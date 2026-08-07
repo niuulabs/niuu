@@ -320,6 +320,103 @@ def test_read_source_bounded_still_404s_for_a_missing_source(client: TestClient)
 
 
 # ---------------------------------------------------------------------------
+# GET /mimir/sources — metadata only
+# ---------------------------------------------------------------------------
+
+
+def test_sources_listing_does_not_carry_bodies(client: TestClient) -> None:
+    """Building the listing from bodies OOM-killed the shared mount."""
+    client.post(
+        "/mimir/ingest",
+        json={"title": "Big", "content": "x" * 200_000, "source_type": "document"},
+    )
+
+    resp = client.get("/mimir/sources")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["content"] is None
+    assert body[0]["title"] == "Big"
+
+
+def test_sources_listing_still_classifies_origin_without_bodies(client: TestClient) -> None:
+    """origin_type comes from metadata now — it used to require a full read."""
+    client.post(
+        "/mimir/ingest",
+        json={
+            "title": "From the web",
+            "content": "hello",
+            "source_type": "web",
+            "origin_url": "https://example.com/a",
+        },
+    )
+    client.post(
+        "/mimir/ingest",
+        json={"title": "From a file", "content": "hello there", "source_type": "document"},
+    )
+
+    web = client.get("/mimir/sources", params={"origin_type": "web"}).json()
+    files = client.get("/mimir/sources", params={"origin_type": "file"}).json()
+
+    assert [s["title"] for s in web] == ["From the web"]
+    assert [s["origin_url"] for s in web] == ["https://example.com/a"]
+    assert [s["title"] for s in files] == ["From a file"]
+
+
+# ---------------------------------------------------------------------------
+# POST /mimir/ingest — operational sources are refused
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_refuses_operational_source_types(client: TestClient) -> None:
+    """Exhaust can never be synthesised, so it would sit unprocessed forever."""
+    resp = client.post(
+        "/mimir/ingest",
+        json={
+            "title": "Mimir health small ingest probe",
+            "content": "ok",
+            "source_type": "diagnostic",
+        },
+    )
+
+    assert resp.status_code == 422
+    assert "knowledge" in resp.json()["detail"]
+    assert client.get("/mimir/sources").json() == []
+
+
+def test_ingest_refuses_tool_output(client: TestClient) -> None:
+    resp = client.post(
+        "/mimir/ingest",
+        json={
+            "title": "Dream cycle 2026-06-18T08:15",
+            "content": "ran",
+            "source_type": "tool_output",
+        },
+    )
+
+    assert resp.status_code == 422
+
+
+def test_ingest_still_accepts_knowledge_bearing_types(client: TestClient) -> None:
+    """The gate names exhaust explicitly — it must not police vocabulary.
+
+    Agents legitimately invent types (pdf, reference, source) for real material;
+    a UV LED datasheet and a firmware file are knowledge whatever they are called.
+    """
+    for source_type in ("web", "document", "research", "pdf", "reference"):
+        resp = client.post(
+            "/mimir/ingest",
+            json={
+                "title": f"A {source_type}",
+                "content": f"content for {source_type}",
+                "source_type": source_type,
+            },
+        )
+        assert resp.status_code == 200, source_type
+
+
+# ---------------------------------------------------------------------------
 # GET /mimir/pages
 # ---------------------------------------------------------------------------
 
@@ -1012,11 +1109,10 @@ def test_sources_filters_unprocessed_and_missing_page_sources(
     all_sources = client_with_sourced_page.get("/mimir/sources")
     assert all_sources.status_code == 200
     assert any(source["source_id"] == loose_source_id for source in all_sources.json())
-    assert any(
-        source["source_id"] == loose_source_id
-        and source["content"] == "Not yet referenced by any page."
-        for source in all_sources.json()
-    )
+    # A listing carries metadata only. Loading every body to build it held the
+    # whole corpus in memory and OOM-killed the service; fetch /mimir/source for
+    # content.
+    assert all(source["content"] is None for source in all_sources.json())
 
     file_sources = client_with_sourced_page.get("/mimir/sources", params={"origin_type": "file"})
     assert file_sources.status_code == 200

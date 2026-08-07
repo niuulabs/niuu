@@ -18,6 +18,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 
+from niuu.domain.mimir import OPERATIONAL_SOURCE_TYPES
 from niuu.ports.mimir import MimirPort
 from ravn.config import MimirSourceTriggerConfig
 from ravn.domain.models import AgentTask, OutputMode
@@ -90,6 +91,14 @@ class MimirSourceTrigger(TriggerPort):
         sources = sorted(sources, key=lambda meta: meta.ingested_at)
 
         for src in sources:
+            if src.source_type in OPERATIONAL_SOURCE_TYPES:
+                # Records of the system's own activity — probe output, tool
+                # transcripts, run logs. No synthesis will ever cite one, so it
+                # stays "unprocessed" forever; sweeping it again every poll is
+                # work that can never finish. Ingest now refuses these, but the
+                # shared mount already holds 61 from before that gate existed.
+                continue
+
             enqueued_at = self._enqueued.get(src.source_id)
             if enqueued_at is not None and (now - enqueued_at) < retry_after:
                 continue

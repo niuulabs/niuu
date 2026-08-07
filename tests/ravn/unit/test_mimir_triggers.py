@@ -302,6 +302,37 @@ class TestMimirSourceTrigger:
         assert ["src-old", "src-new"] == [t.task_id.rsplit("_", 1)[-1] for t in enqueued]
 
     @pytest.mark.asyncio
+    async def test_poll_once_skips_operational_sources(self) -> None:
+        """Exhaust can never be cited by a page, so it can never stop being swept.
+
+        The shared mount holds 61 such sources — dream-cycle markers, lint
+        reports, proof readbacks — ingested before the gate existed. Without
+        this skip they are re-swept every poll, forever.
+        """
+        knowledge = _source_meta(source_id="src-real", title="A datasheet")
+        exhaust = _source_meta(source_id="src-log", title="Dream cycle 2026-06-18T08:15")
+        exhaust.source_type = "tool_output"
+        probe = _source_meta(source_id="src-probe", title="Mimir health small ingest probe")
+        probe.source_type = "diagnostic"
+
+        mimir = AsyncMock()
+        mimir.list_sources = AsyncMock(return_value=[exhaust, probe, knowledge])
+        mimir.read_source_excerpt = AsyncMock(return_value=_full_source())
+        trigger = self._make_trigger(mimir=mimir)
+
+        enqueued: list[AgentTask] = []
+
+        async def _enqueue(task: AgentTask) -> bool:
+            enqueued.append(task)
+            return True
+
+        await trigger._poll_once(_enqueue)
+
+        assert [t.title for t in enqueued] == ["Synthesise Mímir source: A datasheet"]
+        # Skipped before the read — exhaust costs nothing at all now.
+        mimir.read_source_excerpt.assert_awaited_once_with("src-real", 120_000)
+
+    @pytest.mark.asyncio
     async def test_poll_once_asks_for_a_bounded_excerpt(self) -> None:
         """The context truncates anyway — do not ship the megabytes first."""
         mimir = AsyncMock()

@@ -45,6 +45,7 @@ from mimir.compiled_truth import CompiledTruthPage
 from mimir.compiled_truth import parse_page as parse_compiled_truth_page
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
 from niuu.domain.mimir import (
+    OPERATIONAL_SOURCE_TYPES,
     MimirLintReport,
     MimirPage,
     MimirPageMeta,
@@ -646,6 +647,14 @@ async def _source_page_map(
 
 
 async def _read_full_sources(port: MimirPort) -> list[MimirSource]:
+    """Load every raw source with its content.
+
+    This holds the entire corpus in memory, which is enough to OOM the service
+    on a large mount — listings and activity feeds must use ``list_sources()``
+    instead. Only evidence computation legitimately needs the bodies, because it
+    matches facts against source text, including sources a page does not yet
+    cite.
+    """
     sources: list[MimirSource] = []
     for source_meta in await port.list_sources():
         source = await port.read_source(source_meta.source_id)
@@ -1271,7 +1280,9 @@ class MimirRouter:
                         )
                     )
                 source_pages = await _source_page_map(port)
-                for source in await _read_full_sources(port):
+                # Metadata only — an activity feed needs titles and timestamps,
+                # not the bodies behind them.
+                for source in await port.list_sources():
                     events.append(
                         RecentWriteResponse(
                             id=_stable_id(
@@ -1798,9 +1809,12 @@ class MimirRouter:
         ) -> list[SourceMetaResponse]:
             port, resolved_mount = self._resolve_port(mount)
             source_pages = await _source_page_map(port)
-            full_sources = await _read_full_sources(port)
             results: list[SourceMetaResponse] = []
-            for source in full_sources:
+            # Metadata only. Reading every source body to build a listing loaded
+            # the whole corpus into memory at once and OOM-killed the service on
+            # the shared mount; the bodies were then discarded, since a listing
+            # has no use for them. Callers that want content fetch /mimir/source.
+            for source in await port.list_sources():
                 if origin_type == "web" and not source.origin_url:
                     continue
                 if origin_type is not None and origin_type != "web" and source.origin_url:
@@ -1818,7 +1832,6 @@ class MimirRouter:
                         ingest_agent="mimir",
                         compiled_into=source_pages.get(source.source_id, []),
                         mount_name=resolved_mount,
-                        content=source.content,
                     )
                 )
             if unprocessed:
@@ -1881,6 +1894,16 @@ class MimirRouter:
             _auth: None = Depends(_require_write_auth),
         ) -> IngestResponse:
             port, _ = self._resolve_port(request.mount)
+            if request.source_type in OPERATIONAL_SOURCE_TYPES:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Refusing to ingest source_type {request.source_type!r}: it records "
+                        "system activity, not knowledge, so nothing will ever synthesise it "
+                        "into a page and it would sit unprocessed forever. Write run output "
+                        "to logs or a thread instead."
+                    ),
+                )
             content_hash = compute_content_hash(request.content)
             source_id = compute_source_id(request.content)
             source = MimirSource(

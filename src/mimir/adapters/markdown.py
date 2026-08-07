@@ -1383,6 +1383,7 @@ class MarkdownMimirAdapter(MimirPort):
                     title=data["title"],
                     ingested_at=datetime.fromisoformat(data["ingested_at"]),
                     source_type=data["source_type"],
+                    origin_url=data.get("origin_url"),
                 )
             except Exception as exc:
                 logger.warning("Mímir: failed to read raw source %s: %s", json_path.name, exc)

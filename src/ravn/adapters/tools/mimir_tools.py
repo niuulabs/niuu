@@ -170,8 +170,12 @@ class MimirIngestTool(ToolPort):
                 },
                 "source_type": {
                     "type": "string",
-                    "enum": ["web", "document", "conversation", "tool_output", "research"],
-                    "description": "Category of source.",
+                    "enum": ["web", "document", "conversation", "research"],
+                    "description": (
+                        "Category of source. Mímir holds knowledge about the world, not "
+                        "records of your own activity — do not ingest tool transcripts, "
+                        "probe output or run logs, which no page will ever synthesise."
+                    ),
                 },
                 "origin_url": {
                     "type": "string",

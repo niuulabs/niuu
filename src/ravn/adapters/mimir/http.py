@@ -421,6 +421,7 @@ class HttpMimirAdapter(MimirPort):
                 title=item["title"],
                 ingested_at=datetime.fromisoformat(item["ingested_at"]),
                 source_type=item["source_type"],
+                origin_url=item.get("origin_url"),
             )
             for item in response.json()
         ]
