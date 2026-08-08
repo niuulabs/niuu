@@ -23,6 +23,7 @@ import json
 import logging
 from datetime import UTC, datetime
 
+from ravn.adapters._pool_sizing import AUX_POOL_MAX_SIZE, AUX_POOL_MIN_SIZE
 from ravn.domain.checkpoint import Checkpoint, InterruptReason
 from ravn.ports.checkpoint import CheckpointPort
 
@@ -199,7 +200,11 @@ class PostgresCheckpointAdapter(CheckpointPort):
             return self._pool
         import asyncpg  # type: ignore[import]
 
-        self._pool = await asyncpg.create_pool(self._dsn)
+        self._pool = await asyncpg.create_pool(
+            self._dsn,
+            min_size=AUX_POOL_MIN_SIZE,
+            max_size=AUX_POOL_MAX_SIZE,
+        )
         async with self._pool.acquire() as conn:
             await conn.execute(_CREATE_CRASH_TABLE_SQL)
             await conn.execute(_CREATE_SNAPSHOT_TABLE_SQL)

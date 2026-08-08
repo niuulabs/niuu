@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from ravn.adapters._pool_sizing import AUX_POOL_MAX_SIZE, AUX_POOL_MIN_SIZE
 from ravn.adapters.valkyrie_history.memory import InMemoryValkyrieHistoryStore
 from ravn.adapters.valkyrie_history.postgres import PostgresValkyrieHistoryStore
 from ravn.ports.valkyrie_history import ValkyrieHistoryStore
@@ -26,7 +27,11 @@ class LazyPostgresValkyrieHistoryStore(ValkyrieHistoryStore):
         if self._store is None:
             import asyncpg  # noqa: PLC0415
 
-            pool = await asyncpg.create_pool(dsn=self._dsn)
+            pool = await asyncpg.create_pool(
+                dsn=self._dsn,
+                min_size=AUX_POOL_MIN_SIZE,
+                max_size=AUX_POOL_MAX_SIZE,
+            )
             self._store = PostgresValkyrieHistoryStore(pool)
         return self._store
 
