@@ -191,10 +191,10 @@ class PostgresMemoryAdapter(MemoryPort):
         await self._search.initialize()
 
     async def close(self) -> None:
-        """Close the connection pool gracefully."""
+        """Close the connection pool gracefully. Safe to call more than once."""
         if self._pool is not None:
-            await self._pool.close()
-            self._pool = None
+            pool, self._pool = self._pool, None
+            await pool.close()
         await self._search.close()
 
     # ------------------------------------------------------------------

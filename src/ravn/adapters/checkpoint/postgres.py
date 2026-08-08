@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
 from ravn.domain.checkpoint import Checkpoint, InterruptReason
 from ravn.ports.checkpoint import CheckpointPort
@@ -187,23 +188,48 @@ class PostgresCheckpointAdapter(CheckpointPort):
         ``postgresql://user:pass@host/db``.
     max_snapshots_per_task:
         Maximum named snapshots retained per task.  Oldest are pruned.
+    pool_min_size / pool_max_size:
+        Connection pool bounds.  Checkpointing is low-traffic and strictly
+        serialised per task, so the default is deliberately small: asyncpg's
+        own default is 10/10, which had this adapter open ten connections on
+        first save for a workload that never needs more than one at a time.
     """
 
-    def __init__(self, dsn: str, max_snapshots_per_task: int = 20) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        max_snapshots_per_task: int = 20,
+        *,
+        pool_min_size: int = 1,
+        pool_max_size: int = 4,
+    ) -> None:
         self._dsn = dsn
-        self._pool: object | None = None
+        self._pool: Any | None = None
         self._max_snapshots = max_snapshots_per_task
+        self._pool_min_size = pool_min_size
+        self._pool_max_size = pool_max_size
 
-    async def _ensure_pool(self) -> object:
+    async def _ensure_pool(self) -> Any:
         if self._pool is not None:
             return self._pool
         import asyncpg  # type: ignore[import]
 
-        self._pool = await asyncpg.create_pool(self._dsn)
+        self._pool = await asyncpg.create_pool(
+            self._dsn,
+            min_size=self._pool_min_size,
+            max_size=self._pool_max_size,
+        )
         async with self._pool.acquire() as conn:
             await conn.execute(_CREATE_CRASH_TABLE_SQL)
             await conn.execute(_CREATE_SNAPSHOT_TABLE_SQL)
         return self._pool
+
+    async def close(self) -> None:
+        """Close the connection pool. Safe to call when it was never opened."""
+        if self._pool is None:
+            return
+        pool, self._pool = self._pool, None
+        await pool.close()
 
     # ------------------------------------------------------------------
     # NIU-504: crash-recovery checkpoint

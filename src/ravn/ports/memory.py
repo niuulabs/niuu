@@ -140,3 +140,15 @@ class MemoryPort(ABC):
         """Return the in-memory rolling summary for *session_id*, or empty string."""
         summaries: dict[str, str] = self.__dict__.get("_rolling_summaries", {})
         return summaries.get(session_id, "")
+
+    async def close(self) -> None:
+        """Release any resources the backend holds. Idempotent.
+
+        On the port rather than only on the adapters that need it: a file- or
+        memory-backed adapter has nothing to release, but the composition root
+        cannot know which one it wired without an isinstance check. Declaring
+        the no-op here means shutdown can always call it — the postgres
+        adapter's pool-closing ``close`` existed for months and was never
+        invoked precisely because the caller had no contract to rely on.
+        """
+        return None

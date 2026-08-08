@@ -70,3 +70,11 @@ class CheckpointPort(ABC):
     @abstractmethod
     async def delete_snapshot(self, checkpoint_id: str) -> None:
         """Delete the snapshot with the given *checkpoint_id*.  No-op if absent."""
+
+    async def close(self) -> None:
+        """Release any resources the backend holds. Idempotent.
+
+        The disk adapter holds nothing; the postgres one lazily opens a pool
+        and, until this existed, had no way to give it back.
+        """
+        return None

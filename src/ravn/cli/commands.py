@@ -774,18 +774,26 @@ async def _load_checkpoint_session(
     Returns ``(session, user_input)`` where ``user_input`` is the original
     prompt from the checkpoint (or *fallback_prompt* if no checkpoint exists).
     """
+    # The port is only needed to read the checkpoint; everything below is pure
+    # session reconstruction. Closing it here rather than at the end of the
+    # function means the postgres backend does not hold a pool open for the
+    # lifetime of the resumed session, and the early returns cannot skip it.
     port = _build_checkpoint(settings)
-
-    if checkpoint_id:
-        checkpoint = await port.load_snapshot(checkpoint_id)
-        if checkpoint is None:
-            typer.echo(f"[ravn] No snapshot found for checkpoint_id={checkpoint_id!r}", err=True)
-            return None, fallback_prompt
-    else:
-        checkpoint = await port.load(task_id)
-        if checkpoint is None:
-            typer.echo(f"[ravn] No checkpoint found for task_id={task_id!r}", err=True)
-            return None, fallback_prompt
+    try:
+        if checkpoint_id:
+            checkpoint = await port.load_snapshot(checkpoint_id)
+            if checkpoint is None:
+                typer.echo(
+                    f"[ravn] No snapshot found for checkpoint_id={checkpoint_id!r}", err=True
+                )
+                return None, fallback_prompt
+        else:
+            checkpoint = await port.load(task_id)
+            if checkpoint is None:
+                typer.echo(f"[ravn] No checkpoint found for task_id={task_id!r}", err=True)
+                return None, fallback_prompt
+    finally:
+        await port.close()
 
     # Reconstruct session from checkpoint messages.
     session = Session()

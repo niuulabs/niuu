@@ -732,6 +732,12 @@ async def _run_daemon(
             await environment_signal_runtime.stop()
         if environment_signal_publisher_started and environment_signal_publisher is not None:
             await environment_signal_publisher.stop()
+        if memory is not None:
+            # MemoryPort.close() is a no-op for file/sqlite backends and closes
+            # the connection pool for postgres. Called unconditionally: the
+            # composition root should not have to know which backend it wired.
+            with suppress(Exception):
+                await memory.close()
         await event_publisher.close()
         await _shutdown_mcp(mcp_manager)
         # NIU-598: flush pending events before tearing down daemon reflection service.
