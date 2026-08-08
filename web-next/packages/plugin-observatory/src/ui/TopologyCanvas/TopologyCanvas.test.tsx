@@ -519,6 +519,32 @@ describe('TopologyCanvas', () => {
     expect(mainCtx.fillRect).toHaveBeenCalled();
   });
 
+  it('holds the drawing still while paused, and lets it go again', async () => {
+    // Asserted on the starfield: it is drawn every frame, from the clock and
+    // nothing else, so two frames far apart in time are identical only if the
+    // clock itself has been stopped.
+    const frameSince = (start: number) => mainCtx.fillStyles.slice(start);
+
+    await renderCanvas(MOCK_TOPOLOGY, { paused: true });
+    const a = mainCtx.fillStyles.length;
+    runAnimationFrame(1000);
+    const b = mainCtx.fillStyles.length;
+    runAnimationFrame(9000);
+    expect(frameSince(b)).toEqual(mainCtx.fillStyles.slice(a, b));
+    expect(b).toBeGreaterThan(a);
+
+    cleanup();
+    animationFrames = [];
+    mainCtx = makeCtxMock();
+
+    await renderCanvas(MOCK_TOPOLOGY);
+    const c = mainCtx.fillStyles.length;
+    runAnimationFrame(1000);
+    const d = mainCtx.fillStyles.length;
+    runAnimationFrame(9000);
+    expect(frameSince(d)).not.toEqual(mainCtx.fillStyles.slice(c, d));
+  });
+
   it('stops drawing queued frames after unmount cleanup runs', async () => {
     const { unmount } = render(<TopologyCanvas topology={MOCK_TOPOLOGY} />);
     const canvas = screen.getByTestId('topology-canvas') as HTMLCanvasElement;

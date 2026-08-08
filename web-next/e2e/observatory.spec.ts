@@ -556,6 +556,31 @@ test('present mode stands the rail, inspector and feed down', async ({ page }) =
   await expect(stage).toHaveAttribute('data-presenting', 'false');
 });
 
+// ── Motion ────────────────────────────────────────────────────────────────────
+
+test('the stage can be held still, and the choice outlives a reload', async ({ page }) => {
+  await page.goto('/observatory');
+  await expect(page.getByTestId('topology-canvas')).toBeVisible({ timeout: 5000 });
+
+  const hold = page.getByTestId('motion-toggle');
+  await expect(hold).toHaveAttribute('aria-pressed', 'false');
+  await expect(hold).toHaveAccessibleName('Hold the stage still');
+
+  await hold.click();
+  await expect(hold).toHaveAttribute('aria-pressed', 'true');
+  await expect(hold).toHaveAccessibleName('Let the stage move');
+  // Holding the stage stills what is drawn on it; it does not take it away.
+  await expect(page.getByTestId('topology-canvas')).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByTestId('motion-toggle')).toHaveAttribute('aria-pressed', 'true', {
+    timeout: 5000,
+  });
+
+  await page.getByTestId('motion-toggle').click();
+  await expect(page.getByTestId('motion-toggle')).toHaveAttribute('aria-pressed', 'false');
+});
+
 // ── 3D view ───────────────────────────────────────────────────────────────────
 
 /**

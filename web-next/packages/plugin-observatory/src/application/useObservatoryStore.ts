@@ -16,21 +16,27 @@ export type ObservatoryFilter = 'all' | 'agents' | 'runs' | 'services' | 'device
  */
 export type ObservatoryView = '2d' | '3d';
 
-/** Persisted so the operator's choice of stage survives a reload. */
+/** Persisted so the operator's choices survive a reload. */
 const VIEW_STORAGE_KEY = 'niuu.observatory.view';
+const MOTION_STORAGE_KEY = 'niuu.observatory.motion';
 
-function readStoredView(): ObservatoryView {
+/**
+ * Read a stored preference, falling back when storage will not answer.
+ *
+ * Private browsing, a quota that has been hit, an embedder that blocks it —
+ * a preference that cannot be read is not worth failing a page load over.
+ */
+function readStored(key: string, fallback: string): string {
   try {
-    return localStorage.getItem(VIEW_STORAGE_KEY) === '3d' ? '3d' : '2d';
+    return localStorage.getItem(key) ?? fallback;
   } catch {
-    // Private browsing, or no storage at all. The plan is the safe default.
-    return '2d';
+    return fallback;
   }
 }
 
-function writeStoredView(view: ObservatoryView): void {
+function writeStored(key: string, value: string): void {
   try {
-    localStorage.setItem(VIEW_STORAGE_KEY, view);
+    localStorage.setItem(key, value);
   } catch {
     // A preference that cannot be saved is not worth failing a click over.
   }
@@ -57,6 +63,16 @@ interface ObservatoryStoreState {
   presenting: boolean;
   /** Plan or model. */
   view: ObservatoryView;
+  /**
+   * Whether the stage is animating.
+   *
+   * Covers both views, because it is one preference about one estate: the
+   * pulses, the travelling marks, the well's ripples and the idle camera
+   * drift all stop together. Held still, the Observatory is a diagram — which
+   * is what you want for a screenshot, a long look at a dense cluster, or a
+   * machine you would rather not have painting sixty times a second.
+   */
+  motion: boolean;
 }
 
 interface ObservatoryStore {
@@ -69,6 +85,7 @@ interface ObservatoryStore {
   setHiddenCompute(compute: ReadonlySet<ComputeClass>): void;
   setPresenting(presenting: boolean): void;
   setView(view: ObservatoryView): void;
+  setMotion(motion: boolean): void;
   subscribe(fn: () => void): () => void;
 }
 
@@ -100,7 +117,9 @@ export function getObservatoryStore(): ObservatoryStore {
     hiddenLayers: new Set<EdgeLayer>(CALM_HIDDEN_LAYERS),
     hiddenCompute: new Set<ComputeClass>(),
     presenting: false,
-    view: readStoredView(),
+    view: readStored(VIEW_STORAGE_KEY, '2d') === '3d' ? '3d' : '2d',
+    // Animating unless the operator has said otherwise.
+    motion: readStored(MOTION_STORAGE_KEY, 'on') !== 'off',
   };
 
   _store = {
@@ -148,7 +167,13 @@ export function getObservatoryStore(): ObservatoryStore {
     setView(view: ObservatoryView): void {
       if (state.view === view) return;
       state = { ...state, view };
-      writeStoredView(view);
+      writeStored(VIEW_STORAGE_KEY, view);
+      subscribers.forEach((fn) => fn());
+    },
+    setMotion(motion: boolean): void {
+      if (state.motion === motion) return;
+      state = { ...state, motion };
+      writeStored(MOTION_STORAGE_KEY, motion ? 'on' : 'off');
       subscribers.forEach((fn) => fn());
     },
     subscribe(fn: () => void): () => void {

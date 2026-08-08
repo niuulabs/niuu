@@ -78,6 +78,15 @@ export interface TopologyCanvasProps {
    * read as an outage.
    */
   hiddenCompute?: ReadonlySet<ComputeClass>;
+  /**
+   * Hold the drawing still: no pulses, no travelling marks, no ripples.
+   *
+   * Separate from the operating system's reduced-motion setting rather than
+   * folded into it — that setting is a standing accessibility preference, this
+   * is a switch on the wall the operator reaches for when they want to study a
+   * frame. Either one alone stills the stage.
+   */
+  paused?: boolean;
   /** Show the minimap panel (default true). */
   showMinimap?: boolean;
   /** Extra CSS class applied to the wrapper div. */
@@ -103,6 +112,7 @@ export function TopologyCanvas({
   focusId,
   hiddenLayers,
   hiddenCompute,
+  paused = false,
   showMinimap = true,
   className,
   style,
@@ -171,13 +181,14 @@ export function TopologyCanvas({
     return map;
   }, [drawnTopology]);
 
-  const reducedMotion = useMemo(
+  const prefersReducedMotion = useMemo(
     () =>
       typeof window !== 'undefined' &&
       typeof window.matchMedia === 'function' &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches,
     [],
   );
+  const reducedMotion = prefersReducedMotion || paused;
 
   // Stable reference to drawing data so the rAF loop always reads fresh values
   // without being re-subscribed on every state tick.
@@ -548,9 +559,17 @@ export function TopologyCanvas({
 
     let cancelled = false;
     let rafId = 0;
+    // The moment the stage was held at. Stilling by freezing the clock rather
+    // than by branching in every draw call means one switch stops all of it —
+    // stars, zone breath, flow marks — and nothing can be left twitching
+    // because somebody forgot to thread a flag into it. Frozen at the first
+    // frame after the pause, so holding the stage does not also jump it.
+    let heldAt: number | null = null;
 
-    const render = (now: number) => {
+    const render = (frameTime: number) => {
       if (cancelled) return;
+      if (reducedMotion && heldAt === null) heldAt = frameTime;
+      const now = reducedMotion ? (heldAt ?? frameTime) : frameTime;
       const { topology: topo, positions: pos, hoveredId } = drawRef.current;
       const { w, h } = sizeRef.current;
       if (!w || !h) {

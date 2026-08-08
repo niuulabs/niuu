@@ -28,6 +28,9 @@ const MOCK_TOPOLOGY: Topology = {
 
 beforeEach(() => {
   __resetObservatoryStore();
+  // Both the stage and the motion preference outlive a store reset, so a test
+  // that changes one would otherwise decide what the next test opens on.
+  localStorage.clear();
   vi.mocked(useTopology).mockReturnValue(MOCK_TOPOLOGY);
 });
 
@@ -85,5 +88,23 @@ describe('ObservatoryTopbar', () => {
 
     fireEvent.click(screen.getByTestId('view-toggle-2d'));
     expect(getObservatoryStore().read().view).toBe('2d');
+  });
+
+  it('offers to hold the stage still, and to let it go again', () => {
+    render(<ObservatoryTopbar />);
+    const button = screen.getByTestId('motion-toggle');
+
+    // Not pressed while the stage is moving: the control names the action it
+    // will take, so a moving stage offers to stop.
+    expect(button).toHaveAttribute('aria-pressed', 'false');
+    expect(button).toHaveAccessibleName('Hold the stage still');
+
+    fireEvent.click(button);
+    expect(getObservatoryStore().read().motion).toBe(false);
+    expect(button).toHaveAttribute('aria-pressed', 'true');
+    expect(button).toHaveAccessibleName('Let the stage move');
+
+    fireEvent.click(button);
+    expect(getObservatoryStore().read().motion).toBe(true);
   });
 });

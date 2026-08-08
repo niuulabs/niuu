@@ -20,7 +20,7 @@ const VIEWS: ReadonlyArray<{ id: ObservatoryView; label: string; title: string }
  */
 export function ObservatoryTopbar() {
   const topology = useTopology();
-  const [{ presenting, view }, store] = useObservatoryStore();
+  const [{ presenting, view, motion }, store] = useObservatoryStore();
 
   return (
     <div className="obs-topbar" data-testid="observatory-topbar">
@@ -46,6 +46,37 @@ export function ObservatoryTopbar() {
           </button>
         ))}
       </div>
+
+      {/*
+        Reads as an action, not a state: while the stage is moving it offers to
+        stop it, and while it is held it offers to let it go. A switch labelled
+        "motion" would leave an operator working out which way is which every
+        time they came back to the page.
+      */}
+      <button
+        type="button"
+        className="obs-topbar__motion"
+        data-testid="motion-toggle"
+        aria-pressed={!motion}
+        aria-label={motion ? 'Hold the stage still' : 'Let the stage move'}
+        title={
+          motion
+            ? 'Hold the stage still — stops the pulses, the travelling marks and the idle camera'
+            : 'Let the stage move again'
+        }
+        onClick={() => store.setMotion(!motion)}
+      >
+        <svg viewBox="0 0 10 10" aria-hidden="true" focusable="false">
+          {motion ? (
+            <>
+              <rect x="1.5" y="1" width="2.4" height="8" />
+              <rect x="6.1" y="1" width="2.4" height="8" />
+            </>
+          ) : (
+            <polygon points="2,1 9,5 2,9" />
+          )}
+        </svg>
+      </button>
 
       <button
         type="button"

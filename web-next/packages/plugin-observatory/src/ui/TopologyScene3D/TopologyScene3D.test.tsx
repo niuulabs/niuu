@@ -138,6 +138,13 @@ function host() {
   return screen.getByTestId('topology-scene3d-host');
 }
 
+/** Where the camera stood the last time a frame was drawn. */
+function eye(): [number, number, number] {
+  const last = renders[renders.length - 1];
+  if (!last) throw new Error('nothing has been drawn yet');
+  return [last.camera.position.x, last.camera.position.y, last.camera.position.z];
+}
+
 /** Screen coordinates for the centre of the stage. */
 const CENTRE = {
   clientX: HOST_RECT.left + HOST_RECT.width / 2,
@@ -320,7 +327,34 @@ describe('TopologyScene3D', () => {
     // Long past the idle delay, then a few frames of drift.
     runFrames(6, CAMERA3D.IDLE_DELAY_MS + 1000, 100);
     expect(renders.length).toBeGreaterThan(before);
-    expect(screen.getByTestId('topology-scene3d-host')).toBeInTheDocument();
+    expect(eye()).not.toEqual([0, 0, 0]);
+
+    const turned = eye();
+    runFrames(4, CAMERA3D.IDLE_DELAY_MS + 2000, 100);
+    expect(eye()).not.toEqual(turned);
+  });
+
+  it('holds the camera where it stands while the stage is paused', () => {
+    // The counterpart of the drift test: same idle wait, same frames, and the
+    // camera does not move — which is the whole of what the button promises.
+    renderScene({ paused: true });
+    runFrames(6, CAMERA3D.IDLE_DELAY_MS + 1000, 100);
+    const held = eye();
+
+    runFrames(4, CAMERA3D.IDLE_DELAY_MS + 2000, 100);
+    expect(eye()).toEqual(held);
+  });
+
+  it('lets the camera go again when the pause is lifted', () => {
+    const { rerender } = render(
+      <TopologyScene3D topology={TOPOLOGY} createRenderer={fakeRendererFactory} paused />,
+    );
+    runFrames(4, CAMERA3D.IDLE_DELAY_MS + 1000, 100);
+    const held = eye();
+
+    rerender(<TopologyScene3D topology={TOPOLOGY} createRenderer={fakeRendererFactory} />);
+    runFrames(4, CAMERA3D.IDLE_DELAY_MS + 2000, 100);
+    expect(eye()).not.toEqual(held);
   });
 
   it('stops drifting the moment the operator touches it', () => {

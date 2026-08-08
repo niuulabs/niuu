@@ -43,7 +43,7 @@ export function ObservatoryPage() {
   const events = useEvents();
   const { data: registry } = useRegistry();
   const [storeState, store] = useObservatoryStore();
-  const { selectedId, focusId, hiddenLayers, hiddenCompute, presenting, view } = storeState;
+  const { selectedId, focusId, hiddenLayers, hiddenCompute, presenting, view, motion } = storeState;
 
   const selectedNode: TopologyNode | null =
     selectedId && topology ? (topology.nodes.find((n) => n.id === selectedId) ?? null) : null;
@@ -105,6 +105,7 @@ export function ObservatoryPage() {
               focusId={focusId}
               hiddenLayers={hiddenLayers}
               hiddenCompute={hiddenCompute}
+              paused={!motion}
               className="niuu:absolute niuu:inset-0"
             />
           </Suspense>
@@ -117,6 +118,7 @@ export function ObservatoryPage() {
             focusId={focusId}
             hiddenLayers={hiddenLayers}
             hiddenCompute={hiddenCompute}
+            paused={!motion}
             className="niuu:absolute niuu:inset-0"
           />
         )}

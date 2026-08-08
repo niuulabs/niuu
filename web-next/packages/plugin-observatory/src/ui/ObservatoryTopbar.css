@@ -45,6 +45,7 @@
   color: var(--color-text-primary);
 }
 
+.obs-topbar__motion,
 .obs-topbar__present {
   flex: none;
   padding: var(--space-1) var(--space-3);
@@ -63,17 +64,36 @@
     border-color 130ms ease;
 }
 
+.obs-topbar__motion:hover,
 .obs-topbar__present:hover {
   color: var(--color-text-primary);
   border-color: var(--color-text-faint);
 }
 
+.obs-topbar__motion:focus-visible,
 .obs-topbar__present:focus-visible {
   outline: 2px solid var(--color-brand);
   outline-offset: 1px;
 }
 
+.obs-topbar__motion[aria-pressed='true'],
 .obs-topbar__present[aria-pressed='true'] {
   color: var(--color-text-primary);
   border-color: var(--color-brand);
+}
+
+/* Square, so the glyph is the whole button and it cannot shuffle the bar
+   sideways when it swaps between two bars and a triangle. */
+.obs-topbar__motion {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  padding: var(--space-1) 0;
+}
+
+.obs-topbar__motion svg {
+  width: 0.5rem;
+  height: 0.5rem;
+  fill: currentColor;
 }

@@ -52,6 +52,14 @@ export interface TopologyScene3DProps {
   focusId?: string | null;
   hiddenLayers?: ReadonlySet<EdgeLayer>;
   hiddenCompute?: ReadonlySet<ComputeClass>;
+  /**
+   * Hold the model still: no pulses, no travelling marks, no idle drift.
+   *
+   * The scene already stills itself for an operating system that asks for
+   * reduced motion, and this reaches the same switch — so pausing cannot leave
+   * one animated thing running because it was wired up separately.
+   */
+  paused?: boolean;
   showMinimap?: boolean;
   className?: string;
   style?: React.CSSProperties;
@@ -85,6 +93,7 @@ export function TopologyScene3D({
   focusId,
   hiddenLayers,
   hiddenCompute,
+  paused = false,
   showMinimap = true,
   className,
   style,
@@ -185,13 +194,14 @@ export function TopologyScene3D({
     return map;
   }, [drawnTopology]);
 
-  const reducedMotion = useMemo(
+  const prefersReducedMotion = useMemo(
     () =>
       typeof window !== 'undefined' &&
       typeof window.matchMedia === 'function' &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches,
     [],
   );
+  const reducedMotion = prefersReducedMotion || paused;
 
   // Read by the animation loop, so it never has to be re-subscribed when the
   // parent hands down new props.
@@ -250,8 +260,12 @@ export function TopologyScene3D({
   // ── Scene ───────────────────────────────────────────────────────────────────
 
   useEffect(() => {
+    // The standing accessibility preference is baked in; pausing is not.
+    // Pausing arrives per frame instead, because rebuilding every geometry and
+    // texture on the stage is not a reasonable price for a button that only
+    // stops a clock.
     const scene = createObservatoryScene(model, {
-      reducedMotion,
+      reducedMotion: prefersReducedMotion,
       readoutFor: (regionId) => readouts.get(regionId) ?? null,
     });
     sceneRef.current = scene;
@@ -259,7 +273,7 @@ export function TopologyScene3D({
       scene.dispose();
       sceneRef.current = null;
     };
-  }, [model, readouts, reducedMotion]);
+  }, [model, readouts, prefersReducedMotion]);
 
   const fitCamera = useCallback(() => {
     const { w, h } = sizeRef.current;

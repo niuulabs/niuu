@@ -33,6 +33,7 @@ describe('useObservatoryStore', () => {
       hiddenCompute: new Set(),
       presenting: false,
       view: '2d',
+      motion: true,
     });
 
     act(() => {
@@ -50,6 +51,7 @@ describe('useObservatoryStore', () => {
       hiddenCompute: new Set(),
       presenting: false,
       view: '2d',
+      motion: true,
     });
     expect(notify).toHaveBeenCalledTimes(2);
 
@@ -71,6 +73,13 @@ describe('useObservatoryStore', () => {
 describe('layer visibility', () => {
   beforeEach(() => {
     __resetObservatoryStore();
+  });
+
+  // Both a stubbed-out storage and a written preference outlive a test, so
+  // without this a test that denies storage decides what the next one sees.
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.clear();
   });
 
   it('opens calm rather than showing every layer at once', () => {
@@ -167,6 +176,59 @@ describe('layer visibility', () => {
       expect(() => store.setView('3d')).not.toThrow();
       // The choice still holds for this visit; it just cannot outlive it.
       expect(store.read().view).toBe('3d');
+    });
+  });
+
+  describe('motion', () => {
+    it('opens moving', () => {
+      expect(getObservatoryStore().read().motion).toBe(true);
+    });
+
+    it('holds the stage and publishes the change once', () => {
+      const store = getObservatoryStore();
+      let calls = 0;
+      const unsubscribe = store.subscribe(() => (calls += 1));
+
+      store.setMotion(false);
+      store.setMotion(false);
+      unsubscribe();
+
+      expect(store.read().motion).toBe(false);
+      expect(calls).toBe(1);
+    });
+
+    it('remembers a held stage for the next visit', () => {
+      getObservatoryStore().setMotion(false);
+      expect(localStorage.getItem('niuu.observatory.motion')).toBe('off');
+
+      __resetObservatoryStore();
+      expect(getObservatoryStore().read().motion).toBe(false);
+
+      getObservatoryStore().setMotion(true);
+      expect(localStorage.getItem('niuu.observatory.motion')).toBe('on');
+      __resetObservatoryStore();
+      expect(getObservatoryStore().read().motion).toBe(true);
+    });
+
+    it('opens moving when storage is unreadable', () => {
+      vi.stubGlobal('localStorage', {
+        getItem: () => {
+          throw new Error('denied');
+        },
+        setItem: () => {
+          throw new Error('denied');
+        },
+        removeItem: () => {},
+        clear: () => {},
+        key: () => null,
+        length: 0,
+      });
+
+      __resetObservatoryStore();
+      const store = getObservatoryStore();
+      expect(store.read().motion).toBe(true);
+      expect(() => store.setMotion(false)).not.toThrow();
+      expect(store.read().motion).toBe(false);
     });
   });
 });
