@@ -1126,7 +1126,12 @@ def _link_superseded_artifact(
 ) -> LearnedToolArtifact:
     """Archive the previous version of a tool's envelope and link the chain."""
     if not path.is_file():
-        return artifact
+        # No envelope under this name — but a rename is still a new version of
+        # something. Chaining was keyed purely on the name-derived path, so
+        # list_k8s_pods -> list_k8s_pod_names looked like a first build and the
+        # predecessor vanished from the chain. When the resident declared what
+        # capability the tool serves, that is the better key.
+        return _link_by_capability(artifact, artifacts_dir=artifacts_dir)
     try:
         previous = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -1154,6 +1159,103 @@ def _link_superseded_artifact(
         # two-artifact cycle that ping-pongs forever.
         return artifact
     return replace(artifact, supersedes=previous_id)
+
+
+def find_installed_duplicate(
+    *,
+    artifacts_dir: str | Path,
+    tools_dir: str | Path,
+    artifact: LearnedToolArtifact,
+) -> LearnedToolArtifact | None:
+    """Return an installed artifact this one would merely re-create, if any.
+
+    Residents rebuilt tools they already owned and, twice in one 41-minute
+    stretch, produced byte-identical code under a new name. Nothing noticed:
+    each build wrote a fresh envelope, so the catalog grew and the same work was
+    paid for again.
+
+    Identity is the code plus the behavioural contract — input schema, required
+    permission, declared reach, entry point. Name and description are labels: a
+    rename with identical code is the same tool wearing a new label, which is
+    precisely one of the duplications seen. A changed schema or permission is a
+    real revision and must still be written.
+    """
+    artifacts_path = Path(artifacts_dir)
+    if not artifact.tool_code.strip() or not artifacts_path.is_dir():
+        return None
+    contract = _manifest_contract(artifact.manifest)
+    for candidate_path in sorted(artifacts_path.glob("*.json")):
+        try:
+            payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or payload.get("tool_code") != artifact.tool_code:
+            continue
+        candidate = LearnedToolArtifact.from_dict(payload)
+        if candidate.artifact_id == artifact.artifact_id:
+            continue
+        if _manifest_contract(candidate.manifest) != contract:
+            continue
+        # Only an artifact whose code is actually on disk can be run instead;
+        # one persisted after a failed verification is not a usable answer.
+        if not learned_tool_path(tools_dir, candidate.manifest.name).is_file():
+            continue
+        return candidate
+    return None
+
+
+def _manifest_contract(manifest: LearnedToolManifest) -> str:
+    """What a caller is promised, ignoring what the tool happens to be called."""
+    return json.dumps(
+        {
+            "input_schema": manifest.input_schema,
+            "output_schema": manifest.output_schema,
+            "required_permission": manifest.required_permission,
+            "entry_point": manifest.entry_point,
+            "artifact_type": manifest.artifact_type,
+            "declared_reach": [grant.to_dict() for grant in manifest.declared_reach],
+        },
+        sort_keys=True,
+    )
+
+
+def _link_by_capability(
+    artifact: LearnedToolArtifact,
+    *,
+    artifacts_dir: Path,
+) -> LearnedToolArtifact:
+    """Link a differently-named artifact to the last one serving the same need.
+
+    Only ever reads: the predecessor keeps its own envelope and stays installed.
+    All this establishes is that the new artifact knows what it follows, so
+    ``supersedes`` can be walked back for rollback and review.
+    """
+    capability_id = artifact.source_gap_id.strip()
+    if not capability_id or artifact.supersedes:
+        return artifact
+
+    newest: tuple[str, str] = ("", "")
+    for candidate_path in sorted(artifacts_dir.glob("*.json")):
+        try:
+            payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            # A neighbouring envelope being unreadable is not this write's
+            # problem; the worst outcome is the chain link we could not prove.
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("source_gap_id") or "").strip() != capability_id:
+            continue
+        candidate_id = str(payload.get("artifact_id") or "")
+        if not candidate_id or candidate_id == artifact.artifact_id:
+            continue
+        created_at = str(payload.get("created_at") or "")
+        if created_at >= newest[0]:
+            newest = (created_at, candidate_id)
+
+    if not newest[1]:
+        return artifact
+    return replace(artifact, supersedes=newest[1])
 
 
 def read_learned_tool_artifact(path: str | Path) -> LearnedToolArtifact:

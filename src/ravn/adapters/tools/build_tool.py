@@ -25,6 +25,7 @@ from ravn.tool_observability import publish_learned_tool_inventory
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
+    find_installed_duplicate,
     learned_tool_artifact_path,
     learned_tool_path,
     learned_tool_runner_for_backend,
@@ -156,7 +157,11 @@ class BuildTool(ToolPort):
             "or thresholds; take them as input_schema parameters. The tool is canaried "
             "(one sandboxed run on canary_input — return a clear error object instead of "
             "raising when access is missing), persisted, and registered so it can be "
-            "called by name on the next iteration."
+            "called by name on the next iteration. Pass capability_id — a stable name for "
+            "the CAPABILITY, not the tool — and reuse it whenever you revise or rename a "
+            "tool for the same purpose, so versions chain instead of forking. A build "
+            "whose code and contract match an installed tool is not rebuilt: the result "
+            "names the tool you already have."
         )
 
     @property
@@ -250,6 +255,24 @@ class BuildTool(ToolPort):
                 "artifact_id": {
                     "type": "string",
                     "description": "Optional stable artifact id for provenance.",
+                },
+                "capability_id": {
+                    "type": "string",
+                    "description": (
+                        "Stable id for the CAPABILITY this tool provides, independent "
+                        "of the tool's name — e.g. 'k8s.pods.list'. Reuse the same value "
+                        "when you rebuild, revise, or rename a tool that serves the same "
+                        "purpose: versions chain from it, so a rename stays one lineage "
+                        "instead of forking into a second tool that does the same job."
+                    ),
+                },
+                "signal_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Ids of the observations that made this tool necessary, recorded "
+                        "on the artifact so a build can be traced back to what prompted it."
+                    ),
                 },
                 "canary_input": {
                     "type": "object",
@@ -445,6 +468,31 @@ class BuildTool(ToolPort):
                     "provenance": artifact.provenance,
                 },
             )
+
+            # A rebuild that produces what is already installed is finished
+            # here: no second envelope, and no throwaway venv spent verifying
+            # code that has already been verified. Checked before
+            # _verify_and_repair because that is where the cost is.
+            duplicate = find_installed_duplicate(
+                artifacts_dir=self._artifacts_dir,
+                tools_dir=self._tools_dir,
+                artifact=artifact,
+            )
+            if duplicate is not None:
+                self._complete_commission(input, artifact=duplicate)
+                telemetry.event(
+                    "ravn.tool_build.duplicate.skipped",
+                    attributes={
+                        "ravn.tool_build.name": artifact.manifest.name,
+                        "ravn.tool_build.duplicate.name": duplicate.manifest.name,
+                        "ravn.tool_build.duplicate.artifact_id": duplicate.artifact_id,
+                    },
+                )
+                telemetry.count(
+                    "ravn.tool_build.duplicate.operations",
+                    attributes={"ravn.tool_build.duplicate.name": duplicate.manifest.name},
+                )
+                return ToolResult(tool_call_id="", content=_duplicate_summary(artifact, duplicate))
 
             # Never trust the builder's own "it works": independently verify the
             # returned code in a throwaway venv, repairing on failure, BEFORE the
@@ -1567,6 +1615,9 @@ def _artifact_from_input(input: dict) -> LearnedToolArtifact:  # noqa: A002
     artifact_id = str(input.get("artifact_id") or "").strip()
     if not artifact_id:
         artifact_id = f"learned-tool:{manifest.name}:{uuid4().hex[:12]}"
+    signal_ids_raw = input.get("signal_ids")
+    if signal_ids_raw is not None and not isinstance(signal_ids_raw, list):
+        raise ValueError("signal_ids must be a list when provided")
     return LearnedToolArtifact(
         artifact_id=artifact_id,
         manifest=manifest,
@@ -1574,6 +1625,11 @@ def _artifact_from_input(input: dict) -> LearnedToolArtifact:  # noqa: A002
         test_code=test_code,
         requirements=requirements,
         provenance=dict(provenance or {}),
+        # What need this build serves, as distinct from what it is called. The
+        # version chain keys on this when present, so renaming a tool no longer
+        # starts a fresh lineage that hides the version it replaced.
+        source_gap_id=str(input.get("capability_id") or "").strip(),
+        source_signal_ids=[str(item) for item in (signal_ids_raw or []) if str(item).strip()],
     )
 
 
@@ -1649,3 +1705,25 @@ def _build_result_outcome(result: ToolResult) -> str:
 def _verification_payload(artifact: LearnedToolArtifact) -> dict[str, Any]:
     verification = artifact.provenance.get("verification")
     return dict(verification) if isinstance(verification, dict) else {}
+
+
+def _duplicate_summary(
+    attempted: LearnedToolArtifact,
+    installed: LearnedToolArtifact,
+) -> str:
+    """Tell the resident it already owns this, in the place it will read it."""
+    return json.dumps(
+        {
+            "status": "already_installed",
+            "tool_name": installed.manifest.name,
+            "artifact_id": installed.artifact_id,
+            "requested_name": attempted.manifest.name,
+            "detail": (
+                f"No tool was built: {installed.manifest.name!r} is already installed with "
+                "identical code and an identical contract. Run it with learned_tool_run "
+                f"(name={installed.manifest.name!r}). Build again only if you need "
+                "different behaviour, not a different name."
+            ),
+        },
+        indent=2,
+    )

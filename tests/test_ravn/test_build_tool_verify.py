@@ -423,3 +423,113 @@ async def test_commissioned_build_rejects_unknown_continuation_task(tmp_path) ->
     assert result.is_error is True
     assert "no pending commissioned build exists" in result.content
     assert registered == []
+
+
+# ---------------------------------------------------------------------------
+# Identical rebuilds and capability identity, end to end through execute()
+# ---------------------------------------------------------------------------
+
+
+async def test_rebuilding_an_installed_tool_writes_no_second_artifact(tmp_path) -> None:
+    """Residents rebuilt what they already owned; twice, byte-identically.
+
+    The waste is not only the duplicate envelope — it is the verification venv,
+    the review, and a catalog that grows a near-duplicate entry each time.
+    """
+    tool, registered = _tool(tmp_path)
+    build = {"manifest": _manifest(), "tool_code": _ECHO_TOOL, "test_code": ""}
+
+    first = await tool.execute(build)
+    assert first.is_error is False
+    assert len(list((tmp_path / "arts").glob("*.json"))) == 1
+
+    second = await tool.execute({**build, "artifact_id": "learned-tool:echo_tool:second"})
+
+    assert second.is_error is False
+    payload = json.loads(second.content)
+    assert payload["status"] == "already_installed"
+    assert payload["tool_name"] == "echo_tool"
+    assert "learned_tool_run" in payload["detail"]
+    # Nothing new on disk, and no second registration.
+    assert len(list((tmp_path / "arts").glob("*.json"))) == 1
+    assert len(registered) == 1
+
+
+async def test_rebuilding_under_a_new_name_returns_the_tool_already_installed(tmp_path) -> None:
+    tool, _ = _tool(tmp_path)
+    await tool.execute({"manifest": _manifest(), "tool_code": _ECHO_TOOL, "test_code": ""})
+
+    renamed = await tool.execute(
+        {
+            "manifest": _manifest("echo_payload_v2"),
+            "tool_code": _ECHO_TOOL,
+            "test_code": "",
+        }
+    )
+
+    payload = json.loads(renamed.content)
+    assert payload["status"] == "already_installed"
+    assert payload["tool_name"] == "echo_tool"
+    assert payload["requested_name"] == "echo_payload_v2"
+    assert not (tmp_path / "tools" / "echo_payload_v2.py").exists()
+
+
+async def test_a_genuinely_changed_tool_is_still_built(tmp_path) -> None:
+    tool, registered = _tool(tmp_path)
+    await tool.execute({"manifest": _manifest(), "tool_code": _ECHO_TOOL, "test_code": ""})
+
+    revised = await tool.execute(
+        {
+            "manifest": _manifest(),
+            "tool_code": "def run(payload):\n    return {'echo': payload, 'v': 2}\n",
+            "test_code": "",
+            "replace": True,
+        }
+    )
+
+    assert revised.is_error is False
+    assert json.loads(revised.content).get("status") != "already_installed"
+    assert len(registered) == 2
+
+
+async def test_capability_id_is_recorded_on_the_artifact(tmp_path) -> None:
+    tool, _ = _tool(tmp_path)
+
+    await tool.execute(
+        {
+            "manifest": _manifest(),
+            "tool_code": _ECHO_TOOL,
+            "test_code": "",
+            "capability_id": "echo.payload",
+            "signal_ids": ["signal-1", "signal-2"],
+        }
+    )
+
+    envelope = json.loads(next((tmp_path / "arts").glob("*.json")).read_text())
+    assert envelope["source_gap_id"] == "echo.payload"
+    assert envelope["source_signal_ids"] == ["signal-1", "signal-2"]
+
+
+async def test_a_rename_with_new_code_chains_on_the_declared_capability(tmp_path) -> None:
+    tool, _ = _tool(tmp_path)
+    first = await tool.execute(
+        {
+            "manifest": _manifest(),
+            "tool_code": _ECHO_TOOL,
+            "test_code": "",
+            "capability_id": "echo.payload",
+        }
+    )
+    first_id = json.loads(first.content)["artifact_id"]
+
+    await tool.execute(
+        {
+            "manifest": _manifest("echo_payload_v2"),
+            "tool_code": "def run(payload):\n    return {'echo': payload, 'v': 2}\n",
+            "test_code": "",
+            "capability_id": "echo.payload",
+        }
+    )
+
+    renamed = json.loads((tmp_path / "arts" / "echo_payload_v2.json").read_text())
+    assert renamed["supersedes"] == first_id

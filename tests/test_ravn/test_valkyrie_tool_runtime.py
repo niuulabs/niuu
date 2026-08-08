@@ -29,6 +29,7 @@ from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
     LocalLearnedToolRunner,
     _ContainerProcessResult,
+    find_installed_duplicate,
     learned_tool_artifact_path,
     learned_tool_path,
     learned_tool_venvs_dir,
@@ -1732,3 +1733,255 @@ async def test_forge_runner_uses_unscopable_config_as_is(tmp_path, monkeypatch) 
     assert result.ok
     assert result.enforcement == REACH_ENFORCEMENT_ENFORCED
     assert created[0]._config is config
+
+
+# ---------------------------------------------------------------------------
+# Capability identity: a renamed tool is still a new version of something
+# ---------------------------------------------------------------------------
+
+
+def _capability_artifact(
+    artifact_id: str,
+    name: str,
+    *,
+    capability_id: str = "k8s.pods.list",
+    code: str = "def run(input):\n    return {'pods': []}\n",
+    created_at: str = "2026-08-01T00:00:00+00:00",
+) -> LearnedToolArtifact:
+    manifest = replace(_learned_tool_artifact().manifest, name=name)
+    return LearnedToolArtifact(
+        artifact_id=artifact_id,
+        manifest=manifest,
+        tool_code=code,
+        source_gap_id=capability_id,
+        created_at=created_at,
+    )
+
+
+def test_a_renamed_tool_chains_to_the_capability_it_replaces(tmp_path) -> None:
+    # The churn this fixes: list_k8s_pods -> list_k8s_pod_names looked like a
+    # first build, because chaining keyed on the name-derived artifact path.
+    write_learned_tool_artifact(
+        artifacts_dir=tmp_path,
+        artifact=_capability_artifact("learned-tool:pods:v1", "list_k8s_pods"),
+    )
+    path = write_learned_tool_artifact(
+        artifacts_dir=tmp_path,
+        artifact=_capability_artifact(
+            "learned-tool:pods:v2",
+            "list_k8s_pod_names",
+            code="def run(input):\n    return {'names': []}\n",
+            created_at="2026-08-02T00:00:00+00:00",
+        ),
+    )
+
+    assert read_learned_tool_artifact(path).supersedes == "learned-tool:pods:v1"
+
+
+def test_a_rename_chains_to_the_newest_predecessor(tmp_path) -> None:
+    for index, (artifact_id, name, created) in enumerate(
+        [
+            ("learned-tool:pods:v1", "list_k8s_pods", "2026-08-01T00:00:00+00:00"),
+            ("learned-tool:pods:v2", "list_k8s_pods_v2", "2026-08-02T00:00:00+00:00"),
+        ]
+    ):
+        write_learned_tool_artifact(
+            artifacts_dir=tmp_path,
+            artifact=_capability_artifact(
+                artifact_id,
+                name,
+                code=f"def run(input):\n    return {{'n': {index}}}\n",
+                created_at=created,
+            ),
+        )
+
+    path = write_learned_tool_artifact(
+        artifacts_dir=tmp_path,
+        artifact=_capability_artifact(
+            "learned-tool:pods:v3",
+            "list_k8s_pod_names",
+            code="def run(input):\n    return {'n': 99}\n",
+            created_at="2026-08-03T00:00:00+00:00",
+        ),
+    )
+
+    assert read_learned_tool_artifact(path).supersedes == "learned-tool:pods:v2"
+
+
+def test_a_rename_without_a_declared_capability_still_starts_a_new_chain(tmp_path) -> None:
+    # Honest limit: with nothing to chain on, behaviour is exactly as before.
+    write_learned_tool_artifact(
+        artifacts_dir=tmp_path,
+        artifact=_capability_artifact("learned-tool:a", "probe_a", capability_id=""),
+    )
+    path = write_learned_tool_artifact(
+        artifacts_dir=tmp_path,
+        artifact=_capability_artifact(
+            "learned-tool:b",
+            "probe_b",
+            capability_id="",
+            code="def run(input):\n    return {'b': True}\n",
+        ),
+    )
+
+    assert read_learned_tool_artifact(path).supersedes == ""
+
+
+def test_a_different_capability_does_not_chain(tmp_path) -> None:
+    write_learned_tool_artifact(
+        artifacts_dir=tmp_path,
+        artifact=_capability_artifact("learned-tool:pods", "list_pods"),
+    )
+    path = write_learned_tool_artifact(
+        artifacts_dir=tmp_path,
+        artifact=_capability_artifact(
+            "learned-tool:nodes",
+            "list_nodes",
+            capability_id="k8s.nodes.list",
+            code="def run(input):\n    return {'nodes': []}\n",
+        ),
+    )
+
+    assert read_learned_tool_artifact(path).supersedes == ""
+
+
+def test_same_name_chaining_still_wins_over_capability_lookup(tmp_path) -> None:
+    # The name-keyed path is the more specific answer and must keep precedence,
+    # including its archive-the-predecessor behaviour.
+    write_learned_tool_artifact(
+        artifacts_dir=tmp_path,
+        artifact=_capability_artifact("learned-tool:pods:v1", "list_k8s_pods"),
+    )
+    write_learned_tool_artifact(
+        artifacts_dir=tmp_path,
+        artifact=_capability_artifact(
+            "learned-tool:pods:renamed",
+            "list_k8s_pod_names",
+            code="def run(input):\n    return {'renamed': True}\n",
+            created_at="2026-08-02T00:00:00+00:00",
+        ),
+    )
+    path = write_learned_tool_artifact(
+        artifacts_dir=tmp_path,
+        artifact=_capability_artifact(
+            "learned-tool:pods:v2",
+            "list_k8s_pods",
+            code="def run(input):\n    return {'v2': True}\n",
+            created_at="2026-08-03T00:00:00+00:00",
+        ),
+    )
+
+    assert read_learned_tool_artifact(path).supersedes == "learned-tool:pods:v1"
+
+
+def test_an_unreadable_neighbour_does_not_break_the_write(tmp_path) -> None:
+    write_learned_tool_artifact(
+        artifacts_dir=tmp_path,
+        artifact=_capability_artifact("learned-tool:pods:v1", "list_k8s_pods"),
+    )
+    (tmp_path / "broken.json").write_text("{not json", encoding="utf-8")
+
+    path = write_learned_tool_artifact(
+        artifacts_dir=tmp_path,
+        artifact=_capability_artifact(
+            "learned-tool:pods:v2",
+            "list_k8s_pod_names",
+            code="def run(input):\n    return {'v2': True}\n",
+            created_at="2026-08-02T00:00:00+00:00",
+        ),
+    )
+
+    assert read_learned_tool_artifact(path).supersedes == "learned-tool:pods:v1"
+
+
+# ---------------------------------------------------------------------------
+# Identical rebuilds
+# ---------------------------------------------------------------------------
+
+
+def _install(tmp_path, artifact: LearnedToolArtifact) -> None:
+    artifacts_dir = tmp_path / "artifacts"
+    write_learned_tool_artifact(artifacts_dir=artifacts_dir, artifact=artifact)
+    write_learned_tool(tools_dir=tmp_path, artifact=artifact)
+
+
+def test_identical_rebuild_is_recognised_as_already_installed(tmp_path) -> None:
+    installed = _capability_artifact("learned-tool:pods:v1", "list_k8s_pods")
+    _install(tmp_path, installed)
+
+    duplicate = find_installed_duplicate(
+        artifacts_dir=tmp_path / "artifacts",
+        tools_dir=tmp_path,
+        artifact=_capability_artifact("learned-tool:pods:v2", "list_k8s_pods"),
+    )
+
+    assert duplicate is not None
+    assert duplicate.artifact_id == "learned-tool:pods:v1"
+
+
+def test_identical_code_under_a_new_name_is_the_same_tool(tmp_path) -> None:
+    _install(tmp_path, _capability_artifact("learned-tool:pods:v1", "list_k8s_pods"))
+
+    duplicate = find_installed_duplicate(
+        artifacts_dir=tmp_path / "artifacts",
+        tools_dir=tmp_path,
+        artifact=_capability_artifact("learned-tool:pods:v2", "list_k8s_pod_names"),
+    )
+
+    assert duplicate is not None
+    assert duplicate.manifest.name == "list_k8s_pods"
+
+
+def test_a_changed_contract_is_a_revision_not_a_duplicate(tmp_path) -> None:
+    _install(tmp_path, _capability_artifact("learned-tool:pods:v1", "list_k8s_pods"))
+    revised = _capability_artifact("learned-tool:pods:v2", "list_k8s_pods")
+    revised = replace(
+        revised,
+        manifest=replace(
+            revised.manifest,
+            input_schema={"type": "object", "properties": {"namespace": {"type": "string"}}},
+        ),
+    )
+
+    assert (
+        find_installed_duplicate(
+            artifacts_dir=tmp_path / "artifacts", tools_dir=tmp_path, artifact=revised
+        )
+        is None
+    )
+
+
+def test_different_code_is_never_a_duplicate(tmp_path) -> None:
+    _install(tmp_path, _capability_artifact("learned-tool:pods:v1", "list_k8s_pods"))
+
+    assert (
+        find_installed_duplicate(
+            artifacts_dir=tmp_path / "artifacts",
+            tools_dir=tmp_path,
+            artifact=_capability_artifact(
+                "learned-tool:pods:v2",
+                "list_k8s_pods",
+                code="def run(input):\n    return {'different': True}\n",
+            ),
+        )
+        is None
+    )
+
+
+def test_an_artifact_whose_code_was_never_installed_is_not_offered(tmp_path) -> None:
+    # Persisted after a failed verification: the envelope exists, the tool does
+    # not. Pointing the resident at it would be pointing at nothing.
+    artifacts_dir = tmp_path / "artifacts"
+    write_learned_tool_artifact(
+        artifacts_dir=artifacts_dir,
+        artifact=_capability_artifact("learned-tool:pods:v1", "list_k8s_pods"),
+    )
+
+    assert (
+        find_installed_duplicate(
+            artifacts_dir=artifacts_dir,
+            tools_dir=tmp_path,
+            artifact=_capability_artifact("learned-tool:pods:v2", "list_k8s_pods"),
+        )
+        is None
+    )
