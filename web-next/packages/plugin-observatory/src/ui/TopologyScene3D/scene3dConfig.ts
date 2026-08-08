@@ -7,17 +7,6 @@
  * model of the same estate need different numbers to be legible.
  */
 
-/**
- * The field the estate is drawn on.
- *
- * Deep navy rather than black: pure black gives a thin cyan line nothing to sit
- * against, and the eye reads the result as a hairline on a void rather than as
- * an instrument with a face.
- */
-export const RENDER3D = {
-  BACKGROUND: 0x040a16,
-} as const;
-
 export const CAMERA3D = {
   FOV: 52,
   NEAR: 2,

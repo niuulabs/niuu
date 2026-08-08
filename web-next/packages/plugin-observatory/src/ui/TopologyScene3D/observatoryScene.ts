@@ -83,7 +83,9 @@ import {
 import { partsOf, type FormPart } from './nodeForm';
 import { placeLabels, type LabelCandidate } from './labelLayout';
 import type { Vec3 } from './vec3';
+import { CANVAS } from '../TopologyCanvas/config';
 import {
+  createBackdropTexture,
   createGlowTexture,
   createLabelTexture,
   estimateLabelAspect,
@@ -369,6 +371,15 @@ export function createObservatoryScene(
   const moteTexture = createMoteTexture();
   for (const texture of [glowTexture, ringTexture, moteTexture]) {
     if (texture) disposables.push(texture);
+  }
+
+  // The plan's own wash, so the ground does not change colour when the
+  // operator switches views. Falls back to the flat edge colour where there is
+  // no canvas to draw a gradient on.
+  const backdrop = createBackdropTexture(CANVAS.BACKDROP_CENTRE, CANVAS.BACKDROP_EDGE);
+  if (backdrop) {
+    disposables.push(backdrop);
+    scene.background = backdrop;
   }
 
   scene.add(new AmbientLight(0xdff1ff, LIGHT3D.AMBIENT_INTENSITY));

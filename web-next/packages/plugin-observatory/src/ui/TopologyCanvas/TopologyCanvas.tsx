@@ -581,8 +581,8 @@ export function TopologyCanvas({
 
       // Background gradient
       const bg = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.7);
-      bg.addColorStop(0, '#0a0c12');
-      bg.addColorStop(1, '#050509');
+      bg.addColorStop(0, CANVAS.BACKDROP_CENTRE);
+      bg.addColorStop(1, CANVAS.BACKDROP_EDGE);
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, w, h);
 

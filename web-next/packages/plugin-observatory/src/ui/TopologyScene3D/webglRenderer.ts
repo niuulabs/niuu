@@ -24,7 +24,7 @@ import {
   type Scene as ThreeScene,
 } from 'three';
 
-import { RENDER3D } from './scene3dConfig';
+import { CANVAS } from '../TopologyCanvas/config';
 
 /** The surface `TopologyScene3D` draws through. */
 export interface Scene3DRenderer {
@@ -39,7 +39,8 @@ export type Scene3DRendererFactory = () => Scene3DRenderer;
 
 export function createWebGLRenderer(): Scene3DRenderer {
   const renderer = new WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-  renderer.setClearColor(RENDER3D.BACKGROUND, 1);
+  // The plan's outer wash: what shows before the scene's backdrop is up.
+  renderer.setClearColor(CANVAS.BACKDROP_EDGE, 1);
   // A colour that was chosen is a colour that should arrive.
   renderer.toneMapping = NoToneMapping;
   renderer.outputColorSpace = SRGBColorSpace;

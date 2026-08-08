@@ -176,6 +176,30 @@ export function createLabelTexture(
   return { texture: toTexture(canvas), aspect: width / height };
 }
 
+/** Edge of the backdrop texture, in pixels. A wash needs no detail. */
+const BACKDROP_SIZE = 512;
+
+/**
+ * The field the estate stands on.
+ *
+ * The same radial wash the plan draws, from the same two values, so the ground
+ * does not change colour when you switch views — nothing gives away that two
+ * views are two products faster than that.
+ */
+export function createBackdropTexture(centre: string, edge: string): Texture | null {
+  const made = makeCanvas(BACKDROP_SIZE, BACKDROP_SIZE, ['createRadialGradient', 'fillRect']);
+  if (!made) return null;
+  const { canvas, ctx } = made;
+  const half = BACKDROP_SIZE / 2;
+  // 0.7 of the long edge, matching the plan's own falloff.
+  const gradient = ctx.createRadialGradient(half, half, 0, half, half, BACKDROP_SIZE * 0.7);
+  gradient.addColorStop(0, centre);
+  gradient.addColorStop(1, edge);
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, BACKDROP_SIZE, BACKDROP_SIZE);
+  return toTexture(canvas);
+}
+
 // ── Node marks ────────────────────────────────────────────────────────────────
 
 /** Edge of a node mark's texture, in pixels. */

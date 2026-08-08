@@ -4,6 +4,17 @@
  */
 
 export const CANVAS = {
+  /**
+   * The field the estate is drawn on: a radial wash, lit at the centre.
+   *
+   * Shared with the 3D stage rather than restated there. The two views are one
+   * estate seen two ways, and nothing gives that away faster than the ground
+   * changing colour when you switch — so there is one pair of values and both
+   * views read it.
+   */
+  BACKDROP_CENTRE: '#0a0c12',
+  BACKDROP_EDGE: '#050509',
+
   /** World-space dimensions. */
   WORLD_W: 4200,
   WORLD_H: 3600,

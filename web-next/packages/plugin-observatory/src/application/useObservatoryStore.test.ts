@@ -10,6 +10,7 @@ import {
 describe('useObservatoryStore', () => {
   afterEach(() => {
     __resetObservatoryStore();
+    vi.unstubAllGlobals();
     localStorage.clear();
   });
 
@@ -142,21 +143,30 @@ describe('layer visibility', () => {
     it('opens on the plan when storage is unreadable, rather than failing', () => {
       // Private browsing, or a storage quota that has been hit. A preference
       // that cannot be read is not worth failing a page load over.
-      const getItem = vi.spyOn(globalThis.localStorage, 'getItem').mockImplementation(() => {
+      //
+      // The whole global is replaced rather than its methods spied on. On some
+      // Node versions `globalThis.localStorage` is a lazy getter that hands
+      // back a fresh object on each access, so a spy installed on one instance
+      // is simply not there when the store reads the next — which passed here
+      // and failed on CI, reading the value the previous test had stored.
+      const denied = () => {
         throw new Error('denied');
-      });
-      const setItem = vi.spyOn(globalThis.localStorage, 'setItem').mockImplementation(() => {
-        throw new Error('denied');
+      };
+      vi.stubGlobal('localStorage', {
+        getItem: denied,
+        setItem: denied,
+        removeItem: denied,
+        clear: () => {},
+        key: () => null,
+        length: 0,
       });
 
       __resetObservatoryStore();
       const store = getObservatoryStore();
       expect(store.read().view).toBe('2d');
       expect(() => store.setView('3d')).not.toThrow();
+      // The choice still holds for this visit; it just cannot outlive it.
       expect(store.read().view).toBe('3d');
-
-      getItem.mockRestore();
-      setItem.mockRestore();
     });
   });
 });
