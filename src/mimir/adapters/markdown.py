@@ -864,11 +864,10 @@ class MarkdownMimirAdapter(MimirPort):
         prefix: str | None = None,
     ) -> list[MimirPageMeta]:
         """List all wiki pages, optionally filtered by category or path prefix."""
-        pages_with_content = await asyncio.to_thread(self._list_pages_with_content, category)
-        pages = [meta for meta, _ in pages_with_content]
-        if prefix is None:
-            return pages
-        return [meta for meta in pages if meta.path.startswith(prefix)]
+        pages_with_content = await asyncio.to_thread(
+            self._list_pages_with_content, category, prefix
+        )
+        return [meta for meta, _ in pages_with_content]
 
     async def read_source(self, source_id: str) -> MimirSource | None:
         """Return the full raw source by ID, or None if not found."""
@@ -1928,16 +1927,22 @@ class MarkdownMimirAdapter(MimirPort):
     def _list_pages_with_content(
         self,
         category: str | None = None,
+        prefix: str | None = None,
     ) -> list[tuple[MimirPageMeta, str]]:
-        """Return all wiki pages with their content, optionally filtered by category."""
+        """Return wiki pages with their content, filtered by category and/or prefix.
+
+        *prefix* is applied to the path before the file is read. It used to be
+        applied to the finished list, so asking for one campaign's handful of
+        artifacts still read every page in the wiki — Ting's campaign detail
+        route timed out at 30s on that, and it makes one call per campaign.
+        """
         results: list[tuple[MimirPageMeta, str]] = []
         search_root = self._wiki / category if category else self._wiki
 
-        if not search_root.exists():
-            return results
-
         for md_path in search_root.rglob("*.md"):
             if md_path.name in {"index.md", "log.md"}:
+                continue
+            if prefix is not None and not str(self._wiki_relative_path(md_path)).startswith(prefix):
                 continue
             content = md_path.read_text(encoding="utf-8")
             meta = self._build_page_meta(md_path, content)

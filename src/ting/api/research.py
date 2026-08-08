@@ -1067,17 +1067,25 @@ def _mimir_http_auth(settings: Any) -> MimirAuth | None:
 
 
 def _campaign_owns_path(campaign: WorkflowCampaign, path: str) -> bool:
+    # Same slug the pages were written under, not the uniquified campaign
+    # slug — otherwise every real artifact path fails this check.
+    slug = _artifact_slug(campaign)
+
     if str(campaign.metadata.get("surface") or "").strip() == _A2A_SURFACE:
         workflow_slug = str(campaign.metadata.get("a2a_workflow_slug") or campaign.slug).strip()
         declared = workflow_artifact_paths_from_snapshot(
             campaign.workflow_snapshot,
             slug=workflow_slug,
         )
-        return path in declared
+        # A graph that declares paths is authoritative — honour it exactly.
+        # Most graphs declare none: `artifactPaths` is optional and absent from
+        # every seeded research workflow, which made `path in declared` false
+        # for every path and 404'd every artifact of every A2A campaign, even
+        # though the listing route found them by prefix and showed them. Fall
+        # back to the same slug scoping that listing uses, so the two agree.
+        if declared:
+            return path in declared
 
-    # Same slug the pages were written under, not the uniquified campaign
-    # slug — otherwise every real artifact path fails this check.
-    slug = _artifact_slug(campaign)
     if path.startswith(f"research/campaigns/{slug}/"):
         return True
     return path in {

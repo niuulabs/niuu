@@ -1051,3 +1051,111 @@ def test_delete_campaign_removes_record(tmp_path: Path) -> None:
 
     assert response.status_code == 204
     assert client.get("/api/v1/ting/research/campaigns", headers=_headers()).json() == []
+
+
+# ---------------------------------------------------------------------------
+# _campaign_owns_path — A2A campaigns whose graph declares no artifactPaths
+# ---------------------------------------------------------------------------
+
+
+def _a2a_campaign(
+    *,
+    snapshot: dict | None,
+    slug: str = "survey-something-c6aa1b687896",
+    workflow_slug: str = "survey-something",
+) -> WorkflowCampaign:
+    now = datetime.now(UTC)
+    return WorkflowCampaign(
+        id=uuid4(),
+        slug=slug,
+        name="Survey",
+        owner_id=uuid4(),
+        workflow_id=uuid4(),
+        workflow_version=1,
+        workflow_name="Research Campaign",
+        workflow_snapshot=snapshot,
+        session_id="session-1",
+        session_name=slug,
+        status=WorkflowCampaignStatus.RUNNING,
+        active_stage_id="frame",
+        stage_state=[],
+        metadata={"surface": "a2a", "a2a_workflow_slug": workflow_slug},
+        created_at=now,
+        updated_at=now,
+        last_activity_at=now,
+        completed_at=None,
+    )
+
+
+def test_a2a_campaign_owns_its_artifacts_when_the_graph_declares_none() -> None:
+    """`artifactPaths` is optional and no seeded research workflow sets it.
+
+    Requiring membership of an empty declared set made `path in declared` false
+    for every path, so every artifact of every A2A campaign 404'd — while the
+    listing route, which scopes by slug prefix, happily returned them.
+    """
+    from ting.api.research import _campaign_owns_path
+
+    campaign = _a2a_campaign(snapshot={"graph": {"nodes": [], "edges": [], "tags": []}})
+
+    assert _campaign_owns_path(campaign, "research/campaigns/survey-something/final.md")
+    assert _campaign_owns_path(campaign, "research/campaigns/survey-something/notes/x.md")
+    assert _campaign_owns_path(campaign, "learnings/research/survey-something.md")
+    assert _campaign_owns_path(campaign, "followups/research/survey-something.md")
+
+
+def test_a2a_campaign_scopes_to_its_own_slug_when_the_graph_declares_none() -> None:
+    """The fallback is still a real boundary, not an open door."""
+    from ting.api.research import _campaign_owns_path
+
+    campaign = _a2a_campaign(snapshot={"graph": {"nodes": []}})
+
+    assert not _campaign_owns_path(campaign, "research/campaigns/someone-else/final.md")
+    assert not _campaign_owns_path(campaign, "self/secrets.md")
+    assert not _campaign_owns_path(campaign, "learnings/research/someone-else.md")
+
+
+def test_a2a_campaign_honours_a_graph_that_does_declare_paths() -> None:
+    """A declaring graph stays authoritative — the fallback must not loosen it."""
+    from ting.api.research import _campaign_owns_path
+
+    campaign = _a2a_campaign(
+        snapshot={
+            "graph": {
+                "nodes": [],
+                "artifactPaths": ["research/campaigns/{slug}/final.md"],
+            }
+        }
+    )
+
+    assert _campaign_owns_path(campaign, "research/campaigns/survey-something/final.md")
+    assert not _campaign_owns_path(campaign, "research/campaigns/survey-something/plan.md")
+
+
+def test_non_a2a_campaign_is_unaffected() -> None:
+    from ting.api.research import _campaign_owns_path
+
+    now = datetime.now(UTC)
+    campaign = WorkflowCampaign(
+        id=uuid4(),
+        slug="plain-campaign",
+        name="Plain",
+        owner_id=uuid4(),
+        workflow_id=uuid4(),
+        workflow_version=1,
+        workflow_name="Research Campaign",
+        workflow_snapshot=None,
+        session_id="session-1",
+        session_name="plain-campaign",
+        status=WorkflowCampaignStatus.RUNNING,
+        active_stage_id="frame",
+        stage_state=[],
+        metadata={},
+        created_at=now,
+        updated_at=now,
+        last_activity_at=now,
+        completed_at=None,
+    )
+
+    assert _campaign_owns_path(campaign, "research/campaigns/plain-campaign/final.md")
+    assert not _campaign_owns_path(campaign, "research/campaigns/other/final.md")
