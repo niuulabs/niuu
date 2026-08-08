@@ -180,6 +180,7 @@ from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _build_tool_build_backend,
     _constructor_accepts_kwarg,
     _get_tool_group,
+    _with_mimir_fact_capture,
     _import_class,
     _inject_secrets,
     _mimir_workload_platform_defaults,
@@ -528,6 +529,7 @@ def _build_agent(
     )
     memory = _build_memory(settings, llm=llm)
     mimir = _build_mimir(settings)
+    memory = _with_mimir_fact_capture(memory, mimir)
     iteration_budget = _build_iteration_budget(settings, max_iterations)
     tools = _build_tools(
         settings,

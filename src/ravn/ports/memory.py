@@ -101,9 +101,10 @@ class MemoryPort(ABC):
         Called unconditionally at the start of run_turn() — no isinstance
         check at the call site.
 
-        Note: when a Mímir adapter is wired, the agent loop calls
-        ``inline_facts.detect_and_write()`` directly, independently of this
-        hook.
+        When Mímir is configured, composition wraps the episodic backend in
+        ``MimirFactCapturingMemory``, which overrides this hook to write
+        compiled-truth pages. The agent does not know, and must not ask, which
+        backend it was handed.
         """
         return []
 

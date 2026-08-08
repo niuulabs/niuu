@@ -63,6 +63,7 @@ async def _run_daemon(
 
     # Build Mímir adapter early so _agent_factory closure can capture it.
     daemon_mimir = _build_mimir(settings)
+    memory = _with_mimir_fact_capture(memory, daemon_mimir)
     drive_loop: Any | None = None
     resident_inbox: Any | None = None
     resident_state: Any | None = None

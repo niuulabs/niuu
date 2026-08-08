@@ -661,6 +661,21 @@ def _build_memory(settings: Settings, llm: Any = None) -> Any:
     return adapter
 
 
+def _with_mimir_fact_capture(memory: Any | None, mimir: Any | None) -> Any | None:
+    """Wire inline-fact capture into the memory port when Mimir is configured.
+
+    The agent used to decide this itself — writing facts to Mimir when it held
+    a Mimir adapter and to the memory port otherwise — which put a choice of
+    persistence backend inside the agent loop. Composition owns it now, so the
+    agent makes one unconditional call.
+    """
+    if mimir is None:
+        return memory
+    from ravn.adapters.memory.mimir_facts import MimirFactCapturingMemory  # noqa: PLC0415
+
+    return MimirFactCapturingMemory(mimir, inner=memory)
+
+
 # ---------------------------------------------------------------------------
 # Builder: Permission
 # ---------------------------------------------------------------------------

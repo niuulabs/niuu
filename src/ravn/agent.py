@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any
 
 from niuu.observability import get_observability
 from niuu.ports.mimir import MimirPort
-from ravn.adapters.memory.inline_facts import detect_and_write as _detect_and_write_facts
 from ravn.budget import IterationBudget, TokenEstimator
 from ravn.compression import CompressionResult, ContextCompressor
 from ravn.config import ExtendedThinkingConfig
@@ -413,12 +412,10 @@ class RavnAgent:
         # Determine whether explicit thinking was requested for this turn.
         explicit_thinking, user_input = _parse_think_flag(user_input)
 
-        if self._mimir is not None:
-            try:
-                await _detect_and_write_facts(user_input, self._mimir)
-            except Exception:
-                logger.warning("Inline fact detection failed; continuing.", exc_info=True)
-        elif self._memory is not None:
+        # One unconditional call, as MemoryPort.process_inline_facts has always
+        # documented. Which store the facts land in — Mímir, the episodic
+        # backend, or nowhere — is composition's decision, not the agent's.
+        if self._memory is not None:
             try:
                 await self._memory.process_inline_facts(str(self._session.id), user_input)
             except Exception:
