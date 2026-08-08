@@ -6,6 +6,36 @@ import type { ComputeClass } from '../domain/computeClass';
 
 export type ObservatoryFilter = 'all' | 'agents' | 'runs' | 'services' | 'devices';
 
+/**
+ * Which stage the topology is drawn on.
+ *
+ * Not two products: one estate, one layout, one palette, seen either as a plan
+ * or as a model. The choice lives in the store rather than in the page because
+ * the topbar owns the control and the content slot owns the stage, and the two
+ * are rendered into different parts of the shell.
+ */
+export type ObservatoryView = '2d' | '3d';
+
+/** Persisted so the operator's choice of stage survives a reload. */
+const VIEW_STORAGE_KEY = 'niuu.observatory.view';
+
+function readStoredView(): ObservatoryView {
+  try {
+    return localStorage.getItem(VIEW_STORAGE_KEY) === '3d' ? '3d' : '2d';
+  } catch {
+    // Private browsing, or no storage at all. The plan is the safe default.
+    return '2d';
+  }
+}
+
+function writeStoredView(view: ObservatoryView): void {
+  try {
+    localStorage.setItem(VIEW_STORAGE_KEY, view);
+  } catch {
+    // A preference that cannot be saved is not worth failing a click over.
+  }
+}
+
 interface ObservatoryStoreState {
   selectedId: string | null;
   /**
@@ -25,6 +55,8 @@ interface ObservatoryStoreState {
   hiddenCompute: ReadonlySet<ComputeClass>;
   /** Present mode: rail, inspector and feed step aside, leaving the graph. */
   presenting: boolean;
+  /** Plan or model. */
+  view: ObservatoryView;
 }
 
 interface ObservatoryStore {
@@ -36,6 +68,7 @@ interface ObservatoryStore {
   toggleCompute(compute: ComputeClass): void;
   setHiddenCompute(compute: ReadonlySet<ComputeClass>): void;
   setPresenting(presenting: boolean): void;
+  setView(view: ObservatoryView): void;
   subscribe(fn: () => void): () => void;
 }
 
@@ -67,6 +100,7 @@ export function getObservatoryStore(): ObservatoryStore {
     hiddenLayers: new Set<EdgeLayer>(CALM_HIDDEN_LAYERS),
     hiddenCompute: new Set<ComputeClass>(),
     presenting: false,
+    view: readStoredView(),
   };
 
   _store = {
@@ -109,6 +143,12 @@ export function getObservatoryStore(): ObservatoryStore {
     setPresenting(presenting: boolean): void {
       if (state.presenting === presenting) return;
       state = { ...state, presenting };
+      subscribers.forEach((fn) => fn());
+    },
+    setView(view: ObservatoryView): void {
+      if (state.view === view) return;
+      state = { ...state, view };
+      writeStoredView(view);
       subscribers.forEach((fn) => fn());
     },
     subscribe(fn: () => void): () => void {

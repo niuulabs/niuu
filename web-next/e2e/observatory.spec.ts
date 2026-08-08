@@ -1,15 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { CANVAS } from '../packages/plugin-observatory/src/ui/TopologyCanvas/config';
 
-async function openTopologyDrawer(page: Page, testId: string, name: RegExp) {
-  const nodeButton = page.getByTestId(testId);
-  await expect(nodeButton).toBeAttached();
-  await nodeButton.evaluate((element) => {
-    (element as HTMLButtonElement).click();
-  });
-  await expect(page.getByRole('dialog', { name })).toBeVisible({ timeout: 3000 });
-}
-
 // ── Navigation ────────────────────────────────────────────────────────────────
 
 test('observatory rail button navigates to /observatory', async ({ page }) => {
@@ -324,75 +315,130 @@ test('registry: cycle is rejected — dragging ancestor onto descendant does not
   expect(versionAfter).toBe(versionBefore);
 });
 
-// ── NIU-665 overlay e2e tests ─────────────────────────────────────────────
+// ── Inspector ─────────────────────────────────────────────────────────────────
 
-test('clicking a topology node opens the EntityDrawer', async ({ page }) => {
+/**
+ * Select a node the way the keyboard and screen-reader path does.
+ *
+ * The canvas is a single element with no DOM inside it, so the hidden node
+ * list is the only way to reach a specific entity without hit-testing pixels —
+ * and it is a real path an operator uses, not a test-only hook.
+ */
+async function selectNode(page: Page, testId: string) {
+  const nodeButton = page.getByTestId(testId);
+  await expect(nodeButton).toBeAttached();
+  await nodeButton.evaluate((element) => {
+    (element as HTMLButtonElement).click();
+  });
+}
+
+test('the inspector opens empty and says so', async ({ page }) => {
   await page.goto('/observatory');
-
-  // Wait for topology to load (node list appears)
-  const nodeList = page.getByTestId('topology-node-list');
-  await expect(nodeList).toBeVisible({ timeout: 5000 });
-
-  // Click the realm-asgard node button
-  await openTopologyDrawer(page, 'node-btn-realm-asgard', /asgard/i);
+  // An empty panel with no explanation reads as a panel that failed to load.
+  await expect(page.getByTestId('inspector-empty')).toBeVisible({ timeout: 5000 });
 });
 
-test('EntityDrawer close button dismisses the drawer', async ({ page }) => {
+test('selecting a node fills the inspector with it', async ({ page }) => {
   await page.goto('/observatory');
-  await page.getByTestId('topology-node-list').waitFor({ state: 'visible', timeout: 5000 });
+  await expect(page.getByTestId('topology-node-list')).toBeAttached({ timeout: 5000 });
 
-  await openTopologyDrawer(page, 'node-btn-realm-asgard', /asgard/i);
+  await selectNode(page, 'node-btn-realm-asgard');
 
-  await page.getByRole('button', { name: /close/i }).click();
-  await expect(page.getByRole('dialog')).not.toBeVisible();
+  const inspector = page.getByTestId('inspector');
+  await expect(inspector).toBeVisible({ timeout: 3000 });
+  await expect(inspector.getByRole('heading', { name: /asgard/i })).toBeVisible();
+  await expect(page.getByTestId('inspector-kind')).toContainText(/realm/i);
 });
 
-test('realm EntityDrawer shows resident list', async ({ page }) => {
+test('selecting the same node again puts it down', async ({ page }) => {
   await page.goto('/observatory');
-  await page.getByTestId('topology-node-list').waitFor({ state: 'visible', timeout: 5000 });
+  await expect(page.getByTestId('topology-node-list')).toBeAttached({ timeout: 5000 });
 
-  await openTopologyDrawer(page, 'node-btn-realm-asgard', /asgard/i);
-  const dialog = page.getByRole('dialog', { name: /asgard/i });
+  await selectNode(page, 'node-btn-realm-asgard');
+  await expect(page.getByTestId('inspector')).toBeVisible({ timeout: 3000 });
 
-  // Realm asgard contains clusters and host
-  await expect(dialog.getByRole('heading', { name: 'Residents' })).toBeVisible();
-  await expect(dialog.getByText('valaskjálf')).toBeVisible();
+  // The rail and the hidden list report `aria-pressed`, so pressing again has
+  // to release — otherwise there is no way to stop looking at something.
+  await selectNode(page, 'node-btn-realm-asgard');
+  await expect(page.getByTestId('inspector-empty')).toBeVisible();
 });
 
-test('clicking a resident in the drawer navigates to that resident (drill-in)', async ({
-  page,
-}) => {
+test('the inspector docks beside the stage rather than covering it', async ({ page }) => {
   await page.goto('/observatory');
-  await page.getByTestId('topology-node-list').waitFor({ state: 'visible', timeout: 5000 });
+  await selectNode(page, 'node-btn-cluster-valaskjalf');
 
-  // Open realm drawer
-  await openTopologyDrawer(page, 'node-btn-realm-asgard', /asgard/i);
-
-  // Click the cluster resident
-  const residentBtn = page.getByTestId('resident-cluster-valaskjalf');
-  await expect(residentBtn).toBeVisible();
-  await residentBtn.click();
-
-  // Drawer should now show the cluster node
-  await expect(page.getByRole('dialog', { name: /valask/i })).toBeVisible({ timeout: 3000 });
+  await expect(page.getByTestId('inspector')).toBeVisible({ timeout: 3000 });
+  // A floating drawer covered the canvas it was describing; this one is a
+  // column of the page grid, so both are readable at once.
+  await expect(page.getByTestId('topology-canvas')).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'Inspector' })).toBeVisible();
 });
 
-test('cluster EntityDrawer shows residents', async ({ page }) => {
+test('the inspector lists what a node is connected to, and can follow a link', async ({ page }) => {
   await page.goto('/observatory');
-  await page.getByTestId('topology-node-list').waitFor({ state: 'visible', timeout: 5000 });
+  await selectNode(page, 'node-btn-ravn-huginn');
 
-  // Click the cluster node directly
-  await openTopologyDrawer(page, 'node-btn-cluster-valaskjalf', /valask/i);
-  const dialog = page.getByRole('dialog', { name: /valask/i });
-  await expect(dialog.getByRole('heading', { name: 'Members' })).toBeVisible();
-  await expect(dialog.locator('[data-testid^="resident-"]').first()).toBeVisible();
+  const peers = page.getByTestId('inspector-connected');
+  await expect(peers).toBeVisible({ timeout: 5000 });
+
+  const first = peers.locator('[data-testid^="insp-peer-"]').first();
+  const name = (await first.innerText()).split('\n')[0]!.trim();
+  await first.click();
+
+  // Following a link moves the inspector to that entity. The name is the h2;
+  // the blocks below it carry h3s of their own.
+  await expect(page.getByTestId('inspector').locator('h2')).toContainText(name, { timeout: 3000 });
 });
 
-test('EventLog overlay is visible and shows events', async ({ page }) => {
+test('a resident publishes an A2A card, on its own tab', async ({ page }) => {
   await page.goto('/observatory');
-  const eventLog = page.getByTestId('event-log');
-  await expect(eventLog).toBeVisible({ timeout: 3000 });
-  await expect(eventLog.locator('[data-testid^="event-"]').first()).toBeVisible({ timeout: 5000 });
+  await selectNode(page, 'node-btn-ravn-huginn');
+
+  // The card is a second reading of the same entity, so it lives behind a tab
+  // rather than below the fold of the first one.
+  await page.getByTestId('insp-tab-card').click();
+  const card = page.getByTestId('agent-card');
+  await expect(card).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('agent-card-url')).toContainText('agent-card.json');
+  await expect(page.getByTestId('agent-card-skills')).toBeVisible();
+});
+
+test('the JSON tab shows the card exactly as it was served', async ({ page }) => {
+  await page.goto('/observatory');
+  await selectNode(page, 'node-btn-ravn-huginn');
+
+  await page.getByTestId('insp-tab-json').click();
+  const json = page.getByTestId('agent-card-json');
+  await expect(json).toBeVisible({ timeout: 5000 });
+  expect(JSON.parse((await json.textContent()) ?? '{}')).toHaveProperty('cardUrl');
+});
+
+test('a workflow session publishes a card of its own kind', async ({ page }) => {
+  await page.goto('/observatory');
+  await selectNode(page, 'node-btn-run-research');
+
+  await page.getByTestId('insp-tab-card').click();
+  await expect(page.getByTestId('agent-card')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('agent-card-session')).toBeVisible();
+});
+
+test('a node that publishes no card shows no A2A panel', async ({ page }) => {
+  await page.goto('/observatory');
+  await selectNode(page, 'node-btn-host-saehrimnir');
+
+  await expect(page.getByTestId('inspector')).toBeVisible({ timeout: 5000 });
+  // A host simply has no card. The panel says nothing rather than showing an
+  // empty one, which would read as a card that failed to load.
+  await expect(page.getByTestId('agent-card')).toHaveCount(0);
+});
+
+// ── Signal feed ───────────────────────────────────────────────────────────────
+
+test('the signal feed is docked under the stage and carries events', async ({ page }) => {
+  await page.goto('/observatory');
+  const ticker = page.getByTestId('signal-ticker');
+  await expect(ticker).toBeVisible({ timeout: 3000 });
+  await expect(ticker.locator('[data-testid^="signal-"]').first()).toBeVisible({ timeout: 5000 });
 });
 
 test('Minimap overlay is visible on observatory page', async ({ page }) => {
@@ -415,11 +461,45 @@ test('layer filters toggle and can be restored', async ({ page }) => {
   // Other layers are unaffected by hiding one.
   await expect(page.getByTestId('layer-toggle-mesh')).toHaveAttribute('aria-pressed', 'true');
 
-  const showAll = page.getByTestId('layer-toggle-all');
+  const showAll = page.getByTestId('filter-all');
   await expect(showAll).toBeEnabled();
   await showAll.click();
   await expect(memory).toHaveAttribute('aria-pressed', 'true');
   await expect(showAll).toBeDisabled();
+});
+
+test('the Observatory opens calm, and calm is one click away again', async ({ page }) => {
+  await page.goto('/observatory');
+
+  // Platform wiring and telemetry dominate by edge count and say the least
+  // about what the estate is doing, so the first look leaves them down.
+  await expect(page.getByTestId('layer-toggle-platform')).toHaveAttribute('aria-pressed', 'false', {
+    timeout: 5000,
+  });
+  await expect(page.getByTestId('layer-toggle-observability')).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  );
+
+  await page.getByTestId('filter-all').click();
+  await expect(page.getByTestId('layer-toggle-platform')).toHaveAttribute('aria-pressed', 'true');
+
+  await page.getByTestId('filter-calm').click();
+  await expect(page.getByTestId('layer-toggle-platform')).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByTestId('layer-toggle-mesh')).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('compute classes can be switched off and back on', async ({ page }) => {
+  await page.goto('/observatory');
+
+  const own = page.getByTestId('compute-toggle-own');
+  await expect(own).toHaveAttribute('aria-pressed', 'true', { timeout: 5000 });
+  await own.click();
+  await expect(own).toHaveAttribute('aria-pressed', 'false');
+
+  await page.getByTestId('filter-none').click();
+  await expect(page.getByTestId('compute-toggle-k8s')).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByTestId('layer-toggle-mesh')).toHaveAttribute('aria-pressed', 'false');
 });
 
 test('every connection layer offers a toggle with a count', async ({ page }) => {
@@ -434,43 +514,130 @@ test('every connection layer offers a toggle with a count', async ({ page }) => 
 test('rail sections collapse and expand independently', async ({ page }) => {
   await page.goto('/observatory');
 
-  const realms = page.getByTestId('subnav-section-realms');
-  await expect(realms).toBeVisible({ timeout: 5000 });
-  await expect(realms).toHaveAttribute('open', '');
+  const residents = page.getByTestId('subnav-section-rail-residents');
+  await expect(residents).toBeVisible({ timeout: 5000 });
+  await expect(residents).toHaveAttribute('open', '');
 
-  await page.getByTestId('subnav-toggle-realms').click();
-  await expect(realms).not.toHaveAttribute('open', '');
-  await expect(page.getByTestId('subnav-section-clusters')).toHaveAttribute('open', '');
+  await page.getByTestId('subnav-toggle-rail-residents').click();
+  await expect(residents).not.toHaveAttribute('open', '');
+  await expect(page.getByTestId('subnav-section-rail-clusters')).toHaveAttribute('open', '');
 
-  await page.getByTestId('subnav-toggle-realms').click();
-  await expect(realms).toHaveAttribute('open', '');
+  await page.getByTestId('subnav-toggle-rail-residents').click();
+  await expect(residents).toHaveAttribute('open', '');
 });
 
-// ── A2A card ──────────────────────────────────────────────────────────────────
-
-test('selecting a resident shows the A2A card it publishes', async ({ page }) => {
+test('picking a resident from the rail selects it on the stage', async ({ page }) => {
   await page.goto('/observatory');
-  await openTopologyDrawer(page, 'node-btn-ravn-huginn', /huginn/i);
 
-  const card = page.getByTestId('agent-card');
-  await expect(card).toBeVisible({ timeout: 5000 });
-  await expect(page.getByTestId('agent-card-kind')).toHaveText(/resident/i);
-  await expect(page.getByTestId('agent-card-url')).toContainText('agent-card.json');
-  await expect(page.getByTestId('agent-card-skills')).toBeVisible();
+  const row = page.getByTestId('rail-row-ravn-huginn');
+  await expect(row).toBeVisible({ timeout: 5000 });
+  await row.click();
+
+  await expect(row).toHaveAttribute('aria-pressed', 'true');
+  await expect(
+    page.getByTestId('inspector').getByRole('heading', { name: /huginn/i }),
+  ).toBeVisible();
 });
 
-test('selecting a workflow session shows its card kind', async ({ page }) => {
-  await page.goto('/observatory');
-  await openTopologyDrawer(page, 'node-btn-run-research', /research-session/i);
+// ── Present mode ──────────────────────────────────────────────────────────────
 
-  await expect(page.getByTestId('agent-card-kind')).toHaveText(/workflow-session/i, {
-    timeout: 5000,
-  });
+test('present mode stands the rail, inspector and feed down', async ({ page }) => {
+  await page.goto('/observatory');
+
+  const stage = page.getByTestId('observatory-page');
+  await expect(stage).toHaveAttribute('data-presenting', 'false', { timeout: 5000 });
+
+  await page.getByTestId('present-toggle').click();
+  await expect(stage).toHaveAttribute('data-presenting', 'true');
+  // The rail is not ours to collapse: an empty subnav is what the shell closes.
+  await expect(page.getByTestId('observatory-subnav')).toHaveCount(0);
+
+  await page.getByTestId('present-toggle').click();
+  await expect(stage).toHaveAttribute('data-presenting', 'false');
 });
 
-test('a node that publishes no card shows no A2A panel', async ({ page }) => {
-  await page.goto('/observatory');
-  await openTopologyDrawer(page, 'node-btn-host-saehrimnir', /sæhrímnir/i);
+// ── 3D view ───────────────────────────────────────────────────────────────────
 
-  await expect(page.getByTestId('agent-card')).toHaveCount(0);
+/**
+ * Put the estate on the 3D stage and wait for the model to arrive.
+ *
+ * The toggle lives in the shell's topbar slot rather than on the page, which is
+ * exactly what these specs should be checking: the two views share the rail,
+ * the inspector and the filters, and only the stage changes.
+ */
+async function switchTo3D(page: Page) {
+  await page.getByTestId('view-toggle-3d').click();
+  await expect(page.getByTestId('topology-scene3d')).toBeVisible({ timeout: 5000 });
+}
+
+test('observatory switches between the plan and the model', async ({ page }) => {
+  await page.goto('/observatory');
+  await expect(page.getByTestId('topology-canvas')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('view-toggle-2d')).toHaveAttribute('aria-pressed', 'true');
+
+  await switchTo3D(page);
+  await expect(page.getByTestId('topology-canvas')).toHaveCount(0);
+  await expect(page.getByTestId('view-toggle-3d')).toHaveAttribute('aria-pressed', 'true');
+
+  await page.getByTestId('view-toggle-2d').click();
+  await expect(page.getByTestId('topology-canvas')).toBeVisible();
+});
+
+test('3D view draws into a WebGL canvas and offers its camera controls', async ({ page }) => {
+  await page.goto('/observatory');
+  await switchTo3D(page);
+
+  await expect(page.getByTestId('topology-scene3d-host').locator('canvas')).toBeVisible();
+  await expect(page.getByTestId('camera-controls-3d')).toBeVisible();
+  // The gesture set differs from the plan's, and nothing else on screen says so.
+  await expect(page.getByTestId('scene3d-hint')).toContainText('orbit');
+  await expect(page.getByTestId('minimap-panel-3d')).toBeVisible();
+});
+
+test('3D view zooms from its camera controls', async ({ page }) => {
+  await page.goto('/observatory');
+  await switchTo3D(page);
+
+  const readout = page.getByTestId('zoom-display-3d');
+  await expect(readout).toBeVisible();
+  const before = await readout.textContent();
+
+  await page.getByRole('button', { name: /zoom in/i }).click();
+  await expect(readout).not.toHaveText(before ?? '', { timeout: 3000 });
+});
+
+test('3D view orbits on drag without losing the stage', async ({ page }) => {
+  await page.goto('/observatory');
+  await switchTo3D(page);
+
+  const stage = page.getByTestId('topology-scene3d-host');
+  const box = (await stage.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 160, box.y + box.height / 2 - 40, { steps: 8 });
+  await page.mouse.up();
+
+  await expect(stage).toHaveAttribute('data-dragging', 'false');
+  await expect(stage.locator('canvas')).toBeVisible();
+});
+
+test('3D view keeps the inspector answering for a selection made in the rail', async ({ page }) => {
+  await page.goto('/observatory');
+  await switchTo3D(page);
+
+  // The hidden node list is the keyboard and screen-reader path into the same
+  // selection the canvas offers, and it must work on either stage.
+  const nodeButton = page.getByTestId('topology-node-list').getByRole('button').first();
+  await expect(nodeButton).toBeAttached();
+  await nodeButton.evaluate((element) => (element as HTMLButtonElement).click());
+
+  await expect(page.getByTestId('inspector')).toBeVisible({ timeout: 3000 });
+});
+
+test('3D view survives a filter change without emptying the stage', async ({ page }) => {
+  await page.goto('/observatory');
+  await switchTo3D(page);
+
+  await page.getByTestId('layer-toggle-platform').click();
+  await expect(page.getByTestId('topology-scene3d-host').locator('canvas')).toBeVisible();
 });

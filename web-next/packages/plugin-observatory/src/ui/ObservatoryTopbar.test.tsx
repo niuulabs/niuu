@@ -68,4 +68,22 @@ describe('ObservatoryTopbar', () => {
     fireEvent.click(button);
     expect(getObservatoryStore().read().presenting).toBe(false);
   });
+
+  it('offers both stages, with the current one shown as pressed', () => {
+    // A lone "3D" button that lights up would make the plan read as the
+    // absence of a mode rather than as a mode.
+    render(<ObservatoryTopbar />);
+    expect(screen.getByTestId('view-toggle-2d')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('view-toggle-3d')).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('switches to the model and back', () => {
+    render(<ObservatoryTopbar />);
+    fireEvent.click(screen.getByTestId('view-toggle-3d'));
+    expect(getObservatoryStore().read().view).toBe('3d');
+    expect(screen.getByTestId('view-toggle-3d')).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(screen.getByTestId('view-toggle-2d'));
+    expect(getObservatoryStore().read().view).toBe('2d');
+  });
 });

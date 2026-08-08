@@ -10,6 +10,7 @@ import {
 describe('useObservatoryStore', () => {
   afterEach(() => {
     __resetObservatoryStore();
+    localStorage.clear();
   });
 
   it('reuses the singleton store instance', () => {
@@ -30,6 +31,7 @@ describe('useObservatoryStore', () => {
       hiddenLayers: new Set(CALM_HIDDEN_LAYERS),
       hiddenCompute: new Set(),
       presenting: false,
+      view: '2d',
     });
 
     act(() => {
@@ -46,6 +48,7 @@ describe('useObservatoryStore', () => {
       hiddenLayers: new Set(CALM_HIDDEN_LAYERS),
       hiddenCompute: new Set(),
       presenting: false,
+      view: '2d',
     });
     expect(notify).toHaveBeenCalledTimes(2);
 
@@ -108,5 +111,52 @@ describe('layer visibility', () => {
     store.setHiddenLayers(incoming);
     incoming.clear();
     expect(store.read().hiddenLayers.has('mesh')).toBe(true);
+  });
+
+  describe('view', () => {
+    it('opens on the plan', () => {
+      expect(getObservatoryStore().read().view).toBe('2d');
+    });
+
+    it('switches stage and publishes the change once', () => {
+      const store = getObservatoryStore();
+      let calls = 0;
+      const unsubscribe = store.subscribe(() => (calls += 1));
+
+      store.setView('3d');
+      store.setView('3d');
+      unsubscribe();
+
+      expect(store.read().view).toBe('3d');
+      expect(calls).toBe(1);
+    });
+
+    it('remembers the choice for the next visit', () => {
+      getObservatoryStore().setView('3d');
+      expect(localStorage.getItem('niuu.observatory.view')).toBe('3d');
+
+      __resetObservatoryStore();
+      expect(getObservatoryStore().read().view).toBe('3d');
+    });
+
+    it('opens on the plan when storage is unreadable, rather than failing', () => {
+      // Private browsing, or a storage quota that has been hit. A preference
+      // that cannot be read is not worth failing a page load over.
+      const getItem = vi.spyOn(globalThis.localStorage, 'getItem').mockImplementation(() => {
+        throw new Error('denied');
+      });
+      const setItem = vi.spyOn(globalThis.localStorage, 'setItem').mockImplementation(() => {
+        throw new Error('denied');
+      });
+
+      __resetObservatoryStore();
+      const store = getObservatoryStore();
+      expect(store.read().view).toBe('2d');
+      expect(() => store.setView('3d')).not.toThrow();
+      expect(store.read().view).toBe('3d');
+
+      getItem.mockRestore();
+      setItem.mockRestore();
+    });
   });
 });

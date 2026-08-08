@@ -15,7 +15,11 @@ import { __resetObservatoryStore, getObservatoryStore } from '../application/use
 beforeEach(() => {
   // Reset the module-level singleton to prevent state leaking between tests.
   __resetObservatoryStore();
-  HTMLCanvasElement.prototype.getContext = vi.fn().mockReturnValue(makeCtxMock());
+  // Only 2D. Answering for 'webgl2' as well would tell the 3D stage this
+  // environment can render, and it would go on to open a real GL context.
+  HTMLCanvasElement.prototype.getContext = vi
+    .fn()
+    .mockImplementation((kind: string) => (kind === '2d' ? makeCtxMock() : null));
   vi.stubGlobal('requestAnimationFrame', vi.fn().mockReturnValue(0));
   vi.stubGlobal('cancelAnimationFrame', vi.fn());
   vi.stubGlobal('devicePixelRatio', 1);
@@ -170,5 +174,30 @@ describe('ObservatoryPage', () => {
   it('renders the Minimap overlay with topology', () => {
     wrap(<ObservatoryPage />);
     expect(screen.getByRole('img', { name: /topology minimap/i })).toBeInTheDocument();
+  });
+
+  it('swaps the plan for the model when the stage is switched, and back', async () => {
+    // One estate seen two ways: the rail, the inspector and the filters are
+    // shared, and only what stands in the stage changes.
+    wrap(<ObservatoryPage />);
+    expect(screen.getByTestId('topology-canvas')).toBeInTheDocument();
+
+    act(() => getObservatoryStore().setView('3d'));
+    expect(screen.queryByTestId('topology-canvas')).not.toBeInTheDocument();
+    // The 3D stage arrives on its own chunk, so it is awaited rather than
+    // assumed present the moment the toggle flips.
+    expect(screen.getByTestId('scene3d-loading')).toBeInTheDocument();
+    expect(await screen.findByTestId('topology-scene3d')).toBeInTheDocument();
+
+    act(() => getObservatoryStore().setView('2d'));
+    expect(screen.getByTestId('topology-canvas')).toBeInTheDocument();
+  });
+
+  it('keeps the inspector answering while the model is on stage', async () => {
+    wrap(<ObservatoryPage />);
+    act(() => getObservatoryStore().setView('3d'));
+    await screen.findByTestId('topology-scene3d');
+    fireEvent.click(screen.getByTestId('node-btn-realm-asgard'));
+    expect(screen.getByTestId('inspector')).toBeInTheDocument();
   });
 });
