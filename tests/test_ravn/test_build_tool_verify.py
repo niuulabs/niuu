@@ -533,3 +533,152 @@ async def test_a_rename_with_new_code_chains_on_the_declared_capability(tmp_path
 
     renamed = json.loads((tmp_path / "arts" / "echo_payload_v2.json").read_text())
     assert renamed["supersedes"] == first_id
+
+
+# ---------------------------------------------------------------------------
+# Reuse before commissioning: the check that saves the expensive part
+# ---------------------------------------------------------------------------
+
+
+class CountingBackend:
+    """Records whether a build was actually commissioned."""
+
+    def __init__(self) -> None:
+        self.commissions = 0
+
+    @property
+    def name(self) -> str:
+        return "counting"
+
+    async def build(self, *args: Any, **kwargs: Any) -> ToolBuildResult:
+        self.commissions += 1
+        return ToolBuildResult(
+            manifest=_manifest(),
+            tool_code=_ECHO_TOOL,
+            test_code="",
+            requirements=[],
+            provenance={},
+        )
+
+
+async def test_rebuild_request_does_not_commission_a_workflow(tmp_path) -> None:
+    """The waste that mattered: a Ting workflow run for a tool already owned.
+
+    Checking after the build saves an artifact write and a verification venv.
+    Checking before saves the tens of minutes the build itself costs.
+    """
+    backend = CountingBackend()
+    tool, _ = _tool(tmp_path, build_backend=backend)
+
+    await tool.execute(
+        {
+            "manifest": _manifest(),
+            "tool_code": _ECHO_TOOL,
+            "test_code": "",
+            "capability_id": "echo.payload",
+        }
+    )
+
+    result = await tool.execute(
+        {
+            "manifest": _manifest("echo_tool_v2"),
+            "build_request": "build something that echoes the payload",
+            "capability_id": "echo.payload",
+        }
+    )
+
+    assert backend.commissions == 0
+    payload = json.loads(result.content)
+    assert payload["status"] == "already_installed"
+    assert payload["tool_name"] == "echo_tool"
+    assert "replace=true" in payload["detail"]
+
+
+async def test_replace_still_commissions_a_genuine_revision(tmp_path) -> None:
+    # A resident that means to change behaviour must not be blocked by its own
+    # previous version.
+    backend = CountingBackend()
+    tool, _ = _tool(tmp_path, build_backend=backend)
+    await tool.execute(
+        {
+            "manifest": _manifest(),
+            "tool_code": _ECHO_TOOL,
+            "test_code": "",
+            "capability_id": "echo.payload",
+        }
+    )
+
+    await tool.execute(
+        {
+            "manifest": _manifest(),
+            "build_request": "make it also report the payload size",
+            "capability_id": "echo.payload",
+            "replace": True,
+        }
+    )
+
+    assert backend.commissions == 1
+
+
+async def test_a_new_capability_still_commissions(tmp_path) -> None:
+    backend = CountingBackend()
+    tool, _ = _tool(tmp_path, build_backend=backend)
+    await tool.execute(
+        {
+            "manifest": _manifest(),
+            "tool_code": _ECHO_TOOL,
+            "test_code": "",
+            "capability_id": "echo.payload",
+        }
+    )
+
+    await tool.execute(
+        {
+            "manifest": _manifest("count_nodes"),
+            "build_request": "count cluster nodes",
+            "capability_id": "k8s.nodes.count",
+        }
+    )
+
+    assert backend.commissions == 1
+
+
+async def test_same_name_rerequest_is_caught_without_a_capability_id(tmp_path) -> None:
+    # The observed pair: the same tool name commissioned twice minutes apart.
+    backend = CountingBackend()
+    tool, _ = _tool(tmp_path, build_backend=backend)
+    await tool.execute({"manifest": _manifest(), "tool_code": _ECHO_TOOL, "test_code": ""})
+
+    result = await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+
+    assert backend.commissions == 0
+    assert json.loads(result.content)["status"] == "already_installed"
+
+
+async def test_an_uninstalled_artifact_does_not_block_a_build(tmp_path) -> None:
+    # An envelope persisted after failed verification is not a usable tool, so
+    # it must not stand in the way of building a working one.
+    backend = CountingBackend()
+    tool, _ = _tool(tmp_path, build_backend=backend)
+    (tmp_path / "arts").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "arts" / "echo_tool.json").write_text(
+        json.dumps(
+            {
+                "artifact_id": "learned-tool:echo_tool:failed",
+                "manifest": _manifest(),
+                "tool_code": _ECHO_TOOL,
+                "source_gap_id": "echo.payload",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    await tool.execute(
+        {
+            "manifest": _manifest(),
+            "build_request": "build an echo tool",
+            "capability_id": "echo.payload",
+        }
+    )
+
+    assert backend.commissions == 1

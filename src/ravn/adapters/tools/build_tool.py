@@ -25,6 +25,7 @@ from ravn.tool_observability import publish_learned_tool_inventory
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
+    find_installed_capability,
     find_installed_duplicate,
     learned_tool_artifact_path,
     learned_tool_path,
@@ -446,6 +447,32 @@ class BuildTool(ToolPort):
     async def _execute_pipeline(self, input: dict) -> ToolResult:  # noqa: A002
         telemetry = get_observability()
         try:
+            # Before commissioning, not after. A commissioned build is a Ting
+            # workflow that runs for tens of minutes; discovering afterwards
+            # that the tool already existed saves an artifact write and a
+            # verification venv, and none of the cost that mattered.
+            already = self._already_serves_request(input)
+            if already is not None:
+                telemetry.event(
+                    "ravn.tool_build.duplicate.skipped",
+                    attributes={
+                        "ravn.tool_build.duplicate.name": already.manifest.name,
+                        "ravn.tool_build.duplicate.artifact_id": already.artifact_id,
+                        "ravn.tool_build.duplicate.stage": "pre_commission",
+                    },
+                )
+                telemetry.count(
+                    "ravn.tool_build.duplicate.operations",
+                    attributes={
+                        "ravn.tool_build.duplicate.name": already.manifest.name,
+                        "ravn.tool_build.duplicate.stage": "pre_commission",
+                    },
+                )
+                return ToolResult(
+                    tool_call_id="",
+                    content=_already_serves_summary(input, already),
+                )
+
             input = await self._maybe_commission(input)
             artifact = _artifact_from_input(input)
             telemetry.set_attributes(
@@ -704,6 +731,36 @@ class BuildTool(ToolPort):
                 flock_warning=flock_warning,
                 lifecycle_warning=lifecycle_warning,
             ),
+        )
+
+    def _already_serves_request(self, input: dict) -> LearnedToolArtifact | None:  # noqa: A002
+        """Return an installed tool that already answers this request, if any.
+
+        Deliberately narrow, because a false positive here refuses a build the
+        resident genuinely needs:
+
+        * only for commissioned builds — an inline build already has its code,
+          so the exact code+contract check downstream is strictly better;
+        * never when resuming a durable task, which is a build in flight;
+        * never when ``replace`` is set, which is how a resident says it means
+          to change the tool's behaviour rather than re-request it.
+        """
+        if str(input.get("continuation_task_id") or "").strip():
+            return None
+        if bool(input.get("replace")):
+            return None
+        if str(input.get("tool_code") or "").strip():
+            return None
+        if not str(input.get("build_request") or "").strip():
+            return None
+
+        manifest = input.get("manifest")
+        name = str(manifest.get("name") or "") if isinstance(manifest, dict) else ""
+        return find_installed_capability(
+            artifacts_dir=self._artifacts_dir,
+            tools_dir=self._tools_dir,
+            capability_id=str(input.get("capability_id") or ""),
+            name=name,
         )
 
     async def _maybe_commission(self, input: dict) -> dict:  # noqa: A002
@@ -1723,6 +1780,29 @@ def _duplicate_summary(
                 "identical code and an identical contract. Run it with learned_tool_run "
                 f"(name={installed.manifest.name!r}). Build again only if you need "
                 "different behaviour, not a different name."
+            ),
+        },
+        indent=2,
+    )
+
+
+def _already_serves_summary(input: dict, installed: LearnedToolArtifact) -> str:  # noqa: A002
+    """Tell the resident it already owns this, before anything is commissioned."""
+    manifest = input.get("manifest")
+    requested = str(manifest.get("name") or "") if isinstance(manifest, dict) else ""
+    return json.dumps(
+        {
+            "status": "already_installed",
+            "tool_name": installed.manifest.name,
+            "artifact_id": installed.artifact_id,
+            "capability_id": installed.source_gap_id,
+            "requested_name": requested,
+            "description": installed.manifest.description,
+            "detail": (
+                f"No build was commissioned: {installed.manifest.name!r} is already installed "
+                "and serves this capability. Run it with learned_tool_run, and use "
+                "capability_list with names=[...] for its input schema. If it is genuinely "
+                "inadequate, re-request with replace=true and say what behaviour must change."
             ),
         },
         indent=2,

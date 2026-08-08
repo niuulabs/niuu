@@ -1204,6 +1204,50 @@ def find_installed_duplicate(
     return None
 
 
+def find_installed_capability(
+    *,
+    artifacts_dir: str | Path,
+    tools_dir: str | Path,
+    capability_id: str = "",
+    name: str = "",
+) -> LearnedToolArtifact | None:
+    """Find an installed tool already serving *capability_id* or called *name*.
+
+    Answerable before any code exists, which is the point: the code-level
+    duplicate check can only run on a finished build, and a commissioned build
+    is a Ting workflow that has already taken half an hour by then. Declared
+    intent — the capability being asked for, or the name being asked for — is
+    all that is available up front, and it is enough to stop the common case.
+
+    Capability match is preferred over name match: it survives a rename, which
+    is the duplication that name-keyed logic misses entirely.
+    """
+    artifacts_path = Path(artifacts_dir)
+    if not artifacts_path.is_dir():
+        return None
+    wanted_capability = capability_id.strip()
+    wanted_name = name.strip()
+    if not wanted_capability and not wanted_name:
+        return None
+
+    by_name: LearnedToolArtifact | None = None
+    for candidate_path in sorted(artifacts_path.glob("*.json")):
+        try:
+            payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        candidate = LearnedToolArtifact.from_dict(payload)
+        if not learned_tool_path(tools_dir, candidate.manifest.name).is_file():
+            continue
+        if wanted_capability and candidate.source_gap_id.strip() == wanted_capability:
+            return candidate
+        if wanted_name and candidate.manifest.name == wanted_name and by_name is None:
+            by_name = candidate
+    return by_name
+
+
 def _manifest_contract(manifest: LearnedToolManifest) -> str:
     """What a caller is promised, ignoring what the tool happens to be called."""
     return json.dumps(
