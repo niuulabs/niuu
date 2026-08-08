@@ -619,7 +619,17 @@ async def _page_mount_map(
     default_name: str,
     default_role: str,
     mounts: list[dict[str, Any]] | None = None,
+    category: str | None = None,
+    prefix: str | None = None,
 ) -> dict[str, list[str]]:
+    """Map page path → the mounts holding it, scoped the same way the caller is.
+
+    The scope matters: this decorates a page listing, so it only needs the pages
+    in that listing. Asking each mount for its whole corpus regardless of filter
+    silently undid the caller's ``prefix`` — ``GET /mimir/pages?prefix=...``
+    scoped its own read and then walked all 578 pages here anyway, which is the
+    cost Ting pays once per campaign and 18 times per research page view.
+    """
     mount_map: dict[str, list[str]] = {}
     mounts = mounts or _extract_mount_definitions(
         adapter,
@@ -628,7 +638,7 @@ async def _page_mount_map(
     )
     for mount in mounts:
         try:
-            pages = await mount["port"].list_pages()
+            pages = await mount["port"].list_pages(category=category, prefix=prefix)
         except Exception:
             continue
         for page in pages:
@@ -1332,6 +1342,8 @@ class MimirRouter:
                 default_name=self._name,
                 default_role=self._role,
                 mounts=mounts,
+                category=category,
+                prefix=prefix,
             )
             if mount is not None:
                 return [_decorate_page_meta(page, mounts=[resolved_mount]) for page in pages]
@@ -1353,11 +1365,16 @@ class MimirRouter:
                 raise HTTPException(status_code=404, detail=f"Page not found: {path}")
             if mount is not None:
                 return _decorate_page(page, mounts=[resolved_mount])
+            # Only this page's mounts are needed. Unscoped, this walked all 578
+            # pages to answer for one — and Ting reads ~10 pages per campaign,
+            # 18 campaigns per research page view, so a single view cost ~180
+            # corpus walks. A path is its own prefix.
             mount_map = await _page_mount_map(
                 adapter,
                 default_name=self._name,
                 default_role=self._role,
                 mounts=mounts,
+                prefix=page.meta.path,
             )
             return _decorate_page(page, mounts=mount_map.get(page.meta.path, [self._name]))
 
