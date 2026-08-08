@@ -3,10 +3,7 @@ import { useNavigate } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { openEventStream } from '@niuulabs/query';
 import { Table, type TableColumn } from '@niuulabs/ui';
-import type {
-  CampaignArtifactSummary,
-  ResearchCampaign,
-} from '../ports';
+import type { CampaignArtifactSummary, ResearchCampaign } from '../ports';
 import { useResearchCampaigns } from './useResearch';
 import { useDispatcherState } from './useDispatcherState';
 import './ResearchCenterPage.css';
