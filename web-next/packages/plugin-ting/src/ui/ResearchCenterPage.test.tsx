@@ -2,7 +2,12 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { IResearchService, ResearchCampaign, ResearchCampaignDetail } from '../ports';
+import type {
+  CampaignArtifactSummary,
+  IResearchService,
+  ResearchCampaign,
+  ResearchCampaignDetail,
+} from '../ports';
 import { createMockDispatcherService } from '../adapters/mock';
 import { ResearchCenterPage } from './ResearchCenterPage';
 
@@ -203,9 +208,44 @@ const campaignDetails: ResearchCampaignDetail[] = [
   },
 ];
 
+/**
+ * Mirror the server's artifact summary, which the campaign list now carries.
+ *
+ * The cards used to derive these counts by fetching each campaign's detail;
+ * they come down with the list instead, so the fake list must supply them.
+ */
+function summarize(campaign: ResearchCampaignDetail): CampaignArtifactSummary {
+  const kindOf = (artifact: { path: string; kind?: string | null }) =>
+    (artifact.kind ?? '').toLowerCase() || artifact.path.toLowerCase();
+  const sourceIds = new Set<string>();
+  for (const artifact of campaign.artifacts) {
+    for (const id of artifact.sourceIds ?? []) sourceIds.add(id);
+  }
+  return {
+    artifactCount: campaign.artifacts.length,
+    sourceCount: sourceIds.size,
+    critiqueCount: campaign.artifacts.filter((a) =>
+      ['critique', 'challenge', 'skeptic'].some((k) => kindOf(a).includes(k)),
+    ).length,
+    learningCount: campaign.artifacts.filter(
+      (a) => kindOf(a).includes('learning') || a.path.startsWith('learnings/'),
+    ).length,
+    followUpCount: campaign.artifacts.filter(
+      (a) => kindOf(a).includes('followup') || a.path.startsWith('followups/'),
+    ).length,
+    published:
+      'manifest' in campaign.canonicalArtifacts ||
+      campaign.artifacts.some((a) => a.publishState === 'published'),
+    known: true,
+  };
+}
+
 const researchService: IResearchService = {
   async listCampaigns() {
-    return campaignDetails.map((campaign) => ({ ...campaign }));
+    return campaignDetails.map((campaign) => ({
+      ...campaign,
+      artifactSummary: summarize(campaign),
+    }));
   },
   async getCampaign(slug) {
     return campaignDetails.find((campaign) => campaign.slug === slug) ?? null;
@@ -237,7 +277,12 @@ function createResearchService(
   return {
     async listCampaigns() {
       if (listError) throw listError;
-      return campaigns.map((campaign) => ({ ...campaign }));
+      // A slug listed as missing stands for a campaign the server could not
+      // summarise, which must read as unknown rather than as having none.
+      return campaigns.map((campaign) => ({
+        ...campaign,
+        artifactSummary: missing.has(campaign.slug) ? null : summarize(campaign),
+      }));
     },
     async getCampaign(slug) {
       if (missing.has(slug)) return null;

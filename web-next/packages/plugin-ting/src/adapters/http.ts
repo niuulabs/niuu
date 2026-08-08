@@ -32,6 +32,7 @@ import type {
   UpdateResearchCampaignRequest,
   CampaignArtifact,
   CampaignArtifactDetail,
+  CampaignArtifactSummary,
   ResearchCampaign,
   ResearchCampaignDetail,
   ITingSettingsService,
@@ -388,6 +389,23 @@ interface RawResearchCampaign {
   last_activity_at?: string | null;
   completedAt?: string | null;
   completed_at?: string | null;
+  artifactSummary?: RawCampaignArtifactSummary | null;
+  artifact_summary?: RawCampaignArtifactSummary | null;
+}
+
+interface RawCampaignArtifactSummary {
+  artifactCount?: number;
+  artifact_count?: number;
+  sourceCount?: number;
+  source_count?: number;
+  critiqueCount?: number;
+  critique_count?: number;
+  learningCount?: number;
+  learning_count?: number;
+  followUpCount?: number;
+  follow_up_count?: number;
+  published?: boolean;
+  known?: boolean;
 }
 
 interface RawResearchCampaignDetail extends RawResearchCampaign {
@@ -810,6 +828,24 @@ function toResearchCampaign(raw: RawResearchCampaign): ResearchCampaign {
     updatedAt: raw.updatedAt ?? raw.updated_at ?? '',
     lastActivityAt: raw.lastActivityAt ?? raw.last_activity_at ?? null,
     completedAt: raw.completedAt ?? raw.completed_at ?? null,
+    artifactSummary: toCampaignArtifactSummary(raw.artifactSummary ?? raw.artifact_summary),
+  };
+}
+
+function toCampaignArtifactSummary(
+  raw: RawCampaignArtifactSummary | null | undefined,
+): CampaignArtifactSummary | null {
+  // A service that predates the field sends nothing; null means "not summarised"
+  // and reads as unknown, which is not the same as a campaign with no artifacts.
+  if (!raw) return null;
+  return {
+    artifactCount: raw.artifactCount ?? raw.artifact_count ?? 0,
+    sourceCount: raw.sourceCount ?? raw.source_count ?? 0,
+    critiqueCount: raw.critiqueCount ?? raw.critique_count ?? 0,
+    learningCount: raw.learningCount ?? raw.learning_count ?? 0,
+    followUpCount: raw.followUpCount ?? raw.follow_up_count ?? 0,
+    published: raw.published ?? false,
+    known: raw.known ?? true,
   };
 }
 

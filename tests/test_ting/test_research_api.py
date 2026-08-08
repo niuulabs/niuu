@@ -1159,3 +1159,102 @@ def test_non_a2a_campaign_is_unaffected() -> None:
 
     assert _campaign_owns_path(campaign, "research/campaigns/plain-campaign/final.md")
     assert not _campaign_owns_path(campaign, "research/campaigns/other/final.md")
+
+
+# ---------------------------------------------------------------------------
+# _campaign_artifact_summary — tallies without reading artifacts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_artifact_summary_counts_without_reading_bodies(tmp_path: Path, monkeypatch) -> None:
+    """The research cards need counts, and counts are metadata.
+
+    Deriving them from the full detail cost one request and a page read per
+    artifact, per campaign, for all 18 rows — on mount and again every 15s.
+    """
+    from mimir.adapters.markdown import MarkdownMimirAdapter
+    from ting.api import research as research_api
+
+    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    slug = "a-campaign"
+    for rel, body in [
+        (f"research/campaigns/{slug}/final.md", "# Final\n<!-- sources: s1 s2 -->"),
+        (f"research/campaigns/{slug}/critique.md", "# Critique\n<!-- sources: s2 -->"),
+        (
+            f"research/campaigns/{slug}/manifest.md",
+            f"# Manifest\nresearch/campaigns/{slug}/final.md",
+        ),
+        (f"learnings/research/{slug}.md", "# Learning\n"),
+    ]:
+        path = adapter._wiki / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+
+    monkeypatch.setattr(
+        research_api, "_resolve_campaign_mimir_port", lambda campaign, settings: adapter
+    )
+    campaign = _a2a_campaign(snapshot=None, slug=slug, workflow_slug=slug)
+
+    reads: list[str] = []
+    original_read_text = Path.read_text
+
+    def _tracking(self: Path, *args: object, **kwargs: object) -> str:
+        if self.suffix == ".md":
+            reads.append(self.name)
+        return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    Path.read_text = _tracking  # type: ignore[method-assign]
+    try:
+        summary = await research_api._campaign_artifact_summary(campaign, settings=object())
+    finally:
+        Path.read_text = original_read_text  # type: ignore[method-assign]
+
+    assert summary.known is True
+    assert summary.artifact_count == 4
+    assert summary.source_count == 2
+    assert summary.critique_count == 1
+    assert summary.learning_count == 1
+    assert summary.published is True
+    # One metadata pass over the four pages, plus the manifest for the
+    # published flag — not a get_page per artifact on top of the listing.
+    assert len(reads) == 5, reads
+    assert reads.count("final.md") == 1, reads
+
+
+@pytest.mark.asyncio
+async def test_artifact_summary_reports_unknown_when_there_is_no_mount(
+    monkeypatch,
+) -> None:
+    """An unreadable mount is not a campaign with no artifacts."""
+    from ting.api import research as research_api
+
+    monkeypatch.setattr(
+        research_api, "_resolve_campaign_mimir_port", lambda campaign, settings: None
+    )
+
+    summary = await research_api._campaign_artifact_summary(
+        _a2a_campaign(snapshot=None), settings=object()
+    )
+
+    assert summary.known is False
+    assert summary.artifact_count == 0
+
+
+@pytest.mark.asyncio
+async def test_artifact_summary_reports_unknown_when_mimir_raises(monkeypatch) -> None:
+    from ting.api import research as research_api
+
+    class _Broken:
+        async def list_pages(self, **_kwargs: object) -> list[object]:
+            raise RuntimeError("503 Service Unavailable")
+
+    monkeypatch.setattr(
+        research_api, "_resolve_campaign_mimir_port", lambda campaign, settings: _Broken()
+    )
+
+    summary = await research_api._campaign_artifact_summary(
+        _a2a_campaign(snapshot=None), settings=object()
+    )
+
+    assert summary.known is False

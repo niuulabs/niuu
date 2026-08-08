@@ -38,6 +38,7 @@ export type {
   ResearchCampaignDetail,
   CampaignArtifact,
   CampaignArtifactDetail,
+  CampaignArtifactSummary,
   CampaignStageState,
   ResearchCampaignStatus,
 } from './domain/research';

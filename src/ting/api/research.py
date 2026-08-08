@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import UTC, datetime
@@ -120,6 +121,30 @@ class CampaignArtifactResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class CampaignArtifactSummaryResponse(BaseModel):
+    """Per-campaign artifact tallies for the research list cards.
+
+    The cards need counts and a published flag, not artifacts. Fetching the
+    full detail per row to derive them meant a request per campaign plus a
+    ``get_page`` per artifact; a listing of 18 campaigns did that on mount and
+    again every 15s. Every field here comes from page metadata plus one
+    manifest read, so no artifact content crosses the wire and a remote mount
+    is read in a single listing rather than once per artifact.
+    """
+
+    artifact_count: int = Field(default=0, serialization_alias="artifactCount")
+    source_count: int = Field(default=0, serialization_alias="sourceCount")
+    critique_count: int = Field(default=0, serialization_alias="critiqueCount")
+    learning_count: int = Field(default=0, serialization_alias="learningCount")
+    follow_up_count: int = Field(default=0, serialization_alias="followUpCount")
+    published: bool = False
+    # False when Mímir could not be read, so the counts are unknown rather than
+    # zero — the cards must not report an unreachable campaign as empty.
+    known: bool = True
+
+    model_config = {"populate_by_name": True}
+
+
 class ResearchCampaignResponse(BaseModel):
     id: str
     slug: str
@@ -142,6 +167,10 @@ class ResearchCampaignResponse(BaseModel):
     updated_at: datetime = Field(serialization_alias="updatedAt")
     last_activity_at: datetime | None = Field(default=None, serialization_alias="lastActivityAt")
     completed_at: datetime | None = Field(default=None, serialization_alias="completedAt")
+    artifact_summary: CampaignArtifactSummaryResponse | None = Field(
+        default=None,
+        serialization_alias="artifactSummary",
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -200,7 +229,19 @@ def create_research_router() -> APIRouter:
             )
             for campaign in campaigns
         ]
-        return [_to_campaign_response(campaign) for campaign in refreshed]
+        # Summarised here so the cards need no per-campaign follow-up request.
+        # Concurrently: each summary is a handful of metadata reads, and doing
+        # them in series would put the whole list behind the slowest mount.
+        summaries = await asyncio.gather(
+            *(
+                _campaign_artifact_summary(campaign, settings=request.app.state.settings)
+                for campaign in refreshed
+            )
+        )
+        return [
+            _to_campaign_response(campaign, artifact_summary=summary)
+            for campaign, summary in zip(refreshed, summaries, strict=True)
+        ]
 
     @router.post(
         "/campaigns",
@@ -833,6 +874,65 @@ async def _load_campaign_artifacts(
     return artifacts, canonical
 
 
+async def _campaign_artifact_summary(
+    campaign: WorkflowCampaign,
+    *,
+    settings: Any,
+) -> CampaignArtifactSummaryResponse:
+    """Tally a campaign's artifacts without reading any of them.
+
+    Everything the research cards show is derivable from page metadata: the
+    kind from the path, the cited sources from ``source_ids``. Only the
+    published flag needs a page read, and that is the one manifest.
+
+    A filesystem mount still opens each page to build that metadata, but it
+    does so in one pass; what this avoids is the per-artifact ``get_page`` the
+    detail route pays, which over HTTP is a round trip and a body each.
+    """
+    adapter = _resolve_campaign_mimir_port(campaign, settings)
+    if adapter is None:
+        return CampaignArtifactSummaryResponse(known=False)
+
+    slug = _artifact_slug(campaign)
+    try:
+        pages = list(await adapter.list_pages(prefix=f"research/campaigns/{slug}/"))
+        # A full path is its own prefix, so this asks "does that page exist"
+        # without reading it — the listing route pays a get_page per candidate.
+        for path in (f"learnings/research/{slug}.md", f"followups/research/{slug}.md"):
+            pages.extend(
+                page for page in await adapter.list_pages(prefix=path) if page.path == path
+            )
+        published_paths = await _published_paths(adapter, slug)
+    except Exception:
+        # Same rule as the artifact listing: unknown is not empty.
+        logger.warning(
+            "Mimir could not be read while summarising research campaign %s",
+            campaign.slug,
+            exc_info=True,
+        )
+        return CampaignArtifactSummaryResponse(known=False)
+
+    kinds = [(page.path, _classify_artifact_kind(page.path)) for page in pages]
+
+    source_ids: set[str] = set()
+    for page in pages:
+        source_ids.update(page.source_ids or [])
+
+    return CampaignArtifactSummaryResponse(
+        artifact_count=len(pages),
+        source_count=len(source_ids),
+        critique_count=sum(1 for _, kind in kinds if kind in {"critique", "challenge", "skeptic"}),
+        learning_count=sum(
+            1 for path, kind in kinds if kind == "learning" or path.startswith("learnings/")
+        ),
+        follow_up_count=sum(
+            1 for path, kind in kinds if kind == "followup" or path.startswith("followups/")
+        ),
+        published=bool(published_paths),
+        known=True,
+    )
+
+
 async def _published_paths(adapter: MimirPort, slug: str) -> set[str]:
     manifest_path = f"research/campaigns/{slug}/manifest.md"
     try:
@@ -1130,6 +1230,7 @@ def _to_campaign_response(
     campaign: WorkflowCampaign,
     *,
     chat_endpoint: str | None = None,
+    artifact_summary: CampaignArtifactSummaryResponse | None = None,
 ) -> ResearchCampaignResponse:
     return ResearchCampaignResponse(
         id=str(campaign.id),
@@ -1150,6 +1251,7 @@ def _to_campaign_response(
         updated_at=campaign.updated_at,
         last_activity_at=campaign.last_activity_at,
         completed_at=campaign.completed_at,
+        artifact_summary=artifact_summary,
     )
 
 

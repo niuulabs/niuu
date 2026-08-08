@@ -2032,3 +2032,80 @@ describe('buildTingAuditLogHttpAdapter', () => {
     expect(typeof svc.listAuditEntries).toBe('function');
   });
 });
+
+describe('research campaign artifact summary', () => {
+  it('maps the summary the list now carries', async () => {
+    const client = {
+      get: vi.fn().mockResolvedValue([
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          slug: 'a-campaign',
+          name: 'A campaign',
+          ownerId: 'dev',
+          workflowId: '22222222-2222-4222-8222-222222222222',
+          workflowVersion: '1.0.0',
+          workflowName: 'Research Campaign',
+          sessionId: 's',
+          sessionName: 's',
+          status: 'running',
+          stageState: [],
+          metadata: {},
+          createdAt: '2026-08-08T00:00:00Z',
+          updatedAt: '2026-08-08T00:00:00Z',
+          artifact_summary: {
+            artifact_count: 7,
+            source_count: 4,
+            critique_count: 1,
+            learning_count: 1,
+            follow_up_count: 2,
+            published: true,
+            known: true,
+          },
+        },
+      ]),
+    };
+    const service = buildResearchHttpAdapter(client as never);
+
+    const [campaign] = await service.listCampaigns();
+
+    expect(campaign?.artifactSummary).toEqual({
+      artifactCount: 7,
+      sourceCount: 4,
+      critiqueCount: 1,
+      learningCount: 1,
+      followUpCount: 2,
+      published: true,
+      known: true,
+    });
+  });
+
+  it('leaves the summary null when the service does not send one', async () => {
+    const client = {
+      get: vi.fn().mockResolvedValue([
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          slug: 'a-campaign',
+          name: 'A campaign',
+          ownerId: 'dev',
+          workflowId: '22222222-2222-4222-8222-222222222222',
+          workflowVersion: '1.0.0',
+          workflowName: 'Research Campaign',
+          sessionId: 's',
+          sessionName: 's',
+          status: 'running',
+          stageState: [],
+          metadata: {},
+          createdAt: '2026-08-08T00:00:00Z',
+          updatedAt: '2026-08-08T00:00:00Z',
+        },
+      ]),
+    };
+    const service = buildResearchHttpAdapter(client as never);
+
+    const [campaign] = await service.listCampaigns();
+
+    // Null reads as "not summarised", which the cards show as unknown rather
+    // than as a campaign with no artifacts.
+    expect(campaign?.artifactSummary).toBeNull();
+  });
+});

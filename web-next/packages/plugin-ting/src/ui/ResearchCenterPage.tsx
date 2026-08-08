@@ -1,14 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';
-import { useQueries, useQueryClient } from '@tanstack/react-query';
-import { useService } from '@niuulabs/plugin-sdk';
+import { useQueryClient } from '@tanstack/react-query';
 import { openEventStream } from '@niuulabs/query';
 import { Table, type TableColumn } from '@niuulabs/ui';
 import type {
-  CampaignArtifact,
-  IResearchService,
+  CampaignArtifactSummary,
   ResearchCampaign,
-  ResearchCampaignDetail,
 } from '../ports';
 import { useResearchCampaigns } from './useResearch';
 import { useDispatcherState } from './useDispatcherState';
@@ -78,30 +75,14 @@ function pageStatusLabel(bucket: CampaignBucket): string {
 
 function bucketForCampaign(
   campaign: ResearchCampaign,
-  detail: ResearchCampaignDetail | null,
+  summary: CampaignArtifactSummary | null,
 ): CampaignBucket {
   if (campaign.status === 'failed') return 'failed';
   if (campaign.status === 'blocked') return 'blocked';
-  if (isPublished(detail)) return 'published';
+  if (summary?.published) return 'published';
   if (campaign.status === 'running') return 'running';
   if (campaign.status === 'pending') return 'draft';
   return 'review-ready';
-}
-
-function isPublished(detail: ResearchCampaignDetail | null): boolean {
-  if (!detail) return false;
-  const canonical = new Set(Object.keys(detail.canonicalArtifacts));
-  if (canonical.has('manifest')) return true;
-  return detail.artifacts.some(
-    (artifact) =>
-      artifact.publishState === 'published' &&
-      (artifact.kind === 'final' ||
-        artifact.kind === 'manifest' ||
-        artifact.path.includes('/final.md') ||
-        artifact.path.includes('/manifest.md') ||
-        artifact.path.startsWith('learnings/') ||
-        artifact.path.startsWith('followups/')),
-  );
 }
 
 function normalizeMode(mode: unknown): string {
@@ -126,64 +107,19 @@ function buildQuestion(campaign: ResearchCampaign): string {
   return 'Review campaign artifacts and published memory in Mimir.';
 }
 
-function classifyArtifactKind(artifact: CampaignArtifact): string {
-  if (artifact.kind) return artifact.kind.toLowerCase();
-  const path = artifact.path.toLowerCase();
-  if (path.includes('/sources')) return 'sources';
-  if (path.includes('/critique') || path.includes('/challenge')) return 'critique';
-  if (path.includes('/final')) return 'final';
-  if (path.includes('/manifest')) return 'manifest';
-  if (path.includes('/brief')) return 'brief';
-  if (path.includes('/plan')) return 'plan';
-  if (path.includes('learnings/')) return 'learning';
-  if (path.includes('followups/')) return 'followup';
-  if (path.includes('/notes/')) return 'note';
-  return 'artifact';
-}
-
-function countUniqueSourceIds(artifacts: CampaignArtifact[]): number {
-  const ids = new Set<string>();
-  for (const artifact of artifacts) {
-    for (const sourceId of artifact.sourceIds ?? []) ids.add(sourceId);
-  }
-  return ids.size;
-}
-
-function deriveCounts(detail: ResearchCampaignDetail | null): {
-  sourceCount: number;
-  critiqueCount: number;
-  learningCount: number;
-  followUpCount: number;
-} {
-  if (!detail) {
-    return { sourceCount: 0, critiqueCount: 0, learningCount: 0, followUpCount: 0 };
-  }
-  const sourceCount = countUniqueSourceIds(detail.artifacts);
-  const critiqueCount = detail.artifacts.filter((artifact) => {
-    const kind = classifyArtifactKind(artifact);
-    return kind === 'critique' || kind === 'challenge' || kind === 'skeptic';
-  }).length;
-  const learningCount = detail.artifacts.filter((artifact) => {
-    const kind = classifyArtifactKind(artifact);
-    return kind === 'learning' || artifact.path.startsWith('learnings/');
-  }).length;
-  const followUpCount = detail.artifacts.filter((artifact) => {
-    const kind = classifyArtifactKind(artifact);
-    return kind === 'followup' || artifact.path.startsWith('followups/');
-  }).length;
-  return { sourceCount, critiqueCount, learningCount, followUpCount };
-}
-
 function deriveWarning(
   campaign: ResearchCampaign,
-  detail: ResearchCampaignDetail | null,
+  summary: CampaignArtifactSummary | null,
   bucket: CampaignBucket,
 ): string | null {
   const firstReason = campaign.stageState.find((stage) => stage.reason)?.reason?.trim();
   if (firstReason) return firstReason;
   if (bucket === 'failed') return 'workflow run failed before publish';
   if (bucket === 'blocked') return 'campaign needs human review before it can continue';
-  if (!detail && campaign.status === 'running')
+  // Unknown, not empty: Mímir could not be read, so say so rather than imply
+  // the campaign has produced nothing.
+  if (summary && !summary.known) return 'artifact store unreachable; counts unknown';
+  if (!summary && campaign.status === 'running')
     return 'awaiting artifact updates from live workflow';
   return null;
 }
@@ -223,12 +159,12 @@ function deriveProgressPercent(campaign: ResearchCampaign, bucket: CampaignBucke
 
 function deriveConfidence(
   campaign: ResearchCampaign,
-  detail: ResearchCampaignDetail | null,
+  summary: CampaignArtifactSummary | null,
   bucket: CampaignBucket,
   progressPercent: number,
 ): number {
-  const artifactCount = detail?.artifacts.length ?? 0;
-  const sourceCount = countUniqueSourceIds(detail?.artifacts ?? []);
+  const artifactCount = summary?.artifactCount ?? 0;
+  const sourceCount = summary?.sourceCount ?? 0;
   let score =
     24 + Math.round(progressPercent * 0.36) + artifactCount * 6 + Math.min(sourceCount, 6);
   if (bucket === 'review-ready') score = Math.max(score, 78);
@@ -262,15 +198,12 @@ function shortRunLabel(campaign: ResearchCampaign): string {
   return `run/${campaign.sessionId.slice(0, 8)}`;
 }
 
-function toViewModel(
-  campaign: ResearchCampaign,
-  detail: ResearchCampaignDetail | null,
-): CampaignCardViewModel {
-  const bucket = bucketForCampaign(campaign, detail);
+function toViewModel(campaign: ResearchCampaign): CampaignCardViewModel {
+  const summary = campaign.artifactSummary ?? null;
+  const bucket = bucketForCampaign(campaign, summary);
   const mode = normalizeMode(campaign.metadata.mode);
-  const counts = deriveCounts(detail);
   const progressPercent = deriveProgressPercent(campaign, bucket);
-  const confidence = deriveConfidence(campaign, detail, bucket, progressPercent);
+  const confidence = deriveConfidence(campaign, summary, bucket, progressPercent);
   return {
     id: campaign.id,
     slug: campaign.slug,
@@ -285,11 +218,11 @@ function toViewModel(
     progressPercent,
     progressSegments: normalizeSegments(campaign, bucket),
     elapsedLabel: formatRelativeDuration(campaign.createdAt, campaign.updatedAt),
-    sourceCount: counts.sourceCount,
-    critiqueCount: counts.critiqueCount,
-    learningCount: counts.learningCount,
-    followUpCount: counts.followUpCount,
-    warning: deriveWarning(campaign, detail, bucket),
+    sourceCount: summary?.sourceCount ?? 0,
+    critiqueCount: summary?.critiqueCount ?? 0,
+    learningCount: summary?.learningCount ?? 0,
+    followUpCount: summary?.followUpCount ?? 0,
+    warning: deriveWarning(campaign, summary, bucket),
     runLabel: shortRunLabel(campaign),
     updatedAt: campaign.updatedAt,
     createdAt: campaign.createdAt,
@@ -569,23 +502,12 @@ function ResearchTableView({
 export function ResearchCenterPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const researchService = useService<IResearchService>('ting.research');
   const { data: campaigns = [], isLoading, isError, error } = useResearchCampaigns();
   const { data: dispatcherState } = useDispatcherState();
   const [search, setSearch] = useState('');
   const [activeFilter, setActiveFilter] = useState<ResearchFilter>('all');
   const [sortBy, setSortBy] = useState<ResearchSort>('updated');
   const [viewMode, setViewMode] = useState<ResearchViewMode>('grid');
-
-  const detailQueries = useQueries({
-    queries: campaigns.map((campaign) => ({
-      queryKey: ['ting', 'research', 'campaign', campaign.slug],
-      queryFn: () => researchService.getCampaign(campaign.slug),
-      enabled: campaigns.length > 0,
-      staleTime: 15_000,
-      refetchInterval: 15_000,
-    })),
-  });
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -605,11 +527,7 @@ export function ResearchCenterPage() {
     return () => stream.close();
   }, [queryClient]);
 
-  const cards = useMemo(() => {
-    return campaigns.map((campaign, index) =>
-      toViewModel(campaign, detailQueries[index]?.data ?? null),
-    );
-  }, [campaigns, detailQueries]);
+  const cards = useMemo(() => campaigns.map(toViewModel), [campaigns]);
 
   const counts = useMemo(
     () => ({
