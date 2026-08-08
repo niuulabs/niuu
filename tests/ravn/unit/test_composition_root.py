@@ -421,7 +421,9 @@ class TestBuildTools:
         assert payload["count"] == 1
         entry = payload["capabilities"][0]
         assert entry["tags"] == ["tool", "learned"]
-        assert entry["metadata"]["invoke_via"] == "learned_tool_run"
+        # Compact listing, but still enough to dispatch on: the listing tells the
+        # resident how to run this without a second lookup.
+        assert entry["invoke_via"] == "learned_tool_run"
 
         executed = await by_name["learned_tool_run"].execute(
             {"name": "persisted_metric_window", "input": {}}

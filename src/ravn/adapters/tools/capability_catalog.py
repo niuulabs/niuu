@@ -61,8 +61,12 @@ class CapabilityListTool(ToolPort):
             "resident learned tools, resident skills, configured remote workflows, "
             "and peer Agent Card skills. Use this before building new tools so existing "
             "capabilities are not duplicated. Entries tagged 'learned' are not native "
-            "tools — execute them by name with learned_tool_run. Learned entries include "
-            "lifecycle, usage, failure, and supersession evidence for portfolio review."
+            "tools — execute them by name with learned_tool_run. Listing is compact and "
+            "omits input schemas; pass names: [...] for the full entry, including schema "
+            "and lifecycle/usage/failure/supersession evidence, of the ones you care "
+            "about. Pass query: '<substring>' to check whether something already exists. "
+            "A filtered miss returns a catalog_preview — read it and broaden before "
+            "concluding no relevant capability exists."
         )
 
     @property
@@ -90,6 +94,23 @@ class CapabilityListTool(ToolPort):
                     "maximum": 500,
                     "description": "Maximum capabilities to return.",
                 },
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Substring matched against name and description. Use this "
+                        "to check whether a capability already exists — e.g. 'pods' "
+                        "— instead of listing the whole catalog."
+                    ),
+                },
+                "names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Return the FULL entry, including input_schema, for these "
+                        "capability names only. Listing is compact by design; ask "
+                        "here for the schema of the one you intend to run."
+                    ),
+                },
             },
         }
 
@@ -112,27 +133,54 @@ class CapabilityListTool(ToolPort):
             tags=_string_list(input.get("tags")),
             require_all_tags=bool(input.get("require_all_tags") or False),
         )
+        query = str(input.get("query") or "").strip()
+        if query:
+            filtered = [item for item in filtered if item.matches_query(query)]
+        wanted = {name.strip() for name in _string_list(input.get("names")) if name.strip()}
         limit = _int_in_range(input.get("limit"), default=100, minimum=1, maximum=500)
         catalog_counts: dict[str, int] = {}
         for capability in capabilities:
             catalog_counts[capability.kind.value] = catalog_counts.get(capability.kind.value, 0) + 1
+
+        if wanted:
+            # Detail mode: full entries, schemas included, for named capabilities
+            # only. Bounded by the caller's own list, so it cannot run away.
+            selected = [item for item in capabilities if item.name in wanted]
+            entries = [item.to_catalog_dict() for item in selected]
+            shown, total, truncated = len(entries), len(entries), False
+            missing = sorted(wanted - {item.name for item in selected})
+        else:
+            entries, shown, total, truncated = _fit_index(filtered, limit)
+            missing = []
+
         payload = {
-            "capabilities": [item.to_catalog_dict() for item in filtered[:limit]],
-            "count": min(len(filtered), limit),
-            "total": len(filtered),
+            "capabilities": entries,
+            "count": shown,
+            "total": total,
             "catalog_total": len(capabilities),
             "catalog_counts": catalog_counts,
-            "catalog_preview": (
-                [
-                    {key: entry[key] for key in ("id", "kind", "name", "source")}
-                    for capability in capabilities[:limit]
-                    for entry in [capability.to_catalog_dict()]
-                ]
-                if not filtered
-                else []
-            ),
+            # Stated in the payload, not appended to a sliced string: a caller
+            # must be able to tell a short list from a cut one by parsing the
+            # result, which is impossible once the JSON itself is chopped.
+            "truncated": truncated,
+            "detail": bool(wanted),
+            # A filtered miss must not read as an empty catalog. `query` was
+            # removed once before (a67d376c) because narrowing hid peer agent
+            # skills and residents concluded no peer existed; the preview is
+            # what makes a bad filter visible as a bad filter.
+            "catalog_preview": _preview(capabilities, limit) if not entries else [],
             "errors": errors,
         }
+        if truncated:
+            payload["next_step"] = (
+                "This list was shortened to stay readable. Narrow it with "
+                "`query` (substring of name or description) or `kind`, then ask "
+                "for `names: [...]` to get the full schema of the one you want."
+            )
+        if missing:
+            payload["not_found"] = missing
+        if query:
+            payload["query"] = query
         telemetry = get_observability()
         telemetry.set_attributes(
             {
@@ -396,3 +444,75 @@ def _int_in_range(value: Any, *, default: int, minimum: int, maximum: int) -> in
     except (TypeError, ValueError):
         return default
     return max(minimum, min(maximum, number))
+
+
+#: Char budget for one capability_list result. Deliberately below the agent's
+#: default max_tool_result_chars (100_000) so this tool shortens its own list
+#: cleanly rather than having the string sliced mid-JSON on the way out.
+_INDEX_CHAR_BUDGET = 60_000
+
+
+def _fit_index(
+    capabilities: Sequence[Capability],
+    limit: int,
+) -> tuple[list[dict[str, Any]], int, int, bool]:
+    """Return ``(entries, shown, total, truncated)`` within the char budget.
+
+    Entries are compact — no input schemas — which is what keeps a large catalog
+    readable at all. If even the compact list would exceed the budget, drop
+    entries from the end and report it, so the caller receives valid JSON that
+    says it is partial instead of malformed JSON that looks whole.
+    """
+    total = len(capabilities)
+    entries = [_index_entry(item) for item in capabilities[:limit]]
+    truncated = total > limit
+    while entries and len(json.dumps(entries)) > _INDEX_CHAR_BUDGET:
+        entries.pop()
+        truncated = True
+    return entries, len(entries), total, truncated
+
+
+def _index_entry(capability: Capability) -> dict[str, Any]:
+    """Compact entry, plus the health signal a learned tool is judged on.
+
+    Dropping ``input_schema`` is the point of the index; dropping the lifecycle
+    counters with it would take away the one thing that distinguishes a working
+    learned tool from a failing one — and "I can't tell if mine works" leads
+    back to rebuilding just as surely as "I can't see mine at all". Three
+    scalars, not the whole lifecycle dict; the rest is available via ``names``.
+    """
+    entry = capability.to_index_dict()
+    metadata = capability.metadata
+    # Compact must not mean uncallable: these say *how* to invoke the entry, and
+    # a peer skill without its agent_id/skill_id is a name the resident cannot
+    # act on. Three scalars each; the bulk (interfaces, security schemes,
+    # provenance, examples) stays behind `names`.
+    for key in ("invoke_via", "agent_id", "skill_id"):
+        if metadata.get(key):
+            entry[key] = metadata[key]
+    lifecycle = metadata.get("lifecycle")
+    if isinstance(lifecycle, dict) and lifecycle.get("status"):
+        entry["usage"] = {
+            "status": lifecycle.get("status"),
+            "runs": lifecycle.get("run_count"),
+            "failures": lifecycle.get("failure_count"),
+        }
+    return entry
+
+
+#: Names-and-kinds only, so a miss can show the whole catalog cheaply. Bounded
+#: for the same reason as the index: no payload this tool emits may be unbounded.
+_PREVIEW_LIMIT = 200
+
+
+def _preview(capabilities: Sequence[Capability], limit: int) -> list[dict[str, Any]]:
+    """Name/kind/source rows, so a filtered miss still shows what does exist."""
+    return [
+        {
+            "id": item.capability_id,
+            "kind": item.kind.value,
+            "name": item.name,
+            "source": item.source,
+        }
+        for item in capabilities[: min(limit, _PREVIEW_LIMIT)]
+    ]

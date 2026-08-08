@@ -55,6 +55,44 @@ class Capability:
             "metadata": dict(self.metadata),
         }
 
+    def to_index_dict(self, *, description_chars: int = 200) -> dict[str, Any]:
+        """Return the compact form used when *listing* many capabilities.
+
+        A list answers "what do I already have?"; it does not need each entry's
+        input schema, and carrying them is what made the answer unreadable. On
+        one resident the full catalog reached 151,007 chars against a 100,000
+        char tool-result cap — a third cut off mid-JSON, so the model received
+        malformed output, could not find the tool it owned, and built it again.
+        Schemas were 63KB of that and descriptions another 39KB.
+
+        Fetch the full entry for a chosen capability with ``to_catalog_dict``;
+        that shape is the stable Guild/UI/API contract and is unchanged.
+        """
+        description = self.description or ""
+        clipped = description[:description_chars].rstrip()
+        if len(description) > len(clipped):
+            clipped += "…"
+        return {
+            "id": self.capability_id,
+            "kind": self.kind.value,
+            "name": self.name,
+            "description": clipped,
+            "tags": list(self.tags),
+            "source": self.source,
+        }
+
+    def matches_query(self, query: str) -> bool:
+        """Whether *query* occurs in this capability's name or description.
+
+        The catalog had kind and tag filters but no way to ask "do I have
+        anything that lists pods?" — so a resident that could not see its whole
+        catalog had no way to narrow, and rebuilding was the only move left.
+        """
+        needle = query.strip().casefold()
+        if not needle:
+            return True
+        return needle in self.name.casefold() or needle in (self.description or "").casefold()
+
     def to_claude_tool(self) -> dict[str, Any] | None:
         """Project native tool capabilities to Claude/Anthropic tool schema."""
         if self.kind is not CapabilityKind.TOOL:
