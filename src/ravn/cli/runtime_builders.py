@@ -645,13 +645,18 @@ def _build_memory(settings: Settings, llm: Any = None) -> Any:
         adapter = PostgresMemoryAdapter(dsn=dsn)
 
     else:
-        # Custom backend via fully-qualified class path
+        # Custom backend via fully-qualified class path. A bad path is a
+        # configuration error, not a reason to run on: swallowing it left the
+        # resident with memory silently disabled — recording nothing, recalling
+        # nothing — and one warning line to explain months of amnesia.
         try:
             cls = _import_class(backend)
-            adapter = cls(path=settings.memory.path)
         except Exception as exc:
-            logger.warning("Failed to load custom memory backend %r: %s", backend, exc)
-            return None
+            raise ValueError(
+                f"memory.backend {backend!r} is not importable: {type(exc).__name__}: {exc}. "
+                "Use 'none' to run without memory deliberately."
+            ) from exc
+        adapter = cls(path=settings.memory.path)
 
     return adapter
 

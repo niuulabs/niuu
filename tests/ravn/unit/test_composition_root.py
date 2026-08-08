@@ -155,13 +155,18 @@ class TestBuildMemory:
         mem = _build_memory(settings)
         assert mem is None
 
-    def test_custom_backend_failure_returns_none(self, settings: Settings) -> None:
+    def test_custom_backend_failure_raises_instead_of_disabling_memory(
+        self, settings: Settings
+    ) -> None:
+        # Was: returned None with a warning, so a typo'd class path left the
+        # resident recording and recalling nothing while looking healthy.
+        # 'none' is how to ask for no memory on purpose.
         from ravn.cli.commands import _build_memory
 
         settings.memory.backend = "nonexistent.module.Adapter"
 
-        mem = _build_memory(settings)
-        assert mem is None
+        with pytest.raises(ValueError, match="not importable"):
+            _build_memory(settings)
 
     def test_embedding_failure_falls_back_to_fts_only(self, settings: Settings) -> None:
         from ravn.cli.commands import _build_memory

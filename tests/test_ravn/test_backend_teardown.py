@@ -75,3 +75,30 @@ def test_checkpoint_pool_is_bounded_well_below_the_asyncpg_default() -> None:
 
     assert port._pool_min_size == 1
     assert port._pool_max_size == 4
+
+
+@pytest.mark.asyncio
+async def test_an_unimportable_memory_backend_fails_loudly() -> None:
+    """A typo in memory.backend used to disable memory with one warning line.
+
+    The resident then recorded nothing and recalled nothing, indefinitely, and
+    looked healthy while doing it. 'none' is how you ask for that on purpose.
+    """
+    from ravn.cli.runtime_builders import _build_memory
+    from ravn.config import Settings
+
+    settings = Settings()
+    settings.memory.backend = "ravn.adapters.memory.nonexistent.NoSuchAdapter"
+
+    with pytest.raises(ValueError, match="not importable"):
+        _build_memory(settings)
+
+
+def test_none_backend_still_disables_memory_quietly() -> None:
+    from ravn.cli.runtime_builders import _build_memory
+    from ravn.config import Settings
+
+    settings = Settings()
+    settings.memory.backend = "none"
+
+    assert _build_memory(settings) is None
