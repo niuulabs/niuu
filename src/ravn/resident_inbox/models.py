@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -114,6 +114,19 @@ class ResidentInboxRun:
 
 class ResidentInboxBackend(Protocol):
     async def write_event(self, event: Any) -> str: ...
+
+    async def load_seen_signal_keys(self) -> list[str]:
+        """Identities this resident has already ingested, oldest first.
+
+        Optional: a backend that keeps no durable dedupe record returns nothing
+        and the caller falls back to an in-process cache, which is what every
+        resident did before this existed.
+        """
+        return []
+
+    async def record_seen_signal_keys(self, keys: Sequence[str]) -> None:
+        """Persist *keys* as ingested. A no-op for backends without the store."""
+        return None
 
     async def write_directed_message(
         self,
