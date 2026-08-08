@@ -257,9 +257,6 @@ const researchService: IResearchService = {
     return campaignDetails[0]!;
   },
   async deleteCampaign() {},
-  async listArtifacts(slug) {
-    return campaignDetails.find((campaign) => campaign.slug === slug)?.artifacts ?? [];
-  },
   async getArtifact() {
     return null;
   },
@@ -295,9 +292,6 @@ function createResearchService(
       return campaigns[0]!;
     },
     async deleteCampaign() {},
-    async listArtifacts(slug) {
-      return campaigns.find((campaign) => campaign.slug === slug)?.artifacts ?? [];
-    },
     async getArtifact() {
       return null;
     },
@@ -382,9 +376,6 @@ describe('ResearchCenterPage', () => {
         throw new Error('not needed');
       },
       async deleteCampaign() {},
-      async listArtifacts() {
-        return [];
-      },
       async getArtifact() {
         return null;
       },

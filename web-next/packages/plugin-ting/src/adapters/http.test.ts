@@ -1778,34 +1778,6 @@ describe('buildResearchHttpAdapter', () => {
     expect(updated.status).toBe('complete');
   });
 
-  it('lists artifacts and fills artifact defaults when optional fields are absent', async () => {
-    const client = makeClient();
-    client.get.mockResolvedValue([
-      {
-        path: 'notes/scratch.md',
-        title: 'Scratch Notes',
-        updatedAt: '2026-05-10T11:30:00Z',
-      },
-    ]);
-
-    const [artifact] = await buildResearchHttpAdapter(client).listArtifacts(
-      'research/council-human-v1',
-    );
-
-    expect(client.get).toHaveBeenCalledWith(
-      '/research/campaigns/research%2Fcouncil-human-v1/artifacts',
-    );
-    expect(artifact).toEqual({
-      path: 'notes/scratch.md',
-      title: 'Scratch Notes',
-      updatedAt: '2026-05-10T11:30:00Z',
-      kind: undefined,
-      publishState: 'unknown',
-      sourceIds: [],
-      summary: null,
-    });
-  });
-
   it('gets artifact details and returns null when an artifact is missing', async () => {
     const client = makeClient();
     client.get
@@ -1835,7 +1807,6 @@ describe('buildResearchHttpAdapter', () => {
     expect(typeof svc.createCampaign).toBe('function');
     expect(typeof svc.updateCampaign).toBe('function');
     expect(typeof svc.deleteCampaign).toBe('function');
-    expect(typeof svc.listArtifacts).toBe('function');
     expect(typeof svc.getArtifact).toBe('function');
   });
 });

@@ -1334,13 +1334,6 @@ export function buildResearchHttpAdapter(client: ApiClient): IResearchService {
       await client.delete<void>(`/research/campaigns/${encodeURIComponent(slug)}`);
     },
 
-    async listArtifacts(slug: string) {
-      const raw = await client.get<RawCampaignArtifact[]>(
-        `/research/campaigns/${encodeURIComponent(slug)}/artifacts`,
-      );
-      return raw.map(toCampaignArtifact);
-    },
-
     async getArtifact(slug: string, path: string) {
       try {
         const raw = await client.get<RawCampaignArtifactDetail>(
@@ -1382,13 +1375,6 @@ export function buildSpecsHttpAdapter(client: ApiClient): ISpecsService {
 
     async deleteCampaign(slug: string) {
       await client.delete<void>(`/specs/campaigns/${encodeURIComponent(slug)}`);
-    },
-
-    async listArtifacts(slug: string) {
-      const raw = await client.get<RawCampaignArtifact[]>(
-        `/specs/campaigns/${encodeURIComponent(slug)}/artifacts`,
-      );
-      return raw.map(toCampaignArtifact);
     },
 
     async getArtifact(slug: string, path: string) {

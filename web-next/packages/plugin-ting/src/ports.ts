@@ -15,7 +15,6 @@ import type { Workflow } from './domain/workflow';
 import type {
   ResearchCampaign,
   ResearchCampaignDetail,
-  CampaignArtifact,
   CampaignArtifactDetail,
 } from './domain/research';
 import type {
@@ -324,7 +323,6 @@ export interface IResearchService {
   createCampaign(request: CreateResearchCampaignRequest): Promise<ResearchCampaign>;
   updateCampaign(slug: string, request: UpdateResearchCampaignRequest): Promise<ResearchCampaign>;
   deleteCampaign(slug: string): Promise<void>;
-  listArtifacts(slug: string): Promise<CampaignArtifact[]>;
   getArtifact(slug: string, path: string): Promise<CampaignArtifactDetail | null>;
 }
 
@@ -351,7 +349,6 @@ export interface ISpecsService {
   getCampaign(slug: string): Promise<SpecCampaignDetail | null>;
   createCampaign(request: CreateSpecCampaignRequest): Promise<SpecCampaign>;
   deleteCampaign(slug: string): Promise<void>;
-  listArtifacts(slug: string): Promise<CampaignArtifact[]>;
   getArtifact(slug: string, path: string): Promise<CampaignArtifactDetail | null>;
   reviewCampaign(slug: string, request: ReviewSpecCampaignRequest): Promise<SpecCampaign>;
 }

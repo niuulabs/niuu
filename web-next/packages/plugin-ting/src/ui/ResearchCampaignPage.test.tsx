@@ -648,9 +648,6 @@ function makeResearchService(
       return detail;
     },
     async deleteCampaign() {},
-    async listArtifacts() {
-      return detail.artifacts;
-    },
     async getArtifact(_slug, path) {
       return artifacts.get(path) ?? null;
     },
