@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 from datetime import UTC, datetime
@@ -15,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from mimir.adapters.markdown import MarkdownMimirAdapter
-from niuu.domain.mimir import MimirPage
+from niuu.domain.mimir import MimirPage, MimirPageMeta
 from niuu.domain.models import Principal
 from niuu.ports.mimir import MimirPort
 from niuu.utils import import_class, resolve_secret_kwargs
@@ -229,14 +228,11 @@ def create_research_router() -> APIRouter:
             )
             for campaign in campaigns
         ]
-        # Summarised here so the cards need no per-campaign follow-up request.
-        # Concurrently: each summary is a handful of metadata reads, and doing
-        # them in series would put the whole list behind the slowest mount.
-        summaries = await asyncio.gather(
-            *(
-                _campaign_artifact_summary(campaign, settings=request.app.state.settings)
-                for campaign in refreshed
-            )
+        # Summarised here so the cards need no per-campaign follow-up request,
+        # and in one batch so the list is not one round trip per row.
+        summaries = await _campaign_artifact_summaries(
+            refreshed,
+            settings=request.app.state.settings,
         )
         return [
             _to_campaign_response(campaign, artifact_summary=summary)
@@ -874,52 +870,92 @@ async def _load_campaign_artifacts(
     return artifacts, canonical
 
 
-async def _campaign_artifact_summary(
-    campaign: WorkflowCampaign,
+async def _campaign_artifact_summaries(
+    campaigns: list[WorkflowCampaign],
     *,
     settings: Any,
-) -> CampaignArtifactSummaryResponse:
-    """Tally a campaign's artifacts without reading any of them.
+) -> list[CampaignArtifactSummaryResponse]:
+    """Summarise a whole list of campaigns in three reads per mount.
 
     Everything the research cards show is derivable from page metadata: the
-    kind from the path, the cited sources from ``source_ids``. Only the
-    published flag needs a page read, and that is the one manifest.
+    kind comes from the path, the citations from ``source_ids``, and
+    "published" from whether the campaign wrote a manifest. None of it needs a
+    page body, and none of it needs a request per campaign.
 
-    A filesystem mount still opens each page to build that metadata, but it
-    does so in one pass; what this avoids is the per-artifact ``get_page`` the
-    detail route pays, which over HTTP is a round trip and a body each.
+    That last part is the point. Summarising each campaign on its own still
+    cost four calls apiece, and Mímir serves on a single worker — eighteen
+    campaigns meant seventy-odd requests queued behind each other, which took
+    about as long as doing it serially. Listing the three prefixes once per
+    mount and grouping by slug turns the whole list into three reads.
     """
-    adapter = _resolve_campaign_mimir_port(campaign, settings)
-    if adapter is None:
-        return CampaignArtifactSummaryResponse(known=False)
+    if not campaigns:
+        return []
 
-    slug = _artifact_slug(campaign)
-    try:
-        pages = list(await adapter.list_pages(prefix=f"research/campaigns/{slug}/"))
-        # A full path is its own prefix, so this asks "does that page exist"
-        # without reading it — the listing route pays a get_page per candidate.
-        for path in (f"learnings/research/{slug}.md", f"followups/research/{slug}.md"):
-            pages.extend(
-                page for page in await adapter.list_pages(prefix=path) if page.path == path
+    # Campaigns can resolve to different mounts, so group by the adapter each
+    # one lands on and read each mount once.
+    adapters: list[tuple[MimirPort, list[int]]] = []
+    unmounted: set[int] = set()
+    for index, campaign in enumerate(campaigns):
+        adapter = _resolve_campaign_mimir_port(campaign, settings)
+        if adapter is None:
+            unmounted.add(index)
+            continue
+        for known_adapter, indexes in adapters:
+            if known_adapter is adapter or _same_mimir_mount(known_adapter, adapter):
+                indexes.append(index)
+                break
+        else:
+            adapters.append((adapter, [index]))
+
+    summaries = [CampaignArtifactSummaryResponse(known=False) for _ in campaigns]
+    for adapter, indexes in adapters:
+        try:
+            pages = [
+                page
+                for prefix in ("research/campaigns/", "learnings/research/", "followups/research/")
+                for page in await adapter.list_pages(prefix=prefix)
+            ]
+        except Exception:
+            # Same rule as the artifact listing: unknown is not empty.
+            logger.warning(
+                "Mimir could not be read while summarising %d research campaign(s)",
+                len(indexes),
+                exc_info=True,
             )
-        published_paths = await _published_paths(adapter, slug)
-    except Exception:
-        # Same rule as the artifact listing: unknown is not empty.
-        logger.warning(
-            "Mimir could not be read while summarising research campaign %s",
-            campaign.slug,
-            exc_info=True,
-        )
-        return CampaignArtifactSummaryResponse(known=False)
+            continue
+        for index in indexes:
+            summaries[index] = _summarize_campaign_pages(campaigns[index], pages)
+    return summaries
 
-    kinds = [(page.path, _classify_artifact_kind(page.path)) for page in pages]
 
+def _same_mimir_mount(left: MimirPort, right: MimirPort) -> bool:
+    """True when two adapters read the same store, so one listing serves both."""
+    left_url = getattr(left, "_base_url", None)
+    right_url = getattr(right, "_base_url", None)
+    if left_url is not None or right_url is not None:
+        return left_url == right_url
+    left_root = left.filesystem_root()
+    right_root = right.filesystem_root()
+    return left_root is not None and left_root == right_root
+
+
+def _summarize_campaign_pages(
+    campaign: WorkflowCampaign,
+    pages: list[MimirPageMeta],
+) -> CampaignArtifactSummaryResponse:
+    """Tally one campaign's artifacts out of a mount-wide page listing."""
+    slug = _artifact_slug(campaign)
+    prefix = f"research/campaigns/{slug}/"
+    owned = {f"learnings/research/{slug}.md", f"followups/research/{slug}.md"}
+    mine = [page for page in pages if page.path.startswith(prefix) or page.path in owned]
+
+    kinds = [(page.path, _classify_artifact_kind(page.path)) for page in mine]
     source_ids: set[str] = set()
-    for page in pages:
+    for page in mine:
         source_ids.update(page.source_ids or [])
 
     return CampaignArtifactSummaryResponse(
-        artifact_count=len(pages),
+        artifact_count=len(mine),
         source_count=len(source_ids),
         critique_count=sum(1 for _, kind in kinds if kind in {"critique", "challenge", "skeptic"}),
         learning_count=sum(
@@ -928,7 +964,9 @@ async def _campaign_artifact_summary(
         follow_up_count=sum(
             1 for path, kind in kinds if kind == "followup" or path.startswith("followups/")
         ),
-        published=bool(published_paths),
+        # A campaign is published once it has written its manifest; that is
+        # exactly what _published_paths reports, without reading the file.
+        published=any(page.path == f"{prefix}manifest.md" for page in mine),
         known=True,
     )
 
