@@ -626,3 +626,44 @@ async def _record(events: list[SleipnirEvent], event: SleipnirEvent) -> None:
 
 async def _enqueue(tasks: list[AgentTask], task: AgentTask) -> None:
     tasks.append(task)
+
+
+@pytest.mark.asyncio
+async def test_dedupe_set_survives_a_restart(tmp_path) -> None:
+    """A restarted resident must not re-judge history it already ingested.
+
+    A polling source returns everything it still retains on every call, so the
+    only thing separating "new" from "seen an hour ago" is the dedupe set. Held
+    in memory alone it died with the process: one roll of valhalla published
+    229 stale signals in a single poll and buried a genuinely new warning
+    twelfth in a queue that took hours to drain.
+    """
+    inbox = LocalResidentInbox(tmp_path / "inbox")
+    bus = InProcessBus()
+
+    first = EnvironmentSignalRuntime(settings=_settings(), publisher=bus, resident_inbox=inbox)
+    published = await first.collect_once()
+    assert published > 0, "fixture must publish something for the test to mean anything"
+
+    # The identities outlive the process that saw them.
+    assert await inbox.load_seen_signal_keys()
+
+    # A brand-new runtime — nothing carried over in memory.
+    second = EnvironmentSignalRuntime(settings=_settings(), publisher=bus, resident_inbox=inbox)
+    assert second._seen == {}
+    await second._hydrate_seen()
+    assert second._seen, "the durable set should have been restored"
+
+    # Same source, same events, and now nothing is treated as new.
+    assert await second.collect_once() == 0
+
+
+@pytest.mark.asyncio
+async def test_without_an_inbox_dedupe_still_works_in_process(tmp_path) -> None:
+    """The durable store is optional; losing it must not break intake."""
+    bus = InProcessBus()
+    runtime = EnvironmentSignalRuntime(settings=_settings(), publisher=bus)
+
+    await runtime._hydrate_seen()  # no inbox — must be a quiet no-op
+    assert await runtime.collect_once() > 0
+    assert await runtime.collect_once() == 0, "in-process dedupe still applies"

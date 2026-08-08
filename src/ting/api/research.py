@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
@@ -150,6 +151,14 @@ class ResearchCampaignDetailResponse(ResearchCampaignResponse):
     canonical_artifacts: dict[str, str] = Field(
         default_factory=dict,
         serialization_alias="canonicalArtifacts",
+    )
+    #: True when Mímir could not be read in time, so ``artifacts`` is empty
+    #: because the listing failed — not because the campaign produced nothing.
+    #: Without this the two are indistinguishable to a caller, and an empty
+    #: list would quietly assert a finished campaign wrote nothing.
+    artifacts_unavailable: bool = Field(
+        default=False,
+        serialization_alias="artifactsUnavailable",
     )
 
 
@@ -293,30 +302,53 @@ def create_research_router() -> APIRouter:
             volundr_factory=volundr_factory,
             principal=principal,
         )
-        artifacts, canonical = await _load_campaign_artifacts(
-            refreshed,
-            settings=request.app.state.settings,
-        )
-        stage_state = _derive_stage_state(
-            refreshed.workflow_snapshot,
-            artifacts,
-            refreshed.status,
-            refreshed.stage_state,
-        )
-        if stage_state != refreshed.stage_state or (
-            stage_state and stage_state[0].stage_id != refreshed.active_stage_id
-        ):
-            refreshed = await repo.save_campaign(
-                WorkflowCampaign(
-                    **{
-                        **refreshed.__dict__,
-                        "stage_state": stage_state,
-                        "active_stage_id": _active_stage_id(stage_state),
-                        "updated_at": datetime.now(UTC),
-                    }
-                )
+        artifacts_unavailable = False
+        try:
+            artifacts, canonical = await _load_campaign_artifacts(
+                refreshed,
+                settings=request.app.state.settings,
             )
-        return _to_campaign_detail_response(refreshed, artifacts, canonical)
+        except _CampaignArtifactsUnavailableError:
+            artifacts, canonical = [], {}
+            artifacts_unavailable = True
+        # Stage state is derived FROM the artifacts: _derive_stage_state builds
+        # `available_kinds` out of the list and marks every stage it cannot
+        # satisfy as pending. So an empty list does not mean "nothing is done",
+        # it means "nothing is known" — and persisting it rewrites a finished
+        # campaign as though it had never started. 41 of 49 completed campaigns
+        # were sitting at 0/N stages for exactly this reason.
+        #
+        # A timeout is one way to get an empty list; Mimir answering 200 with
+        # nothing is another, and that one reaches here. Guard the condition
+        # rather than the cause: never derive from an empty listing when what
+        # is already stored records real progress.
+        stage_progress_known = any(stage.status == "complete" for stage in refreshed.stage_state)
+        if not artifacts_unavailable and not (not artifacts and stage_progress_known):
+            stage_state = _derive_stage_state(
+                refreshed.workflow_snapshot,
+                artifacts,
+                refreshed.status,
+                refreshed.stage_state,
+            )
+            if stage_state != refreshed.stage_state or (
+                stage_state and stage_state[0].stage_id != refreshed.active_stage_id
+            ):
+                refreshed = await repo.save_campaign(
+                    WorkflowCampaign(
+                        **{
+                            **refreshed.__dict__,
+                            "stage_state": stage_state,
+                            "active_stage_id": _active_stage_id(stage_state),
+                            "updated_at": datetime.now(UTC),
+                        }
+                    )
+                )
+        return _to_campaign_detail_response(
+            refreshed,
+            artifacts,
+            canonical,
+            artifacts_unavailable=artifacts_unavailable,
+        )
 
     @router.patch("/campaigns/{slug}", response_model=ResearchCampaignResponse)
     async def patch_campaign(
@@ -401,10 +433,19 @@ def create_research_router() -> APIRouter:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
         if campaign is None or not _campaign_artifacts_accessible(campaign):
             raise HTTPException(status_code=404, detail="Campaign not found")
-        artifacts, _canonical = await _load_campaign_artifacts(
-            campaign,
-            settings=request.app.state.settings,
-        )
+        try:
+            artifacts, _canonical = await _load_campaign_artifacts(
+                campaign,
+                settings=request.app.state.settings,
+            )
+        except _CampaignArtifactsUnavailableError as exc:
+            # This route's whole payload IS the artifact list, so an empty 200
+            # would be a lie. Say the store is unreachable and let the caller
+            # retry.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Artifact store is not responding; artifacts are unknown",
+            ) from exc
         return artifacts
 
     @router.get("/campaigns/{slug}/artifact", response_model=CampaignArtifactDetailResponse)
@@ -430,7 +471,7 @@ def create_research_router() -> APIRouter:
             page = await adapter.get_page(path)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Artifact not found") from exc
-        published_paths = await _published_paths(adapter, campaign.slug)
+        published_paths = await _published_paths(adapter, _artifact_slug(campaign))
         artifact = _artifact_response(page, published_paths, manifest_known=bool(published_paths))
         return CampaignArtifactDetailResponse(
             path=artifact.path,
@@ -692,6 +733,40 @@ def _campaign_status_from_session(
     return fallback
 
 
+#: Where an A2A launch stores the slug the workflow actually wrote under.
+#: Mirrors ``ting.api.a2a._WORKFLOW_SLUG_KEY``.
+_A2A_WORKFLOW_SLUG_KEY = "a2a_workflow_slug"
+
+
+def _artifact_slug(campaign: WorkflowCampaign) -> str:
+    """The slug a campaign's Mímir pages actually live under.
+
+    An A2A launch uniquifies the campaign slug with the campaign id
+    (``<launch-slug>-<id.hex[:12]>``) so two runs of the same workflow do not
+    collide. The workflow itself never sees that suffix — it writes to
+    ``research/campaigns/<launch-slug>/``. Addressing artifacts by
+    ``campaign.slug`` therefore looks in a directory that has never existed,
+    and every A2A-launched research campaign reported zero artifacts. Since
+    stage state is derived from that listing, they also displayed as unstarted.
+
+    ``a2a.py`` already resolves paths this way; this is the same rule.
+    """
+    return str(campaign.metadata.get(_A2A_WORKFLOW_SLUG_KEY) or campaign.slug).strip()
+
+
+class _CampaignArtifactsUnavailableError(Exception):
+    """Mímir could not be read, so this campaign's artifacts are unknown.
+
+    Distinct from "the campaign has no artifacts", which an empty list would
+    otherwise assert. Callers that can still render something useful catch this
+    and mark the response; callers that cannot let it surface.
+    """
+
+    def __init__(self, slug: str) -> None:
+        super().__init__(f"artifact listing unavailable for campaign {slug!r}")
+        self.slug = slug
+
+
 async def _load_campaign_artifacts(
     campaign: WorkflowCampaign,
     *,
@@ -701,12 +776,32 @@ async def _load_campaign_artifacts(
     if adapter is None:
         return [], {}
 
-    prefix = f"research/campaigns/{campaign.slug}/"
-    pages = await adapter.list_pages(prefix=prefix)
+    slug = _artifact_slug(campaign)
+    prefix = f"research/campaigns/{slug}/"
+    try:
+        pages = await adapter.list_pages(prefix=prefix)
+    except httpx.TimeoutException:
+        # Mímir lists pages by walking the corpus even when given a prefix, so
+        # this call scales with the whole wiki rather than with one campaign's
+        # handful of files. Past 30s it times out, and the exception used to
+        # escape and 500 the entire detail route — which deleted the campaign
+        # from the research page altogether. Four finished campaigns with every
+        # artifact safely written were invisible for that reason alone.
+        #
+        # Degrade to "artifacts could not be read" rather than vanishing. The
+        # caller is told which it is; nothing here claims the campaign is empty.
+        logger.error(
+            "Mimir timed out listing artifacts for research campaign %s "
+            "(prefix=%s); returning the campaign without its artifact list",
+            campaign.slug,
+            prefix,
+            exc_info=True,
+        )
+        raise _CampaignArtifactsUnavailableError(campaign.slug) from None
     page_paths = {page.path for page in pages}
     extra_paths = [
-        f"learnings/research/{campaign.slug}.md",
-        f"followups/research/{campaign.slug}.md",
+        f"learnings/research/{slug}.md",
+        f"followups/research/{slug}.md",
     ]
     extra_pages: list[MimirPage] = []
     for path in extra_paths:
@@ -725,7 +820,7 @@ async def _load_campaign_artifacts(
             continue
     full_pages.extend(extra_pages)
 
-    published_paths = await _published_paths(adapter, campaign.slug)
+    published_paths = await _published_paths(adapter, slug)
     manifest_known = bool(published_paths)
     artifacts = [
         _artifact_response(page, published_paths, manifest_known=manifest_known)
@@ -980,7 +1075,9 @@ def _campaign_owns_path(campaign: WorkflowCampaign, path: str) -> bool:
         )
         return path in declared
 
-    slug = campaign.slug
+    # Same slug the pages were written under, not the uniquified campaign
+    # slug — otherwise every real artifact path fails this check.
+    slug = _artifact_slug(campaign)
     if path.startswith(f"research/campaigns/{slug}/"):
         return True
     return path in {
@@ -1052,10 +1149,13 @@ def _to_campaign_detail_response(
     campaign: WorkflowCampaign,
     artifacts: list[CampaignArtifactResponse],
     canonical: dict[str, str],
+    *,
+    artifacts_unavailable: bool = False,
 ) -> ResearchCampaignDetailResponse:
     base = _to_campaign_response(campaign)
     return ResearchCampaignDetailResponse(
         **base.model_dump(),
         artifacts=artifacts,
         canonical_artifacts=canonical,
+        artifacts_unavailable=artifacts_unavailable,
     )

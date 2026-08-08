@@ -109,6 +109,7 @@ class EnvironmentSignalRuntime:
         output_mode: OutputMode = OutputMode.AMBIENT,
         owns_publisher: bool = False,
         durable_home_enabled: bool = False,
+        resident_inbox: Any | None = None,
     ) -> None:
         self._settings = settings
         self._publisher = publisher
@@ -118,6 +119,9 @@ class EnvironmentSignalRuntime:
         self._output_mode = output_mode
         self._owns_publisher = owns_publisher
         self._durable_home_enabled = durable_home_enabled
+        # Where the dedupe set is kept between restarts. Optional: without
+        # it the set is in-process only, which is the historical behaviour.
+        self._resident_inbox = resident_inbox
         self._environment = build_runtime_environment(settings)
         self._adapters: list[SignalAdapter] = []
         self._seen: OrderedDict[str, None] = OrderedDict()
@@ -132,6 +136,7 @@ class EnvironmentSignalRuntime:
         )
 
     async def start(self) -> None:
+        await self._hydrate_seen()
         if self._owns_publisher and hasattr(self._publisher, "start"):
             await self._publisher.start()  # type: ignore[attr-defined]
         self._adapters = self._build_adapters()
@@ -337,6 +342,10 @@ class EnvironmentSignalRuntime:
                 },
                 description="Environment signals accepted for resident judgment.",
             )
+        # Written only after the batch is fully handled, mirroring the
+        # in-memory set: anything that raised above never reaches here, so the
+        # next poll re-collects it rather than losing it.
+        await self._persist_seen(signals)
         duration_ms = int((perf_counter() - started) * 1000)
         await self._publish_signal_poll_completed(
             adapter,
@@ -544,6 +553,48 @@ class EnvironmentSignalRuntime:
 
     def _is_seen(self, signal: NormalizedSignal) -> bool:
         return self._signal_key(signal) in self._seen
+
+    async def _hydrate_seen(self) -> None:
+        """Load the durable dedupe set so a restart does not re-judge history.
+
+        A polling source returns everything it retains on every call, so the
+        only thing separating "new" from "seen an hour ago" is this set. Held
+        in memory alone it died with the process: one roll of valhalla then
+        published 229 stale signals in a single poll and buried a genuinely new
+        warning behind hours of backlog.
+        """
+        loader = getattr(self._resident_inbox, "load_seen_signal_keys", None)
+        if loader is None:
+            return
+        try:
+            keys = await loader()
+        except Exception:  # noqa: BLE001 — a lost record costs one replay, not startup
+            logger.warning(
+                "environment_signals: could not load the durable dedupe set; "
+                "recent observations may be re-ingested once",
+                exc_info=True,
+            )
+            return
+        cache_size = self._settings.environment.signal_dedupe_cache_size
+        for key in list(keys)[-cache_size:]:
+            self._seen[key] = None
+        if keys:
+            logger.info(
+                "environment_signals: restored %d already-seen observation(s) from the inbox",
+                len(self._seen),
+            )
+
+    async def _persist_seen(self, signals: list[NormalizedSignal]) -> None:
+        recorder = getattr(self._resident_inbox, "record_seen_signal_keys", None)
+        if recorder is None or not signals:
+            return
+        try:
+            await recorder([self._signal_key(signal) for signal in signals])
+        except Exception:  # noqa: BLE001 — bookkeeping must never break intake
+            logger.warning(
+                "environment_signals: could not persist the dedupe set",
+                exc_info=True,
+            )
 
     def _remember(self, signal: NormalizedSignal) -> bool:
         key = self._signal_key(signal)

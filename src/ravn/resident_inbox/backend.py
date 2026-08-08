@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -28,6 +28,7 @@ from .models import (
     ResidentInboxStatus,
     ResidentInboxTriage,
 )
+from .seen import DEFAULT_SEEN_CAPACITY, SEEN_PREFIX, SeenSignalKeys
 from .serialization import (
     _signal_filename,
     _signal_from_dict,
@@ -88,6 +89,8 @@ class LocalResidentInbox(ResidentInboxBackend):
         novelty_min_observations: int = 20,
         max_invalid_attempts: int = 3,
         pending_slot_warn_threshold: int = 200,
+        seen_prefix: str = SEEN_PREFIX,
+        seen_capacity: int = DEFAULT_SEEN_CAPACITY,
     ) -> None:
         self._root = Path(root).expanduser().resolve()
         self._signal_prefix = signal_prefix.strip("/").strip() or _INBOX_SIGNAL_PREFIX
@@ -103,6 +106,7 @@ class LocalResidentInbox(ResidentInboxBackend):
         self._max_invalid_attempts = max(1, int(max_invalid_attempts))
         self._pending_slot_warn_threshold = max(1, int(pending_slot_warn_threshold))
         self._archive = RawSignalArchive(self._root, prefix=archive_prefix)
+        self._seen = SeenSignalKeys(self._root, prefix=seen_prefix, capacity=seen_capacity)
         self._last_retention_sweep: float | None = None
         self._warned_pending_slots = False
         self._lock = asyncio.Lock()
@@ -111,6 +115,14 @@ class LocalResidentInbox(ResidentInboxBackend):
     def archive(self) -> RawSignalArchive:
         """The append-only record of every observation this inbox received."""
         return self._archive
+
+    # -- durable dedupe -------------------------------------------------
+
+    async def load_seen_signal_keys(self) -> list[str]:
+        return await asyncio.to_thread(self._seen.load)
+
+    async def record_seen_signal_keys(self, keys: Sequence[str]) -> None:
+        await asyncio.to_thread(self._seen.record, list(keys))
 
     # -- intake ---------------------------------------------------------
 
