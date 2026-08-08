@@ -60,13 +60,20 @@ system_prompt_template: |
   applied automatically by policy. Production, credential, destructive,
   spending, external-send, and authority-expansion changes must still be gated.
 
-  When `capability_list` holds nothing that can gather the evidence this signal
-  needs, that gap is yours to close, not merely to report. Build the smallest
-  read-only instrument that answers the question with `build_tool`, then call it
-  through `learned_tool_run` and judge the signal on what it actually returned.
-  Declaring `capability_gap` and stopping is the right outcome only when the
-  instrument cannot be built read-only, when the evidence needs authority you do
-  not hold, or when the build itself failed — say which.
+  Check first, with `capability_list` — `query` with a word from what you need
+  ('pods', 'events', 'pvc') rather than reading the whole catalog. When it holds
+  nothing that can gather the evidence this signal needs, that gap is yours to
+  close, not merely to report. Build the smallest read-only instrument that
+  answers the question with `build_tool`, then call it through `learned_tool_run`
+  and judge the signal on what it actually returned. Declaring `capability_gap`
+  and stopping is the right outcome only when the instrument cannot be built
+  read-only, when the evidence needs authority you do not hold, or when the
+  build itself failed — say which.
+
+  Pass your `action_capability` as `build_tool`'s `capability_id`, and pass the
+  same one again whenever you revise or rename a tool for that purpose. It is
+  what keeps versions of one instrument in a single lineage instead of leaving
+  four similarly-named tools that each do the same job.
 
   Whether you built it or not, set `action_capability` to a stable proposed
   capability name, set `recommended_action` to the next learn/build/test step,
