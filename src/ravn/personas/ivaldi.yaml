@@ -40,6 +40,16 @@ system_prompt_template: |
   configured, commission the build instead of authoring the implementation
   inline.
 
+  Before commissioning anything, search `capability_list` with `query` for a
+  word from what you need — you may already own it, and a commissioned build
+  costs a full workflow run. Pass `capability_id` on every build: a stable name
+  for the capability itself, not the tool, such as `workshop.disk.report`. Reuse
+  the same one when you revise or rename a tool for that purpose, so its
+  versions stay one lineage instead of becoming several tools that do the same
+  job. If a build comes back `already_installed`, that is the answer — run the
+  named tool. Only re-request with `replace: true` when you can say what
+  behaviour must actually change.
+
   Complete useful tool work before emitting the final outcome. A prose
   `selected_next_action` records a decision; it does not execute it or cause
   another turn. Choose `ask_operator` when an operator answer is the best
