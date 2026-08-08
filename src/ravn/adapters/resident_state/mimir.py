@@ -17,6 +17,11 @@ from ravn.domain.resident_continuation import (
     ResidentWorkingStateRecord,
 )
 from ravn.domain.resident_state import ResidentStatePort
+from ravn.memory_telemetry import (
+    RESULT_HIT,
+    record_resident_state_operation,
+    result_for,
+)
 from ravn.ports.mimir import MimirPort
 from ravn.resident_continuation import (
     _A2A_TASKS_PATH,
@@ -334,6 +339,44 @@ class LocalResidentState(LocalResidentMemory, ResidentStatePort):
 
     async def available(self) -> bool:
         return True
+
+    # ------------------------------------------------------------------
+    # Observed operations
+    #
+    # GBrain and Letheo extend this class and delegate through ``super()``,
+    # so instrumenting here covers all three adapters. ``type(self).__name__``
+    # keeps them distinguishable on the metric.
+    # ------------------------------------------------------------------
+
+    async def recall(self, mandate: str, *, limit: int = 5) -> list[ResidentMemoryEntry]:
+        entries = await super().recall(mandate, limit=limit)
+        record_resident_state_operation(
+            operation="recall",
+            record_type="continuation",
+            adapter=type(self).__name__,
+            result=result_for(len(entries)),
+        )
+        return entries
+
+    async def read_working_state(self, resident_id: str) -> ResidentMemoryEntry | None:
+        entry = await super().read_working_state(resident_id)
+        record_resident_state_operation(
+            operation="read",
+            record_type="working_state",
+            adapter=type(self).__name__,
+            result=result_for(1 if entry is not None else 0),
+        )
+        return entry
+
+    async def write_turn(self, record: ResidentTurnRecord) -> str:
+        ref = await super().write_turn(record)
+        record_resident_state_operation(
+            operation="write",
+            record_type="turn",
+            adapter=type(self).__name__,
+            result=RESULT_HIT,
+        )
+        return ref
 
     async def list_refs(self, prefix: str = "") -> list[str]:
         root = self._root.resolve()

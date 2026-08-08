@@ -480,6 +480,25 @@ class MemoryConfig(BaseModel):
         default=14.0,
         description="Half-life in days for the exponential recency decay applied to episodes.",
     )
+    recency_floor: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum recency multiplier, so an old-but-relevant episode still ranks. "
+            "Recency multiplies into the combined score, so without a floor the decay "
+            "acts as an age filter rather than a ranking signal: at the default "
+            "half-life nothing older than ~24 days can clear prefetch_min_relevance. "
+            "0.0 restores the previous unbounded decay."
+        ),
+    )
+    corpus_stats_interval_seconds: float = Field(
+        default=300.0,
+        description=(
+            "Minimum seconds between corpus-health gauge samples (episode count, "
+            "embedding and search-index coverage). 0 disables sampling."
+        ),
+    )
     max_retries: int = Field(
         default=15,
         description="Maximum retry attempts on SQLite 'database is locked' errors.",

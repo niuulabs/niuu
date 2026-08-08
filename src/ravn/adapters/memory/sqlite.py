@@ -17,20 +17,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import sqlite3
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 
 from niuu.adapters.search.sqlite import SqliteSearchAdapter
 from ravn.adapters.memory.scoring import (
     _AVG_EPISODE_CHARS,
     _CHARS_PER_TOKEN,
-    _OUTCOME_WEIGHTS,
-    _recency_score,
     build_prefetch_context,
     build_session_summaries,
+    combined_score,
+    score_and_admit,
 )
 from ravn.domain.models import (
     Episode,
@@ -39,12 +41,27 @@ from ravn.domain.models import (
     SessionSummary,
     SharedContext,
 )
+from ravn.memory_telemetry import (
+    RESULT_EMPTY,
+    RESULT_ERROR,
+    RESULT_HIT,
+    record_corpus,
+    record_funnel,
+    record_injected_chars,
+    record_memory_operation,
+    result_for,
+)
 from ravn.ports.embedding import EmbeddingPort
 from ravn.ports.memory import MemoryPort
 
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
+
+# Identifies this backend on every metric it emits.
+_BACKEND = "sqlite"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS episodes (
@@ -112,16 +129,10 @@ def _row_to_episode(row: sqlite3.Row) -> Episode:
     )
 
 
-def _combined_score(
-    relevance: float,
-    timestamp: datetime,
-    outcome: Outcome,
-    half_life_days: float,
-) -> float:
-    """Combine normalised relevance, recency decay, and outcome weight into [0, 1]."""
-    recency = _recency_score(timestamp, half_life_days)
-    weight = _OUTCOME_WEIGHTS.get(outcome, 0.5)
-    return relevance * recency * weight
+# The scoring rule now lives in ``scoring`` alongside the admission loop that
+# applies it, so both adapters share one definition. Re-exported under the
+# historical name for existing importers.
+_combined_score = combined_score
 
 
 # ---------------------------------------------------------------------------
@@ -154,10 +165,12 @@ class SqliteMemoryAdapter(MemoryPort):
         prefetch_limit: int = 5,
         prefetch_min_relevance: float = 0.3,
         recency_half_life_days: float = 14.0,
+        recency_floor: float = 0.5,
         session_search_truncate_chars: int = 100_000,
         embedding_port: EmbeddingPort | None = None,
         rrf_k: int = 60,
         semantic_candidate_limit: int = 50,
+        corpus_stats_interval_seconds: float = 300.0,
     ) -> None:
         self._path = Path(path).expanduser()
         self._max_retries = max_retries
@@ -168,8 +181,11 @@ class SqliteMemoryAdapter(MemoryPort):
         self._prefetch_limit = prefetch_limit
         self._prefetch_min_relevance = prefetch_min_relevance
         self._recency_half_life_days = recency_half_life_days
+        self._recency_floor = recency_floor
         self._session_search_truncate_chars = session_search_truncate_chars
         self._embedding_port = embedding_port
+        self._corpus_stats_interval_seconds = corpus_stats_interval_seconds
+        self._last_corpus_sample_at: float | None = None
         self._write_count = 0
         self._shared_context: SharedContext | None = None
 
@@ -198,20 +214,37 @@ class SqliteMemoryAdapter(MemoryPort):
         await asyncio.to_thread(self._init_db)
 
     async def record_episode(self, episode: Episode) -> None:
-        await asyncio.to_thread(self._record_episode_sync, episode)
-        # Index the episode in the search adapter for future retrieval.
-        content = f"{episode.task_description} {episode.summary} {' '.join(episode.tags)}"
-        metadata = {
-            "session_id": episode.session_id,
-            "timestamp": episode.timestamp.isoformat(),
-            "outcome": episode.outcome.value,
-        }
-        await self._search.index(
-            episode.episode_id,
-            content,
-            metadata,
-            embedding=episode.embedding,
+        started = monotonic()
+        try:
+            await asyncio.to_thread(self._record_episode_sync, episode)
+            # Index the episode in the search adapter for future retrieval.
+            content = f"{episode.task_description} {episode.summary} {' '.join(episode.tags)}"
+            metadata = {
+                "session_id": episode.session_id,
+                "timestamp": episode.timestamp.isoformat(),
+                "outcome": episode.outcome.value,
+            }
+            await self._search.index(
+                episode.episode_id,
+                content,
+                metadata,
+                embedding=episode.embedding,
+            )
+        except Exception:
+            record_memory_operation(
+                operation="record",
+                backend=_BACKEND,
+                result=RESULT_ERROR,
+                seconds=monotonic() - started,
+            )
+            raise
+        record_memory_operation(
+            operation="record",
+            backend=_BACKEND,
+            result=RESULT_HIT,
+            seconds=monotonic() - started,
         )
+        await self._maybe_emit_corpus_gauges()
 
     async def query_episodes(
         self,
@@ -220,46 +253,108 @@ class SqliteMemoryAdapter(MemoryPort):
         limit: int = 5,
         min_relevance: float = 0.3,
     ) -> list[EpisodeMatch]:
-        # Get raw search results from the shared search adapter.
-        search_results = await self._search.search(query, limit=limit * 3)
+        started = monotonic()
+        try:
+            # Get raw search results from the shared search adapter.
+            search_results = await self._search.search(query, limit=limit * 3)
 
-        if not search_results:
-            return []
+            if not search_results:
+                record_funnel(
+                    backend=_BACKEND,
+                    candidates=0,
+                    admitted=0,
+                    scores=[],
+                    top_candidate_age_days=None,
+                )
+                record_memory_operation(
+                    operation="query",
+                    backend=_BACKEND,
+                    result=RESULT_EMPTY,
+                    seconds=monotonic() - started,
+                )
+                return []
 
-        # Load full episode objects from the episodes table by ID.
-        episode_ids = [r.id for r in search_results]
-        episodes_by_id = await asyncio.to_thread(self._load_episodes_by_ids_sync, episode_ids)
+            # Load full episode objects from the episodes table by ID.
+            episode_ids = [r.id for r in search_results]
+            episodes_by_id = await asyncio.to_thread(self._load_episodes_by_ids_sync, episode_ids)
 
-        # Apply episode-specific scoring: recency decay × outcome weight.
-        matches: list[EpisodeMatch] = []
-        for result in search_results:
-            ep = episodes_by_id.get(result.id)
-            if ep is None:
-                continue
-            score = _combined_score(
-                result.score,
-                ep.timestamp,
-                ep.outcome,
-                self._recency_half_life_days,
+            # Apply episode-specific scoring: recency decay × outcome weight.
+            matches = score_and_admit(
+                search_results,
+                episodes_by_id,
+                half_life_days=self._recency_half_life_days,
+                min_relevance=min_relevance,
+                limit=limit,
+                backend=_BACKEND,
+                recency_floor=self._recency_floor,
             )
-            if score >= min_relevance:
-                matches.append(EpisodeMatch(episode=ep, relevance=score))
-
-        matches.sort(key=lambda m: m.relevance, reverse=True)
-        return matches[:limit]
+        except Exception:
+            record_memory_operation(
+                operation="query",
+                backend=_BACKEND,
+                result=RESULT_ERROR,
+                seconds=monotonic() - started,
+            )
+            raise
+        record_memory_operation(
+            operation="query",
+            backend=_BACKEND,
+            result=result_for(len(matches)),
+            seconds=monotonic() - started,
+        )
+        return matches
 
     async def prefetch(self, context: str) -> str:
         if self._prefetch_limit == 0:
             return ""
+        started = monotonic()
         matches = await self.query_episodes(
             context,
             limit=self._prefetch_limit,
             min_relevance=self._prefetch_min_relevance,
         )
-        if not matches:
-            return ""
-        budget_chars = self._prefetch_budget * _CHARS_PER_TOKEN
-        return build_prefetch_context(matches, budget_chars)
+        block = ""
+        if matches:
+            budget_chars = self._prefetch_budget * _CHARS_PER_TOKEN
+            block = build_prefetch_context(matches, budget_chars)
+        record_injected_chars(backend=_BACKEND, chars=len(block))
+        record_memory_operation(
+            operation="prefetch",
+            backend=_BACKEND,
+            result=result_for(len(block)),
+            seconds=monotonic() - started,
+        )
+        return block
+
+    async def _maybe_emit_corpus_gauges(self) -> None:
+        """Sample corpus-health gauges at most once per configured interval.
+
+        Coverage ratios only change slowly, so sampling on write keeps them
+        current without a dedicated scheduler or a per-call table scan.
+        """
+        if self._corpus_stats_interval_seconds <= 0:
+            return
+        now = monotonic()
+        if (
+            self._last_corpus_sample_at is not None
+            and now - self._last_corpus_sample_at < self._corpus_stats_interval_seconds
+        ):
+            return
+        self._last_corpus_sample_at = now
+        try:
+            episodes, embedded, indexed = await asyncio.to_thread(self._corpus_stats_sync)
+        except sqlite3.Error:
+            logger.warning("Corpus gauge sampling failed.", exc_info=True)
+            return
+        if episodes == 0:
+            record_corpus(backend=_BACKEND, episodes=0, embedding_coverage=0.0, index_coverage=0.0)
+            return
+        record_corpus(
+            backend=_BACKEND,
+            episodes=episodes,
+            embedding_coverage=embedded / episodes,
+            index_coverage=min(1.0, indexed / episodes),
+        )
 
     async def count_episodes(self) -> int:
         """Return the total number of stored episodes."""
@@ -391,6 +486,33 @@ class SqliteMemoryAdapter(MemoryPort):
             return {row["episode_id"]: _row_to_episode(row) for row in rows}
 
         return self._with_retry(_do)
+
+    def _corpus_stats_sync(self) -> tuple[int, int, int]:
+        """Return ``(episodes, episodes_with_embedding, indexed_documents)``.
+
+        ``indexed_documents`` counts rows the search adapter owns; a shortfall
+        against ``episodes`` means part of the corpus is unreachable by any
+        query regardless of how it is scored.
+        """
+
+        def _do_stats() -> tuple[int, int, int]:
+            conn = self._connect()
+            try:
+                row = conn.execute("SELECT COUNT(*), COUNT(embedding) FROM episodes").fetchone()
+                episodes = int(row[0]) if row else 0
+                embedded = int(row[1]) if row else 0
+                try:
+                    index_row = conn.execute("SELECT COUNT(*) FROM search_index").fetchone()
+                    indexed = int(index_row[0]) if index_row else 0
+                except sqlite3.OperationalError:
+                    indexed = 0
+                return episodes, embedded, indexed
+            except sqlite3.OperationalError:
+                return 0, 0, 0
+            finally:
+                conn.close()
+
+        return self._with_retry(_do_stats)
 
     def _count_episodes_sync(self) -> int:
         def _do_count() -> int:
