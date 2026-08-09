@@ -68,8 +68,10 @@ class HttpMimirAdapter(MimirPort):
         base_url: str,
         auth: MimirAuth | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
+        environment_id: str = "",
     ) -> None:
         self._base_url = base_url.rstrip("/")
+        self._environment_id = environment_id
         self._auth = auth
         self._timeout = timeout
         self._client: httpx.AsyncClient | None = None
@@ -158,6 +160,7 @@ class HttpMimirAdapter(MimirPort):
                 operation=operation,
                 result=RESULT_ERROR,
                 seconds=monotonic() - started,
+                environment_id=self._environment_id,
             )
             raise
         result = RESULT_ERROR if response.is_error else RESULT_HIT
@@ -165,6 +168,7 @@ class HttpMimirAdapter(MimirPort):
             operation=operation,
             result=result,
             seconds=monotonic() - started,
+            environment_id=self._environment_id,
         )
         return response
 
@@ -208,6 +212,7 @@ class HttpMimirAdapter(MimirPort):
             operation="query",
             result=result_for(len(pages)),
             results_returned=len(pages),
+            environment_id=self._environment_id,
         )
         return MimirQueryResult(question=question, answer="", sources=pages)
 
@@ -220,6 +225,7 @@ class HttpMimirAdapter(MimirPort):
             operation="search",
             result=result_for(len(pages)),
             results_returned=len(pages),
+            environment_id=self._environment_id,
         )
         return pages
 

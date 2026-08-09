@@ -10,7 +10,10 @@ def _adapter_name(candidate: ResidentStatePort) -> str:
     return type(candidate).__name__
 
 
-async def select_resident_state(*candidates: ResidentStatePort) -> ResidentStatePort:
+async def select_resident_state(
+    *candidates: ResidentStatePort,
+    environment_id: str = "",
+) -> ResidentStatePort:
     """Return the first candidate whose backend is available, in preference order.
 
     Lets composition prefer GBrain and fall back to a local/Mimir store when
@@ -32,6 +35,7 @@ async def select_resident_state(*candidates: ResidentStatePort) -> ResidentState
                 preferred=preferred,
                 selected=_adapter_name(candidate),
                 reason="preferred_unavailable",
+                environment_id=environment_id,
             )
         return candidate
     raise RuntimeError("no resident-state adapter is available")

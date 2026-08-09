@@ -171,6 +171,7 @@ class SqliteMemoryAdapter(MemoryPort):
         rrf_k: int = 60,
         semantic_candidate_limit: int = 50,
         corpus_stats_interval_seconds: float = 300.0,
+        environment_id: str = "",
     ) -> None:
         self._path = Path(path).expanduser()
         self._max_retries = max_retries
@@ -182,6 +183,7 @@ class SqliteMemoryAdapter(MemoryPort):
         self._prefetch_min_relevance = prefetch_min_relevance
         self._recency_half_life_days = recency_half_life_days
         self._recency_floor = recency_floor
+        self._environment_id = environment_id
         self._session_search_truncate_chars = session_search_truncate_chars
         self._embedding_port = embedding_port
         self._corpus_stats_interval_seconds = corpus_stats_interval_seconds
@@ -236,6 +238,7 @@ class SqliteMemoryAdapter(MemoryPort):
                 backend=_BACKEND,
                 result=RESULT_ERROR,
                 seconds=monotonic() - started,
+                environment_id=self._environment_id,
             )
             raise
         record_memory_operation(
@@ -243,6 +246,7 @@ class SqliteMemoryAdapter(MemoryPort):
             backend=_BACKEND,
             result=RESULT_HIT,
             seconds=monotonic() - started,
+            environment_id=self._environment_id,
         )
         await self._maybe_emit_corpus_gauges()
 
@@ -265,6 +269,7 @@ class SqliteMemoryAdapter(MemoryPort):
                     admitted=0,
                     scores=[],
                     top_candidate_age_days=None,
+                    environment_id=self._environment_id,
                 )
                 record_memory_operation(
                     operation="query",
@@ -287,6 +292,7 @@ class SqliteMemoryAdapter(MemoryPort):
                 limit=limit,
                 backend=_BACKEND,
                 recency_floor=self._recency_floor,
+                environment_id=self._environment_id,
             )
         except Exception:
             record_memory_operation(
@@ -294,6 +300,7 @@ class SqliteMemoryAdapter(MemoryPort):
                 backend=_BACKEND,
                 result=RESULT_ERROR,
                 seconds=monotonic() - started,
+                environment_id=self._environment_id,
             )
             raise
         record_memory_operation(
@@ -301,6 +308,7 @@ class SqliteMemoryAdapter(MemoryPort):
             backend=_BACKEND,
             result=result_for(len(matches)),
             seconds=monotonic() - started,
+            environment_id=self._environment_id,
         )
         return matches
 
@@ -317,12 +325,15 @@ class SqliteMemoryAdapter(MemoryPort):
         if matches:
             budget_chars = self._prefetch_budget * _CHARS_PER_TOKEN
             block = build_prefetch_context(matches, budget_chars)
-        record_injected_chars(backend=_BACKEND, chars=len(block))
+        record_injected_chars(
+            backend=_BACKEND, chars=len(block), environment_id=self._environment_id
+        )
         record_memory_operation(
             operation="prefetch",
             backend=_BACKEND,
             result=result_for(len(block)),
             seconds=monotonic() - started,
+            environment_id=self._environment_id,
         )
         return block
 
@@ -354,6 +365,7 @@ class SqliteMemoryAdapter(MemoryPort):
             episodes=episodes,
             embedding_coverage=embedded / episodes,
             index_coverage=min(1.0, indexed / episodes),
+            environment_id=self._environment_id,
         )
 
     async def count_episodes(self) -> int:

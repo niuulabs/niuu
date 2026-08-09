@@ -146,6 +146,7 @@ class PostgresMemoryAdapter(MemoryPort):
         rrf_k: int = 60,
         semantic_candidate_limit: int = 200,
         search_port: SearchPort | None = None,
+        environment_id: str = "",
     ) -> None:
         resolved_dsn = os.environ.get(dsn_env, dsn) if dsn_env else dsn
         if not resolved_dsn:
@@ -161,6 +162,7 @@ class PostgresMemoryAdapter(MemoryPort):
         self._prefetch_min_relevance = prefetch_min_relevance
         self._recency_half_life_days = recency_half_life_days
         self._recency_floor = recency_floor
+        self._environment_id = environment_id
         self._session_search_truncate_chars = session_search_truncate_chars
         self._pool: asyncpg.Pool | None = None
         self._shared_context: SharedContext | None = None
@@ -219,6 +221,7 @@ class PostgresMemoryAdapter(MemoryPort):
                 backend=_BACKEND,
                 result=RESULT_ERROR,
                 seconds=monotonic() - started,
+                environment_id=self._environment_id,
             )
             raise
         record_memory_operation(
@@ -226,6 +229,7 @@ class PostgresMemoryAdapter(MemoryPort):
             backend=_BACKEND,
             result=RESULT_HIT,
             seconds=monotonic() - started,
+            environment_id=self._environment_id,
         )
 
     async def _record_episode(self, episode: Episode) -> None:
@@ -302,12 +306,14 @@ class PostgresMemoryAdapter(MemoryPort):
                 admitted=0,
                 scores=[],
                 top_candidate_age_days=None,
+                environment_id=self._environment_id,
             )
             record_memory_operation(
                 operation="query",
                 backend=_BACKEND,
                 result=RESULT_EMPTY,
                 seconds=monotonic() - started,
+                environment_id=self._environment_id,
             )
             return []
 
@@ -337,12 +343,14 @@ class PostgresMemoryAdapter(MemoryPort):
             limit=limit,
             backend=_BACKEND,
             recency_floor=self._recency_floor,
+            environment_id=self._environment_id,
         )
         record_memory_operation(
             operation="query",
             backend=_BACKEND,
             result=result_for(len(matches)),
             seconds=monotonic() - started,
+            environment_id=self._environment_id,
         )
         return matches
 
@@ -359,12 +367,15 @@ class PostgresMemoryAdapter(MemoryPort):
         if matches:
             budget_chars = self._prefetch_budget * _CHARS_PER_TOKEN
             block = build_prefetch_context(matches, budget_chars)
-        record_injected_chars(backend=_BACKEND, chars=len(block))
+        record_injected_chars(
+            backend=_BACKEND, chars=len(block), environment_id=self._environment_id
+        )
         record_memory_operation(
             operation="prefetch",
             backend=_BACKEND,
             result=result_for(len(block)),
             seconds=monotonic() - started,
+            environment_id=self._environment_id,
         )
         return block
 

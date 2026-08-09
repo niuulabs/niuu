@@ -61,6 +61,7 @@ ATTR_RECORD_TYPE = "ravn.resident_state.record_type"
 ATTR_REASON = "ravn.resident_state.reason"
 ATTR_MIMIR_OPERATION = "ravn.mimir.operation"
 ATTR_COMPONENT = "ravn.runtime.component"
+ATTR_ENVIRONMENT = "ravn.environment.id"
 
 # --- result values --------------------------------------------------------
 
@@ -74,6 +75,20 @@ def result_for(count: int) -> str:
     return RESULT_HIT if count > 0 else RESULT_EMPTY
 
 
+def _identity(component: str, environment_id: str) -> dict[str, str]:
+    """Attributes identifying which resident produced a sample.
+
+    The dashboard's environment picker filters on ``ravn.environment.id``, the
+    same key ``drive_loop`` stamps on its gauges. Without it these metrics
+    cannot be separated when a Mimir tenant holds more than one resident.
+    Omitted entirely when unset, so a series never carries an empty label.
+    """
+    attributes = {ATTR_COMPONENT: component}
+    if environment_id:
+        attributes[ATTR_ENVIRONMENT] = environment_id
+    return attributes
+
+
 def record_memory_operation(
     *,
     operation: str,
@@ -81,6 +96,7 @@ def record_memory_operation(
     result: str,
     seconds: float | None = None,
     component: str = "resident",
+    environment_id: str = "",
 ) -> None:
     """Emit the outcome (and optionally the latency) of one memory operation."""
     telemetry = get_observability()
@@ -88,7 +104,7 @@ def record_memory_operation(
         ATTR_OPERATION: operation,
         ATTR_BACKEND: backend,
         ATTR_RESULT: result,
-        ATTR_COMPONENT: component,
+        **_identity(component, environment_id),
     }
     telemetry.count(
         OPERATIONS,
@@ -112,6 +128,7 @@ def record_funnel(
     scores: list[float],
     top_candidate_age_days: float | None,
     component: str = "resident",
+    environment_id: str = "",
 ) -> None:
     """Emit the retrieval funnel for one query.
 
@@ -119,7 +136,7 @@ def record_funnel(
     the histogram shows a sub-threshold cluster instead of silence.
     """
     telemetry = get_observability()
-    attributes = {ATTR_BACKEND: backend, ATTR_COMPONENT: component}
+    attributes = {ATTR_BACKEND: backend, **_identity(component, environment_id)}
     telemetry.count(
         CANDIDATES,
         candidates,
@@ -149,12 +166,18 @@ def record_funnel(
         )
 
 
-def record_injected_chars(*, backend: str, chars: int, component: str = "resident") -> None:
+def record_injected_chars(
+    *,
+    backend: str,
+    chars: int,
+    component: str = "resident",
+    environment_id: str = "",
+) -> None:
     """Emit how much context prefetch actually injected into the prompt."""
     get_observability().record(
         INJECTED_CHARS,
         chars,
-        attributes={ATTR_BACKEND: backend, ATTR_COMPONENT: component},
+        attributes={ATTR_BACKEND: backend, **_identity(component, environment_id)},
         description="Characters of past context injected by prefetch.",
     )
 
@@ -166,6 +189,7 @@ def record_corpus(
     embedding_coverage: float,
     index_coverage: float,
     component: str = "resident",
+    environment_id: str = "",
 ) -> None:
     """Emit corpus-health gauges.
 
@@ -173,7 +197,7 @@ def record_corpus(
     embeddings never generated, or episodes missing from the search index.
     """
     telemetry = get_observability()
-    attributes = {ATTR_BACKEND: backend, ATTR_COMPONENT: component}
+    attributes = {ATTR_BACKEND: backend, **_identity(component, environment_id)}
     telemetry.gauge(
         CORPUS_EPISODES,
         episodes,
@@ -201,6 +225,7 @@ def record_resident_state_operation(
     adapter: str,
     result: str,
     component: str = "resident",
+    environment_id: str = "",
 ) -> None:
     """Emit one resident-state read or write."""
     get_observability().count(
@@ -210,7 +235,7 @@ def record_resident_state_operation(
             ATTR_RECORD_TYPE: record_type,
             ATTR_ADAPTER: adapter,
             ATTR_RESULT: result,
-            ATTR_COMPONENT: component,
+            **_identity(component, environment_id),
         },
         description="Resident-state operations by record type and outcome.",
     )
@@ -222,6 +247,7 @@ def record_resident_state_fallback(
     selected: str,
     reason: str,
     component: str = "resident",
+    environment_id: str = "",
 ) -> None:
     """Emit an adapter fallback.
 
@@ -234,7 +260,7 @@ def record_resident_state_fallback(
             "ravn.resident_state.preferred": preferred,
             ATTR_ADAPTER: selected,
             ATTR_REASON: reason,
-            ATTR_COMPONENT: component,
+            **_identity(component, environment_id),
         },
         description="Resident-state adapter fallbacks away from the preferred store.",
     )
@@ -247,13 +273,14 @@ def record_mimir_operation(
     seconds: float | None = None,
     results_returned: int | None = None,
     component: str = "resident",
+    environment_id: str = "",
 ) -> None:
     """Emit one Mímir call made by the agent."""
     telemetry = get_observability()
     attributes = {
         ATTR_MIMIR_OPERATION: operation,
         ATTR_RESULT: result,
-        ATTR_COMPONENT: component,
+        **_identity(component, environment_id),
     }
     telemetry.count(
         MIMIR_OPERATIONS,
@@ -281,6 +308,7 @@ __all__ = [
     "ATTR_ADAPTER",
     "ATTR_BACKEND",
     "ATTR_COMPONENT",
+    "ATTR_ENVIRONMENT",
     "ATTR_MIMIR_OPERATION",
     "ATTR_OPERATION",
     "ATTR_REASON",

@@ -146,4 +146,8 @@ data:
     environment:
       id: {{ .Values.resident.environmentId | quote }}
       resident_name: {{ $residentName | quote }}
+    {{- with .Values.resident.observability }}
+    observability:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
 {{- end }}

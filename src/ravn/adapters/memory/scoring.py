@@ -97,6 +97,7 @@ def score_and_admit(
     limit: int,
     backend: str,
     recency_floor: float = 0.0,
+    environment_id: str = "",
 ) -> list[EpisodeMatch]:
     """Score search-port candidates and keep those clearing *min_relevance*.
 
@@ -132,6 +133,7 @@ def score_and_admit(
         admitted=len(matches),
         scores=scores,
         top_candidate_age_days=_age_days(best[1].timestamp) if best else None,
+        environment_id=environment_id,
     )
 
     matches.sort(key=lambda m: m.relevance, reverse=True)
