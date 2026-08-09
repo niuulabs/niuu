@@ -116,3 +116,52 @@ class TestOpenAIEmbeddingAdapter:
         adapter = OpenAIEmbeddingAdapter(api_key="test")
         result = await adapter.embed_batch([])
         assert result == []
+
+
+class TestNoAuthSelfHostedServer:
+    """Self-hosted OpenAI-compatible servers take no API key.
+
+    vLLM, TGI and Ollama serve /v1/embeddings unauthenticated. Sending
+    ``Authorization: Bearer`` with an empty value is not ignored — httpx
+    rejects the bare ``"Bearer "`` with LocalProtocolError, so every call
+    failed against exactly the deployments most likely to run without
+    credentials. The header must be omitted, not emptied.
+    """
+
+    @respx.mock
+    async def test_no_authorization_header_when_key_is_absent(self) -> None:
+        route = respx.post("http://vllm.test/v1/embeddings").mock(
+            return_value=Response(200, json=_make_response([[0.1, 0.2, 0.3]]))
+        )
+        adapter = OpenAIEmbeddingAdapter(api_key="", base_url="http://vllm.test/v1")
+
+        vector = await adapter.embed("unhealthy pod in kube-system")
+
+        assert vector == [0.1, 0.2, 0.3]
+        assert "authorization" not in {k.lower() for k in route.calls[0].request.headers}
+        await adapter.close()
+
+    @respx.mock
+    async def test_authorization_header_is_sent_when_a_key_is_configured(self) -> None:
+        route = respx.post("http://api.test/v1/embeddings").mock(
+            return_value=Response(200, json=_make_response([[0.4, 0.5]]))
+        )
+        adapter = OpenAIEmbeddingAdapter(api_key="sk-secret", base_url="http://api.test/v1")
+
+        await adapter.embed("hello")
+
+        assert route.calls[0].request.headers["authorization"] == "Bearer sk-secret"
+        await adapter.close()
+
+    @respx.mock
+    async def test_dimension_is_learned_from_the_server(self) -> None:
+        """Qwen3-Embedding returns 1024 dims, not the OpenAI default of 1536."""
+        respx.post("http://vllm.test/v1/embeddings").mock(
+            return_value=Response(200, json=_make_response([[0.0] * 1024]))
+        )
+        adapter = OpenAIEmbeddingAdapter(api_key="", base_url="http://vllm.test/v1")
+
+        assert adapter.dimension == _DEFAULT_DIMENSION
+        await adapter.embed("x")
+        assert adapter.dimension == 1024
+        await adapter.close()

@@ -62,13 +62,24 @@ class OpenAIEmbeddingAdapter(EmbeddingPort):
             await self._client.aclose()
             self._client = None
 
+    def _headers(self) -> dict[str, str]:
+        """Build request headers, omitting auth entirely when no key is set.
+
+        A self-hosted OpenAI-compatible server (vLLM, TGI, Ollama) needs no
+        key. Sending ``Authorization: Bearer`` with an empty value is not
+        merely ignored — httpx rejects the bare ``"Bearer "`` outright with
+        ``LocalProtocolError``, so every embed call fails against exactly the
+        deployments most likely to be used without credentials.
+        """
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        return headers
+
     async def _post_embeddings(self, texts: list[str]) -> list[list[float]]:
         response = await self._get_client().post(
             f"{self._base_url}/embeddings",
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=self._headers(),
             json={"input": texts, "model": self._model},
         )
         response.raise_for_status()
