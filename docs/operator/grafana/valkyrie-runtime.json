@@ -252,6 +252,111 @@
       "options": {"content": "### How to read one trajectory\nOpen a task trace and follow: JetStream `receive` → signal normalization/publish → queue admission → `invoke_agent` → ordered `chat` and `execute_tool` spans → capability, HTTP/A2A, resident-state, and ODIN child spans → JetStream ACK or NAK. Trace events contain bounded redacted content only when `observability.capture_content=true`; production defaults to metadata-only. `environment_type` is provenance, never a handler selector. A tool launch is not success: require terminal A2A state, verified artifact, adoption, execution, and later reuse evidence.", "mode": "markdown"},
       "title": "Evidence contract",
       "type": "text"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 90},
+      "id": 70,
+      "panels": [],
+      "title": "Agent memory (episodic, resident state, Mimir)",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 91},
+      "id": 71,
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "(sum(rate(ravn_memory_operations{job=~\"$job\",ravn_memory_operation=\"prefetch\",ravn_memory_result=\"hit\"}[$__rate_interval])) or vector(0)) / clamp_min((sum(rate(ravn_memory_operations{job=~\"$job\",ravn_memory_operation=\"prefetch\"}[$__rate_interval])) or vector(0)), 1e-9)", "refId": "A"}],
+      "title": "Prefetch hit rate",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 91},
+      "id": 72,
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "(sum(rate(ravn_memory_admitted{job=~\"$job\"}[$__rate_interval])) or vector(0)) / clamp_min((sum(rate(ravn_memory_candidates{job=~\"$job\"}[$__rate_interval])) or vector(0)), 1e-9)", "refId": "A"}],
+      "title": "Admission rate (admitted / candidates)",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 91},
+      "id": 73,
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "min(ravn_memory_corpus_embedding_coverage{job=~\"$job\"})", "refId": "A"}],
+      "title": "Embedding coverage",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 91},
+      "id": 74,
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "(sum(rate(ravn_mimir_operations{job=~\"$job\",ravn_mimir_operation=~\"search|query\",ravn_memory_result=\"hit\"}[$__rate_interval])) or vector(0)) / clamp_min((sum(rate(ravn_mimir_operations{job=~\"$job\",ravn_mimir_operation=~\"search|query\"}[$__rate_interval])) or vector(0)), 1e-9)", "refId": "A"}],
+      "title": "Mimir search hit rate",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 0, "lineWidth": 2, "showPoints": "never", "stacking": {"group": "A", "mode": "none"}}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 95},
+      "id": 75,
+      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (ravn_memory_backend) (rate(ravn_memory_candidates{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "{{ravn_memory_backend}} candidates", "refId": "A"}, {"expr": "sum by (ravn_memory_backend) (rate(ravn_memory_admitted{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "{{ravn_memory_backend}} admitted", "refId": "B"}],
+      "title": "Retrieval funnel: candidates vs admitted",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 0, "lineWidth": 2, "showPoints": "never", "stacking": {"group": "A", "mode": "none"}}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 95},
+      "id": 76,
+      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "histogram_quantile(0.50, sum by (le) (rate(ravn_memory_relevance_score_bucket{job=~\"$job\"}[$__rate_interval])))", "legendFormat": "p50 score", "refId": "A"}, {"expr": "histogram_quantile(0.95, sum by (le) (rate(ravn_memory_relevance_score_bucket{job=~\"$job\"}[$__rate_interval])))", "legendFormat": "p95 score", "refId": "B"}, {"expr": "histogram_quantile(0.95, sum by (le) (rate(ravn_memory_candidate_age_days_bucket{job=~\"$job\"}[$__rate_interval])))", "legendFormat": "p95 candidate age (days)", "refId": "C"}],
+      "title": "Relevance score distribution vs min_relevance gate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2, "showPoints": "never", "stacking": {"group": "A", "mode": "normal"}}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 103},
+      "id": 77,
+      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (ravn_memory_operation, ravn_memory_result) (rate(ravn_memory_operations{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "memory {{ravn_memory_operation}} {{ravn_memory_result}}", "refId": "A"}, {"expr": "sum by (ravn_resident_state_record_type, ravn_memory_result) (rate(ravn_resident_state_operations{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "resident {{ravn_resident_state_record_type}} {{ravn_memory_result}}", "refId": "B"}, {"expr": "sum by (ravn_memory_result) (rate(ravn_mimir_operations{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "mimir {{ravn_memory_result}}", "refId": "C"}],
+      "title": "Memory / resident-state / Mimir operations by outcome",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 0, "lineWidth": 2, "showPoints": "never", "stacking": {"group": "A", "mode": "none"}}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 103},
+      "id": 78,
+      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "histogram_quantile(0.50, sum by (le) (rate(ravn_memory_prefetch_injected_chars_bucket{job=~\"$job\"}[$__rate_interval])))", "legendFormat": "p50 injected chars", "refId": "A"}, {"expr": "histogram_quantile(0.95, sum by (le) (rate(ravn_memory_prefetch_injected_chars_bucket{job=~\"$job\"}[$__rate_interval])))", "legendFormat": "p95 injected chars", "refId": "B"}, {"expr": "sum by (ravn_resident_state_adapter, ravn_resident_state_reason) (rate(ravn_resident_state_fallback{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "fallback -> {{ravn_resident_state_adapter}}", "refId": "C"}],
+      "title": "Injected context and resident-state fallbacks",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 111},
+      "id": 79,
+      "options": {"showHeader": true},
+      "targets": [{"expr": "ravn_memory_corpus_episodes{job=~\"$job\"}", "format": "table", "instant": true, "refId": "A"}, {"expr": "ravn_memory_corpus_embedding_coverage{job=~\"$job\"}", "format": "table", "instant": true, "refId": "B"}, {"expr": "ravn_memory_corpus_index_coverage{job=~\"$job\"}", "format": "table", "instant": true, "refId": "C"}],
+      "title": "Corpus health: episodes, embedding coverage, index coverage",
+      "type": "table"
+    },
+    {
+      "gridPos": {"h": 4, "w": 24, "x": 0, "y": 118},
+      "id": 80,
+      "options": {"content": "**Reading this row.** `Admission rate` is the diagnostic: a healthy funnel keeps candidates and admitted within an order of magnitude. Candidates high with admitted at zero means retrieval is working and the `min_relevance` gate is discarding it \u2014 check the score distribution against the gate and the p95 candidate age, since the combined score multiplies relevance by an unbounded recency decay.\n\n`Embedding coverage` below 1 means part of the corpus can only be reached lexically; `index coverage` below 1 means part of it cannot be reached at all. Both are silent failures no per-call metric shows.", "mode": "markdown"},
+      "title": "How to read the memory row",
+      "type": "text"
     }
   ],
   "refresh": "10s",

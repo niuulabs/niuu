@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import UTC, datetime
+from time import monotonic
 from typing import Any
 
 import asyncpg
@@ -23,29 +24,34 @@ from niuu.ports.search import SearchPort
 from ravn.adapters.memory.scoring import (
     _AVG_EPISODE_CHARS,
     _CHARS_PER_TOKEN,
-    _OUTCOME_WEIGHTS,
-    _recency_score,
     build_prefetch_context,
     build_session_summaries,
+    combined_score,
+    score_and_admit,
 )
 from ravn.domain.models import Episode, EpisodeMatch, Outcome, SessionSummary, SharedContext
+from ravn.memory_telemetry import (
+    RESULT_EMPTY,
+    RESULT_ERROR,
+    RESULT_HIT,
+    record_funnel,
+    record_injected_chars,
+    record_memory_operation,
+    result_for,
+)
 from ravn.ports.memory import MemoryPort
+
+# Identifies this backend on every metric it emits.
+_BACKEND = "postgres"
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-
-def _combined_score(
-    relevance: float,
-    timestamp: datetime,
-    outcome: Outcome,
-    half_life_days: float,
-) -> float:
-    """Combine normalised relevance, recency decay, and outcome weight into [0, 1]."""
-    recency = _recency_score(timestamp, half_life_days)
-    weight = _OUTCOME_WEIGHTS.get(outcome, 0.5)
-    return relevance * recency * weight
+# The scoring rule now lives in ``scoring`` alongside the admission loop that
+# applies it, so both adapters share one definition. Re-exported under the
+# historical name for existing importers.
+_combined_score = combined_score
 
 
 def _row_to_episode(row: asyncpg.Record | dict[str, Any]) -> Episode:
@@ -135,6 +141,7 @@ class PostgresMemoryAdapter(MemoryPort):
         prefetch_limit: int = 5,
         prefetch_min_relevance: float = 0.3,
         recency_half_life_days: float = 14.0,
+        recency_floor: float = 0.5,
         session_search_truncate_chars: int = 100_000,
         rrf_k: int = 60,
         semantic_candidate_limit: int = 200,
@@ -153,6 +160,7 @@ class PostgresMemoryAdapter(MemoryPort):
         self._prefetch_limit = prefetch_limit
         self._prefetch_min_relevance = prefetch_min_relevance
         self._recency_half_life_days = recency_half_life_days
+        self._recency_floor = recency_floor
         self._session_search_truncate_chars = session_search_truncate_chars
         self._pool: asyncpg.Pool | None = None
         self._shared_context: SharedContext | None = None
@@ -202,6 +210,25 @@ class PostgresMemoryAdapter(MemoryPort):
     # ------------------------------------------------------------------
 
     async def record_episode(self, episode: Episode) -> None:
+        started = monotonic()
+        try:
+            await self._record_episode(episode)
+        except Exception:
+            record_memory_operation(
+                operation="record",
+                backend=_BACKEND,
+                result=RESULT_ERROR,
+                seconds=monotonic() - started,
+            )
+            raise
+        record_memory_operation(
+            operation="record",
+            backend=_BACKEND,
+            result=RESULT_HIT,
+            seconds=monotonic() - started,
+        )
+
+    async def _record_episode(self, episode: Episode) -> None:
         pool = self._require_pool()
         async with pool.acquire() as conn:
             await conn.execute(
@@ -264,10 +291,24 @@ class PostgresMemoryAdapter(MemoryPort):
         if not query.strip():
             return []
 
+        started = monotonic()
         # Get raw search results from the shared search adapter.
         search_results = await self._search.search(query, limit=limit * 3)
 
         if not search_results:
+            record_funnel(
+                backend=_BACKEND,
+                candidates=0,
+                admitted=0,
+                scores=[],
+                top_candidate_age_days=None,
+            )
+            record_memory_operation(
+                operation="query",
+                backend=_BACKEND,
+                result=RESULT_EMPTY,
+                seconds=monotonic() - started,
+            )
             return []
 
         # Load full episode objects from ravn_episodes by ID.
@@ -288,35 +329,44 @@ class PostgresMemoryAdapter(MemoryPort):
         episodes_by_id = {row["episode_id"]: _row_to_episode(row) for row in rows}
 
         # Apply episode-specific scoring: recency decay × outcome weight.
-        matches: list[EpisodeMatch] = []
-        for result in search_results:
-            ep = episodes_by_id.get(result.id)
-            if ep is None:
-                continue
-            score = _combined_score(
-                result.score,
-                ep.timestamp,
-                ep.outcome,
-                self._recency_half_life_days,
-            )
-            if score >= min_relevance:
-                matches.append(EpisodeMatch(episode=ep, relevance=score))
-
-        matches.sort(key=lambda m: m.relevance, reverse=True)
-        return matches[:limit]
+        matches = score_and_admit(
+            search_results,
+            episodes_by_id,
+            half_life_days=self._recency_half_life_days,
+            min_relevance=min_relevance,
+            limit=limit,
+            backend=_BACKEND,
+            recency_floor=self._recency_floor,
+        )
+        record_memory_operation(
+            operation="query",
+            backend=_BACKEND,
+            result=result_for(len(matches)),
+            seconds=monotonic() - started,
+        )
+        return matches
 
     async def prefetch(self, context: str) -> str:
         if self._prefetch_limit == 0:
             return ""
+        started = monotonic()
         matches = await self.query_episodes(
             context,
             limit=self._prefetch_limit,
             min_relevance=self._prefetch_min_relevance,
         )
-        if not matches:
-            return ""
-        budget_chars = self._prefetch_budget * _CHARS_PER_TOKEN
-        return build_prefetch_context(matches, budget_chars)
+        block = ""
+        if matches:
+            budget_chars = self._prefetch_budget * _CHARS_PER_TOKEN
+            block = build_prefetch_context(matches, budget_chars)
+        record_injected_chars(backend=_BACKEND, chars=len(block))
+        record_memory_operation(
+            operation="prefetch",
+            backend=_BACKEND,
+            result=result_for(len(block)),
+            seconds=monotonic() - started,
+        )
+        return block
 
     async def count_episodes(self) -> int:
         """Return the total number of stored episodes."""

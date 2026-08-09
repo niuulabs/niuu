@@ -626,10 +626,12 @@ def _build_memory(settings: Settings, llm: Any = None) -> Any:
             prefetch_limit=settings.memory.prefetch_limit,
             prefetch_min_relevance=settings.memory.prefetch_min_relevance,
             recency_half_life_days=settings.memory.recency_half_life_days,
+            recency_floor=settings.memory.recency_floor,
             session_search_truncate_chars=settings.memory.session_search_truncate_chars,
             embedding_port=embedding_port,
             rrf_k=settings.embedding.rrf_k,
             semantic_candidate_limit=settings.embedding.semantic_candidate_limit,
+            corpus_stats_interval_seconds=settings.memory.corpus_stats_interval_seconds,
         )
 
     elif backend == "postgres":

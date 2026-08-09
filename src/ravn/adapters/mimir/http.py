@@ -22,6 +22,7 @@ import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from typing import Any
 from urllib.parse import quote
 
@@ -41,6 +42,12 @@ from niuu.domain.mimir import (
 )
 from niuu.ports.mimir import MimirPort
 from ravn.domain.mimir import MimirAuth
+from ravn.memory_telemetry import (
+    RESULT_ERROR,
+    RESULT_HIT,
+    record_mimir_operation,
+    result_for,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,10 +140,33 @@ class HttpMimirAdapter(MimirPort):
         return token
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        """Issue one Mímir call, timed and counted.
+
+        Every Mímir operation the agent performs funnels through here, so this
+        is the single place that can report whether the shared knowledge base
+        is reachable at all.
+        """
+        started = monotonic()
+        operation = f"{method} {path}"
         client = await self._get_client()
         headers = dict(kwargs.pop("headers", {}) or {})
         headers.update(await self._build_headers())
-        return await client.request(method, path, headers=headers, **kwargs)
+        try:
+            response = await client.request(method, path, headers=headers, **kwargs)
+        except Exception:
+            record_mimir_operation(
+                operation=operation,
+                result=RESULT_ERROR,
+                seconds=monotonic() - started,
+            )
+            raise
+        result = RESULT_ERROR if response.is_error else RESULT_HIT
+        record_mimir_operation(
+            operation=operation,
+            result=result,
+            seconds=monotonic() - started,
+        )
+        return response
 
     async def aclose(self) -> None:
         """Close the underlying HTTP client."""
@@ -172,13 +202,26 @@ class HttpMimirAdapter(MimirPort):
         response.raise_for_status()
         results = response.json()
         pages = [_parse_search_result(r) for r in results]
+        # Retrieval that succeeds and returns nothing is the failure mode a
+        # transport-level status code cannot express.
+        record_mimir_operation(
+            operation="query",
+            result=result_for(len(pages)),
+            results_returned=len(pages),
+        )
         return MimirQueryResult(question=question, answer="", sources=pages)
 
     async def search(self, query: str) -> list[MimirPage]:
         """GET /mimir/search — full-text search."""
         response = await self._request("GET", "/mimir/search", params={"q": query})
         response.raise_for_status()
-        return [_parse_search_result(r) for r in response.json()]
+        pages = [_parse_search_result(r) for r in response.json()]
+        record_mimir_operation(
+            operation="search",
+            result=result_for(len(pages)),
+            results_returned=len(pages),
+        )
+        return pages
 
     async def upsert_page(
         self,
