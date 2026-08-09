@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest import mock
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -16,10 +17,39 @@ from mimir.config import MimirServiceConfig
 # ---------------------------------------------------------------------------
 
 
-def test_build_embed_fn_returns_none_when_sentence_transformers_missing() -> None:
-    with patch.dict("sys.modules", {"sentence_transformers": None}):
-        result = _build_embed_fn("all-MiniLM-L6-v2")
-    assert result is None
+def test_build_embed_fn_raises_when_sentence_transformers_missing() -> None:
+    """Replaces a test asserting this returned None.
+
+    Returning None dropped Mímir to keyword-only with one warning line. On the
+    golden set that is the difference between P@5 0.995 and 0.468, and
+    semantic recall 1.000 versus 0.000 — invisible, and by far the largest
+    retrieval regression in the system.
+    """
+    import builtins
+
+    from mimir.app import _build_embed_fn
+
+    real_import = builtins.__import__
+
+    def _no_sentence_transformers(name, *args, **kwargs):
+        if name == "sentence_transformers":
+            raise ImportError("not installed")
+        return real_import(name, *args, **kwargs)
+
+    with mock.patch.object(builtins, "__import__", _no_sentence_transformers):
+        with pytest.raises(RuntimeError, match="will not silently drop"):
+            _build_embed_fn("all-MiniLM-L6-v2")
+
+
+def test_build_embed_fn_uses_an_endpoint_without_any_local_model() -> None:
+    """An OpenAI-compatible URL needs only httpx — no heavy dependency."""
+    from mimir.app import _build_embed_fn
+
+    embed = _build_embed_fn(
+        "Qwen/Qwen3-Embedding-0.6B", base_url="https://brain.test/v1", api_key=""
+    )
+
+    assert callable(embed)
 
 
 def test_build_embed_fn_returns_callable_when_available() -> None:

@@ -280,6 +280,8 @@ async def run_eval(
     golden_path: Path,
     *,
     embedding_model: str | None = None,
+    embedding_base_url: str = "",
+    embedding_api_key: str = "",
 ) -> EvalReport:
     """Run the golden-set eval against a hermetic Mímir built from *corpus_dir*.
 
@@ -302,7 +304,13 @@ async def run_eval(
     with TemporaryDirectory(prefix="mimir-eval-") as tmp:
         root = Path(tmp)
         shutil.copytree(corpus_dir, root / "wiki", dirs_exist_ok=True)
-        adapter = _build_adapter(root, root / "search.db", embedding_model)
+        adapter = _build_adapter(
+            root,
+            root / "search.db",
+            embedding_model,
+            embedding_base_url=embedding_base_url,
+            embedding_api_key=embedding_api_key,
+        )
         await adapter.rebuild_search_index()
 
         results: list[QueryEval] = []
@@ -329,13 +337,24 @@ async def run_eval(
     )
 
 
-def _build_adapter(root: Path, search_db: Path, embedding_model: str | None):
+def _build_adapter(
+    root: Path,
+    search_db: Path,
+    embedding_model: str | None,
+    *,
+    embedding_base_url: str = "",
+    embedding_api_key: str = "",
+):
     """Construct a MarkdownMimirAdapter with the same wiring create_app uses."""
     from mimir.adapters.markdown import MarkdownMimirAdapter
     from mimir.app import _build_embed_fn
     from niuu.adapters.search.sqlite import SqliteSearchAdapter
 
-    embed_fn = _build_embed_fn(embedding_model) if embedding_model else None
+    embed_fn = (
+        _build_embed_fn(embedding_model, base_url=embedding_base_url, api_key=embedding_api_key)
+        if embedding_model
+        else None
+    )
     search_port = SqliteSearchAdapter(path=str(search_db), embed_fn=embed_fn)
     return MarkdownMimirAdapter(root=root, search_port=search_port)
 

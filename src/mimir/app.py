@@ -38,22 +38,39 @@ from niuu.settings_schema import (
 logger = logging.getLogger(__name__)
 
 
-def _build_embed_fn(model_name: str):  # type: ignore[return]
-    """Return an async embed function backed by sentence-transformers.
+def _build_embed_fn(model_name: str, *, base_url: str = "", api_key: str = ""):  # type: ignore[return]
+    """Return an async embed function, or raise if the request cannot be met.
 
-    The model is loaded lazily on the first call and cached.  If
-    sentence-transformers is not installed the function returns ``None`` and
-    the adapter falls back to FTS-only search.
+    Two backends. With *base_url* the vectors come from an OpenAI-compatible
+    endpoint over httpx — no heavy dependency, and it works against the same
+    model production uses. Without one, sentence-transformers is loaded
+    in-process.
+
+    Asking for embeddings and quietly getting keyword-only search is the
+    failure this must not have: it is invisible, and it drops semantic recall
+    to zero while every other signal looks healthy. Pass embedding_model=None
+    to choose FTS-only deliberately. See .claude/rules/no-fallbacks.md.
     """
+    if base_url:
+        from ravn.adapters.embedding.openai import OpenAIEmbeddingAdapter
+
+        adapter = OpenAIEmbeddingAdapter(api_key, model=model_name, base_url=base_url)
+
+        async def _embed_remote(text: str) -> list[float]:
+            return await adapter.embed(text)
+
+        return _embed_remote
+
     try:
         from sentence_transformers import SentenceTransformer  # type: ignore[import]
-    except ImportError:
-        logger.warning(
-            "mimir: sentence-transformers not installed — "
-            "falling back to FTS-only search (embedding_model=%r ignored)",
-            model_name,
-        )
-        return None
+    except ImportError as exc:
+        raise RuntimeError(
+            f"embedding_model={model_name!r} is configured but sentence-transformers "
+            f"is not installed. Set embedding_base_url to use an OpenAI-compatible "
+            f"endpoint instead, install the dependency, or set embedding_model=null "
+            f"to run FTS-only on purpose — search will not silently drop to "
+            f"keyword-only."
+        ) from exc
 
     _model: SentenceTransformer | None = None
 
@@ -82,7 +99,15 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
     from niuu.adapters.search.sqlite import SqliteSearchAdapter
 
     search_db = config.search_db or str(Path(config.path).expanduser() / "search.db")
-    embed_fn = _build_embed_fn(config.embedding_model) if config.embedding_model else None
+    embed_fn = (
+        _build_embed_fn(
+            config.embedding_model,
+            base_url=config.embedding_base_url,
+            api_key=config.embedding_api_key,
+        )
+        if config.embedding_model
+        else None
+    )
     search_port = SqliteSearchAdapter(path=search_db, embed_fn=embed_fn)
 
     adapter = MarkdownMimirAdapter(

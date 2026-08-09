@@ -220,10 +220,24 @@ class MimirServiceConfig(BaseSettings):
     embedding_model: str | None = Field(
         default=None,
         description=(
-            "sentence-transformers model name for semantic search "
-            "(e.g. 'all-MiniLM-L6-v2'). "
-            "Set to null for FTS-only mode (no sentence-transformers required)."
+            "Embedding model for semantic search. With embedding_base_url set "
+            "this is the model name sent to that endpoint (e.g. "
+            "'Qwen/Qwen3-Embedding-0.6B'); without it, a sentence-transformers "
+            "model loaded in-process (e.g. 'all-MiniLM-L6-v2'). "
+            "Null means FTS-only, which is a deliberate choice, not a fallback."
         ),
+    )
+    embedding_base_url: str = Field(
+        default="",
+        description=(
+            "OpenAI-compatible /v1 base URL serving embeddings (vLLM, TGI, "
+            "Ollama, OpenAI). Preferred over loading a model in-process: it "
+            "needs only httpx, so no heavy dependency in the image."
+        ),
+    )
+    embedding_api_key: str = Field(
+        default="",
+        description="Bearer token for embedding_base_url. Empty for unauthenticated servers.",
     )
     eval_capture: bool = Field(
         default=True,
