@@ -13,10 +13,13 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from niuu.adapters.search.rrf import cosine_similarity, reciprocal_rank_fusion
+from niuu.ports.search import SearchResult
 from ravn.domain.models import Episode, EpisodeMatch, Outcome, SessionSummary
+from ravn.memory_telemetry import record_funnel
 
 # Re-export so existing ``from ravn.adapters.memory.scoring import ...`` calls work.
 __all__ = [
@@ -24,6 +27,8 @@ __all__ = [
     "reciprocal_rank_fusion",
     "build_prefetch_context",
     "build_session_summaries",
+    "combined_score",
+    "score_and_admit",
     "_CHARS_PER_TOKEN",
     "_AVG_EPISODE_CHARS",
     "_OUTCOME_WEIGHTS",
@@ -44,12 +49,93 @@ _OUTCOME_WEIGHTS: dict[str, float] = {
 }
 
 
-def _recency_score(timestamp: datetime, half_life_days: float) -> float:
-    """Compute exponential decay recency in [0, 1] given episode age."""
+def _recency_score(
+    timestamp: datetime,
+    half_life_days: float,
+    floor: float = 0.0,
+) -> float:
+    """Compute exponential decay recency in ``[floor, 1]`` given episode age.
+
+    Without a floor this decays to zero, and because the caller *multiplies*
+    it into the combined score, age stops being a ranking signal and becomes a
+    filter: at a 14-day half-life nothing older than roughly 24 days can clear
+    a ``min_relevance`` of 0.3 at any relevance. The floor keeps recency
+    ordering results without annihilating them, matching the ``recency_floor``
+    that Mímir's ranking layer already applies.
+    """
     now = datetime.now(UTC)
     ts = timestamp if timestamp.tzinfo is not None else timestamp.replace(tzinfo=UTC)
     age_days = (now - ts).total_seconds() / 86400.0
-    return math.exp(-age_days * math.log(2) / half_life_days)
+    return max(floor, math.exp(-age_days * math.log(2) / half_life_days))
+
+
+def _age_days(timestamp: datetime) -> float:
+    """Age of *timestamp* in days, naive timestamps assumed UTC."""
+    ts = timestamp if timestamp.tzinfo is not None else timestamp.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - ts).total_seconds() / 86400.0)
+
+
+def combined_score(
+    relevance: float,
+    timestamp: datetime,
+    outcome: Outcome,
+    half_life_days: float,
+    recency_floor: float = 0.0,
+) -> float:
+    """Combine normalised relevance, recency decay, and outcome weight into [0, 1]."""
+    recency = _recency_score(timestamp, half_life_days, recency_floor)
+    weight = _OUTCOME_WEIGHTS.get(outcome, 0.5)
+    return relevance * recency * weight
+
+
+def score_and_admit(
+    search_results: Sequence[SearchResult],
+    episodes_by_id: dict[str, Episode],
+    *,
+    half_life_days: float,
+    min_relevance: float,
+    limit: int,
+    backend: str,
+    recency_floor: float = 0.0,
+) -> list[EpisodeMatch]:
+    """Score search-port candidates and keep those clearing *min_relevance*.
+
+    Shared by the SQLite and Postgres adapters so the ranking rule — and the
+    funnel telemetry that makes it diagnosable — exist in exactly one place.
+    Every candidate's score is reported, admitted or not, so a corpus scoring
+    just under the gate is visible rather than merely absent.
+    """
+    matches: list[EpisodeMatch] = []
+    scores: list[float] = []
+    best: tuple[float, Episode] | None = None
+
+    for result in search_results:
+        episode = episodes_by_id.get(result.id)
+        if episode is None:
+            continue
+        score = combined_score(
+            result.score,
+            episode.timestamp,
+            episode.outcome,
+            half_life_days,
+            recency_floor,
+        )
+        scores.append(score)
+        if best is None or score > best[0]:
+            best = (score, episode)
+        if score >= min_relevance:
+            matches.append(EpisodeMatch(episode=episode, relevance=score))
+
+    record_funnel(
+        backend=backend,
+        candidates=len(scores),
+        admitted=len(matches),
+        scores=scores,
+        top_candidate_age_days=_age_days(best[1].timestamp) if best else None,
+    )
+
+    matches.sort(key=lambda m: m.relevance, reverse=True)
+    return matches[:limit]
 
 
 def _format_episode_block(episode: Episode) -> str:
