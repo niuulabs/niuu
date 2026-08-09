@@ -66,6 +66,12 @@ class GBrainMimirAdapter(MimirPort):
         ingest_url: optional ``/ingest`` endpoint for markdown bulk writes.
         timeout_seconds: HTTP timeout for every call.
         search_limit: results requested per search.
+        query_expansion: whether gbrain may spend an LLM call rewriting each
+            query into variants before retrieving. It is gbrain's default and
+            usually helps recall, but it needs a working chat model and makes
+            every search cost a generation — so it is explicit here rather
+            than left to the server's mood, and a bake-off can hold it
+            constant on both sides.
     """
 
     def __init__(
@@ -76,6 +82,7 @@ class GBrainMimirAdapter(MimirPort):
         ingest_url: str | None = None,
         timeout_seconds: float = _DEFAULT_TIMEOUT,
         search_limit: int = _DEFAULT_SEARCH_LIMIT,
+        query_expansion: bool = True,
     ) -> None:
         if not mcp_url:
             raise ValueError("GBrainMimirAdapter requires an MCP URL")
@@ -89,6 +96,7 @@ class GBrainMimirAdapter(MimirPort):
         self._api_token = api_token
         self._timeout_seconds = float(timeout_seconds)
         self._search_limit = search_limit
+        self._query_expansion = query_expansion
         self._client: httpx.AsyncClient | None = None
 
     # ------------------------------------------------------------------
@@ -138,7 +146,19 @@ class GBrainMimirAdapter(MimirPort):
     # ------------------------------------------------------------------
 
     async def search(self, query: str) -> list[MimirPage]:
-        result = await self._call_tool("search", {"query": query, "limit": self._search_limit})
+        """Retrieve pages via gbrain's hybrid path.
+
+        gbrain exposes two retrieval tools and the names are misleading:
+        ``search`` is keyword-only (Postgres tsvector), while ``query`` is the
+        hybrid one — vector + keyword + RRF + multi-query expansion. Mímir's
+        ``search()`` is hybrid, so ``query`` is the like-for-like mapping.
+        Wiring this to ``search`` would score gbrain's weakest retrieval path
+        against Mímir's strongest and call the result a comparison.
+        """
+        result = await self._call_tool(
+            "query",
+            {"query": query, "limit": self._search_limit, "expand": self._query_expansion},
+        )
         return [_page_from_record(r) for r in _records(result)]
 
     async def query(self, question: str) -> MimirQueryResult:
@@ -147,14 +167,30 @@ class GBrainMimirAdapter(MimirPort):
         This is the reason the adapter is interesting: ``MimirQueryResult``
         has always carried an ``answer`` field documented as an LLM-synthesised
         answer, and every existing implementation leaves it empty.
+
+        ``think`` answers HTTP 200 even when it could not synthesise anything —
+        with no chat model configured it returns the literal string
+        ``"(no LLM available — set ANTHROPIC_API_KEY or pass `client`)"``
+        alongside ``synthesisOk: false``. Handing that back as an answer would
+        put a placeholder into a resident's reasoning and call it knowledge, so
+        an unsuccessful synthesis raises. See ``.claude/rules/no-fallbacks.md``.
         """
-        result = await self._call_tool("think", {"query": question})
-        text = _text_result(result)
-        records = _records(result)
+        result = await self._call_tool("think", {"question": question})
+        payload = _think_payload(result)
+        if payload.get("synthesisOk") is False:
+            detail = "; ".join(
+                str(item)
+                for item in [*payload.get("warnings", []), *payload.get("gaps", [])]
+                if item
+            )
+            raise RuntimeError(
+                f"gbrain think could not synthesise an answer for {question!r}"
+                f"{': ' + detail if detail else ''}"
+            )
         return MimirQueryResult(
             question=question,
-            answer=text,
-            sources=[_page_from_record(r) for r in records],
+            answer=str(payload.get("answer") or _text_result(result)),
+            sources=[_page_from_record(r) for r in _citation_records(payload, result)],
         )
 
     async def read_page(self, path: str) -> str:
@@ -309,6 +345,34 @@ def _records(result: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(results, list):
             return [r for r in results if isinstance(r, dict)]
     return []
+
+
+def _think_payload(result: dict[str, Any]) -> dict[str, Any]:
+    """Read ``think``'s report object out of its text block.
+
+    ``think`` returns a single JSON document — answer, citations, gaps,
+    warnings, ``synthesisOk`` — rather than the page-record list the retrieval
+    tools return, so it needs its own parse.
+    """
+    structured = result.get("structuredContent")
+    if isinstance(structured, dict):
+        return structured
+    text = _text_result(result)
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _citation_records(payload: dict[str, Any], result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Cited pages behind a ``think`` answer, however gbrain shaped them."""
+    citations = payload.get("citations")
+    if isinstance(citations, list):
+        return [c if isinstance(c, dict) else {"slug": str(c)} for c in citations]
+    return _records(result)
 
 
 def _page_from_record(record: dict[str, Any], *, default_path: str = "") -> MimirPage:

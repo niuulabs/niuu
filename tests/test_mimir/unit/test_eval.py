@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -31,9 +32,11 @@ from mimir.eval import (
     append_capture,
     capture_file_for,
     compare_reports,
+    evaluate_adapter,
     load_capture,
     load_golden_set,
     mrr,
+    normalise_path,
     precision_at_k,
     recall_at_k,
     replay_capture,
@@ -238,6 +241,75 @@ async def test_run_eval_report_round_trips_via_json(tmp_path: Path) -> None:
     restored = EvalReport.from_dict(json.loads(json.dumps(report.to_dict())))
     assert restored.overall == report.overall
     assert [q.query for q in restored.queries] == [q.query for q in report.queries]
+
+
+# ---------------------------------------------------------------------------
+# evaluate_adapter — the bake-off seam (NIU-1133)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("technical/auth-oidc.md", "technical/auth-oidc"),
+        ("wiki/technical/auth-oidc.md", "technical/auth-oidc"),
+        ("/technical/Auth-OIDC", "technical/auth-oidc"),
+        ("technical/auth-oidc", "technical/auth-oidc"),
+    ],
+)
+def test_normalise_path_collapses_store_specific_addressing(raw: str, expected: str) -> None:
+    assert normalise_path(raw) == expected
+
+
+class _StubStore:
+    """Minimal MimirPort-shaped search surface, addressing pages by slug."""
+
+    def __init__(self, results: dict[str, list[str]]) -> None:
+        self._results = results
+
+    async def search(self, query: str) -> list[SimpleNamespace]:
+        return [
+            SimpleNamespace(meta=SimpleNamespace(path=path))
+            for path in self._results.get(query, [])
+        ]
+
+
+async def test_evaluate_adapter_scores_a_store_that_returns_slugs() -> None:
+    """A store addressing pages without ``.md`` must not be penalised for it.
+
+    This is what makes the gbrain bake-off meaningful: gbrain returns
+    extensionless slugs, so without normalisation it would score 0.0 on every
+    query for a reason that has nothing to do with retrieval quality.
+    """
+    queries = [
+        GoldenQuery(query="oidc", expected=["technical/auth-oidc.md"], category="keyword"),
+    ]
+    report = await evaluate_adapter(
+        _StubStore({"oidc": ["technical/auth-oidc", "projects/other"]}),
+        queries,
+        corpus="stub",
+        embedding_model="stub-model",
+    )
+
+    assert report.overall["precision_at_5"] == 1.0
+    assert report.overall["mrr"] == 1.0
+    assert report.embedding_model == "stub-model"
+    assert report.corpus == "stub"
+
+
+async def test_evaluate_adapter_reports_a_miss_as_zero() -> None:
+    queries = [
+        GoldenQuery(query="oidc", expected=["technical/auth-oidc.md"], category="keyword"),
+    ]
+    report = await evaluate_adapter(
+        _StubStore({"oidc": ["projects/unrelated"]}),
+        queries,
+        corpus="stub",
+    )
+
+    assert report.overall["precision_at_5"] == 0.0
+    assert report.overall["recall_at_10"] == 0.0
+    assert report.queries[0].expected == ["technical/auth-oidc.md"]
 
 
 # ---------------------------------------------------------------------------

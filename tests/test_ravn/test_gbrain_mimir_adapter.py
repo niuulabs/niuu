@@ -71,15 +71,37 @@ class TestRetrieval:
         await adapter.close()
 
     @respx.mock
-    async def test_search_sends_the_query_and_a_limit(self) -> None:
+    async def test_search_uses_the_hybrid_tool_not_the_keyword_one(self) -> None:
+        """gbrain's tool names invert the obvious reading.
+
+        ``search`` is keyword-only tsvector; ``query`` is hybrid (vector +
+        keyword + RRF + expansion). Mímir's ``search()`` is hybrid, so binding
+        to ``search`` would hand the bake-off a rigged comparison.
+        """
         route = respx.post(_MCP).mock(return_value=httpx.Response(200, json=_tool_result()))
         adapter = _adapter(search_limit=3)
 
         await adapter.search("unhealthy pods")
 
         sent = json.loads(route.calls[0].request.content)
-        assert sent["params"]["name"] == "search"
-        assert sent["params"]["arguments"] == {"query": "unhealthy pods", "limit": 3}
+        assert sent["params"]["name"] == "query"
+        assert sent["params"]["arguments"] == {
+            "query": "unhealthy pods",
+            "limit": 3,
+            "expand": True,
+        }
+        await adapter.close()
+
+    @respx.mock
+    async def test_query_expansion_can_be_turned_off(self) -> None:
+        """Expansion costs a generation per search, so it is an explicit knob."""
+        route = respx.post(_MCP).mock(return_value=httpx.Response(200, json=_tool_result()))
+        adapter = _adapter(query_expansion=False)
+
+        await adapter.search("unhealthy pods")
+
+        sent = json.loads(route.calls[0].request.content)
+        assert sent["params"]["arguments"]["expand"] is False
         await adapter.close()
 
     @respx.mock
@@ -93,8 +115,14 @@ class TestRetrieval:
             return_value=httpx.Response(
                 200,
                 json=_tool_result(
-                    text="Pods were failing readiness after the 1.32 upgrade.",
-                    structured=[_page("ops/pods")],
+                    text=json.dumps(
+                        {
+                            "question": "why were pods failing?",
+                            "answer": "Pods were failing readiness after the 1.32 upgrade.",
+                            "citations": [_page("ops/pods")],
+                            "synthesisOk": True,
+                        }
+                    ),
                 ),
             )
         )
@@ -107,13 +135,51 @@ class TestRetrieval:
         await adapter.close()
 
     @respx.mock
-    async def test_query_calls_think_not_search(self) -> None:
-        route = respx.post(_MCP).mock(return_value=httpx.Response(200, json=_tool_result(text="x")))
+    async def test_query_raises_when_gbrain_could_not_synthesise(self) -> None:
+        """`think` answers 200 with a placeholder when it has no chat model.
+
+        Observed live: ``answer`` becomes "(no LLM available — set
+        ANTHROPIC_API_KEY ...)" with ``synthesisOk: false``. Passing that back
+        would put a placeholder into a resident's reasoning and call it an
+        answer.
+        """
+        respx.post(_MCP).mock(
+            return_value=httpx.Response(
+                200,
+                json=_tool_result(
+                    text=json.dumps(
+                        {
+                            "answer": "(no LLM available — set ANTHROPIC_API_KEY or pass `client`)",
+                            "citations": [],
+                            "gaps": ["no LLM available; gather succeeded but synthesis skipped"],
+                            "warnings": ["NO_ANTHROPIC_API_KEY"],
+                            "synthesisOk": False,
+                        }
+                    ),
+                ),
+            )
+        )
+        adapter = _adapter()
+
+        with pytest.raises(RuntimeError, match="NO_ANTHROPIC_API_KEY"):
+            await adapter.query("why were pods failing?")
+        await adapter.close()
+
+    @respx.mock
+    async def test_query_calls_think_with_a_question_argument(self) -> None:
+        """`think` takes `question`; the retrieval tools take `query`."""
+        route = respx.post(_MCP).mock(
+            return_value=httpx.Response(
+                200, json=_tool_result(text=json.dumps({"answer": "x", "synthesisOk": True}))
+            )
+        )
         adapter = _adapter()
 
         await adapter.query("what happened?")
 
-        assert json.loads(route.calls[0].request.content)["params"]["name"] == "think"
+        sent = json.loads(route.calls[0].request.content)
+        assert sent["params"]["name"] == "think"
+        assert sent["params"]["arguments"] == {"question": "what happened?"}
         await adapter.close()
 
     @respx.mock

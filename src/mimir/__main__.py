@@ -188,8 +188,14 @@ def eval_run(
     ),
     embedding_model: str | None = typer.Option(
         None,
-        help="sentence-transformers model for hybrid search. None = FTS-only.",
+        help="Embedding model for hybrid search. None = FTS-only.",
     ),
+    embedding_base_url: str = typer.Option(
+        "",
+        help="OpenAI-compatible embedding endpoint (e.g. a vLLM /v1). "
+        "Empty = load the model locally via sentence-transformers.",
+    ),
+    embedding_api_key: str = typer.Option("", help="Bearer token for --embedding-base-url."),
     json_output: bool = typer.Option(False, "--json", help="Emit the report as JSON."),
     out: str | None = typer.Option(None, help="Also write the JSON report to this file."),
     against: str | None = typer.Option(
@@ -207,7 +213,15 @@ def eval_run(
 
     from mimir.eval import EvalReport, compare_reports, run_eval
 
-    report = asyncio.run(run_eval(Path(corpus), Path(golden), embedding_model=embedding_model))
+    report = asyncio.run(
+        run_eval(
+            Path(corpus),
+            Path(golden),
+            embedding_model=embedding_model,
+            embedding_base_url=embedding_base_url,
+            embedding_api_key=embedding_api_key,
+        )
+    )
 
     if out is not None:
         Path(out).write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")

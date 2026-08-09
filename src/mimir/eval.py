@@ -153,6 +153,23 @@ def validate_golden_paths(queries: list[GoldenQuery], corpus_dir: Path) -> list[
     return sorted(set(missing))
 
 
+def normalise_path(path: str) -> str:
+    """Reduce a page path to the identity the golden set compares on.
+
+    The golden set names pages the way the corpus does — ``technical/auth-oidc.md``.
+    A different knowledge store addresses the same page differently: gbrain uses
+    extensionless slugs, and Mímir mounts prefix pages with ``wiki/``. Scoring
+    the same corpus across stores means comparing the part that identifies the
+    page, not the part that identifies the store.
+    """
+    cleaned = path.strip().strip("/")
+    if cleaned.startswith("wiki/"):
+        cleaned = cleaned[len("wiki/") :]
+    if cleaned.endswith(".md"):
+        cleaned = cleaned[: -len(".md")]
+    return cleaned.lower()
+
+
 # ---------------------------------------------------------------------------
 # Reports
 # ---------------------------------------------------------------------------
@@ -312,26 +329,53 @@ async def run_eval(
             embedding_api_key=embedding_api_key,
         )
         await adapter.rebuild_search_index()
+        return await evaluate_adapter(
+            adapter,
+            queries,
+            corpus=str(corpus_dir),
+            embedding_model=embedding_model,
+        )
 
-        results: list[QueryEval] = []
-        for entry in queries:
-            pages = await adapter.search(entry.query)
-            returned = [page.meta.path for page in pages]
-            results.append(
-                QueryEval(
-                    query=entry.query,
-                    category=entry.category,
-                    expected=entry.expected,
-                    returned=returned[:RECALL_K],
-                    precision=precision_at_k(returned, entry.expected),
-                    recall=recall_at_k(returned, entry.expected),
-                    mrr=mrr(returned, entry.expected),
-                )
+
+async def evaluate_adapter(
+    adapter: Any,
+    queries: list[GoldenQuery],
+    *,
+    corpus: str,
+    embedding_model: str | None = None,
+) -> EvalReport:
+    """Score any knowledge store against a golden set.
+
+    *adapter* only has to answer ``await adapter.search(query)`` with objects
+    exposing ``meta.path`` — the ``MimirPort`` search contract. That is the
+    whole coupling, which is what makes a bake-off possible: the markdown
+    adapter and :class:`~ravn.adapters.mimir.gbrain.GBrainMimirAdapter` are
+    scored by identical code on identical queries, so a metric difference is a
+    retrieval difference and nothing else.
+
+    Paths are compared through :func:`normalise_path`, so a store that returns
+    extensionless slugs is not penalised for its addressing scheme.
+    """
+    results: list[QueryEval] = []
+    for entry in queries:
+        pages = await adapter.search(entry.query)
+        returned = [normalise_path(page.meta.path) for page in pages]
+        expected = [normalise_path(path) for path in entry.expected]
+        results.append(
+            QueryEval(
+                query=entry.query,
+                category=entry.category,
+                expected=entry.expected,
+                returned=returned[:RECALL_K],
+                precision=precision_at_k(returned, expected),
+                recall=recall_at_k(returned, expected),
+                mrr=mrr(returned, expected),
             )
+        )
 
     return EvalReport(
         generated_at=datetime.now(UTC).isoformat(),
-        corpus=str(corpus_dir),
+        corpus=corpus,
         embedding_model=embedding_model,
         queries=results,
     )
