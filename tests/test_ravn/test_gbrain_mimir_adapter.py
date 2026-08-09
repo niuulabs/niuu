@@ -183,6 +183,61 @@ class TestRetrieval:
         await adapter.close()
 
     @respx.mock
+    async def test_think_model_is_passed_because_gbrain_ignores_its_own_config(self) -> None:
+        """`think` does not honour the brain's configured chat_model.
+
+        Observed live: with `chat_model` set to a reachable vLLM, `think`
+        still reported `modelUsed: anthropic:claude-opus-4-7` and failed on
+        NO_ANTHROPIC_API_KEY. Only the per-call `model` argument is obeyed.
+        """
+        route = respx.post(_MCP).mock(
+            return_value=httpx.Response(
+                200, json=_tool_result(text=json.dumps({"answer": "x", "synthesisOk": True}))
+            )
+        )
+        adapter = _adapter(think_model="nvidia:nvidia/nemotron-3-super")
+
+        await adapter.query("what happened?")
+
+        sent = json.loads(route.calls[0].request.content)
+        assert sent["params"]["arguments"]["model"] == "nvidia:nvidia/nemotron-3-super"
+        await adapter.close()
+
+    @respx.mock
+    async def test_think_citations_keep_their_page_paths(self) -> None:
+        """`think` names the cited page `page_slug`; retrieval uses `slug`.
+
+        Reading only `slug` left every citation with an empty path — sources
+        that look present and identify nothing.
+        """
+        respx.post(_MCP).mock(
+            return_value=httpx.Response(
+                200,
+                json=_tool_result(
+                    text=json.dumps(
+                        {
+                            "answer": "Nordvolt firmware.",
+                            "citations": [
+                                {"page_slug": "entities/nordvolt", "citation_index": 1},
+                                {"page_slug": "projects/helios", "citation_index": 2},
+                            ],
+                            "synthesisOk": True,
+                        }
+                    ),
+                ),
+            )
+        )
+        adapter = _adapter()
+
+        result = await adapter.query("who caused the delay?")
+
+        assert [p.meta.path for p in result.sources] == [
+            "entities/nordvolt",
+            "projects/helios",
+        ]
+        await adapter.close()
+
+    @respx.mock
     async def test_get_page_raises_when_the_page_is_absent(self) -> None:
         """MimirPort callers catch FileNotFoundError; an empty page is not a page."""
         respx.post(_MCP).mock(return_value=httpx.Response(200, json=_tool_result()))

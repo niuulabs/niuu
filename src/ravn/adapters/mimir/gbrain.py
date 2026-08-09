@@ -66,6 +66,11 @@ class GBrainMimirAdapter(MimirPort):
         ingest_url: optional ``/ingest`` endpoint for markdown bulk writes.
         timeout_seconds: HTTP timeout for every call.
         search_limit: results requested per search.
+        think_model: model that ``query()`` asks gbrain to synthesise with,
+            as ``<provider>:<model>``. Required in practice: ``think`` ignores
+            the brain's configured ``chat_model`` and falls back to a
+            hardcoded Anthropic default, so without this every synthesis
+            reports ``NO_ANTHROPIC_API_KEY`` however the brain is configured.
         query_expansion: whether gbrain may spend an LLM call rewriting each
             query into variants before retrieving. It is gbrain's default and
             usually helps recall, but it needs a working chat model and makes
@@ -82,6 +87,7 @@ class GBrainMimirAdapter(MimirPort):
         ingest_url: str | None = None,
         timeout_seconds: float = _DEFAULT_TIMEOUT,
         search_limit: int = _DEFAULT_SEARCH_LIMIT,
+        think_model: str = "",
         query_expansion: bool = True,
     ) -> None:
         if not mcp_url:
@@ -96,6 +102,7 @@ class GBrainMimirAdapter(MimirPort):
         self._api_token = api_token
         self._timeout_seconds = float(timeout_seconds)
         self._search_limit = search_limit
+        self._think_model = think_model
         self._query_expansion = query_expansion
         self._client: httpx.AsyncClient | None = None
 
@@ -175,7 +182,10 @@ class GBrainMimirAdapter(MimirPort):
         put a placeholder into a resident's reasoning and call it knowledge, so
         an unsuccessful synthesis raises. See ``.claude/rules/no-fallbacks.md``.
         """
-        result = await self._call_tool("think", {"question": question})
+        arguments: dict[str, Any] = {"question": question}
+        if self._think_model:
+            arguments["model"] = self._think_model
+        result = await self._call_tool("think", arguments)
         payload = _think_payload(result)
         if payload.get("synthesisOk") is False:
             detail = "; ".join(
@@ -376,7 +386,9 @@ def _citation_records(payload: dict[str, Any], result: dict[str, Any]) -> list[d
 
 
 def _page_from_record(record: dict[str, Any], *, default_path: str = "") -> MimirPage:
-    path = str(record.get("slug") or record.get("path") or default_path)
+    # `think` citations key the page as `page_slug`; the retrieval tools use
+    # `slug`. Reading only one of them silently produced empty-path sources.
+    path = str(record.get("slug") or record.get("page_slug") or record.get("path") or default_path)
     content = str(record.get("content") or record.get("body") or "")
     updated_raw = record.get("updated_at") or record.get("updatedAt")
     try:
