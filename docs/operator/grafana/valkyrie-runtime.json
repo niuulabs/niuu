@@ -39,7 +39,7 @@
       "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
       "id": 4,
       "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "(sum(rate(ravn_agent_tasks{job=~\"$job\",ravn_task_outcome=~\"error|exception\"}[$__rate_interval])) or vector(0)) / clamp_min((sum(rate(ravn_agent_tasks{job=~\"$job\"}[$__rate_interval])) or vector(0)), 1e-9)", "refId": "A"}],
+      "targets": [{"expr": "(sum(rate(ravn_agent_tasks{job=~\"$job\",ravn_task_outcome=~\"error|exception\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(ravn_agent_tasks{job=~\"$job\"}[$__rate_interval])), 1e-9)", "refId": "A"}],
       "title": "Task failure ratio",
       "type": "stat"
     },
@@ -263,27 +263,27 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "${metrics}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit"}, "overrides": []},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit", "noValue": "no data yet"}, "overrides": []},
       "gridPos": {"h": 4, "w": 6, "x": 0, "y": 91},
       "id": 71,
       "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "(sum(rate(ravn_memory_operations{job=~\"$job\",ravn_environment_id=~\"$environment\",ravn_memory_operation=\"prefetch\",ravn_memory_result=\"hit\"}[$__rate_interval])) or vector(0)) / clamp_min((sum(rate(ravn_memory_operations{job=~\"$job\",ravn_environment_id=~\"$environment\",ravn_memory_operation=\"prefetch\"}[$__rate_interval])) or vector(0)), 1e-9)", "refId": "A"}],
+      "targets": [{"expr": "(sum(rate(ravn_memory_operations{job=~\"$job\",ravn_environment_id=~\"$environment\",ravn_memory_operation=\"prefetch\",ravn_memory_result=\"hit\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(ravn_memory_operations{job=~\"$job\",ravn_environment_id=~\"$environment\",ravn_memory_operation=\"prefetch\"}[$__rate_interval])), 1e-9)", "refId": "A"}],
       "title": "Prefetch hit rate",
       "type": "stat"
     },
     {
       "datasource": {"type": "prometheus", "uid": "${metrics}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit"}, "overrides": []},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit", "noValue": "no data yet"}, "overrides": []},
       "gridPos": {"h": 4, "w": 6, "x": 6, "y": 91},
       "id": 72,
       "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "(sum(rate(ravn_memory_admitted{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval])) or vector(0)) / clamp_min((sum(rate(ravn_memory_candidates{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval])) or vector(0)), 1e-9)", "refId": "A"}],
+      "targets": [{"expr": "(sum(rate(ravn_memory_admitted{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(ravn_memory_candidates{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval])), 1e-9)", "refId": "A"}],
       "title": "Admission rate (admitted / candidates)",
       "type": "stat"
     },
     {
       "datasource": {"type": "prometheus", "uid": "${metrics}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit"}, "overrides": []},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit", "noValue": "no data yet"}, "overrides": []},
       "gridPos": {"h": 4, "w": 6, "x": 12, "y": 91},
       "id": 73,
       "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
@@ -293,11 +293,11 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "${metrics}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit"}, "overrides": []},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit", "noValue": "no data yet"}, "overrides": []},
       "gridPos": {"h": 4, "w": 6, "x": 18, "y": 91},
       "id": 74,
       "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "(sum(rate(ravn_mimir_operations{job=~\"$job\",ravn_environment_id=~\"$environment\",ravn_mimir_operation=~\"search|query\",ravn_memory_result=\"hit\"}[$__rate_interval])) or vector(0)) / clamp_min((sum(rate(ravn_mimir_operations{job=~\"$job\",ravn_environment_id=~\"$environment\",ravn_mimir_operation=~\"search|query\"}[$__rate_interval])) or vector(0)), 1e-9)", "refId": "A"}],
+      "targets": [{"expr": "(sum(rate(ravn_mimir_operations{job=~\"$job\",ravn_environment_id=~\"$environment\",ravn_mimir_operation=~\"search|query\",ravn_memory_result=\"hit\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(ravn_mimir_operations{job=~\"$job\",ravn_environment_id=~\"$environment\",ravn_mimir_operation=~\"search|query\"}[$__rate_interval])), 1e-9)", "refId": "A"}],
       "title": "Mimir search hit rate",
       "type": "stat"
     },
