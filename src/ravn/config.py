@@ -3012,14 +3012,16 @@ class ResidentInboxConfig(BaseModel):
 class ResidentStateConfig(BaseModel):
     """Resident memory/state adapter selection.
 
-    One adapter, no fallback. A previous version preferred GBrain and dropped
-    to a local store whenever GBrain was unavailable — which was permanently,
-    on every resident, entirely unnoticed. Picking a store is configuration;
-    it is not something to resolve at runtime by trying the next one.
+    One adapter, no fallback. A previous version preferred an external brain
+    and dropped to a local store whenever it was unavailable — which was
+    permanently, on every resident, entirely unnoticed. Picking a store is
+    configuration; it is not something to resolve at runtime by trying the
+    next one.
 
-    The default is the local filesystem store because that is what residents
-    actually run on. Point ``adapter`` at GBrain (or anything else) to use it,
-    and it will fail loudly if its backend is not reachable.
+    The default is the local filesystem store, which is what residents
+    actually run on. Point ``adapter`` at any other ResidentStatePort
+    implementation to use it; it will fail loudly if its backend is not
+    reachable.
     """
 
     adapter: str = Field(

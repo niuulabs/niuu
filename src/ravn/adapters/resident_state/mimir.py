@@ -345,9 +345,9 @@ class LocalResidentState(LocalResidentMemory, ResidentStatePort):
     # ------------------------------------------------------------------
     # Observed operations
     #
-    # GBrain and Letheo extend this class and delegate through ``super()``,
-    # so instrumenting here covers all three adapters. ``type(self).__name__``
-    # keeps them distinguishable on the metric.
+    # Any subclass delegating through ``super()`` is covered here too;
+    # ``type(self).__name__`` keeps implementations distinguishable on the
+    # metric.
     # ------------------------------------------------------------------
 
     async def recall(self, mandate: str, *, limit: int = 5) -> list[ResidentMemoryEntry]:

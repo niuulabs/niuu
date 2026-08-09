@@ -26,8 +26,8 @@ class ResidentStatePort(Protocol):
     async def available(self) -> bool:
         """Whether this adapter's backing store is usable in the current environment.
 
-        Lets a selector prefer an adapter (e.g. GBrain) and fall back to another
-        when its backend is absent, without the caller branching on adapter type.
+        Checked at startup: a configured adapter whose backend is unusable is
+        a hard failure, not a cue to substitute a different store.
         """
         ...
 
