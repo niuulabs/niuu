@@ -375,7 +375,9 @@ class SqliteMemoryAdapter(MemoryPort):
         record_corpus(
             backend=_BACKEND,
             episodes=episodes,
-            embedding_coverage=embedded / episodes,
+            # Clamped like index_coverage: search_index can hold slightly more
+            # rows than episodes, and a coverage above 1.0 reads as a fault.
+            embedding_coverage=min(1.0, embedded / episodes),
             index_coverage=min(1.0, indexed / episodes),
             environment_id=self._environment_id,
         )
@@ -562,19 +564,34 @@ class SqliteMemoryAdapter(MemoryPort):
         return self._with_retry(_do)
 
     def _corpus_stats_sync(self) -> tuple[int, int, int]:
-        """Return ``(episodes, episodes_with_embedding, indexed_documents)``.
+        """Return ``(episodes, documents_with_embedding, indexed_documents)``.
 
         ``indexed_documents`` counts rows the search adapter owns; a shortfall
         against ``episodes`` means part of the corpus is unreachable by any
         query regardless of how it is scored.
+
+        The embedding count comes from ``search_index``, not ``episodes``.
+        Vectors live in the search adapter's table — that is what a semantic
+        query is scored against — and ``episodes.embedding`` is a column
+        nothing writes. Counting it made this gauge report 0.0000 permanently:
+        it read zero on residents whose index was in fact fully embedded, and
+        would have kept reading zero after any backfill. A gauge that can only
+        ever report failure is worse than no gauge, because it sends people
+        hunting a fault that is not there.
         """
 
         def _do_stats() -> tuple[int, int, int]:
             conn = self._connect()
             try:
-                row = conn.execute("SELECT COUNT(*), COUNT(embedding) FROM episodes").fetchone()
+                row = conn.execute("SELECT COUNT(*) FROM episodes").fetchone()
                 episodes = int(row[0]) if row else 0
-                embedded = int(row[1]) if row else 0
+                try:
+                    embedded_row = conn.execute(
+                        "SELECT COUNT(embedding) FROM search_index"
+                    ).fetchone()
+                    embedded = int(embedded_row[0]) if embedded_row else 0
+                except sqlite3.OperationalError:
+                    embedded = 0
                 try:
                     index_row = conn.execute("SELECT COUNT(*) FROM search_index").fetchone()
                     indexed = int(index_row[0]) if index_row else 0

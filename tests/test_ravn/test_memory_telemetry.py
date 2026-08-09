@@ -243,6 +243,40 @@ class TestSqliteAdapterOperations:
         ]
         assert episodes, "prefetch alone emitted no corpus gauges"
 
+    async def test_embedding_coverage_counts_the_table_that_holds_vectors(
+        self, telemetry: RecordingTelemetry, tmp_path
+    ) -> None:
+        """Coverage must read search_index, not episodes.
+
+        Vectors live in the search adapter's table — that is what a semantic
+        query scores against. episodes.embedding is a column nothing writes,
+        so counting it pinned this gauge at 0.0000 forever: it read zero on
+        residents whose index was fully embedded, and would have kept reading
+        zero after any backfill.
+        """
+        import sqlite3
+
+        db = tmp_path / "memory.db"
+        adapter = SqliteMemoryAdapter(path=str(db), corpus_stats_interval_seconds=0.0001)
+        await adapter.initialize()
+        await adapter.record_episode(_episode("one", age_days=1))
+
+        # Give the indexed document a vector, as the backfill does.
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE search_index SET embedding = ?", ("[0.1, 0.2]",))
+        conn.commit()
+        conn.close()
+
+        adapter._last_corpus_sample_at = None
+        await adapter._maybe_emit_corpus_gauges()
+
+        coverage = [
+            value
+            for name, value, _ in telemetry.gauges
+            if name == memory_telemetry.CORPUS_EMBEDDING_COVERAGE
+        ]
+        assert coverage[-1] > 0.0, "coverage still read zero on a fully embedded index"
+
     async def test_corpus_sampling_respects_its_interval(
         self, telemetry: RecordingTelemetry, tmp_path
     ) -> None:
