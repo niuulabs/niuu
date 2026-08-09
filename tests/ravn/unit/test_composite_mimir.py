@@ -354,11 +354,15 @@ async def test_read_source_raises_when_no_mount_could_answer() -> None:
 
 
 @pytest.mark.asyncio
-async def test_read_source_returns_none_when_a_mount_answered_and_lacked_it() -> None:
-    """A genuine absence must stay absent — one reachable mount is enough."""
+async def test_read_source_returns_none_when_every_mount_answered_and_lacked_it() -> None:
+    """A genuine absence must stay absent — but only if every mount answered.
+
+    This previously passed with one mount raising, which meant the broken
+    mount's contents were assumed empty.
+    """
     local = _make_mount("local")
     shared = _make_mount("shared", role="shared")
-    local.port.read_source = AsyncMock(side_effect=RuntimeError("down"))
+    local.port.read_source = AsyncMock(return_value=None)
     shared.port.read_source = AsyncMock(return_value=None)
 
     adapter = CompositeMimirAdapter(mounts=[local, shared])
@@ -367,12 +371,14 @@ async def test_read_source_returns_none_when_a_mount_answered_and_lacked_it() ->
 
 
 @pytest.mark.asyncio
-async def test_read_source_from_mount_handles_port_errors() -> None:
+async def test_read_source_from_mount_raises_when_that_mount_is_down() -> None:
+    """The caller named this mount, so its failure is the answer to the call."""
     local = _make_mount("local")
     local.port.read_source = AsyncMock(side_effect=RuntimeError("boom"))
     adapter = CompositeMimirAdapter(mounts=[local])
 
-    assert await adapter.read_source_from_mount("src-1", "local") is None
+    with pytest.raises(MimirUnavailableError, match="local"):
+        await adapter.read_source_from_mount("src-1", "local")
 
 
 @pytest.mark.asyncio
@@ -456,13 +462,18 @@ async def test_read_source_retry_is_off_by_default() -> None:
 
 
 @pytest.mark.asyncio
-async def test_summarize_aggregates_mounts_and_survives_an_unreachable_one() -> None:
+async def test_summarize_aggregates_every_mount() -> None:
+    """Totals are only true when every mount contributed.
+
+    This used to skip an unreachable mount, so `/mimir/mounts` reported a
+    smaller corpus than exists — a shrinking page count reads as data loss,
+    which is a worse signal than an outage that says so.
+    """
     early = datetime(2026, 1, 1, tzinfo=UTC)
     late = datetime(2026, 6, 1, tzinfo=UTC)
 
     local = _make_mount("local")
     shared = _make_mount("shared", role="shared")
-    down = _make_mount("down", role="domain")
     local.port.summarize = AsyncMock(
         return_value=MimirMountSummary(
             page_count=3,
@@ -483,9 +494,7 @@ async def test_summarize_aggregates_mounts_and_survives_an_unreachable_one() -> 
             lint_checked_at=late,
         )
     )
-    down.port.summarize = AsyncMock(side_effect=RuntimeError("503 Service Unavailable"))
-
-    adapter = CompositeMimirAdapter(mounts=[local, shared, down])
+    adapter = CompositeMimirAdapter(mounts=[local, shared])
     summary = await adapter.summarize()
 
     assert summary.page_count == 8
@@ -716,7 +725,7 @@ async def test_integration_two_markdown_adapters(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Exception isolation — one mount failing should not abort others
+# A mount that fails fails the call — .claude/rules/no-fallbacks.md
 # ---------------------------------------------------------------------------
 
 
@@ -728,25 +737,22 @@ def _error_port(error: Exception = RuntimeError("mount down")) -> object:
     port.search = AsyncMock(side_effect=error)
     port.list_pages = AsyncMock(side_effect=error)
     port.list_threads = AsyncMock(side_effect=error)
+    port.get_thread_queue = AsyncMock(side_effect=error)
     port.list_sources = AsyncMock(side_effect=error)
     port.lint = AsyncMock(side_effect=error)
+    port.summarize = AsyncMock(side_effect=error)
     port.read_source = AsyncMock(side_effect=error)
     port.read_page = AsyncMock(side_effect=error)
     port.get_page = AsyncMock(side_effect=error)
     port.upsert_page = AsyncMock(side_effect=error)
+    port.delete_page = AsyncMock(side_effect=error)
     port.update_thread_weight = AsyncMock(side_effect=error)
+    port.update_thread_state = AsyncMock(side_effect=error)
     return port
 
 
-@pytest.mark.asyncio
-async def test_ingest_exception_in_one_mount_continues_others() -> None:
-    bad_port = _error_port()
-    good_port = AsyncMock()
-    good_port.ingest = AsyncMock(return_value=["wiki/page.md"])
-    bad = MimirMount(name="bad", port=bad_port, role="local", read_priority=0)
-    good = MimirMount(name="good", port=good_port, role="shared", read_priority=1)
-    adapter = CompositeMimirAdapter(mounts=[bad, good])
-    source = MimirSource(
+def _a_source() -> MimirSource:
+    return MimirSource(
         source_id="s1",
         title="T",
         content="c",
@@ -754,45 +760,53 @@ async def test_ingest_exception_in_one_mount_continues_others() -> None:
         ingested_at=datetime.now(UTC),
         content_hash=compute_content_hash("c"),
     )
-    result = await adapter.ingest(source)
-    good_port.ingest.assert_called_once()
-    assert result == ["wiki/page.md"]
 
 
 @pytest.mark.asyncio
-async def test_query_exception_in_one_mount_continues_others() -> None:
-    bad_port = _error_port()
-    good_port = _mock_port()
-    bad = MimirMount(name="bad", port=bad_port, role="local", read_priority=0)
-    good = MimirMount(name="good", port=good_port, role="shared", read_priority=1)
+@pytest.mark.parametrize(
+    ("operation", "call"),
+    [
+        ("ingest", lambda a: a.ingest(_a_source())),
+        ("query", lambda a: a.query("test question")),
+        ("search", lambda a: a.search("query")),
+        ("list_pages", lambda a: a.list_pages()),
+        ("list_sources", lambda a: a.list_sources()),
+        ("lint", lambda a: a.lint()),
+        ("list_threads", lambda a: a.list_threads()),
+        ("get_thread_queue", lambda a: a.get_thread_queue()),
+        ("summarize", lambda a: a.summarize()),
+    ],
+)
+async def test_a_failing_mount_fails_the_whole_fan_out(operation: str, call) -> None:
+    """One unreachable mount must not be papered over by the others.
+
+    Every one of these used to catch, log a warning and carry on, returning
+    whatever the surviving mounts held. That is indistinguishable from a small
+    corpus, which is how the GBrain resident-state adapter stayed silently
+    demoted on all nine residents for months. The caller has to be able to tell
+    "the corpus does not contain this" from "I could not read the corpus".
+    """
+    bad = MimirMount(name="bad", port=_error_port(), role="local", read_priority=0)
+    good = MimirMount(name="good", port=_mock_port(), role="shared", read_priority=1)
     adapter = CompositeMimirAdapter(mounts=[bad, good])
-    result = await adapter.query("test question")
-    good_port.query.assert_called_once()
-    assert isinstance(result, MimirQueryResult)
+
+    with pytest.raises(MimirUnavailableError, match="'bad'"):
+        await call(adapter)
 
 
 @pytest.mark.asyncio
-async def test_search_exception_in_one_mount_continues_others() -> None:
-    bad_port = _error_port()
-    good_port = _mock_port()
-    bad = MimirMount(name="bad", port=bad_port, role="local", read_priority=0)
-    good = MimirMount(name="good", port=good_port, role="shared", read_priority=1)
-    adapter = CompositeMimirAdapter(mounts=[bad, good])
-    result = await adapter.search("query")
-    good_port.search.assert_called_once()
-    assert isinstance(result, list)
+async def test_the_failing_mount_is_named_with_a_remedy() -> None:
+    """An operator reading the log needs to know which mount and what to do."""
+    bad = MimirMount(name="shared-mimir", port=_error_port(), role="shared", read_priority=0)
+    adapter = CompositeMimirAdapter(mounts=[bad])
 
+    with pytest.raises(MimirUnavailableError) as caught:
+        await adapter.search("anything")
 
-@pytest.mark.asyncio
-async def test_list_pages_exception_in_one_mount_continues_others() -> None:
-    bad_port = _error_port()
-    good_port = _mock_port()
-    bad = MimirMount(name="bad", port=bad_port, role="local", read_priority=0)
-    good = MimirMount(name="good", port=good_port, role="shared", read_priority=1)
-    adapter = CompositeMimirAdapter(mounts=[bad, good])
-    result = await adapter.list_pages()
-    good_port.list_pages.assert_called_once()
-    assert isinstance(result, list)
+    message = str(caught.value)
+    assert "shared-mimir" in message
+    assert "search" in message
+    assert "Fix or remove that mount" in message
 
 
 @pytest.mark.asyncio
@@ -811,61 +825,49 @@ async def test_list_sources_sets_mount_name() -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_sources_exception_in_one_mount_continues_others() -> None:
+async def test_a_broken_mount_cannot_be_read_as_a_missing_source() -> None:
+    """One mount answering "not here" does not rule the source out.
+
+    The old rule concluded absence whenever *some* mount answered, so a single
+    broken mount turned a source that exists into a provenance defect — and
+    prescribed a remedy (re-ingest) that cannot fix an outage.
+    """
     bad_port = _error_port()
     good_port = _mock_port()
-    bad = MimirMount(name="bad", port=bad_port, role="local", read_priority=0)
-    good = MimirMount(name="good", port=good_port, role="shared", read_priority=1)
-    adapter = CompositeMimirAdapter(mounts=[bad, good])
-    result = await adapter.list_sources()
-    # Should not raise, returns whatever good_port has
-    assert isinstance(result, list)
-
-
-@pytest.mark.asyncio
-async def test_lint_exception_in_one_mount_continues_others() -> None:
-    bad_port = _error_port()
-    good_port = _mock_port()
-    bad = MimirMount(name="bad", port=bad_port, role="local", read_priority=0)
-    good = MimirMount(name="good", port=good_port, role="shared", read_priority=1)
-    adapter = CompositeMimirAdapter(mounts=[bad, good])
-    result = await adapter.lint()
-    good_port.lint.assert_called_once()
-    assert isinstance(result, MimirLintReport)
-
-
-@pytest.mark.asyncio
-async def test_read_source_exception_falls_through() -> None:
-    bad_port = _error_port()
-    good_port = _mock_port()
-    # _mock_port leaves read_source a bare MagicMock, so awaiting it raised too —
-    # the old blanket swallow hid that and this test never proved fall-through.
     good_port.read_source = AsyncMock(return_value=None)
     bad = MimirMount(name="bad", port=bad_port, role="local", read_priority=0)
     good = MimirMount(name="good", port=good_port, role="shared", read_priority=1)
     adapter = CompositeMimirAdapter(mounts=[bad, good])
 
-    assert await adapter.read_source("src-1") is None
-    good_port.read_source.assert_awaited_once()
+    with pytest.raises(MimirUnavailableError, match="bad"):
+        await adapter.read_source("src-1")
 
 
 @pytest.mark.asyncio
-async def test_upsert_unknown_mount_name_skipped() -> None:
-    good_port = _mock_port()
-    good = MimirMount(name="good", port=good_port, role="local", read_priority=0)
+async def test_write_routing_naming_an_unmounted_mimir_is_fatal() -> None:
+    """Routing to a mount that does not exist writes nowhere.
+
+    This used to log a warning and return normally, so the caller was told the
+    page had been written.
+    """
+    good = MimirMount(name="good", port=_mock_port(), role="local", read_priority=0)
     routing = WriteRouting(rules=[("wiki/", ["nonexistent"])], default=["good"])
     adapter = CompositeMimirAdapter(mounts=[good], write_routing=routing)
-    # Should not crash — unknown mount is silently skipped
-    await adapter.upsert_page("wiki/page.md", "content")
+
+    with pytest.raises(MimirUnavailableError) as caught:
+        await adapter.upsert_page("wiki/page.md", "content")
+
+    assert "nonexistent" in str(caught.value)
+    assert "mounted: ['good']" in str(caught.value)
 
 
 @pytest.mark.asyncio
-async def test_upsert_exception_in_mount_logged_not_raised() -> None:
-    bad_port = _error_port()
-    bad = MimirMount(name="bad", port=bad_port, role="local", read_priority=0)
+async def test_a_failed_write_is_never_reported_as_written() -> None:
+    bad = MimirMount(name="bad", port=_error_port(), role="local", read_priority=0)
     adapter = CompositeMimirAdapter(mounts=[bad])
-    # Should not raise
-    await adapter.upsert_page("wiki/page.md", "content")
+
+    with pytest.raises(MimirUnavailableError, match="upsert_page"):
+        await adapter.upsert_page("wiki/page.md", "content")
 
 
 # ---------------------------------------------------------------------------
@@ -899,16 +901,17 @@ async def test_list_threads_respects_limit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_threads_exception_in_one_mount_continues_others() -> None:
+async def test_list_threads_does_not_hide_a_broken_mount_behind_a_partial_queue() -> None:
+    """A thread queue missing a mount's threads looks like an idle resident."""
     bad_port = _error_port()
     bad_port.list_threads = AsyncMock(side_effect=RuntimeError("down"))
     good_port = _mock_port(pages=[_make_page("threads/alpha")])
     bad = MimirMount(name="bad", port=bad_port, role="local", read_priority=0)
     good = MimirMount(name="good", port=good_port, role="shared", read_priority=1)
     adapter = CompositeMimirAdapter(mounts=[bad, good])
-    results = await adapter.list_threads()
-    assert isinstance(results, list)
-    good_port.list_threads.assert_called_once()
+
+    with pytest.raises(MimirUnavailableError, match="list_threads"):
+        await adapter.list_threads()
 
 
 # ---------------------------------------------------------------------------

@@ -65,12 +65,45 @@ def _sanitize_log(value: object) -> str:
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
 
+def _mount_failed(operation: str, mount_name: str, exc: Exception) -> MimirUnavailableError:
+    """The error every fan-out raises when one mount cannot do its part.
+
+    A composite that skips a failing mount answers from a corpus that is not
+    the configured one, and says nothing about it: reads come back thin, writes
+    report success having landed nowhere. That is indistinguishable from a
+    small corpus or an idle resident, which is why it survives for months. See
+    ``.claude/rules/no-fallbacks.md``.
+    """
+    return MimirUnavailableError(
+        f"Mímir mount {mount_name!r} failed during {operation}: {exc}. "
+        f"Fix or remove that mount — results from the remaining mounts would "
+        f"be silently incomplete."
+    )
+
+
+def _unknown_mount(operation: str, name: str, known: list[str]) -> MimirUnavailableError:
+    """Write routing named a mount that is not mounted."""
+    return MimirUnavailableError(
+        f"write routing for {operation} names unknown Mímir mount {name!r}; "
+        f"mounted: {known or '(none)'}. Fix the routing rules or mount it — "
+        f"writes to a mount that does not exist go nowhere."
+    )
+
+
 class CompositeMimirAdapter(MimirPort):
     """Fan-out across multiple MimirPort instances with configurable routing.
 
     Read operations merge results from all mounts in ``read_priority`` order
     (de-duplicated by page path).  Write operations are routed by category
     prefix or explicit ``mimir=`` override.
+
+    **A mount that fails fails the call.** Every fan-out here used to catch,
+    log and carry on, which meant a configured mount could be unreachable for
+    months while reads quietly returned a fraction of the corpus and writes
+    reported success having landed nowhere. The only failure a mount is allowed
+    to answer with is ``FileNotFoundError`` on a single-page read — that is the
+    protocol saying "not here, ask the next mount", not a mount that could not
+    answer. See ``.claude/rules/no-fallbacks.md``.
 
     Args:
         mounts:        Ordered list of Mímir mounts.
@@ -95,6 +128,9 @@ class CompositeMimirAdapter(MimirPort):
         self._read_retry_max_seconds = read_retry_max_seconds
         self._read_retry_initial_backoff_seconds = read_retry_initial_backoff_seconds
         self._read_retry_max_backoff_seconds = read_retry_max_backoff_seconds
+
+    def _mount_names(self) -> list[str]:
+        return sorted(self._mount_map)
 
     def ingest_targets(self, explicit: str | None = None) -> list[str]:
         """Return the mount names an ingest should target.
@@ -125,13 +161,9 @@ class CompositeMimirAdapter(MimirPort):
         for mount in self._mounts:
             try:
                 paths = await mount.port.ingest(source)
-                all_paths.extend(paths)
             except Exception as exc:
-                logger.warning(
-                    "composite mimir: ingest failed on %s: %s",
-                    _sanitize_log(mount.name),
-                    _sanitize_log(exc),
-                )
+                raise _mount_failed("ingest", mount.name, exc) from exc
+            all_paths.extend(paths)
         return list(dict.fromkeys(all_paths))
 
     async def ingest_to(self, source: MimirSource, mount_name: str) -> list[str]:
@@ -153,17 +185,15 @@ class CompositeMimirAdapter(MimirPort):
         for mount in self._mounts:
             try:
                 result = await mount.port.query(question)
-                for page in result.sources:
-                    if page.meta.path not in seen_paths:
-                        seen_paths.add(page.meta.path)
-                        merged_sources.append(page)
             except Exception as exc:
-                logger.warning(
-                    "composite mimir: query failed on %s: %s",
-                    _sanitize_log(mount.name),
-                    _sanitize_log(exc),
-                )
+                raise _mount_failed("query", mount.name, exc) from exc
+            for page in result.sources:
+                if page.meta.path not in seen_paths:
+                    seen_paths.add(page.meta.path)
+                    merged_sources.append(page)
 
+        # answer stays empty by design: Mímir's synthesis is precomputed into
+        # the Compiled Truth zone by a Ravn, not composed at query time.
         return MimirQueryResult(question=question, answer="", sources=merged_sources)
 
     async def search(self, query: str) -> list[MimirPage]:
@@ -174,47 +204,45 @@ class CompositeMimirAdapter(MimirPort):
         for mount in self._mounts:
             try:
                 pages = await mount.port.search(query)
-                for page in pages:
-                    if page.meta.path not in seen_paths:
-                        seen_paths.add(page.meta.path)
-                        results.append(page)
             except Exception as exc:
-                logger.warning(
-                    "composite mimir: search failed on %s: %s",
-                    _sanitize_log(mount.name),
-                    _sanitize_log(exc),
-                )
+                raise _mount_failed("search", mount.name, exc) from exc
+            for page in pages:
+                if page.meta.path not in seen_paths:
+                    seen_paths.add(page.meta.path)
+                    results.append(page)
 
         return results
 
     async def get_page(self, path: str) -> MimirPage:
-        """Read full page from the first mount (in priority order) that has it."""
+        """Read full page from the first mount (in priority order) that has it.
+
+        ``FileNotFoundError`` from a mount means "not here, ask the next one" —
+        a protocol-level answer, not a failure. Anything else means the mount
+        could not answer, and a mount that could not answer might have been the
+        one holding the page, so it must not be reported as "not found".
+        """
         for mount in self._mounts:
             try:
                 return await mount.port.get_page(path)
             except FileNotFoundError:
                 continue
             except Exception as exc:
-                logger.warning(
-                    "composite mimir: get_page failed on %s: %s",
-                    _sanitize_log(mount.name),
-                    _sanitize_log(exc),
-                )
+                raise _mount_failed("get_page", mount.name, exc) from exc
         raise FileNotFoundError(f"Mímir page not found in any mount: {path}")
 
     async def read_page(self, path: str) -> str:
-        """Read from the first mount (in priority order) that has the page."""
+        """Read from the first mount (in priority order) that has the page.
+
+        Shares ``get_page``'s absence semantics: only a mount that answered can
+        rule the page out.
+        """
         for mount in self._mounts:
             try:
                 return await mount.port.read_page(path)
             except FileNotFoundError:
                 continue
             except Exception as exc:
-                logger.warning(
-                    "composite mimir: read_page failed on %s: %s",
-                    _sanitize_log(mount.name),
-                    _sanitize_log(exc),
-                )
+                raise _mount_failed("read_page", mount.name, exc) from exc
         raise FileNotFoundError(f"Mímir page not found in any mount: {path}")
 
     async def list_pages(
@@ -229,16 +257,12 @@ class CompositeMimirAdapter(MimirPort):
         for mount in self._mounts:
             try:
                 pages = await mount.port.list_pages(category=category, prefix=prefix)
-                for meta in pages:
-                    if meta.path not in seen_paths:
-                        seen_paths.add(meta.path)
-                        results.append(meta)
             except Exception as exc:
-                logger.warning(
-                    "composite mimir: list_pages failed on %s: %s",
-                    _sanitize_log(mount.name),
-                    _sanitize_log(exc),
-                )
+                raise _mount_failed("list_pages", mount.name, exc) from exc
+            for meta in pages:
+                if meta.path not in seen_paths:
+                    seen_paths.add(meta.path)
+                    results.append(meta)
 
         return results
 
@@ -247,9 +271,12 @@ class CompositeMimirAdapter(MimirPort):
 
         Counts are summed across mounts rather than de-duplicated by page path:
         de-duplication would mean listing the pages, which is exactly the
-        corpus walk this call exists to avoid. A mount that cannot answer is
-        skipped with a warning so one unreachable mount does not blank the
-        whole summary.
+        corpus walk this call exists to avoid.
+
+        A mount that cannot answer makes the totals wrong, so this raises. The
+        summary feeds dashboards and ``/mimir/mounts``; a page count that
+        silently omits a mount reads as a shrinking corpus, which is a worse
+        signal than an outage that says so.
         """
         page_count = 0
         source_count = 0
@@ -262,12 +289,7 @@ class CompositeMimirAdapter(MimirPort):
             try:
                 summary = await mount.port.summarize()
             except Exception as exc:
-                logger.warning(
-                    "composite mimir: summarize failed on %s: %s",
-                    _sanitize_log(mount.name),
-                    _sanitize_log(exc),
-                )
-                continue
+                raise _mount_failed("summarize", mount.name, exc) from exc
 
             page_count += summary.page_count
             source_count += summary.source_count
@@ -335,9 +357,13 @@ class CompositeMimirAdapter(MimirPort):
             source, failures = await self._read_source_once(source_id, read)
             if source is not None:
                 return source
-            if not failures or len(failures) < len(self._mounts):
-                # At least one mount answered and did not have it — real absence.
+            if not failures:
+                # Every mount answered and none had it — real absence.
                 return None
+            # Any mount that could not answer might have been the one holding
+            # it. Previously absence was concluded whenever *some* mount
+            # answered, so a single broken mount turned a present source into a
+            # missing one — the provenance-defect report an outage cannot fix.
 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -391,12 +417,7 @@ class CompositeMimirAdapter(MimirPort):
         try:
             return await mount.port.read_source(source_id)
         except Exception as exc:
-            logger.debug(
-                "composite mimir: read_source_from_mount failed on %s: %s",
-                _sanitize_log(mount_name),
-                _sanitize_log(exc),
-            )
-            return None
+            raise _mount_failed("read_source_from_mount", mount_name, exc) from exc
 
     async def list_sources(self, *, unprocessed_only: bool = False) -> list[MimirSourceMeta]:
         """List sources from all mounts, de-duplicated by source_id.
@@ -410,36 +431,33 @@ class CompositeMimirAdapter(MimirPort):
         for mount in self._mounts:
             try:
                 sources = await mount.port.list_sources(unprocessed_only=unprocessed_only)
-                for meta in sources:
-                    if meta.source_id not in seen_ids:
-                        seen_ids.add(meta.source_id)
-                        meta.mount_name = mount.name
-                        results.append(meta)
             except Exception as exc:
-                logger.debug(
-                    "composite mimir: list_sources failed on %s: %s",
-                    _sanitize_log(mount.name),
-                    _sanitize_log(exc),
-                )
+                raise _mount_failed("list_sources", mount.name, exc) from exc
+            for meta in sources:
+                if meta.source_id not in seen_ids:
+                    seen_ids.add(meta.source_id)
+                    meta.mount_name = mount.name
+                    results.append(meta)
 
         return results
 
     async def lint(self, fix: bool = False) -> MimirLintReport:
-        """Run lint on all mounts, merge issue lists."""
+        """Run lint on all mounts, merge issue lists.
+
+        A mount that could not be linted must not be silently dropped: the
+        merged report would read as a clean bill of health over a corpus that
+        was never checked.
+        """
         all_issues: list[LintIssue] = []
         pages_checked = 0
 
         for mount in self._mounts:
             try:
                 report = await mount.port.lint(fix=fix)
-                all_issues.extend(report.issues)
-                pages_checked += report.pages_checked
             except Exception as exc:
-                logger.warning(
-                    "composite mimir: lint failed on %s: %s",
-                    _sanitize_log(mount.name),
-                    _sanitize_log(exc),
-                )
+                raise _mount_failed("lint", mount.name, exc) from exc
+            all_issues.extend(report.issues)
+            pages_checked += report.pages_checked
 
         return MimirLintReport(issues=all_issues, pages_checked=pages_checked)
 
@@ -455,18 +473,14 @@ class CompositeMimirAdapter(MimirPort):
         for mount in self._mounts:
             try:
                 pages = await mount.port.list_threads(state=state, limit=limit)
-                for page in pages:
-                    if page.meta.path not in seen_paths:
-                        seen_paths.add(page.meta.path)
-                        results.append(page)
-                        if len(results) >= limit:
-                            return results
             except Exception as exc:
-                logger.warning(
-                    "composite mimir: list_threads failed on %s: %s",
-                    _sanitize_log(mount.name),
-                    _sanitize_log(exc),
-                )
+                raise _mount_failed("list_threads", mount.name, exc) from exc
+            for page in pages:
+                if page.meta.path not in seen_paths:
+                    seen_paths.add(page.meta.path)
+                    results.append(page)
+                    if len(results) >= limit:
+                        return results
 
         return results
 
@@ -482,16 +496,12 @@ class CompositeMimirAdapter(MimirPort):
         for mount in self._mounts:
             try:
                 pages = await mount.port.get_thread_queue(owner_id=owner_id, limit=limit)
-                for page in pages:
-                    if page.meta.path not in seen_paths:
-                        seen_paths.add(page.meta.path)
-                        results.append(page)
             except Exception as exc:
-                logger.warning(
-                    "composite mimir: get_thread_queue failed on %s: %s",
-                    _sanitize_log(mount.name),
-                    _sanitize_log(exc),
-                )
+                raise _mount_failed("get_thread_queue", mount.name, exc) from exc
+            for page in pages:
+                if page.meta.path not in seen_paths:
+                    seen_paths.add(page.meta.path)
+                    results.append(page)
 
         results.sort(key=lambda p: p.meta.thread_weight or 0.0, reverse=True)
         return results[:limit]
@@ -502,20 +512,11 @@ class CompositeMimirAdapter(MimirPort):
         for name in target_names:
             mount = self._mount_map.get(name)
             if mount is None:
-                logger.warning(
-                    "composite mimir: write routing named unknown mount %s for path %s",
-                    _sanitize_log(name),
-                    _sanitize_log(path),
-                )
-                continue
+                raise _unknown_mount(f"update_thread_state({path!r})", name, self._mount_names())
             try:
                 await mount.port.update_thread_state(path, state)
             except Exception as exc:
-                logger.warning(
-                    "composite mimir: update_thread_state failed on %s: %s",
-                    _sanitize_log(name),
-                    _sanitize_log(exc),
-                )
+                raise _mount_failed("update_thread_state", name, exc) from exc
 
     async def assign_thread_owner(self, path: str, owner_id: str | None) -> None:
         """Claim thread ownership on routed mounts.
@@ -526,22 +527,13 @@ class CompositeMimirAdapter(MimirPort):
         for name in target_names:
             mount = self._mount_map.get(name)
             if mount is None:
-                logger.warning(
-                    "composite mimir: write routing named unknown mount %s for path %s",
-                    _sanitize_log(name),
-                    _sanitize_log(path),
-                )
-                continue
+                raise _unknown_mount(f"assign_thread_owner({path!r})", name, self._mount_names())
             try:
                 await mount.port.assign_thread_owner(path, owner_id)
             except ThreadOwnershipError:
                 raise
             except Exception as exc:
-                logger.warning(
-                    "composite mimir: assign_thread_owner failed on %s: %s",
-                    _sanitize_log(name),
-                    _sanitize_log(exc),
-                )
+                raise _mount_failed("assign_thread_owner", name, exc) from exc
 
     async def update_thread_weight(
         self,
@@ -554,20 +546,11 @@ class CompositeMimirAdapter(MimirPort):
         for name in target_names:
             mount = self._mount_map.get(name)
             if mount is None:
-                logger.warning(
-                    "composite mimir: write routing named unknown mount %s for path %s",
-                    _sanitize_log(name),
-                    _sanitize_log(path),
-                )
-                continue
+                raise _unknown_mount(f"update_thread_weight({path!r})", name, self._mount_names())
             try:
                 await mount.port.update_thread_weight(path, weight, signals)
             except Exception as exc:
-                logger.warning(
-                    "composite mimir: update_thread_weight failed on %s: %s",
-                    _sanitize_log(name),
-                    _sanitize_log(exc),
-                )
+                raise _mount_failed("update_thread_weight", name, exc) from exc
 
     # ------------------------------------------------------------------
     # MimirPort — write operations (routed)
@@ -591,25 +574,16 @@ class CompositeMimirAdapter(MimirPort):
         for name in target_names:
             mount = self._mount_map.get(name)
             if mount is None:
-                logger.warning(
-                    "composite mimir: write routing named unknown mount %s for path %s",
-                    _sanitize_log(name),
-                    _sanitize_log(path),
-                )
-                continue
+                raise _unknown_mount(f"upsert_page({path!r})", name, self._mount_names())
             try:
                 await mount.port.upsert_page(path, content, meta=meta)
-                logger.debug(
-                    "composite mimir: wrote %s to mount %s",
-                    _sanitize_log(path),
-                    _sanitize_log(name),
-                )
             except Exception as exc:
-                logger.warning(
-                    "composite mimir: upsert_page failed on %s: %s",
-                    _sanitize_log(name),
-                    _sanitize_log(exc),
-                )
+                raise _mount_failed("upsert_page", name, exc) from exc
+            logger.debug(
+                "composite mimir: wrote %s to mount %s",
+                _sanitize_log(path),
+                _sanitize_log(name),
+            )
 
     async def delete_page(self, path: str, mimir: str | None = None) -> bool:
         """Delete *path* from the mounts selected by normal write routing."""
@@ -617,18 +591,9 @@ class CompositeMimirAdapter(MimirPort):
         for name in self._write_routing.resolve(path, explicit=mimir):
             mount = self._mount_map.get(name)
             if mount is None:
-                logger.warning(
-                    "composite mimir: delete routing named unknown mount %s for path %s",
-                    _sanitize_log(name),
-                    _sanitize_log(path),
-                )
-                continue
+                raise _unknown_mount(f"delete_page({path!r})", name, self._mount_names())
             try:
                 deleted = await mount.port.delete_page(path) or deleted
             except Exception as exc:
-                logger.warning(
-                    "composite mimir: delete_page failed on %s: %s",
-                    _sanitize_log(name),
-                    _sanitize_log(exc),
-                )
+                raise _mount_failed("delete_page", name, exc) from exc
         return deleted
