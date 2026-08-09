@@ -90,11 +90,16 @@ class TestAgentMemoryHooks:
         assert call_kwargs.kwargs["response_summary"] == "Done."
 
     @pytest.mark.asyncio
-    async def test_on_turn_complete_exception_does_not_abort_turn(self) -> None:
+    async def test_on_turn_complete_exception_aborts_the_turn(self) -> None:
+        """Replaces a test asserting the agent swallowed this.
+
+        The rolling session summary is memory state; dropping it leaves later
+        turns summarising across a gap, and the warning that covered it told
+        nobody.
+        """
         memory = StubMemory()
         memory._on_turn_complete_mock = AsyncMock(side_effect=RuntimeError("hook failed"))
         agent, _ = self._make_agent(memory)
 
-        # Should not raise — the agent swallows on_turn_complete errors
-        result = await agent.run_turn("hello")
-        assert result.response == "Done."
+        with pytest.raises(RuntimeError, match="on_turn_complete failed"):
+            await agent.run_turn("hello")

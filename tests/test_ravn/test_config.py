@@ -79,17 +79,6 @@ class TestLLMConfig:
         assert c.max_retries >= 0
         assert c.timeout > 0
         assert isinstance(c.provider, LLMProviderConfig)
-        assert c.fallbacks == []
-
-    def test_fallback_chain(self) -> None:
-        c = LLMConfig(
-            fallbacks=[
-                LLMProviderConfig(adapter="pkg.FallbackA"),
-                LLMProviderConfig(adapter="pkg.FallbackB"),
-            ]
-        )
-        assert len(c.fallbacks) == 2
-        assert c.fallbacks[0].adapter == "pkg.FallbackA"
 
 
 class TestObservabilityConfig:

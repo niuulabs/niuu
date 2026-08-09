@@ -46,7 +46,6 @@ CORPUS_EMBEDDING_COVERAGE = "ravn.memory.corpus.embedding.coverage"
 CORPUS_INDEX_COVERAGE = "ravn.memory.corpus.index.coverage"
 
 RESIDENT_STATE_OPERATIONS = "ravn.resident_state.operations"
-RESIDENT_STATE_FALLBACK = "ravn.resident_state.fallback"
 
 MIMIR_OPERATIONS = "ravn.mimir.operations"
 MIMIR_RESULTS = "ravn.mimir.results"
@@ -58,7 +57,6 @@ ATTR_OPERATION = "ravn.memory.operation"
 ATTR_RESULT = "ravn.memory.result"
 ATTR_ADAPTER = "ravn.resident_state.adapter"
 ATTR_RECORD_TYPE = "ravn.resident_state.record_type"
-ATTR_REASON = "ravn.resident_state.reason"
 ATTR_MIMIR_OPERATION = "ravn.mimir.operation"
 ATTR_COMPONENT = "ravn.runtime.component"
 ATTR_ENVIRONMENT = "ravn.environment.id"
@@ -241,31 +239,6 @@ def record_resident_state_operation(
     )
 
 
-def record_resident_state_fallback(
-    *,
-    preferred: str,
-    selected: str,
-    reason: str,
-    component: str = "resident",
-    environment_id: str = "",
-) -> None:
-    """Emit an adapter fallback.
-
-    A resident whose preferred brain is unreachable keeps working against the
-    local store, so this degradation is invisible without a counter.
-    """
-    get_observability().count(
-        RESIDENT_STATE_FALLBACK,
-        attributes={
-            "ravn.resident_state.preferred": preferred,
-            ATTR_ADAPTER: selected,
-            ATTR_REASON: reason,
-            **_identity(component, environment_id),
-        },
-        description="Resident-state adapter fallbacks away from the preferred store.",
-    )
-
-
 def record_mimir_operation(
     *,
     operation: str,
@@ -311,7 +284,6 @@ __all__ = [
     "ATTR_ENVIRONMENT",
     "ATTR_MIMIR_OPERATION",
     "ATTR_OPERATION",
-    "ATTR_REASON",
     "ATTR_RECORD_TYPE",
     "ATTR_RESULT",
     "CANDIDATES",
@@ -325,7 +297,6 @@ __all__ = [
     "MIMIR_RESULTS",
     "OPERATIONS",
     "RELEVANCE_SCORE",
-    "RESIDENT_STATE_FALLBACK",
     "RESIDENT_STATE_OPERATIONS",
     "RESULT_EMPTY",
     "RESULT_ERROR",
@@ -335,7 +306,6 @@ __all__ = [
     "record_injected_chars",
     "record_memory_operation",
     "record_mimir_operation",
-    "record_resident_state_fallback",
     "record_resident_state_operation",
     "result_for",
 ]

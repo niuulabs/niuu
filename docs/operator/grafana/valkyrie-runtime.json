@@ -337,8 +337,8 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 103},
       "id": 78,
       "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [{"expr": "histogram_quantile(0.50, sum by (le) (rate(ravn_memory_prefetch_injected_chars_bucket{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval])))", "legendFormat": "p50 injected chars", "refId": "A"}, {"expr": "histogram_quantile(0.95, sum by (le) (rate(ravn_memory_prefetch_injected_chars_bucket{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval])))", "legendFormat": "p95 injected chars", "refId": "B"}, {"expr": "sum by (ravn_resident_state_adapter, ravn_resident_state_reason) (rate(ravn_resident_state_fallback{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval]))", "legendFormat": "fallback -> {{ravn_resident_state_adapter}}", "refId": "C"}],
-      "title": "Injected context and resident-state fallbacks",
+      "targets": [{"expr": "histogram_quantile(0.50, sum by (le) (rate(ravn_memory_prefetch_injected_chars_bucket{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval])))", "legendFormat": "p50 injected chars", "refId": "A"}, {"expr": "histogram_quantile(0.95, sum by (le) (rate(ravn_memory_prefetch_injected_chars_bucket{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval])))", "legendFormat": "p95 injected chars", "refId": "B"}],
+      "title": "Injected context size",
       "type": "timeseries"
     },
     {

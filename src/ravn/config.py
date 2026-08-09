@@ -121,10 +121,6 @@ class LLMConfig(BaseModel):
     retry_base_delay: float = Field(default=1.0)
     timeout: float = Field(default=120.0)
     provider: LLMProviderConfig = Field(default_factory=LLMProviderConfig)
-    fallbacks: list[LLMProviderConfig] = Field(
-        default_factory=list,
-        description="Ordered list of fallback providers tried when the primary fails.",
-    )
     extended_thinking: ExtendedThinkingConfig = Field(
         default_factory=ExtendedThinkingConfig,
         description="Extended thinking (deliberate reasoning budget) configuration.",
@@ -3016,36 +3012,27 @@ class ResidentInboxConfig(BaseModel):
 class ResidentStateConfig(BaseModel):
     """Resident memory/state adapter selection.
 
-    ``adapter`` is the preferred store (GBrain by default); ``fallback_adapter``
-    is used only when the preferred adapter reports it is not available (e.g.
-    GBrain's CLI/endpoint is absent). Selection is done by
-    ``ravn.adapters.resident_state.select_resident_state`` — no caller branches
-    on adapter type.
+    One adapter, no fallback. A previous version preferred GBrain and dropped
+    to a local store whenever GBrain was unavailable — which was permanently,
+    on every resident, entirely unnoticed. Picking a store is configuration;
+    it is not something to resolve at runtime by trying the next one.
+
+    The default is the local filesystem store because that is what residents
+    actually run on. Point ``adapter`` at GBrain (or anything else) to use it,
+    and it will fail loudly if its backend is not reachable.
     """
 
     adapter: str = Field(
-        default="ravn.adapters.resident_state.gbrain.GBrainResidentStateAdapter",
-        description="Fully-qualified preferred ResidentStatePort adapter class.",
+        default="ravn.adapters.resident_state.mimir.LocalResidentState",
+        description="Fully-qualified ResidentStatePort adapter class. No fallback.",
     )
     kwargs: dict[str, Any] = Field(
         default_factory=dict,
-        description="Constructor kwargs passed to the preferred resident state adapter.",
+        description="Constructor kwargs passed to the resident state adapter.",
     )
     secret_kwargs_env: dict[str, str] = Field(
         default_factory=dict,
         description="Maps adapter kwarg names to env var names for secret injection.",
-    )
-    fallback_adapter: str = Field(
-        default="ravn.adapters.resident_state.mimir.LocalResidentState",
-        description="Adapter used when the preferred adapter is unavailable.",
-    )
-    fallback_kwargs: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Constructor kwargs passed to the fallback resident state adapter.",
-    )
-    fallback_secret_kwargs_env: dict[str, str] = Field(
-        default_factory=dict,
-        description="Maps fallback adapter kwarg names to env var names for secret injection.",
     )
     continuation_max_turns: int = Field(
         default=3,

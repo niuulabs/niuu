@@ -21,6 +21,7 @@ import logging
 import random
 import sqlite3
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
@@ -367,6 +368,56 @@ class SqliteMemoryAdapter(MemoryPort):
             index_coverage=min(1.0, indexed / episodes),
             environment_id=self._environment_id,
         )
+
+    async def backfill_embeddings(
+        self,
+        *,
+        batch_size: int = 64,
+        max_documents: int = 0,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> tuple[int, int]:
+        """Embed already-indexed documents that have no vector.
+
+        Enabling embeddings only affects new writes, so a corpus built while
+        they were off stays lexical-only — which is the state that made a
+        conversational query return nothing against 32k episodes. This walks
+        the backlog in batches and returns ``(embedded, remaining)``.
+
+        Failures are not swallowed: an embedding endpoint that starts refusing
+        halfway through raises, having committed the batches that succeeded,
+        so a partial run is resumable rather than silently incomplete.
+        """
+        if self._embedding_port is None:
+            raise RuntimeError(
+                "backfill_embeddings requires an embedding port; enable "
+                "embedding.enabled and configure an adapter first."
+            )
+
+        embedded = 0
+        while True:
+            if max_documents and embedded >= max_documents:
+                break
+            want = batch_size
+            if max_documents:
+                want = min(batch_size, max_documents - embedded)
+            batch = await self._search.unembedded(limit=want)
+            if not batch:
+                break
+
+            vectors = await self._embedding_port.embed_batch([content for _, content, _ in batch])
+            if len(vectors) != len(batch):
+                raise RuntimeError(
+                    f"embedding backend returned {len(vectors)} vectors for "
+                    f"{len(batch)} inputs; refusing to write a misaligned batch"
+                )
+            for (doc_id, content, metadata), vector in zip(batch, vectors, strict=True):
+                await self._search.index(doc_id, content, metadata, embedding=vector)
+            embedded += len(batch)
+            if progress is not None:
+                progress(embedded, len(batch))
+
+        remaining = len(await self._search.unembedded(limit=1))
+        return embedded, remaining
 
     async def count_episodes(self) -> int:
         """Return the total number of stored episodes."""

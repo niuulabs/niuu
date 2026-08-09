@@ -78,7 +78,6 @@ def test_runtime_dashboard_covers_every_agent_memory_metric() -> None:
         memory_telemetry.CORPUS_EMBEDDING_COVERAGE,
         memory_telemetry.CORPUS_INDEX_COVERAGE,
         memory_telemetry.RESIDENT_STATE_OPERATIONS,
-        memory_telemetry.RESIDENT_STATE_FALLBACK,
         memory_telemetry.MIMIR_OPERATIONS,
     ):
         assert metric.replace(".", "_") in queries, f"{metric} is emitted but never plotted"

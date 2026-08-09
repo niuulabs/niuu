@@ -234,6 +234,10 @@ class SqliteSearchAdapter(SearchPort):
             return await self._search_hybrid(query, limit=limit)
         return await asyncio.to_thread(self._search_fts_sync, query, limit)
 
+    async def unembedded(self, limit: int = 500) -> list[tuple[str, str, dict[str, Any]]]:
+        """Return indexed documents with a NULL embedding, oldest rowid first."""
+        return await asyncio.to_thread(self._unembedded_sync, limit)
+
     async def remove(self, id: str) -> None:
         await asyncio.to_thread(self._remove_sync, id)
 
@@ -378,6 +382,20 @@ class SqliteSearchAdapter(SearchPort):
                     jitter = random.uniform(self._min_jitter_ms, self._max_jitter_ms) / 1000.0
                     time.sleep(jitter)
         raise last_exc
+
+    def _unembedded_sync(self, limit: int) -> list[tuple[str, str, dict[str, Any]]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT id, content, metadata FROM search_index "
+                "WHERE embedding IS NULL ORDER BY rowid LIMIT ?",
+                (limit,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        finally:
+            conn.close()
+        return [(r["id"], r["content"], json.loads(r["metadata"] or "{}")) for r in rows]
 
     def _index_sync(
         self,

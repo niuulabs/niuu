@@ -1,4 +1,4 @@
-"""E2E scenarios for memory, session search, and fallback LLM (NIU-456).
+"""E2E scenarios for memory and session search (NIU-456).
 
 Scenario 1 — Memory recall:
   Seed episodes → new conversation references past work → prefetch injects
@@ -20,16 +20,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ravn.adapters.llm.fallback import FallbackLLMAdapter
 from ravn.adapters.memory.sqlite import SqliteMemoryAdapter
 from ravn.adapters.permission.allow_deny import AllowAllPermission
 from ravn.adapters.tools.session_search import SessionSearchTool
 from ravn.agent import RavnAgent
-from ravn.domain.exceptions import AllProvidersExhaustedError, LLMError
 from ravn.domain.models import (
     Episode,
     LLMResponse,
@@ -351,107 +348,3 @@ class TestSessionSearchScenario:
 
         result = await agent.run_turn("show me past prometheus work")
         assert "prometheus" in result.response.lower()
-
-
-# ---------------------------------------------------------------------------
-# Scenario 3 — Fallback trigger
-# ---------------------------------------------------------------------------
-
-
-class TestFallbackTriggerScenario:
-    async def test_primary_429_fallback_responds(self) -> None:
-        """Primary mock raises 429 → fallback mock responds → agent gets a response."""
-        primary = MagicMock(spec=LLMPort)
-        primary.generate = AsyncMock(side_effect=LLMError("rate limited", status_code=429))
-
-        async def _primary_stream(*args, **kwargs) -> AsyncIterator[StreamEvent]:
-            raise LLMError("rate limited", status_code=429)
-            yield  # pragma: no cover — makes this an async generator
-
-        primary.stream = _primary_stream
-
-        fallback = ScriptedLLM([_text_response("Answered by fallback")])
-        adapter = FallbackLLMAdapter([primary, fallback])
-
-        agent, _ = _make_agent(adapter)
-        result = await agent.run_turn("hello")
-
-        assert "Answered by fallback" in result.response
-
-    async def test_all_providers_fail_raises(self) -> None:
-        """When all providers fail, AllProvidersExhaustedError propagates."""
-        err = LLMError("all gone", status_code=503)
-
-        p1 = MagicMock(spec=LLMPort)
-        p1.generate = AsyncMock(side_effect=err)
-
-        async def _fail_stream(*args, **kwargs) -> AsyncIterator[StreamEvent]:
-            raise err
-            yield
-
-        p1.stream = _fail_stream
-
-        p2 = MagicMock(spec=LLMPort)
-        p2.generate = AsyncMock(side_effect=err)
-        p2.stream = _fail_stream
-
-        adapter = FallbackLLMAdapter([p1, p2])
-        agent, _ = _make_agent(adapter)
-
-        with pytest.raises(AllProvidersExhaustedError):
-            await agent.run_turn("this will fail")
-
-    async def test_fallback_transparent_to_caller(self) -> None:
-        """After a fallback the agent TurnResult looks identical to normal."""
-        primary = MagicMock(spec=LLMPort)
-        primary.generate = AsyncMock(side_effect=LLMError("down", status_code=429))
-
-        async def _primary_fail(*args, **kwargs) -> AsyncIterator[StreamEvent]:
-            raise LLMError("down", status_code=429)
-            yield
-
-        primary.stream = _primary_fail
-
-        fallback = ScriptedLLM([_text_response("Hello from fallback")])
-        adapter = FallbackLLMAdapter([primary, fallback])
-
-        agent, _ = _make_agent(adapter)
-        result = await agent.run_turn("say hello")
-
-        assert result.response == "Hello from fallback"
-        assert result.usage is not None
-
-    async def test_fallback_restoration_primary_tried_next_turn(self) -> None:
-        """After using a fallback, the next turn tries the primary first."""
-        call_order: list[str] = []
-
-        primary = MagicMock(spec=LLMPort)
-        fallback_llm = MagicMock(spec=LLMPort)
-
-        async def _primary_stream_first_fail(*args, **kwargs) -> AsyncIterator[StreamEvent]:
-            call_order.append("primary")
-            if len(call_order) == 1:
-                raise LLMError("first time", status_code=429)
-            yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="primary")
-            yield StreamEvent(type=StreamEventType.MESSAGE_DONE, usage=_USAGE)
-
-        async def _fallback_stream(*args, **kwargs) -> AsyncIterator[StreamEvent]:
-            call_order.append("fallback")
-            yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="fallback")
-            yield StreamEvent(type=StreamEventType.MESSAGE_DONE, usage=_USAGE)
-
-        primary.stream = _primary_stream_first_fail
-        fallback_llm.stream = _fallback_stream
-
-        adapter = FallbackLLMAdapter([primary, fallback_llm])
-        agent, _ = _make_agent(adapter)
-
-        # Turn 1: primary fails → fallback used.
-        r1 = await agent.run_turn("turn 1")
-        assert r1.response == "fallback"
-
-        # Turn 2: primary tried first (restoration).
-        r2 = await agent.run_turn("turn 2")
-        assert r2.response == "primary"
-
-        assert call_order == ["primary", "fallback", "primary"]

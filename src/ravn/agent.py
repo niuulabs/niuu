@@ -662,8 +662,15 @@ class RavnAgent:
                     user_input=user_input,
                     response_summary=final_response,
                 )
-            except Exception:
-                logger.warning("Memory on_turn_complete failed; continuing.", exc_info=True)
+            except Exception as exc:
+                # The rolling session summary is memory state like any other.
+                # Losing it leaves later turns summarising from a gap, and the
+                # warning that used to cover it told nobody.
+                raise RuntimeError(
+                    f"memory on_turn_complete failed for session {self._session.id}: "
+                    f"{exc}. Memory is configured, so a dropped turn summary is a "
+                    f"hard failure, not a degraded mode."
+                ) from exc
 
         # NIU-594: emit ravn.session.ended enriched with structured outcome
         if parsed_outcome is not None:

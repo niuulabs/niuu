@@ -1089,6 +1089,50 @@ def inbox_migrate(
         raise typer.Exit(1)
 
 
+@app.command("memory-backfill-embeddings")
+def memory_backfill_embeddings(
+    config: str = typer.Option("", "--config", help="Path to the ravn config file."),
+    batch_size: int = typer.Option(64, help="Documents embedded per request."),
+    max_documents: int = typer.Option(0, help="Stop after this many; 0 means all."),
+) -> None:
+    """Embed indexed episodes that predate embeddings being enabled.
+
+    Turning embeddings on only affects new writes, so a corpus built while
+    they were off stays lexical-only — the state in which a conversational
+    query returned nothing against tens of thousands of episodes. Resumable:
+    each batch commits before the next is fetched, so a run interrupted or
+    refused partway can simply be run again.
+    """
+    import asyncio  # noqa: PLC0415
+
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+    settings = Settings()
+    memory = _build_memory(settings)
+    if memory is None:
+        typer.echo("memory backend is disabled; nothing to backfill.", err=True)
+        raise typer.Exit(1)
+    if not hasattr(memory, "backfill_embeddings"):
+        typer.echo(
+            f"{type(memory).__name__} does not support embedding backfill.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    def _progress(done: int, batch: int) -> None:
+        typer.echo(f"  embedded {done} (+{batch})")
+
+    embedded, remaining = asyncio.run(
+        memory.backfill_embeddings(
+            batch_size=batch_size,
+            max_documents=max_documents,
+            progress=_progress,
+        )
+    )
+    typer.echo(f"embedded  : {embedded}")
+    typer.echo(f"remaining : {remaining}")
+
+
 # ---------------------------------------------------------------------------
 # Resume CLI (NIU-537)
 # ---------------------------------------------------------------------------

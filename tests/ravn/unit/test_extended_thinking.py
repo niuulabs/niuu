@@ -7,7 +7,6 @@ Covers:
 - RavnEvent.thinking() factory method
 - AnthropicAdapter: thinking param in request, THINKING stream events,
   thinking_tokens in usage, headers, generate() with thinking blocks
-- FallbackLLMAdapter: passes thinking to supports_thinking providers, strips
   it for non-supporting providers
 - LLMPort.supports_thinking property
 - Agent: _parse_think_flag, configured reasoning activation,
@@ -24,7 +23,6 @@ import pytest
 import respx
 
 from ravn.adapters.llm.anthropic import AnthropicAdapter
-from ravn.adapters.llm.fallback import FallbackLLMAdapter
 from ravn.agent import RavnAgent, _parse_think_flag
 from ravn.config import ExtendedThinkingConfig
 from ravn.domain.events import RavnEvent, RavnEventType
@@ -397,8 +395,6 @@ async def test_anthropic_adapter_generate_without_thinking():
 
 
 # ---------------------------------------------------------------------------
-# FallbackLLMAdapter — thinking routing
-# ---------------------------------------------------------------------------
 
 
 class ThinkingCapableLLM(LLMPort):
@@ -489,82 +485,6 @@ class NonThinkingLLM(LLMPort):
             type=StreamEventType.MESSAGE_DONE,
             usage=TokenUsage(input_tokens=1, output_tokens=1),
         )
-
-
-@pytest.mark.asyncio
-async def test_fallback_passes_thinking_to_capable_provider():
-    capable = ThinkingCapableLLM()
-    fallback = FallbackLLMAdapter([capable])
-
-    thinking = {"type": "enabled", "budget_tokens": 4000}
-    await fallback.generate(
-        [{"role": "user", "content": "hi"}],
-        tools=[],
-        system="",
-        model="m",
-        max_tokens=1024,
-        thinking=thinking,
-    )
-    assert capable.last_thinking == thinking
-
-
-@pytest.mark.asyncio
-async def test_fallback_strips_thinking_for_non_capable_provider():
-    non_capable = NonThinkingLLM()
-    fallback = FallbackLLMAdapter([non_capable])
-
-    thinking = {"type": "enabled", "budget_tokens": 4000}
-    await fallback.generate(
-        [{"role": "user", "content": "hi"}],
-        tools=[],
-        system="",
-        model="m",
-        max_tokens=1024,
-        thinking=thinking,
-    )
-    # Should be stripped to None
-    assert non_capable.last_thinking is None
-
-
-@pytest.mark.asyncio
-async def test_fallback_stream_passes_thinking_to_capable_provider():
-    capable = ThinkingCapableLLM()
-    fallback = FallbackLLMAdapter([capable])
-
-    thinking = {"type": "enabled", "budget_tokens": 4000}
-    async for _ in fallback.stream(
-        [{"role": "user", "content": "hi"}],
-        tools=[],
-        system="",
-        model="m",
-        max_tokens=1024,
-        thinking=thinking,
-    ):
-        pass
-    assert capable.last_thinking == thinking
-
-
-@pytest.mark.asyncio
-async def test_fallback_stream_strips_thinking_for_non_capable():
-    non_capable = NonThinkingLLM()
-    fallback = FallbackLLMAdapter([non_capable])
-
-    thinking = {"type": "enabled", "budget_tokens": 4000}
-    async for _ in fallback.stream(
-        [{"role": "user", "content": "hi"}],
-        tools=[],
-        system="",
-        model="m",
-        max_tokens=1024,
-        thinking=thinking,
-    ):
-        pass
-    assert non_capable.last_thinking is None
-
-
-# ---------------------------------------------------------------------------
-# Agent — extended thinking triggers
-# ---------------------------------------------------------------------------
 
 
 class ThinkingRecordingLLM(LLMPort):

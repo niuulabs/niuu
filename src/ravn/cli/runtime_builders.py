@@ -363,18 +363,11 @@ def _build_llm(settings: Settings) -> Any:
 
     primary: LLMPort = cls(**kwargs)
 
-    if not settings.llm.fallbacks:
-        return primary
-
-    from ravn.adapters.llm.fallback import FallbackLLMAdapter
-
-    providers: list[LLMPort] = [primary]
-    for fb in settings.llm.fallbacks:
-        fb_cls = _import_class(fb.adapter)
-        fb_kwargs = _inject_secrets(dict(fb.kwargs), fb.secret_kwargs_env)
-        providers.append(fb_cls(**fb_kwargs))
-
-    return FallbackLLMAdapter(providers=providers)
+    # No provider substitution. Rotating to a second provider mid-run means the
+    # answer came from a model nobody chose for it, decided at runtime and
+    # usually unnoticed. If the configured provider cannot serve, the call
+    # fails; changing provider is a deploy.
+    return primary
 
 
 def _build_executor(

@@ -566,35 +566,3 @@ class TestBifrostRetry:
 # ---------------------------------------------------------------------------
 # Fallback chain integration
 # ---------------------------------------------------------------------------
-
-
-@respx.mock
-async def test_bifrost_in_fallback_chain() -> None:
-    """Bifrost down → falls back to local adapter via FallbackLLMAdapter."""
-    from ravn.adapters.llm.fallback import FallbackLLMAdapter
-    from ravn.ports.llm import LLMPort
-
-    class _StubLocal(LLMPort):
-        async def generate(self, messages, *, tools, system, model, max_tokens, thinking=None):
-            from ravn.domain.models import LLMResponse, StopReason, TokenUsage
-
-            return LLMResponse(
-                content="local fallback",
-                tool_calls=[],
-                stop_reason=StopReason.END_TURN,
-                usage=TokenUsage(input_tokens=1, output_tokens=1),
-            )
-
-        async def stream(self, messages, *, tools, system, model, max_tokens, thinking=None):
-            raise NotImplementedError
-            yield  # make it an async generator
-
-    # Bifrost returns 503 → FallbackLLMAdapter should fall through to local
-    respx.post(_BIFROST_URL).mock(return_value=httpx.Response(503, text="down"))
-
-    bifrost = BifrostAdapter(base_url=_BASE_URL, max_retries=0)
-    local = _StubLocal()
-    chain = FallbackLLMAdapter([bifrost, local])
-
-    result = await chain.generate([], tools=[], system="", model="m", max_tokens=100)
-    assert result.content == "local fallback"

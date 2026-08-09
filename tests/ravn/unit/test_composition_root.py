@@ -66,23 +66,19 @@ class TestBuildLlm:
         assert kwargs["max_tokens"] == settings.effective_max_tokens()
 
     @pytest.mark.usefixtures("_api_key")
-    def test_with_fallbacks_returns_fallback_adapter(self, settings: Settings) -> None:
-        from ravn.adapters.llm.fallback import FallbackLLMAdapter
+    def test_no_provider_substitution_is_configurable(self, settings: Settings) -> None:
+        """Replaces a test asserting a fallback provider list was honoured.
+
+        Rotating providers at runtime meant an answer could come from a model
+        nobody chose for that call, usually unnoticed. Changing provider is a
+        deploy, not a runtime branch.
+        """
         from ravn.cli.commands import _build_llm
-        from ravn.config import LLMProviderConfig
 
-        settings.llm.fallbacks = [
-            LLMProviderConfig(
-                adapter="ravn.adapters.llm.anthropic.AnthropicAdapter",
-                kwargs={},
-            ),
-        ]
+        assert not hasattr(settings.llm, "fallbacks")
+        llm = _build_llm(settings)
 
-        with patch("ravn.adapters.llm.anthropic.AnthropicAdapter") as mock_cls:
-            mock_cls.return_value = MagicMock()
-            llm = _build_llm(settings)
-
-        assert isinstance(llm, FallbackLLMAdapter)
+        assert type(llm).__name__ != "FallbackLLMAdapter"
 
     @pytest.mark.usefixtures("_api_key")
     def test_custom_provider_adapter(self, settings: Settings) -> None:

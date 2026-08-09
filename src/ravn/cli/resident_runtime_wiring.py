@@ -150,7 +150,7 @@ async def _build_resident_state(
     workspace: Path,
     mimir: Any | None,
 ) -> Any:
-    """Select the configured preferred/fallback ResidentStatePort adapters."""
+    """Build the single configured ResidentStatePort adapter. No fallback."""
     import inspect  # noqa: PLC0415
 
     from ravn.adapters.resident_state import select_resident_state  # noqa: PLC0415
@@ -158,14 +158,11 @@ async def _build_resident_state(
     cfg = settings.resident_state
     state_root = _resident_ravn_state_dir(workspace, settings) / "resident-state"
 
-    def _candidate(
-        adapter_path: str,
-        kwargs: dict[str, Any],
-        secret_kwargs_env: dict[str, str],
-    ) -> Any | None:
+    def _build(adapter_path: str, kwargs: dict[str, Any], secrets: dict[str, str]) -> Any:
+        """Construct the configured adapter, or raise saying why it could not be."""
         try:
             cls = _import_class(adapter_path)
-            resolved = _inject_secrets(dict(kwargs), secret_kwargs_env)
+            resolved = _inject_secrets(dict(kwargs), secrets)
             params = inspect.signature(cls.__init__).parameters
             if "root" in params and "root" not in resolved:
                 resolved["root"] = state_root
@@ -177,24 +174,13 @@ async def _build_resident_state(
                 resolved["environment_id"] = settings.environment.id
             return cls(**resolved)
         except Exception as exc:
-            logger.warning("resident state adapter %s unavailable: %s", adapter_path, exc)
-            return None
+            raise RuntimeError(
+                f"resident state adapter {adapter_path!r} is configured but could not "
+                f"be constructed: {exc}. Fix the configuration, or configure a "
+                f"different resident_state.adapter."
+            ) from exc
 
-    candidates = [
-        candidate
-        for candidate in (
-            _candidate(cfg.adapter, cfg.kwargs, cfg.secret_kwargs_env),
-            _candidate(
-                cfg.fallback_adapter,
-                cfg.fallback_kwargs,
-                cfg.fallback_secret_kwargs_env,
-            ),
-        )
-        if candidate is not None
-    ]
-    if not candidates:
-        raise RuntimeError("no resident-state adapters could be constructed")
-    return await select_resident_state(*candidates, environment_id=settings.environment.id)
+    return await select_resident_state(_build(cfg.adapter, cfg.kwargs, cfg.secret_kwargs_env))
 
 
 def _build_resident_runtime(

@@ -237,6 +237,12 @@ class TestSqliteAdapterOperations:
 
 
 class TestResidentStateSelection:
+    """One configured adapter, no fallback.
+
+    Demoting to a second store when the first was unavailable ran every
+    resident against different data than configured, permanently and silently.
+    """
+
     class _Adapter:
         def __init__(self, available: bool) -> None:
             self._available = available
@@ -244,29 +250,13 @@ class TestResidentStateSelection:
         async def available(self) -> bool:
             return self._available
 
-    async def test_preferred_adapter_records_no_fallback(
-        self, telemetry: RecordingTelemetry
-    ) -> None:
-        preferred = self._Adapter(available=True)
+    async def test_available_adapter_is_returned(self) -> None:
+        adapter = self._Adapter(available=True)
 
-        selected = await select_resident_state(preferred, self._Adapter(available=True))
+        assert await select_resident_state(adapter) is adapter
 
-        assert selected is preferred
-        assert telemetry.total(memory_telemetry.RESIDENT_STATE_FALLBACK) == 0
-
-    async def test_falling_back_is_counted(self, telemetry: RecordingTelemetry) -> None:
-        """A resident silently demoted to its local store must be visible."""
-        fallback = self._Adapter(available=True)
-
-        selected = await select_resident_state(self._Adapter(available=False), fallback)
-
-        assert selected is fallback
-        assert telemetry.total(memory_telemetry.RESIDENT_STATE_FALLBACK) == 1
-
-    async def test_no_available_adapter_still_fails_loudly(
-        self, telemetry: RecordingTelemetry
-    ) -> None:
-        with pytest.raises(RuntimeError):
+    async def test_unavailable_adapter_raises_instead_of_substituting(self) -> None:
+        with pytest.raises(RuntimeError, match="backend is not available"):
             await select_resident_state(self._Adapter(available=False))
 
 
@@ -479,20 +469,3 @@ class TestEnvironmentIdentity:
 
         attrs = telemetry.attributes_for(memory_telemetry.OPERATIONS)[0]
         assert memory_telemetry.ATTR_ENVIRONMENT not in attrs
-
-    async def test_resident_state_fallback_carries_the_environment_id(
-        self, telemetry: RecordingTelemetry
-    ) -> None:
-        class _Adapter:
-            def __init__(self, available: bool) -> None:
-                self._available = available
-
-            async def available(self) -> bool:
-                return self._available
-
-        await select_resident_state(
-            _Adapter(available=False), _Adapter(available=True), environment_id="regin"
-        )
-
-        attrs = telemetry.attributes_for(memory_telemetry.RESIDENT_STATE_FALLBACK)
-        assert attrs and attrs[0][memory_telemetry.ATTR_ENVIRONMENT] == "regin"

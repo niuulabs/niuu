@@ -87,6 +87,15 @@ class SearchPort(ABC):
         No-op if the document does not exist.
         """
 
+    async def unembedded(self, limit: int = 500) -> list[tuple[str, str, dict[str, Any]]]:
+        """Return indexed documents that carry no embedding.
+
+        Turning embeddings on only affects new writes, so an existing corpus
+        stays lexical-only until it is backfilled. Implementations without a
+        vector column return an empty list.
+        """
+        return []
+
     @abstractmethod
     async def rebuild(self) -> None:
         """Rebuild the search index from the stored documents.
