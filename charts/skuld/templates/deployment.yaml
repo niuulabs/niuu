@@ -445,6 +445,13 @@ spec:
               mountPath: /workspace
               subPath: {{ include "skuld.sessionId" . }}/workspace
             {{- end }}
+            {{- if .Values.homeVolume.enabled }}
+            # /workspace is an emptyDir for residents, so anything ravn writes
+            # there dies with the pod. The home claim is the only durable place
+            # it can keep episodic memory across restarts.
+            - name: home
+              mountPath: {{ .Values.homeVolume.mountPath }}
+            {{- end }}
             - name: ravn-config
               mountPath: /etc/ravn/config.yaml
               subPath: config.yaml

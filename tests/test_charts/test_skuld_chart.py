@@ -834,6 +834,48 @@ class TestResidentMemoryPersistence:
         assert config["memory"]["backend"] == "sqlite"
 
 
+class TestRavnHomeVolume:
+    """Ravn must see the persistent home claim, not only the emptyDir workspace.
+
+    Making the memory path configurable achieves nothing if the only volume
+    the ravn container can write to is erased with the pod.
+    """
+
+    def test_ravn_mounts_the_home_volume_when_enabled(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(
+            tmp_path,
+            {
+                "resident": {"enabled": True, "persona": "product-steward"},
+                "homeVolume": {
+                    "enabled": True,
+                    "existingClaim": "some-home-claim",
+                    "mountPath": "/volundr/home",
+                },
+            },
+        )
+        deployment = _deployment_from_rendered(rendered)
+        ravn = next(
+            c for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == "ravn"
+        )
+        paths = {m["mountPath"] for m in ravn["volumeMounts"]}
+        assert "/volundr/home" in paths
+        assert "/workspace" in paths
+
+    def test_ravn_has_no_home_mount_when_disabled(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(
+            tmp_path,
+            {
+                "resident": {"enabled": True, "persona": "product-steward"},
+                "homeVolume": {"enabled": False},
+            },
+        )
+        deployment = _deployment_from_rendered(rendered)
+        ravn = next(
+            c for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == "ravn"
+        )
+        assert all("home" not in m["mountPath"] for m in ravn["volumeMounts"])
+
+
 def _ravn_config_from_rendered(rendered_yaml: str) -> dict:
     for document in yaml.safe_load_all(rendered_yaml):
         if not isinstance(document, dict) or document.get("kind") != "ConfigMap":
