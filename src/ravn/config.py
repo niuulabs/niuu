@@ -2422,6 +2422,18 @@ class PostSessionReflectionConfig(BaseModel):
         default=1024,
         description="Maximum tokens the reflection LLM call may produce.",
     )
+    inject_learnings: bool = Field(
+        default=True,
+        description=(
+            "Read promoted learnings from every configured Mímir mount at session "
+            "start and put them in the system prompt. Separate from `enabled`, "
+            "which governs whether reflection *writes* learnings: a resident can "
+            "usefully read what its peers promoted without producing its own. "
+            "Injection is how learnings reach a turn at all — `mimir_search` is a "
+            "tool the model must elect, and across every resident it has never "
+            "been called once."
+        ),
+    )
     learning_token_budget: int = Field(
         default=500,
         description=("Maximum tokens of injected learnings in the session-start system prompt."),

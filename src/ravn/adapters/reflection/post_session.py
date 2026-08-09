@@ -602,15 +602,19 @@ async def fetch_relevant_learnings(
     """Query Mímir for learning pages matching *repo_slug* and format for injection.
 
     Returns a formatted Markdown block ready for inclusion in the system
-    prompt, capped at approximately *token_budget* tokens.  Returns an empty
-    string when no learnings are found or on any error.
-    """
-    try:
-        pages = await mimir.list_pages(category="learnings")
-    except Exception as exc:
-        logger.warning("fetch_relevant_learnings: list_pages failed: %s", exc)
-        return ""
+    prompt, capped at approximately *token_budget* tokens. An empty string
+    means no learnings matched — which is an answer, not a failure.
 
+    A Mímir that cannot be listed raises. Swallowing it returns the same empty
+    string as "no learnings exist", and the two are not the same: one is a
+    resident with nothing to recall, the other is a resident that has lost
+    access to everything its flock ever promoted. See
+    ``.claude/rules/no-fallbacks.md``.
+
+    On a composite adapter this lists every configured mount, so a resident
+    with local and shared Mímir mounted sees learnings from both.
+    """
+    pages = await mimir.list_pages(category="learnings")
     if not pages:
         return ""
 
@@ -635,10 +639,9 @@ async def fetch_relevant_learnings(
     char_budget = token_budget * _CHARS_PER_TOKEN
 
     for meta in selected:
-        try:
-            content = await mimir.read_page(meta.path)
-        except Exception:
-            continue
+        # No try/except: list_pages just named this page, so a read that fails
+        # means the mount went away mid-call, not that the page is absent.
+        content = await mimir.read_page(meta.path)
 
         # Strip YAML frontmatter for injection; keep markdown body only.
         body = _strip_frontmatter(content).strip()

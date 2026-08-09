@@ -126,6 +126,12 @@ class RavnAgent:
         repo_slug: str = "",
         # NIU-588: learnings injection at session start
         mimir: MimirPort | None = None,
+        # Learning injection budget. Configurable rather than hardcoded: a
+        # resident with two Mímir mounts and a flock's worth of promoted
+        # learnings needs a different budget from a one-shot coding session.
+        inject_learnings: bool = False,
+        max_learnings_injected: int = 5,
+        learning_token_budget: int = 500,
         # NIU-594: persona config for outcome block parsing
         persona_config: PersonaConfig | None = None,
         # Retained for constructor compatibility. A tool-use response is never
@@ -188,6 +194,9 @@ class RavnAgent:
         self._session_ended_emitted: bool = False
         # NIU-588: learnings injection at session start
         self._mimir = mimir
+        self._inject_learnings_enabled = inject_learnings
+        self._max_learnings_injected = max_learnings_injected
+        self._learning_token_budget = learning_token_budget
         # NIU-594: persona config for outcome block parsing
         self._persona_config = persona_config
         self._context_window_tokens = max(0, context_window_tokens)
@@ -385,6 +394,12 @@ class RavnAgent:
         if self._turn_count == 0:
             await self._emit_session_started()
         self._turn_count += 1
+
+        # NIU-588: promoted learnings go in once, on the first turn. They are
+        # rules over many episodes, not per-turn context, so re-reading every
+        # turn would spend the budget without changing the content.
+        if self._turn_count == 1:
+            await self._inject_learnings()
 
         # Check budget before starting the turn.
         if self._iteration_budget is not None and self._iteration_budget.exhausted:
@@ -860,6 +875,43 @@ class RavnAgent:
             content=content[:limit] + marker,
             is_error=result.is_error,
         )
+
+    async def _inject_learnings(self) -> None:
+        """Put promoted Mímir learnings into the system prompt for this session.
+
+        Restored from NIU-588, which added it and was then dropped in c1253e9d
+        — a large refactor whose message never mentions it. Everything it needs
+        survived the removal: fetch_relevant_learnings, set_learnings_context,
+        and both budget settings. Only the call was missing, and with it the
+        entire learning pipeline: 780 candidates and 167 promoted learnings on
+        one resident, reachable in principle by `mimir_search` and in practice
+        by nothing, because that tool has never been called once on any
+        resident.
+
+        Injection rather than a tool is deliberate. The comparison is direct:
+        episodic prefetch injects and hits on every turn; Mímir waits to be
+        elected and never is.
+
+        Not best-effort. The original logged a warning and continued, which is
+        how a dead learning pipeline stayed invisible for months.
+        """
+        if not self._inject_learnings_enabled:
+            return
+        if self._mimir is None or self._prompt_builder is None:
+            return
+
+        from ravn.adapters.reflection.post_session import (  # noqa: PLC0415
+            fetch_relevant_learnings,
+        )
+
+        learnings_text = await fetch_relevant_learnings(
+            self._mimir,
+            repo_slug=self._repo_slug,
+            max_pages=self._max_learnings_injected,
+            token_budget=self._learning_token_budget,
+        )
+        if learnings_text:
+            self._prompt_builder.set_learnings_context(learnings_text)
 
     async def _maybe_compress(
         self,

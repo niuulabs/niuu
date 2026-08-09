@@ -941,9 +941,25 @@ async def test_fetch_relevant_learnings_includes_page_content():
 
 
 @pytest.mark.asyncio
-async def test_fetch_relevant_learnings_returns_empty_on_error():
+async def test_fetch_relevant_learnings_raises_when_mimir_cannot_be_listed():
+    """An unreadable Mímir is not the same as a resident with no learnings.
+
+    Both used to return "". One means nothing has been promoted yet; the other
+    means the resident has lost access to everything its flock ever promoted,
+    and it would inject an empty block and carry on saying nothing was wrong.
+    """
     mimir = AsyncMock()
     mimir.list_pages.side_effect = RuntimeError("storage error")
+
+    with pytest.raises(RuntimeError, match="storage error"):
+        await fetch_relevant_learnings(mimir, repo_slug="myrepo", max_pages=5, token_budget=500)
+
+
+@pytest.mark.asyncio
+async def test_fetch_relevant_learnings_returns_empty_when_none_exist():
+    """No learnings is an answer, and stays an empty string."""
+    mimir = AsyncMock()
+    mimir.list_pages.return_value = []
 
     result = await fetch_relevant_learnings(
         mimir, repo_slug="myrepo", max_pages=5, token_budget=500
@@ -988,7 +1004,7 @@ async def test_fetch_relevant_learnings_returns_empty_when_no_matching_repo():
 
 
 @pytest.mark.asyncio
-async def test_fetch_relevant_learnings_skips_pages_with_read_error():
+async def test_fetch_relevant_learnings_raises_when_a_named_page_cannot_be_read():
     meta = MimirPageMeta(
         path="learnings/general/some-learning",
         title="Some learning",
@@ -1000,8 +1016,11 @@ async def test_fetch_relevant_learnings_skips_pages_with_read_error():
     mimir.list_pages.return_value = [meta]
     mimir.read_page.side_effect = RuntimeError("read error")
 
-    result = await fetch_relevant_learnings(mimir, repo_slug="", max_pages=5, token_budget=500)
-    assert result == ""
+    # list_pages just named this page, so a failed read means the mount went
+    # away mid-call — not that the page is absent. Skipping it silently
+    # shrinks the injected learnings with nothing to show it happened.
+    with pytest.raises(RuntimeError, match="read error"):
+        await fetch_relevant_learnings(mimir, repo_slug="", max_pages=5, token_budget=500)
 
 
 @pytest.mark.asyncio

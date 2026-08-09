@@ -58,9 +58,14 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from mimir.eval import (  # noqa: E402
     EvalReport,
     GoldenQuery,
+    QueryEval,
     compare_reports,
     evaluate_adapter,
     load_golden_set,
+    mrr,
+    normalise_path,
+    precision_at_k,
+    recall_at_k,
     run_eval,
     validate_golden_paths,
 )
@@ -82,13 +87,23 @@ async def ingest_corpus(adapter: GBrainMimirAdapter, corpus_dir: Path) -> int:
     return len(pages)
 
 
-async def show_synthesis(args: argparse.Namespace, queries: list[GoldenQuery]) -> None:
-    """Print gbrain's composed answers for a sample of the golden questions.
+async def eval_synthesis(args: argparse.Namespace, queries: list[GoldenQuery]) -> None:
+    """Score gbrain's composed answers against the golden set.
 
-    Mímir has no counterpart to score this against — both ``MimirPort``
-    implementations return ``answer=""``, and ``src/mimir/`` holds no model at
-    all. So this is not a comparison; it is the only way to see what the
-    capability actually produces before deciding whether we want it.
+    Mímir has no synthesis to compare against — both ``MimirPort``
+    implementations return ``answer=""`` and ``src/mimir/`` holds no model at
+    all — so this is not a bake-off. It measures gbrain's ``think`` on its own
+    terms, against the one label we already have: which pages *should* answer
+    each question.
+
+    What is measured is **citation accuracy**, not prose quality: of the pages
+    ``think`` cites, how many are the ones the golden set names. That is
+    objective and needs no judge. An answer that reads well while citing the
+    wrong pages is the failure mode worth catching, because it is the one a
+    reader cannot see.
+
+    Also reported: how often synthesis succeeded at all, and how long it took —
+    both decide whether this is usable in a turn, independent of quality.
     """
     adapter = GBrainMimirAdapter(
         mcp_url=args.mcp_url,
@@ -96,17 +111,76 @@ async def show_synthesis(args: argparse.Namespace, queries: list[GoldenQuery]) -
         think_model=args.think_model,
         timeout_seconds=args.timeout_seconds,
     )
+    sample = queries[args.think_offset : args.think_offset + args.think]
+    scored: list[QueryEval] = []
+    failures: list[tuple[str, str]] = []
+    latencies: list[float] = []
     try:
-        for entry in queries[: args.think]:
+        for i, entry in enumerate(sample, 1):
             started = time.monotonic()
-            result = await adapter.query(entry.query)
+            try:
+                result = await adapter.query(entry.query)
+            except Exception as exc:  # synthesis refused, timed out, or errored
+                failures.append((entry.query, str(exc)[:140]))
+                print(f"[{i}/{len(sample)}] FAILED  {entry.query}", file=sys.stderr)
+                continue
             elapsed = time.monotonic() - started
+            latencies.append(elapsed)
+            cited = [normalise_path(p.meta.path) for p in result.sources]
+            expected = [normalise_path(p) for p in entry.expected]
+            scored.append(
+                QueryEval(
+                    query=entry.query,
+                    category=entry.category,
+                    expected=entry.expected,
+                    returned=cited,
+                    precision=precision_at_k(cited, expected),
+                    recall=recall_at_k(cited, expected),
+                    mrr=mrr(cited, expected),
+                )
+            )
+            print(f"[{i}/{len(sample)}] {elapsed:>5.0f}s  {entry.query}", file=sys.stderr)
             print(f"\n[{entry.category}] {entry.query}   ({elapsed:.0f}s)")
             print(f"  expected: {', '.join(entry.expected)}")
-            print(f"  cited:    {', '.join(p.meta.path for p in result.sources) or '(none)'}")
-            print(f"  {result.answer.strip()}")
+            print(f"  cited:    {', '.join(cited) or '(none)'}")
+            print(f"  {result.answer.strip()[:700]}")
+            if args.think_jsonl:
+                # Appended per question: a 62-question run is ~2h and cannot
+                # complete inside one command window, so partial results have
+                # to survive the run being cut short.
+                with open(args.think_jsonl, "a", encoding="utf-8") as fh:
+                    fh.write(
+                        json.dumps(
+                            {
+                                "query": entry.query,
+                                "category": entry.category,
+                                "expected": entry.expected,
+                                "cited": cited,
+                                "precision": scored[-1].precision,
+                                "recall": scored[-1].recall,
+                                "mrr": scored[-1].mrr,
+                                "seconds": round(elapsed, 1),
+                                "answer": result.answer.strip(),
+                            }
+                        )
+                        + "\n"
+                    )
     finally:
         await adapter.close()
+
+    print("\n=== think: citation accuracy against the golden set ===")
+    report = EvalReport(
+        generated_at="", corpus=str(args.corpus), embedding_model=args.think_model, queries=scored
+    )
+    print(report.format_text())
+    attempted = len(sample)
+    print(f"\n  synthesis succeeded : {len(scored)}/{attempted}")
+    if latencies:
+        latencies.sort()
+        median = latencies[len(latencies) // 2]
+        print(f"  latency median/max  : {median:.0f}s / {latencies[-1]:.0f}s")
+    for query, why in failures:
+        print(f"  FAILED  {query}: {why}")
 
 
 async def score_gbrain(
@@ -159,7 +233,18 @@ async def main() -> int:
         "--think",
         type=int,
         default=0,
-        help="show gbrain's composed answers for the first N golden questions",
+        help="score gbrain's synthesis on N golden questions",
+    )
+    parser.add_argument(
+        "--think-offset",
+        type=int,
+        default=0,
+        help="skip the first N questions — lets a long run proceed in slices",
+    )
+    parser.add_argument(
+        "--think-jsonl",
+        default="",
+        help="append each scored answer here, so a cut-short run keeps its results",
     )
     parser.add_argument("--timeout-seconds", type=float, default=900.0)
     parser.add_argument(
@@ -186,7 +271,7 @@ async def main() -> int:
     if args.think:
         if not args.think_model:
             raise SystemExit("--think needs --think-model; gbrain's think ignores chat_model")
-        await show_synthesis(args, queries)
+        await eval_synthesis(args, queries)
 
     gbrain_report = await score_gbrain(args, queries)
     print("\n=== gbrain ===")

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
 
+from niuu.domain.mimir import MimirPageMeta
 from ravn.adapters.permission.allow_deny import AllowAllPermission
 from ravn.agent import (
     RavnAgent,
@@ -319,3 +321,72 @@ class TestAgentMemoryIntegration:
         await agent.run_turn("first task")
         await agent.run_turn("second task")
         assert len(mem.recorded_episodes) == 2
+
+
+# ---------------------------------------------------------------------------
+# Learnings injection (NIU-588, restored)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_promoted_learnings_are_injected_on_the_first_turn() -> None:
+    """The whole learning pipeline hangs off this call.
+
+    It existed in 42d3aae5 and was dropped in c1253e9d, leaving 167 promoted
+    learnings on one resident reachable only by `mimir_search` — a tool that
+    has never been called once on any resident.
+    """
+    from ravn.prompt_builder import PromptBuilder
+
+    mimir = AsyncMock()
+    mimir.list_pages.return_value = [
+        MimirPageMeta(
+            path="learnings/general/disk-pressure",
+            title="FreeDiskSpaceFailed is noise without DiskPressure",
+            summary="",
+            category="learnings",
+            updated_at=datetime(2026, 8, 1, tzinfo=UTC),
+        )
+    ]
+    mimir.read_page.return_value = "Ignore when DiskPressure=False."
+
+    builder = PromptBuilder()
+    agent = RavnAgent(
+        llm=make_simple_llm(),
+        tools=[],
+        channel=InMemoryChannel(),
+        permission=AllowAllPermission(),
+        system_prompt="You are a resident.",
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
+        max_iterations=5,
+        prompt_builder=builder,
+        mimir=mimir,
+        inject_learnings=True,
+    )
+
+    await agent.run_turn("what is happening on this node?")
+
+    rendered = "".join(str(b) for b in builder.render_blocks())
+    assert "Ignore when DiskPressure=False." in rendered
+
+
+@pytest.mark.asyncio
+async def test_learnings_are_not_injected_when_disabled() -> None:
+    mimir = AsyncMock()
+    agent = RavnAgent(
+        llm=make_simple_llm(),
+        tools=[],
+        channel=InMemoryChannel(),
+        permission=AllowAllPermission(),
+        system_prompt="You are a resident.",
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
+        max_iterations=5,
+        mimir=mimir,
+        inject_learnings=False,
+    )
+
+    await agent.run_turn("hello")
+
+    mimir.list_pages.assert_not_called()
