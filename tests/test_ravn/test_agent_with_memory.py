@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock
 
+import pytest
+
 from ravn.adapters.permission.allow_deny import AllowAllPermission
 from ravn.agent import (
     RavnAgent,
@@ -276,20 +278,33 @@ class TestAgentMemoryIntegration:
         result = await agent.run_turn("hello")
         assert result.response == "Done!"
 
-    async def test_memory_prefetch_failure_does_not_crash(self) -> None:
+    async def test_memory_prefetch_failure_is_fatal(self) -> None:
+        """Replaces a test that asserted the turn continued regardless.
+
+        Running the turn anyway meant reasoning with no history at all while
+        every outward signal looked normal. Configuring memory is a statement
+        that it is required.
+        """
         mem = RecordingMemory()
         mem.prefetch = AsyncMock(side_effect=RuntimeError("prefetch failed"))
         agent, _ = make_agent(make_simple_llm(), memory=mem)
-        # Should complete without raising.
-        result = await agent.run_turn("hello")
-        assert result.response == "Done!"
 
-    async def test_memory_record_failure_does_not_crash(self) -> None:
+        with pytest.raises(RuntimeError, match="memory prefetch failed"):
+            await agent.run_turn("hello")
+
+    async def test_memory_record_failure_is_fatal(self) -> None:
+        """Replaces a test that asserted the turn continued regardless.
+
+        A swallowed record_episode loses that turn permanently and the corpus
+        silently stops growing — how noatun lost episodes to a broken
+        embedding endpoint while looking healthy.
+        """
         mem = RecordingMemory()
         mem.record_episode = AsyncMock(side_effect=RuntimeError("record failed"))
         agent, _ = make_agent(make_simple_llm(), memory=mem)
-        result = await agent.run_turn("hello")
-        assert result.response == "Done!"
+
+        with pytest.raises(RuntimeError, match="recording the episode"):
+            await agent.run_turn("hello")
 
     async def test_episode_task_description_matches_user_input(self) -> None:
         mem = RecordingMemory()

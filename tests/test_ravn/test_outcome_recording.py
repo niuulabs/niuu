@@ -188,12 +188,17 @@ class TestAgentEpisodeEnrichment:
         result = await agent.run_turn("hello")
         assert result.response == "Done!"
 
-    async def test_episode_recording_failure_does_not_crash(self) -> None:
+    async def test_episode_recording_failure_is_fatal(self) -> None:
+        """Replaces a test asserting the turn survived a failed recording.
+
+        Surviving it means the turn is gone from memory and nothing says so.
+        """
         mem = RecordingMemory()
         mem.record_episode = AsyncMock(side_effect=RuntimeError("db error"))
         agent, _ = make_agent(make_simple_llm(), memory=mem)
-        result = await agent.run_turn("hello")
-        assert result.response == "Done!"
+
+        with pytest.raises(RuntimeError, match="recording the episode"):
+            await agent.run_turn("hello")
 
     async def test_reflection_failure_stores_fallback_message(self) -> None:
         mem = RecordingMemory()

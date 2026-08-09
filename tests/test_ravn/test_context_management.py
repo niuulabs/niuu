@@ -423,8 +423,13 @@ class TestAgentPromptBuilder:
         assert isinstance(call_system[0], list)
 
     @pytest.mark.asyncio
-    async def test_prompt_builder_memory_prefetch_failure_continues(self):
-        """Memory prefetch failure with PromptBuilder still returns blocks."""
+    async def test_prompt_builder_memory_prefetch_failure_is_fatal(self):
+        """Replaces a test asserting the turn continued without context.
+
+        The PromptBuilder path swallowed prefetch failures too, so a resident
+        would render a prompt with an empty memory section and reason as if
+        it had no history.
+        """
         from unittest.mock import AsyncMock as _AsyncMock
 
         from ravn.ports.memory import MemoryPort
@@ -460,9 +465,8 @@ class TestAgentPromptBuilder:
             memory=memory,
             prompt_builder=builder,
         )
-        # Should not raise despite memory failure
-        result = await agent.run_turn("hello")
-        assert result.response == "OK"
+        with pytest.raises(RuntimeError, match="memory prefetch failed"):
+            await agent.run_turn("hello")
 
 
 # ---------------------------------------------------------------------------

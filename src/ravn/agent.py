@@ -400,14 +400,9 @@ class RavnAgent:
         else:
             effective_system = self._system_prompt
             if self._memory is not None:
-                try:
-                    memory_ctx = await self._memory.prefetch(user_input)
-                    if memory_ctx:
-                        effective_system = f"{effective_system}\n\n{memory_ctx}"
-                except Exception:
-                    logger.warning(
-                        "Memory prefetch failed; continuing without context.", exc_info=True
-                    )
+                memory_ctx = await self._prefetch_or_fail(user_input)
+                if memory_ctx:
+                    effective_system = f"{effective_system}\n\n{memory_ctx}"
 
         # Determine whether explicit thinking was requested for this turn.
         explicit_thinking, user_input = _parse_think_flag(user_input)
@@ -648,8 +643,17 @@ class RavnAgent:
                 )
                 await self._memory.record_episode(episode)
             recorded_episode = episode
-        except Exception:
-            logger.warning("Episode extraction/recording failed; continuing.", exc_info=True)
+        except Exception as exc:
+            # Do not swallow this. A failed record_episode means the turn that
+            # just happened is gone from memory forever, and continuing past it
+            # hides the loss: the corpus silently stops growing while every
+            # other signal looks healthy. An embedding endpoint returning junk
+            # cost noatun episodes exactly this way before anyone noticed.
+            raise RuntimeError(
+                f"recording the episode for session {self._session.id} failed: {exc}. "
+                f"Memory is configured, so losing a turn is a hard failure, not a "
+                f"degraded mode — disable memory explicitly if that is intended."
+            ) from exc
 
         if self._memory is not None:
             try:
@@ -682,25 +686,35 @@ class RavnAgent:
         """
         if self._prompt_builder is not None:
             if self._memory is not None:
-                try:
-                    memory_ctx = await self._memory.prefetch(user_input)
-                    self._prompt_builder.set_memory_context(memory_ctx or "")
-                except Exception:
-                    logger.warning(
-                        "Memory prefetch failed; continuing without context.", exc_info=True
-                    )
+                memory_ctx = await self._prefetch_or_fail(user_input)
+                self._prompt_builder.set_memory_context(memory_ctx or "")
             return self._prompt_builder.render_blocks()
 
         # Legacy: plain-string system prompt with optional memory suffix.
         effective: str = self._system_prompt
         if self._memory is not None:
-            try:
-                memory_ctx = await self._memory.prefetch(user_input)
-                if memory_ctx:
-                    effective = f"{self._system_prompt}\n\n{memory_ctx}"
-            except Exception:
-                logger.warning("Memory prefetch failed; continuing without context.", exc_info=True)
+            memory_ctx = await self._prefetch_or_fail(user_input)
+            if memory_ctx:
+                effective = f"{self._system_prompt}\n\n{memory_ctx}"
         return effective
+
+    async def _prefetch_or_fail(self, user_input: str) -> str:
+        """Read past context, raising rather than running without it.
+
+        Swallowing this produced a turn that looked normal but reasoned with
+        no history at all. Memory being configured is a statement that it is
+        required; if it cannot be read, that is a failure to surface, not a
+        mode to continue in. Turn memory off explicitly to run without it.
+        """
+        assert self._memory is not None
+        try:
+            return await self._memory.prefetch(user_input)
+        except Exception as exc:
+            raise RuntimeError(
+                f"memory prefetch failed for session {self._session.id}: {exc}. "
+                f"Refusing to run the turn with no past context while memory is "
+                f"configured — set memory.backend to 'none' if that is intended."
+            ) from exc
 
     def _prompt_section_estimates(
         self,
