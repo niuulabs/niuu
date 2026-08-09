@@ -1348,3 +1348,24 @@ class TestBuildMimirAuthWorkloadDefaults:
         assert auth.type == "bearer"
         assert auth.token == "tok"
         assert auth.exchange_url is None
+
+
+def test_resident_daemon_wires_learning_injection() -> None:
+    """The daemon builds its agent through executor.build(), not _build_agent.
+
+    Wiring only commands.py left every resident with the constructor default
+    of False — the setting existed, the config said true, and injection still
+    never ran. AgentExecutor.build filters kwargs against the RavnAgent
+    signature, so a parameter that is never passed fails silently rather than
+    raising.
+    """
+    from pathlib import Path
+
+    source = Path("src/ravn/cli/daemon_runtime.py").read_text(encoding="utf-8")
+    build_call = source.split("agent = executor.build(", 1)[1].split("\n        )", 1)[0]
+    for param in (
+        "inject_learnings=settings.reflection.inject_learnings",
+        "max_learnings_injected=settings.reflection.max_learnings_injected",
+        "learning_token_budget=settings.reflection.learning_token_budget",
+    ):
+        assert param in build_call, f"{param} missing from the daemon agent build"
