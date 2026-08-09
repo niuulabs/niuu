@@ -150,4 +150,8 @@ data:
     observability:
       {{- toYaml . | nindent 6 }}
     {{- end }}
+    {{- with .Values.resident.memory }}
+    memory:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
 {{- end }}

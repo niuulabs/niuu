@@ -601,6 +601,10 @@ def _build_memory(settings: Settings, llm: Any = None) -> Any:
 
     embedding_port = None
     if settings.embedding.enabled:
+        # Asking for embeddings and silently getting lexical-only search is the
+        # failure this must not have: retrieval keeps working, quality collapses,
+        # and nothing says so. Configuration that cannot be honoured is a
+        # startup error, not a warning.
         try:
             cls = _import_class(settings.embedding.adapter)
             kwargs = _inject_secrets(
@@ -609,7 +613,12 @@ def _build_memory(settings: Settings, llm: Any = None) -> Any:
             )
             embedding_port = cls(**kwargs)
         except Exception as exc:
-            logger.warning("Failed to load embedding adapter: %s — falling back to FTS-only", exc)
+            raise RuntimeError(
+                f"embedding.enabled is true but the adapter "
+                f"{settings.embedding.adapter!r} could not be constructed: {exc}. "
+                f"Set embedding.enabled=false to run with lexical-only search, or "
+                f"fix the adapter configuration — memory will not silently degrade."
+            ) from exc
 
     adapter = None
 

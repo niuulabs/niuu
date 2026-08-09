@@ -803,6 +803,37 @@ class TestResidentObservability:
         assert config["environment"]["id"] == "muninn"
 
 
+class TestResidentMemoryPersistence:
+    """The memory path must be settable, or episodes die with the pod.
+
+    The chart's default workspace is an emptyDir for residents, and ravn's
+    memory defaults to $HOME/.ravn/memory.db inside it — so a resident's entire
+    episodic history was erased on every restart, with prefetch reporting an
+    honest but useless zero hit rate against an empty corpus.
+    """
+
+    def test_memory_is_absent_by_default(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(
+            tmp_path, {"resident": {"enabled": True, "persona": "product-steward"}}
+        )
+        assert "memory" not in _ravn_config_from_rendered(rendered)
+
+    def test_memory_path_can_be_pointed_at_a_persistent_mount(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(
+            tmp_path,
+            {
+                "resident": {
+                    "enabled": True,
+                    "persona": "product-steward",
+                    "memory": {"backend": "sqlite", "path": "/volundr/home/.ravn/memory.db"},
+                }
+            },
+        )
+        config = _ravn_config_from_rendered(rendered)
+        assert config["memory"]["path"] == "/volundr/home/.ravn/memory.db"
+        assert config["memory"]["backend"] == "sqlite"
+
+
 def _ravn_config_from_rendered(rendered_yaml: str) -> dict:
     for document in yaml.safe_load_all(rendered_yaml):
         if not isinstance(document, dict) or document.get("kind") != "ConfigMap":
