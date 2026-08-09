@@ -859,8 +859,11 @@ def _build_mimir(settings: Settings) -> Any:
 
         mounts: list[Any] = []
         for inst in settings.mimir.instances:
-            if inst.path:
-                port: Any = MarkdownMimirAdapter(root=inst.path)
+            if inst.adapter:
+                cls = _import_class(inst.adapter)
+                port: Any = cls(**_inject_secrets(dict(inst.kwargs), inst.secret_kwargs_env))
+            elif inst.path:
+                port = MarkdownMimirAdapter(root=inst.path)
             elif inst.url:
                 auth = None
                 if inst.auth is not None:
@@ -869,11 +872,12 @@ def _build_mimir(settings: Settings) -> Any:
                     base_url=inst.url, auth=auth, environment_id=settings.environment.id
                 )
             else:
-                logger.warning(
-                    "Mímir instance %r has neither path nor url — skipping",
-                    inst.name,
+                # Skipping left the mount silently absent: reads returned fewer
+                # results and nothing said a configured instance was missing.
+                raise ValueError(
+                    f"Mímir instance {inst.name!r} has no adapter, path or url. "
+                    f"Give it one, or remove it from mimir.instances."
                 )
-                continue
             mounts.append(
                 MimirMount(
                     name=inst.name,

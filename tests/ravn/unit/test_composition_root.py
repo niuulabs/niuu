@@ -1212,36 +1212,40 @@ class TestBuildMimir:
         assert port_types["local"] is MarkdownMimirAdapter
         assert port_types["hosted"] is HttpMimirAdapter
 
-    def test_instance_without_path_or_url_skipped(self, settings: Settings, tmp_path: Path) -> None:
-        from mimir.adapters.markdown import MarkdownMimirAdapter
-        from ravn.adapters.mimir.composite import CompositeMimirAdapter
+    def test_one_unbuildable_instance_fails_the_whole_mount(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        """Replaces a test asserting the bad instance was skipped.
+
+        Skipping produced a Mímir with fewer mounts than configured: reads
+        returned less, and nothing anywhere said an instance was missing.
+        """
         from ravn.cli.commands import _build_mimir
         from ravn.config import MimirInstanceConfig
 
         settings.mimir.enabled = True
         settings.mimir.instances = [
             MimirInstanceConfig(name="bad", role="local"),  # neither path nor url
-            MimirInstanceConfig(
-                name="local",
-                role="local",
-                path=str(tmp_path / "local"),
-            ),
+            MimirInstanceConfig(name="local", role="local", path=str(tmp_path / "local")),
         ]
-        result = _build_mimir(settings)
-        assert isinstance(result, CompositeMimirAdapter)
-        assert len(result._mounts) == 1
-        assert isinstance(result._mounts[0].port, MarkdownMimirAdapter)
 
-    def test_all_instances_invalid_returns_none(self, settings: Settings) -> None:
+        with pytest.raises(ValueError, match="no adapter, path or url"):
+            _build_mimir(settings)
+
+    def test_an_instance_with_no_backend_raises(self, settings: Settings) -> None:
+        """Replaces a test asserting this returned None — i.e. Mímir disabled.
+
+        Returning None is how a typo in one instance turned into a resident
+        running with no knowledge base at all, looking healthy.
+        """
         from ravn.cli.commands import _build_mimir
         from ravn.config import MimirInstanceConfig
 
         settings.mimir.enabled = True
-        settings.mimir.instances = [
-            MimirInstanceConfig(name="bad", role="local"),  # neither path nor url
-        ]
-        result = _build_mimir(settings)
-        assert result is None
+        settings.mimir.instances = [MimirInstanceConfig(name="bad", role="local")]
+
+        with pytest.raises(ValueError, match="no adapter, path or url"):
+            _build_mimir(settings)
 
     def test_write_routing_applied_to_composite(self, settings: Settings, tmp_path: Path) -> None:
         from ravn.adapters.mimir.composite import CompositeMimirAdapter

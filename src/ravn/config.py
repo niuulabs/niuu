@@ -1629,6 +1629,23 @@ class MimirInstanceConfig(BaseModel):
         default=None,
         description="Category filter for domain-scoped Mímirs. None means all categories.",
     )
+    adapter: str = Field(
+        default="",
+        description=(
+            "Fully-qualified MimirPort class for backends other than the built-in "
+            "markdown/HTTP pair, e.g. "
+            "'ravn.adapters.mimir.gbrain.GBrainMimirAdapter'. Takes precedence "
+            "over path/url; constructor arguments come from kwargs."
+        ),
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs passed to the adapter named in `adapter`.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps adapter kwarg names to env var names for secret injection.",
+    )
     read_priority: int = Field(
         default=0,
         description="Read order — lower value is queried first (local=0, shared=1, domain=2).",
