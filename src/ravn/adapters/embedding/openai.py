@@ -10,16 +10,31 @@ Call ``await adapter.close()`` when done to release the connection pool.
 
 from __future__ import annotations
 
+import logging
 import os
 
 import httpx
 
 from ravn.ports.embedding import EmbeddingPort
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_MODEL = "text-embedding-3-small"
 _DEFAULT_BASE_URL = "https://api.openai.com/v1"
 # text-embedding-3-small default dimension
 _DEFAULT_DIMENSION = 1536
+
+# Embedding models reject input past their context window rather than
+# truncating it. Qwen3-Embedding-0.6B on our vLLM answers 400 with
+# "You passed 8193 input tokens ... context length is only 8192", and because
+# memory prefetch treats an embedding failure as fatal, one long episode kills
+# the whole turn — Runa lost ten turns that way in six hours.
+#
+# Chars rather than tokens: this adapter serves several models and has no
+# tokenizer for any of them. Four chars per token is the usual conservative
+# ratio for English prose, so the default leaves room under an 8k window.
+# Raise it for a model with a larger context.
+_DEFAULT_MAX_INPUT_CHARS = 24_000
 
 
 class OpenAIEmbeddingAdapter(EmbeddingPort):
@@ -30,6 +45,10 @@ class OpenAIEmbeddingAdapter(EmbeddingPort):
         model: Embedding model name.
         base_url: Base URL for the OpenAI (or compatible) API.
         timeout: HTTP request timeout in seconds.
+        max_input_chars: Longest input sent per text. Longer text is
+            truncated rather than rejected — see ``_DEFAULT_MAX_INPUT_CHARS``.
+            0 disables truncation, which restores the old behaviour of letting
+            the model refuse oversized input.
     """
 
     def __init__(
@@ -39,11 +58,13 @@ class OpenAIEmbeddingAdapter(EmbeddingPort):
         model: str = _DEFAULT_MODEL,
         base_url: str = _DEFAULT_BASE_URL,
         timeout: float = 30.0,
+        max_input_chars: int = _DEFAULT_MAX_INPUT_CHARS,
     ) -> None:
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._max_input_chars = max_input_chars
         self._dimension: int | None = None
         self._client: httpx.AsyncClient | None = None
 
@@ -76,11 +97,27 @@ class OpenAIEmbeddingAdapter(EmbeddingPort):
             headers["Authorization"] = f"Bearer {self._api_key}"
         return headers
 
+    def _truncate(self, text: str) -> str:
+        """Clip *text* to the model's input window.
+
+        Truncating loses the tail of a long episode; refusing loses the whole
+        turn. The first is a worse embedding, the second is an outage.
+        """
+        if self._max_input_chars <= 0 or len(text) <= self._max_input_chars:
+            return text
+        logger.debug(
+            "embedding input truncated from %d to %d chars for model %s",
+            len(text),
+            self._max_input_chars,
+            self._model,
+        )
+        return text[: self._max_input_chars]
+
     async def _post_embeddings(self, texts: list[str]) -> list[list[float]]:
         response = await self._get_client().post(
             f"{self._base_url}/embeddings",
             headers=self._headers(),
-            json={"input": texts, "model": self._model},
+            json={"input": [self._truncate(t) for t in texts], "model": self._model},
         )
         response.raise_for_status()
         data = response.json()

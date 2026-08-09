@@ -219,6 +219,30 @@ class TestSqliteAdapterOperations:
         ]
         assert episodes[-1] == 1
 
+    async def test_corpus_gauges_report_on_a_resident_that_only_reads(
+        self, telemetry: RecordingTelemetry, tmp_path
+    ) -> None:
+        """A resident that never writes must still report corpus health.
+
+        Sampling on write alone inverted the signal these gauges exist for: a
+        resident whose memory is failing stops recording, its series goes
+        stale, and an absent gauge reads as idle rather than broken. Over one
+        6h window glitnir recorded nothing at all and reported no corpus
+        health whatsoever — exactly the case worth seeing.
+        """
+        adapter = SqliteMemoryAdapter(
+            path=str(tmp_path / "memory.db"),
+            corpus_stats_interval_seconds=0.0001,
+        )
+        await adapter.initialize()
+
+        await adapter.prefetch("anything at all")
+
+        episodes = [
+            name for name, _, _ in telemetry.gauges if name == memory_telemetry.CORPUS_EPISODES
+        ]
+        assert episodes, "prefetch alone emitted no corpus gauges"
+
     async def test_corpus_sampling_respects_its_interval(
         self, telemetry: RecordingTelemetry, tmp_path
     ) -> None:

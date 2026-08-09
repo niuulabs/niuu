@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import respx
 from httpx import Response
@@ -164,4 +166,49 @@ class TestNoAuthSelfHostedServer:
         assert adapter.dimension == _DEFAULT_DIMENSION
         await adapter.embed("x")
         assert adapter.dimension == 1024
+        await adapter.close()
+
+    @respx.mock
+    async def test_oversized_input_is_truncated_rather_than_rejected(self) -> None:
+        """A long episode must not be able to kill the turn that recalls it.
+
+        Qwen3-Embedding-0.6B has an 8192-token window and answers 400 —
+        "You passed 8193 input tokens ... context length is only 8192" — rather
+        than truncating. Memory prefetch treats an embedding failure as fatal,
+        so before this Runa lost ten turns in six hours to oversized input.
+        """
+        route = respx.post("http://vllm.test/v1/embeddings").mock(
+            return_value=Response(200, json=_make_response([[0.1, 0.2]]))
+        )
+        adapter = OpenAIEmbeddingAdapter(base_url="http://vllm.test/v1", max_input_chars=100)
+
+        await adapter.embed("x" * 5000)
+
+        sent = json.loads(route.calls[0].request.content)
+        assert len(sent["input"][0]) == 100
+        await adapter.close()
+
+    @respx.mock
+    async def test_input_within_the_window_is_sent_untouched(self) -> None:
+        route = respx.post("http://vllm.test/v1/embeddings").mock(
+            return_value=Response(200, json=_make_response([[0.1]]))
+        )
+        adapter = OpenAIEmbeddingAdapter(base_url="http://vllm.test/v1", max_input_chars=100)
+
+        await adapter.embed("a short episode")
+
+        assert json.loads(route.calls[0].request.content)["input"] == ["a short episode"]
+        await adapter.close()
+
+    @respx.mock
+    async def test_truncation_can_be_disabled(self) -> None:
+        """0 restores the old behaviour: let the model refuse oversized input."""
+        route = respx.post("http://vllm.test/v1/embeddings").mock(
+            return_value=Response(200, json=_make_response([[0.1]]))
+        )
+        adapter = OpenAIEmbeddingAdapter(base_url="http://vllm.test/v1", max_input_chars=0)
+
+        await adapter.embed("y" * 3000)
+
+        assert len(json.loads(route.calls[0].request.content)["input"][0]) == 3000
         await adapter.close()

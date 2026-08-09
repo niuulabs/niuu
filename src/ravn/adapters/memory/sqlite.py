@@ -314,6 +314,9 @@ class SqliteMemoryAdapter(MemoryPort):
         return matches
 
     async def prefetch(self, context: str) -> str:
+        # Before the query, not after: a prefetch that raises must still have
+        # reported how much of the corpus was reachable when it tried.
+        await self._maybe_emit_corpus_gauges()
         if self._prefetch_limit == 0:
             return ""
         started = monotonic()
@@ -341,8 +344,16 @@ class SqliteMemoryAdapter(MemoryPort):
     async def _maybe_emit_corpus_gauges(self) -> None:
         """Sample corpus-health gauges at most once per configured interval.
 
-        Coverage ratios only change slowly, so sampling on write keeps them
-        current without a dedicated scheduler or a per-call table scan.
+        Coverage ratios only change slowly, so sampling on the turn path keeps
+        them current without a dedicated scheduler or a per-call table scan.
+
+        Sampled from both ``prefetch`` and ``record_episode``, and from
+        ``prefetch`` *before* the query runs. Sampling on write alone inverted
+        the signal these gauges exist for: a resident whose memory is failing
+        stops recording, so its corpus series went stale and vanished — and an
+        absent gauge reads as an idle resident, not a broken one. Over one 6h
+        window glitnir recorded nothing at all and reported no corpus health
+        whatsoever, which is precisely the case worth seeing.
         """
         if self._corpus_stats_interval_seconds <= 0:
             return
