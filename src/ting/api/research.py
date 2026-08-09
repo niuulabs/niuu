@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from mimir.adapters.markdown import MarkdownMimirAdapter
-from niuu.domain.mimir import MimirPage
+from niuu.domain.mimir import MimirPage, MimirPageMeta
 from niuu.domain.models import Principal
 from niuu.ports.mimir import MimirPort
 from niuu.utils import import_class, resolve_secret_kwargs
@@ -120,6 +120,30 @@ class CampaignArtifactResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class CampaignArtifactSummaryResponse(BaseModel):
+    """Per-campaign artifact tallies for the research list cards.
+
+    The cards need counts and a published flag, not artifacts. Fetching the
+    full detail per row to derive them meant a request per campaign plus a
+    ``get_page`` per artifact; a listing of 18 campaigns did that on mount and
+    again every 15s. Every field here comes from page metadata plus one
+    manifest read, so no artifact content crosses the wire and a remote mount
+    is read in a single listing rather than once per artifact.
+    """
+
+    artifact_count: int = Field(default=0, serialization_alias="artifactCount")
+    source_count: int = Field(default=0, serialization_alias="sourceCount")
+    critique_count: int = Field(default=0, serialization_alias="critiqueCount")
+    learning_count: int = Field(default=0, serialization_alias="learningCount")
+    follow_up_count: int = Field(default=0, serialization_alias="followUpCount")
+    published: bool = False
+    # False when Mímir could not be read, so the counts are unknown rather than
+    # zero — the cards must not report an unreachable campaign as empty.
+    known: bool = True
+
+    model_config = {"populate_by_name": True}
+
+
 class ResearchCampaignResponse(BaseModel):
     id: str
     slug: str
@@ -142,6 +166,10 @@ class ResearchCampaignResponse(BaseModel):
     updated_at: datetime = Field(serialization_alias="updatedAt")
     last_activity_at: datetime | None = Field(default=None, serialization_alias="lastActivityAt")
     completed_at: datetime | None = Field(default=None, serialization_alias="completedAt")
+    artifact_summary: CampaignArtifactSummaryResponse | None = Field(
+        default=None,
+        serialization_alias="artifactSummary",
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -200,7 +228,16 @@ def create_research_router() -> APIRouter:
             )
             for campaign in campaigns
         ]
-        return [_to_campaign_response(campaign) for campaign in refreshed]
+        # Summarised here so the cards need no per-campaign follow-up request,
+        # and in one batch so the list is not one round trip per row.
+        summaries = await _campaign_artifact_summaries(
+            refreshed,
+            settings=request.app.state.settings,
+        )
+        return [
+            _to_campaign_response(campaign, artifact_summary=summary)
+            for campaign, summary in zip(refreshed, summaries, strict=True)
+        ]
 
     @router.post(
         "/campaigns",
@@ -833,6 +870,107 @@ async def _load_campaign_artifacts(
     return artifacts, canonical
 
 
+async def _campaign_artifact_summaries(
+    campaigns: list[WorkflowCampaign],
+    *,
+    settings: Any,
+) -> list[CampaignArtifactSummaryResponse]:
+    """Summarise a whole list of campaigns in three reads per mount.
+
+    Everything the research cards show is derivable from page metadata: the
+    kind comes from the path, the citations from ``source_ids``, and
+    "published" from whether the campaign wrote a manifest. None of it needs a
+    page body, and none of it needs a request per campaign.
+
+    That last part is the point. Summarising each campaign on its own still
+    cost four calls apiece, and Mímir serves on a single worker — eighteen
+    campaigns meant seventy-odd requests queued behind each other, which took
+    about as long as doing it serially. Listing the three prefixes once per
+    mount and grouping by slug turns the whole list into three reads.
+    """
+    if not campaigns:
+        return []
+
+    # Campaigns can resolve to different mounts, so group by the adapter each
+    # one lands on and read each mount once.
+    adapters: list[tuple[MimirPort, list[int]]] = []
+    unmounted: set[int] = set()
+    for index, campaign in enumerate(campaigns):
+        adapter = _resolve_campaign_mimir_port(campaign, settings)
+        if adapter is None:
+            unmounted.add(index)
+            continue
+        for known_adapter, indexes in adapters:
+            if known_adapter is adapter or _same_mimir_mount(known_adapter, adapter):
+                indexes.append(index)
+                break
+        else:
+            adapters.append((adapter, [index]))
+
+    summaries = [CampaignArtifactSummaryResponse(known=False) for _ in campaigns]
+    for adapter, indexes in adapters:
+        try:
+            pages = [
+                page
+                for prefix in ("research/campaigns/", "learnings/research/", "followups/research/")
+                for page in await adapter.list_pages(prefix=prefix)
+            ]
+        except Exception:
+            # Same rule as the artifact listing: unknown is not empty.
+            logger.warning(
+                "Mimir could not be read while summarising %d research campaign(s)",
+                len(indexes),
+                exc_info=True,
+            )
+            continue
+        for index in indexes:
+            summaries[index] = _summarize_campaign_pages(campaigns[index], pages)
+    return summaries
+
+
+def _same_mimir_mount(left: MimirPort, right: MimirPort) -> bool:
+    """True when two adapters read the same store, so one listing serves both."""
+    left_url = getattr(left, "_base_url", None)
+    right_url = getattr(right, "_base_url", None)
+    if left_url is not None or right_url is not None:
+        return left_url == right_url
+    left_root = left.filesystem_root()
+    right_root = right.filesystem_root()
+    return left_root is not None and left_root == right_root
+
+
+def _summarize_campaign_pages(
+    campaign: WorkflowCampaign,
+    pages: list[MimirPageMeta],
+) -> CampaignArtifactSummaryResponse:
+    """Tally one campaign's artifacts out of a mount-wide page listing."""
+    slug = _artifact_slug(campaign)
+    prefix = f"research/campaigns/{slug}/"
+    owned = {f"learnings/research/{slug}.md", f"followups/research/{slug}.md"}
+    mine = [page for page in pages if page.path.startswith(prefix) or page.path in owned]
+
+    kinds = [(page.path, _classify_artifact_kind(page.path)) for page in mine]
+    source_ids: set[str] = set()
+    for page in mine:
+        source_ids.update(page.source_ids or [])
+
+    return CampaignArtifactSummaryResponse(
+        artifact_count=len(mine),
+        source_count=len(source_ids),
+        critique_count=sum(1 for _, kind in kinds if kind in {"critique", "challenge", "skeptic"}),
+        learning_count=sum(
+            1 for path, kind in kinds if kind == "learning" or path.startswith("learnings/")
+        ),
+        follow_up_count=sum(
+            1 for path, kind in kinds if kind == "followup" or path.startswith("followups/")
+        ),
+        # A campaign is published once it has written its manifest; that is
+        # exactly what _published_paths reports, without reading the file.
+        published=any(page.path == f"{prefix}manifest.md" for page in mine),
+        known=True,
+    )
+
+
 async def _published_paths(adapter: MimirPort, slug: str) -> set[str]:
     manifest_path = f"research/campaigns/{slug}/manifest.md"
     try:
@@ -1067,17 +1205,25 @@ def _mimir_http_auth(settings: Any) -> MimirAuth | None:
 
 
 def _campaign_owns_path(campaign: WorkflowCampaign, path: str) -> bool:
+    # Same slug the pages were written under, not the uniquified campaign
+    # slug — otherwise every real artifact path fails this check.
+    slug = _artifact_slug(campaign)
+
     if str(campaign.metadata.get("surface") or "").strip() == _A2A_SURFACE:
         workflow_slug = str(campaign.metadata.get("a2a_workflow_slug") or campaign.slug).strip()
         declared = workflow_artifact_paths_from_snapshot(
             campaign.workflow_snapshot,
             slug=workflow_slug,
         )
-        return path in declared
+        # A graph that declares paths is authoritative — honour it exactly.
+        # Most graphs declare none: `artifactPaths` is optional and absent from
+        # every seeded research workflow, which made `path in declared` false
+        # for every path and 404'd every artifact of every A2A campaign, even
+        # though the listing route found them by prefix and showed them. Fall
+        # back to the same slug scoping that listing uses, so the two agree.
+        if declared:
+            return path in declared
 
-    # Same slug the pages were written under, not the uniquified campaign
-    # slug — otherwise every real artifact path fails this check.
-    slug = _artifact_slug(campaign)
     if path.startswith(f"research/campaigns/{slug}/"):
         return True
     return path in {
@@ -1122,6 +1268,7 @@ def _to_campaign_response(
     campaign: WorkflowCampaign,
     *,
     chat_endpoint: str | None = None,
+    artifact_summary: CampaignArtifactSummaryResponse | None = None,
 ) -> ResearchCampaignResponse:
     return ResearchCampaignResponse(
         id=str(campaign.id),
@@ -1142,6 +1289,7 @@ def _to_campaign_response(
         updated_at=campaign.updated_at,
         last_activity_at=campaign.last_activity_at,
         completed_at=campaign.completed_at,
+        artifact_summary=artifact_summary,
     )
 
 

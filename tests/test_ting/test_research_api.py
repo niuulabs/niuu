@@ -1051,3 +1051,245 @@ def test_delete_campaign_removes_record(tmp_path: Path) -> None:
 
     assert response.status_code == 204
     assert client.get("/api/v1/ting/research/campaigns", headers=_headers()).json() == []
+
+
+# ---------------------------------------------------------------------------
+# _campaign_owns_path — A2A campaigns whose graph declares no artifactPaths
+# ---------------------------------------------------------------------------
+
+
+def _a2a_campaign(
+    *,
+    snapshot: dict | None,
+    slug: str = "survey-something-c6aa1b687896",
+    workflow_slug: str = "survey-something",
+) -> WorkflowCampaign:
+    now = datetime.now(UTC)
+    return WorkflowCampaign(
+        id=uuid4(),
+        slug=slug,
+        name="Survey",
+        owner_id=uuid4(),
+        workflow_id=uuid4(),
+        workflow_version=1,
+        workflow_name="Research Campaign",
+        workflow_snapshot=snapshot,
+        session_id="session-1",
+        session_name=slug,
+        status=WorkflowCampaignStatus.RUNNING,
+        active_stage_id="frame",
+        stage_state=[],
+        metadata={"surface": "a2a", "a2a_workflow_slug": workflow_slug},
+        created_at=now,
+        updated_at=now,
+        last_activity_at=now,
+        completed_at=None,
+    )
+
+
+def test_a2a_campaign_owns_its_artifacts_when_the_graph_declares_none() -> None:
+    """`artifactPaths` is optional and no seeded research workflow sets it.
+
+    Requiring membership of an empty declared set made `path in declared` false
+    for every path, so every artifact of every A2A campaign 404'd — while the
+    listing route, which scopes by slug prefix, happily returned them.
+    """
+    from ting.api.research import _campaign_owns_path
+
+    campaign = _a2a_campaign(snapshot={"graph": {"nodes": [], "edges": [], "tags": []}})
+
+    assert _campaign_owns_path(campaign, "research/campaigns/survey-something/final.md")
+    assert _campaign_owns_path(campaign, "research/campaigns/survey-something/notes/x.md")
+    assert _campaign_owns_path(campaign, "learnings/research/survey-something.md")
+    assert _campaign_owns_path(campaign, "followups/research/survey-something.md")
+
+
+def test_a2a_campaign_scopes_to_its_own_slug_when_the_graph_declares_none() -> None:
+    """The fallback is still a real boundary, not an open door."""
+    from ting.api.research import _campaign_owns_path
+
+    campaign = _a2a_campaign(snapshot={"graph": {"nodes": []}})
+
+    assert not _campaign_owns_path(campaign, "research/campaigns/someone-else/final.md")
+    assert not _campaign_owns_path(campaign, "self/secrets.md")
+    assert not _campaign_owns_path(campaign, "learnings/research/someone-else.md")
+
+
+def test_a2a_campaign_honours_a_graph_that_does_declare_paths() -> None:
+    """A declaring graph stays authoritative — the fallback must not loosen it."""
+    from ting.api.research import _campaign_owns_path
+
+    campaign = _a2a_campaign(
+        snapshot={
+            "graph": {
+                "nodes": [],
+                "artifactPaths": ["research/campaigns/{slug}/final.md"],
+            }
+        }
+    )
+
+    assert _campaign_owns_path(campaign, "research/campaigns/survey-something/final.md")
+    assert not _campaign_owns_path(campaign, "research/campaigns/survey-something/plan.md")
+
+
+def test_non_a2a_campaign_is_unaffected() -> None:
+    from ting.api.research import _campaign_owns_path
+
+    now = datetime.now(UTC)
+    campaign = WorkflowCampaign(
+        id=uuid4(),
+        slug="plain-campaign",
+        name="Plain",
+        owner_id=uuid4(),
+        workflow_id=uuid4(),
+        workflow_version=1,
+        workflow_name="Research Campaign",
+        workflow_snapshot=None,
+        session_id="session-1",
+        session_name="plain-campaign",
+        status=WorkflowCampaignStatus.RUNNING,
+        active_stage_id="frame",
+        stage_state=[],
+        metadata={},
+        created_at=now,
+        updated_at=now,
+        last_activity_at=now,
+        completed_at=None,
+    )
+
+    assert _campaign_owns_path(campaign, "research/campaigns/plain-campaign/final.md")
+    assert not _campaign_owns_path(campaign, "research/campaigns/other/final.md")
+
+
+# ---------------------------------------------------------------------------
+# _campaign_artifact_summary — tallies without reading artifacts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_artifact_summaries_read_each_mount_once(tmp_path: Path, monkeypatch) -> None:
+    """The whole list costs three reads, not four per campaign.
+
+    Mímir serves on one worker, so per-campaign summaries queued behind each
+    other and eighteen campaigns took about as long as doing it serially.
+    """
+    from mimir.adapters.markdown import MarkdownMimirAdapter
+    from ting.api import research as research_api
+
+    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    for slug in ("first", "second"):
+        for rel, body in [
+            (f"research/campaigns/{slug}/final.md", f"# Final {slug}\n<!-- sources: s1 s2 -->"),
+            (f"research/campaigns/{slug}/critique.md", f"# Critique {slug}\n<!-- sources: s2 -->"),
+            (f"learnings/research/{slug}.md", f"# Learning {slug}\n"),
+        ]:
+            path = adapter._wiki / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+    manifest = adapter._wiki / "research/campaigns/first/manifest.md"
+    manifest.write_text("# Manifest\nresearch/campaigns/first/final.md", encoding="utf-8")
+
+    monkeypatch.setattr(
+        research_api, "_resolve_campaign_mimir_port", lambda campaign, settings: adapter
+    )
+    campaigns = [
+        _a2a_campaign(snapshot=None, slug=f"{slug}-abc123", workflow_slug=slug)
+        for slug in ("first", "second")
+    ]
+
+    listings: list[str | None] = []
+    original = MarkdownMimirAdapter.list_pages
+
+    async def _tracking(self, category=None, prefix=None):  # type: ignore[no-untyped-def]
+        listings.append(prefix)
+        return await original(self, category=category, prefix=prefix)
+
+    monkeypatch.setattr(MarkdownMimirAdapter, "list_pages", _tracking)
+    summaries = await research_api._campaign_artifact_summaries(campaigns, settings=object())
+
+    # Three prefixes for the mount, however many campaigns share it.
+    assert listings == [
+        "research/campaigns/",
+        "learnings/research/",
+        "followups/research/",
+    ], listings
+
+    first, second = summaries
+    assert first.artifact_count == 4 and first.published is True
+    assert first.source_count == 2
+    assert first.learning_count == 1
+    assert second.artifact_count == 3 and second.published is False
+
+
+@pytest.mark.asyncio
+async def test_artifact_summaries_do_not_leak_between_campaigns(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Slugs share a prefix root, so each campaign must claim only its own."""
+    from mimir.adapters.markdown import MarkdownMimirAdapter
+    from ting.api import research as research_api
+
+    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    for rel in (
+        "research/campaigns/alpha/final.md",
+        "research/campaigns/alpha-extended/final.md",
+        "research/campaigns/alpha-extended/plan.md",
+    ):
+        path = adapter._wiki / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# Page\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        research_api, "_resolve_campaign_mimir_port", lambda campaign, settings: adapter
+    )
+    campaigns = [_a2a_campaign(snapshot=None, slug="alpha-abc123", workflow_slug="alpha")]
+
+    (summary,) = await research_api._campaign_artifact_summaries(campaigns, settings=object())
+
+    assert summary.artifact_count == 1
+
+
+@pytest.mark.asyncio
+async def test_artifact_summaries_report_unknown_without_a_mount(monkeypatch) -> None:
+    """An unreadable mount is not a campaign with no artifacts."""
+    from ting.api import research as research_api
+
+    monkeypatch.setattr(
+        research_api, "_resolve_campaign_mimir_port", lambda campaign, settings: None
+    )
+
+    (summary,) = await research_api._campaign_artifact_summaries(
+        [_a2a_campaign(snapshot=None)], settings=object()
+    )
+
+    assert summary.known is False
+    assert summary.artifact_count == 0
+
+
+@pytest.mark.asyncio
+async def test_artifact_summaries_report_unknown_when_mimir_raises(monkeypatch) -> None:
+    from ting.api import research as research_api
+
+    class _Broken:
+        async def list_pages(self, **_kwargs: object) -> list[object]:
+            raise RuntimeError("503 Service Unavailable")
+
+        def filesystem_root(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        research_api, "_resolve_campaign_mimir_port", lambda campaign, settings: _Broken()
+    )
+
+    (summary,) = await research_api._campaign_artifact_summaries(
+        [_a2a_campaign(snapshot=None)], settings=object()
+    )
+
+    assert summary.known is False
+
+
+@pytest.mark.asyncio
+async def test_artifact_summaries_of_an_empty_list() -> None:
+    from ting.api import research as research_api
+
+    assert await research_api._campaign_artifact_summaries([], settings=object()) == []

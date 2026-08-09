@@ -6,6 +6,42 @@ import type { ComputeClass } from '../domain/computeClass';
 
 export type ObservatoryFilter = 'all' | 'agents' | 'runs' | 'services' | 'devices';
 
+/**
+ * Which stage the topology is drawn on.
+ *
+ * Not two products: one estate, one layout, one palette, seen either as a plan
+ * or as a model. The choice lives in the store rather than in the page because
+ * the topbar owns the control and the content slot owns the stage, and the two
+ * are rendered into different parts of the shell.
+ */
+export type ObservatoryView = '2d' | '3d';
+
+/** Persisted so the operator's choices survive a reload. */
+const VIEW_STORAGE_KEY = 'niuu.observatory.view';
+const MOTION_STORAGE_KEY = 'niuu.observatory.motion';
+
+/**
+ * Read a stored preference, falling back when storage will not answer.
+ *
+ * Private browsing, a quota that has been hit, an embedder that blocks it —
+ * a preference that cannot be read is not worth failing a page load over.
+ */
+function readStored(key: string, fallback: string): string {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStored(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // A preference that cannot be saved is not worth failing a click over.
+  }
+}
+
 interface ObservatoryStoreState {
   selectedId: string | null;
   /**
@@ -25,6 +61,18 @@ interface ObservatoryStoreState {
   hiddenCompute: ReadonlySet<ComputeClass>;
   /** Present mode: rail, inspector and feed step aside, leaving the graph. */
   presenting: boolean;
+  /** Plan or model. */
+  view: ObservatoryView;
+  /**
+   * Whether the stage is animating.
+   *
+   * Covers both views, because it is one preference about one estate: the
+   * pulses, the travelling marks, the well's ripples and the idle camera
+   * drift all stop together. Held still, the Observatory is a diagram — which
+   * is what you want for a screenshot, a long look at a dense cluster, or a
+   * machine you would rather not have painting sixty times a second.
+   */
+  motion: boolean;
 }
 
 interface ObservatoryStore {
@@ -36,6 +84,8 @@ interface ObservatoryStore {
   toggleCompute(compute: ComputeClass): void;
   setHiddenCompute(compute: ReadonlySet<ComputeClass>): void;
   setPresenting(presenting: boolean): void;
+  setView(view: ObservatoryView): void;
+  setMotion(motion: boolean): void;
   subscribe(fn: () => void): () => void;
 }
 
@@ -67,6 +117,9 @@ export function getObservatoryStore(): ObservatoryStore {
     hiddenLayers: new Set<EdgeLayer>(CALM_HIDDEN_LAYERS),
     hiddenCompute: new Set<ComputeClass>(),
     presenting: false,
+    view: readStored(VIEW_STORAGE_KEY, '2d') === '3d' ? '3d' : '2d',
+    // Animating unless the operator has said otherwise.
+    motion: readStored(MOTION_STORAGE_KEY, 'on') !== 'off',
   };
 
   _store = {
@@ -109,6 +162,18 @@ export function getObservatoryStore(): ObservatoryStore {
     setPresenting(presenting: boolean): void {
       if (state.presenting === presenting) return;
       state = { ...state, presenting };
+      subscribers.forEach((fn) => fn());
+    },
+    setView(view: ObservatoryView): void {
+      if (state.view === view) return;
+      state = { ...state, view };
+      writeStored(VIEW_STORAGE_KEY, view);
+      subscribers.forEach((fn) => fn());
+    },
+    setMotion(motion: boolean): void {
+      if (state.motion === motion) return;
+      state = { ...state, motion };
+      writeStored(MOTION_STORAGE_KEY, motion ? 'on' : 'off');
       subscribers.forEach((fn) => fn());
     },
     subscribe(fn: () => void): () => void {

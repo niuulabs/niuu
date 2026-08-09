@@ -223,9 +223,6 @@ function makeSpecsService(overrides?: Partial<ISpecsService>): ISpecsService {
       return campaign;
     },
     async deleteCampaign() {},
-    async listArtifacts() {
-      return campaign.artifacts;
-    },
     async getArtifact(_slug, path) {
       return artifacts.get(path) ?? null;
     },

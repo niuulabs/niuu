@@ -184,9 +184,6 @@ describe('ResearchNewPage', () => {
         throw new Error('not needed');
       },
       async deleteCampaign() {},
-      async listArtifacts() {
-        return [];
-      },
       async getArtifact() {
         return null;
       },
@@ -306,9 +303,6 @@ describe('ResearchNewPage', () => {
         throw new Error('not needed');
       },
       async deleteCampaign() {},
-      async listArtifacts() {
-        return [];
-      },
       async getArtifact() {
         return null;
       },

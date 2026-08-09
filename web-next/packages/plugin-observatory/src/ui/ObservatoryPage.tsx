@@ -1,15 +1,29 @@
+import { Suspense, lazy } from 'react';
 import { useTopology } from '../application/useTopology';
 import { useEvents } from '../application/useEvents';
 import { useRegistry } from '../application/useRegistry';
 import { useObservatoryStore } from '../application/useObservatoryStore';
 import type { TopologyNode } from '../domain';
 import { TopologyCanvas } from './TopologyCanvas';
+
 import { LayerFilterBar } from './LayerFilterBar';
 import { SignalTicker } from './SignalTicker';
 import { Inspector } from './overlays/Inspector';
 import { AgentCardPanel } from './overlays/AgentCardPanel';
 import { humanizeObservatoryText } from './displayLabels';
 import './ObservatoryShell.css';
+
+/**
+ * The 3D stage, fetched only when someone asks for it.
+ *
+ * It brings a whole rendering library with it — around a fifth of the app's
+ * download, which every operator would otherwise pay for on first load whether
+ * or not they ever leave the plan. Split out, the cost lands on the click that
+ * asks for it.
+ */
+const TopologyScene3D = lazy(() =>
+  import('./TopologyScene3D').then((module) => ({ default: module.TopologyScene3D })),
+);
 
 /**
  * Observatory page.
@@ -29,7 +43,7 @@ export function ObservatoryPage() {
   const events = useEvents();
   const { data: registry } = useRegistry();
   const [storeState, store] = useObservatoryStore();
-  const { selectedId, focusId, hiddenLayers, hiddenCompute, presenting } = storeState;
+  const { selectedId, focusId, hiddenLayers, hiddenCompute, presenting, view, motion } = storeState;
 
   const selectedNode: TopologyNode | null =
     selectedId && topology ? (topology.nodes.find((n) => n.id === selectedId) ?? null) : null;
@@ -69,16 +83,45 @@ export function ObservatoryPage() {
         than the page — otherwise they cover the filter bar and swallow clicks.
       */}
       <main className="obs-shell__stage">
-        <TopologyCanvas
-          topology={topology}
-          registry={registry ?? null}
-          onNodeClick={handleNodeClick}
-          selectedId={selectedId}
-          focusId={focusId}
-          hiddenLayers={hiddenLayers}
-          hiddenCompute={hiddenCompute}
-          className="niuu:absolute niuu:inset-0"
-        />
+        {/*
+          One estate, one layout, one palette — the stage is a choice of
+          viewpoint, not of subject. Both renderers take the same props and
+          report selection the same way, so the inspector and the rail neither
+          know nor care which one is mounted.
+        */}
+        {view === '3d' ? (
+          <Suspense
+            fallback={
+              <div className="obs-shell__loading" data-testid="scene3d-loading" role="status">
+                Opening the 3D view…
+              </div>
+            }
+          >
+            <TopologyScene3D
+              topology={topology}
+              registry={registry ?? null}
+              onNodeClick={handleNodeClick}
+              selectedId={selectedId}
+              focusId={focusId}
+              hiddenLayers={hiddenLayers}
+              hiddenCompute={hiddenCompute}
+              paused={!motion}
+              className="niuu:absolute niuu:inset-0"
+            />
+          </Suspense>
+        ) : (
+          <TopologyCanvas
+            topology={topology}
+            registry={registry ?? null}
+            onNodeClick={handleNodeClick}
+            selectedId={selectedId}
+            focusId={focusId}
+            hiddenLayers={hiddenLayers}
+            hiddenCompute={hiddenCompute}
+            paused={!motion}
+            className="niuu:absolute niuu:inset-0"
+          />
+        )}
       </main>
 
       <SignalTicker events={events} />

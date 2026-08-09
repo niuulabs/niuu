@@ -683,12 +683,6 @@ describe('createMockResearchService', () => {
     expect(await svc.listCampaigns()).toHaveLength(0);
   });
 
-  it('listArtifacts returns artifacts or an empty list for unknown slugs', async () => {
-    const svc = createMockResearchService();
-    expect(await svc.listArtifacts('rag-landscape')).toHaveLength(2);
-    expect(await svc.listArtifacts('nope')).toEqual([]);
-  });
-
   it('getArtifact returns content for a known artifact', async () => {
     const svc = createMockResearchService();
     const artifact = await svc.getArtifact(

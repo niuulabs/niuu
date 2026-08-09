@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from ravn.adapters._pool_sizing import AUX_POOL_MAX_SIZE, AUX_POOL_MIN_SIZE
 from ravn.adapters.review import FileReviewQueueStore
 from ravn.config import OdinReviewConfig
 from ravn.odin.review import ReviewStatus, capability_for_kind
@@ -46,7 +47,11 @@ class _LazyPostgresReviewQueueStore(ReviewQueueStore):
         if self._store is None:
             import asyncpg  # noqa: PLC0415
 
-            pool = await asyncpg.create_pool(dsn=self._dsn)
+            pool = await asyncpg.create_pool(
+                dsn=self._dsn,
+                min_size=AUX_POOL_MIN_SIZE,
+                max_size=AUX_POOL_MAX_SIZE,
+            )
             self._store = self._store_cls(pool)
         return self._store
 

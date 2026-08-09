@@ -1291,3 +1291,75 @@ def test_url_ingest_failure_returns_bad_gateway(client: TestClient, respx_mock) 
 
     resp = client.post("/mimir/sources/ingest/url", json={"url": "https://example.com/fail"})
     assert resp.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# Page reads must not walk the corpus to decorate one page
+# ---------------------------------------------------------------------------
+
+
+def _count_page_reads(client: TestClient, call) -> int:
+    """Run *call* and count how many wiki files get read off disk."""
+    reads: list[str] = []
+    original_read_text = Path.read_text
+
+    def _tracking(self: Path, *args: object, **kwargs: object) -> str:
+        if self.suffix == ".md":
+            reads.append(self.name)
+        return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    Path.read_text = _tracking  # type: ignore[method-assign]
+    try:
+        call()
+    finally:
+        Path.read_text = original_read_text  # type: ignore[method-assign]
+    return len(reads)
+
+
+def _seed_pages(client: TestClient, count: int) -> None:
+    for i in range(count):
+        client.put(
+            "/mimir/page",
+            json={"path": f"technical/bulk-{i}.md", "content": f"# Bulk {i}\nfiller."},
+        )
+
+
+def test_reading_one_page_does_not_walk_the_corpus(client: TestClient) -> None:
+    """Decorating a page with its mounts used to re-read every page in the wiki.
+
+    Ting reads ~10 pages per research campaign and one page view loads 18
+    campaigns, so this turned a page view into ~180 full-corpus walks.
+    """
+    client.put("/mimir/page", json={"path": "research/campaigns/x/final.md", "content": "# F\nx."})
+    _seed_pages(client, 30)
+
+    reads = _count_page_reads(
+        client,
+        lambda: client.get("/mimir/page", params={"path": "research/campaigns/x/final.md"}),
+    )
+
+    # The page itself, plus its scoped mount lookup — not the whole wiki.
+    assert reads <= 4, f"reading one page touched {reads} files"
+
+
+def test_listing_pages_by_prefix_does_not_walk_the_corpus(client: TestClient) -> None:
+    client.put("/mimir/page", json={"path": "research/campaigns/x/final.md", "content": "# F\nx."})
+    client.put("/mimir/page", json={"path": "research/campaigns/x/plan.md", "content": "# P\nx."})
+    _seed_pages(client, 30)
+
+    reads = _count_page_reads(
+        client,
+        lambda: client.get("/mimir/pages", params={"prefix": "research/campaigns/x/"}),
+    )
+
+    assert reads <= 6, f"prefixed listing touched {reads} files"
+
+
+def test_page_response_still_reports_its_mount(client: TestClient) -> None:
+    """Scoping the lookup must not cost the answer it exists to give."""
+    client.put("/mimir/page", json={"path": "research/campaigns/x/final.md", "content": "# F\nx."})
+
+    resp = client.get("/mimir/page", params={"path": "research/campaigns/x/final.md"})
+
+    assert resp.status_code == 200
+    assert resp.json()["mounts"] == ["test"]

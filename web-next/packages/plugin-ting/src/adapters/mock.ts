@@ -1830,10 +1830,6 @@ export function createMockResearchService(): IResearchService {
       campaigns.delete(slug);
     },
 
-    async listArtifacts(slug: string) {
-      return campaigns.get(slug)?.artifacts ?? [];
-    },
-
     async getArtifact(slug: string, path: string) {
       const artifact = campaigns.get(slug)?.artifacts.find((item) => item.path === path);
       if (!artifact) return null;
@@ -1999,10 +1995,6 @@ export function createMockSpecsService(): ISpecsService {
 
     async deleteCampaign(slug: string) {
       campaigns.delete(slug);
-    },
-
-    async listArtifacts(slug: string) {
-      return campaigns.get(slug)?.artifacts ?? [];
     },
 
     async getArtifact(slug: string, path: string) {

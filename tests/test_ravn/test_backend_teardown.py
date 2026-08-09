@@ -9,6 +9,8 @@ because every deployed resident runs sqlite + file.
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 from ravn.adapters.checkpoint.disk import DiskCheckpointAdapter
@@ -67,14 +69,18 @@ async def test_closing_a_postgres_checkpoint_adapter_releases_the_pool() -> None
     assert closed == [True]
 
 
-def test_checkpoint_pool_is_bounded_well_below_the_asyncpg_default() -> None:
-    # asyncpg defaults to min_size=10/max_size=10, so the old bare create_pool
-    # grabbed ten connections on first save for a serialised, low-traffic
-    # workload.
-    port = PostgresCheckpointAdapter(dsn="postgresql://unused/db")
+def test_checkpoint_pool_uses_the_shared_auxiliary_sizing() -> None:
+    # Sizing belongs to _pool_sizing, not to this adapter: several auxiliary
+    # stores share one Postgres, and on 2026-08-08 leaving it implicit took 69
+    # of its 100 slots. One number, not one per adapter.
+    from ravn.adapters import checkpoint as checkpoint_pkg
+    from ravn.adapters._pool_sizing import AUX_POOL_MAX_SIZE, AUX_POOL_MIN_SIZE
 
-    assert port._pool_min_size == 1
-    assert port._pool_max_size == 4
+    source = (pathlib.Path(checkpoint_pkg.__file__).parent / "postgres.py").read_text()
+
+    assert "AUX_POOL_MIN_SIZE" in source and "AUX_POOL_MAX_SIZE" in source
+    assert "pool_min_size" not in source, "adapter must not reintroduce its own knob"
+    assert (AUX_POOL_MIN_SIZE, AUX_POOL_MAX_SIZE) == (1, 5)
 
 
 @pytest.mark.asyncio

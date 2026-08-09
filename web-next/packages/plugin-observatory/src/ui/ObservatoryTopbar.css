@@ -4,6 +4,48 @@
   gap: var(--space-3);
 }
 
+/* The stage picker reads as one control, so its halves share a border. */
+.obs-topbar__views {
+  display: flex;
+  flex: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.obs-topbar__view {
+  padding: var(--space-1) var(--space-3);
+  border: 0;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs, 0.625rem);
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  transition:
+    color 130ms ease,
+    background 130ms ease;
+}
+
+.obs-topbar__view + .obs-topbar__view {
+  border-left: 1px solid var(--color-border);
+}
+
+.obs-topbar__view:hover {
+  color: var(--color-text-primary);
+}
+
+.obs-topbar__view:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: -2px;
+}
+
+.obs-topbar__view[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--color-brand) 18%, var(--color-bg-tertiary));
+  color: var(--color-text-primary);
+}
+
+.obs-topbar__motion,
 .obs-topbar__present {
   flex: none;
   padding: var(--space-1) var(--space-3);
@@ -22,17 +64,36 @@
     border-color 130ms ease;
 }
 
+.obs-topbar__motion:hover,
 .obs-topbar__present:hover {
   color: var(--color-text-primary);
   border-color: var(--color-text-faint);
 }
 
+.obs-topbar__motion:focus-visible,
 .obs-topbar__present:focus-visible {
   outline: 2px solid var(--color-brand);
   outline-offset: 1px;
 }
 
+.obs-topbar__motion[aria-pressed='true'],
 .obs-topbar__present[aria-pressed='true'] {
   color: var(--color-text-primary);
   border-color: var(--color-brand);
+}
+
+/* Square, so the glyph is the whole button and it cannot shuffle the bar
+   sideways when it swaps between two bars and a triangle. */
+.obs-topbar__motion {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  padding: var(--space-1) 0;
+}
+
+.obs-topbar__motion svg {
+  width: 0.5rem;
+  height: 0.5rem;
+  fill: currentColor;
 }

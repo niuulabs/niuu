@@ -24,6 +24,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from ravn.adapters._pool_sizing import AUX_POOL_MAX_SIZE, AUX_POOL_MIN_SIZE
 from ravn.domain.checkpoint import Checkpoint, InterruptReason
 from ravn.ports.checkpoint import CheckpointPort
 
@@ -188,26 +189,15 @@ class PostgresCheckpointAdapter(CheckpointPort):
         ``postgresql://user:pass@host/db``.
     max_snapshots_per_task:
         Maximum named snapshots retained per task.  Oldest are pruned.
-    pool_min_size / pool_max_size:
-        Connection pool bounds.  Checkpointing is low-traffic and strictly
-        serialised per task, so the default is deliberately small: asyncpg's
-        own default is 10/10, which had this adapter open ten connections on
-        first save for a workload that never needs more than one at a time.
+
+    Pool size comes from ``_pool_sizing``: several auxiliary stores share one
+    Postgres, so they share one number rather than each naming its own.
     """
 
-    def __init__(
-        self,
-        dsn: str,
-        max_snapshots_per_task: int = 20,
-        *,
-        pool_min_size: int = 1,
-        pool_max_size: int = 4,
-    ) -> None:
+    def __init__(self, dsn: str, max_snapshots_per_task: int = 20) -> None:
         self._dsn = dsn
         self._pool: Any | None = None
         self._max_snapshots = max_snapshots_per_task
-        self._pool_min_size = pool_min_size
-        self._pool_max_size = pool_max_size
 
     async def _ensure_pool(self) -> Any:
         if self._pool is not None:
@@ -216,8 +206,8 @@ class PostgresCheckpointAdapter(CheckpointPort):
 
         self._pool = await asyncpg.create_pool(
             self._dsn,
-            min_size=self._pool_min_size,
-            max_size=self._pool_max_size,
+            min_size=AUX_POOL_MIN_SIZE,
+            max_size=AUX_POOL_MAX_SIZE,
         )
         async with self._pool.acquire() as conn:
             await conn.execute(_CREATE_CRASH_TABLE_SQL)

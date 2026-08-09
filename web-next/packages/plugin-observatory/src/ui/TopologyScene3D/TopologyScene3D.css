@@ -1,0 +1,77 @@
+/* TopologyScene3D — the 3D stage and its overlays. */
+
+.topology-scene3d {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  /* Matches the plan's canvas, which is what shows through until the
+     renderer's first frame lands. */
+  background: radial-gradient(ellipse at 50% 50%, #0a0c12 0%, #050509 70%);
+}
+
+.topology-scene3d__canvas-host {
+  position: absolute;
+  inset: 0;
+  cursor: grab;
+  touch-action: none;
+  outline: none;
+}
+
+.topology-scene3d__canvas-host[data-dragging='true'] {
+  cursor: grabbing;
+}
+
+.topology-scene3d__canvas-host[data-hovering='true'] {
+  cursor: pointer;
+}
+
+.topology-scene3d__canvas-host > canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/*
+ * The gestures are not the plan's gestures, and nothing on screen would say so
+ * otherwise — drag orbits here rather than panning, which is the one thing an
+ * operator arriving from the 2D view will get wrong.
+ */
+.topology-scene3d__hint {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  z-index: 40;
+  display: flex;
+  gap: 14px;
+  padding: 6px 10px;
+  border: 1px solid rgb(147 197 253 / 16%);
+  border-radius: 6px;
+  background: rgb(9 9 11 / 76%);
+  color: rgb(186 230 253 / 62%);
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  user-select: none;
+}
+
+.topology-scene3d__fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  text-align: center;
+}
+
+.topology-scene3d__fallback strong {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}

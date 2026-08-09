@@ -381,3 +381,65 @@ async def test_read_source_excerpt_treats_non_positive_as_unbounded(tmp_path: Pa
 @pytest.mark.asyncio
 async def test_read_source_excerpt_of_a_missing_source(tmp_path: Path) -> None:
     assert await _make_adapter(tmp_path).read_source_excerpt("src-nope", 100) is None
+
+
+# ---------------------------------------------------------------------------
+# Prefix-scoped listing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_pages_with_prefix_does_not_read_other_pages(tmp_path: Path) -> None:
+    """A prefix must scope the walk, not just filter its result.
+
+    Ting asks for one campaign's artifacts and used to pay for the whole wiki:
+    its detail route timed out at 30s, and it makes one such call per campaign.
+    """
+    adapter = _make_adapter(tmp_path)
+    _write_page(adapter, "research/campaigns/wanted/final.md", "# Final\n")
+    _write_page(adapter, "research/campaigns/wanted/plan.md", "# Plan\n")
+    for i in range(25):
+        _write_page(adapter, f"technical/other-{i}.md", f"# Other {i}\n")
+
+    read: list[str] = []
+    original_read_text = Path.read_text
+
+    def _tracking_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        if self.suffix == ".md":
+            read.append(self.name)
+        return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    Path.read_text = _tracking_read_text  # type: ignore[method-assign]
+    try:
+        pages = await adapter.list_pages(prefix="research/campaigns/wanted/")
+    finally:
+        Path.read_text = original_read_text  # type: ignore[method-assign]
+
+    assert sorted(p.path for p in pages) == [
+        "research/campaigns/wanted/final.md",
+        "research/campaigns/wanted/plan.md",
+    ]
+    assert sorted(read) == ["final.md", "plan.md"]
+
+
+@pytest.mark.asyncio
+async def test_list_pages_without_prefix_is_unchanged(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    _write_page(adapter, "research/campaigns/wanted/final.md", "# Final\n")
+    _write_page(adapter, "technical/other.md", "# Other\n")
+
+    pages = await adapter.list_pages()
+
+    assert len(pages) == 2
+
+
+@pytest.mark.asyncio
+async def test_list_pages_prefix_combines_with_category(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    _write_page(adapter, "research/campaigns/wanted/final.md", "# Final\n")
+    _write_page(adapter, "research/campaigns/other/final.md", "# Other\n")
+    _write_page(adapter, "technical/x.md", "# X\n")
+
+    pages = await adapter.list_pages(category="research", prefix="research/campaigns/wanted/")
+
+    assert [p.path for p in pages] == ["research/campaigns/wanted/final.md"]
