@@ -155,6 +155,37 @@ class TestBuildMemory:
         mem = _build_memory(settings)
         assert mem is None
 
+    def test_unloadable_embedding_adapter_raises_instead_of_degrading(
+        self, settings: Settings, tmp_path
+    ) -> None:
+        """Asking for embeddings and silently getting lexical-only must not happen.
+
+        The old behaviour logged a warning and continued, so a resident whose
+        config demanded semantic search ran keyword-only with retrieval quality
+        quietly collapsed and nothing to detect it by.
+        """
+        from ravn.cli.commands import _build_memory
+
+        settings.memory.backend = "sqlite"
+        settings.memory.path = str(tmp_path / "memory.db")
+        settings.embedding.enabled = True
+        settings.embedding.adapter = "ravn.adapters.embedding.nope.MissingAdapter"
+
+        with pytest.raises(RuntimeError, match="embedding.enabled is true"):
+            _build_memory(settings)
+
+    def test_disabled_embeddings_still_build_lexical_memory(
+        self, settings: Settings, tmp_path
+    ) -> None:
+        """Opting out explicitly is fine — only unmet configuration is an error."""
+        from ravn.cli.commands import _build_memory
+
+        settings.memory.backend = "sqlite"
+        settings.memory.path = str(tmp_path / "memory.db")
+        settings.embedding.enabled = False
+
+        assert _build_memory(settings) is not None
+
     def test_custom_backend_failure_raises_instead_of_disabling_memory(
         self, settings: Settings
     ) -> None:
@@ -168,17 +199,25 @@ class TestBuildMemory:
         with pytest.raises(ValueError, match="not importable"):
             _build_memory(settings)
 
-    def test_embedding_failure_falls_back_to_fts_only(self, settings: Settings) -> None:
+    def test_embedding_failure_is_fatal_not_a_silent_downgrade(
+        self, settings: Settings, tmp_path
+    ) -> None:
+        """Replaces an earlier test that asserted the opposite.
+
+        This previously returned a working memory adapter with embeddings
+        quietly dropped, which is how a resident ended up running keyword-only
+        retrieval while its config asked for semantic search. Continuing in a
+        degraded mode the operator did not ask for is the bug, not the feature.
+        """
         from ravn.cli.commands import _build_memory
 
         settings.memory.backend = "sqlite"
-        settings.memory.path = "/tmp/test_ravn_memory_fts.db"
+        settings.memory.path = str(tmp_path / "memory_fts.db")
         settings.embedding.enabled = True
         settings.embedding.adapter = "nonexistent.module.Embedding"
 
-        mem = _build_memory(settings)
-        # Memory still created, just without embedding
-        assert mem is not None
+        with pytest.raises(RuntimeError, match="will not silently degrade"):
+            _build_memory(settings)
 
 
 # ---------------------------------------------------------------------------

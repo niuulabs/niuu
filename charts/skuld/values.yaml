@@ -492,6 +492,11 @@ resident:
   # or metrics until this block is supplied. Rendered verbatim into the ravn
   # config's `observability:` section.
   observability: {}
+  # -- Episodic memory settings. The default path lives under $HOME, which for a
+  # chart-deployed resident is the sessions volume — an emptyDir unless
+  # persistence.existingClaim is set, so episodes are erased on every restart.
+  # Point `path` at a persistent mount (e.g. the homeVolume claim) to keep them.
+  memory: {}
   environmentId: "local"
   # -- Display identity of the resident (e.g. "Muninn"); defaults to persona
   name: ""

@@ -39,7 +39,7 @@
       "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
       "id": 4,
       "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "(sum(rate(ravn_agent_tasks{job=~\"$job\",ravn_task_outcome=~\"error|exception\"}[$__rate_interval])) or vector(0)) / clamp_min((sum(rate(ravn_agent_tasks{job=~\"$job\"}[$__rate_interval])) or vector(0)), 1e-9)", "refId": "A"}],
+      "targets": [{"expr": "(sum(rate(ravn_agent_tasks{job=~\"$job\",ravn_task_outcome=~\"error|exception\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(ravn_agent_tasks{job=~\"$job\"}[$__rate_interval])), 1e-9)", "refId": "A"}],
       "title": "Task failure ratio",
       "type": "stat"
     },
@@ -263,27 +263,27 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "${metrics}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit"}, "overrides": []},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit", "noValue": "no data yet"}, "overrides": []},
       "gridPos": {"h": 4, "w": 6, "x": 0, "y": 91},
       "id": 71,
       "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "(sum(rate(ravn_memory_operations{job=~\"$job\",ravn_environment_id=~\"$environment\",ravn_memory_operation=\"prefetch\",ravn_memory_result=\"hit\"}[$__rate_interval])) or vector(0)) / clamp_min((sum(rate(ravn_memory_operations{job=~\"$job\",ravn_environment_id=~\"$environment\",ravn_memory_operation=\"prefetch\"}[$__rate_interval])) or vector(0)), 1e-9)", "refId": "A"}],
+      "targets": [{"expr": "(sum(rate(ravn_memory_operations{job=~\"$job\",ravn_environment_id=~\"$environment\",ravn_memory_operation=\"prefetch\",ravn_memory_result=\"hit\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(ravn_memory_operations{job=~\"$job\",ravn_environment_id=~\"$environment\",ravn_memory_operation=\"prefetch\"}[$__rate_interval])), 1e-9)", "refId": "A"}],
       "title": "Prefetch hit rate",
       "type": "stat"
     },
     {
       "datasource": {"type": "prometheus", "uid": "${metrics}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit"}, "overrides": []},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit", "noValue": "no data yet"}, "overrides": []},
       "gridPos": {"h": 4, "w": 6, "x": 6, "y": 91},
       "id": 72,
       "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "(sum(rate(ravn_memory_admitted{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval])) or vector(0)) / clamp_min((sum(rate(ravn_memory_candidates{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval])) or vector(0)), 1e-9)", "refId": "A"}],
+      "targets": [{"expr": "(sum(rate(ravn_memory_admitted{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(ravn_memory_candidates{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval])), 1e-9)", "refId": "A"}],
       "title": "Admission rate (admitted / candidates)",
       "type": "stat"
     },
     {
       "datasource": {"type": "prometheus", "uid": "${metrics}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit"}, "overrides": []},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit", "noValue": "no data yet"}, "overrides": []},
       "gridPos": {"h": 4, "w": 6, "x": 12, "y": 91},
       "id": 73,
       "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
@@ -293,11 +293,11 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "${metrics}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit"}, "overrides": []},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.05}]}, "unit": "percentunit", "noValue": "no data yet"}, "overrides": []},
       "gridPos": {"h": 4, "w": 6, "x": 18, "y": 91},
       "id": 74,
       "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "(sum(rate(ravn_mimir_operations{job=~\"$job\",ravn_environment_id=~\"$environment\",ravn_mimir_operation=~\"search|query\",ravn_memory_result=\"hit\"}[$__rate_interval])) or vector(0)) / clamp_min((sum(rate(ravn_mimir_operations{job=~\"$job\",ravn_environment_id=~\"$environment\",ravn_mimir_operation=~\"search|query\"}[$__rate_interval])) or vector(0)), 1e-9)", "refId": "A"}],
+      "targets": [{"expr": "(sum(rate(ravn_mimir_operations{job=~\"$job\",ravn_environment_id=~\"$environment\",ravn_mimir_operation=~\"search|query\",ravn_memory_result=\"hit\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(ravn_mimir_operations{job=~\"$job\",ravn_environment_id=~\"$environment\",ravn_mimir_operation=~\"search|query\"}[$__rate_interval])), 1e-9)", "refId": "A"}],
       "title": "Mimir search hit rate",
       "type": "stat"
     },
@@ -356,6 +356,81 @@
       "id": 80,
       "options": {"content": "**Reading this row.** `Admission rate` is the diagnostic: a healthy funnel keeps candidates and admitted within an order of magnitude. Candidates high with admitted at zero means retrieval is working and the `min_relevance` gate is discarding it \u2014 check the score distribution against the gate and the p95 candidate age, since the combined score multiplies relevance by an unbounded recency decay.\n\n`Embedding coverage` below 1 means part of the corpus can only be reached lexically; `index coverage` below 1 means part of it cannot be reached at all. Both are silent failures no per-call metric shows.", "mode": "markdown"},
       "title": "How to read the memory row",
+      "type": "text"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 122},
+      "id": 81,
+      "panels": [],
+      "title": "Learned tools: build vs reuse",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "noValue": "no data yet", "thresholds": {"mode": "absolute", "steps": [{"color": "text", "value": null}]}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 123},
+      "id": 82,
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "count(count by (ravn_learned_tool_name) (max_over_time(ravn_learned_tool_installed{job=~\"$job\"}[6h])))", "refId": "A"}],
+      "title": "Distinct learned tools",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "noValue": "no data yet", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1.05}, {"color": "red", "value": 1.25}]}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 123},
+      "id": 83,
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "count(max_over_time(ravn_learned_tool_installed{job=~\"$job\"}[6h])) / clamp_min(count(count by (ravn_learned_tool_name) (max_over_time(ravn_learned_tool_installed{job=~\"$job\"}[6h]))), 1e-9)", "refId": "A"}],
+      "title": "Reinstall ratio (installs / distinct names)",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "noValue": "no data yet", "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 2}, {"color": "green", "value": 5}]}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 123},
+      "id": 84,
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "sum(rate(ravn_agent_tool_calls{job=~\"$job\",gen_ai_tool_name=\"learned_tool_run\"}[6h])) / clamp_min(sum(rate(ravn_agent_tool_calls{job=~\"$job\",gen_ai_tool_name=\"build_tool\"}[6h])), 1e-9)", "refId": "A"}],
+      "title": "Reuse ratio (learned_tool_run / build_tool)",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "noValue": "no data yet", "thresholds": {"mode": "absolute", "steps": [{"color": "text", "value": null}]}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 123},
+      "id": 85,
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "sum(increase(ravn_agent_tool_calls{job=~\"$job\",gen_ai_tool_name=\"capability_list\"}[6h]))", "refId": "A"}],
+      "title": "Capability discovery calls",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2, "showPoints": "never", "stacking": {"group": "A", "mode": "none"}}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 127},
+      "id": 86,
+      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (gen_ai_tool_name) (rate(ravn_agent_tool_calls{job=~\"$job\",gen_ai_tool_name=~\"build_tool|learned_tool_run|capability_list\"}[$__rate_interval]))", "legendFormat": "{{gen_ai_tool_name}}", "refId": "A"}],
+      "title": "Build vs reuse vs discovery",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 127},
+      "id": 87,
+      "options": {"showHeader": true},
+      "targets": [{"expr": "count by (ravn_learned_tool_name) (max_over_time(ravn_learned_tool_installed{job=~\"$job\"}[6h]))", "format": "table", "instant": true, "refId": "A"}],
+      "title": "Installed learned tools by name (scan for near-duplicates)",
+      "type": "table"
+    },
+    {
+      "gridPos": {"h": 5, "w": 24, "x": 0, "y": 135},
+      "id": 88,
+      "options": {"content": "**Is the resident rebuilding what it already has?**\n\n`Reinstall ratio` above 1 means the same tool *name* was installed more than once \u2014 a literal rebuild. It does not catch the more common case: a rebuild under a slightly different name (`k8s_` vs `kubernetes_` prefixes, swapped word order, `_v2`/`_v3` suffixes). Scan the name table for those; a normalized capability label would be needed to measure them directly.\n\n`Reuse ratio` is runs per build \u2014 higher is better. A low ratio alongside healthy `capability_list` calls means discovery is running but not finding the existing tool, which points back at retrieval, not at the tool builder.\n\nAll panels look over a 6h window: `ravn_learned_tool_installed` is emitted at install time and then goes stale, so an instant query returns nothing.", "mode": "markdown"},
+      "title": "How to read the tool row",
       "type": "text"
     }
   ],
