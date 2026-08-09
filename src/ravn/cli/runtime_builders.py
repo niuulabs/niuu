@@ -632,6 +632,7 @@ def _build_memory(settings: Settings, llm: Any = None) -> Any:
             rrf_k=settings.embedding.rrf_k,
             semantic_candidate_limit=settings.embedding.semantic_candidate_limit,
             corpus_stats_interval_seconds=settings.memory.corpus_stats_interval_seconds,
+            environment_id=settings.environment.id,
         )
 
     elif backend == "postgres":
@@ -644,7 +645,7 @@ def _build_memory(settings: Settings, llm: Any = None) -> Any:
                 "Postgres memory backend configured but no DSN provided — memory disabled",
             )
             return None
-        adapter = PostgresMemoryAdapter(dsn=dsn)
+        adapter = PostgresMemoryAdapter(dsn=dsn, environment_id=settings.environment.id)
 
     else:
         # Custom backend via fully-qualified class path
@@ -842,7 +843,9 @@ def _build_mimir(settings: Settings) -> Any:
                 auth = None
                 if inst.auth is not None:
                     auth = _build_mimir_auth(settings, inst.auth)
-                port = HttpMimirAdapter(base_url=inst.url, auth=auth)
+                port = HttpMimirAdapter(
+                    base_url=inst.url, auth=auth, environment_id=settings.environment.id
+                )
             else:
                 logger.warning(
                     "Mímir instance %r has neither path nor url — skipping",

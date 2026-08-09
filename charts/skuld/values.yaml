@@ -487,6 +487,11 @@ resident:
   # -- Exact collaboration-event redeliveries retained by the room adapter.
   roomDeliveryDedupeMaxEntries: 4096
   # -- Stable environment identity shared by the resident Ravn and its room.
+  # OpenTelemetry export for the resident's Ravn process. Omitted by default:
+  # ravn's ObservabilityConfig.enabled is false, so a resident emits no traces
+  # or metrics until this block is supplied. Rendered verbatim into the ravn
+  # config's `observability:` section.
+  observability: {}
   environmentId: "local"
   # -- Display identity of the resident (e.g. "Muninn"); defaults to persona
   name: ""

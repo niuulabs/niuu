@@ -334,8 +334,10 @@ class LocalResidentState(LocalResidentMemory, ResidentStatePort):
         root: Path,
         *,
         continuation_prefix: str = "resident/continuation",
+        environment_id: str = "",
     ) -> None:
         LocalResidentMemory.__init__(self, root, prefix=continuation_prefix)
+        self._environment_id = environment_id
 
     async def available(self) -> bool:
         return True
@@ -354,6 +356,7 @@ class LocalResidentState(LocalResidentMemory, ResidentStatePort):
             operation="recall",
             record_type="continuation",
             adapter=type(self).__name__,
+            environment_id=self._environment_id,
             result=result_for(len(entries)),
         )
         return entries
@@ -364,6 +367,7 @@ class LocalResidentState(LocalResidentMemory, ResidentStatePort):
             operation="read",
             record_type="working_state",
             adapter=type(self).__name__,
+            environment_id=self._environment_id,
             result=result_for(1 if entry is not None else 0),
         )
         return entry
@@ -374,6 +378,7 @@ class LocalResidentState(LocalResidentMemory, ResidentStatePort):
             operation="write",
             record_type="turn",
             adapter=type(self).__name__,
+            environment_id=self._environment_id,
             result=RESULT_HIT,
         )
         return ref

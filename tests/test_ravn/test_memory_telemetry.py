@@ -423,3 +423,76 @@ class TestRecencyFloor:
         )
 
         assert failure < success
+
+
+class TestEnvironmentIdentity:
+    """Metrics must carry the label the dashboard's environment picker filters on.
+
+    A Mimir tenant can hold more than one resident. Without ``ravn.environment.id``
+    the memory row silently blends them, which is exactly the failure mode this
+    instrumentation exists to prevent.
+    """
+
+    def test_funnel_carries_the_environment_id(self, telemetry: RecordingTelemetry) -> None:
+        episodes = {"fresh": _episode("fresh", age_days=1)}
+        results = [SearchResult(id="fresh", content="c", score=1.0)]
+
+        score_and_admit(
+            results,
+            episodes,
+            half_life_days=14.0,
+            min_relevance=0.3,
+            limit=5,
+            backend="sqlite",
+            environment_id="muninn",
+        )
+
+        attrs = telemetry.attributes_for(memory_telemetry.CANDIDATES)
+        assert attrs and all(a[memory_telemetry.ATTR_ENVIRONMENT] == "muninn" for a in attrs)
+
+    async def test_adapter_stamps_every_memory_metric(
+        self, telemetry: RecordingTelemetry, tmp_path
+    ) -> None:
+        adapter = SqliteMemoryAdapter(
+            path=str(tmp_path / "memory.db"),
+            environment_id="noatun",
+            corpus_stats_interval_seconds=0.0001,
+        )
+        await adapter.initialize()
+        await adapter.record_episode(_episode("fresh", age_days=0.1))
+        await adapter.prefetch("size the auxiliary postgres pools")
+
+        for metric in (memory_telemetry.OPERATIONS, memory_telemetry.CANDIDATES):
+            attrs = telemetry.attributes_for(metric)
+            assert attrs, f"{metric} never emitted"
+            assert all(a.get(memory_telemetry.ATTR_ENVIRONMENT) == "noatun" for a in attrs)
+        gauges = [a for n, _, a in telemetry.gauges if n == memory_telemetry.CORPUS_EPISODES]
+        assert gauges and gauges[0][memory_telemetry.ATTR_ENVIRONMENT] == "noatun"
+
+    def test_the_label_is_omitted_when_unset(self, telemetry: RecordingTelemetry) -> None:
+        """An unset id must not produce an empty-string label on the series."""
+        memory_telemetry.record_memory_operation(
+            operation="query",
+            backend="sqlite",
+            result=memory_telemetry.RESULT_HIT,
+        )
+
+        attrs = telemetry.attributes_for(memory_telemetry.OPERATIONS)[0]
+        assert memory_telemetry.ATTR_ENVIRONMENT not in attrs
+
+    async def test_resident_state_fallback_carries_the_environment_id(
+        self, telemetry: RecordingTelemetry
+    ) -> None:
+        class _Adapter:
+            def __init__(self, available: bool) -> None:
+                self._available = available
+
+            async def available(self) -> bool:
+                return self._available
+
+        await select_resident_state(
+            _Adapter(available=False), _Adapter(available=True), environment_id="regin"
+        )
+
+        attrs = telemetry.attributes_for(memory_telemetry.RESIDENT_STATE_FALLBACK)
+        assert attrs and attrs[0][memory_telemetry.ATTR_ENVIRONMENT] == "regin"

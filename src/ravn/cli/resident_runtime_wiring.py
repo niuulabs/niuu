@@ -173,6 +173,8 @@ async def _build_resident_state(
                 if mimir is None:
                     raise RuntimeError("adapter requires Mimir but no Mimir backend is configured")
                 resolved["mimir"] = mimir
+            if "environment_id" in params and "environment_id" not in resolved:
+                resolved["environment_id"] = settings.environment.id
             return cls(**resolved)
         except Exception as exc:
             logger.warning("resident state adapter %s unavailable: %s", adapter_path, exc)
@@ -192,7 +194,7 @@ async def _build_resident_state(
     ]
     if not candidates:
         raise RuntimeError("no resident-state adapters could be constructed")
-    return await select_resident_state(*candidates)
+    return await select_resident_state(*candidates, environment_id=settings.environment.id)
 
 
 def _build_resident_runtime(

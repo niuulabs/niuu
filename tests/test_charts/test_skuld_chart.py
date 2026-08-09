@@ -763,6 +763,57 @@ class TestBehaviorSettingsRendering:
         }
 
 
+class TestResidentObservability:
+    """The resident's OTel export must be renderable from values.
+
+    ravn's ObservabilityConfig.enabled defaults to false, so a resident
+    rendered without this block emits no traces or metrics at all — the state
+    Muninn was found in while every other fleet was reporting.
+    """
+
+    def test_observability_is_absent_by_default(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(
+            tmp_path,
+            {"resident": {"enabled": True, "persona": "product-steward"}},
+        )
+        config = _ravn_config_from_rendered(rendered)
+        assert "observability" not in config
+
+    def test_observability_block_is_rendered_when_supplied(self, tmp_path: Path) -> None:
+        rendered = _render_skuld_chart(
+            tmp_path,
+            {
+                "resident": {
+                    "enabled": True,
+                    "persona": "product-steward",
+                    "environmentId": "muninn",
+                    "observability": {
+                        "enabled": True,
+                        "service_name": "ravn",
+                        "metric_endpoint": "https://mimir.example/valhalla/otlp/v1/metrics",
+                        "metric_export_interval_milliseconds": 5000,
+                    },
+                }
+            },
+        )
+        config = _ravn_config_from_rendered(rendered)
+        assert config["observability"]["enabled"] is True
+        assert config["observability"]["metric_endpoint"].endswith("/otlp/v1/metrics")
+        # The environment id is what the dashboard's environment picker filters on.
+        assert config["environment"]["id"] == "muninn"
+
+
+def _ravn_config_from_rendered(rendered_yaml: str) -> dict:
+    for document in yaml.safe_load_all(rendered_yaml):
+        if not isinstance(document, dict) or document.get("kind") != "ConfigMap":
+            continue
+        body = (document.get("data") or {}).get("config.yaml")
+        if body and "environment:" in body:
+            return yaml.safe_load(body)
+    pytest.fail("ravn config.yaml was not rendered")
+    raise AssertionError("ravn config.yaml was not rendered")
+
+
 def _render_skuld_chart(tmp_path: Path, values: dict) -> str:
     helm = shutil.which("helm")
     if not helm:
