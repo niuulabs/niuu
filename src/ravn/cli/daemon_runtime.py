@@ -51,7 +51,7 @@ async def _run_daemon(
     workspace = _resolve_workspace(settings)
     from ravn.cli.tool_builders import _build_learned_tool_resolver  # noqa: PLC0415
 
-    _build_learned_tool_resolver(settings, workspace)
+    learned_tool_resolver = _build_learned_tool_resolver(settings, workspace)
     cli_transport_executor = _uses_cli_transport_executor(persona_config)
     llm = None if cli_transport_executor else _build_llm(settings)
     memory = _build_memory(settings)
@@ -450,6 +450,18 @@ async def _run_daemon(
         )
         if hasattr(drive_loop, "set_persona_config"):
             drive_loop.set_persona_config(persona_config)
+        if learned_tool_resolver is not None and hasattr(drive_loop, "register_telemetry_refresh"):
+            # The inventory is published once while the resolver is built, so
+            # the gauge ages out and the fleet reads zero installed tools while
+            # hundreds sit on disk. Re-state it on every heartbeat.
+            def _refresh_learned_tool_inventory() -> None:
+                from ravn.tool_observability import (  # noqa: PLC0415
+                    publish_learned_tool_inventory,
+                )
+
+                publish_learned_tool_inventory(learned_tool_resolver.list_artifacts())
+
+            drive_loop.register_telemetry_refresh(_refresh_learned_tool_inventory)
         if resident_runtime is not None:
             from ravn.resident_runtime import ResidentHomeTrigger  # noqa: PLC0415
 

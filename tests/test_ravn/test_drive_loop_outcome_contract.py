@@ -2203,3 +2203,46 @@ class TestTaskPersonaContract:
         emitted = str(dl._mesh.mock_calls)
         assert registry.VALKYRIE_JUDGMENT_REJECTED not in emitted
         assert "dream.completed" in emitted
+
+
+class TestSteadyStateTelemetryRefresh:
+    """Gauges describing steady state are re-stated, not published once.
+
+    Regression: the learned-tool inventory was published only while the
+    resolver was built, so the series aged out within a scrape interval and
+    the fleet reported 0 installed tools while 296 sat on disk.
+    """
+
+    def test_registered_refresher_runs_on_demand(self) -> None:
+        dl = _make_drive_loop()
+        calls = []
+        dl.register_telemetry_refresh(lambda: calls.append(1))
+        dl.register_telemetry_refresh(lambda: calls.append(2))
+
+        dl._refresh_steady_state_telemetry()
+        dl._refresh_steady_state_telemetry()
+
+        assert calls == [1, 2, 1, 2]
+
+    def test_no_refreshers_is_not_an_error(self) -> None:
+        dl = _make_drive_loop()
+        dl._refresh_steady_state_telemetry()
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_restates_gauges(self) -> None:
+        import asyncio
+
+        dl = _make_drive_loop(heartbeat_seconds=0)
+        calls = []
+        dl.register_telemetry_refresh(lambda: calls.append(1))
+        dl._config.heartbeat_interval_seconds = 0
+
+        task = asyncio.create_task(dl._heartbeat())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert calls, "heartbeat did not re-state registered gauges"

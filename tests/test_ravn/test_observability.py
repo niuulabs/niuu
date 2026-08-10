@@ -255,3 +255,45 @@ def test_linked_span_starts_a_bounded_trace_with_causal_link() -> None:
     assert len(after.links) == 1
     assert after.links[0].context.trace_id == before.context.trace_id
     telemetry.shutdown()
+
+
+class TestMetricToolNameBounding:
+    """A garbled tool call must not mint a new metric time series.
+
+    Observed in production: tool-name labels containing a full JSON tool
+    definition, a stray ``</parameter=1``, and a bare first name — one series
+    each, permanently, in the tool-usage panels.
+    """
+
+    def test_real_tool_names_pass_through(self) -> None:
+        from ravn.tool_observability import metric_tool_name
+
+        for name in (
+            "kubernetes_inspect",
+            "mimir_search",
+            "learned_tool_run",
+            "web.fetch",
+            "a2a:send",
+            "build-tool",
+        ):
+            assert metric_tool_name(name) == name
+
+    def test_malformed_names_collapse_to_one_label(self) -> None:
+        from ravn.tool_observability import MALFORMED_TOOL_LABEL, metric_tool_name
+
+        malformed = [
+            '{\n  "name": "valkyrie-inspect-kubernetes-node",\n  "description": "..."\n}',
+            "</parameter=1",
+            "Elliott Smith wrote it",
+            "kube-apiserver-jarnvidr-controlplane-xwdpt-jnk22\n</parameter=1",
+            "x" * 200,
+            "",
+            None,
+        ]
+        labels = {metric_tool_name(n) for n in malformed}
+        assert labels == {MALFORMED_TOOL_LABEL}
+
+    def test_whitespace_is_not_a_new_series(self) -> None:
+        from ravn.tool_observability import metric_tool_name
+
+        assert metric_tool_name("  mimir_search  ") == "mimir_search"

@@ -1266,6 +1266,10 @@ class DriveLoop:
         ) = None
         self._fan_in = FanInBuffer()
         self._reflex_injector: ReflexInjector | None = None
+        # Gauges that describe steady state rather than an event. Published
+        # once at startup they go stale within one scrape interval and the
+        # panel reads zero, so the heartbeat re-states them.
+        self._telemetry_refreshers: list[Callable[[], None]] = []
         self._reflex_initialised = False
         self._resident_runtime: object | None = None
         self._shutting_down = False
@@ -1677,6 +1681,15 @@ class DriveLoop:
     def set_mesh(self, mesh: MeshPort | None) -> None:
         """Set the mesh port for publishing outcome events."""
         self._mesh = mesh
+
+    def register_telemetry_refresh(self, refresh: Callable[[], None]) -> None:
+        """Register a steady-state gauge to be re-published on each heartbeat."""
+        self._telemetry_refreshers.append(refresh)
+
+    def _refresh_steady_state_telemetry(self) -> None:
+        """Re-state registered gauges so they do not age out between events."""
+        for refresh in self._telemetry_refreshers:
+            refresh()
 
     def _task_persona_config(self, task: AgentTask) -> PersonaConfig | None:
         """Return the persona contract the task's response was written against.
@@ -4262,6 +4275,7 @@ class DriveLoop:
             )
             await self._event_publisher.publish(event)
             self._record_queue_state()
+            self._refresh_steady_state_telemetry()
             logger.debug(
                 "drive_loop: heartbeat — active=%d queued=%d triggers=%d",
                 active,

@@ -2,11 +2,35 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable, Iterable
 from time import monotonic
 from typing import Any
 
 from niuu.observability import get_observability
+
+# Tool names as the runtimes actually define them: identifiers, not prose.
+_TOOL_NAME = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+
+MALFORMED_TOOL_LABEL = "__malformed__"
+
+
+def metric_tool_name(name: str | None) -> str:
+    """Return *name* if it is a tool identifier, else a single shared label.
+
+    A model that garbles a tool call emits whatever it produced where the name
+    belongs — observed in production: a full JSON tool definition, a stray
+    ``</parameter=1``, and a bare first name. Those strings reached the metric
+    label verbatim, so every malformed generation minted a permanent new time
+    series and the tool-usage panels filled with one-off garbage.
+
+    Spans and events keep the raw name, which is where you go to see what the
+    model actually said; only the metric label is bounded.
+    """
+    text = (name or "").strip()
+    if _TOOL_NAME.match(text):
+        return text
+    return MALFORMED_TOOL_LABEL
 
 
 async def execute_observed_tool[T](
@@ -52,6 +76,11 @@ async def execute_observed_tool[T](
         )
         if key in attributes
     }
+    # Bound the two label values a model can influence, so a garbled tool call
+    # cannot create a new time series.
+    for label in ("gen_ai.tool.name", "ravn.learned_tool.name"):
+        if label in metric_attributes:
+            metric_attributes[label] = metric_tool_name(str(metric_attributes[label]))
     if carrier:
         telemetry.count(
             "ravn.trace.boundaries",
