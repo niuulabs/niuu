@@ -226,3 +226,90 @@ def test_test_run_timeout_is_reported(monkeypatch) -> None:
     )
     assert result.ok is False
     assert "verification test timed out" in result.logs
+
+
+class TestStaticDefects:
+    """Catch what a test run cannot be relied on to surface.
+
+    Residents wrote ``from ravn.sdk import tool`` against an SDK that did not
+    exist, wrapped it in ``except Exception: return None``, and shipped tools
+    that reported success while doing nothing. 28 of 105 artifacts on one
+    resident carried no verification at all; of those that did, the swallow
+    meant passing proved nothing.
+    """
+
+    def test_unresolvable_import_is_a_defect(self) -> None:
+        from ravn.valkyrie_evolution.tool_verification import static_defects
+
+        code = "import nowhere_at_all\ndef run(i):\n    return {}\n"
+        assert any("nowhere_at_all" in d for d in static_defects(code))
+
+    def test_declared_requirement_is_not_a_defect(self) -> None:
+        from ravn.valkyrie_evolution.tool_verification import static_defects
+
+        code = "import httpx\ndef run(i):\n    return {'t': httpx.get('http://x').text}\n"
+        assert static_defects(code, ["httpx"]) == []
+
+    def test_host_sdk_is_allowed_because_the_sandbox_provides_it(self) -> None:
+        from ravn.valkyrie_evolution.tool_verification import static_defects
+
+        code = "from ravn.sdk import tool\ndef run(i):\n    return tool.kubernetes_inspect()\n"
+        assert static_defects(code) == []
+
+    def test_free_variable_is_a_defect(self) -> None:
+        from ravn.valkyrie_evolution.tool_verification import static_defects
+
+        code = "def run(i):\n    return {'v': never_defined(i)}\n"
+        assert any("never_defined" in d for d in static_defects(code))
+
+    def test_correct_code_is_clean(self) -> None:
+        """No false positives on except-as, comprehensions, closures, walrus."""
+        from ravn.valkyrie_evolution.tool_verification import static_defects
+
+        code = (
+            "import json, os\n"
+            "class C:\n"
+            "    def m(self):\n"
+            "        return os.sep\n"
+            "def _h(v):\n"
+            "    return v * 2\n"
+            "def run(i):\n"
+            "    try:\n"
+            "        d = json.loads(i.get('raw', '{}'))\n"
+            "    except ValueError as e:\n"
+            "        return {'error': str(e)}\n"
+            "    if (n := d.get('n')):\n"
+            "        return {'v': _h(n), 'c': C().m(), 'l': [x for x in d.get('l', [])]}\n"
+            "    return {}\n"
+        )
+        assert static_defects(code) == []
+
+    def test_undeclared_import_still_reports_a_healable_module(self) -> None:
+        """The dependency-heal loop installs this and retries."""
+        from ravn.valkyrie_evolution.tool_verification import (
+            verify_learned_tool_in_ephemeral_venv,
+        )
+
+        result = verify_learned_tool_in_ephemeral_venv(
+            tool_name="t",
+            tool_code="import somepkg\ndef run(i):\n    return {}\n",
+            test_code="",
+            requirements=[],
+        )
+        assert result.ok is False
+        assert result.missing_module == "somepkg"
+
+    def test_empty_tests_no_longer_pass_a_broken_tool(self) -> None:
+        """The hole: no test_code used to mean an automatic ok=True."""
+        from ravn.valkyrie_evolution.tool_verification import (
+            verify_learned_tool_in_ephemeral_venv,
+        )
+
+        result = verify_learned_tool_in_ephemeral_venv(
+            tool_name="t",
+            tool_code="def run(i):\n    return {'v': undefined_helper(i)}\n",
+            test_code="",
+            requirements=[],
+        )
+        assert result.ok is False
+        assert "undefined_helper" in result.logs

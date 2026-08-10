@@ -17,7 +17,9 @@ tools were native tools, so dispatch does not widen what a session may run.
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Awaitable, Callable, Sequence
 
 from niuu.observability import get_observability
 from ravn.domain.models import ToolResult
@@ -40,10 +42,61 @@ class LearnedToolRunTool(ToolPort):
         resolver: LearnedToolResolver,
         permission: PermissionPort,
         skill_manager: SkillManagementRegistry | None = None,
+        host_tools_provider: Callable[[], Sequence[ToolPort]] | None = None,
     ) -> None:
         self._resolver = resolver
         self._permission = permission
         self._skill_manager = skill_manager
+        self._host_tools_provider = host_tools_provider
+
+    def _host_call(self, learned_tool_name: str) -> Callable[[str, dict], Awaitable[object]]:
+        """Let a learned tool ask this resident to run one of its own tools.
+
+        The sandbox reaches back through here and nowhere else, so this is the
+        whole boundary. A learned tool may only reach tools the resident itself
+        holds, never another learned tool — chaining them would make one
+        sandbox escape reachable from any other — and each call is checked
+        against the same permission port a model-issued call goes through.
+        """
+
+        async def call(name: str, arguments: dict) -> object:
+            provider = self._host_tools_provider
+            if provider is None:
+                raise RuntimeError("this resident exposes no tools to learned tools")
+            available = {
+                tool.name: tool
+                for tool in provider()
+                if tool.name not in {"learned_tool_run", self.name}
+            }
+            tool = available.get(name)
+            if tool is None:
+                raise PermissionError(
+                    f"{name!r} is not a tool this resident exposes to learned tools; "
+                    f"available: {', '.join(sorted(available)) or 'none'}"
+                )
+            if not self._permission.allows(tool.required_permission):
+                raise PermissionError(
+                    f"{name!r} requires permission {tool.required_permission!r}, "
+                    f"which this resident does not hold"
+                )
+            get_observability().count(
+                "ravn.learned_tool.host_calls",
+                attributes={
+                    "ravn.learned_tool.name": learned_tool_name,
+                    "gen_ai.tool.name": name,
+                },
+                description="Host tools invoked from inside a learned tool sandbox.",
+            )
+            result = await tool.execute(dict(arguments))
+            if getattr(result, "is_error", False):
+                raise RuntimeError(str(getattr(result, "content", "")) or f"{name} failed")
+            content = getattr(result, "content", "")
+            try:
+                return json.loads(content)
+            except (TypeError, ValueError):
+                return content
+
+        return call
 
     @property
     def name(self) -> str:
@@ -120,7 +173,7 @@ class LearnedToolRunTool(ToolPort):
                 )
 
             try:
-                tool = self._resolver.load(name)
+                tool = self._resolver.load(name, host_call=self._host_call(name))
             except LearnedToolError as exc:
                 span.set_attribute("ravn.learned_tool.outcome", "unavailable")
                 return ToolResult(

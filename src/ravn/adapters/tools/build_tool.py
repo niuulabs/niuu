@@ -162,7 +162,16 @@ class BuildTool(ToolPort):
             "the CAPABILITY, not the tool — and reuse it whenever you revise or rename a "
             "tool for the same purpose, so versions chain instead of forking. A build "
             "whose code and contract match an installed tool is not rebuilt: the result "
-            "names the tool you already have."
+            "names the tool you already have. "
+            "To use one of YOUR OWN tools from inside the code you write, call it through "
+            "the host SDK: `from ravn.sdk import tool` then "
+            "`tool.<tool_name>(arg=value)`, which returns the tool's parsed result and "
+            "raises on refusal or failure. That module exists only inside the sandbox — "
+            "do not guess at any other host API, and never wrap the import in "
+            "`try/except`: swallowing it produces a tool that reports success while doing "
+            "nothing. Everything else the code imports must be the standard library or "
+            "listed in requirements, and every name it uses must be one it defines, "
+            "imports or is passed — verification rejects the build otherwise."
         )
 
     @property

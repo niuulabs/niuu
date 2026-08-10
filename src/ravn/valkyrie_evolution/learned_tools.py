@@ -28,6 +28,7 @@ from ravn.valkyrie_evolution.tool_runtime import (
     DEFAULT_TOOL_VENV_PIP_TIMEOUT_SECONDS,
     TOOL_VENV_REQUIREMENTS_STAMP,
     TOOL_VENV_UV_CACHE_DIRNAME,
+    HostCall,
     ToolRunResult,
     ToolVenvError,
     ensure_tool_venv,
@@ -95,6 +96,7 @@ class LearnedToolRunner(Protocol):
         timeout_seconds: float,
         requirements: Sequence[str] = (),
         declared_reach: Sequence[ToolReachGrant] = (),
+        host_call: HostCall | None = None,
     ) -> ToolRunResult:
         """Execute a learned tool and return a structured run result."""
 
@@ -132,6 +134,7 @@ class LocalLearnedToolRunner:
         timeout_seconds: float,
         requirements: Sequence[str] = (),
         declared_reach: Sequence[ToolReachGrant] = (),
+        host_call: HostCall | None = None,
     ) -> ToolRunResult:
         self._warn_unenforced_reach(tool_path, declared_reach)
         python_executable: Path | None = None
@@ -164,6 +167,7 @@ class LocalLearnedToolRunner:
             entry_point=entry_point,
             timeout_seconds=timeout_seconds,
             python_executable=python_executable,
+            host_call=host_call,
         )
 
     def _warn_unenforced_reach(
@@ -276,7 +280,17 @@ class ContainedLearnedToolRunner:
         timeout_seconds: float,
         requirements: Sequence[str] = (),
         declared_reach: Sequence[ToolReachGrant] = (),
+        host_call: HostCall | None = None,
     ) -> ToolRunResult:
+        if host_call is not None:
+            return ToolRunResult(
+                ok=False,
+                error=(
+                    "this execution backend cannot provide the host SDK: the tool asks to "
+                    "call the resident's own tools and there is no channel back from here. "
+                    "Run it on the local backend, or rebuild it self-contained."
+                ),
+            )
         path = tool_path.resolve()
         if not path.is_file():
             return ToolRunResult(ok=False, error=f"tool implementation missing: {path}")
@@ -808,7 +822,17 @@ class ForgeSandboxLearnedToolRunner:
         timeout_seconds: float,
         requirements: Sequence[str] = (),
         declared_reach: Sequence[ToolReachGrant] = (),
+        host_call: HostCall | None = None,
     ) -> ToolRunResult:
+        if host_call is not None:
+            return ToolRunResult(
+                ok=False,
+                error=(
+                    "this execution backend cannot provide the host SDK: the tool asks to "
+                    "call the resident's own tools and there is no channel back from here. "
+                    "Run it on the local backend, or rebuild it self-contained."
+                ),
+            )
         if not tool_path.resolve().is_relative_to(self._workspace_root):
             return ToolRunResult(
                 ok=False,
@@ -1019,6 +1043,33 @@ def _reach_enforcement(*, network: str | None, network_allowed: bool) -> str:
     return REACH_ENFORCEMENT_UNAVAILABLE
 
 
+def require_verified_artifact(artifact: LearnedToolArtifact) -> None:
+    """Raise unless *artifact* carries a passing independent verification.
+
+    Adoption is supposed to verify, but a second path installed tools without
+    it: of 105 artifacts on one resident, 28 carried no verification record at
+    all. An unverified tool is not merely unproven — the ones observed here
+    call a host SDK that does not exist, swallow the ImportError, and return
+    ``None``, so they report success while doing nothing. Refusing to load
+    them turns a silent no-op back into a visible failure.
+    """
+    verification = artifact.provenance.get("verification")
+    name = artifact.manifest.name
+    if verification is None:
+        raise LearnedToolError(
+            f"learned tool {name!r} has no verification record and will not be run. "
+            f"Rebuild it with build_tool, which verifies before installing."
+        )
+    if not isinstance(verification, dict) or verification.get("ok") is not True:
+        detail = ""
+        if isinstance(verification, dict):
+            detail = str(verification.get("error") or verification.get("summary") or "").strip()
+        raise LearnedToolError(
+            f"learned tool {name!r} failed verification and will not be run"
+            + (f": {detail}" if detail else "")
+        )
+
+
 class LearnedTool(ToolPort):
     """Expose a resident-authored artifact through the normal agent tool port."""
 
@@ -1030,6 +1081,7 @@ class LearnedTool(ToolPort):
         timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
         runner: LearnedToolRunner | None = None,
         requirements: Sequence[str] = (),
+        host_call: HostCall | None = None,
     ) -> None:
         _validate_manifest(manifest)
         self._manifest = manifest
@@ -1037,6 +1089,7 @@ class LearnedTool(ToolPort):
         self._timeout_seconds = timeout_seconds
         self._runner = runner or LocalLearnedToolRunner()
         self._requirements = list(requirements)
+        self._host_call = host_call
 
     @property
     def name(self) -> str:
@@ -1070,6 +1123,7 @@ class LearnedTool(ToolPort):
             timeout_seconds=self._timeout_seconds,
             requirements=self._requirements,
             declared_reach=self._manifest.declared_reach,
+            host_call=self._host_call,
         )
         if not result.ok:
             detail = result.error
@@ -1318,6 +1372,7 @@ def load_learned_tool(
     runner: LearnedToolRunner | None = None,
     requirements: list[str] | None = None,
     venvs_dir: str | Path | None = None,
+    host_call: HostCall | None = None,
 ) -> LearnedTool:
     """Create an agent-callable ToolPort from a learned artifact.
 
@@ -1336,6 +1391,7 @@ def load_learned_tool(
         timeout_seconds=timeout_seconds,
         runner=runner,
         requirements=resolved_requirements,
+        host_call=host_call,
     )
 
 
@@ -1580,7 +1636,7 @@ class LearnedToolResolver:
             artifacts.append(artifact)
         return artifacts
 
-    def load(self, name: str) -> LearnedTool:
+    def load(self, name: str, *, host_call: HostCall | None = None) -> LearnedTool:
         """Load one learned tool as an executable ToolPort, by manifest name.
 
         Raises :class:`LearnedToolError` when the tool does not exist or its
@@ -1592,6 +1648,7 @@ class LearnedToolResolver:
         if not artifact_path.is_file():
             raise LearnedToolError(f"no learned tool named {name!r} is installed")
         artifact = read_learned_tool_artifact(artifact_path)
+        require_verified_artifact(artifact)
         tool_path = self._tool_path(artifact.manifest.name)
         if not tool_path.exists():
             raise LearnedToolError(f"learned tool {name!r} has no code file at {tool_path}")
@@ -1601,6 +1658,7 @@ class LearnedToolResolver:
             timeout_seconds=self._timeout_seconds,
             runner=self._runner(),
             venvs_dir=self._venvs_dir,
+            host_call=host_call,
         )
 
     def _tool_path(self, name: str) -> Path:

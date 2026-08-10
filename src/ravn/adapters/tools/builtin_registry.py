@@ -499,6 +499,7 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "resolver": ctx["learned_tool_resolver"],
             "permission": ctx["permission"],
             "skill_manager": ctx.get("skill_manager"),
+            "host_tools_provider": ctx.get("capability_tools_provider"),
         },
     ),
 }

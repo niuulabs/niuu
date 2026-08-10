@@ -176,7 +176,7 @@ async def test_learned_tool_lifecycle_has_explicit_trace_spans(
             return ToolResult(tool_call_id="", content="ok")
 
     class Resolver:
-        def load(self, name):
+        def load(self, name, *, host_call=None):
             return LearnedTool()
 
     await LearnedToolRunTool(

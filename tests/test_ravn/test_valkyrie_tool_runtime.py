@@ -919,6 +919,7 @@ async def test_learned_tool_threads_requirements_and_reach_to_its_runner(tmp_pat
             timeout_seconds: float,
             requirements: Any = (),
             declared_reach: Any = (),
+            host_call: Any = None,
         ) -> ToolRunResult:
             self.calls.append(
                 {"requirements": list(requirements), "declared_reach": list(declared_reach)}
@@ -1985,3 +1986,68 @@ def test_an_artifact_whose_code_was_never_installed_is_not_offered(tmp_path) -> 
         )
         is None
     )
+
+
+class TestHostCallBridge:
+    """A learned tool can ask the resident to run one of its own tools.
+
+    Residents were already writing ``from ravn.sdk import tool`` against an
+    SDK that did not exist. This makes the module they reach for real, and the
+    supplied callable is the entire boundary.
+    """
+
+    @pytest.mark.asyncio
+    async def test_tool_reaches_a_host_tool_and_gets_the_result(self, tmp_path: Path) -> None:
+        from ravn.valkyrie_evolution.tool_runtime import run_tool
+
+        tool = tmp_path / "t.py"
+        tool.write_text(
+            "def run(input):\n"
+            "    from ravn.sdk import tool\n"
+            "    pod = tool.kubernetes_inspect(action='inspect_pod', name=input['name'])\n"
+            "    return {'phase': pod['phase'], 'name': input['name']}\n"
+        )
+        seen: list[tuple[str, dict]] = []
+
+        async def host(name: str, arguments: dict) -> object:
+            seen.append((name, arguments))
+            return {"phase": "Running"}
+
+        result = await run_tool(tool, {"name": "api-0"}, host_call=host)
+
+        assert result.ok is True
+        assert result.result == {"phase": "Running", "name": "api-0"}
+        assert seen == [("kubernetes_inspect", {"action": "inspect_pod", "name": "api-0"})]
+
+    @pytest.mark.asyncio
+    async def test_a_refused_host_call_fails_the_tool(self, tmp_path: Path) -> None:
+        from ravn.valkyrie_evolution.tool_runtime import run_tool
+
+        tool = tmp_path / "t.py"
+        tool.write_text(
+            "def run(input):\n"
+            "    from ravn.sdk import tool\n"
+            "    return {'x': tool.delete_everything()}\n"
+        )
+
+        async def host(name: str, arguments: dict) -> object:
+            raise PermissionError(f"{name} is not available to learned tools")
+
+        result = await run_tool(tool, {}, host_call=host)
+
+        assert result.ok is False
+        assert "not available to learned tools" in (result.stderr + result.error)
+
+    @pytest.mark.asyncio
+    async def test_without_a_bridge_the_import_fails_loudly(self, tmp_path: Path) -> None:
+        """The defect this replaces: the tool swallowed it and returned None."""
+        from ravn.valkyrie_evolution.tool_runtime import run_tool
+
+        tool = tmp_path / "t.py"
+        tool.write_text(
+            "def run(input):\n    from ravn.sdk import tool\n    return {'x': tool.anything()}\n"
+        )
+
+        result = await run_tool(tool, {})
+
+        assert result.ok is False

@@ -28,6 +28,7 @@ def _install_tool(
     tool_code: str = "def run(input):\n    return {'ok': True, 'echo': input}\n",
     required_permission: str = "mimir:read",
     write_code: bool = True,
+    verified: bool = True,
 ) -> LearnedToolArtifact:
     artifact = LearnedToolArtifact(
         artifact_id=f"learned-tool:{name}",
@@ -39,6 +40,10 @@ def _install_tool(
             declared_reach=[],
         ),
         tool_code=tool_code,
+        # An installed tool carries the verification the build path performs;
+        # loading refuses anything else, so a fixture without it is not a tool
+        # this resident would ever have.
+        provenance={"verification": {"ok": True, "logs": "fixture"}} if verified else {},
     )
     code_dir, artifacts_dir = learned_tool_storage(state_dir)
     if write_code:

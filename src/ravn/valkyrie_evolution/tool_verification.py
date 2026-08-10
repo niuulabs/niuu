@@ -14,10 +14,14 @@ keyword-only and free of build_tool internals.
 
 from __future__ import annotations
 
+import ast
 import re
 import shutil
 import subprocess
+import symtable
+import sys
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,6 +58,110 @@ class VerificationResult:
     ok: bool
     logs: str
     missing_module: str | None = None
+
+
+def static_defects(tool_code: str, requirements: Sequence[str] = ()) -> list[str]:
+    """Return defects visible without running *tool_code*.
+
+    Two failures that a test run cannot be relied on to surface:
+
+    * **Unresolvable imports.** Residents reach for a host SDK that does not
+      exist — ``from ravn.sdk import tool`` — inside ``try/except Exception``,
+      so the ImportError is swallowed and the tool returns ``None`` while
+      reporting success. Nothing in a test run distinguishes that from a tool
+      whose answer is legitimately empty.
+    * **Free variables.** A name the module never binds raises only on the
+      branch that reaches it, so a test exercising any other path passes.
+
+    Scope analysis comes from :mod:`symtable` — the compiler's own — rather
+    than a hand-rolled AST walk, which gets ``except X as e`` and
+    comprehension targets wrong in exactly the way that produces false
+    positives on correct code.
+    """
+    try:
+        tree = ast.parse(tool_code)
+        table = symtable.symtable(tool_code, "<learned_tool>", "exec")
+    except SyntaxError as exc:
+        return [f"tool code does not parse: {exc}"]
+
+    defects: list[str] = []
+    allowed = {
+        r.split("[")[0].split("==")[0].split(">")[0].split("<")[0].strip().replace("-", "_")
+        for r in requirements
+    }
+    for node in ast.walk(tree):
+        roots: list[str] = []
+        if isinstance(node, ast.Import):
+            roots = [a.name.split(".")[0] for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            roots = [node.module.split(".")[0]]
+        for root in roots:
+            # ``ravn`` is the host SDK the sandbox injects (tool_runtime's
+            # HOST_SDK_MODULE), not something pip provides.
+            if root in sys.stdlib_module_names or root in allowed or root == "ravn":
+                continue
+            defects.append(
+                f"imports {root!r}, which is neither in the standard library nor in "
+                f"this tool's requirements — it will not exist where the tool runs"
+            )
+
+    known = set(dir(__import__("builtins")))
+
+    def binds(sym: symtable.Symbol) -> bool:
+        # A module-level ``def``/``class`` is a namespace, ``import x`` is an
+        # import; neither reports as "assigned", so all four have to count.
+        return bool(
+            sym.is_assigned() or sym.is_imported() or sym.is_namespace() or sym.is_parameter()
+        )
+
+    known |= {sym.get_name() for sym in table.get_symbols() if binds(sym)}
+
+    def walk(scope: symtable.SymbolTable) -> None:
+        for sym in scope.get_symbols():
+            if binds(sym) or not sym.is_referenced():
+                continue
+            if sym.get_name() in known:
+                continue
+            # Free at every enclosing scope too: symtable resolves closures, so
+            # what is left genuinely resolves to nothing at runtime.
+            if sym.is_global() or sym.is_free():
+                defects.append(
+                    f"uses {sym.get_name()!r}, which the tool never defines, imports or "
+                    f"receives as an argument"
+                )
+        for child in scope.get_children():
+            walk(child)
+
+    walk(table)
+    return sorted(dict.fromkeys(defects))
+
+
+def first_undeclared_import(tool_code: str, requirements: Sequence[str] = ()) -> str | None:
+    """Return the first import that is neither stdlib, declared, nor host-provided.
+
+    The dependency-heal loop installs this and retries, which is the whole
+    reason an undeclared import must not be reported as a flat static failure:
+    a tool that simply forgot to list ``requests`` is repairable.
+    """
+    try:
+        tree = ast.parse(tool_code)
+    except SyntaxError:
+        return None
+    allowed = {
+        r.split("[")[0].split("==")[0].split(">")[0].split("<")[0].strip().replace("-", "_")
+        for r in requirements
+    }
+    for node in ast.walk(tree):
+        roots: list[str] = []
+        if isinstance(node, ast.Import):
+            roots = [a.name.split(".")[0] for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            roots = [node.module.split(".")[0]]
+        for root in roots:
+            if root in sys.stdlib_module_names or root in allowed or root == "ravn":
+                continue
+            return root
+    return None
 
 
 def parse_missing_module(text: str) -> str | None:
@@ -133,6 +241,20 @@ def verify_learned_tool_in_ephemeral_venv(
     tests is a weaker signal, not a rejection.
     """
     del entry_point  # accepted for a stable signature; the test module drives the run.
+    # Before spending a venv on it: defects a test run cannot be relied on to
+    # surface. A tool that swallows an ImportError for a host SDK that does not
+    # exist passes any test whose assertions tolerate an empty answer, and with
+    # no test_code at all nothing runs against it whatsoever.
+    defects = static_defects(tool_code, requirements)
+    if defects:
+        return VerificationResult(
+            ok=False,
+            logs="static verification failed:\n" + "\n".join(f"  - {d}" for d in defects),
+            # An undeclared import is repairable: the heal loop installs it and
+            # retries. Reporting it here keeps that path working instead of
+            # turning a forgotten requirement into a dead build.
+            missing_module=first_undeclared_import(tool_code, requirements),
+        )
     if not test_code.strip():
         return VerificationResult(
             ok=True,

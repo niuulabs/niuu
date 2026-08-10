@@ -14,9 +14,11 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -72,10 +74,53 @@ SANDBOX_ENV_PASSTHROUGH = (
     "no_proxy",
 )
 
+#: Name of the host-call module the sandbox exposes. Residents were already
+#: writing ``from ravn.sdk import tool`` against an SDK that did not exist and
+#: swallowing the ImportError, so the tool reported success while returning
+#: nothing. This makes the module they reach for real.
+HOST_SDK_MODULE = "ravn.sdk"
+
+#: Environment variable carrying the inherited host-call socket descriptor.
+HOST_CALL_FD_ENV = "RAVN_HOST_CALL_FD"
+
 _BOOTSTRAP = """
 import importlib.util
 import json
+import os
+import socket
 import sys
+import types
+
+_fd = os.environ.get("RAVN_HOST_CALL_FD")
+if _fd:
+    _channel = socket.socket(fileno=int(_fd)).makefile("rwb")
+
+    class _HostTool:
+        \"\"\"Call a tool of the resident that launched this subprocess.\"\"\"
+
+        def __getattr__(self, name):
+            def call(**kwargs):
+                _channel.write(
+                    (json.dumps({"tool": name, "arguments": kwargs}) + "\\n").encode("utf-8")
+                )
+                _channel.flush()
+                line = _channel.readline()
+                if not line:
+                    raise RuntimeError("host call channel closed by the resident")
+                reply = json.loads(line)
+                if not reply.get("ok"):
+                    raise RuntimeError(reply.get("error") or "host call failed")
+                return reply.get("result")
+
+            return call
+
+    _sdk = types.ModuleType("ravn.sdk")
+    _sdk.tool = _HostTool()
+    _pkg = types.ModuleType("ravn")
+    _pkg.sdk = _sdk
+    _pkg.__path__ = []
+    sys.modules["ravn"] = _pkg
+    sys.modules["ravn.sdk"] = _sdk
 
 spec = importlib.util.spec_from_file_location("valkyrie_tool", sys.argv[1])
 module = importlib.util.module_from_spec(spec)
@@ -347,6 +392,44 @@ def _pip_install_tool_requirements(
         )
 
 
+#: Serves one sandboxed tool's host-call requests. Given a tool name and its
+#: arguments, returns the result the tool sees; raising denies the call and the
+#: tool receives the message.
+HostCall = Callable[[str, dict[str, Any]], Awaitable[Any]]
+
+
+async def _serve_host_calls(sock: socket.socket, host_call: HostCall) -> None:
+    """Answer newline-delimited JSON host calls until the tool exits.
+
+    One request at a time, matching the tool's blocking client: a learned tool
+    is straight-line code, and letting it pipeline would buy nothing for the
+    complexity of correlating replies.
+    """
+    reader, writer = await asyncio.open_unix_connection(sock=sock)
+    try:
+        while True:
+            line = await reader.readline()
+            if not line:
+                return
+            try:
+                request = json.loads(line)
+                name = str(request.get("tool") or "")
+                arguments = request.get("arguments") or {}
+                if not isinstance(arguments, dict):
+                    raise TypeError("host call arguments must be an object")
+                reply = {"ok": True, "result": await host_call(name, arguments)}
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                reply = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            writer.write((json.dumps(reply, default=str) + "\n").encode("utf-8"))
+            await writer.drain()
+    except (asyncio.CancelledError, ConnectionError):
+        return
+    finally:
+        writer.close()
+
+
 async def run_tool(
     tool_path: str | Path,
     payload: dict[str, Any],
@@ -355,30 +438,59 @@ async def run_tool(
     timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
     output_limit_bytes: int = DEFAULT_TOOL_OUTPUT_LIMIT_BYTES,
     python_executable: str | Path | None = None,
+    host_call: HostCall | None = None,
 ) -> ToolRunResult:
     """Execute a tool implementation in an isolated subprocess.
 
     ``python_executable`` selects the interpreter (a per-tool venv's python
     for tools with dependencies); the default is the resident's own
     interpreter — exactly the historical behavior.
+
+    ``host_call``, when given, exposes :data:`HOST_SDK_MODULE` inside the
+    sandbox so the tool can ask the resident to run one of its own tools. The
+    callable is the whole boundary: it decides what may be invoked and answers
+    the tool's request. Without it the module is absent and any import of it
+    fails loudly, which is the behavior every existing tool was written
+    against — badly, by swallowing it.
     """
     path = Path(tool_path)
     if not path.is_file():
         return ToolRunResult(ok=False, error=f"tool implementation missing: {path}")
 
+    env = sandbox_env()
+    parent_sock: socket.socket | None = None
+    child_sock: socket.socket | None = None
+    pass_fds: tuple[int, ...] = ()
+    if host_call is not None:
+        parent_sock, child_sock = socket.socketpair()
+        child_sock.set_inheritable(True)
+        pass_fds = (child_sock.fileno(),)
+        env[HOST_CALL_FD_ENV] = str(child_sock.fileno())
+
     interpreter = str(python_executable) if python_executable is not None else sys.executable
-    process = await asyncio.create_subprocess_exec(
-        interpreter,
-        "-I",
-        "-c",
-        _BOOTSTRAP,
-        str(path),
-        entry_point,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=sandbox_env(),
-    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            interpreter,
+            "-I",
+            "-c",
+            _BOOTSTRAP,
+            str(path),
+            entry_point,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            pass_fds=pass_fds,
+        )
+    finally:
+        # The child owns its end once spawned; holding it here would keep the
+        # channel open after the tool exits and hang the server task.
+        if child_sock is not None:
+            child_sock.close()
+
+    server: asyncio.Task | None = None
+    if parent_sock is not None and host_call is not None:
+        server = asyncio.create_task(_serve_host_calls(parent_sock, host_call))
     try:
         stdout, stderr = await asyncio.wait_for(
             process.communicate(json.dumps(payload).encode("utf-8")),
@@ -391,6 +503,11 @@ async def run_tool(
             ok=False,
             error=f"tool timed out after {timeout_seconds}s: {path.name}",
         )
+    finally:
+        if server is not None:
+            server.cancel()
+        if parent_sock is not None:
+            parent_sock.close()
 
     stderr_text = stderr.decode("utf-8", errors="replace")[:output_limit_bytes]
     if process.returncode != 0:
