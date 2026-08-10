@@ -297,11 +297,9 @@ describe('computeLayout', () => {
     const asgardRadius = asgard.zoneRadius ?? LAYOUT.REALM_INNER_RADIUS;
     const vanaheimRadius = vanaheim.zoneRadius ?? LAYOUT.REALM_INNER_RADIUS;
 
-    expect(Math.hypot(mimir.x - asgard.x, mimir.y - asgard.y)).toBeGreaterThanOrEqual(
-      LAYOUT.MIMIR_RADIUS + asgardRadius,
-    );
+    expect(Math.hypot(mimir.x - asgard.x, mimir.y - asgard.y)).toBeGreaterThanOrEqual(asgardRadius);
     expect(Math.hypot(mimir.x - vanaheim.x, mimir.y - vanaheim.y)).toBeGreaterThanOrEqual(
-      LAYOUT.MIMIR_RADIUS + vanaheimRadius,
+      vanaheimRadius,
     );
     expect(Math.hypot(asgard.x - vanaheim.x, asgard.y - vanaheim.y)).toBeGreaterThanOrEqual(
       asgardRadius + vanaheimRadius,
@@ -610,7 +608,7 @@ describe('computeLayout', () => {
 
     const clusterRadius = cluster.zoneRadius ?? LAYOUT.CLUSTER_INNER_RADIUS;
     expect(
-      Math.hypot(mimir.x - cluster.x, mimir.y - cluster.y) + LAYOUT.MIMIR_RADIUS,
+      Math.hypot(mimir.x - cluster.x, mimir.y - cluster.y) + NODE_SIZE.mimir!,
     ).toBeLessThanOrEqual(clusterRadius);
     expect(Math.hypot(bifrost.x - cluster.x, bifrost.y - cluster.y) + 32).toBeLessThanOrEqual(
       clusterRadius,

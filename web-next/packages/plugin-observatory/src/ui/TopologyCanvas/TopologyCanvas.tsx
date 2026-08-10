@@ -20,7 +20,6 @@ import {
   drawZones,
   drawEdges,
   drawNode,
-  drawMimir,
   drawMinimap,
   getStructureLabelBounds,
   realmBounds,
@@ -677,22 +676,8 @@ export function TopologyCanvas({
           if (node.typeId === 'host') paint(node);
         }
         for (const node of topo.nodes) {
-          if (node.typeId === 'host' || node.typeId === 'mimir') continue;
+          if (node.typeId === 'host') continue;
           paint(node);
-        }
-
-        for (const node of topo.nodes) {
-          if (node.typeId !== 'mimir') continue;
-          const p = pos.get(node.id);
-          if (!p) continue;
-          drawMimir(ctx, p, now, {
-            scale: node.parentId ? 0.8 : 1,
-            label: node.label.toUpperCase(),
-            colour: resolveStyle(node).colour,
-            alpha: alphaForNode(node),
-            zoom: cam.zoom,
-            reducedMotion,
-          });
         }
       }
 

@@ -11,8 +11,8 @@ from __future__ import annotations
 from copy import deepcopy
 
 REGISTRY: dict[str, object] = {
-    "version": 15,
-    "updatedAt": "2026-08-02T00:00:00Z",
+    "version": 16,
+    "updatedAt": "2026-08-09T00:00:00Z",
     "types": [
         {
             "id": "realm",
@@ -287,10 +287,16 @@ REGISTRY: dict[str, object] = {
             "id": "mimir",
             "label": "Mímir",
             "rune": "ᛗ",
-            "icon": "book-open",
-            "shape": "mimir",
+            # A store, drawn as one. There is no longer a single Mímir to make
+            # the centrepiece of the canvas: every cluster has one, and a
+            # workflow session draws one for each store it provisions or
+            # mounts. At that count the old well — a lit, breathing disc the
+            # size of a cluster, drawn above everything — stopped reading as
+            # emphasis and started reading as noise.
+            "icon": "database",
+            "shape": "cylinder",
             "color": "ice-100",
-            "size": 42,
+            "size": 11,
             "border": "solid",
             "canContain": [],
             "parentTypes": ["cluster", "realm"],

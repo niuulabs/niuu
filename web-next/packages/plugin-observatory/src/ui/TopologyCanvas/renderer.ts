@@ -20,7 +20,7 @@ import { hostRole } from '../../domain/hostRole';
 import { humanizeObservatoryText } from '../displayLabels';
 import type { NodePosition } from './layoutEngine';
 import { zoneRadius, HOST_HALF_W, HOST_HALF_H } from './layoutEngine';
-import { NODE_SIZE, MIMIR_RUNES, LAYOUT, LOD, LABEL_PX, MESH_PULSE, EDGE_FLOW } from './config';
+import { NODE_SIZE, LAYOUT, LOD, LABEL_PX, MESH_PULSE, EDGE_FLOW } from './config';
 import { cloudPath, drawGlyph, roundRectPath } from './shapes';
 import { nodeStyle, type NodeStyle } from './nodeStyle';
 
@@ -33,7 +33,7 @@ export type LabelTier = 'primary' | 'secondary';
  * Entities that carry the story of the topology — the things an operator scans
  * for first. They earn a label before anything else does.
  */
-const PRIMARY_LABEL_TYPES: ReadonlySet<string> = new Set(['mimir', 'ravn_long', 'valkyrie', 'run']);
+const PRIMARY_LABEL_TYPES: ReadonlySet<string> = new Set(['ravn_long', 'valkyrie', 'run']);
 
 export function labelTier(typeId: string): LabelTier {
   return PRIMARY_LABEL_TYPES.has(typeId) ? 'primary' : 'secondary';
@@ -546,7 +546,6 @@ export function edgeHash(id: string): number {
 
 export function nodeEdgeRadius(node: TopologyNode | undefined, style?: NodeStyle): number {
   if (!node) return 8;
-  if (node.typeId === 'mimir') return LAYOUT.MIMIR_RADIUS;
   if (style) return style.radius + 3;
   if (node.typeId === 'host') return Math.max(HOST_HALF_W, HOST_HALF_H);
   if (node.typeId === 'run') return 50;
@@ -1221,95 +1220,6 @@ function drawContainerRing(
 
 // ── Mímir ─────────────────────────────────────────────────────────────────────
 
-export interface MimirDrawOptions {
-  scale?: number;
-  label?: string;
-  /** Compute-class hue, so a Mímir on your own hardware reads green. */
-  colour?: readonly [number, number, number];
-  alpha?: number;
-  zoom?: number;
-  reducedMotion?: boolean;
-}
-
-/**
- * Mímir — a well, not a node.
- *
- * Memory is the one thing on this canvas everything else reaches into, so it
- * gets the only mark with depth: dark water lit at the rim, ripples rising
- * outward, and runes turning around it. The runes only appear once the camera
- * is close enough for them to be glyphs rather than noise.
- */
-export function drawMimir(
-  ctx: CanvasRenderingContext2D,
-  pos: NodePosition,
-  now: number,
-  options: MimirDrawOptions = {},
-): void {
-  const scale = options.scale ?? 1;
-  const label = options.label ?? 'MÍMIR';
-  const colour = options.colour ?? C.moon;
-  const a = options.alpha ?? 1;
-  const zoom = options.zoom ?? 1;
-  const R = LAYOUT.MIMIR_RADIUS * scale;
-  const { x, y } = pos;
-  const breathe = options.reducedMotion ? 1 : 1 + 0.04 * Math.sin(now / 1900);
-
-  // The halo that says "everything here reads from this".
-  const neb = ctx.createRadialGradient(x, y, R * 0.9, x, y, R * 3);
-  neb.addColorStop(0, rgba(colour, 0.1 * a));
-  neb.addColorStop(1, rgba(colour, 0));
-  ctx.fillStyle = neb;
-  ctx.beginPath();
-  ctx.arc(x, y, R * 3, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Dark water, tinted at the rim by the compute hue.
-  const water = ctx.createRadialGradient(x, y, R * 0.1, x, y, R * breathe);
-  water.addColorStop(0, `rgba(4,8,15,${a})`);
-  water.addColorStop(0.72, `rgba(5,12,22,${a})`);
-  water.addColorStop(1, rgba(colour, 0.22 * a));
-  ctx.fillStyle = water;
-  ctx.beginPath();
-  ctx.arc(x, y, R * breathe, 0, Math.PI * 2);
-  ctx.fill();
-
-  for (let i = 1; i <= 3; i += 1) {
-    const phase = options.reducedMotion ? 0.55 : (now / 3800 + i / 3) % 1;
-    ctx.strokeStyle = rgba(colour, 0.26 * (1 - phase) * a);
-    ctx.lineWidth = worldFontSize(1.4, zoom);
-    ctx.beginPath();
-    ctx.arc(x, y, R * (0.16 + phase * 0.8), 0, Math.PI * 2);
-    ctx.stroke();
-  }
-
-  ctx.strokeStyle = rgba(colour, 0.72 * a);
-  ctx.lineWidth = worldFontSize(2.2, zoom);
-  ctx.beginPath();
-  ctx.arc(x, y, R * breathe, 0, Math.PI * 2);
-  ctx.stroke();
-
-  if (zoom > 0.55) {
-    const n = MIMIR_RUNES.length;
-    ctx.save();
-    ctx.font = `${worldFontSize(11, zoom)}px "JetBrains Mono", monospace`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const spin = options.reducedMotion ? 0 : now / 24000;
-    for (let i = 0; i < n; i += 1) {
-      const t = (i / n) * Math.PI * 2 + spin;
-      ctx.fillStyle = rgba(colour, (0.4 + 0.3 * Math.sin(now / 850 + i)) * a);
-      ctx.fillText(MIMIR_RUNES[i] ?? 'ᚠ', x + Math.cos(t) * R * 1.75, y + Math.sin(t) * R * 1.75);
-    }
-    ctx.restore();
-  }
-
-  ctx.textBaseline = 'alphabetic';
-  ctx.textAlign = 'center';
-  ctx.fillStyle = rgba(colour, 0.9 * a);
-  ctx.font = `${worldFontSize(LABEL_PX.PRIMARY, zoom)}px "JetBrains Mono", monospace`;
-  ctx.fillText(label, x, y + R * 1.75 + worldFontSize(19, zoom));
-}
-
 // ── Generic nodes ─────────────────────────────────────────────────────────────
 
 export interface NodeDrawOptions {
@@ -1344,7 +1254,6 @@ export function drawNode(
   zoom: number,
   options: NodeDrawOptions = {},
 ): void {
-  if (node.typeId === 'mimir') return; // drawn last, above everything
   // Containers are drawn as boundaries by `drawZones`; giving one a glyph too
   // would put two marks on the canvas for the same thing.
   if (
@@ -1468,8 +1377,8 @@ export function drawMinimap(
     if (!pos) continue;
     const mx = (pos.x + halfW) * sx;
     const my = (pos.y + halfH) * sy;
-    ctx.fillStyle = node.typeId === 'mimir' ? rgba(C.moon, 0.9) : rgba(C.ice, 0.6);
-    const r = node.typeId === 'mimir' ? 3 : 1.5;
+    ctx.fillStyle = rgba(C.ice, 0.6);
+    const r = 1.5;
     ctx.fillRect(mx - r / 2, my - r / 2, r, r);
   }
 

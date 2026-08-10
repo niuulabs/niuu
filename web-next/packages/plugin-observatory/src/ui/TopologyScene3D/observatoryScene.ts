@@ -19,7 +19,6 @@ import {
   BoxGeometry,
   BufferAttribute,
   BufferGeometry,
-  CircleGeometry,
   Color,
   CylinderGeometry,
   EdgesGeometry,
@@ -34,7 +33,6 @@ import {
   LineBasicMaterial,
   LineSegments,
   Mesh,
-  MeshBasicMaterial,
   OctahedronGeometry,
   Object3D,
   PerspectiveCamera,
@@ -47,7 +45,6 @@ import {
   SpriteMaterial,
   SRGBColorSpace,
   TetrahedronGeometry,
-  TorusGeometry,
   Vector2,
   Vector3,
   type BufferGeometry as TBufferGeometry,
@@ -57,7 +54,6 @@ import {
 
 import type { ComputeClass } from '../../domain/computeClass';
 import type { Rgb } from '../TopologyCanvas/nodeStyle';
-import { MIMIR_RUNES } from '../TopologyCanvas/config';
 import {
   CAMERA3D,
   EDGE3D,
@@ -65,7 +61,6 @@ import {
   LABEL3D,
   LIGHT3D,
   MESH_PULSE3D,
-  MIMIR3D,
   NODE3D,
   RISER,
   STARS3D,
@@ -785,13 +780,13 @@ export function createObservatoryScene(
 
     const colour = toColor(node.colour);
 
-    let mark: Sprite | null = null;
-    let markMaterial: SpriteMaterial | null = null;
+    let mark: Sprite | null;
+    let markMaterial: SpriteMaterial | null;
     let body: Group | null = null;
     const bodyFaces: ShaderMaterial[] = [];
     const bodyEdges: LineBasicMaterial[] = [];
 
-    if (!node.isWell) {
+    {
       // The mark: camera-facing, so it reads the same from any angle, and the
       // only thing drawn once the estate is far enough away that a body would
       // be a smear.
@@ -910,118 +905,6 @@ export function createObservatoryScene(
     };
     visuals.push(visual);
     visualById.set(node.id, visual);
-  }
-
-  // ── Mímir, the well ─────────────────────────────────────────────────────────
-
-  /** One well: dark water, a lit rim, ripples rising, and runes turning. */
-  interface Well {
-    ripples: Mesh[];
-    rippleMaterials: MeshBasicMaterial[];
-    runeSprites: Sprite[];
-    orbit: number;
-    runeRise: number;
-  }
-
-  const wells: Well[] = [];
-
-  // Rasterised once and shared: eighteen runes per well, several wells to an
-  // estate, and the glyph is the same glyph every time.
-  const runeTextures = MIMIR_RUNES.map((rune) => createLabelTexture(rune, { weight: 500 })).filter(
-    (built): built is NonNullable<typeof built> => built !== null,
-  );
-  for (const built of runeTextures) disposables.push(built.texture);
-
-  for (const wellNode of model.nodes.filter((node) => node.isWell)) {
-    const ripples: Mesh[] = [];
-    const rippleMaterials: MeshBasicMaterial[] = [];
-    const runeSprites: Sprite[] = [];
-    const wellGroup = new Group();
-    const radius = MIMIR3D.RADIUS * wellNode.wellScale;
-    const depth = MIMIR3D.DEPTH * wellNode.wellScale;
-    const runeSize = MIMIR3D.RUNE_SIZE * wellNode.wellScale;
-    wellGroup.position.set(wellNode.position.x, wellNode.position.y, wellNode.position.z);
-    scene.add(wellGroup);
-    const colour = toColor(wellNode.colour);
-
-    // Dark water, and the shaft it stands in.
-    const shaft = new Mesh(
-      track(new CylinderGeometry(radius, radius * 0.72, depth, 48, 1, true)),
-      track(createShellMaterial(colour.clone(), 0.05, 1.6, 1.8)),
-    );
-    shaft.position.y = -depth / 2;
-    wellGroup.add(shaft);
-
-    const water = new Mesh(
-      track(new CircleGeometry(radius, 64)),
-      track(
-        new MeshBasicMaterial({
-          color: new Color().setRGB(0.02, 0.05, 0.09, SRGBColorSpace),
-          transparent: true,
-          opacity: 0.94,
-          side: DoubleSide,
-        }),
-      ),
-    );
-    water.rotation.x = -Math.PI / 2;
-    wellGroup.add(water);
-
-    const rim = new Mesh(
-      track(new TorusGeometry(radius, radius * 0.04, 12, 64)),
-      track(
-        new MeshBasicMaterial({
-          color: colour.clone(),
-          transparent: true,
-          opacity: 0.95,
-          blending: AdditiveBlending,
-          depthWrite: false,
-        }),
-      ),
-    );
-    rim.rotation.x = -Math.PI / 2;
-    wellGroup.add(rim);
-
-    for (let i = 0; i < MIMIR3D.RIPPLE_COUNT; i += 1) {
-      const material = track(
-        new MeshBasicMaterial({
-          color: colour.clone(),
-          transparent: true,
-          opacity: MIMIR3D.RIPPLE_ALPHA,
-          depthWrite: false,
-          side: DoubleSide,
-        }),
-      );
-      const ripple = new Mesh(track(new TorusGeometry(radius, radius * 0.018, 8, 64)), material);
-      ripple.rotation.x = -Math.PI / 2;
-      wellGroup.add(ripple);
-      ripples.push(ripple);
-      rippleMaterials.push(material);
-    }
-
-    for (const built of runeTextures) {
-      const material = track(
-        new SpriteMaterial({
-          map: built.texture,
-          color: colour.clone(),
-          transparent: true,
-          opacity: 0.75,
-          depthWrite: false,
-          blending: AdditiveBlending,
-        }),
-      );
-      const sprite = new Sprite(material);
-      sprite.scale.set(runeSize * built.aspect, runeSize, 1);
-      wellGroup.add(sprite);
-      runeSprites.push(sprite);
-    }
-
-    wells.push({
-      ripples,
-      rippleMaterials,
-      runeSprites,
-      orbit: radius * MIMIR3D.RUNE_ORBIT,
-      runeRise: MIMIR3D.RUNE_RISE * wellNode.wellScale,
-    });
   }
 
   // ── Mesh pulse rings ────────────────────────────────────────────────────────
@@ -1290,25 +1173,6 @@ export function createObservatoryScene(
         motePositions.set([point.x, point.y, point.z], index * 3);
       });
       moteGeometry.getAttribute('position').needsUpdate = true;
-    }
-
-    // The wells.
-    const spin = still ? 0 : (now / MIMIR3D.RUNE_SPIN_PERIOD_MS) * Math.PI * 2;
-    for (const well of wells) {
-      for (let i = 0; i < well.ripples.length; i += 1) {
-        const phase = still ? 0.45 : (now / MIMIR3D.RIPPLE_PERIOD_MS + i / well.ripples.length) % 1;
-        const scale = 1 + phase * (MIMIR3D.RIPPLE_MAX_SCALE - 1);
-        well.ripples[i]!.scale.set(scale, scale, 1);
-        well.rippleMaterials[i]!.opacity = MIMIR3D.RIPPLE_ALPHA * (1 - phase);
-      }
-      well.runeSprites.forEach((sprite, index) => {
-        const angle = (index / Math.max(well.runeSprites.length, 1)) * Math.PI * 2 + spin;
-        sprite.position.set(
-          Math.cos(angle) * well.orbit,
-          well.runeRise,
-          Math.sin(angle) * well.orbit,
-        );
-      });
     }
 
     // Mesh pulse.

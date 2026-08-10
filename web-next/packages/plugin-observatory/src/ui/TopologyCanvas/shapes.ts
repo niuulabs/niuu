@@ -565,17 +565,23 @@ const GLYPHS: Readonly<Record<string, GlyphFn>> = {
   box: drawBoxedDot,
   ring: drawRing,
   'ring-dashed': drawRing,
+  // A Mímir is a store, and there are many of them: one per cluster, one per
+  // workflow session that mounts or provisions one. The old mark was a lit
+  // well the size of a cluster, drawn above everything and breathing — right
+  // when there was one, unreadable at a dozen. Kept as a shape name so a
+  // registry stored before the change still resolves to the same glyph rather
+  // than falling back to a box.
+  mimir: drawCylinder,
 };
 
 /**
  * Marks the canvas draws outside the glyph table.
  *
- * Mímir is drawn last, above everything, because it breathes and everything
- * else reaches into it. A cloud is a region rather than an object and is
- * traced by `drawZones`. Both are shapes the vocabulary contains — a type
- * declaring either must not be downgraded to a box.
+ * A cloud is a region rather than an object and is traced by `drawZones`. It
+ * is a shape the vocabulary contains — a type declaring it must not be
+ * downgraded to a box.
  */
-const DEFERRED_SHAPES: ReadonlySet<string> = new Set(['mimir', 'cloud']);
+const DEFERRED_SHAPES: ReadonlySet<string> = new Set(['cloud']);
 
 /** True when the canvas knows how to draw this registry shape. */
 export function isKnownShape(shape: string): boolean {

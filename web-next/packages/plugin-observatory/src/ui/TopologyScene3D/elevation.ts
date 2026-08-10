@@ -44,15 +44,7 @@ export function isContainerType(typeId: string): boolean {
   return CONTAINER_TYPES.has(typeId);
 }
 
-/**
- * Height of the deck a node stands on, in world units.
- *
- * A Mímir at the root of the graph is the well itself and sinks below the
- * floor. A Mímir inside a cluster is one instance among the things running
- * there and stands on the leaf deck with them — sinking it would put it
- * through the plate of the cluster that owns it.
- */
+/** Height of the deck a node stands on, in world units. */
 export function elevationFor(node: TopologyNode): number {
-  if (node.typeId === 'mimir') return node.parentId ? TIER.LEAF : TIER.MIMIR;
   return TIER_BY_TYPE[node.typeId] ?? TIER.LEAF;
 }

@@ -90,7 +90,7 @@ describe('renderer helpers', () => {
 
   it('derives edge radii, trims points, and finds ancestor chains', () => {
     expect(nodeEdgeRadius(undefined)).toBe(8);
-    expect(nodeEdgeRadius({ ...realm, typeId: 'mimir' })).toBeGreaterThan(20);
+    expect(nodeEdgeRadius({ ...realm, typeId: 'mimir' })).toBe(nodeSwatchSize('mimir') / 2 + 3);
     expect(nodeEdgeRadius(hostNode)).toBeGreaterThan(20);
     expect(nodeEdgeRadius(runNode)).toBe(50);
     expect(nodeEdgeRadius({ ...realm, typeId: 'service' })).toBe(nodeSwatchSize('service') / 2 + 3);

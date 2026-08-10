@@ -172,6 +172,17 @@ class ObservatoryFragment(_ObservatoryModel):
 
     nodes: list[TopologyNode] = Field(default_factory=list)
     edges: list[TopologyEdge] = Field(default_factory=list)
+
+    #: Edges whose endpoints the source could not name from its own view.
+    #:
+    #: `source_id` and `target_id` hold references — `service:observatory@
+    #: noatun/volundr`, or the URL a session was configured to call — rather
+    #: than node ids, and are resolved by the aggregator against the merged
+    #: graph. A source that dropped these instead lost every relationship
+    #: crossing a cluster boundary, which is most of what an estate view is
+    #: for.
+    pending_edges: list[TopologyEdge] = Field(default_factory=list)
+
     events: list[TopologyEvent] = Field(default_factory=list)
     layout_hints: LayoutHints | None = None
     meta: FragmentMeta | None = None

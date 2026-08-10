@@ -30,6 +30,7 @@ from niuu.domain.observatory import (
     TopologyWarning,
 )
 from niuu.domain.services.observatory_fragments import ObservatoryFragmentInboxService
+from niuu.domain.services.observatory_refs import resolve_node_ref
 from niuu.ports.observatory_topology import ObservatoryTopologyClientPort
 
 logger = logging.getLogger(__name__)
@@ -277,6 +278,24 @@ def _merge_node(preferred: TopologyNode, other: TopologyNode) -> TopologyNode:
     return TopologyNode.model_validate(merged)
 
 
+def _resolve_pending_edge(
+    edge: TopologyEdge,
+    nodes: Mapping[str, TopologyNode],
+) -> TopologyEdge | None:
+    """Point a cross-source edge at the nodes it was always describing.
+
+    Both endpoints have to land, and on different nodes. A reference that
+    resolves to the same node as the other end is a source describing itself
+    the long way round, not a relationship.
+    """
+    candidates = [node.model_dump(by_alias=True) for node in nodes.values()]
+    source_id = resolve_node_ref(edge.source_id, candidates)
+    target_id = resolve_node_ref(edge.target_id, candidates)
+    if not source_id or not target_id or source_id == target_id:
+        return None
+    return edge.model_copy(update={"source_id": source_id, "target_id": target_id})
+
+
 def _merge(
     fragments: list[ObservatoryFragment],
 ) -> tuple[list[TopologyNode], list[TopologyEdge], list[TopologyEvent], list[TopologyWarning]]:
@@ -299,6 +318,7 @@ def _merge(
     """
     nodes: dict[str, TopologyNode] = {}
     edges: dict[str, TopologyEdge] = {}
+    pending: dict[str, tuple[str, TopologyEdge]] = {}
     events: dict[str, TopologyEvent] = {}
     warnings: list[TopologyWarning] = []
     claimed_by: dict[str, str] = {}
@@ -344,8 +364,26 @@ def _merge(
             )
         for edge in fragment.edges:
             edges.setdefault(edge.id, edge)
+        for edge in fragment.pending_edges:
+            pending.setdefault(edge.id, (source_id, edge))
         for event in fragment.events:
             events.setdefault(event.id, event)
+
+    for source_id, edge in pending.values():
+        resolved = _resolve_pending_edge(edge, nodes)
+        if resolved is None:
+            warnings.append(
+                TopologyWarning(
+                    source_id=source_id,
+                    code="edge_unresolved",
+                    message=(
+                        f"Edge '{edge.id}' names '{edge.source_id}' → '{edge.target_id}', "
+                        "and no source in the estate reported a node matching one of them"
+                    ),
+                )
+            )
+            continue
+        edges.setdefault(resolved.id, resolved)
 
     return list(nodes.values()), list(edges.values()), list(events.values()), warnings
 
