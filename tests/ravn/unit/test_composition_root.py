@@ -328,6 +328,9 @@ class TestBuildTools:
                 declared_reach=[],
             ),
             tool_code="def run(input):\n    return {'ok': True}\n",
+            # An installed tool carries the verification the build path
+            # performs; loading refuses anything else.
+            provenance={"verification": {"ok": True, "logs": "fixture"}},
         )
         write_learned_tool(tools_dir=tmp_path / ".ravn" / "learned_tools", artifact=artifact)
         write_learned_tool_artifact(
