@@ -568,6 +568,44 @@ class TestObservatoryFragment:
         assert "type_id" not in body["nodes"][0]
         assert "sourceId" in body["meta"]
 
+    def test_carries_pending_edges_so_the_aggregator_can_resolve_them(self) -> None:
+        """An endpoint this source cannot name has to reach one that can.
+
+        The fragment hand-copies its keys, and leaving this one out computed
+        the pending edges and threw them away — a workflow session's mount on
+        a Mímir in another cluster still reached nobody.
+        """
+
+        class _WithPending(_FakeDiscoveryService):
+            async def get_topology_snapshot(
+                self,
+                headers: dict[str, str] | None = None,
+            ) -> dict[str, object]:
+                snapshot = await super().get_topology_snapshot(headers)
+                snapshot["pendingEdges"] = [
+                    {
+                        "id": "edge:writes:session:mimir",
+                        "sourceId": "realm:test",
+                        "targetId": "https://mimir.yggdrasil.niuu.world/api/v1",
+                        "relationType": "writes",
+                    }
+                ]
+                return snapshot
+
+        app = create_app(
+            registry_repository=InMemoryObservatoryRegistryRepository(),
+            discovery_service=_WithPending(),
+        )
+        with TestClient(app) as client:
+            body = client.get(
+                "/api/v1/observatory/fragment",
+                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "tenant-a"},
+            ).json()
+
+        assert [edge["targetId"] for edge in body["pendingEdges"]] == [
+            "https://mimir.yggdrasil.niuu.world/api/v1"
+        ]
+
     def test_carries_the_events_alongside_the_graph(self) -> None:
         app = create_app(
             registry_repository=InMemoryObservatoryRegistryRepository(),

@@ -339,6 +339,11 @@ def create_router() -> APIRouter:
             {
                 "nodes": snapshot.get("nodes", []),
                 "edges": snapshot.get("edges", []),
+                # The whole point of a pending edge is that somebody else can
+                # resolve it. Leaving it out of the fragment computed it here
+                # and threw it away, so a workflow session's mount on a Mímir
+                # in another cluster still reached nobody.
+                "pendingEdges": snapshot.get("pendingEdges", []),
                 "events": events,
                 "layoutHints": snapshot.get("layoutHints"),
                 "meta": {
