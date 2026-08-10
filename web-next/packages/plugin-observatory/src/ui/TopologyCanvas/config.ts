@@ -138,9 +138,6 @@ export const LAYOUT = {
 
   /** Extra scatter added for additional generic-node bands. */
   NODE_SCATTER_STEP: 64,
-
-  /** Pixel radius of the Mímir glyph circle. */
-  MIMIR_RADIUS: 42,
 } as const;
 
 /**
@@ -249,7 +246,7 @@ export const LABEL_PX = {
 
 /** Per-typeId hit radius for click / hover detection (world units). */
 export const HIT_RADIUS: Record<string, number> = {
-  mimir: 42,
+  mimir: 14,
   ting: 18,
   bifrost: 16,
   volundr: 16,
@@ -276,7 +273,7 @@ export const HIT_RADIUS: Record<string, number> = {
 
 /** Per-typeId visual size (radius / half-side) for rendering. */
 export const NODE_SIZE: Record<string, number> = {
-  mimir: 42,
+  mimir: 11,
   ting: 11,
   bifrost: 10,
   volundr: 13,
@@ -299,29 +296,3 @@ export const NODE_SIZE: Record<string, number> = {
   vaettir: 7,
   beacon: 4,
 };
-
-/**
- * Orbiting runes displayed around the Mímir glyph.
- * Hate-symbol exclusion list: Othala ᛟ, Sowilo ᛊ, Tiwaz ᛏ, Algiz ᛉ,
- * Hagalaz ᚺ/ᚻ — see ADL hate symbol database.
- */
-export const MIMIR_RUNES = [
-  'ᚠ',
-  'ᚢ',
-  'ᚦ',
-  'ᚨ',
-  'ᚱ',
-  'ᚲ',
-  'ᚷ',
-  'ᚹ',
-  'ᚾ',
-  'ᛁ',
-  '✦',
-  'ᛈ',
-  'ᛒ',
-  'ᛖ',
-  'ᛗ',
-  'ᛚ',
-  'ᛜ',
-  'ᛞ',
-] as const;

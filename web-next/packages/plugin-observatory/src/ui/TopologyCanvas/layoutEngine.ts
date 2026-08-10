@@ -48,7 +48,6 @@ const HOST_CONTAINER_PAD_Y = 24;
 const HOST_CORE_CLEARANCE = 52;
 
 const TYPE_PRIORITY: Record<string, number> = {
-  mimir: 0,
   realm: 1,
   cluster: 2,
   namespace: 3,
@@ -664,7 +663,7 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
     { x: 0, y: 0 },
     {
       padding: 48,
-      fallbackRadius: Math.max(LAYOUT.REALM_INNER_RADIUS, LAYOUT.MIMIR_RADIUS) + 120,
+      fallbackRadius: LAYOUT.REALM_INNER_RADIUS + 120,
       extentForNode: worldContainerExtent,
     },
   );
@@ -804,8 +803,7 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
       node.typeId === 'realm' ||
       node.typeId === 'cluster' ||
       node.typeId === 'host' ||
-      node.typeId === 'run' ||
-      node.typeId === 'mimir'
+      node.typeId === 'run'
     ) {
       continue;
     }

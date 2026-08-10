@@ -23,6 +23,7 @@ from observatory.entity_discovery import (
     TingWorkDiscoveryAdapter,
     VolundrSessionsDiscoveryAdapter,
     WardenSpecDiscoveryAdapter,
+    _merge_discovered_entities,
     topology_from_discovery,
 )
 
@@ -2779,3 +2780,409 @@ async def test_adapters_run_concurrently_not_end_to_end() -> None:
     assert len(result.entities) == 5
     # Five 0.15s adapters: ~0.15s concurrently, ~0.75s end to end.
     assert elapsed < 0.5
+
+
+@pytest.mark.asyncio
+async def test_http_probe_folds_into_the_workload_it_probed() -> None:
+    """One Mímir, discovered two ways, must be one node.
+
+    Every cluster drew two Mímirs — and two Ting, and two Bifröst — because
+    the HTTP probe names what answered `mimir:ymir` while the cluster scout
+    names the same process after the resource it read. The halves also
+    disagreed: page counts on one node, placement and resources on the other.
+    """
+    composite = CompositeDiscoveryAdapter(
+        [
+            _StaticAdapter(
+                DiscoveryResult(
+                    entities=[
+                        DiscoveredEntity(
+                            id="runtime:ymir:volundr:mimir:mimir-shared",
+                            kind="mimir",
+                            name="mimir-shared",
+                            realm="ginnungagap",
+                            cluster="ymir",
+                            namespace="volundr",
+                            status="healthy",
+                            source_kind="kubernetes",
+                            metadata={"component": "knowledge-service"},
+                        )
+                    ]
+                )
+            ),
+            _StaticAdapter(
+                DiscoveryResult(
+                    entities=[
+                        DiscoveredEntity(
+                            id="mimir:ymir",
+                            kind="mimir",
+                            name="Mímir",
+                            realm="ginnungagap",
+                            cluster="ymir",
+                            namespace="volundr",
+                            status="healthy",
+                            metadata={"pages": 812, "mountCount": 3},
+                        )
+                    ]
+                )
+            ),
+        ]  # type: ignore[arg-type]
+    )
+
+    result = await composite.discover()
+
+    assert [entity.id for entity in result.entities] == ["runtime:ymir:volundr:mimir:mimir-shared"]
+    folded = result.entities[0]
+    assert folded.name == "Mímir"
+    assert folded.realm == "ginnungagap"
+    assert folded.metadata["pages"] == 812
+    assert folded.metadata["component"] == "knowledge-service"
+
+
+@pytest.mark.asyncio
+async def test_folding_a_gateway_probe_carries_its_children_and_edges() -> None:
+    """A model drawn inside its gateway must follow the gateway, not dangle."""
+    composite = CompositeDiscoveryAdapter(
+        [
+            _StaticAdapter(
+                DiscoveryResult(
+                    entities=[
+                        DiscoveredEntity(
+                            id="runtime:ymir:volundr:bifrost:bifrost",
+                            kind="bifrost",
+                            name="bifrost",
+                            cluster="ymir",
+                            namespace="volundr",
+                        ),
+                        DiscoveredEntity(
+                            id="bifrost:ymir",
+                            kind="bifrost",
+                            name="Bifröst",
+                            cluster="ymir",
+                            namespace="volundr",
+                        ),
+                        DiscoveredEntity(
+                            id="model:local:qwen",
+                            kind="model",
+                            name="qwen",
+                            cluster="ymir",
+                            namespace="volundr",
+                            parent_id="bifrost:ymir",
+                        ),
+                    ],
+                    edges=[
+                        {
+                            "id": "edge:bifrost-ymir:model-local-qwen",
+                            "sourceId": "bifrost:ymir",
+                            "targetId": "model:local:qwen",
+                            "relationType": "routes_to",
+                        }
+                    ],
+                )
+            )
+        ]  # type: ignore[arg-type]
+    )
+
+    result = await composite.discover()
+
+    gateway_id = "runtime:ymir:volundr:bifrost:bifrost"
+    assert {entity.id for entity in result.entities} == {gateway_id, "model:local:qwen"}
+    model = next(entity for entity in result.entities if entity.kind == "model")
+    assert model.parent_id == gateway_id
+    assert result.edges[0]["sourceId"] == gateway_id
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_probe_is_left_alone_and_reported() -> None:
+    """Two Mímirs in one namespace are two Mímirs; attaching is a guess."""
+    composite = CompositeDiscoveryAdapter(
+        [
+            _StaticAdapter(
+                DiscoveryResult(
+                    entities=[
+                        DiscoveredEntity(
+                            id="runtime:ymir:volundr:mimir:mimir-shared",
+                            kind="mimir",
+                            name="mimir-shared",
+                            cluster="ymir",
+                            namespace="volundr",
+                        ),
+                        DiscoveredEntity(
+                            id="runtime:ymir:volundr:mimir:mimir-research",
+                            kind="mimir",
+                            name="mimir-research",
+                            cluster="ymir",
+                            namespace="volundr",
+                        ),
+                        DiscoveredEntity(
+                            id="mimir:ymir",
+                            kind="mimir",
+                            name="Mímir",
+                            cluster="ymir",
+                            namespace="volundr",
+                            source_adapter="MimirDiscoveryAdapter",
+                        ),
+                    ]
+                )
+            )
+        ]  # type: ignore[arg-type]
+    )
+
+    result = await composite.discover()
+
+    assert len(result.entities) == 3
+    assert any("could be any of 2 mimir workloads" in event["message"] for event in result.events)
+
+
+@pytest.mark.asyncio
+async def test_probe_with_no_workload_behind_it_stays_a_node() -> None:
+    """A Mímir served from outside the cluster has no resource to fold into."""
+    composite = CompositeDiscoveryAdapter(
+        [
+            _StaticAdapter(
+                DiscoveryResult(
+                    entities=[
+                        DiscoveredEntity(
+                            id="mimir:saehrimnir",
+                            kind="mimir",
+                            name="Mímir",
+                            cluster="saehrimnir",
+                        )
+                    ]
+                )
+            )
+        ]  # type: ignore[arg-type]
+    )
+
+    result = await composite.discover()
+
+    assert [entity.id for entity in result.entities] == ["mimir:saehrimnir"]
+    assert result.events == []
+
+
+def test_merging_claims_keeps_realm_and_host() -> None:
+    """A workload arrives as Deployment, Service and Pod — one entity, three claims.
+
+    Dropping realm and host on merge blanked both on every Kubernetes
+    workload, so nothing was ever related to the box it runs on.
+    """
+    deployment = DiscoveredEntity(
+        id="runtime:ymir:volundr:mimir:mimir-shared",
+        kind="mimir",
+        name="mimir-shared",
+        realm="ginnungagap",
+        cluster="ymir",
+        namespace="volundr",
+    )
+    pod = DiscoveredEntity(
+        id="runtime:ymir:volundr:mimir:mimir-shared",
+        kind="mimir",
+        name="mimir-shared",
+        realm="ginnungagap",
+        cluster="ymir",
+        namespace="volundr",
+        host="ymir-worker-3",
+    )
+
+    merged = _merge_discovered_entities([deployment, pod])
+
+    assert merged[0].realm == "ginnungagap"
+    assert merged[0].host == "ymir-worker-3"
+
+
+def test_unresolvable_edge_is_handed_on_rather_than_dropped() -> None:
+    """A relationship that leaves the cluster is not a broken relationship.
+
+    Dropping what one Observatory could not see locally took every
+    cross-cluster edge in the estate with it, including all seven `observes`
+    edges between the Observatories themselves.
+    """
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(
+                    id="runtime:valhalla:skuld:skuld:50d943c8",
+                    kind="skuld",
+                    name="tool-skill-builder",
+                    cluster="valhalla",
+                    namespace="skuld",
+                )
+            ],
+            edges=[
+                {
+                    "id": "edge:writes:session:mimir",
+                    "sourceId": "runtime:valhalla:skuld:skuld:50d943c8",
+                    "targetId": "https://mimir.yggdrasil.niuu.world/api/v1",
+                    "relationType": "writes",
+                }
+            ],
+        )
+    )
+
+    assert snapshot["edges"] == []
+    assert [edge["targetId"] for edge in snapshot["pendingEdges"]] == [
+        "https://mimir.yggdrasil.niuu.world/api/v1"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ingress_hostname_is_attributed_to_its_sole_backend(tmp_path, monkeypatch) -> None:
+    """A workload has to know the hostname the estate reaches it on.
+
+    A mount configured as `https://mimir.yggdrasil.niuu.world/api/v1` matches
+    nothing otherwise: the workload publishes only its in-cluster Service name.
+    A host fronting many services identifies none of them, so it is not
+    claimed by any.
+    """
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    monkeypatch.setenv("KUBERNETES_SERVICE_PORT", "443")
+
+    def _rule(host: str, services: list[str]) -> dict[str, object]:
+        return {
+            "host": host,
+            "http": {
+                "paths": [
+                    {"path": f"/{name}", "backend": {"service": {"name": name}}}
+                    for name in services
+                ]
+            },
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/services"):
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "metadata": {
+                                "name": name,
+                                "namespace": "volundr",
+                                "labels": {
+                                    "niuu.world/cluster": "ymir",
+                                    "app.kubernetes.io/name": app,
+                                    "app.kubernetes.io/component": component,
+                                },
+                            }
+                        }
+                        for name, app, component in (
+                            ("niuu-mimir-shared", "mimir-shared", "knowledge-service"),
+                            ("niuu-volundr", "volundr", "volundr"),
+                            ("niuu-ting", "ting", "saga-coordinator"),
+                        )
+                    ]
+                },
+            )
+        if request.url.path.endswith("/ingresses"):
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "metadata": {
+                                "name": "niuu",
+                                "namespace": "volundr",
+                                "labels": {"niuu.world/cluster": "ymir"},
+                            },
+                            "spec": {
+                                "rules": [
+                                    _rule("mimir.yggdrasil.niuu.world", ["niuu-mimir-shared"]),
+                                    _rule(
+                                        "yggdrasil.niuu.world",
+                                        ["niuu-volundr", "niuu-ting"],
+                                    ),
+                                ]
+                            },
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(200, json={"items": []})
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["services", "ingresses"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+    public = {entity.id: entity.endpoints.get("public") for entity in result.entities}
+
+    assert public["runtime:ymir:volundr:mimir:mimir-shared"] == "https://mimir.yggdrasil.niuu.world"
+    assert public["runtime:ymir:volundr:volundr:volundr"] is None
+    assert public["runtime:ymir:volundr:ting:ting"] is None
+
+
+@pytest.mark.asyncio
+async def test_flock_session_mimir_mounts_are_discovered(tmp_path, monkeypatch) -> None:
+    """The Mímirs a workflow session holds, taken from the release Volundr wrote.
+
+    Shape copied from a running `tool-skill-builder` session on valhalla: a
+    named, prefix-scoped read_write binding onto the hosted Mímir, plus a
+    session-private ephemeral store.
+    """
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    monkeypatch.setenv("KUBERNETES_SERVICE_PORT", "443")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "metadata": {"name": "skuld-50d943c8", "uid": "uid-1"},
+                        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+                        "spec": {
+                            "values": {
+                                "session": {"id": "50d943c8", "name": "tool-skill-builder"},
+                                "mimir": {
+                                    "registryRefs": [
+                                        {
+                                            "mount_name": "mimir-yggdrasil",
+                                            "label": "Capability Memory",
+                                            "role": "shared",
+                                            "url": "https://mimir.yggdrasil.niuu.world/api/v1",
+                                            "categories": ["capability", "skills"],
+                                        }
+                                    ],
+                                    "ephemeralLocals": [{"name": "scratch"}],
+                                    "bindings": [
+                                        {
+                                            "mount_name": "mimir-yggdrasil",
+                                            "access": "read_write",
+                                            "target_id": "tool-skill-builder",
+                                            "write_prefixes": ["capabilities/", "skills/"],
+                                        }
+                                    ],
+                                },
+                            }
+                        },
+                    }
+                ]
+            },
+        )
+
+    adapter = FluxHelmReleaseSessionDiscoveryAdapter(
+        cluster="valhalla",
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    session_id = "runtime:valhalla:skuld:skuld:50d943c8"
+    scratch = next(entity for entity in result.entities if entity.kind == "mimir")
+    assert scratch.id == f"{session_id}:mimir:scratch"
+    assert scratch.parent_id == session_id
+    assert scratch.metadata["ephemeral"] is True
+
+    mounts = [
+        (edge["relationType"], edge["targetId"], edge["label"])
+        for edge in result.edges
+        if edge["relationType"] in {"reads", "writes"}
+    ]
+    assert sorted(mounts) == [
+        ("reads", "https://mimir.yggdrasil.niuu.world/api/v1", "mimir-yggdrasil"),
+        ("writes", "https://mimir.yggdrasil.niuu.world/api/v1", "mimir-yggdrasil"),
+    ]

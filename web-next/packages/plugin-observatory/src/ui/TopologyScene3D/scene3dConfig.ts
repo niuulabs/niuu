@@ -95,12 +95,6 @@ export const TIER = {
   HOST: 345,
   /** Everything that runs on something: agents, services, models, run steps. */
   LEAF: 455,
-  /**
-   * Mímir is a well. Everything else stands on the floor; memory is the one
-   * thing the estate reaches *down* into, so it sits below the plane and every
-   * edge into it descends.
-   */
-  MIMIR: -150,
 } as const;
 
 export const ZONE3D = {
@@ -213,8 +207,6 @@ export const NODE3D = {
   SCALE: 1.7,
   /** Smallest a node may draw, so a 4-unit service is still a visible mark. */
   MIN_RADIUS: 9,
-  /** How big a Mímir inside a cluster draws next to the estate's own. */
-  NESTED_WELL_SCALE: 0.62,
 
   /**
    * A node is a small, quiet mark.
@@ -336,22 +328,6 @@ export const MESH_PULSE3D = {
   /** Steady halo so members stay marked while a ring is faded out. */
   HALO_SCALE: 2.6,
   HALO_ALPHA: 0.5,
-} as const;
-
-export const MIMIR3D = {
-  /** Radius of the well mouth. */
-  RADIUS: 86,
-  /** How far the shaft drops below the mouth. */
-  DEPTH: 150,
-  RIPPLE_COUNT: 3,
-  RIPPLE_PERIOD_MS: 3800,
-  RIPPLE_MAX_SCALE: 2.5,
-  RIPPLE_ALPHA: 0.42,
-  /** Where the runes turn, as a multiple of the mouth radius. */
-  RUNE_ORBIT: 1.7,
-  RUNE_RISE: 26,
-  RUNE_SIZE: 34,
-  RUNE_SPIN_PERIOD_MS: 44000,
 } as const;
 
 export const STARS3D = {

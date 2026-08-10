@@ -262,7 +262,7 @@ describe('createObservatoryScene', () => {
     // operator has orbited to — and small, because the instrument work belongs
     // to the regions.
     const marks = collect(scene.scene, (object) => object.userData.pickKind === 'mark');
-    expect(marks).toHaveLength(standing.length - 1); // Mímir is a well.
+    expect(marks).toHaveLength(standing.length);
     expect(marks.every((object) => object instanceof Sprite)).toBe(true);
 
     // A region's mark is its shell and its dial; its name is what is clicked.

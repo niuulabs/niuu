@@ -421,3 +421,85 @@ class TestMerge:
         )
 
         assert one.revision != two.revision
+
+
+@pytest.mark.asyncio
+async def test_pending_edge_resolves_across_fragments_by_url() -> None:
+    """A session in one cluster mounts a Mímir in another.
+
+    Neither Observatory can draw that edge: valhalla has no node for ymir's
+    Mímir, and ymir never saw the session. Only the aggregator holds both, so
+    the endpoint reference travels as a URL and is resolved here. Before this,
+    every cross-cluster relationship in the estate was silently dropped by the
+    source that could only see one end.
+    """
+    session = ObservatoryFragment(
+        nodes=[
+            TopologyNode(
+                id="runtime:valhalla:skuld:skuld:50d943c8",
+                type_id="skuld",
+                label="tool-skill-builder",
+                cluster_id="valhalla",
+            )
+        ],
+        pending_edges=[
+            TopologyEdge(
+                id="edge:writes:session:mimir",
+                source_id="runtime:valhalla:skuld:skuld:50d943c8",
+                target_id="https://mimir.yggdrasil.niuu.world/api/v1",
+                relation_type="writes",
+                label="mimir-yggdrasil",
+            )
+        ],
+        meta=FragmentMeta(source_id="observatory-valhalla", cluster_id="valhalla"),
+    )
+    hosted = ObservatoryFragment(
+        nodes=[
+            TopologyNode.model_validate(
+                {
+                    "id": "runtime:ymir:volundr:mimir:mimir-shared",
+                    "typeId": "mimir",
+                    "label": "Mímir",
+                    "clusterId": "ymir",
+                    "endpoints": {"public": "https://mimir.yggdrasil.niuu.world"},
+                }
+            )
+        ],
+        meta=FragmentMeta(source_id="observatory-ymir", cluster_id="ymir"),
+    )
+    service = _service({"observatory-valhalla": session, "observatory-ymir": hosted})
+
+    snapshot = await service.get_snapshot(
+        [_instance("observatory-valhalla", cluster="valhalla"), _instance("observatory-ymir")],
+        headers={},
+    )
+
+    assert [(edge.source_id, edge.target_id) for edge in snapshot.edges] == [
+        ("runtime:valhalla:skuld:skuld:50d943c8", "runtime:ymir:volundr:mimir:mimir-shared")
+    ]
+    assert not [w for w in snapshot.warnings if w.code == "edge_unresolved"]
+
+
+@pytest.mark.asyncio
+async def test_pending_edge_nobody_can_place_is_reported() -> None:
+    """An endpoint no source in the estate reported is said out loud."""
+    fragment = ObservatoryFragment(
+        nodes=[TopologyNode(id="node-a", type_id="service", label="a")],
+        pending_edges=[
+            TopologyEdge(
+                id="edge:observes:a:gone",
+                source_id="node-a",
+                target_id="service:observatory@atlantis/volundr",
+                relation_type="observes",
+            )
+        ],
+        meta=FragmentMeta(source_id="observatory-ymir", cluster_id="ymir"),
+    )
+    service = _service({"observatory-ymir": fragment})
+
+    snapshot = await service.get_snapshot([_instance("observatory-ymir")], headers={})
+
+    assert snapshot.edges == []
+    unresolved = [w for w in snapshot.warnings if w.code == "edge_unresolved"]
+    assert len(unresolved) == 1
+    assert "atlantis" in unresolved[0].message

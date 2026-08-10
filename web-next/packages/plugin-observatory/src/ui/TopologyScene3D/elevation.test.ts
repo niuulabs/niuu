@@ -29,14 +29,11 @@ describe('elevationFor', () => {
     expect(elevationFor(node('run'))).toBe(elevationFor(node('host')));
   });
 
-  it('sends the estate’s Mímir below the floor, because it is a well', () => {
-    expect(elevationFor(node('mimir'))).toBe(TIER.MIMIR);
-    expect(elevationFor(node('mimir'))).toBeLessThan(TIER.FLOOR);
-  });
-
-  it('stands a Mímir inside a cluster on the leaf deck instead', () => {
-    // Sinking it would drive the shaft through the plate of the very cluster
-    // that owns it.
+  it('stands every Mímir on the leaf deck, wherever it sits', () => {
+    // It sank below the floor when it was drawn as a well and there was one
+    // of them. A store on every cluster and every workflow session stands
+    // with the things that run there.
+    expect(elevationFor(node('mimir'))).toBe(TIER.LEAF);
     expect(elevationFor(node('mimir', 'cluster-1'))).toBe(TIER.LEAF);
   });
 

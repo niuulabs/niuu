@@ -10,7 +10,7 @@ import os
 import socket
 from collections import Counter
 from collections.abc import Collection, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
@@ -18,6 +18,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
+from niuu.domain.services.observatory_refs import resolve_node_ref
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class, resolve_secret_kwargs
 from observatory.contracts import ObservatoryEdge, ObservatoryEvent, ObservatorySnapshot
@@ -265,8 +266,16 @@ def _merge_discovered_entity(
         id=current.id,
         kind=kind,
         name=name or current.name,
+        # Placement survives the merge. Omitting realm and host here blanked
+        # both on every workload that appears more than once — which is every
+        # Kubernetes workload, since its Deployment, Service and Pod are three
+        # claims on one entity. The realm was lost, and so was the `nodeName`
+        # only the Pod knows, so no workload was ever related to the box under
+        # it.
+        realm=incoming.realm or current.realm,
         cluster=incoming.cluster or current.cluster,
         namespace=incoming.namespace or current.namespace,
+        host=incoming.host or current.host,
         status=_merge_status(current.status, incoming.status),
         parent_id=incoming.parent_id or current.parent_id,
         labels={**current.labels, **incoming.labels},
@@ -288,6 +297,171 @@ def _merge_discovered_entities(entities: list[DiscoveredEntity]) -> list[Discove
     for entity in entities:
         merged[entity.id] = _merge_discovered_entity(merged.get(entity.id), entity)
     return list(merged.values())
+
+
+def _ingress_backends(ingresses: Iterable[Mapping[str, Any]]) -> dict[str, set[str]]:
+    """Which Services each published hostname routes to."""
+    backends: dict[str, set[str]] = {}
+    for ingress in ingresses:
+        spec = ingress.get("spec") if isinstance(ingress.get("spec"), Mapping) else {}
+        rules = spec.get("rules") if isinstance(spec.get("rules"), list) else []
+        for rule in rules:
+            if not isinstance(rule, Mapping):
+                continue
+            host = str(rule.get("host") or "").strip()
+            if not host:
+                continue
+            http = rule.get("http") if isinstance(rule.get("http"), Mapping) else {}
+            paths = http.get("paths") if isinstance(http.get("paths"), list) else []
+            for path in paths:
+                if not isinstance(path, Mapping):
+                    continue
+                backend = path.get("backend") if isinstance(path.get("backend"), Mapping) else {}
+                service = backend.get("service")
+                name = (
+                    str(service.get("name") or "").strip()
+                    if isinstance(service, Mapping)
+                    else str(backend.get("serviceName") or "").strip()
+                )
+                if name:
+                    backends.setdefault(host, set()).add(name)
+    return backends
+
+
+def _attribute_public_hosts(
+    entities: list[DiscoveredEntity],
+    ingresses: list[dict[str, Any]],
+) -> list[DiscoveredEntity]:
+    """Tell each workload the hostname the estate reaches it on.
+
+    Without it a mount configured as `https://mimir.yggdrasil.niuu.world/api/v1`
+    matches nothing: the workload only ever published its in-cluster Service
+    name, and the ingress that publishes the hostname is a separate node that
+    fronts a dozen services.
+
+    Only a host with exactly one backend is attributed. `yggdrasil.niuu.world`
+    routes to Volundr, Ting, Bifröst, Guild and more by path, so it identifies
+    none of them — claiming it for each would make every URL reference in the
+    estate ambiguous, which is worse than leaving them unresolved.
+    """
+    backends = _ingress_backends(ingresses)
+    sole_backends = {host: next(iter(names)) for host, names in backends.items() if len(names) == 1}
+    if not sole_backends:
+        return entities
+
+    hosts_by_service: dict[str, str] = {}
+    for host, service in sole_backends.items():
+        hosts_by_service.setdefault(service, host)
+
+    attributed: list[DiscoveredEntity] = []
+    for entity in entities:
+        resources = entity.metadata.get("resources")
+        names = (
+            {
+                str(resource.get("name") or "")
+                for resource in resources
+                if isinstance(resource, Mapping) and str(resource.get("kind") or "") == "service"
+            }
+            if isinstance(resources, list)
+            else set()
+        )
+        host = next(
+            (hosts_by_service[name] for name in sorted(names) if name in hosts_by_service), ""
+        )
+        if not host or entity.endpoints.get("public"):
+            attributed.append(entity)
+            continue
+        attributed.append(
+            replace(entity, endpoints={**entity.endpoints, "public": f"https://{host}"})
+        )
+    return attributed
+
+
+def _probe_id(entity: DiscoveredEntity) -> bool:
+    """True when this id is the one an HTTP probe invents for itself.
+
+    An adapter that reaches a service over HTTP knows what kind of thing
+    answered and which cluster it called, and nothing else — so it names the
+    node `mimir:ymir`. It is deliberately not a Kubernetes identity, because
+    the service may not be on Kubernetes at all.
+    """
+    return bool(entity.cluster) and entity.id == f"{entity.kind}:{_slug(entity.cluster)}"
+
+
+def _fold_service_probes(
+    entities: list[DiscoveredEntity],
+    edges: list[ObservatoryEdge],
+) -> tuple[list[DiscoveredEntity], list[ObservatoryEdge], list[ObservatoryEvent]]:
+    """Fold each HTTP probe's node into the workload it was probing.
+
+    `MimirDiscoveryAdapter` calls a Mímir and names what answered `mimir:ymir`.
+    `KubernetesDiscoveryAdapter` finds the same process and names it after the
+    resource it read: `runtime:ymir:volundr:mimir:mimir-shared`. Both were
+    emitted, so every cluster drew two Mímirs — and two Ting, and two Bifröst.
+    Worse than the duplication, the halves disagreed: page counts and mounts
+    sat on one node, placement, labels and resources on the other, so neither
+    node was the Mímir.
+
+    Folding happens only where it is unambiguous — exactly one workload of the
+    same kind in the same cluster and namespace. Two Mímirs in one namespace
+    are two Mímirs; attaching the probe to whichever was found first would be
+    a guess, so it stays its own node and says why.
+
+    A probe that matches nothing is left alone: a Mímir served from outside
+    the cluster is a real node with no Kubernetes resource behind it.
+    """
+    aliases: dict[str, str] = {}
+    events: list[ObservatoryEvent] = []
+    for entity in entities:
+        if not _probe_id(entity):
+            continue
+        matches = [
+            other.id
+            for other in entities
+            if other.id.startswith("runtime:")
+            and other.kind == entity.kind
+            and other.cluster == entity.cluster
+            and (not entity.namespace or other.namespace == entity.namespace)
+        ]
+        if len(matches) == 1:
+            aliases[entity.id] = matches[0]
+            continue
+        if matches:
+            events.append(
+                _adapter_warning(
+                    entity.source_adapter or entity.kind,
+                    f"{entity.id} could be any of {len(matches)} {entity.kind} workloads in "
+                    f"{entity.cluster}/{entity.namespace or '*'}; leaving it as its own node",
+                )
+            )
+    if not aliases:
+        return entities, edges, events
+
+    by_id = {entity.id: entity for entity in entities}
+    folded: dict[str, DiscoveredEntity] = {}
+    for entity in entities:
+        # A model drawn inside its gateway points at the gateway's probe id, so
+        # the parent has to follow the fold or the model is orphaned.
+        parent_id = aliases.get(entity.parent_id or "", entity.parent_id)
+        claim = entity if parent_id == entity.parent_id else replace(entity, parent_id=parent_id)
+        target_id = aliases.get(claim.id)
+        if target_id is None:
+            folded[claim.id] = _merge_discovered_entity(folded.get(claim.id), claim)
+            continue
+        folded[target_id] = _merge_discovered_entity(
+            folded.get(target_id) or by_id[target_id],
+            claim,
+        )
+
+    rewritten: dict[str, ObservatoryEdge] = {}
+    for edge in edges:
+        source_id = aliases.get(str(edge.get("sourceId") or ""), str(edge.get("sourceId") or ""))
+        target_id = aliases.get(str(edge.get("targetId") or ""), str(edge.get("targetId") or ""))
+        if source_id == target_id:
+            continue
+        resolved: ObservatoryEdge = {**edge, "sourceId": source_id, "targetId": target_id}
+        rewritten[str(resolved.get("id") or "")] = resolved
+    return list(folded.values()), list(rewritten.values()), events
 
 
 @dataclass(frozen=True)
@@ -770,6 +944,16 @@ class FluxHelmReleaseSessionDiscoveryAdapter:
                     source_adapter=self.__class__.__name__,
                 )
             )
+            mimir_entities, mimir_edges = _session_mimir_entities(
+                values,
+                session_entity_id=entity_id,
+                session_id=session_id,
+                cluster=self._cluster,
+                namespace=self._namespace,
+                source_adapter=self.__class__.__name__,
+            )
+            entities.extend(mimir_entities)
+            edges.extend(mimir_edges)
             if self._cluster:
                 edges.append(
                     _edge(
@@ -1824,6 +2008,189 @@ def _flock_summary(values: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _mimir_values(values: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The session's Mímir wiring, however the release spelled it.
+
+    Volundr writes camelCase into the HelmRelease it creates while the Ravn
+    config it renders is snake_case, and both spellings reach this adapter
+    depending on which composed the release.
+    """
+    mimir = values.get("mimir")
+    if isinstance(mimir, Mapping):
+        return mimir
+    workload = values.get("workload_config") or values.get("workloadConfig")
+    if isinstance(workload, Mapping) and isinstance(workload.get("mimir"), Mapping):
+        return workload["mimir"]
+    return {}
+
+
+def _mimir_field(mimir: Mapping[str, Any], camel: str, snake: str) -> list[Any]:
+    for key in (camel, snake):
+        value = mimir.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
+#: Which of `reads`/`writes` an access mode means. A mount the session can
+#: write is one it also reads, so `read_write` draws both.
+_MIMIR_ACCESS_RELATIONS = {
+    "read": ("reads",),
+    "readonly": ("reads",),
+    "read_only": ("reads",),
+    "write": ("writes",),
+    "read_write": ("reads", "writes"),
+    "readwrite": ("reads", "writes"),
+}
+
+
+def _mimir_mount_access(mimir: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """What each mount is bound for, from the bindings that name it."""
+    access: dict[str, dict[str, Any]] = {}
+    for binding in _mimir_field(mimir, "bindings", "bindings"):
+        if not isinstance(binding, Mapping):
+            continue
+        mount = str(binding.get("mount_name") or binding.get("mountName") or "").strip()
+        if not mount:
+            continue
+        prefixes = binding.get("write_prefixes") or binding.get("writePrefixes") or []
+        entry = access.setdefault(mount, {"access": "read", "writePrefixes": [], "boundTo": []})
+        mode = str(binding.get("access") or "read").strip().lower()
+        if "write" in mode:
+            entry["access"] = "read_write" if "read" in mode else "write"
+        entry["writePrefixes"] = sorted(
+            {*entry["writePrefixes"], *(str(prefix) for prefix in prefixes if str(prefix))}
+        )
+        target = str(binding.get("target_id") or binding.get("targetId") or "").strip()
+        if target and target not in entry["boundTo"]:
+            entry["boundTo"].append(target)
+    return access
+
+
+def _session_mimir_entities(
+    values: Mapping[str, Any],
+    *,
+    session_entity_id: str,
+    session_id: str,
+    cluster: str,
+    namespace: str,
+    source_adapter: str,
+) -> tuple[list[DiscoveredEntity], list[ObservatoryEdge]]:
+    """The Mímirs a workflow session holds, and how it holds them.
+
+    A flock session is launched with named, prefix-scoped mounts — "Capability
+    Memory" writable under `capabilities/`, "Research Memory" under
+    `research/` — and every one of them was invisible. The whole wiring is
+    already in the HelmRelease Volundr wrote; this adapter simply never looked
+    at it.
+
+    A mount backed by a path is the session's own store and has no other owner,
+    so it is drawn as a node inside the session. A mount backed by a URL
+    belongs to somebody else — usually the hosted Mímir in another cluster —
+    so it is drawn as a relationship to that Mímir, referenced by URL because
+    this adapter has no way to know the node id another cluster minted for it.
+    """
+    mimir = _mimir_values(values)
+    if not mimir:
+        return [], []
+
+    access_by_mount = _mimir_mount_access(mimir)
+    entities: list[DiscoveredEntity] = []
+    edges: list[ObservatoryEdge] = []
+    seen: set[str] = set()
+
+    def _record(name: str, role: str, url: str, path: str, extra: dict[str, Any]) -> None:
+        mount = name.strip()
+        if not mount or mount in seen:
+            return
+        seen.add(mount)
+        binding = access_by_mount.get(mount, {})
+        detail = {
+            "mountName": mount,
+            "role": role,
+            "sessionId": session_id,
+            "access": str(binding.get("access") or "read"),
+            "writePrefixes": binding.get("writePrefixes") or [],
+            "boundTo": binding.get("boundTo") or [],
+            **extra,
+        }
+        if not url:
+            entities.append(
+                DiscoveredEntity(
+                    id=f"{session_entity_id}:mimir:{_slug(mount)}",
+                    kind="mimir",
+                    name=str(extra.get("label") or mount),
+                    cluster=cluster,
+                    namespace=namespace,
+                    parent_id=session_entity_id,
+                    status="healthy",
+                    source_adapter=source_adapter,
+                    source_kind="flux-helmrelease:mimir-mount",
+                    metadata={**detail, "path": path, "ephemeral": role == "ephemeral"},
+                )
+            )
+            return
+        for relation in _MIMIR_ACCESS_RELATIONS.get(str(detail["access"]), ("reads",)):
+            edges.append(
+                _edge(
+                    source_id=session_entity_id,
+                    target_id=url,
+                    relation_type=relation,
+                    source_adapter=source_adapter,
+                    evidence_field="HelmRelease.spec.values.mimir",
+                    confidence="observed",
+                    label=mount,
+                )
+            )
+
+    for ref in _mimir_field(mimir, "registryRefs", "registry_refs"):
+        if not isinstance(ref, Mapping):
+            continue
+        _record(
+            str(ref.get("mount_name") or ref.get("mountName") or ""),
+            str(ref.get("role") or "shared"),
+            str(ref.get("url") or ""),
+            "",
+            {
+                "label": str(ref.get("label") or ""),
+                "categories": [str(item) for item in ref.get("categories") or []],
+                "registryEntryId": str(
+                    ref.get("registry_entry_id") or ref.get("registryEntryId") or ""
+                ),
+            },
+        )
+
+    for instance in _mimir_field(mimir, "instances", "instances"):
+        if not isinstance(instance, Mapping):
+            continue
+        _record(
+            str(instance.get("name") or ""),
+            str(instance.get("role") or "local"),
+            str(instance.get("url") or ""),
+            str(instance.get("path") or ""),
+            {"readPriority": instance.get("read_priority", instance.get("readPriority"))},
+        )
+
+    for local in _mimir_field(mimir, "ephemeralLocals", "ephemeral_locals"):
+        name = str(local.get("name") or "") if isinstance(local, Mapping) else str(local or "")
+        path = str(local.get("path") or "") if isinstance(local, Mapping) else ""
+        _record(name, "ephemeral", "", path, {})
+
+    hosted = str(mimir.get("hosted_url") or mimir.get("hostedUrl") or "").strip()
+    if hosted and not any(str(edge.get("targetId") or "") == hosted for edge in edges):
+        edges.append(
+            _edge(
+                source_id=session_entity_id,
+                target_id=hosted,
+                relation_type="reads",
+                source_adapter=source_adapter,
+                evidence_field="HelmRelease.spec.values.mimir.hostedUrl",
+                confidence="observed",
+            )
+        )
+    return entities, edges
+
+
 def _flock_member_entities(
     values: Mapping[str, Any],
     *,
@@ -1933,6 +2300,7 @@ class KubernetesDiscoveryAdapter:
         attachments: list[tuple[DiscoveredEntity, list[ObservatoryEdge]]] = []
         edges: list[ObservatoryEdge] = []
         events: list[ObservatoryEvent] = []
+        ingresses: list[dict[str, Any]] = []
         try:
             async with httpx.AsyncClient(
                 timeout=self._timeout_seconds,
@@ -1960,6 +2328,8 @@ class KubernetesDiscoveryAdapter:
                     for item in payload.get("items", []) if isinstance(payload, dict) else []:
                         if isinstance(item, dict):
                             resource_kind = _singular_resource_kind(kind)
+                            if resource_kind == "ingress":
+                                ingresses.append(item)
                             if resource_kind == "node":
                                 node = self._node_entity(item)
                                 if node is not None:
@@ -1995,7 +2365,7 @@ class KubernetesDiscoveryAdapter:
         except Exception as exc:
             events.append(_adapter_warning("kubernetes", str(exc)))
         return DiscoveryResult(
-            entities=_merge_discovered_entities(entities),
+            entities=_attribute_public_hosts(_merge_discovered_entities(entities), ingresses),
             edges=edges,
             events=events,
         )
@@ -2265,9 +2635,17 @@ class CompositeDiscoveryAdapter:
             for edge in result.edges:
                 edges_by_id[edge["id"]] = edge
             events.extend(result.events)
+
+        # Only here do a cluster scout and an HTTP probe of the same service
+        # meet, so this is the one place that can tell they found one thing.
+        entities_list, edges_list, fold_events = _fold_service_probes(
+            list(entities_by_id.values()),
+            list(edges_by_id.values()),
+        )
+        events.extend(fold_events)
         return DiscoveryResult(
-            entities=list(entities_by_id.values()),
-            edges=list(edges_by_id.values()),
+            entities=entities_list,
+            edges=edges_list,
             events=events,
         )
 
@@ -2411,9 +2789,20 @@ def topology_from_discovery(
         node = _entity_to_node(entity, parent_id=parent_id, known_type_ids=type_ids)
         nodes[node["id"]] = node
 
+    # An edge this fragment cannot resolve is usually not a broken edge: it is
+    # an edge to somewhere else. A workflow session in valhalla mounts a Mímir
+    # in ymir, and one Observatory that dropped what it could not see locally
+    # took every cross-cluster relationship in the estate with it — all seven
+    # `observes` edges between Observatories included. Guild sees every
+    # fragment at once, so unresolved endpoints are handed on rather than
+    # decided here.
+    pending: dict[str, ObservatoryEdge] = {}
     for edge in result.edges:
         resolved = _resolve_edge(edge, nodes)
-        if resolved and resolved["sourceId"] != resolved["targetId"]:
+        if resolved is None:
+            pending[str(edge.get("id") or "")] = edge
+            continue
+        if resolved["sourceId"] != resolved["targetId"]:
             edges[resolved["id"]] = resolved
 
     events = list(result.events)
@@ -2436,7 +2825,7 @@ def topology_from_discovery(
 
     node_list = list(nodes.values())
     edge_list = list(edges.values())
-    return {
+    snapshot: ObservatorySnapshot = {
         "timestamp": _iso(),
         "revision": _revision(node_list, edge_list, events),
         "nodes": node_list,
@@ -2444,6 +2833,11 @@ def topology_from_discovery(
         "events": events,
         "layoutHints": {"mode": "pack", "scope": "world"},
     }
+    if pending:
+        # Kept out of `edges` so a consumer reading one fragment never renders
+        # an endpoint that does not exist in it.
+        snapshot["pendingEdges"] = list(pending.values())
+    return snapshot
 
 
 def _revision(
@@ -2493,52 +2887,18 @@ def _resolve_edge(
 
 
 def _resolve_node_ref(ref: str, nodes: dict[str, dict[str, Any]]) -> str:
-    value = ref.strip()
-    if not value:
-        return ""
-    if value in nodes:
-        return value
+    """Resolve an edge endpoint against the nodes this fragment knows about.
 
-    node_list = list(nodes.values())
-    if "@" in value:
-        value, scope = value.split("@", 1)
-        cluster, _, namespace = scope.partition("/")
-    else:
-        cluster = ""
-        namespace = ""
-
-    if ":" in value:
-        type_id, _, name = value.partition(":")
-    else:
-        type_id = ""
-        name = value
-    type_id = _type_id_for_component(type_id, "") if type_id else ""
-    name_slug = _slug(name)
-
-    candidates: list[str] = []
-    for node in node_list:
-        if type_id and node.get("typeId") != type_id:
-            continue
-        if cluster and node.get("clusterName") != cluster:
-            continue
-        if namespace and node.get("namespace") != namespace:
-            continue
-        node_id = str(node.get("id") or "")
-        label = str(node.get("label") or "")
-        labels = node.get("labels") if isinstance(node.get("labels"), dict) else {}
-        logical_names = {
-            _slug(label),
-            _slug(node_id.rsplit(":", 1)[-1]),
-            _slug(str(labels.get("app.kubernetes.io/name") or "")),
-            _slug(str(labels.get("app.kubernetes.io/component") or "")),
-            _slug(str(labels.get("niuu.world/entity-id") or "")),
-            _slug(str(labels.get("niuu.world/service-id") or "")),
-        }
-        if name_slug in logical_names or any(
-            logical_name.endswith(f"-{name_slug}") for logical_name in logical_names
-        ):
-            candidates.append(node_id)
-    return candidates[0] if len(set(candidates)) == 1 else ""
+    The rules themselves live in `niuu` because Guild has to apply the same
+    ones to whatever a fragment could not resolve on its own. Only the
+    component vocabulary is ours: `knowledge-service` means `mimir` here and
+    nowhere else.
+    """
+    return resolve_node_ref(
+        ref,
+        nodes.values(),
+        type_alias=lambda component: _type_id_for_component(component, ""),
+    )
 
 
 #: Node fields an adapter's metadata must never overwrite. These carry the

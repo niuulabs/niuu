@@ -193,9 +193,10 @@ def normalize_registry(registry: dict[str, Any]) -> dict[str, Any]:
 #: not: it names one of a fixed set of glyphs the canvas knows how to draw, and
 #: a stored value the vocabulary has dropped renders as a fallback box forever.
 #: The seed is the only thing that knows the current vocabulary, so on a
-#: version bump it wins. `size` travels with it because the two were chosen
-#: together — a rack at a dot's size is a smear.
-_SEED_OWNED_KEYS = ("shape", "size")
+#: version bump it wins. `size` and `icon` travel with it because the three
+#: were chosen together — a rack at a dot's size is a smear, and an icon
+#: naming a glyph the icon set no longer has renders as nothing at all.
+_SEED_OWNED_KEYS = ("shape", "size", "icon")
 
 
 def merge_seed_into(stored: dict[str, Any], seed: dict[str, Any]) -> dict[str, Any]:

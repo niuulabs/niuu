@@ -112,6 +112,13 @@ class ObservatoryFragment(TypedDict, total=False):
 
     nodes: list[ObservatoryNode]
     edges: list[ObservatoryEdge]
+    #: Edges whose endpoints this fragment could not name, carrying their
+    #: original references. A relationship that leaves the cluster — a session
+    #: mounting a Mímir elsewhere, an Observatory watching its peers — can only
+    #: be resolved once every fragment has been merged, so it is passed on
+    #: intact instead of being dropped by the source that could not see both
+    #: ends. Never rendered directly: the endpoints are references, not ids.
+    pendingEdges: list[ObservatoryEdge]
     events: list[ObservatoryEvent]
     layoutHints: ObservatoryLayoutHints
     meta: ObservatoryFragmentMeta

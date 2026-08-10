@@ -59,19 +59,6 @@ export interface Node3D {
   detail: string;
   labelTier: 'primary' | 'secondary';
   /**
-   * True for Mímir, which is drawn as a well rather than as a solid.
-   *
-   * Memory is the one thing on this stage everything else reaches into, and a
-   * sphere the size of its glyph radius is just the biggest ball in the room —
-   * it dominates by size while saying nothing about what it is.
-   */
-  isWell: boolean;
-  /**
-   * Size of the well relative to a standing one. A Mímir inside a cluster is
-   * one instance among that cluster's contents, not the estate's memory.
-   */
-  wellScale: number;
-  /**
    * True for the types the plan draws as a boundary rather than as a mark —
    * realms, clusters, namespaces, clouds. They get a deck and nothing else:
    * a solid at the centre of a region would be a second mark for one thing,
@@ -235,8 +222,6 @@ export function buildNode3D(node: TopologyNode, position: NodePosition, style: N
     label: humanizeObservatoryText(node.label),
     detail: nodeDetailLine(node),
     labelTier: labelTier(node.typeId),
-    isWell: node.typeId === 'mimir',
-    wellScale: node.parentId ? NODE3D.NESTED_WELL_SCALE : 1,
     isBoundary: BOUNDARY_TYPES.has(node.typeId),
     isContainer: node.typeId === 'host' || node.typeId === 'run',
     form: nodeFormOf(node),

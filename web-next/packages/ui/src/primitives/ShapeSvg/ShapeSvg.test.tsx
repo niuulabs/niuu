@@ -89,9 +89,13 @@ describe('ShapeSvg', () => {
     expect(screen.getByRole('img')).toHaveClass('test-class');
   });
 
-  it('mimir renders the ᛗ glyph', () => {
-    const { container } = render(<ShapeSvg shape="mimir" />);
-    expect(container.textContent).toContain('ᛗ');
+  it('mimir previews as the store the canvas draws', () => {
+    // It was a lettered disc back when the estate had one Mímir. There is now
+    // one per cluster and one per workflow-session mount, so it wears the same
+    // barrel the canvas gives it.
+    const { container: mimir } = render(<ShapeSvg shape="mimir" />);
+    const { container: cylinder } = render(<ShapeSvg shape="cylinder" />);
+    expect(mimir.querySelector('svg')!.innerHTML).toBe(cylinder.querySelector('svg')!.innerHTML);
   });
 
   it('previews the marks the canvas actually draws', () => {

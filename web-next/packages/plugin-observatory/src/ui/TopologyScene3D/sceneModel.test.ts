@@ -79,14 +79,20 @@ describe('buildNode3D', () => {
     expect(built.position).toEqual({ x: 12, y: TIER.LEAF, z: -34 });
   });
 
-  it('marks every Mímir a well, and shrinks the ones inside a cluster', () => {
-    const root = node('m1', 'mimir');
-    const nested = node('m2', 'mimir', 'cluster-a');
-    expect(buildNode3D(root, { x: 0, y: 0 }, styleFor(root)).wellScale).toBe(1);
-    expect(buildNode3D(nested, { x: 0, y: 0 }, styleFor(nested)).wellScale).toBe(
-      NODE3D.NESTED_WELL_SCALE,
+  it('gives a Mímir an ordinary mark, not a well of its own', () => {
+    // Once every cluster and every workflow session has one, a well the size
+    // of a region is the biggest object in the room and says nothing about
+    // what it is. A Mímir is a store, sized and drawn like any other node.
+    const mimir = node('m1', 'mimir');
+    const service = node('s1', 'service');
+    const built = buildNode3D(mimir, { x: 0, y: 0 }, styleFor(mimir));
+
+    expect(built.isBoundary).toBe(false);
+    expect(built.isContainer).toBe(false);
+    expect(built.radius).toBe(node3dRadius(styleFor(mimir)));
+    expect(built.position.y).toBe(
+      buildNode3D(service, { x: 0, y: 0 }, styleFor(service)).position.y,
     );
-    expect(buildNode3D(nested, { x: 0, y: 0 }, styleFor(nested)).isWell).toBe(true);
   });
 });
 
@@ -360,8 +366,6 @@ describe('edgeArc', () => {
     label: 'a',
     detail: '',
     labelTier: 'primary',
-    isWell: false,
-    wellScale: 1,
   };
   const to: Node3D = { ...from, id: 'b', position: { x: 600, y: TIER.LEAF, z: 0 } };
 

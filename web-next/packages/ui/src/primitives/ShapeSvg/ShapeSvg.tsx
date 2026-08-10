@@ -173,6 +173,10 @@ export function ShapeSvg({
         </svg>
       );
 
+    // A Mímir is a store. It was once drawn as a lit well, back when the
+    // estate had one; with a Mímir per cluster and per workflow session, the
+    // barrel is the mark that survives being repeated.
+    case 'mimir':
     case 'cylinder':
       return (
         <svg {...svgProps}>
@@ -258,24 +262,6 @@ export function ShapeSvg({
             strokeDasharray="1 2"
           />
           <circle cx="0" cy="0" r="2.5" fill={c} />
-        </svg>
-      );
-
-    case 'mimir':
-      return (
-        <svg {...svgProps}>
-          <circle cx="0" cy="0" r="5" fill="var(--color-bg-primary)" stroke={c} strokeWidth="1.4" />
-          <text
-            x="0"
-            y="1"
-            fontSize="5"
-            fill={c}
-            textAnchor="middle"
-            dominantBaseline="middle"
-            fontFamily="monospace"
-          >
-            ᛗ
-          </text>
         </svg>
       );
 
