@@ -1716,8 +1716,14 @@ class MimirSourceTriggerConfig(BaseModel):
     """Config for the source-ingest synthesis trigger."""
 
     enabled: bool = Field(
-        default=True,
-        description="Enable automatic synthesis when unprocessed sources are detected.",
+        default=False,
+        description=(
+            "Enable automatic synthesis when unprocessed sources are detected. "
+            "Off by default: any Ravn that mounts a shared Mímir sees the same "
+            "unprocessed sources as every other Ravn mounting it, so leaving "
+            "this on curates one corpus N times over. Enable it only on the "
+            "agent that owns the mount it writes to."
+        ),
     )
     poll_interval_seconds: int = Field(
         default=60,

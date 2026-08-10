@@ -225,6 +225,17 @@ class RavnAgent:
         """Return all registered tools in registration order."""
         return list(self._tools.values())
 
+    @property
+    def persona_config(self) -> PersonaConfig | None:
+        """Return the persona this agent was actually built with.
+
+        A triggered task may request a persona other than the resident's own
+        (``mimir_source`` tasks run as ``mimir-curator``).  The agent factory
+        resolves that override, so this is the only authority on which outcome
+        contract the response was written against.
+        """
+        return self._persona_config
+
     def register_tool(self, tool: ToolPort, *, replace: bool = False) -> None:
         """Register a tool for subsequent LLM iterations in this session."""
         if tool.name in self._tools and not replace:

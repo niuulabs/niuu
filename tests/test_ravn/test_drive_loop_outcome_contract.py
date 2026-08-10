@@ -2109,3 +2109,97 @@ recommendation: reply with the preferred tradeoff
 
         skuld_channel.emit.assert_awaited_once()
         sleipnir_publisher.publish.assert_not_awaited()
+
+
+class TestTaskPersonaContract:
+    """A triggered task is judged against the persona it actually ran as.
+
+    Regression: ``mimir_source`` enqueues tasks for ``mimir-curator``, which
+    produces ``dream.completed``.  The drive loop validated the response
+    against the *resident's* persona (``k8s-valkyrie`` →
+    ``valkyrie.judgment.proposed``), so every synthesis task was rejected for
+    missing fields it was never asked to produce, then re-queued.  Eight
+    residents sat at their 50-task cap with zero completions.
+    """
+
+    @staticmethod
+    def _resident_persona() -> SimpleNamespace:
+        return SimpleNamespace(
+            name="k8s-valkyrie",
+            produces=SimpleNamespace(
+                event_type="valkyrie.judgment.proposed",
+                event_type_map={},
+                schema={},
+            ),
+        )
+
+    @staticmethod
+    def _curator_persona() -> SimpleNamespace:
+        return SimpleNamespace(
+            name="mimir-curator",
+            produces=SimpleNamespace(
+                event_type="dream.completed",
+                event_type_map={},
+                schema={},
+            ),
+        )
+
+    def test_uses_the_live_agents_persona_not_the_residents(self) -> None:
+        dl = _make_drive_loop()
+        dl._persona_config = self._resident_persona()
+
+        task = _make_agent_task(task_id="task-synth")
+        task.persona = "mimir-curator"
+        dl._active_agents[task.task_id] = SimpleNamespace(persona_config=self._curator_persona())
+
+        resolved = dl._task_persona_config(task)
+
+        assert resolved is not None
+        assert resolved.name == "mimir-curator"
+        # The contract that would have rejected every synthesis task.
+        assert resolved.produces.event_type == "dream.completed"
+
+    def test_resident_persona_still_used_for_its_own_tasks(self) -> None:
+        dl = _make_drive_loop()
+        dl._persona_config = self._resident_persona()
+
+        task = _make_agent_task(task_id="task-signal")
+        task.persona = "k8s-valkyrie"
+        dl._active_agents[task.task_id] = SimpleNamespace(persona_config=self._curator_persona())
+
+        # Same name as the resident: the resident's own config wins without
+        # consulting the agent at all.
+        assert dl._task_persona_config(task) is dl._persona_config
+
+    def test_task_without_a_persona_uses_the_resident(self) -> None:
+        dl = _make_drive_loop()
+        dl._persona_config = self._resident_persona()
+
+        task = _make_agent_task(task_id="task-plain")
+        task.persona = ""
+
+        assert dl._task_persona_config(task) is dl._persona_config
+
+    @pytest.mark.asyncio
+    async def test_curator_outcome_is_not_validated_as_a_valkyrie_judgment(self) -> None:
+        """The end-to-end symptom: a dream.completed body must not be rejected."""
+        dl = _make_drive_loop()
+        dl._persona_config = self._resident_persona()
+        dl._mesh = AsyncMock()
+        dl._source_id = "drive_loop"
+
+        task = _make_agent_task(task_id="task-synth")
+        task.persona = "mimir-curator"
+        dl._active_agents[task.task_id] = SimpleNamespace(persona_config=self._curator_persona())
+
+        published = await dl._emit_mesh_outcome_event(
+            task,
+            response_text=("---outcome---\nverdict: complete\npages_updated: 3\n---end---"),
+            success=True,
+        )
+
+        assert published is not False
+        # The rejection that fired for every synthesis task on every resident.
+        emitted = str(dl._mesh.mock_calls)
+        assert registry.VALKYRIE_JUDGMENT_REJECTED not in emitted
+        assert "dream.completed" in emitted

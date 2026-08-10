@@ -1678,6 +1678,29 @@ class DriveLoop:
         """Set the mesh port for publishing outcome events."""
         self._mesh = mesh
 
+    def _task_persona_config(self, task: AgentTask) -> PersonaConfig | None:
+        """Return the persona contract the task's response was written against.
+
+        Triggered tasks may run as a different persona than the resident:
+        ``mimir_source`` enqueues for ``mimir-curator``, which produces
+        ``dream.completed``, not ``valkyrie.judgment.proposed``.  The agent
+        factory already resolved that override, so the built agent is the only
+        authority on which contract applies.  Judging such a response against
+        the resident's own contract rejects it for missing every field it was
+        never asked to produce, and the task retries forever.
+        """
+        if not task.persona or task.persona == getattr(self._persona_config, "name", None):
+            return self._persona_config
+        agent = self._active_agents.get(task.task_id)
+        resolved = getattr(agent, "persona_config", None) if agent is not None else None
+        if resolved is not None:
+            return resolved
+        # Outside the task's own execution window the agent is already closed.
+        # Every contract check that decides whether a response is valid runs
+        # while it is still live, so this only covers emitters called directly
+        # with an already-finished task.
+        return self._persona_config
+
     def set_persona_config(self, persona_config: PersonaConfig | None) -> None:
         """Set the persona config for determining produces.event_type.
 
@@ -1804,7 +1827,7 @@ class DriveLoop:
         canonical_event_type, outcome_fields, validation_errors = (
             _resident_valkyrie_validation_result(
                 response_text,
-                self._persona_config,
+                self._task_persona_config(task),
                 authoritative_fields=self._authoritative_valkyrie_fields(task),
             )
         )
@@ -2609,7 +2632,12 @@ class DriveLoop:
             prompt = build_initiative_prompt(
                 prompt_task,
                 produces_event_type=str(
-                    getattr(getattr(self._persona_config, "produces", None), "event_type", "") or ""
+                    getattr(
+                        getattr(self._task_persona_config(task), "produces", None),
+                        "event_type",
+                        "",
+                    )
+                    or ""
                 ),
             )
             prompt = await self._apply_retrieval_reflex(prompt, task)
@@ -3043,10 +3071,11 @@ class DriveLoop:
         """Ask the same agent for one strict contract repair when a resident output is invalid."""
         if task.triggered_by == _RESIDENT_VALKYRIE_SCHEMA_REPAIR_TRIGGER:
             return None
+        persona_config = getattr(agent, "persona_config", None) or self._persona_config
         canonical_event_type, outcome_fields, validation_errors = (
             _resident_valkyrie_validation_result(
                 response_text,
-                self._persona_config,
+                persona_config,
                 authoritative_fields=self._authoritative_valkyrie_fields(task),
             )
         )
@@ -3081,7 +3110,7 @@ class DriveLoop:
         repaired_text = str(getattr(repair_result, "response", "") or "")
         _, _, repaired_errors = _resident_valkyrie_validation_result(
             repaired_text,
-            self._persona_config,
+            persona_config,
             authoritative_fields=self._authoritative_valkyrie_fields(task),
         )
         if repaired_errors:
@@ -3107,12 +3136,13 @@ class DriveLoop:
         """Give a workflow agent one chance to revise an outcome the graph cannot route."""
         if not task.workflow_node_id or self._workflow_allowed_outcomes_resolver is None:
             return None
+        persona_config = self._task_persona_config(task)
         canonical_event_type = str(
-            getattr(getattr(self._persona_config, "produces", None), "event_type", "") or ""
+            getattr(getattr(persona_config, "produces", None), "event_type", "") or ""
         )
         if not canonical_event_type or is_valkyrie_outcome_event(canonical_event_type):
             return None
-        parsed = _parse_outcome_for_persona(response_text, self._persona_config)
+        parsed = _parse_outcome_for_persona(response_text, persona_config)
         if parsed is None or not parsed.valid:
             return None
         verdict = str(
@@ -3120,9 +3150,9 @@ class DriveLoop:
         ).strip()
         if not verdict or verdict == "help_needed":
             return None
-        event_type_map = getattr(self._persona_config.produces, "event_type_map", {}) or {}
+        event_type_map = getattr(persona_config.produces, "event_type_map", {}) or {}
         alias_event_type = str(event_type_map.get(verdict) or "")
-        allowed_topics = self._workflow_allowed_outcomes_resolver(task, self._persona_config)
+        allowed_topics = self._workflow_allowed_outcomes_resolver(task, persona_config)
         if allowed_topics is None:
             return None
         if canonical_event_type in allowed_topics or alias_event_type in allowed_topics:
@@ -3318,16 +3348,17 @@ class DriveLoop:
                 event.payload["session_id"] = task.session_id
             event.payload.update(self._sleipnir_task_context_payload(task))
 
-            parsed = _parse_outcome_for_persona(response_text, self._persona_config)
+            task_persona_config = self._task_persona_config(task)
+            parsed = _parse_outcome_for_persona(response_text, task_persona_config)
             if parsed is not None:
                 fields = dict(parsed.fields)
                 canonical_event_type = str(
-                    getattr(getattr(self._persona_config, "produces", None), "event_type", "") or ""
+                    getattr(getattr(task_persona_config, "produces", None), "event_type", "") or ""
                 )
                 if is_valkyrie_outcome_event(canonical_event_type):
                     _, fields, validation_errors = _resident_valkyrie_validation_result(
                         response_text,
-                        self._persona_config,
+                        task_persona_config,
                         authoritative_fields=self._authoritative_valkyrie_fields(task),
                     )
                     outcome_valid = not validation_errors
@@ -3425,7 +3456,7 @@ class DriveLoop:
             return
 
         try:
-            counts = _extract_mimir_dream_counts(response_text, self._persona_config)
+            counts = _extract_mimir_dream_counts(response_text, self._task_persona_config(task))
             event = _sleipnir_mimir_dream_completed(
                 pages_updated=counts["pages_updated"],
                 entities_created=counts["entities_created"],
@@ -3461,7 +3492,9 @@ class DriveLoop:
             return
 
         if self._workflow_allowed_outcomes_resolver is not None:
-            allowed_topics = self._workflow_allowed_outcomes_resolver(task, self._persona_config)
+            allowed_topics = self._workflow_allowed_outcomes_resolver(
+                task, self._task_persona_config(task)
+            )
             if allowed_topics is not None and event_type not in allowed_topics:
                 logger.info(
                     (
@@ -3550,20 +3583,21 @@ class DriveLoop:
         are published as routing-only mesh topics so downstream personas can
         react without replacing the canonical outward event.
         """
-        if self._persona_config is None:
+        persona_config = self._task_persona_config(task)
+        if persona_config is None:
             return success
         if not success:
             logger.info(
                 "drive_loop: skipping mesh outcome publish for failed task_id=%s persona=%s",
                 task.task_id,
-                self._persona_config.name,
+                persona_config.name,
             )
             return False
 
         # Parse outcome block from response
-        parsed = _parse_outcome_for_persona(response_text, self._persona_config)
+        parsed = _parse_outcome_for_persona(response_text, persona_config)
         outcome_fields = dict(parsed.fields) if parsed is not None else {}
-        canonical_event_type = self._persona_config.produces.event_type
+        canonical_event_type = persona_config.produces.event_type
         if not canonical_event_type:
             return True
         tool_fields = task.tool_outcomes.get(canonical_event_type) or {}
@@ -3579,13 +3613,13 @@ class DriveLoop:
                 self._authoritative_valkyrie_fields(task),
             )
 
-        event_type_map = self._persona_config.produces.event_type_map
-        success_verdict = _default_success_verdict(self._persona_config.produces)
+        event_type_map = persona_config.produces.event_type_map
+        success_verdict = _default_success_verdict(persona_config.produces)
         synthesized_pass = False
         root_corr = task.root_correlation_id or task.task_id
         allowed_topics: set[str] | None = None
         if self._workflow_allowed_outcomes_resolver is not None:
-            allowed_topics = self._workflow_allowed_outcomes_resolver(task, self._persona_config)
+            allowed_topics = self._workflow_allowed_outcomes_resolver(task, persona_config)
 
         page_write_fields = task.tool_outcomes.get(_MIMIR_PAGE_WRITTEN_OUTCOME) or {}
         verdict = str(
@@ -3614,7 +3648,7 @@ class DriveLoop:
             synthesized_pass = True
         elif verdict:
             outcome_fields.setdefault("verdict", verdict)
-            normalized_verdict = _normalize_outcome_verdict(verdict, self._persona_config.produces)
+            normalized_verdict = _normalize_outcome_verdict(verdict, persona_config.produces)
             if normalized_verdict != verdict:
                 verdict = normalized_verdict
                 outcome_fields["verdict"] = normalized_verdict
@@ -3628,7 +3662,7 @@ class DriveLoop:
         if is_valkyrie_outcome_event(canonical_event_type):
             _, outcome_fields, validation_errors = _resident_valkyrie_validation_result(
                 response_text,
-                self._persona_config,
+                persona_config,
                 authoritative_fields=self._authoritative_valkyrie_fields(task),
             )
             if validation_errors:
@@ -3638,7 +3672,7 @@ class DriveLoop:
                     validation_errors,
                 )
                 reject_payload: dict[str, object] = {
-                    "persona": self._persona_config.name,
+                    "persona": persona_config.name,
                     "success": False,
                     "event_type": VALKYRIE_JUDGMENT_REJECTED,
                     "canonical_event_type": canonical_event_type,
@@ -3754,7 +3788,7 @@ class DriveLoop:
             outcome_errors.append(artifact_publish_error)
 
         base_payload: dict[str, object] = {
-            "persona": self._persona_config.name,
+            "persona": persona_config.name,
             "success": success and not outcome_errors,
             "outcome": outcome_fields,
             "fields": outcome_fields,
@@ -3874,7 +3908,7 @@ class DriveLoop:
             }
             help_event = build_help_needed_event(
                 source=self._source_id,
-                persona=self._persona_config.name,
+                persona=persona_config.name,
                 reason=str(outcome_fields.get("reason") or "needs_context"),
                 summary=question,
                 attempted=attempted,
