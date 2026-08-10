@@ -1095,9 +1095,7 @@ describe('completed plan sessions', () => {
 
     await waitFor(() => expect(screen.getByText('Completed plans')).toBeInTheDocument());
     expect(screen.getByText('Active plans')).toBeInTheDocument();
-    expect(
-      screen.getByText('NIU-1104 RavnClaw runtime specialization'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('NIU-1104 RavnClaw runtime specialization')).toBeInTheDocument();
     expect(screen.getByText('Still planning')).toBeInTheDocument();
   });
 

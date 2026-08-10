@@ -965,9 +965,7 @@ class TestSpawnPlanSession:
         assert body.repo == ""
         assert body.base_branch == "main"
 
-    def test_lists_every_plan_session_including_finished(
-        self, mock_tracker: MockTracker
-    ) -> None:
+    def test_lists_every_plan_session_including_finished(self, mock_tracker: MockTracker) -> None:
         """A finished plan stays listed.
 
         Filtering to PENDING/RUNNING/BLOCKED removed a plan from the surface the
