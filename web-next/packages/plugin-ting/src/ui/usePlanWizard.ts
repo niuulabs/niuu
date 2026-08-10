@@ -87,7 +87,9 @@ function reducer(state: PlanWizardState, action: Action): PlanWizardState {
     }
 
     case 'RESUME_READY': {
-      const questions = action.session.questions;
+      // questions is optional on PlanSession: a plan that has moved past
+      // clarification comes back without it, and reading .length threw.
+      const questions = action.session.questions ?? [];
       return {
         ...state,
         step: questions.length > 0 ? 'questions' : 'running',
@@ -105,7 +107,7 @@ function reducer(state: PlanWizardState, action: Action): PlanWizardState {
 
     case 'SESSION_STATUS': {
       const questions =
-        action.session.questions.length > 0 ? action.session.questions : state.questions;
+        (action.session.questions ?? []).length > 0 ? action.session.questions : state.questions;
       return {
         ...state,
         session: state.session ? { ...state.session, ...action.session } : action.session,

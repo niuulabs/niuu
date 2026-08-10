@@ -1104,19 +1104,17 @@ def create_sagas_router() -> APIRouter:
         campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
     ) -> list[PlanSessionResponse]:
         campaigns = await campaign_repo.list_campaigns(owner_id=principal.user_id)
-        active_statuses = {
-            WorkflowCampaignStatus.PENDING,
-            WorkflowCampaignStatus.RUNNING,
-            WorkflowCampaignStatus.BLOCKED,
-        }
+        # Every planning campaign, not only the resumable ones. Filtering to
+        # PENDING/RUNNING/BLOCKED meant a plan vanished from the surface the
+        # moment it finished: the campaign, its approved plan and its slug all
+        # still existed, but nothing linked to them, so a completed plan could
+        # only be reached by knowing its URL. The status travels on each item
+        # for the caller to group by.
         plan_campaigns = [
             campaign
             for campaign in campaigns
-            if campaign.status in active_statuses
-            and (
-                campaign.metadata.get("surface") == "ting.plan"
-                or campaign.workflow_name == _PLANNING_WORKFLOW_NAME
-            )
+            if campaign.metadata.get("surface") == "ting.plan"
+            or campaign.workflow_name == _PLANNING_WORKFLOW_NAME
         ]
         return [
             _to_plan_session_response(

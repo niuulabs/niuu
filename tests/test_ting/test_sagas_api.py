@@ -965,7 +965,15 @@ class TestSpawnPlanSession:
         assert body.repo == ""
         assert body.base_branch == "main"
 
-    def test_lists_active_plan_sessions(self, mock_tracker: MockTracker) -> None:
+    def test_lists_every_plan_session_including_finished(
+        self, mock_tracker: MockTracker
+    ) -> None:
+        """A finished plan stays listed.
+
+        Filtering to PENDING/RUNNING/BLOCKED removed a plan from the surface the
+        moment it completed: its campaign, approved plan and slug all still
+        existed, but nothing linked to them, so it was reachable only by URL.
+        """
         workflow = _planning_workflow()
         now = datetime.now(UTC)
         active_plan = WorkflowCampaign(
@@ -1006,7 +1014,12 @@ class TestSpawnPlanSession:
 
         assert response.status_code == 200
         body = response.json()
-        assert [item["campaign_slug"] for item in body] == ["plan-sdcp-operator"]
+        assert sorted(item["campaign_slug"] for item in body) == ["done", "plan-sdcp-operator"]
+        # Status travels per item so the caller can split running from history.
+        by_slug = {item["campaign_slug"]: item["status"] for item in body}
+        assert by_slug["plan-sdcp-operator"] == "running"
+        assert by_slug["done"] == "completed"
+        body = [item for item in body if item["campaign_slug"] == "plan-sdcp-operator"]
         assert body[0]["name"] == "Plan SDCP operator"
         assert body[0]["prompt"] == "Plan SDCP operator"
         assert body[0]["repo"] == ""
@@ -1050,9 +1063,13 @@ class TestSpawnPlanSession:
         assert stored.metadata["cancelled_by"] == "ting.plan"
         assert stored.completed_at is not None
 
+        # Cancelling ends the plan; it does not erase it. The row stays visible
+        # as history, carrying the status that says how it ended.
         list_response = client.get("/api/v1/ting/sagas/plan")
         assert list_response.status_code == 200
-        assert list_response.json() == []
+        listed = list_response.json()
+        assert [item["campaign_slug"] for item in listed] == ["plan-sdcp-operator"]
+        assert listed[0]["status"] == "failed"
 
     def test_defaults_base_branch_to_main(
         self, mock_tracker: MockTracker, monkeypatch: pytest.MonkeyPatch
