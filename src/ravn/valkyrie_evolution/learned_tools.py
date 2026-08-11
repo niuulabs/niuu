@@ -1258,6 +1258,30 @@ def find_installed_duplicate(
     return None
 
 
+#: Naming whims that fork one capability into several tools. A resident asked
+#: for the same thing as ``inspect_k8s_node_disk_pressure`` and
+#: ``inspect_kubernetes_node_disk_pressure``; nothing linked them, so it built
+#: both — and kept building, because neither answered to the other's name.
+_CAPABILITY_SYNONYMS = (("k8s", "kubernetes"),)
+
+
+def capability_key(name: str) -> str:
+    """Return the stable identity of the capability *name* describes.
+
+    Case, separators and the k8s/kubernetes shorthand are naming choices, not
+    different capabilities. Collapsing them lets a build recognise a tool the
+    resident already has, whatever the model decided to call it this time.
+
+    Deliberately conservative: it folds spelling, never meaning. Two tools whose
+    names differ only in punctuation are the same tool in practice; two that
+    differ in a word are left alone.
+    """
+    folded = name.strip().lower()
+    for shorthand, full in _CAPABILITY_SYNONYMS:
+        folded = folded.replace(shorthand, full)
+    return re.sub(r"[^a-z0-9]", "", folded)
+
+
 def find_installed_capability(
     *,
     artifacts_dir: str | Path,
@@ -1285,6 +1309,8 @@ def find_installed_capability(
         return None
 
     by_name: LearnedToolArtifact | None = None
+    by_key: LearnedToolArtifact | None = None
+    wanted_key = capability_key(wanted_capability or wanted_name)
     for candidate_path in sorted(artifacts_path.glob("*.json")):
         try:
             payload = json.loads(candidate_path.read_text(encoding="utf-8"))
@@ -1299,7 +1325,16 @@ def find_installed_capability(
             return candidate
         if wanted_name and candidate.manifest.name == wanted_name and by_name is None:
             by_name = candidate
-    return by_name
+        # Last resort: the same capability under a different spelling. Exact
+        # matching alone let one capability fork into several tools, and a
+        # resident that cannot find what it built asks for it again.
+        if by_key is None and wanted_key:
+            candidate_key = capability_key(
+                candidate.source_gap_id.strip() or candidate.manifest.name
+            )
+            if candidate_key == wanted_key:
+                by_key = candidate
+    return by_name or by_key
 
 
 def _manifest_contract(manifest: LearnedToolManifest) -> str:

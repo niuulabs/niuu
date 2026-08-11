@@ -25,6 +25,7 @@ from ravn.tool_observability import publish_learned_tool_inventory
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
+    capability_key,
     find_installed_capability,
     find_installed_duplicate,
     learned_tool_artifact_path,
@@ -1694,7 +1695,14 @@ def _artifact_from_input(input: dict) -> LearnedToolArtifact:  # noqa: A002
         # What need this build serves, as distinct from what it is called. The
         # version chain keys on this when present, so renaming a tool no longer
         # starts a fresh lineage that hides the version it replaced.
-        source_gap_id=str(input.get("capability_id") or "").strip(),
+        # Derived from the tool's own name when the builder omits it — which is
+        # every build observed in production: 100 of 100 artifacts on one
+        # resident carried an empty capability_id, so the version chain had
+        # nothing to key on and each build forked a new lineage.
+        source_gap_id=(
+            str(input.get("capability_id") or "").strip()
+            or capability_key(str((input.get("manifest") or {}).get("name") or ""))
+        ),
         source_signal_ids=[str(item) for item in (signal_ids_raw or []) if str(item).strip()],
     )
 
