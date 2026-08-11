@@ -7,6 +7,7 @@ import { DispatchView } from './ui/DispatchView';
 import { TingTopbar } from './ui/TingTopbar';
 import { TingFooter } from './ui/TingFooter';
 import { PlanWizard } from './ui/PlanWizard';
+import { PlanDetailPage } from './ui/PlanDetailPage';
 import { TingSubnav } from './ui/TingSubnav';
 import { ResearchCenterPage } from './ui/ResearchCenterPage';
 import { ResearchNewPage } from './ui/ResearchNewPage';
@@ -126,6 +127,11 @@ export const tingPlugin = definePlugin({
       getParentRoute: () => rootRoute,
       path: '/ting/plan',
       component: PlanWizard,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/plan/$slug',
+      component: PlanDetailPage,
     }),
   ],
   subnav: () => TingSubnav(),

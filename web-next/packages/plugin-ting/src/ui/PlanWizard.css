@@ -262,3 +262,91 @@
   background: var(--color-bg-elevated);
   padding: 14px 16px;
 }
+
+/* Plan detail — the addressable page for one plan. Reuses ting-plan-card so a
+   plan looks the same whether you are making it or reading it back. */
+.ting-plan-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.ting-plan-detail__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.ting-plan-detail__head h1 {
+  font-size: var(--font-size-xl);
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.ting-plan-detail__back {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+}
+
+.ting-plan-detail__status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.ting-plan-detail__loading,
+.ting-plan-detail__error,
+.ting-plan-detail__empty {
+  color: var(--color-text-muted);
+  padding: var(--space-4);
+}
+
+.ting-plan-detail__error {
+  color: var(--color-critical);
+}
+
+.ting-plan-detail__meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-4);
+  font-size: var(--font-size-sm);
+}
+
+.ting-plan-detail__meta dt {
+  color: var(--color-text-muted);
+}
+
+.ting-plan-detail__meta dd {
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+.ting-plan-detail__runs-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.ting-plan-detail__phase h3 {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  margin: var(--space-3) 0 var(--space-2);
+}
+
+.ting-plan-detail__risks li,
+.ting-plan-detail__criteria li {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.ting-plan-detail__risks strong {
+  color: var(--color-text-primary);
+  margin-right: var(--space-2);
+}

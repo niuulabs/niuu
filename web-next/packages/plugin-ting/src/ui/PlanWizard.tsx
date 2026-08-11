@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from '@tanstack/react-router';
 import { useService } from '@niuulabs/plugin-sdk';
 import { Rune } from '@niuulabs/ui';
 import type { RepoRecord } from '@niuulabs/ui';
@@ -28,6 +29,7 @@ type RepoCatalogService = {
  *         Full-width on running and approved (content fills the width).
  */
 export function PlanWizard() {
+  const navigate = useNavigate();
   const ting = useService<ITingService>('ting');
   const queryClient = useQueryClient();
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
@@ -113,7 +115,12 @@ export function PlanWizard() {
               <CompletedPlanSessions
                 sessions={completedPlanSessions}
                 loading={state.loading}
-                onOpen={resumePlanSession}
+                onOpen={(session) =>
+                  void navigate({
+                    to: '/ting/plan/$slug',
+                    params: { slug: session.campaignSlug ?? '' },
+                  })
+                }
               />
               <PlanPrompt
                 onSubmit={submitPrompt}

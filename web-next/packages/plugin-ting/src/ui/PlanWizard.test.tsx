@@ -20,6 +20,12 @@ import type { Saga } from '../domain/saga';
 import type { Workflow } from '../domain/workflow';
 import type { RepoRecord } from '@niuulabs/ui';
 
+const mockNavigate = vi.fn();
+vi.mock('@tanstack/react-router', () => ({
+  useNavigate: () => mockNavigate,
+  useParams: () => ({ slug: '' }),
+}));
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -1100,10 +1106,8 @@ describe('completed plan sessions', () => {
   });
 
   it('opens a finished plan without offering resume or cancel on it', async () => {
-    const getPlanSession = vi.fn().mockResolvedValue(finished);
     const svc = makeSvc({
       listPlanSessions: vi.fn().mockResolvedValue([finished]),
-      getPlanSession,
     });
     render(<PlanWizard />, { wrapper: wrap(svc) });
 
@@ -1111,12 +1115,13 @@ describe('completed plan sessions', () => {
     expect(screen.queryByText('Active plans')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /resume/i })).not.toBeInTheDocument();
 
+    // View goes to the addressable page rather than re-entering the wizard,
+    // which is the whole point of the detail route.
     fireEvent.click(screen.getByRole('button', { name: /view/i }));
-    await waitFor(() =>
-      expect(getPlanSession).toHaveBeenCalledWith(
-        'plan-niu-1104-define-ravnclaw-as-niuu-s-advanced',
-      ),
-    );
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/ting/plan/$slug',
+      params: { slug: 'plan-niu-1104-define-ravnclaw-as-niuu-s-advanced' },
+    });
   });
 
   it('hides the section when every plan is still running', async () => {
