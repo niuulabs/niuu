@@ -1614,9 +1614,10 @@ class LearnedToolResolver:
     def list_artifacts(self) -> list[LearnedToolArtifact]:
         """Return every loadable artifact envelope, without building callables.
 
-        Envelopes that fail validation or whose code file is missing are
-        skipped with a warning — a broken artifact must not hide the rest of
-        the catalog.
+        Envelopes that fail validation are skipped with a warning — a broken
+        artifact must not hide the rest of the catalog. One whose code file is
+        missing is removed: it can never execute, and left in place it keeps a
+        capability looking installable that never resolves.
         """
         if not self._artifacts_dir.exists():
             return []
@@ -1628,10 +1629,19 @@ class LearnedToolResolver:
                 logger.warning("Failed to read learned tool artifact %s: %s", artifact_file, exc)
                 continue
             if not self._tool_path(artifact.manifest.name).exists():
+                # An artifact with no code file can never execute, and leaving
+                # it in place is not harmless: the capability it claims never
+                # resolves, so the resident sees the same gap on every sweep
+                # and commissions the same build again. One such orphan drove
+                # 34 rebuilds of the same tool over five days. Reap it, and say
+                # so once, rather than warning about it every minute forever.
                 logger.warning(
-                    "Learned tool %s has an artifact but no code file; skipping",
+                    "Learned tool %s has an artifact but no code file; removing "
+                    "the orphaned artifact so its capability stops reading as "
+                    "installable",
                     artifact.manifest.name,
                 )
+                artifact_file.unlink(missing_ok=True)
                 continue
             artifacts.append(artifact)
         return artifacts

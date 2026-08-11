@@ -242,3 +242,42 @@ class TestLearnedToolRunTool:
 
         assert result.is_error
         assert "archived" in result.content
+
+
+class TestOrphanedArtifactReaping:
+    """An artifact with no code file is removed, not warned about forever.
+
+    A manifest whose .py never landed can never execute, but it kept the
+    capability it claims looking installable. The resident saw the same gap on
+    every sweep and commissioned the same build again — 34 rebuilds of one
+    tool over five days, and 26 such orphans across the fleet.
+    """
+
+    def test_orphaned_artifact_is_removed_from_the_registry(self, tmp_path: Path) -> None:
+        _install_tool(tmp_path, "good_tool")
+        _install_tool(tmp_path, "orphan_tool", write_code=False)
+        code_dir, artifacts_dir = learned_tool_storage(tmp_path)
+        resolver = LearnedToolResolver(state_dir=tmp_path)
+
+        listed = resolver.list_artifacts()
+
+        assert [a.manifest.name for a in listed] == ["good_tool"]
+        # Reaped from disk, so the next sweep does not see it again.
+        assert not (artifacts_dir / "orphan_tool.json").exists()
+        assert (artifacts_dir / "good_tool.json").exists()
+        assert (code_dir / "good_tool.py").exists()
+
+    def test_a_second_sweep_is_quiet(self, tmp_path: Path) -> None:
+        _install_tool(tmp_path, "orphan_tool", write_code=False)
+        resolver = LearnedToolResolver(state_dir=tmp_path)
+
+        assert resolver.list_artifacts() == []
+        # Nothing left to warn about — this is what stops the rebuild loop.
+        assert resolver.list_artifacts() == []
+
+    def test_a_healthy_catalog_is_untouched(self, tmp_path: Path) -> None:
+        _install_tool(tmp_path, "one")
+        _install_tool(tmp_path, "two")
+        resolver = LearnedToolResolver(state_dir=tmp_path)
+
+        assert sorted(a.manifest.name for a in resolver.list_artifacts()) == ["one", "two"]
