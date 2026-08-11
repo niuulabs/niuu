@@ -1077,7 +1077,15 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
         if not isinstance(defaults, dict):
             return _err(f"workflow_alias {alias_name!r} defaults must be an object")
 
-        launch_input = {**defaults, **input}
+        # An empty value must not beat a configured default. The model fills
+        # optional string fields with "" and that silently unmounted the repo:
+        # every launched session carried source.repo "" while the alias named
+        # one, and the workspace came up with nothing checked out.
+        launch_input = {**defaults}
+        for key, value in input.items():
+            if key in defaults and (value is None or value == ""):
+                continue
+            launch_input[key] = value
         launch_input["_workflow_alias_name"] = alias_name.lower()
         self._apply_alias_input_conventions(alias_name, launch_input)
         if not str(launch_input.get("workflow_id", "") or "").strip():

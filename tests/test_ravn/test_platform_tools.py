@@ -949,3 +949,51 @@ class TestTingSpecTool:
         assert body["workflowId"] == "wf-spec"
         assert body["connectionId"] == "Valhalla"
         assert body["repos"] == ["niuulabs/volundr"]
+
+
+class TestWorkflowAliasDefaults:
+    """A configured alias default must survive an empty value from the model.
+
+    Regression: ``{**defaults, **input}`` let an explicitly empty string win,
+    so a model that filled the optional ``repo`` field with "" unmounted the
+    repo the alias configured. Every launched session carried ``source.repo``
+    "" and the delivery workspace came up with nothing checked out — reported
+    as "no repository mounted".
+    """
+
+    @staticmethod
+    def _tool() -> TingWorkflowTool:
+        return TingWorkflowTool(
+            base_url=BASE_URL,
+            workflow_aliases={
+                "delivery": {
+                    "workflow_id": "wf-1",
+                    "defaults": {
+                        "repo": "https://github.com/niuulabs/niuu",
+                        "base_branch": "regin",
+                    },
+                }
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_repo_does_not_unmount_the_configured_one(self) -> None:
+        merged = await self._tool()._launch_input_with_alias(
+            None, {"workflow_alias": "delivery", "repo": "", "spec": "do the thing"}
+        )
+        assert merged["repo"] == "https://github.com/niuulabs/niuu"
+        assert merged["base_branch"] == "regin"
+
+    @pytest.mark.asyncio
+    async def test_a_real_value_still_overrides_the_default(self) -> None:
+        merged = await self._tool()._launch_input_with_alias(
+            None, {"workflow_alias": "delivery", "repo": "https://github.com/other/repo"}
+        )
+        assert merged["repo"] == "https://github.com/other/repo"
+
+    @pytest.mark.asyncio
+    async def test_a_key_absent_from_defaults_is_left_alone(self) -> None:
+        merged = await self._tool()._launch_input_with_alias(
+            None, {"workflow_alias": "delivery", "model": ""}
+        )
+        assert merged["model"] == ""
