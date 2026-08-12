@@ -685,7 +685,9 @@ class ResidentRuntime:
                         budget_ref=budget_ref,
                         reason=budget_reason,
                     )
-            stuck_reason = await self._repeated_decision_reason(fields, case_id=case_id)
+            stuck_reason = await self._repeated_decision_reason(
+                fields, record=record, case_id=case_id
+            )
             if stuck_reason:
                 # Sleeping again would restate the same conclusion on the next
                 # wake and learn nothing. Time passing is not evidence, so hand
@@ -697,10 +699,10 @@ class ResidentRuntime:
                         **fields,
                         "question": (
                             "I have reached the same conclusion "
-                            f"{self._repeated_decision_escalate_after} times without my "
-                            "working state changing, so re-checking is not making "
-                            "progress. Is the thing I am waiting for real, and what "
-                            "should I do instead?"
+                            f"{self._repeated_decision_escalate_after} times running and my "
+                            "tools have returned nothing new each time, so re-checking is "
+                            "not making progress. Is the thing I am waiting for real, and "
+                            "what should I do instead?"
                         ),
                     },
                     turn_ref=turn_ref,
@@ -792,9 +794,10 @@ class ResidentRuntime:
         self,
         fields: Mapping[str, Any],
         *,
+        record: ResidentTurnRecord,
         case_id: str,
     ) -> str:
-        """Track consecutive identical conclusions; return why to escalate, or "".
+        """Track consecutive turns that learned nothing new; return why to escalate.
 
         The streak is keyed on the resident rather than the case on purpose. A
         resident that wakes into a fresh case each tick and re-derives the same
@@ -806,12 +809,14 @@ class ResidentRuntime:
 
         decision = str(fields.get("decision") or "").strip()
         rationale = str(fields.get("rationale") or fields.get("state_summary") or "").strip()
-        signal_refs = _string_refs(fields.get("signal_refs"))
+        working_state = fields.get("working_state")
+        objectives = (
+            working_state.get("objectives") if isinstance(working_state, dict) else working_state
+        )
         fingerprint = decision_fingerprint(
             decision=decision,
-            rationale=rationale,
-            signal_refs=signal_refs,
-            working_state=fields.get("working_state"),
+            objectives=objectives,
+            tool_results=record.tool_results,
         )
 
         prior = await self._state.read_decision_streak(self._resident_id)
@@ -879,16 +884,17 @@ class ResidentRuntime:
             content={"decision": decision, "rationale": rationale},
         )
         logger.warning(
-            "resident %s: reached decision %r %d times running with no change in working "
-            "state (stuck for %.0fs) — escalating to the operator instead of sleeping again",
+            "resident %s: reached decision %r %d times running without its tools returning "
+            "anything new (stuck for %.0fs) — escalating to the operator instead of "
+            "sleeping again",
             self._resident_id,
             decision or "unknown",
             streak.count,
             stuck_for,
         )
         return (
-            f"repeated the same conclusion {streak.count} times with no change in working "
-            f"state; re-checking is not producing new evidence"
+            f"repeated the same conclusion {streak.count} times without gathering any new "
+            f"evidence; re-checking is not making progress"
         )
 
     async def _schedule_wake(

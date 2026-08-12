@@ -1474,17 +1474,18 @@ def test_empty_metadata_does_not_absorb_the_next_line() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _stuck_outcome(*, wake_at: str) -> dict:
+def _stuck_outcome(*, wake_at: str, rationale: str = "", observations: list | None = None) -> dict:
+    """A sleeping turn. Rationale and observations vary the way a stuck one really does."""
     return {
         "continuation": "sleep",
         "next_action_timing": "scheduled_time",
         "wake_at": wake_at,
         "decision": "watch",
-        "rationale": "Research campaign still has no published findings.",
+        "rationale": rationale or "Research campaign still has no published findings.",
         "signal_refs": ["tracker_issue:get:NIU-1118"],
         "working_state": {
             "objectives": ["wait for research campaign findings"],
-            "observations": ["tracker issue is in Backlog"],
+            "observations": observations or ["tracker issue is in Backlog"],
             "hypotheses": ["waiting prevents premature action"],
             "unknowns": ["when will the campaign produce findings?"],
             "capability_gaps": [],
@@ -1493,11 +1494,33 @@ def _stuck_outcome(*, wake_at: str) -> dict:
     }
 
 
-async def _run_stuck_turns(runtime: ResidentRuntime, count: int, *, case_prefix: str = "case"):
-    """Drive *count* identical sleeping turns, each in its own case."""
+_UNCHANGED_EVIDENCE = {"tracker_issue": '{"identifier": "NIU-1118", "status": "Backlog"}'}
+
+
+async def _run_stuck_turns(
+    runtime: ResidentRuntime,
+    count: int,
+    *,
+    case_prefix: str = "case",
+    evidence: dict[str, str] | None = None,
+    reword: bool = False,
+):
+    """Drive *count* sleeping turns, each in its own case, over the same evidence."""
     dispositions = []
     for index in range(count):
         wake_at = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        # A stuck resident narrates differently every turn while learning nothing;
+        # the guard must not be fooled by that, so vary the prose by default.
+        outcome = _stuck_outcome(
+            wake_at=wake_at,
+            rationale=(
+                f"Still no findings as of check {index}; the ticket remains open." if reword else ""
+            ),
+            observations=[f"tracker issue is in Backlog (checked {index} times)"]
+            if reword
+            else None,
+        )
+        outcome["working_state"]["attempts"] = [f"recheck {i}" for i in range(index + 1)]
         dispositions.append(
             await runtime.handle_completed_turn(
                 task=_task(
@@ -1505,7 +1528,11 @@ async def _run_stuck_turns(runtime: ResidentRuntime, count: int, *, case_prefix:
                     root_correlation_id=f"{case_prefix}-{index}",
                 ),
                 prompt="stewardship turn",
-                result=_result(_stuck_outcome(wake_at=wake_at)),
+                result=_result(
+                    outcome,
+                    tools=tuple(evidence or _UNCHANGED_EVIDENCE),
+                    tool_outputs=evidence or _UNCHANGED_EVIDENCE,
+                ),
                 response_text="still waiting",
             )
         )
@@ -1514,9 +1541,8 @@ async def _run_stuck_turns(runtime: ResidentRuntime, count: int, *, case_prefix:
 
 @pytest.mark.asyncio
 async def test_repeated_identical_conclusions_escalate_to_the_operator(tmp_path) -> None:
-    state = LocalResidentState(tmp_path)
     runtime = ResidentRuntime(
-        state=state,
+        state=LocalResidentState(tmp_path),
         resident_id="regin",
         repeated_decision_escalate_after=3,
     )
@@ -1529,31 +1555,92 @@ async def test_repeated_identical_conclusions_escalate_to_the_operator(tmp_path)
     ]
     assert dispositions[-1].kind is ContinuationDecisionKind.ASK_OPERATOR
     assert "repeated the same conclusion 3 times" in dispositions[-1].reason
-    assert "same conclusion" in dispositions[-1].question
+    assert "nothing new" in dispositions[-1].question
 
 
 @pytest.mark.asyncio
-async def test_a_changed_working_state_restarts_the_streak(tmp_path) -> None:
-    """Real progress must not be mistaken for a stuck loop."""
-    state = LocalResidentState(tmp_path)
+async def test_rewording_the_same_verdict_does_not_escape_the_guard(tmp_path) -> None:
+    """The regression that made the first version of this guard useless.
+
+    A real stuck resident rewrote its rationale every turn (40 distinct forms
+    across 55 turns) and appended to `attempts` each time, so a fingerprint over
+    the narration matched nothing and it looped for 30 hours. The guard must key
+    on evidence, not prose.
+    """
     runtime = ResidentRuntime(
-        state=state,
+        state=LocalResidentState(tmp_path),
+        resident_id="regin",
+        repeated_decision_escalate_after=3,
+    )
+
+    dispositions = await _run_stuck_turns(runtime, 3, reword=True)
+
+    assert dispositions[-1].kind is ContinuationDecisionKind.ASK_OPERATOR
+
+
+@pytest.mark.asyncio
+async def test_new_evidence_restarts_the_streak(tmp_path) -> None:
+    """A resident whose tools return something new is working, not stuck."""
+    runtime = ResidentRuntime(
+        state=LocalResidentState(tmp_path),
         resident_id="regin",
         repeated_decision_escalate_after=3,
     )
 
     await _run_stuck_turns(runtime, 2)
-
-    moved = _stuck_outcome(wake_at=(datetime.now(UTC) + timedelta(hours=1)).isoformat())
-    moved["working_state"]["observations"] = ["the campaign does not exist"]
-    disposition = await runtime.handle_completed_turn(
-        task=_task(task_id="task-moved", root_correlation_id="case-moved"),
-        prompt="stewardship turn",
-        result=_result(moved),
-        response_text="found something new",
+    moved = await _run_stuck_turns(
+        runtime,
+        1,
+        case_prefix="moved",
+        evidence={"tracker_issue": '{"identifier": "NIU-1118", "status": "In Progress"}'},
     )
 
-    assert disposition.kind is ContinuationDecisionKind.SLEEP
+    assert moved[0].kind is ContinuationDecisionKind.SLEEP
+
+
+@pytest.mark.asyncio
+async def test_a_watcher_reading_changing_measurements_is_never_escalated(tmp_path) -> None:
+    """Modelled on a live resident watching real etcd latency.
+
+    It sleeps on the same verdict for dozens of turns, but each turn reads a new
+    measurement. Over 657 real turns it never reached a streak of 5.
+    """
+    runtime = ResidentRuntime(
+        state=LocalResidentState(tmp_path),
+        resident_id="k8s-valkyrie",
+        repeated_decision_escalate_after=3,
+    )
+
+    dispositions = []
+    for latency in (402, 195, 308, 315, 329, 377, 413):
+        dispositions += await _run_stuck_turns(
+            runtime,
+            1,
+            case_prefix=f"etcd-{latency}",
+            evidence={"kubernetes_inspect": f"apply request took too long: {latency}ms"},
+        )
+
+    assert {d.kind for d in dispositions} == {ContinuationDecisionKind.SLEEP}
+
+
+@pytest.mark.asyncio
+async def test_a_timestamp_that_only_moves_the_clock_is_not_new_evidence(tmp_path) -> None:
+    runtime = ResidentRuntime(
+        state=LocalResidentState(tmp_path),
+        resident_id="regin",
+        repeated_decision_escalate_after=3,
+    )
+
+    dispositions = []
+    for stamp in ("2026-08-11T10:00:00Z", "2026-08-11T10:30:00Z", "2026-08-11T11:00:00Z"):
+        dispositions += await _run_stuck_turns(
+            runtime,
+            1,
+            case_prefix=f"tick-{stamp}",
+            evidence={"tracker_issue": f'{{"status": "Backlog", "checked_at": "{stamp}"}}'},
+        )
+
+    assert dispositions[-1].kind is ContinuationDecisionKind.ASK_OPERATOR
 
 
 @pytest.mark.asyncio
@@ -1577,9 +1664,8 @@ async def test_the_streak_survives_a_restart(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_escalating_resets_the_streak_so_it_does_not_ask_every_turn(tmp_path) -> None:
-    state = LocalResidentState(tmp_path)
     runtime = ResidentRuntime(
-        state=state,
+        state=LocalResidentState(tmp_path),
         resident_id="regin",
         repeated_decision_escalate_after=3,
     )
@@ -1592,9 +1678,8 @@ async def test_escalating_resets_the_streak_so_it_does_not_ask_every_turn(tmp_pa
 
 @pytest.mark.asyncio
 async def test_the_guard_can_be_disabled(tmp_path) -> None:
-    state = LocalResidentState(tmp_path)
     runtime = ResidentRuntime(
-        state=state,
+        state=LocalResidentState(tmp_path),
         resident_id="regin",
         repeated_decision_escalate_after=0,
     )

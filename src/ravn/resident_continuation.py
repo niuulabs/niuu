@@ -569,27 +569,39 @@ def _section_body(content: str, heading: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ][\d:.+\-]+")
+
+
 def decision_fingerprint(
     *,
     decision: str,
-    rationale: str,
-    signal_refs: tuple[str, ...],
-    working_state: Any,
+    objectives: Any,
+    tool_results: tuple[str, ...],
 ) -> str:
-    """Fingerprint what a turn concluded, so an unchanged conclusion is detectable.
+    """Fingerprint the evidence a turn acted on, not the prose it wrote about it.
 
-    Rationale text is included because a resident stuck on one belief rewords it
-    every turn while the substance never moves; normalising to lowercase words
-    keeps those rewordings on the same fingerprint. Working state is included so
-    a genuinely progressing case — new observations, one fewer unknown — starts a
-    new streak instead of tripping the guard.
+    Keyed on what the resident was trying to do and what its tools actually
+    returned. Everything the model narrates — rationale, state summary, its own
+    observations — is excluded, because a resident stuck on one belief restates
+    it differently every turn: across 55 real stuck turns the rationale took 40
+    distinct forms and the attempts list grew by one entry each time, so any
+    fingerprint including them matched nothing and the guard never fired.
+
+    Tool results are the honest signal. A resident re-reading one unchanged fact
+    gets byte-identical results; one watching a real condition gets new numbers
+    every turn and never trips. Objectives keep separate subjects apart while
+    staying stable within one — and a frozen objective is itself the symptom.
+
+    Validated against two live residents: a stuck one reached runs of 8 identical
+    turns, a busy one watching genuine etcd latency peaked at 4.
     """
     payload = json.dumps(
         {
             "decision": decision.strip().casefold(),
-            "rationale": sorted(re.findall(r"[a-z0-9]+", rationale.casefold())),
-            "signal_refs": sorted({ref.strip().casefold() for ref in signal_refs if ref.strip()}),
-            "working_state": working_state,
+            "objectives": objectives,
+            # Timestamps differ on every read of the same thing; they are the
+            # clock moving, not the world changing.
+            "evidence": [_TIMESTAMP_RE.sub("<ts>", str(item)) for item in tool_results],
         },
         sort_keys=True,
         default=str,

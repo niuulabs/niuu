@@ -207,6 +207,85 @@ Two mechanisms resume the resident when launched work lands:
   at it there (tagged perception, never confused with your chat), can
   `post` answers into that room, and leaves when the work completes.
 
+## When a resident stops making progress
+
+A resident that sleeps and rechecks is normal. A resident that reaches the
+*same* conclusion on every recheck is stuck, and left alone it stays stuck:
+it wakes, restates the verdict, sleeps, and never runs out of budget, because
+each wake opens a fresh case and the per-case turn budget only ever sees one
+turn. One resident spent 30 hours re-deciding "watch — waiting for research
+campaign findings" about a campaign that had failed to launch and did not
+exist. Nothing in the loop could discover that, because nothing in the loop
+ever changed.
+
+```yaml
+resident_state:
+  repeated_decision_escalate_after: 5   # 0 disables the guard
+```
+
+After this many consecutive turns the resident asks you instead of sleeping
+again, and the case waits for your answer.
+
+A turn counts toward the streak when it chose to **sleep** and none of these
+changed since the previous turn:
+
+- the decision (`watch`, `investigate`, …);
+- the working state's `objectives`;
+- what its **tools actually returned**.
+
+The last one carries the weight. Everything the model narrates — rationale,
+state summary, its own observations — is deliberately excluded, because a
+stuck resident restates one belief differently every turn: across 55 real
+stuck turns the rationale took 40 distinct forms and the `attempts` list grew
+by one entry each time. A guard keyed on that narration matches nothing and
+never fires. Tool results are the honest signal — re-reading one unchanged
+fact returns byte-identical results, while watching a real condition returns
+new numbers. Timestamps inside tool results are normalised away first: the
+clock moving is not the world changing.
+
+So the counter resets when a tool returns something new, when the verdict
+changes, or when the objective moves — and does **not** reset merely because
+the resident found new words for the same conclusion. Escalating also resets
+it, so you get one question rather than one per turn.
+
+**Choosing a value.** The streak counts turns, so the wall-clock delay is the
+value times that resident's wake cadence — mostly
+`resident_state.stewardship_interval_seconds`, plus whatever `wake_at` its
+turns request. At the default 5, a resident on a 30-minute stewardship
+interval asks after about 2.5 hours; one waking every 5 minutes asks after
+about 25.
+
+The default was calibrated by replaying two live residents' recorded turns:
+
+| Resident | Turns | Span | Longest unchanged run | Escalations at 5 |
+|---|---|---|---|---|
+| Stuck on a campaign that did not exist | 55 | 1.3d | 8 | 2 (≈1.6/day) |
+| Watching real, ongoing etcd latency | 657 | 8.4d | 4 | 0 |
+
+The second resident sleeps on the same verdict for dozens of turns and must
+never be escalated — it is doing its job, and each turn reads a new
+measurement. Five sits in the gap between the two. Raise it for a resident
+whose normal work involves genuinely long unchanged waits; set `0` only when
+you would rather have silence than the question, and know that a stuck
+resident will then stay stuck until you notice.
+
+The streak is keyed on the resident, not the case, and is persisted at
+`resident/continuation/decision-streak/<resident>.md`, so it survives both
+case boundaries and restarts. Escalations log at WARNING
+(`resident …: reached decision … times running without its tools returning
+anything new`) and emit `ravn.resident.repeated_decision_escalated`; every
+counted turn increments `ravn.resident.repeated_decisions`, which is the
+metric to watch if you want to tune the threshold from real behaviour.
+
+### Related: verify what a resident is waiting for
+
+The loop above was possible partly because the resident could start a research
+campaign but not check one. `ting_research` now supports `list`, `get` and
+`artifacts` alongside `launch`, addressed by the **slug** the launch returns —
+campaigns are not addressable by id, and searching Mimir for one is not a
+substitute. A campaign that does not exist answers as an error saying so,
+rather than as an empty result that reads like "running, no findings yet".
+
 ## Driving pipelines from chat
 
 The `product-steward` persona ships with the full chain:
