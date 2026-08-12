@@ -6,7 +6,7 @@ import json
 
 import pytest
 import respx
-from httpx import Response
+from httpx import HTTPStatusError, Response
 
 from ravn.adapters.embedding.openai import (
     _DEFAULT_DIMENSION,
@@ -28,6 +28,30 @@ def _make_response(vectors: list[list[float]]) -> dict:
         "model": _DEFAULT_MODEL,
         "usage": {"prompt_tokens": 8, "total_tokens": 8},
     }
+
+
+def _models_response(*, max_model_len: int | None) -> dict:
+    entry: dict = {"id": _DEFAULT_MODEL, "object": "model", "owned_by": "vllm"}
+    if max_model_len is not None:
+        entry["max_model_len"] = max_model_len
+    return {"object": "list", "data": [entry]}
+
+
+def _overflow() -> Response:
+    """vLLM's verbatim refusal — it reports the clipped count, not the real one."""
+    return Response(
+        400,
+        json={
+            "error": {
+                "message": (
+                    "You passed 8193 input tokens and requested 0 output tokens. "
+                    "However, the model's context length is only 8192 tokens"
+                ),
+                "type": "BadRequestError",
+                "code": 400,
+            }
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -201,8 +225,8 @@ class TestNoAuthSelfHostedServer:
         await adapter.close()
 
     @respx.mock
-    async def test_truncation_can_be_disabled(self) -> None:
-        """0 restores the old behaviour: let the model refuse oversized input."""
+    async def test_optimistic_truncation_can_be_disabled(self) -> None:
+        """0 sends the text whole; the window retry still backs it up."""
         route = respx.post("http://vllm.test/v1/embeddings").mock(
             return_value=Response(200, json=_make_response([[0.1]]))
         )
@@ -211,4 +235,161 @@ class TestNoAuthSelfHostedServer:
         await adapter.embed("y" * 3000)
 
         assert len(json.loads(route.calls[0].request.content)["input"][0]) == 3000
+        await adapter.close()
+
+
+class TestContextWindowOverflow:
+    """The char bound is a guess; these cover it guessing wrong.
+
+    Measured against Qwen3-Embedding-0.6B's 8192-token window, the chars that
+    fit run from 47948 (prose) to 8204 (hex/UUID soup). No single bound serves
+    both, so overflow has to be survivable rather than merely unlikely.
+    """
+
+    @respx.mock
+    async def test_overflow_is_resent_clipped_to_the_real_window(self) -> None:
+        models = respx.get("http://vllm.test/v1/models").mock(
+            return_value=Response(200, json=_models_response(max_model_len=8192))
+        )
+        embeddings = respx.post("http://vllm.test/v1/embeddings").mock(
+            side_effect=[_overflow(), Response(200, json=_make_response([[0.1, 0.2]]))]
+        )
+        adapter = OpenAIEmbeddingAdapter(base_url="http://vllm.test/v1", max_input_chars=0)
+
+        assert await adapter.embed("j" * 24_000) == [0.1, 0.2]
+
+        assert models.called
+        assert len(embeddings.calls) == 2
+        # One char cannot become more than one token, so 8192 chars always fit.
+        assert len(json.loads(embeddings.calls[1].request.content)["input"][0]) == 8192
+        await adapter.close()
+
+    @respx.mock
+    async def test_openai_phrasing_of_the_same_refusal_is_recognised(self) -> None:
+        respx.get("http://vllm.test/v1/models").mock(
+            return_value=Response(200, json=_models_response(max_model_len=8192))
+        )
+        embeddings = respx.post("http://vllm.test/v1/embeddings").mock(
+            side_effect=[
+                Response(
+                    400,
+                    json={
+                        "error": {
+                            "message": "This model's maximum context length is 8192 tokens",
+                            "code": "context_length_exceeded",
+                        }
+                    },
+                ),
+                Response(200, json=_make_response([[0.3]])),
+            ]
+        )
+        adapter = OpenAIEmbeddingAdapter(base_url="http://vllm.test/v1", max_input_chars=0)
+
+        assert await adapter.embed("k" * 20_000) == [0.3]
+        assert len(embeddings.calls) == 2
+        await adapter.close()
+
+    @respx.mock
+    async def test_a_malformed_request_is_not_retried_shorter(self) -> None:
+        """Retrying a real bad request would hide it behind a second failure."""
+        embeddings = respx.post("http://vllm.test/v1/embeddings").mock(
+            return_value=Response(400, json={"error": {"message": "unknown field 'inputs'"}})
+        )
+        adapter = OpenAIEmbeddingAdapter(base_url="http://vllm.test/v1")
+
+        with pytest.raises(HTTPStatusError):
+            await adapter.embed("hello")
+
+        assert len(embeddings.calls) == 1
+        await adapter.close()
+
+    @respx.mock
+    async def test_window_is_probed_once_and_reused(self) -> None:
+        models = respx.get("http://vllm.test/v1/models").mock(
+            return_value=Response(200, json=_models_response(max_model_len=8192))
+        )
+        respx.post("http://vllm.test/v1/embeddings").mock(
+            side_effect=[
+                _overflow(),
+                Response(200, json=_make_response([[0.1]])),
+                _overflow(),
+                Response(200, json=_make_response([[0.2]])),
+            ]
+        )
+        adapter = OpenAIEmbeddingAdapter(base_url="http://vllm.test/v1", max_input_chars=0)
+
+        await adapter.embed("a" * 20_000)
+        await adapter.embed("b" * 20_000)
+
+        assert len(models.calls) == 1
+        await adapter.close()
+
+    @respx.mock
+    async def test_unreported_window_raises_with_the_remedy(self) -> None:
+        """No max_model_len means no safe length — guessing one is what failed."""
+        respx.get("http://vllm.test/v1/models").mock(
+            return_value=Response(200, json=_models_response(max_model_len=None))
+        )
+        respx.post("http://vllm.test/v1/embeddings").mock(return_value=_overflow())
+        adapter = OpenAIEmbeddingAdapter(base_url="http://vllm.test/v1", max_input_chars=0)
+
+        with pytest.raises(RuntimeError, match="max_input_chars"):
+            await adapter.embed("z" * 20_000)
+        await adapter.close()
+
+    @respx.mock
+    async def test_unreachable_model_listing_raises_with_the_remedy(self) -> None:
+        respx.get("http://vllm.test/v1/models").mock(return_value=Response(404))
+        respx.post("http://vllm.test/v1/embeddings").mock(return_value=_overflow())
+        adapter = OpenAIEmbeddingAdapter(base_url="http://vllm.test/v1", max_input_chars=0)
+
+        with pytest.raises(RuntimeError, match="could not be read"):
+            await adapter.embed("z" * 20_000)
+        await adapter.close()
+
+    @respx.mock
+    async def test_refusal_in_a_non_json_body_is_still_recognised(self) -> None:
+        """A gateway can return the refusal as plain text or HTML."""
+        respx.get("http://vllm.test/v1/models").mock(
+            return_value=Response(200, json=_models_response(max_model_len=8192))
+        )
+        embeddings = respx.post("http://vllm.test/v1/embeddings").mock(
+            side_effect=[
+                Response(400, text="Bad Request: context length is only 8192 tokens"),
+                Response(200, json=_make_response([[0.4]])),
+            ]
+        )
+        adapter = OpenAIEmbeddingAdapter(base_url="http://vllm.test/v1", max_input_chars=0)
+
+        assert await adapter.embed("m" * 20_000) == [0.4]
+        assert len(embeddings.calls) == 2
+        await adapter.close()
+
+    @respx.mock
+    async def test_a_listing_without_our_model_raises_with_the_remedy(self) -> None:
+        respx.get("http://vllm.test/v1/models").mock(
+            return_value=Response(
+                200, json={"object": "list", "data": [{"id": "some-other-model"}]}
+            )
+        )
+        respx.post("http://vllm.test/v1/embeddings").mock(return_value=_overflow())
+        adapter = OpenAIEmbeddingAdapter(base_url="http://vllm.test/v1", max_input_chars=0)
+
+        with pytest.raises(RuntimeError, match="max_input_chars"):
+            await adapter.embed("z" * 20_000)
+        await adapter.close()
+
+    @respx.mock
+    async def test_overflow_of_input_that_already_fits_names_the_batch(self) -> None:
+        """Clipping cannot help when no single text is over the window."""
+        respx.get("http://vllm.test/v1/models").mock(
+            return_value=Response(200, json=_models_response(max_model_len=8192))
+        )
+        embeddings = respx.post("http://vllm.test/v1/embeddings").mock(return_value=_overflow())
+        adapter = OpenAIEmbeddingAdapter(base_url="http://vllm.test/v1", max_input_chars=0)
+
+        with pytest.raises(RuntimeError, match="batch size"):
+            await adapter.embed_batch(["short one", "short two"])
+
+        assert len(embeddings.calls) == 1
         await adapter.close()
