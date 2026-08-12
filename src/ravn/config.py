@@ -3112,6 +3112,17 @@ class ResidentStateConfig(BaseModel):
             "naming an explicit wake_at timestamp."
         ),
     )
+    repeated_decision_escalate_after: int = Field(
+        default=5,
+        ge=0,
+        description=(
+            "Consecutive turns reaching the same conclusion with no change in working "
+            "state before the resident asks the operator instead of sleeping again. "
+            "Per-case turn budgets do not catch this: a resident re-deriving one verdict "
+            "in a fresh case each wake never accumulates turns in any single case. "
+            "0 disables the guard."
+        ),
+    )
     stewardship_interval_seconds: float = Field(
         default=0.0,
         ge=0,

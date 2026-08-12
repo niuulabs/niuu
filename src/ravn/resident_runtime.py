@@ -19,6 +19,7 @@ from ravn.domain.resident_continuation import (
     ContinuationDecisionKind,
     ResidentA2ATaskRecord,
     ResidentBudgetSnapshot,
+    ResidentDecisionStreakRecord,
     ResidentMemoryEntry,
     ResidentScheduledWakeRecord,
     ResidentTurnRecord,
@@ -30,7 +31,11 @@ from ravn.domain.resident_continuation import (
 from ravn.domain.resident_state import ResidentStatePort
 from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
 from ravn.ports.trigger import TriggerPort
-from ravn.resident_continuation import _parse_a2a_task, _scheduled_wake_at
+from ravn.resident_continuation import (
+    _parse_a2a_task,
+    _scheduled_wake_at,
+    decision_fingerprint,
+)
 from ravn.resident_inbox import (
     ResidentInboxBackend,
     ResidentInboxClassification,
@@ -122,6 +127,7 @@ class ResidentRuntime:
         context_max_chars: int = 12000,
         tool_result_max_chars: int = 2000,
         scheduled_wake_default_seconds: float = 3600.0,
+        repeated_decision_escalate_after: int = 5,
         stewardship_interval_seconds: float = 0.0,
         directed_messages_enabled: bool = True,
         environment_id: str = "",
@@ -137,6 +143,7 @@ class ResidentRuntime:
         self._context_max_chars = max(1000, int(context_max_chars))
         self._tool_result_max_chars = max(100, int(tool_result_max_chars))
         self._scheduled_wake_default_seconds = max(1.0, float(scheduled_wake_default_seconds))
+        self._repeated_decision_escalate_after = max(0, int(repeated_decision_escalate_after))
         self._stewardship_interval_seconds = max(0.0, float(stewardship_interval_seconds))
         self._directed_messages_enabled = directed_messages_enabled
         self._environment_id = environment_id.strip() or "unknown"
@@ -678,6 +685,28 @@ class ResidentRuntime:
                         budget_ref=budget_ref,
                         reason=budget_reason,
                     )
+            stuck_reason = await self._repeated_decision_reason(fields, case_id=case_id)
+            if stuck_reason:
+                # Sleeping again would restate the same conclusion on the next
+                # wake and learn nothing. Time passing is not evidence, so hand
+                # this to a human rather than schedule another identical turn.
+                return await self._ask_operator(
+                    task=task,
+                    record=record,
+                    fields={
+                        **fields,
+                        "question": (
+                            "I have reached the same conclusion "
+                            f"{self._repeated_decision_escalate_after} times without my "
+                            "working state changing, so re-checking is not making "
+                            "progress. Is the thing I am waiting for real, and what "
+                            "should I do instead?"
+                        ),
+                    },
+                    turn_ref=turn_ref,
+                    budget_ref=budget_ref,
+                    reason=stuck_reason,
+                )
             wake_ref, wake_at = await self._schedule_wake(
                 task=task,
                 fields=fields,
@@ -757,6 +786,109 @@ class ResidentRuntime:
                 if action is not None
                 else "no selected next action"
             ),
+        )
+
+    async def _repeated_decision_reason(
+        self,
+        fields: Mapping[str, Any],
+        *,
+        case_id: str,
+    ) -> str:
+        """Track consecutive identical conclusions; return why to escalate, or "".
+
+        The streak is keyed on the resident rather than the case on purpose. A
+        resident that wakes into a fresh case each tick and re-derives the same
+        verdict never accumulates turns in any single case, so a per-case budget
+        sees nothing wrong while the resident has in fact been stuck for days.
+        """
+        if self._repeated_decision_escalate_after <= 0:
+            return ""
+
+        decision = str(fields.get("decision") or "").strip()
+        rationale = str(fields.get("rationale") or fields.get("state_summary") or "").strip()
+        signal_refs = _string_refs(fields.get("signal_refs"))
+        fingerprint = decision_fingerprint(
+            decision=decision,
+            rationale=rationale,
+            signal_refs=signal_refs,
+            working_state=fields.get("working_state"),
+        )
+
+        prior = await self._state.read_decision_streak(self._resident_id)
+        now = datetime.now(UTC)
+        if prior is not None and prior.fingerprint == fingerprint:
+            streak = ResidentDecisionStreakRecord(
+                resident_id=self._resident_id,
+                fingerprint=fingerprint,
+                count=prior.count + 1,
+                decision=decision,
+                rationale=rationale,
+                case_id=case_id,
+                first_seen_at=prior.first_seen_at,
+                updated_at=now,
+            )
+        else:
+            streak = ResidentDecisionStreakRecord(
+                resident_id=self._resident_id,
+                fingerprint=fingerprint,
+                count=1,
+                decision=decision,
+                rationale=rationale,
+                case_id=case_id,
+                first_seen_at=now,
+                updated_at=now,
+            )
+        await self._state.write_decision_streak(streak)
+
+        telemetry = get_observability()
+        telemetry.count(
+            "ravn.resident.repeated_decisions",
+            attributes={
+                "ravn.resident.id": self._resident_id,
+                "ravn.resident.decision": decision or "unknown",
+            },
+            description="Consecutive resident turns reaching an unchanged conclusion.",
+        )
+        if streak.count < self._repeated_decision_escalate_after:
+            return ""
+
+        # Reset once escalated: the operator now owns this. Without the reset
+        # every later turn would re-trip the guard and file the same question
+        # again, which is the loop this guard exists to stop.
+        await self._state.write_decision_streak(
+            ResidentDecisionStreakRecord(
+                resident_id=self._resident_id,
+                fingerprint=fingerprint,
+                count=0,
+                decision=decision,
+                rationale=rationale,
+                case_id=case_id,
+                first_seen_at=now,
+                updated_at=now,
+            )
+        )
+
+        stuck_for = (now - streak.first_seen_at).total_seconds()
+        telemetry.event(
+            "ravn.resident.repeated_decision_escalated",
+            attributes={
+                "ravn.resident.id": self._resident_id,
+                "ravn.resident.case_id": case_id,
+                "ravn.resident.repeat_count": streak.count,
+            },
+            content={"decision": decision, "rationale": rationale},
+        )
+        logger.warning(
+            "resident %s: reached decision %r %d times running with no change in working "
+            "state (stuck for %.0fs) — escalating to the operator instead of sleeping again",
+            self._resident_id,
+            decision or "unknown",
+            streak.count,
+            stuck_for,
+        )
+        return (
+            f"repeated the same conclusion {streak.count} times with no change in working "
+            f"state; re-checking is not producing new evidence"
         )
 
     async def _schedule_wake(

@@ -7,6 +7,7 @@ from typing import Protocol
 from ravn.domain.resident_continuation import (
     ResidentA2ATaskRecord,
     ResidentBudgetSnapshot,
+    ResidentDecisionStreakRecord,
     ResidentMemoryEntry,
     ResidentPolicyDecisionRecord,
     ResidentPolicyObservation,
@@ -40,6 +41,12 @@ class ResidentStatePort(Protocol):
     async def write_turn(self, record: ResidentTurnRecord) -> str: ...
 
     async def write_working_state(self, record: ResidentWorkingStateRecord) -> str: ...
+
+    async def read_decision_streak(self, resident_id: str) -> ResidentDecisionStreakRecord | None:
+        """Return the resident's current repeated-decision streak, if any."""
+        ...
+
+    async def write_decision_streak(self, record: ResidentDecisionStreakRecord) -> str: ...
 
     async def read_a2a_task(self, task_id: str) -> ResidentMemoryEntry | None: ...
 

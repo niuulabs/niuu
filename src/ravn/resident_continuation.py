@@ -16,6 +16,7 @@ from ravn.domain.resident_continuation import (
     ResidentBudgetDecision,
     ResidentBudgetLimits,
     ResidentBudgetSnapshot,
+    ResidentDecisionStreakRecord,
     ResidentMemoryEntry,
     ResidentMemoryPort,
     ResidentPolicyDecisionRecord,
@@ -38,6 +39,7 @@ _OPERATOR_NEEDED_PATH = "operator-needed/latest.md"
 _OPERATOR_ANSWER_PATH = "operator-answers/latest.md"
 _SCHEDULED_WAKE_PATH = "scheduled-wake/latest.md"
 _A2A_TASKS_PATH = Path("a2a-tasks")
+_DECISION_STREAK_DIR = "decision-streak"
 
 
 def _case_path(case_id: str, leaf: str) -> Path:
@@ -247,6 +249,17 @@ class LocalResidentMemory(ResidentMemoryPort):
             self._working_state_path(record.resident_id), _render_working_state(record)
         )
 
+    async def read_decision_streak(self, resident_id: str) -> ResidentDecisionStreakRecord | None:
+        entry = await self.read(str(self._decision_streak_path(resident_id)))
+        if entry is None:
+            return None
+        return _parse_decision_streak(resident_id, entry.content)
+
+    async def write_decision_streak(self, record: ResidentDecisionStreakRecord) -> str:
+        return self._write(
+            self._decision_streak_path(record.resident_id), _render_decision_streak(record)
+        )
+
     async def read_a2a_task(self, task_id: str) -> ResidentMemoryEntry | None:
         return await self.read(str(self._prefix / _a2a_task_path(task_id)))
 
@@ -428,6 +441,10 @@ class LocalResidentMemory(ResidentMemoryPort):
         resident_slug = _slug(resident_id) or "resident"
         return self._prefix / "working-state" / f"{resident_slug}.md"
 
+    def _decision_streak_path(self, resident_id: str) -> Path:
+        resident_slug = _slug(resident_id) or "resident"
+        return self._prefix / _DECISION_STREAK_DIR / f"{resident_slug}.md"
+
 
 def _render_turn_record(record: ResidentTurnRecord) -> str:
     action = record.selected_next_action
@@ -490,6 +507,94 @@ def _render_working_state(record: ResidentWorkingStateRecord) -> str:
         "## Evidence References\n\n"
         f"{evidence_refs}\n"
     )
+
+
+def _render_decision_streak(record: ResidentDecisionStreakRecord) -> str:
+    return (
+        "# Resident Decision Streak\n\n"
+        f"- resident_id: {record.resident_id}\n"
+        f"- fingerprint: {record.fingerprint}\n"
+        f"- count: {record.count}\n"
+        f"- decision: {_compact_line(record.decision, limit=200)}\n"
+        f"- case_id: {record.case_id}\n"
+        f"- first_seen_at: {record.first_seen_at.isoformat()}\n"
+        f"- updated_at: {record.updated_at.isoformat()}\n\n"
+        "## Rationale\n\n"
+        f"{_compact_line(record.rationale, limit=1000)}\n"
+    )
+
+
+def _parse_decision_streak(resident_id: str, content: str) -> ResidentDecisionStreakRecord | None:
+    fingerprint = _marker_field(content, "fingerprint")
+    if not fingerprint:
+        return None
+    try:
+        count = int(_marker_field(content, "count") or "0")
+    except ValueError:
+        return None
+    return ResidentDecisionStreakRecord(
+        resident_id=resident_id,
+        fingerprint=fingerprint,
+        count=count,
+        decision=_marker_field(content, "decision"),
+        rationale=_section_body(content, "Rationale"),
+        case_id=_marker_field(content, "case_id"),
+        first_seen_at=_marker_datetime(content, "first_seen_at") or datetime.now(UTC),
+        updated_at=_marker_datetime(content, "updated_at") or datetime.now(UTC),
+    )
+
+
+def _marker_field(content: str, key: str) -> str:
+    match = re.search(rf"^- {re.escape(key)}:\s*(.*?)\s*$", content, flags=re.MULTILINE)
+    return _unquote(match.group(1).strip()) if match else ""
+
+
+def _marker_datetime(content: str, key: str) -> datetime | None:
+    raw = _marker_field(content, key)
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _section_body(content: str, heading: str) -> str:
+    match = re.search(
+        rf"^## {re.escape(heading)}\s*$\n+(.*?)(?=\n## |\Z)",
+        content,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def decision_fingerprint(
+    *,
+    decision: str,
+    rationale: str,
+    signal_refs: tuple[str, ...],
+    working_state: Any,
+) -> str:
+    """Fingerprint what a turn concluded, so an unchanged conclusion is detectable.
+
+    Rationale text is included because a resident stuck on one belief rewords it
+    every turn while the substance never moves; normalising to lowercase words
+    keeps those rewordings on the same fingerprint. Working state is included so
+    a genuinely progressing case — new observations, one fewer unknown — starts a
+    new streak instead of tripping the guard.
+    """
+    payload = json.dumps(
+        {
+            "decision": decision.strip().casefold(),
+            "rationale": sorted(re.findall(r"[a-z0-9]+", rationale.casefold())),
+            "signal_refs": sorted({ref.strip().casefold() for ref in signal_refs if ref.strip()}),
+            "working_state": working_state,
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
 
 def _render_a2a_task(record: ResidentA2ATaskRecord) -> str:

@@ -207,6 +207,27 @@ class ResidentScheduledWakeRecord:
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
+@dataclass(frozen=True)
+class ResidentDecisionStreakRecord:
+    """How many turns in a row reached the same conclusion without moving.
+
+    Per-case budgets cannot see this: a resident that re-derives one verdict in
+    a fresh case every cron tick never accumulates turns in any single case, so
+    it can repeat itself indefinitely while every individual case looks healthy.
+    The streak is therefore keyed by the resident and the shape of what it
+    decided, and survives both case boundaries and restarts.
+    """
+
+    resident_id: str
+    fingerprint: str
+    count: int
+    decision: str = ""
+    rationale: str = ""
+    case_id: str = ""
+    first_seen_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
 RESIDENT_WORKING_STATE_FIELDS = (
     "objectives",
     "observations",

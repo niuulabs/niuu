@@ -9,6 +9,7 @@ from ravn.adapters.resident_pages import collect_pages
 from ravn.domain.resident_continuation import (
     ResidentA2ATaskRecord,
     ResidentBudgetSnapshot,
+    ResidentDecisionStreakRecord,
     ResidentMemoryEntry,
     ResidentPolicyDecisionRecord,
     ResidentPolicyObservation,
@@ -25,6 +26,7 @@ from ravn.memory_telemetry import (
 from ravn.ports.mimir import MimirPort
 from ravn.resident_continuation import (
     _A2A_TASKS_PATH,
+    _DECISION_STREAK_DIR,
     _OPERATOR_ANSWER_PATH,
     _OPERATOR_NEEDED_PATH,
     _SCHEDULED_WAKE_PATH,
@@ -35,12 +37,14 @@ from ravn.resident_continuation import (
     _first_heading_or_line,
     _operator_answer_is_consumed,
     _operator_marker_is_pending,
+    _parse_decision_streak,
     _parse_policy_observation,
     _render_a2a_task,
     _render_answered_operator_needed,
     _render_budget_snapshot,
     _render_consumed_operator_answer,
     _render_consumed_scheduled_wake,
+    _render_decision_streak,
     _render_operator_answer,
     _render_operator_needed,
     _render_policy_decision,
@@ -107,6 +111,17 @@ class MimirResidentState(ResidentStatePort):
     async def write_working_state(self, record: ResidentWorkingStateRecord) -> str:
         path = self._working_state_path(record.resident_id)
         await self._mimir.upsert_page(path, _render_working_state(record))
+        return path
+
+    async def read_decision_streak(self, resident_id: str) -> ResidentDecisionStreakRecord | None:
+        entry = await self.read(self._decision_streak_path(resident_id))
+        if entry is None:
+            return None
+        return _parse_decision_streak(resident_id, entry.content)
+
+    async def write_decision_streak(self, record: ResidentDecisionStreakRecord) -> str:
+        path = self._decision_streak_path(record.resident_id)
+        await self._mimir.upsert_page(path, _render_decision_streak(record))
         return path
 
     async def read_a2a_task(self, task_id: str) -> ResidentMemoryEntry | None:
@@ -324,6 +339,10 @@ class MimirResidentState(ResidentStatePort):
     def _working_state_path(self, resident_id: str) -> str:
         resident_slug = _slug(resident_id) or "resident"
         return f"{self._prefix}/working-state/{resident_slug}.md"
+
+    def _decision_streak_path(self, resident_id: str) -> str:
+        resident_slug = _slug(resident_id) or "resident"
+        return f"{self._prefix}/{_DECISION_STREAK_DIR}/{resident_slug}.md"
 
 
 class LocalResidentState(LocalResidentMemory, ResidentStatePort):

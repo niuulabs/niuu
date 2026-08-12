@@ -1463,3 +1463,142 @@ def test_empty_metadata_does_not_absorb_the_next_line() -> None:
     # unrelated reference and the runtime raises on a ref that never existed.
     assert _metadata(content, "turn_ref") == ""
     assert _metadata(content, "wake_at") == "2026-07-25T09:00:00+00:00"
+
+
+# ---------------------------------------------------------------------------
+# Repeated-decision guard
+#
+# A resident once re-derived one verdict in a fresh case every wake for 30
+# hours. Per-case turn budgets never fired because no single case accumulated
+# turns; the streak below is keyed on the resident so it survives that.
+# ---------------------------------------------------------------------------
+
+
+def _stuck_outcome(*, wake_at: str) -> dict:
+    return {
+        "continuation": "sleep",
+        "next_action_timing": "scheduled_time",
+        "wake_at": wake_at,
+        "decision": "watch",
+        "rationale": "Research campaign still has no published findings.",
+        "signal_refs": ["tracker_issue:get:NIU-1118"],
+        "working_state": {
+            "objectives": ["wait for research campaign findings"],
+            "observations": ["tracker issue is in Backlog"],
+            "hypotheses": ["waiting prevents premature action"],
+            "unknowns": ["when will the campaign produce findings?"],
+            "capability_gaps": [],
+            "attempts": ["rechecked the tracker"],
+        },
+    }
+
+
+async def _run_stuck_turns(runtime: ResidentRuntime, count: int, *, case_prefix: str = "case"):
+    """Drive *count* identical sleeping turns, each in its own case."""
+    dispositions = []
+    for index in range(count):
+        wake_at = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        dispositions.append(
+            await runtime.handle_completed_turn(
+                task=_task(
+                    task_id=f"task-{index}",
+                    root_correlation_id=f"{case_prefix}-{index}",
+                ),
+                prompt="stewardship turn",
+                result=_result(_stuck_outcome(wake_at=wake_at)),
+                response_text="still waiting",
+            )
+        )
+    return dispositions
+
+
+@pytest.mark.asyncio
+async def test_repeated_identical_conclusions_escalate_to_the_operator(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(
+        state=state,
+        resident_id="regin",
+        repeated_decision_escalate_after=3,
+    )
+
+    dispositions = await _run_stuck_turns(runtime, 3)
+
+    assert [d.kind for d in dispositions[:2]] == [
+        ContinuationDecisionKind.SLEEP,
+        ContinuationDecisionKind.SLEEP,
+    ]
+    assert dispositions[-1].kind is ContinuationDecisionKind.ASK_OPERATOR
+    assert "repeated the same conclusion 3 times" in dispositions[-1].reason
+    assert "same conclusion" in dispositions[-1].question
+
+
+@pytest.mark.asyncio
+async def test_a_changed_working_state_restarts_the_streak(tmp_path) -> None:
+    """Real progress must not be mistaken for a stuck loop."""
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(
+        state=state,
+        resident_id="regin",
+        repeated_decision_escalate_after=3,
+    )
+
+    await _run_stuck_turns(runtime, 2)
+
+    moved = _stuck_outcome(wake_at=(datetime.now(UTC) + timedelta(hours=1)).isoformat())
+    moved["working_state"]["observations"] = ["the campaign does not exist"]
+    disposition = await runtime.handle_completed_turn(
+        task=_task(task_id="task-moved", root_correlation_id="case-moved"),
+        prompt="stewardship turn",
+        result=_result(moved),
+        response_text="found something new",
+    )
+
+    assert disposition.kind is ContinuationDecisionKind.SLEEP
+
+
+@pytest.mark.asyncio
+async def test_the_streak_survives_a_restart(tmp_path) -> None:
+    runtime = ResidentRuntime(
+        state=LocalResidentState(tmp_path),
+        resident_id="regin",
+        repeated_decision_escalate_after=3,
+    )
+    await _run_stuck_turns(runtime, 2)
+
+    restarted = ResidentRuntime(
+        state=LocalResidentState(tmp_path),
+        resident_id="regin",
+        repeated_decision_escalate_after=3,
+    )
+    dispositions = await _run_stuck_turns(restarted, 1, case_prefix="after-restart")
+
+    assert dispositions[0].kind is ContinuationDecisionKind.ASK_OPERATOR
+
+
+@pytest.mark.asyncio
+async def test_escalating_resets_the_streak_so_it_does_not_ask_every_turn(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(
+        state=state,
+        resident_id="regin",
+        repeated_decision_escalate_after=3,
+    )
+
+    dispositions = await _run_stuck_turns(runtime, 4)
+
+    assert dispositions[2].kind is ContinuationDecisionKind.ASK_OPERATOR
+    assert dispositions[3].kind is ContinuationDecisionKind.SLEEP
+
+
+@pytest.mark.asyncio
+async def test_the_guard_can_be_disabled(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(
+        state=state,
+        resident_id="regin",
+        repeated_decision_escalate_after=0,
+    )
+
+    dispositions = await _run_stuck_turns(runtime, 6)
+
+    assert {d.kind for d in dispositions} == {ContinuationDecisionKind.SLEEP}
