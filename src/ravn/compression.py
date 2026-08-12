@@ -192,6 +192,16 @@ class ContextCompressor:
     # Public
     # ------------------------------------------------------------------
 
+    @property
+    def protect_last(self) -> int:
+        """How many trailing messages compaction will never touch.
+
+        Callers that must keep the prompt inside a hard budget need this: a
+        message in the protected tail cannot be shrunk later, so whatever
+        enters it has to fit on the way in.
+        """
+        return self._protect_last
+
     async def maybe_compress(
         self,
         messages: list[Message],

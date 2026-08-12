@@ -440,8 +440,13 @@ async def test_capability_list_result_stays_parseable_for_a_large_catalog() -> N
 
     # Without the compact projection this payload is ~1.2MB; the assertion that
     # matters is not its size but that it survives the agent's cap intact.
+    # No prompt budget here, so only the flat cap applies.
+    agent = SimpleNamespace(_max_tool_result_chars=100_000, _max_prompt_tokens=0)
+    agent._budget_tool_result_char_limit = lambda: RavnAgent._budget_tool_result_char_limit(
+        agent  # type: ignore[arg-type]
+    )
     truncated = RavnAgent._truncate_oversized_tool_result(
-        SimpleNamespace(_max_tool_result_chars=100_000),  # type: ignore[arg-type]
+        agent,  # type: ignore[arg-type]
         ToolCall(id="call-1", name="capability_list", input={}),
         result,
     )

@@ -80,6 +80,17 @@ class TokenEstimator:
         return math.ceil(max(0, tokens) * max(1.0, safety_factor))
 
     @staticmethod
+    def chars_for_tokens(tokens: int, safety_factor: float = 1.0) -> int:
+        """Invert :meth:`rough`: the char count that estimates to *tokens*.
+
+        The inverse of ``conservative(rough(text))``, for callers that hold a
+        token allowance and need to cut text to fit it.
+        """
+        if tokens <= 0:
+            return 0
+        return int(tokens / max(1.0, safety_factor)) * _CHARS_PER_TOKEN
+
+    @staticmethod
     def from_usage(usage: TokenUsage) -> int:
         """Return the accurate total from an API usage record."""
         return usage.total_tokens

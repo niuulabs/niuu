@@ -24,15 +24,33 @@ the ``delivery`` field.  Output is still saved locally.
 from __future__ import annotations
 
 import logging
+import re
 from uuid import uuid4
 
 from ravn.adapters.triggers.cron import CronJobRecord, CronJobStore, parse_schedule
 from ravn.domain.models import ToolResult
 from ravn.ports.tool import ToolPort
+from ravn.resident_text import texts_overlap, texts_similar
 
 logger = logging.getLogger(__name__)
 
 _PERMISSION = "cron:manage"
+
+_SILENT_MARKER = "[SILENT]"
+
+#: Case and task identifiers that appear verbatim in a job's context. They are
+#: bookkeeping, not intent, and two jobs watching the same case for different
+#: reasons should still be allowed.
+_CASE_REF = re.compile(r"\b(?:task|case|resident-case|resident-home)[-_][0-9a-z_-]+", re.I)
+
+
+def _comparable_context(context: str) -> str:
+    """Reduce a job context to the part that expresses what it wants done."""
+    text = context.strip()
+    if text.startswith(_SILENT_MARKER):
+        text = text[len(_SILENT_MARKER) :]
+    return _CASE_REF.sub(" ", text)
+
 
 _VALID_DELIVERIES = frozenset({"local", "sleipnir", "platform"})
 
@@ -68,10 +86,23 @@ class CronCreateTool(ToolPort):
     The task fires on the given schedule and runs autonomously in the drive
     loop.  Output is saved to ``~/.ravn/cron/output/{job_id}/`` and optionally
     delivered via the configured channel.
+
+    Two guards bound what an agent can accumulate here, because self-scheduling
+    is the one tool whose output is more work for the same agent. A resident
+    that cannot close a case reaches for it every turn, and the jobs it creates
+    outlive the reasoning that asked for them.
     """
 
-    def __init__(self, store: CronJobStore) -> None:
+    def __init__(
+        self,
+        store: CronJobStore,
+        *,
+        max_jobs: int = 0,
+        duplicate_similarity: float = 0.0,
+    ) -> None:
         self._store = store
+        self._max_jobs = max(0, max_jobs)
+        self._duplicate_similarity = min(1.0, max(0.0, duplicate_similarity))
 
     @property
     def name(self) -> str:
@@ -206,6 +237,36 @@ class CronCreateTool(ToolPort):
                 is_error=True,
             )
 
+        restated = self._find_restatement(name, context)
+        if restated is not None:
+            return ToolResult(
+                tool_call_id="",
+                content=(
+                    "This job restates an existing one in different words; no new job "
+                    "was created. Scheduling a second check does not advance a question "
+                    "the first one is already asking — read that job's output, and if it "
+                    "is not answering the question, delete it and create one job that "
+                    f"does.\n\n{_format_job(restated)}"
+                ),
+                is_error=True,
+            )
+
+        enabled_jobs = [record for record in self._store.list() if record.enabled]
+        if self._max_jobs and len(enabled_jobs) >= self._max_jobs:
+            listing = "\n".join(
+                f"  [{record.job_id}] {record.name!r} — {record.schedule}"
+                for record in enabled_jobs
+            )
+            return ToolResult(
+                tool_call_id="",
+                content=(
+                    f"Cron job limit reached: {len(enabled_jobs)} of {self._max_jobs} "
+                    "enabled jobs. Delete one with cron_delete before scheduling "
+                    f"another.\n\n{listing}"
+                ),
+                is_error=True,
+            )
+
         job_id = uuid4().hex
 
         record = CronJobRecord(
@@ -236,6 +297,35 @@ class CronCreateTool(ToolPort):
                 f"Canonical schedule form: {canonical}"
             ),
         )
+
+    def _find_restatement(self, name: str, context: str) -> CronJobRecord | None:
+        """Return an enabled job that asks the same question in different words.
+
+        Compares the intent, not the string. Contexts are matched by overlap
+        coefficient because one is often an elaboration of another ("check etcd
+        pod logs for latency warnings" inside "check etcd pod logs for latency
+        warnings and apiserver logs for connection errors"); names by Jaccard
+        because both sides are short labels of the same kind.
+
+        The delivery marker and the case identifier are stripped first. Both
+        recur across unrelated jobs, and a shared ``[SILENT]`` prefix or case ID
+        was enough to pull genuinely different jobs over the threshold.
+        """
+        if self._duplicate_similarity <= 0.0:
+            return None
+        new_context = _comparable_context(context)
+        for existing in self._store.list():
+            if not existing.enabled:
+                continue
+            if texts_overlap(
+                new_context,
+                _comparable_context(existing.context),
+                threshold=self._duplicate_similarity,
+            ):
+                return existing
+            if texts_similar(name, existing.name, threshold=self._duplicate_similarity):
+                return existing
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -367,10 +457,19 @@ class CronDeleteTool(ToolPort):
 # ---------------------------------------------------------------------------
 
 
-def build_cron_tools(store: CronJobStore) -> list[ToolPort]:
+def build_cron_tools(
+    store: CronJobStore,
+    *,
+    max_jobs: int = 0,
+    duplicate_similarity: float = 0.0,
+) -> list[ToolPort]:
     """Build the list of cron management tools backed by *store*."""
     return [
-        CronCreateTool(store),
+        CronCreateTool(
+            store,
+            max_jobs=max_jobs,
+            duplicate_similarity=duplicate_similarity,
+        ),
         CronListTool(store),
         CronDeleteTool(store),
     ]

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ravn.agent import RavnAgent
+from ravn.budget import _CHARS_PER_TOKEN
 from ravn.domain.exceptions import PromptBudgetExceededError
 from ravn.domain.models import (
     StreamEvent,
@@ -270,3 +271,111 @@ class TestToolResultCap:
             await agent.run_turn("go")
 
         assert any("truncated" in r.message for r in caplog.records)
+
+
+class _PassthroughCompressor:
+    """A compressor that protects a tail but never compacts.
+
+    Stands in for the real one so the test isolates the truncation decision:
+    if the result still overflows, nothing downstream will save it — which is
+    exactly the production situation.
+    """
+
+    def __init__(self, protect_last: int) -> None:
+        self.protect_last = protect_last
+
+    async def maybe_compress(self, messages, **kwargs):
+        from ravn.compression import CompressionResult
+
+        return messages, CompressionResult(
+            original_count=len(messages),
+            final_count=len(messages),
+            compression_count=0,
+            removed_message_count=0,
+        )
+
+
+class TestBudgetDerivedToolResultCap:
+    """The flat cap and the prompt budget must not be able to contradict each other.
+
+    On the valhalla k8s resident they did: ``max_result_chars`` of 100_000
+    estimates to 37_500 tokens under the 1.5 safety factor, while
+    ``max_prompt_tokens`` of 48_000 minus the measured ~14_600-token fixed cost
+    left ~33_400 for the entire history. One capped tool result therefore
+    exceeded the whole history allowance, landed in the compaction-protected
+    tail where nothing could shrink it, and killed the turn — 195 times in 20
+    hours.
+    """
+
+    @staticmethod
+    def _resident_agent(llm: LLMPort, *, result_size: int) -> RavnAgent:
+        """An agent shaped like the valhalla resident that produced the failures.
+
+        Its measured fixed cost was ~14_600 tokens (tool schemas 8_378,
+        identity 3_044, learnings 695, memory ~2_500) and it ran
+        ``compact_recent_turns: 2``, which protects four trailing messages.
+        """
+        fixed_cost_chars = 14_600 * _CHARS_PER_TOKEN // 3 * 2  # ≈14.6k tokens at 1.5x
+        agent = _agent(
+            llm,
+            tools=[GiantResultTool(size=result_size)],
+            max_tool_result_chars=100_000,
+            max_prompt_tokens=48_000,
+            token_estimate_safety_factor=1.5,
+            system_prompt="R" * fixed_cost_chars,
+        )
+        agent._compressor = _PassthroughCompressor(protect_last=4)
+        return agent
+
+    async def test_result_is_cut_to_fit_the_budget_not_the_flat_cap(self) -> None:
+        agent = self._resident_agent(make_tool_then_text_llm("giant_result"), result_size=200_000)
+
+        budget_limit = agent._budget_tool_result_char_limit()
+
+        assert 0 < budget_limit < 100_000, (
+            "one capped result must no longer be able to exceed the history allowance"
+        )
+
+    async def test_production_shaped_turn_survives_instead_of_raising(self) -> None:
+        """The regression this fixes: the turn used to die after paying for the call."""
+        agent = self._resident_agent(make_tool_then_text_llm("giant_result"), result_size=150_000)
+
+        result = await agent.run_turn("go")
+
+        assert result.response == "done"
+        assert agent.prompt_budget_status["estimated_prompt_tokens"] <= 48_000
+
+    async def test_tighter_configured_cap_still_wins(self) -> None:
+        agent = _agent(
+            make_tool_then_text_llm("giant_result"),
+            tools=[GiantResultTool(size=50_000)],
+            max_tool_result_chars=1_000,
+            max_prompt_tokens=48_000,
+        )
+
+        result = await agent.run_turn("go")
+
+        assert "[tool result truncated: 49000 characters" in result.tool_results[0].content
+
+    async def test_no_budget_leaves_the_flat_cap_in_charge(self) -> None:
+        agent = _agent(
+            make_simple_llm("ok"),
+            max_tool_result_chars=100_000,
+            max_prompt_tokens=0,
+        )
+
+        assert agent._budget_tool_result_char_limit() == 0
+
+    async def test_allowance_is_shared_across_the_protected_tail(self) -> None:
+        """Every protected slot could hold a result, so they must fit together."""
+        agent = _agent(
+            make_simple_llm("ok"),
+            max_tool_result_chars=0,
+            max_prompt_tokens=48_000,
+        )
+        alone = agent._budget_tool_result_char_limit()
+
+        agent._compressor = _PassthroughCompressor(protect_last=4)
+        shared = agent._budget_tool_result_char_limit()
+
+        assert shared == pytest.approx(alone / 4, rel=0.02)

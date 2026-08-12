@@ -13,6 +13,70 @@ from typing import Any
 
 _TIMESTAMP_FORMAT = "%Y%m%dT%H%M%S%fZ"
 
+#: Words carried by almost any sentence, so they say nothing about whether two
+#: texts mean the same thing. Callers add their own domain filler on top.
+_BASE_STOPWORDS = frozenset(
+    {"a", "an", "the", "and", "or", "for", "in", "on", "at", "to", "of", "is"}
+)
+
+#: Below this many significant words the overlap coefficient is trivially high
+#: (a two-word text is "contained" in almost anything), so require near-identity
+#: instead.
+MIN_OVERLAP_WORDS = 5
+
+
+def significant_words(text: str, *, extra_stopwords: frozenset[str] = frozenset()) -> set[str]:
+    """Return the meaning-bearing word set of *text*, lowercased.
+
+    Words shorter than three characters and the stopword sets are dropped, so
+    two texts that differ only in phrasing reduce to the same set.
+    """
+    stop = _BASE_STOPWORDS | extra_stopwords
+    return {w for w in re.findall(r"\b\w{3,}\b", text.lower()) if w not in stop}
+
+
+def texts_similar(
+    a: str,
+    b: str,
+    *,
+    threshold: float,
+    extra_stopwords: frozenset[str] = frozenset(),
+) -> bool:
+    """Whether *a* and *b* share enough significant words (Jaccard) to be duplicates.
+
+    Jaccard punishes a paraphrase for the words it did not reuse, which is the
+    right question for short labels where both sides are the same kind of thing.
+    Use :func:`texts_overlap` when one text may be much longer than the other.
+    """
+    words_a = significant_words(a, extra_stopwords=extra_stopwords)
+    words_b = significant_words(b, extra_stopwords=extra_stopwords)
+    if not words_a or not words_b:
+        return False
+    return len(words_a & words_b) / len(words_a | words_b) >= threshold
+
+
+def texts_overlap(
+    a: str,
+    b: str,
+    *,
+    threshold: float,
+    extra_stopwords: frozenset[str] = frozenset(),
+) -> bool:
+    """Whether the shorter of two texts is largely contained in the longer one.
+
+    The overlap coefficient asks the question that matters when one text
+    elaborates on another ("is the shorter one contained in the longer?"),
+    where Jaccard would penalise the elaboration for its extra words.
+    """
+    words_a = significant_words(a, extra_stopwords=extra_stopwords)
+    words_b = significant_words(b, extra_stopwords=extra_stopwords)
+    if not words_a or not words_b:
+        return False
+    shorter = min(len(words_a), len(words_b))
+    if shorter < MIN_OVERLAP_WORDS:
+        return words_a == words_b
+    return len(words_a & words_b) / shorter >= threshold
+
 
 def slug(value: str, *, max_length: int = 80, fallback: str = "") -> str:
     """Lowercase, collapse non-alphanumeric runs to ``-``, trim, and truncate."""

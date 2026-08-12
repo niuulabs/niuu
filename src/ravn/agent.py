@@ -851,6 +851,42 @@ class RavnAgent:
         logger.error("%s", error)
         raise error
 
+    def _budget_tool_result_char_limit(self) -> int:
+        """Chars one tool result may contribute before the prompt budget breaks.
+
+        The configured ``max_result_chars`` is a flat number that knows nothing
+        about the budget it has to fit inside, and on the valhalla k8s resident
+        the two contradicted each other: 100_000 chars estimate to 37_500 tokens
+        (100_000/4, times the 1.5 safety factor), while ``max_prompt_tokens``
+        of 48_000 minus a ~14_600-token fixed cost left only ~33_400 for the
+        whole history. One result at the cap therefore blew the budget on its
+        own, and because it lands in the compaction-protected tail nothing
+        downstream could recover: 195 turns died on PromptBudgetExceededError
+        in 20 hours, each after the model had already paid for the tool call.
+
+        So derive the ceiling from what is actually free. The fixed cost is
+        measured, not assumed, and the remainder is shared across the protected
+        tail — every slot in it could hold a result this size, and all of them
+        must fit together.
+
+        Returns 0 when no budget is configured, leaving the flat cap in charge.
+        """
+        if self._max_prompt_tokens <= 0:
+            return 0
+        fixed_tokens = sum(
+            tokens
+            for name, tokens in self._prompt_section_estimates(self._system_prompt, []).items()
+            if name != "history"
+        )
+        headroom = self._max_prompt_tokens - fixed_tokens
+        if headroom <= 0:
+            return 0
+        slots = max(1, self._compressor.protect_last if self._compressor else 1)
+        return TokenEstimator.chars_for_tokens(
+            headroom // slots,
+            self._token_estimate_safety_factor,
+        )
+
     def _truncate_oversized_tool_result(
         self,
         tool_call: ToolCall,
@@ -863,18 +899,31 @@ class RavnAgent:
         so nothing downstream could shrink it and the turn died on the prompt
         budget. Truncate here with an explicit marker so the model knows the
         result is partial and the turn can continue.
+
+        The effective limit is the tighter of the configured cap and what the
+        prompt budget can actually hold — see
+        :meth:`_budget_tool_result_char_limit` for why the configured one alone
+        was not enough.
         """
-        limit = self._max_tool_result_chars
         content = result.content
-        if limit <= 0 or not isinstance(content, str) or len(content) <= limit:
+        if not isinstance(content, str):
+            return result
+        budget_limit = self._budget_tool_result_char_limit()
+        limits = [value for value in (self._max_tool_result_chars, budget_limit) if value > 0]
+        if not limits:
+            return result
+        limit = min(limits)
+        if len(content) <= limit:
             return result
         dropped = len(content) - limit
         logger.warning(
-            "tool result for %r truncated: %d of %d chars dropped (max_tool_result_chars=%d)",
+            "tool result for %r truncated: %d of %d chars dropped "
+            "(max_tool_result_chars=%d, prompt-budget limit=%d)",
             tool_call.name,
             dropped,
             len(content),
-            limit,
+            self._max_tool_result_chars,
+            budget_limit,
         )
         marker = (
             f"\n\n[tool result truncated: {dropped} characters beyond the "

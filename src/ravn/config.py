@@ -1495,6 +1495,32 @@ class InitiativeConfig(BaseModel):
         default=30.0,
         description="Seconds between cron trigger ticks (scheduler wake interval).",
     )
+    cron_max_jobs: int = Field(
+        default=12,
+        ge=0,
+        description=(
+            "Maximum enabled cron jobs one agent may hold. Further cron_create "
+            "calls are refused until a job is deleted. A resident that cannot "
+            "close a case schedules another check instead, so the job count "
+            "grows without bound: one k8s resident reached 24 jobs firing ~87 "
+            "tasks/hour, which is more than its queue could ever drain. "
+            "0 disables the cap."
+        ),
+    )
+    cron_duplicate_similarity: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Word-overlap threshold above which a new cron job counts as a "
+            "restatement of an existing one and is refused. Exact-match dedup "
+            "caught nothing in production because a resident never repeats "
+            "itself verbatim: 20 jobs on one resident were all the same etcd "
+            "check under names like 'etcd-health-check', 'recheck-etcd-latency' "
+            "and 'etcd-latency-investigation'. 0 disables near-duplicate "
+            "detection, leaving only exact matching."
+        ),
+    )
     trigger_adapters: list[TriggerAdapterConfig] = Field(
         default_factory=list,
         description=(

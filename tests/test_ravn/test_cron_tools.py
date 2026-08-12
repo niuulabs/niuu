@@ -884,3 +884,195 @@ def test_is_due_canonical_bad_iso():
     trigger = CronTrigger(jobs=[])
     # "once:not-a-date" should not fire (ValueError caught)
     assert trigger._is_due_canonical("once:not-a-date", "k", datetime.now(UTC), {}) is False
+
+
+# ---------------------------------------------------------------------------
+# Near-duplicate and cap guards on cron_create
+#
+# Calibrated against the real cron store of the valhalla k8s resident, which
+# accumulated 24 jobs over five days — 20 of them the same etcd-latency check
+# under different names. The existing exact-match dedup never fired once: the
+# resident restated itself every time. The contexts below are taken verbatim
+# from that store.
+# ---------------------------------------------------------------------------
+
+_DUPLICATE_SIMILARITY = 0.5
+
+
+def _guarded_tool(tmp_path: Path, *, max_jobs: int = 0) -> CronCreateTool:
+    return CronCreateTool(
+        _make_store(tmp_path),
+        max_jobs=max_jobs,
+        duplicate_similarity=_DUPLICATE_SIMILARITY,
+    )
+
+
+@pytest.mark.asyncio
+async def test_cron_create_refuses_reworded_restatement(tmp_path):
+    """The production case: same intent, different name and wording."""
+    tool = _guarded_tool(tmp_path)
+    await tool.execute(
+        {
+            "name": "etcd-latency-check",
+            "schedule": "every 30m",
+            "context": (
+                "Check etcd pod logs for latency warnings and apiserver logs for "
+                "connection errors to monitor ongoing etcd performance issues"
+            ),
+        }
+    )
+
+    result = await tool.execute(
+        {
+            "name": "etcd-apiserver-latency-check",
+            "schedule": "every 15m",
+            "context": (
+                "Monitor etcd and kube-apiserver performance: check pod logs for etcd "
+                "apply latency warnings and kube-apiserver connection errors"
+            ),
+        }
+    )
+
+    assert result.is_error
+    assert "restates an existing one" in result.content
+    assert "etcd-latency-check" in result.content
+    assert len(tool._store.list()) == 1
+
+
+@pytest.mark.asyncio
+async def test_cron_create_refuses_restatement_by_name_alone(tmp_path):
+    """Distinct wording, but the names say the same thing."""
+    tool = _guarded_tool(tmp_path)
+    await tool.execute(
+        {
+            "name": "etcd-monitoring-check",
+            "schedule": "30m",
+            "context": "Check etcd performance and apiserver-etcd connectivity for issues",
+        }
+    )
+
+    result = await tool.execute(
+        {
+            "name": "etcd-monitoring-followup",
+            "schedule": "every 15m",
+            "context": "Re-read the snapshot restore log written by the last backup run",
+        }
+    )
+
+    assert result.is_error
+    assert "restates an existing one" in result.content
+    assert len(tool._store.list()) == 1
+
+
+@pytest.mark.asyncio
+async def test_cron_create_allows_genuinely_different_jobs(tmp_path):
+    """The guard must not collapse an agent's whole schedule into one job."""
+    tool = _guarded_tool(tmp_path)
+    jobs = [
+        ("etcd-snapshot-watch", "Observe etcd snapshot events in the valhalla environment"),
+        ("morning-brief", "Summarise the overnight tracker movement for the operator"),
+        ("cert-expiry-sweep", "List TLS certificates expiring within fourteen days"),
+        ("pvc-capacity-report", "Report persistent volume claims above ninety percent full"),
+    ]
+    for name, context in jobs:
+        result = await tool.execute({"name": name, "schedule": "every 1h", "context": context})
+        assert not result.is_error, f"{name} was wrongly refused: {result.content}"
+
+    assert len(tool._store.list()) == len(jobs)
+
+
+@pytest.mark.asyncio
+async def test_cron_create_ignores_silent_marker_and_case_ids_when_comparing(tmp_path):
+    """Shared bookkeeping tokens must not make unrelated jobs look alike.
+
+    Both contexts carry a ``[SILENT]`` prefix and a case reference; stripped of
+    those they have almost nothing in common and both must be allowed.
+    """
+    tool = _guarded_tool(tmp_path)
+    first = await tool.execute(
+        {
+            "name": "watch-disk",
+            "schedule": "15m",
+            "context": "[SILENT] Resident case task_19fdf1bb210_0197: re-check node disk pressure.",
+        }
+    )
+    second = await tool.execute(
+        {
+            "name": "chase-tracker",
+            "schedule": "15m",
+            "context": "[SILENT] Resident case task_19feb00794d_0394: chase the stalled review.",
+        }
+    )
+
+    assert not first.is_error
+    assert not second.is_error
+    assert len(tool._store.list()) == 2
+
+
+_UNRELATED_DUTIES = [
+    ("cert-expiry-sweep", "List TLS certificates expiring within the next fourteen days."),
+    ("pvc-capacity-report", "Report persistent volume claims above ninety percent full."),
+    ("morning-brief", "Summarise overnight tracker movement for the operator."),
+]
+
+
+@pytest.mark.asyncio
+async def test_cron_create_enforces_job_cap(tmp_path):
+    tool = _guarded_tool(tmp_path, max_jobs=3)
+    for name, context in _UNRELATED_DUTIES:
+        result = await tool.execute({"name": name, "schedule": "every 1h", "context": context})
+        assert not result.is_error, f"{name} was wrongly refused: {result.content}"
+
+    overflow = await tool.execute(
+        {
+            "name": "image-pull-audit",
+            "schedule": "every 1h",
+            "context": "Audit container image pull failures raised by the registry mirror.",
+        }
+    )
+
+    assert overflow.is_error
+    assert "Cron job limit reached: 3 of 3" in overflow.content
+    assert "cert-expiry-sweep" in overflow.content
+    assert len(tool._store.list()) == 3
+
+
+@pytest.mark.asyncio
+async def test_cron_create_cap_ignores_disabled_jobs(tmp_path):
+    """A disabled job costs nothing to run, so it must not consume the budget."""
+    store = _make_store(tmp_path)
+    store.create(
+        _make_record(
+            job_id="deadbeefdeadbeef",
+            name="retired-probe",
+            context="Inspect the retired subsystem for stale lock files each hour.",
+            enabled=False,
+        )
+    )
+    tool = CronCreateTool(store, max_jobs=1, duplicate_similarity=_DUPLICATE_SIMILARITY)
+
+    result = await tool.execute(
+        {
+            "name": "cert-expiry-sweep",
+            "schedule": "every 1h",
+            "context": "List TLS certificates expiring within the next fourteen days.",
+        }
+    )
+
+    assert not result.is_error
+    assert len(store.list()) == 2
+
+
+@pytest.mark.asyncio
+async def test_cron_create_guards_are_off_by_default(tmp_path):
+    """Defaults must not change behaviour for callers that do not opt in."""
+    store = _make_store(tmp_path)
+    tool = CronCreateTool(store)
+
+    await tool.execute({"name": "a-check", "schedule": "30m", "context": "Check etcd latency now."})
+    result = await tool.execute(
+        {"name": "b-check", "schedule": "30m", "context": "Check the etcd latency again now."}
+    )
+
+    assert not result.is_error
+    assert len(store.list()) == 2

@@ -31,6 +31,7 @@ from niuu.domain.mimir import MimirPage
 from niuu.ports.mimir import MimirPort
 from ravn.config import PostSessionReflectionConfig
 from ravn.ports.llm import LLMPort
+from ravn.resident_text import significant_words, texts_overlap, texts_similar
 
 if TYPE_CHECKING:
     from sleipnir.domain.events import SleipnirEvent
@@ -59,13 +60,11 @@ _CONFIDENCE_HIGH_THRESHOLD = 3
 # question that actually matters ("is the shorter claim contained in the
 # longer?") and separated cleanly on the 22 real duplicates this was calibrated
 # against: duplicates >= 0.56, unrelated claims <= 0.40.
+# The word-set mechanics live in ravn.resident_text, shared with the cron
+# near-duplicate guard, which the same paraphrase problem defeated.
 _TITLE_DUPLICATE_SIMILARITY = 0.5
 _CLAIM_DUPLICATE_OVERLAP = 0.5
 _EVIDENCE_DUPLICATE_OVERLAP = 0.5
-# Below this many significant words the overlap coefficient is trivially high
-# (a two-word claim is "contained" in almost anything), so require near-identity
-# instead.
-_MIN_OVERLAP_WORDS = 5
 
 _REFLECTION_SYSTEM = (
     "You extract possible operational learning candidates from AI agent sessions. "
@@ -1114,36 +1113,22 @@ def _title_to_keywords(title: str) -> str:
     return " ".join(keywords[:6])
 
 
+#: Filler specific to reflection prose, on top of the shared base stopwords.
+_REFLECTION_STOPWORDS = frozenset({"learning", "candidate"})
+
+
 def _significant_words(text: str) -> set[str]:
-    stop = {
-        "a",
-        "an",
-        "the",
-        "and",
-        "or",
-        "for",
-        "in",
-        "on",
-        "at",
-        "to",
-        "of",
-        "is",
-        "learning",
-        "candidate",
-    }
-    return {w for w in re.findall(r"\b\w{3,}\b", text.lower()) if w not in stop}
+    return significant_words(text, extra_stopwords=_REFLECTION_STOPWORDS)
 
 
 def _titles_similar(a: str, b: str) -> bool:
     """Return True when *a* and *b* share enough significant words to be duplicates."""
-    words_a = _significant_words(a)
-    words_b = _significant_words(b)
-    if not words_a or not words_b:
-        return False
-
-    overlap = words_a & words_b
-    union = words_a | words_b
-    return len(overlap) / len(union) >= _TITLE_DUPLICATE_SIMILARITY
+    return texts_similar(
+        a,
+        b,
+        threshold=_TITLE_DUPLICATE_SIMILARITY,
+        extra_stopwords=_REFLECTION_STOPWORDS,
+    )
 
 
 def _page_claim(content: str) -> str:
@@ -1158,14 +1143,7 @@ def _page_claim(content: str) -> str:
 
 def _texts_overlap(a: str, b: str, *, threshold: float) -> bool:
     """Whether the shorter of two texts is largely contained in the longer one."""
-    words_a = _significant_words(a)
-    words_b = _significant_words(b)
-    if not words_a or not words_b:
-        return False
-    shorter = min(len(words_a), len(words_b))
-    if shorter < _MIN_OVERLAP_WORDS:
-        return words_a == words_b
-    return len(words_a & words_b) / shorter >= threshold
+    return texts_overlap(a, b, threshold=threshold, extra_stopwords=_REFLECTION_STOPWORDS)
 
 
 def _claims_similar(a: str, b: str) -> bool:

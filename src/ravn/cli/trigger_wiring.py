@@ -176,11 +176,17 @@ def _wire_cron(
         tick_seconds=initiative.cron_tick_seconds,
     )
     drive_loop.register_trigger(trigger)
-    tools = build_cron_tools(store)
+    tools = build_cron_tools(
+        store,
+        max_jobs=initiative.cron_max_jobs,
+        duplicate_similarity=initiative.cron_duplicate_similarity,
+    )
     logger.info(
-        "cron: wired %d config job(s); store at %s",
+        "cron: wired %d config job(s); store at %s (max_jobs=%d, duplicate_similarity=%.2f)",
         len(cron_jobs),
         store._path,
+        initiative.cron_max_jobs,
+        initiative.cron_duplicate_similarity,
     )
     return tools
 
