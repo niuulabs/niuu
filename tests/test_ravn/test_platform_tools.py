@@ -876,6 +876,104 @@ class TestTingResearchTool:
         assert body["question"] == "Look into agent memory solutions."
         assert "workflowId" not in body
 
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_launch_echoes_slug_for_confirmation(self):
+        respx.post(TING_RESEARCH_URL).mock(
+            return_value=httpx.Response(201, json={"slug": "memory-research", "status": "running"})
+        )
+
+        result = await self.tool.execute({"action": "launch", "question": "Agent memory?"})
+
+        assert not result.is_error
+        assert json.loads(result.content)["confirm_with"] == {
+            "action": "get",
+            "slug": "memory-research",
+        }
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_failed_launch_says_no_campaign_exists(self):
+        respx.post(TING_RESEARCH_URL).mock(return_value=httpx.Response(500, text="boom"))
+
+        result = await self.tool.execute({"action": "launch", "question": "Agent memory?"})
+
+        assert result.is_error
+        assert "No campaign was created" in result.content
+        assert "do not record one as running" in result.content
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_list_campaigns(self):
+        respx.get(TING_RESEARCH_URL).mock(
+            return_value=httpx.Response(200, json=[{"slug": "memory-research"}])
+        )
+
+        result = await self.tool.execute({"action": "list"})
+
+        assert not result.is_error
+        assert json.loads(result.content) == [{"slug": "memory-research"}]
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_get_campaign_returns_detail(self):
+        respx.get(f"{TING_RESEARCH_URL}/memory-research").mock(
+            return_value=httpx.Response(200, json={"slug": "memory-research", "status": "running"})
+        )
+
+        result = await self.tool.execute({"action": "get", "slug": "memory-research"})
+
+        assert not result.is_error
+        assert json.loads(result.content)["status"] == "running"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_get_missing_campaign_says_it_does_not_exist(self):
+        """A campaign that was never created must not read as 'still working'."""
+        respx.get(f"{TING_RESEARCH_URL}/62ac5327").mock(return_value=httpx.Response(404))
+
+        result = await self.tool.execute({"action": "get", "slug": "62ac5327"})
+
+        assert result.is_error
+        assert "No research campaign '62ac5327' exists" in result.content
+        assert "do not treat it as pending" in result.content
+
+    @pytest.mark.asyncio
+    async def test_get_requires_slug(self):
+        result = await self.tool.execute({"action": "get"})
+
+        assert result.is_error
+        assert "slug is required" in result.content
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_artifacts_lists_campaign_output(self):
+        respx.get(f"{TING_RESEARCH_URL}/memory-research/artifacts").mock(
+            return_value=httpx.Response(200, json=[{"path": "research/campaigns/memory.md"}])
+        )
+
+        result = await self.tool.execute({"action": "artifacts", "slug": "memory-research"})
+
+        assert not result.is_error
+        assert json.loads(result.content)[0]["path"] == "research/campaigns/memory.md"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_artifacts_for_missing_campaign_is_an_error(self):
+        respx.get(f"{TING_RESEARCH_URL}/ghost/artifacts").mock(return_value=httpx.Response(404))
+
+        result = await self.tool.execute({"action": "artifacts", "slug": "ghost"})
+
+        assert result.is_error
+        assert "No research campaign 'ghost' exists" in result.content
+
+    @pytest.mark.asyncio
+    async def test_unknown_action_is_rejected(self):
+        result = await self.tool.execute({"action": "status"})
+
+        assert result.is_error
+        assert "Unknown action" in result.content
+
 
 class TestTingPlanTool:
     @pytest.mark.asyncio

@@ -1146,9 +1146,25 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
 # ting_research
 # ---------------------------------------------------------------------------
 
+_TING_RESEARCH_PATH = "/api/v1/ting/research/campaigns"
+
 
 class TingResearchTool(TingWorkflowTool):
-    """Launch persistent Ting Research campaigns."""
+    """Launch and inspect persistent Ting Research campaigns.
+
+    Actions:
+    - ``launch``    — start a campaign (requires ``question`` or ``prompt``).
+      The result carries the campaign ``slug``; that slug, not the id, is how
+      every later lookup addresses the campaign.
+    - ``list``      — list your campaigns with their status and artifact tallies.
+    - ``get``       — one campaign with its artifacts (requires ``slug``).
+    - ``artifacts`` — just the artifact listing for a campaign (requires ``slug``).
+
+    ``launch`` alone is not enough to know a campaign exists: a launch can fail,
+    and a campaign that was never created cannot be found by searching Mimir for
+    its id. Confirm with ``get`` before recording that a campaign is running,
+    and poll it with ``get`` rather than guessing at Mimir paths.
+    """
 
     @property
     def name(self) -> str:
@@ -1157,9 +1173,11 @@ class TingResearchTool(TingWorkflowTool):
     @property
     def description(self) -> str:
         return (
-            "Launch persistent Ting Research campaigns. Use this when the operator asks "
-            "for research so the run appears in the Ting Research tab and writes durable "
-            "campaign metadata."
+            "Launch and inspect persistent Ting Research campaigns. Use launch when the "
+            "operator asks for research so the run appears in the Ting Research tab and "
+            "writes durable campaign metadata; use list/get/artifacts to check whether a "
+            "campaign exists, what state it is in, and what it has produced. Always "
+            "confirm a launch with get before treating the campaign as running."
         )
 
     @property
@@ -1169,8 +1187,15 @@ class TingResearchTool(TingWorkflowTool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["launch"],
+                    "enum": ["launch", "list", "get", "artifacts"],
                     "description": "Operation to perform.",
+                },
+                "slug": {
+                    "type": "string",
+                    "description": (
+                        "Campaign slug, as returned by launch (required for get and "
+                        "artifacts). Campaigns are addressed by slug, never by id."
+                    ),
                 },
                 "question": {
                     "type": "string",
@@ -1236,10 +1261,65 @@ class TingResearchTool(TingWorkflowTool):
 
     async def execute(self, input: dict) -> ToolResult:
         action = input.get("action", "")
-        if action != "launch":
-            return _err(f"Unknown action: {action!r}")
+        slug = str(input.get("slug", "") or "").strip()
         async with await self._client() as client:
-            return await self._launch(client, input)
+            match action:
+                case "launch":
+                    return await self._launch(client, input)
+                case "list":
+                    return await self._list_campaigns(client)
+                case "get":
+                    return await self._get_campaign(client, slug)
+                case "artifacts":
+                    return await self._campaign_artifacts(client, slug)
+                case _:
+                    return _err(f"Unknown action: {action!r}")
+        raise AssertionError("Unreachable execute fallthrough")
+
+    async def _list_campaigns(self, client: httpx.AsyncClient) -> ToolResult:
+        try:
+            resp = await client.get(_TING_RESEARCH_PATH)
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(f"Failed to list research campaigns: {exc}")
+
+    async def _get_campaign(self, client: httpx.AsyncClient, slug: str) -> ToolResult:
+        if not slug:
+            return _err("slug is required for get action")
+        try:
+            resp = await client.get(f"{_TING_RESEARCH_PATH}/{slug}")
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                # Say plainly that it does not exist. A launch that failed and a
+                # campaign id that was never real both land here, and both have
+                # been mistaken for "running, no findings yet".
+                return _err(
+                    f"No research campaign {slug!r} exists. It was never created, "
+                    "or the launch failed — do not treat it as pending."
+                )
+            return _err(f"Failed to get research campaign {slug}: {exc}")
+        except Exception as exc:
+            return _err(f"Failed to get research campaign {slug}: {exc}")
+        return _ok(resp.json())
+
+    async def _campaign_artifacts(self, client: httpx.AsyncClient, slug: str) -> ToolResult:
+        if not slug:
+            return _err("slug is required for artifacts action")
+        try:
+            resp = await client.get(f"{_TING_RESEARCH_PATH}/{slug}/artifacts")
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return _err(
+                    f"No research campaign {slug!r} exists. It was never created, "
+                    "or the launch failed — do not treat it as pending."
+                )
+            return _err(f"Failed to list artifacts for research campaign {slug}: {exc}")
+        except Exception as exc:
+            return _err(f"Failed to list artifacts for research campaign {slug}: {exc}")
+        return _ok(resp.json())
 
     async def _launch(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
         launch_seed = dict(input)
@@ -1296,15 +1376,28 @@ class TingResearchTool(TingWorkflowTool):
             body["gateAutoForwardAfter"] = str(gate_auto_forward)
 
         try:
-            resp = await client.post("/api/v1/ting/research/campaigns", json=body)
+            resp = await client.post(_TING_RESEARCH_PATH, json=body)
             resp.raise_for_status()
             payload = resp.json()
-            if isinstance(payload, dict):
-                await self._join_launched_session(payload)
-            return _ok(payload)
         except Exception as exc:
             suffix = f" {workflow_id}" if workflow_id else ""
-            return _err(f"Failed to launch research campaign{suffix}: {exc}")
+            # Spell out the consequence. A failed launch has previously been
+            # written down as "campaign launched, awaiting findings", which is
+            # unfalsifiable: there is no campaign to produce findings, so the
+            # wait never ends.
+            return _err(
+                f"Failed to launch research campaign{suffix}: {exc}. No campaign was "
+                "created — do not record one as running or wait for its findings."
+            )
+        if not isinstance(payload, dict):
+            return _ok(payload)
+        await self._join_launched_session(payload)
+        slug = str(payload.get("slug", "") or "").strip()
+        if not slug:
+            return _ok(payload)
+        # Hand back the one identifier every later lookup accepts, so the case
+        # carries a real handle rather than an id the model reconstructs.
+        return _ok({**payload, "confirm_with": {"action": "get", "slug": slug}})
 
     def _apply_alias_input_conventions(
         self,
