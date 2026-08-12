@@ -52,6 +52,21 @@ _REFLECTION_CONTEXT_MAX_CHARS = 12_000
 _CONFIDENCE_MEDIUM_THRESHOLD = 2
 _CONFIDENCE_HIGH_THRESHOLD = 3
 
+# Titles are compared by Jaccard; claims and evidence notes by overlap
+# coefficient. Jaccard punishes a paraphrase for the words it did not reuse, so
+# two wordings of one belief scored 0.33-0.42 — below any threshold that also
+# kept genuinely different learnings apart. Overlap coefficient asks the
+# question that actually matters ("is the shorter claim contained in the
+# longer?") and separated cleanly on the 22 real duplicates this was calibrated
+# against: duplicates >= 0.56, unrelated claims <= 0.40.
+_TITLE_DUPLICATE_SIMILARITY = 0.5
+_CLAIM_DUPLICATE_OVERLAP = 0.5
+_EVIDENCE_DUPLICATE_OVERLAP = 0.5
+# Below this many significant words the overlap coefficient is trivially high
+# (a two-word claim is "contained" in almost anything), so require near-identity
+# instead.
+_MIN_OVERLAP_WORDS = 5
+
 _REFLECTION_SYSTEM = (
     "You extract possible operational learning candidates from AI agent sessions. "
     "Respond only with valid JSON or the literal null. No markdown fences, no commentary."
@@ -356,7 +371,8 @@ class PostSessionReflectionService:
         session_id = payload.get("session_id", "unknown")
         now = datetime.now(UTC)
 
-        existing_page = await self._find_existing_page(title, repo_slug)
+        claim = str(learning.get("learning", "") or "").strip()
+        existing_page = await self._find_existing_page(title, repo_slug, claim)
 
         if existing_page is not None:
             if existing_page.meta.category == "learnings":
@@ -438,7 +454,16 @@ class PostSessionReflectionService:
             )
             return
 
-        learning_path = learning_path_override or _build_page_path(title, repo_slug)
+        # A candidate promotes to ONE learning page for its whole life. The path
+        # used to be re-derived from each reflection's title, so a candidate that
+        # kept gathering evidence minted a fresh learnings/ file every time the
+        # model reworded its own title — one belief ended up occupying 22 pages,
+        # each citing the same sessions.
+        learning_path = (
+            learning_path_override
+            or _promoted_learning_path(candidate_content)
+            or _build_page_path(title, repo_slug)
+        )
         promoted_content = _promote_candidate_content(
             candidate_content,
             candidate_path=candidate_path,
@@ -464,11 +489,16 @@ class PostSessionReflectionService:
             reason,
         )
 
-    async def _find_existing_page(self, title: str, repo_slug: str) -> MimirPage | None:
-        """Search Mímir for an existing learning page matching *title*.
+    async def _find_existing_page(
+        self,
+        title: str,
+        repo_slug: str,
+        claim: str = "",
+    ) -> MimirPage | None:
+        """Search Mímir for an existing learning page making the same point.
 
-        Returns the first :class:`~niuu.domain.mimir.MimirPage` whose title
-        closely matches, or ``None``.
+        Returns the first :class:`~niuu.domain.mimir.MimirPage` whose title or
+        underlying claim closely matches, or ``None``.
         """
         keywords = _title_to_keywords(title)
         if not keywords:
@@ -484,7 +514,10 @@ class PostSessionReflectionService:
             page
             for page in results
             if page.meta.category in {"learning-candidates", "learnings"}
-            and _titles_similar(page.meta.title or "", title)
+            and (
+                _titles_similar(page.meta.title or "", title)
+                or (claim and _claims_similar(_page_claim(page.content), claim))
+            )
         ]
         for category in ("learning-candidates", "learnings"):
             match = next((page for page in matches if page.meta.category == category), None)
@@ -884,6 +917,42 @@ def _timeline_session_ids(content: str) -> set[str]:
     }
 
 
+def _promoted_learning_path(content: str) -> str:
+    """Return the learnings/ path this candidate was already promoted to, if any."""
+    match = re.search(r"^promoted_to:\s*(.+?)\s*$", content, flags=re.MULTILINE)
+    if match is None:
+        return ""
+    path = match.group(1).strip().strip('"').strip("'")
+    # Only accept a path this module could have written; never follow one that
+    # escapes the learnings tree.
+    if not path.startswith("learnings/") or ".." in path.split("/"):
+        return ""
+    return path
+
+
+def _timeline_notes(content: str) -> list[str]:
+    return [
+        match.group(1).strip()
+        for match in re.finditer(r"^\s{4}note:\s*(.+?)\s*$", content, flags=re.MULTILINE)
+        if match.group(1).strip()
+    ]
+
+
+def _evidence_is_new(content: str, evidence: str) -> bool:
+    """Whether *evidence* says something the timeline does not already record.
+
+    Observing one unchanged fact on a schedule is a single observation repeated,
+    not independent corroboration. Counting each repetition drove a candidate to
+    "high confidence, 34 sessions" while every note said the same thing.
+    """
+    if not _significant_words(evidence):
+        return False
+    return not any(
+        _texts_overlap(evidence, note, threshold=_EVIDENCE_DUPLICATE_OVERLAP)
+        for note in _timeline_notes(content)
+    )
+
+
 def _build_page_path(title: str, repo_slug: str) -> str:
     """Build a ``learnings/`` wiki path from *title* and *repo_slug*."""
     slug = _slugify(title)
@@ -965,6 +1034,11 @@ def _merge_timeline_entry(
     """
     if session_id in _timeline_session_ids(existing_content):
         return existing_content
+    if not _evidence_is_new(existing_content, evidence):
+        # Same observation again from a new session. Recording it would raise
+        # evidence_count and promote the claim on the strength of one fact the
+        # resident simply kept re-reading.
+        return existing_content
 
     date_str = date.strftime("%Y-%m-%dT%H:%M:%SZ")
     new_entry = (
@@ -1040,37 +1114,69 @@ def _title_to_keywords(title: str) -> str:
     return " ".join(keywords[:6])
 
 
+def _significant_words(text: str) -> set[str]:
+    stop = {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "for",
+        "in",
+        "on",
+        "at",
+        "to",
+        "of",
+        "is",
+        "learning",
+        "candidate",
+    }
+    return {w for w in re.findall(r"\b\w{3,}\b", text.lower()) if w not in stop}
+
+
 def _titles_similar(a: str, b: str) -> bool:
     """Return True when *a* and *b* share enough significant words to be duplicates."""
-
-    def significant_words(t: str) -> set[str]:
-        stop = {
-            "a",
-            "an",
-            "the",
-            "and",
-            "or",
-            "for",
-            "in",
-            "on",
-            "at",
-            "to",
-            "of",
-            "is",
-            "learning",
-            "candidate",
-        }
-        return {w for w in re.findall(r"\b\w{3,}\b", t.lower()) if w not in stop}
-
-    words_a = significant_words(a)
-    words_b = significant_words(b)
+    words_a = _significant_words(a)
+    words_b = _significant_words(b)
     if not words_a or not words_b:
         return False
 
     overlap = words_a & words_b
-    # Jaccard similarity >= 0.5 counts as similar.
     union = words_a | words_b
-    return len(overlap) / len(union) >= 0.5
+    return len(overlap) / len(union) >= _TITLE_DUPLICATE_SIMILARITY
+
+
+def _page_claim(content: str) -> str:
+    """Extract the ``What was learned`` claim from a candidate or learning page."""
+    match = re.search(
+        r"^## What was learned\s*$\n+(.*?)(?=\n## |\Z)",
+        content,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _texts_overlap(a: str, b: str, *, threshold: float) -> bool:
+    """Whether the shorter of two texts is largely contained in the longer one."""
+    words_a = _significant_words(a)
+    words_b = _significant_words(b)
+    if not words_a or not words_b:
+        return False
+    shorter = min(len(words_a), len(words_b))
+    if shorter < _MIN_OVERLAP_WORDS:
+        return words_a == words_b
+    return len(words_a & words_b) / shorter >= threshold
+
+
+def _claims_similar(a: str, b: str) -> bool:
+    """Return True when two claim bodies assert substantially the same thing.
+
+    Titles alone were not enough: one belief reappeared as "wait for research
+    findings…", "defer action pending research findings…" and "delay backlog
+    work pending…", which overlap too little as titles to be caught, while the
+    claims underneath them said the same thing in different words.
+    """
+    return _texts_overlap(a, b, threshold=_CLAIM_DUPLICATE_OVERLAP)
 
 
 def _slugify(text: str) -> str:

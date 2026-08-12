@@ -46,6 +46,18 @@ def _make_llm(response_json: str) -> AsyncMock:
     return llm
 
 
+def _make_llm_sequence(*response_jsons: str) -> AsyncMock:
+    """Return a mock LLM that answers each call with the next response."""
+    responses = []
+    for payload in response_jsons:
+        resp = MagicMock()
+        resp.content = payload
+        responses.append(resp)
+    llm = AsyncMock()
+    llm.generate.side_effect = responses
+    return llm
+
+
 # ---------------------------------------------------------------------------
 # Full learning loop: record → candidate → verified promotion → retrieval
 # ---------------------------------------------------------------------------
@@ -142,46 +154,86 @@ async def test_learning_loop_requires_verified_evidence_before_retrieval(tmp_pat
     await writer.stop()
 
 
-@pytest.mark.asyncio
-async def test_learning_loop_confidence_escalation(tmp_path: Path) -> None:
-    """Three sessions with the same pattern upgrade confidence to 'high'."""
-    bus = InProcessBus()
-    mimir = MarkdownMimirAdapter(root=tmp_path)
-    config = _make_config()
-
-    title = "Ruff must run before commit"
-    learning_json = json.dumps(
+def _ruff_learning(evidence: str) -> str:
+    return json.dumps(
         {
-            "title": title,
+            "title": "Ruff must run before commit",
             "learning": "Ruff lint + format must pass before committing.",
             "type": "observation",
             "tags": ["lint"],
-            "evidence": "CI blocked on ruff failure.",
+            "evidence": evidence,
         }
     )
-    llm = _make_llm(learning_json)
 
-    writer = PostSessionReflectionService(subscriber=bus, mimir=mimir, llm=llm, config=config)
+
+async def _publish_sessions(bus: InProcessBus, count: int) -> None:
+    for session_num in range(count):
+        await bus.publish(
+            ravn_session_ended(
+                session_id=f"sess-{session_num}",
+                persona="coder",
+                outcome="failure",
+                token_count=1000,
+                duration_s=20.0,
+                repo_slug="niuulabs/volundr",
+                source="ravn:test",
+            )
+        )
+        await bus.flush()
+
+
+@pytest.mark.asyncio
+async def test_learning_loop_confidence_escalation(tmp_path: Path) -> None:
+    """Three sessions each contributing distinct evidence reach 'high'."""
+    bus = InProcessBus()
+    mimir = MarkdownMimirAdapter(root=tmp_path)
+    llm = _make_llm_sequence(
+        _ruff_learning("CI blocked the auth branch on an unformatted import block."),
+        _ruff_learning("A release tag was cut with trailing whitespace in the changelog."),
+        _ruff_learning("The nightly job failed on an unused variable in the migration script."),
+    )
+
+    writer = PostSessionReflectionService(
+        subscriber=bus, mimir=mimir, llm=llm, config=_make_config()
+    )
     await writer.start()
 
-    for session_num in range(3):
-        event = ravn_session_ended(
-            session_id=f"sess-{session_num}",
-            persona="coder",
-            outcome="failure",
-            token_count=1000,
-            duration_s=20.0,
-            repo_slug="niuulabs/volundr",
-            source="ravn:test",
-        )
-        await bus.publish(event)
-        await bus.flush()
+    await _publish_sessions(bus, 3)
 
     pages = await mimir.list_pages(category="learnings")
     assert len(pages) == 1, "Should have a single deduplicated learning page"
 
     content = await mimir.read_page(pages[0].path)
     assert "confidence: high" in content, "Third observation should upgrade confidence to high"
+
+    await writer.stop()
+
+
+@pytest.mark.asyncio
+async def test_one_observation_reread_does_not_escalate_confidence(tmp_path: Path) -> None:
+    """Re-reading one unchanged fact is a single observation, not corroboration.
+
+    A resident polling the same fact on a schedule drove a claim to
+    "high confidence, 34 sessions" purely by quoting itself, and that claim then
+    kept the resident waiting. Repetition of identical evidence must not count.
+    """
+    bus = InProcessBus()
+    mimir = MarkdownMimirAdapter(root=tmp_path)
+    llm = _make_llm(_ruff_learning("CI blocked on ruff failure."))
+
+    writer = PostSessionReflectionService(
+        subscriber=bus, mimir=mimir, llm=llm, config=_make_config()
+    )
+    await writer.start()
+
+    await _publish_sessions(bus, 5)
+
+    assert await mimir.list_pages(category="learnings") == []
+    candidates = await mimir.list_pages(category="learning-candidates")
+    assert len(candidates) == 1
+    content = await mimir.read_page(candidates[0].path)
+    assert "confidence: low" in content
+    assert content.count("source: ravn_reflection") == 1
 
     await writer.stop()
 
