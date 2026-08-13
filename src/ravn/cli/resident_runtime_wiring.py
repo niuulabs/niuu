@@ -172,6 +172,16 @@ async def _build_resident_state(
                 resolved["mimir"] = mimir
             if "environment_id" in params and "environment_id" not in resolved:
                 resolved["environment_id"] = settings.environment.id
+            for name, value in (
+                ("retention_max_cases", cfg.case_retention_max_cases),
+                ("retention_max_age_days", cfg.case_retention_max_age_days),
+                (
+                    "retention_sweep_interval_seconds",
+                    cfg.case_retention_sweep_interval_seconds,
+                ),
+            ):
+                if name in params and name not in resolved:
+                    resolved[name] = value
             return cls(**resolved)
         except Exception as exc:
             raise RuntimeError(

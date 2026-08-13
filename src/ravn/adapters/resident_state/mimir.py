@@ -354,8 +354,18 @@ class LocalResidentState(LocalResidentMemory, ResidentStatePort):
         *,
         continuation_prefix: str = "resident/continuation",
         environment_id: str = "",
+        retention_max_cases: int = 0,
+        retention_max_age_days: float = 0.0,
+        retention_sweep_interval_seconds: float = 900.0,
     ) -> None:
-        LocalResidentMemory.__init__(self, root, prefix=continuation_prefix)
+        LocalResidentMemory.__init__(
+            self,
+            root,
+            prefix=continuation_prefix,
+            retention_max_cases=retention_max_cases,
+            retention_max_age_days=retention_max_age_days,
+            retention_sweep_interval_seconds=retention_sweep_interval_seconds,
+        )
         self._environment_id = environment_id
 
     async def available(self) -> bool:

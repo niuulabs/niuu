@@ -3117,6 +3117,37 @@ class ResidentStateConfig(BaseModel):
         ge=100,
         description="Maximum characters persisted from each resident tool result.",
     )
+    case_retention_max_cases: int = Field(
+        default=200,
+        ge=0,
+        description=(
+            "Target maximum resident continuation cases kept on disk. A case is "
+            "eligible only when nothing can resume it — no pending scheduled wake "
+            "and no unanswered operator question — so live work is never pruned. "
+            "Cases are a rolling working set, not an archive: episodic memory is "
+            "the durable record. Measured on one resident, 754 of 841 cases were "
+            "unresumable and recall() read all 56 MB of them on every turn. "
+            "Oldest eligible cases beyond the cap are pruned. 0 disables "
+            "count-based pruning."
+        ),
+    )
+    case_retention_max_age_days: float = Field(
+        default=14.0,
+        ge=0,
+        description=(
+            "Maximum age in days of an unresumable resident case; older ones are "
+            "pruned. 0 disables age-based pruning."
+        ),
+    )
+    case_retention_sweep_interval_seconds: float = Field(
+        default=900.0,
+        ge=0,
+        description=(
+            "Minimum seconds between case retention sweeps. Sweeps run off the "
+            "turn write path in a worker thread; this throttle bounds how often "
+            "the cases directory is rescanned."
+        ),
+    )
     directed_message_context_max_chars: int = Field(
         default=4000,
         ge=200,

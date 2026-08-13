@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 import re
+import shutil
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +37,8 @@ from ravn.resident_text import (
 from ravn.resident_text import (
     timestamp_slug as _timestamp_slug,
 )
+
+logger = logging.getLogger(__name__)
 
 _OPERATOR_NEEDED_PATH = "operator-needed/latest.md"
 _OPERATOR_ANSWER_PATH = "operator-answers/latest.md"
@@ -188,9 +193,115 @@ class NullResidentMemory(ResidentMemoryPort):
 class LocalResidentMemory(ResidentMemoryPort):
     """Filesystem fallback that mirrors the Mimir memory shape."""
 
-    def __init__(self, root: Path, *, prefix: str = "resident/continuation") -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        prefix: str = "resident/continuation",
+        retention_max_cases: int = 0,
+        retention_max_age_days: float = 0.0,
+        retention_sweep_interval_seconds: float = 900.0,
+    ) -> None:
         self._root = Path(root)
         self._prefix = Path(prefix.strip("/").strip() or "resident/continuation")
+        self._retention_max_cases = max(0, retention_max_cases)
+        self._retention_max_age_days = max(0.0, retention_max_age_days)
+        self._retention_sweep_interval_seconds = max(0.0, retention_sweep_interval_seconds)
+        self._last_retention_sweep: float | None = None
+
+    # ------------------------------------------------------------------
+    # Case retention
+    # ------------------------------------------------------------------
+
+    def _case_is_resumable(self, case_dir: Path) -> bool:
+        """Whether any mechanism can still bring this case back.
+
+        Exactly two things resume a case: a pending scheduled wake, and an
+        unanswered operator question. Both already record ``- status: pending``
+        under a known leaf — the same convention ``_list_case_entries`` reads —
+        so this needs no new state to answer.
+        """
+        for leaf in (_SCHEDULED_WAKE_PATH, _OPERATOR_NEEDED_PATH):
+            marker = case_dir / leaf
+            if not marker.is_file():
+                continue
+            try:
+                if _operator_marker_is_pending(marker.read_text(encoding="utf-8")):
+                    return True
+            except OSError:
+                # Unreadable marker: assume the case is live rather than delete it.
+                return True
+        return False
+
+    async def prune_cases(self) -> int:
+        """Delete unresumable cases beyond the retention policy; return the count."""
+        return await asyncio.to_thread(self._prune_cases_sync)
+
+    def _prune_cases_sync(self) -> int:
+        base = self._root / self._prefix / "cases"
+        if not base.is_dir():
+            return 0
+        if self._retention_max_cases <= 0 and self._retention_max_age_days <= 0:
+            return 0
+
+        eligible: list[tuple[float, Path]] = []
+        live = 0
+        for case_dir in base.iterdir():
+            if not case_dir.is_dir():
+                continue
+            if self._case_is_resumable(case_dir):
+                live += 1
+                continue
+            try:
+                eligible.append((case_dir.stat().st_mtime, case_dir))
+            except OSError:
+                continue
+
+        eligible.sort(reverse=True)
+        doomed: list[Path] = []
+        if self._retention_max_age_days > 0:
+            cutoff = time.time() - self._retention_max_age_days * 86400
+            doomed.extend(path for mtime, path in eligible if mtime < cutoff)
+        if self._retention_max_cases > 0:
+            # The cap counts every case on disk, live ones included, so a
+            # resident holding many open cases keeps them and trims further
+            # into its dead tail rather than pruning nothing.
+            surplus = len(eligible) + live - self._retention_max_cases
+            if surplus > 0:
+                doomed.extend(path for _mtime, path in eligible[-surplus:])
+
+        removed = 0
+        for case_dir in dict.fromkeys(doomed):
+            try:
+                shutil.rmtree(case_dir)
+            except OSError:
+                logger.warning("resident cases: could not prune %s", case_dir, exc_info=True)
+                continue
+            removed += 1
+        if removed:
+            logger.info(
+                "resident cases: pruned %d unresumable case(s); %d live, %d retained",
+                removed,
+                live,
+                len(eligible) + live - removed,
+            )
+        return removed
+
+    async def _maybe_prune_cases(self) -> None:
+        """Sweep when one is due. Never blocking, never on the read path."""
+        if self._retention_max_cases <= 0 and self._retention_max_age_days <= 0:
+            return
+        now = time.monotonic()
+        if (
+            self._last_retention_sweep is not None
+            and now - self._last_retention_sweep < self._retention_sweep_interval_seconds
+        ):
+            return
+        self._last_retention_sweep = now
+        try:
+            await self.prune_cases()
+        except Exception:  # noqa: BLE001 — bookkeeping must never break a turn
+            logger.warning("resident cases: retention sweep failed", exc_info=True)
 
     async def recall(self, mandate: str, *, limit: int = 5) -> list[ResidentMemoryEntry]:
         base = self._root / self._prefix
@@ -242,7 +353,11 @@ class LocalResidentMemory(ResidentMemoryPort):
             record.case_id,
             f"turns/{stamp}-{record.turn_index}.md",
         )
-        return self._write(rel, _render_turn_record(record))
+        ref = self._write(rel, _render_turn_record(record))
+        # Every turn writes here, so this is the natural sweep tick. The
+        # interval throttle keeps it off all but one write in fifteen minutes.
+        await self._maybe_prune_cases()
+        return ref
 
     async def write_working_state(self, record: ResidentWorkingStateRecord) -> str:
         return self._write(
