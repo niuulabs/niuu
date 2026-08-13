@@ -294,6 +294,9 @@ def _write_broker_config(room_def: RoomDef, rooms_dir: Path) -> Path:
 
     ``room.environment_id`` is the room name, which is what the participation
     subcommands and every joining Ravn address.
+
+    ``room.routed`` declares that the room's ravns do the work and the broker
+    owns no CLI agent, so it neither starts one nor routes chat to one.
     """
     room_dir = _room_dir(room_def.name, rooms_dir)
     workspace = room_dir / "workspace"
@@ -312,6 +315,10 @@ def _write_broker_config(room_def: RoomDef, rooms_dir: Path) -> Path:
         "room": {
             "enabled": True,
             "environment_id": room_def.environment_id,
+            # This broker hosts ravns and owns no agent of its own. Without
+            # this the broker lazy-starts its own Claude on the first browser
+            # connect, which then answers chat meant for the room's ravn.
+            "routed": True,
         },
     }
     path = _broker_config_path(room_def.name, rooms_dir)

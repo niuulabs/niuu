@@ -212,6 +212,17 @@ class RoomConfig(BaseModel):
             "(CLI transport, or an error in room-only workflow sessions)."
         ),
     )
+    routed: bool = Field(
+        default=False,
+        description=(
+            "Declare that this broker hosts a room and owns no CLI agent of "
+            "its own. The broker then never starts its own CLI transport, and "
+            "untargeted browser messages go to the room's sole ravn when "
+            "default_target_peer_id is unset. Set by 'ravn room create'. "
+            "Without it a room broker lazy-starts a Claude/Codex process that "
+            "competes with the room's ravns for the same chat frames."
+        ),
+    )
     presence_sweep_interval_s: float = Field(
         default=30.0,
         description=(

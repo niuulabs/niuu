@@ -69,7 +69,13 @@ class TestRoomCreate:
         config = yaml.safe_load(
             room_mod._broker_config_path("desk", rooms_dir).read_text(encoding="utf-8")
         )
-        assert config["room"] == {"enabled": True, "environment_id": "desk"}
+        # 'routed' is what stops the broker lazy-starting its own Claude and
+        # answering chat addressed to the room's ravn.
+        assert config["room"] == {
+            "enabled": True,
+            "environment_id": "desk",
+            "routed": True,
+        }
         assert config["port"] == 7501
         # The broker refuses to start without a writable workspace, so the
         # generated config must point at the room's own directory.
