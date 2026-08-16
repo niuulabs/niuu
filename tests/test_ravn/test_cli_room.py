@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 import typer
@@ -59,6 +60,11 @@ class TestRoomCreate:
         assert room_def.environment_id == "desk"
         assert room_def.port == 7501
         assert room_def.broker_url == "http://127.0.0.1:7501"
+        # The session id is a real UUID, never the room name — Volundr's
+        # event-log API types the session id as UUID, so a name there makes
+        # the durable log 422 forever once volundr_api_url is configured.
+        assert room_def.session_id != "desk"
+        UUID(room_def.session_id)
         assert fake_broker["spawned"] == ["desk"]
 
     def test_broker_config_enables_room_mode(self, rooms_dir: Path, fake_broker: dict) -> None:
@@ -81,6 +87,11 @@ class TestRoomCreate:
         # generated config must point at the room's own directory.
         assert config["session"]["workspace_dir"].startswith(str(rooms_dir))
         assert config["persistence_mount_path"].startswith(str(rooms_dir))
+        # session.id is the room's UUID from room.yaml, not the room name.
+        room_def = room_mod._load_room_def("desk", rooms_dir)
+        assert room_def is not None
+        assert config["session"]["id"] == room_def.session_id
+        UUID(config["session"]["id"])
 
     def test_no_start_skips_the_broker(self, rooms_dir: Path, fake_broker: dict) -> None:
         result = _create(rooms_dir, "desk", "--no-start")
@@ -274,6 +285,7 @@ class TestRoomDefSerialisation:
             host="127.0.0.1",
             port=7501,
             created_at="2026-07-26T00:00:00+00:00",
+            session_id="7d444840-9dc0-11d1-b245-5ffdce74fad2",
         )
 
         restored = RoomDef.from_yaml(original.to_yaml())
@@ -285,6 +297,22 @@ class TestRoomDefSerialisation:
 
         assert restored.host == room_mod._DEFAULT_HOST
         assert restored.created_at == ""
+
+    def test_legacy_definition_derives_a_stable_session_uuid(self) -> None:
+        """A room.yaml written before session ids existed loads with a session
+        id that is a valid UUID, deterministic across loads, and never the
+        room name."""
+        legacy = "name: desk\nenvironment_id: desk\nport: 7501\n"
+
+        first = RoomDef.from_yaml(legacy)
+        second = RoomDef.from_yaml(legacy)
+
+        assert first.session_id == second.session_id
+        assert first.session_id != "desk"
+        UUID(first.session_id)
+        # A different room derives a different id.
+        other = RoomDef.from_yaml("name: attic\nenvironment_id: attic\nport: 7502\n")
+        assert other.session_id != first.session_id
 
 
 class TestParticipationCommands:
