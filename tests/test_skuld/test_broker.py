@@ -33,6 +33,7 @@ from skuld.broker import (
     send_message_to_session,
 )
 from skuld.config import SkuldSettings
+from skuld.event_log import EventLogRejectedError
 from skuld.transports import (
     CodexSubprocessTransport,
     SDKTransport,
@@ -4183,11 +4184,27 @@ class TestShutdownEdgeCases:
         await test_broker.shutdown()
 
     @pytest.mark.asyncio
-    async def test_startup_with_volundr_api_url(self, test_broker):
-        """Startup logs when volundr_api_url is set."""
-        await test_broker.startup()
-        assert test_broker._transport is not None
-        assert test_broker.service_manager is not None
+    async def test_startup_with_unreachable_volundr_fails_loudly(self, test_broker):
+        """A configured durable log that cannot start is fatal, not degraded.
+
+        volundr_api_url names a backend that must hold the transcript; booting
+        without it would silently record nothing.
+        """
+        with pytest.raises(EventLogRejectedError):
+            await test_broker.startup()
+
+    @pytest.mark.asyncio
+    async def test_startup_without_event_log_succeeds(self, tmp_path):
+        """Disabling the event log is an operator decision — startup honours it."""
+        settings = SkuldSettings(
+            session={"id": "s1", "workspace_dir": str(tmp_path)},
+            volundr_api_url="http://volundr.test:80",
+            event_log_enabled=False,
+        )
+        broker = Broker(settings=settings)
+        await broker.startup()
+        assert broker._transport is not None
+        assert broker.service_manager is not None
 
 
 class TestHandleWebSocket:

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import signal
 import time
 import uuid
 from datetime import UTC, datetime
@@ -21,6 +22,15 @@ FORGE_TRACE_SPANS_START_PATH = "/api/v1/forge/spans/start"
 FORGE_TRACE_SPANS_COMPLETE_PATH = "/api/v1/forge/spans/complete"
 
 logger = logging.getLogger("skuld.broker")
+
+
+class EventLogRejectedError(RuntimeError):
+    """Volundr permanently rejected the durable event log — retrying cannot help.
+
+    Raised for client-side rejections (bad session id, bad credentials, wrong
+    base URL). The durable log is configured, so per the no-fallbacks rule the
+    broker must stop rather than run on while silently recording nothing.
+    """
 
 
 def sanitize_log(value: object) -> str:
@@ -489,14 +499,27 @@ class EventLogMixin:
         )
 
     async def _event_log_flush_loop(self) -> None:
-        """Background worker: drain the event-log buffer to Volundr with retry."""
+        """Background worker: drain the event-log buffer to Volundr with retry.
+
+        Transient failures retry forever; a permanent rejection propagates so
+        the worker's done-callback can take the broker down — a broker that
+        keeps chatting while its configured transcript silently records
+        nothing is the failure mode this codebase forbids.
+        """
         interval = self._settings.event_log_flush_interval_ms / 1000.0
         while not self._event_log_stopping:
             await asyncio.sleep(interval)
             try:
                 await self._flush_event_log()
+            except EventLogRejectedError:
+                raise
             except Exception:
                 logger.debug("event log flush iteration failed", exc_info=True)
+
+    @staticmethod
+    def _is_transient_status(status: int) -> bool:
+        """5xx, timeouts, and rate limits recover on retry; other rejections never do."""
+        return status >= 500 or status in (408, 429)
 
     async def _flush_event_log(self) -> None:
         """Send one batch from the front of the buffer. Removes only on success."""
@@ -515,12 +538,20 @@ class EventLogMixin:
             logger.debug("event log POST failed — will retry", exc_info=True)
             return
         if response.status_code >= 300:
-            logger.debug(
-                "event log POST rejected (%d): %s — will retry",
-                response.status_code,
-                response.text[:200],
+            if self._is_transient_status(response.status_code):
+                logger.debug(
+                    "event log POST rejected (%d): %s — will retry",
+                    response.status_code,
+                    response.text[:200],
+                )
+                return
+            raise EventLogRejectedError(
+                f"Volundr rejected the durable event log for session {self.session_id} "
+                f"({response.status_code}): {response.text[:200]}. Retrying cannot fix "
+                "this — session.id must be the Volundr session UUID and the broker's "
+                "credentials must be valid. Fix the config, or unset volundr_api_url / "
+                "set event_log_enabled: false to run without a durable log."
             )
-            return
         # Idempotent on (session_id, seq), so removing exactly the sent count is
         # safe even if newer frames were appended during the POST.
         async with self._event_log_lock:
@@ -532,21 +563,58 @@ class EventLogMixin:
         The PK is (session_id, seq); if a restarted broker reset seq to 0 its
         appends would hit ON CONFLICT DO NOTHING and silently vanish. Seeding
         from the stored head keeps the sequence monotonic across restarts.
+
+        Runs during broker startup, so a head fetch that cannot succeed fails
+        the boot: guessing seq 0 instead risks exactly the silent swallow the
+        resume exists to prevent, and a permanent rejection here means every
+        later flush would fail too.
         """
         if not self._settings.event_log_enabled or not self.volundr_api_url:
             return
         client = await self._get_http_client()
         path = self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id) + "/head"
-        head = 0
         try:
             response = await client.get(path)
-            if response.status_code < 300:
-                head = int(response.json().get("latest_seq", 0))
-        except Exception:
-            logger.debug("event log head fetch failed — starting seq at 0", exc_info=True)
+        except httpx.HTTPError as exc:
+            raise EventLogRejectedError(
+                f"Volundr is unreachable for the event-log head fetch at "
+                f"{self.volundr_api_url}{path}: {exc}. The durable event log is "
+                "configured (volundr_api_url is set) so it must work — fix "
+                "connectivity, or unset volundr_api_url / set event_log_enabled: "
+                "false to run without a durable log."
+            ) from exc
+        if response.status_code >= 300:
+            raise EventLogRejectedError(
+                f"Volundr rejected the event-log head fetch for session "
+                f"{self.session_id} ({response.status_code}): {response.text[:200]}. "
+                "session.id must be the Volundr session UUID and the broker's "
+                "credentials must be valid. Fix the config, or unset "
+                "volundr_api_url / set event_log_enabled: false to run without a "
+                "durable log."
+            )
+        head = int(response.json().get("latest_seq", 0))
         await self._resume_seq_from_head(head)
         self._event_log_task = asyncio.create_task(self._event_log_flush_loop())
+        self._event_log_task.add_done_callback(self._on_event_log_worker_done)
         logger.info("Durable event log started (resume seq=%d)", self._event_log_seq)
+
+    @staticmethod
+    def _on_event_log_worker_done(task: asyncio.Task) -> None:
+        """Take the broker down when the event-log worker dies on a rejection.
+
+        The worker runs detached, so an exception in it is otherwise invisible
+        until shutdown — the broker would keep serving chat while its
+        configured transcript records nothing. SIGTERM triggers uvicorn's
+        graceful shutdown; the supervisor restart then fails loudly in
+        ``_init_event_log`` until the config is fixed.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            return
+        logger.critical("Durable event log worker died: %s — terminating broker", exc)
+        signal.raise_signal(signal.SIGTERM)
 
     async def _resume_seq_from_head(self, head: int) -> None:
         """Seed the seq counter from the backend head WITHOUT losing window frames.
@@ -588,7 +656,17 @@ class EventLogMixin:
             if remaining == 0:
                 return
             before = remaining
-            await self._flush_event_log()
+            try:
+                await self._flush_event_log()
+            except EventLogRejectedError:
+                # Already shutting down — report the loss instead of aborting
+                # the remaining teardown steps.
+                logger.critical(
+                    "Durable event log rejected during shutdown — %d frames lost",
+                    remaining,
+                    exc_info=True,
+                )
+                return
             async with self._event_log_lock:
                 if len(self._event_log_buffer) >= before:
                     return  # made no progress (backend down) — give up

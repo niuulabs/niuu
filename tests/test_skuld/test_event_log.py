@@ -1,9 +1,16 @@
 """Tests for the broker's durable full-fidelity event log producer."""
 
+import asyncio
+from contextlib import suppress
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import pytest
+
+from skuld import event_log as event_log_mod
 from skuld.broker import Broker, ConversationTurn
 from skuld.config import SkuldSettings
+from skuld.event_log import EventLogRejectedError
 
 
 def _broker(tmp_path, **overrides) -> Broker:
@@ -203,3 +210,121 @@ class TestInitResume:
         b = _broker(tmp_path, event_log_enabled=False)
         await b._init_event_log()
         assert b._event_log_task is None
+
+
+class TestPermanentRejection:
+    """A configured durable log that Volundr permanently rejects is fatal.
+
+    Retrying a 4xx forever while logging at DEBUG is the silent-fallback
+    pattern the no-fallbacks rule forbids: the broker keeps chatting while
+    its transcript records nothing.
+    """
+
+    async def test_flush_raises_on_permanent_rejection(self, tmp_path):
+        b = _broker(tmp_path)
+        b._enqueue_event_log({"type": "assistant"})
+
+        client = AsyncMock()
+        rejection = _resp(422)
+        rejection.text = "value is not a valid uuid"
+        client.post.return_value = rejection
+        with patch.object(b, "_get_http_client", AsyncMock(return_value=client)):
+            with pytest.raises(EventLogRejectedError, match="session UUID"):
+                await b._flush_event_log()
+
+    @pytest.mark.parametrize("status", [408, 429, 500, 503])
+    async def test_flush_retries_transient_statuses(self, tmp_path, status):
+        b = _broker(tmp_path)
+        b._enqueue_event_log({"type": "assistant"})
+
+        client = AsyncMock()
+        client.post.return_value = _resp(status)
+        with patch.object(b, "_get_http_client", AsyncMock(return_value=client)):
+            await b._flush_event_log()
+
+        assert len(b._event_log_buffer) == 1  # retained for retry, no raise
+
+    async def test_flush_loop_propagates_permanent_rejection(self, tmp_path):
+        b = _broker(tmp_path, event_log_flush_interval_ms=1)
+
+        with patch.object(
+            b, "_flush_event_log", AsyncMock(side_effect=EventLogRejectedError("rejected"))
+        ):
+            with pytest.raises(EventLogRejectedError):
+                await b._event_log_flush_loop()
+
+    async def test_flush_loop_swallows_transient_errors(self, tmp_path):
+        b = _broker(tmp_path, event_log_flush_interval_ms=1)
+        calls = 0
+
+        async def _flaky():
+            nonlocal calls
+            calls += 1
+            if calls >= 3:
+                b._event_log_stopping = True
+                return
+            raise RuntimeError("network blip")
+
+        with patch.object(b, "_flush_event_log", _flaky):
+            await b._event_log_flush_loop()
+
+        assert calls == 3
+
+    async def test_init_raises_when_head_fetch_is_rejected(self, tmp_path):
+        b = _broker(tmp_path)
+        client = AsyncMock()
+        rejection = _resp(422)
+        rejection.text = "value is not a valid uuid"
+        client.get.return_value = rejection
+
+        with patch.object(b, "_get_http_client", AsyncMock(return_value=client)):
+            with pytest.raises(EventLogRejectedError, match="session UUID"):
+                await b._init_event_log()
+        assert b._event_log_task is None  # no worker started against a dead log
+
+    async def test_init_raises_when_volundr_is_unreachable(self, tmp_path):
+        b = _broker(tmp_path)
+        client = AsyncMock()
+        client.get.side_effect = httpx.ConnectError("connection refused")
+
+        with patch.object(b, "_get_http_client", AsyncMock(return_value=client)):
+            with pytest.raises(EventLogRejectedError, match="unreachable"):
+                await b._init_event_log()
+        assert b._event_log_task is None
+
+    async def test_worker_death_terminates_the_broker(self, tmp_path):
+        b = _broker(tmp_path)
+
+        async def _doomed():
+            raise EventLogRejectedError("rejected")
+
+        task = asyncio.get_running_loop().create_task(_doomed())
+        with suppress(EventLogRejectedError):
+            await task
+
+        with patch.object(event_log_mod.signal, "raise_signal") as raise_signal:
+            b._on_event_log_worker_done(task)
+        raise_signal.assert_called_once_with(event_log_mod.signal.SIGTERM)
+
+    async def test_cancelled_worker_does_not_terminate_the_broker(self, tmp_path):
+        b = _broker(tmp_path)
+
+        task = asyncio.get_running_loop().create_task(asyncio.sleep(60))
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+        with patch.object(event_log_mod.signal, "raise_signal") as raise_signal:
+            b._on_event_log_worker_done(task)
+        raise_signal.assert_not_called()
+
+    async def test_shutdown_drain_reports_rejection_instead_of_raising(self, tmp_path):
+        b = _broker(tmp_path)
+        b._enqueue_event_log({"type": "assistant"})
+
+        with patch.object(
+            b, "_flush_event_log", AsyncMock(side_effect=EventLogRejectedError("rejected"))
+        ):
+            await b._stop_event_log()  # must not raise mid-teardown
+
+        assert len(b._event_log_buffer) == 1  # loss is reported, not hidden
