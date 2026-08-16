@@ -658,6 +658,16 @@ wheels = [
 ]
 
 [[package]]
+name = "deepseek-harness-runtime-bin"
+version = "0.1.0rc6"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/72/19/548c84e9d02683612b6a3a23571d68480c657ef5f4aa1e3c656898ee1824/deepseek_harness_runtime_bin-0.1.0rc6-py3-none-macosx_14_0_arm64.whl", hash = "sha256:2bbd65edd52dfc340d74f88a890e8031a272a820e58406c2de1f5f5dee51bd9f", size = 52313658, upload-time = "2026-08-13T12:51:03.522Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/0b/d9128f0b3edc5ab5fc6d8746e669c924bd23fd017e645796b3b439dd0eb3/deepseek_harness_runtime_bin-0.1.0rc6-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:99d0ef334a4e3cb178d7b0302bbdd01c8dde6068ee5fe8b01e074541db5c7747", size = 56774186, upload-time = "2026-08-13T12:51:07.783Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/26/1c6bc9c26618ca5b2f155a428d4c0c5d5174b68077cccbc10a1629bb3611/deepseek_harness_runtime_bin-0.1.0rc6-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:d7261d3bdadfa8d10ab03fd06c6bbc66a182ae27d39892a0eb7c2ce9d63a5448", size = 57038106, upload-time = "2026-08-13T12:51:11.387Z" },
+]
+
+[[package]]
 name = "docker"
 version = "7.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3283,6 +3293,9 @@ dev = [
     { name = "textual" },
     { name = "typer" },
 ]
+dsh = [
+    { name = "deepseek-harness-runtime-bin" },
+]
 embeddings = [
     { name = "sentence-transformers" },
 ]
@@ -3344,6 +3357,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=49.0.0" },
     { name = "cryptography", marker = "extra == 'dev'", specifier = ">=49.0.0" },
     { name = "cryptography", marker = "extra == 'encryption'", specifier = ">=49.0.0" },
+    { name = "deepseek-harness-runtime-bin", marker = "extra == 'dsh'", specifier = "==0.1.0rc6" },
     { name = "docker", specifier = ">=7.2.0" },
     { name = "fastapi", specifier = ">=0.139.2" },
     { name = "gitpython", specifier = ">=3.1.55" },
@@ -3398,7 +3412,7 @@ requires-dist = [
     { name = "websockets", specifier = ">=16.1.1" },
     { name = "zeroconf", specifier = ">=0.150.0" },
 ]
-provides-extras = ["openshell", "nats", "embeddings", "test", "rabbitmq", "redis", "k8s", "otel", "encryption", "browser", "infra", "cli", "tui", "dev"]
+provides-extras = ["openshell", "dsh", "nats", "embeddings", "test", "rabbitmq", "redis", "k8s", "otel", "encryption", "browser", "infra", "cli", "tui", "dev"]
 
 [package.metadata.requires-dev]
 dev = [
