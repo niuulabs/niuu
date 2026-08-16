@@ -274,6 +274,12 @@ class MimirResidentState(ResidentStatePort):
         )
         return path
 
+    async def count_cases(self) -> tuple[int, int] | None:
+        """Mimir-backed case counting would walk every case page remotely on
+        each health refresh — decline instead; None is the documented answer
+        for a store that cannot count cheaply."""
+        return None
+
     async def list_operator_needed(self) -> list[ResidentMemoryEntry]:
         return await self._list_case_entries(_OPERATOR_NEEDED_PATH, pending=True)
 

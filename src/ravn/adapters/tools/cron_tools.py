@@ -27,12 +27,24 @@ import logging
 import re
 from uuid import uuid4
 
+from niuu.observability import get_observability
 from ravn.adapters.triggers.cron import CronJobRecord, CronJobStore, parse_schedule
 from ravn.domain.models import ToolResult
 from ravn.ports.tool import ToolPort
 from ravn.resident_text import texts_overlap, texts_similar
 
 logger = logging.getLogger(__name__)
+
+
+def _count_cron_refusal(reason: str) -> None:
+    """A refused cron create is a health signal, not just a tool error —
+    a resident repeatedly hitting the cap or restating jobs is thrashing."""
+    get_observability().count(
+        "ravn.resident.cron_refusals",
+        attributes={"ravn.cron.refusal_reason": reason},
+        description="Cron job creations refused by the backlog guard.",
+    )
+
 
 _PERMISSION = "cron:manage"
 
@@ -239,6 +251,7 @@ class CronCreateTool(ToolPort):
 
         restated = self._find_restatement(name, context)
         if restated is not None:
+            _count_cron_refusal("duplicate")
             return ToolResult(
                 tool_call_id="",
                 content=(
@@ -253,6 +266,7 @@ class CronCreateTool(ToolPort):
 
         enabled_jobs = [record for record in self._store.list() if record.enabled]
         if self._max_jobs and len(enabled_jobs) >= self._max_jobs:
+            _count_cron_refusal("max_jobs")
             listing = "\n".join(
                 f"  [{record.job_id}] {record.name!r} — {record.schedule}"
                 for record in enabled_jobs

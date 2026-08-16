@@ -219,6 +219,7 @@ def _build_resident_runtime(
         tool_result_max_chars=cfg.continuation_tool_result_max_chars,
         scheduled_wake_default_seconds=cfg.scheduled_wake_default_seconds,
         repeated_decision_escalate_after=cfg.repeated_decision_escalate_after,
+        health_refresh_interval_seconds=cfg.health_refresh_interval_seconds,
         stewardship_interval_seconds=cfg.stewardship_interval_seconds,
         directed_messages_enabled=settings.resident_inbox.directed_messages_enabled,
         environment_id=settings.environment.id,

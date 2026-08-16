@@ -467,6 +467,11 @@ async def _run_daemon(
 
             if hasattr(drive_loop, "set_resident_runtime"):
                 drive_loop.set_resident_runtime(resident_runtime)
+            if hasattr(drive_loop, "register_telemetry_refresh"):
+                # The health scorecard gauges (cases, wakes, inbox, streak)
+                # age out like any other steady-state gauge — restate them on
+                # every heartbeat; the recount behind them paces itself.
+                drive_loop.register_telemetry_refresh(resident_runtime.publish_health_gauges)
             if http_gateway is not None:
                 http_gateway.bind_resident_status_provider(drive_loop.resident_hud_status)
             if hasattr(drive_loop, "register_directed_message_interceptor"):

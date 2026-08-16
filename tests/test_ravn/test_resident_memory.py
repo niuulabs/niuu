@@ -325,3 +325,20 @@ async def test_pruning_shrinks_what_recall_has_to_read(tmp_path) -> None:
 
     assert after < before
     assert len(_case_ids(tmp_path)) == 3
+
+
+@pytest.mark.asyncio
+async def test_count_cases_reports_live_and_total(tmp_path) -> None:
+    """The scorecard's case numbers come straight from resumability."""
+    mem = _memory(tmp_path)
+    await _sleeping_case(mem, "sleeping")
+    await _waiting_case(mem, "waiting")
+    for idx in range(3):
+        await _dead_case(mem, f"dead-{idx}")
+
+    assert await mem.count_cases() == (2, 5)
+
+
+@pytest.mark.asyncio
+async def test_count_cases_on_an_empty_store(tmp_path) -> None:
+    assert await _memory(tmp_path).count_cases() == (0, 0)

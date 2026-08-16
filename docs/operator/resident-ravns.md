@@ -277,6 +277,33 @@ anything new`) and emit `ravn.resident.repeated_decision_escalated`; every
 counted turn increments `ravn.resident.repeated_decisions`, which is the
 metric to watch if you want to tune the threshold from real behaviour.
 
+## The health scorecard
+
+"Is this resident healthy?" has one answer surface instead of anecdotes. Every
+resident maintains a scorecard of its durable state and re-states it as gauges
+on every telemetry heartbeat:
+
+| Gauge | Meaning |
+|---|---|
+| `ravn.resident.cases.live` | Durable cases something can still resume (pending wake or unanswered operator question) |
+| `ravn.resident.cases.total` | All cases on disk, live and dead |
+| `ravn.resident.scheduled_wakes.pending` | Wakes waiting to fire |
+| `ravn.resident.inbox.pending` | Inbox signals not yet triaged |
+| `ravn.resident.decision_streak` | Consecutive turns reaching the same conclusion (see above) |
+| `ravn.resident.cron_refusals` (counter) | Cron creations refused by the backlog guard — a resident repeatedly hitting the cap or restating jobs is thrashing |
+
+The same numbers ride the HUD payload (`GET /resident/hud-data`, under
+`health`), so one unauthenticated read-only call answers the question without
+Grafana. Existing gauges complete the picture: `ravn.queue.depth`,
+`ravn.learned_tool.count` / `.installed`, `ravn.capabilities.available`, and
+the `ravn.memory.corpus.*` family.
+
+The counts behind the gauges are recomputed on a coarser cadence
+(`resident_state.health_refresh_interval_seconds`, default 300) because they
+walk the case store; the gauges themselves never age out between recounts. A
+Mimir-backed resident state cannot count cases cheaply and omits the two case
+gauges — absence there means "store cannot answer", not zero.
+
 ### Related: verify what a resident is waiting for
 
 The loop above was possible partly because the resident could start a research

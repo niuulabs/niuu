@@ -3180,6 +3180,16 @@ class ResidentStateConfig(BaseModel):
             "0 disables the guard."
         ),
     )
+    health_refresh_interval_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description=(
+            "Seconds between recounts of the resident health scorecard (durable "
+            "cases, pending wakes, inbox depth, decision streak). Gauges are "
+            "re-stated every telemetry heartbeat regardless; this only paces the "
+            "store walk behind them."
+        ),
+    )
     stewardship_interval_seconds: float = Field(
         default=0.0,
         ge=0,

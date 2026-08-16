@@ -1687,3 +1687,120 @@ async def test_the_guard_can_be_disabled(tmp_path) -> None:
     dispositions = await _run_stuck_turns(runtime, 6)
 
     assert {d.kind for d in dispositions} == {ContinuationDecisionKind.SLEEP}
+
+
+# ---------------------------------------------------------------------------
+# Health scorecard
+# ---------------------------------------------------------------------------
+
+
+async def _seed_health_state(tmp_path):
+    """One live case, one dead case, one pending wake, one untriaged signal."""
+    from ravn.domain.resident_continuation import ResidentTurnRecord
+    from ravn.resident_inbox import ResidentInboxSignal
+
+    state = LocalResidentState(tmp_path / "state")
+    inbox = LocalResidentInbox(tmp_path / "inbox")
+
+    def _turn(case_id: str) -> ResidentTurnRecord:
+        return ResidentTurnRecord(
+            turn_index=1,
+            prompt="look around",
+            response="observing",
+            outcome_fields={"decision": "observe"},
+            tool_names=(),
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+            case_id=case_id,
+        )
+
+    await state.write_turn(_turn("dead-case"))
+    await state.write_turn(_turn("sleeping-case"))
+    await state.write_scheduled_wake(
+        ResidentScheduledWakeRecord(
+            case_id="sleeping-case",
+            root_correlation_id="sleeping-case",
+            wake_at=datetime.now(UTC) + timedelta(hours=1),
+            reason="waiting on the next measurement",
+        )
+    )
+    await inbox.write_signal(
+        ResidentInboxSignal(
+            id="sig-1",
+            source="test",
+            kind="k8s_event",
+            summary="node pressure",
+        )
+    )
+    return state, inbox
+
+
+@pytest.mark.asyncio
+async def test_refresh_health_snapshot_counts_durable_state(tmp_path) -> None:
+    state, inbox = await _seed_health_state(tmp_path)
+    runtime = ResidentRuntime(state=state, inbox=inbox, resident_id="ivaldi")
+
+    snapshot = await runtime.refresh_health_snapshot()
+
+    assert snapshot["cases_live"] == 1
+    assert snapshot["cases_total"] == 2
+    assert snapshot["scheduled_wakes_pending"] == 1
+    assert snapshot["inbox_pending"] == 1
+    assert snapshot["repeated_decision_streak"] == 0
+    # The cached view serves the HUD without touching the store again.
+    assert runtime.health_snapshot() == snapshot
+
+
+@pytest.mark.asyncio
+async def test_publish_health_gauges_restates_and_paces_recounts(tmp_path) -> None:
+    state, inbox = await _seed_health_state(tmp_path)
+    runtime = ResidentRuntime(
+        state=state,
+        inbox=inbox,
+        resident_id="ivaldi",
+        health_refresh_interval_seconds=3600.0,
+    )
+    await runtime.refresh_health_snapshot()
+
+    recounts = 0
+    original = runtime.refresh_health_snapshot
+
+    async def _counting_refresh():
+        nonlocal recounts
+        recounts += 1
+        return await original()
+
+    runtime.refresh_health_snapshot = _counting_refresh  # type: ignore[method-assign]
+
+    # Within the interval the heartbeat only restates gauges — no store walk.
+    runtime.publish_health_gauges()
+    runtime.publish_health_gauges()
+    assert recounts == 0
+
+    # Past the interval one recount is kicked off (and only one).
+    runtime._health_refreshed_at = None
+    runtime.publish_health_gauges()
+    runtime.publish_health_gauges()
+    import asyncio as _asyncio
+
+    await _asyncio.sleep(0)
+    assert recounts == 1
+
+
+@pytest.mark.asyncio
+async def test_hud_status_carries_the_health_snapshot(tmp_path) -> None:
+    state, inbox = await _seed_health_state(tmp_path)
+    runtime = ResidentRuntime(state=state, inbox=inbox, resident_id="ivaldi")
+    await runtime.refresh_health_snapshot()
+
+    settings = Settings()
+    loop = DriveLoop(
+        agent_factory=lambda *a, **k: None,
+        config=InitiativeConfig(),
+        settings=settings,
+    )
+    loop.set_resident_runtime(runtime)
+
+    status = loop.resident_hud_status()
+
+    assert status["health"]["cases_live"] == 1
+    assert status["health"]["inbox_pending"] == 1
