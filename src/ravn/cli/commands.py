@@ -1936,7 +1936,7 @@ def tool_build_doctor(
         False, "--json", help="Emit the checklist as structured JSON."
     ),
 ) -> None:
-    """Diagnose the Valkyrie -> Ting/Forge tool-build path hop by hop.
+    """Diagnose the Valkyrie -> A2A/Forge tool-build path hop by hop.
 
     Runs READ-ONLY probes only — it never launches an actual build. Each hop
     reports PASS/FAIL/SKIP with a one-line reason so a misconfiguration
@@ -1961,9 +1961,6 @@ def tool_build_doctor(
         raise typer.Exit(1)
 
 
-_TING_WORKFLOWS_PATH = "/api/v1/ting/workflows"
-
-
 def _effective_workflow_selector(settings: Settings) -> dict[str, Any] | None:
     """Effective tool-builder selector: realm grant overrides static config."""
     realm_config = _resolve_realm_build_config(settings)
@@ -1975,19 +1972,19 @@ def _effective_workflow_selector(settings: Settings) -> dict[str, Any] | None:
     return None
 
 
-async def _discover_ting_workflows(backend: Any) -> tuple[list[Any], str]:
-    """List workflows via the backend's client. Returns (workflows, error)."""
-    from ravn.adapters.tool_build.ting_workflow import _workflow_from_body  # noqa: PLC0415
+async def _discover_workflows(backend: Any) -> tuple[list[Any], str]:
+    """List workflow skills from the backend's agent card. Returns (workflows, error)."""
+    from ravn.valkyrie_evolution.tool_build_doctor import _list_a2a_skills  # noqa: PLC0415
 
-    client = getattr(backend, "client", None)
-    base_url = getattr(backend, "base_url", "")
-    if client is None or not base_url:
-        return [], "configured backend exposes no client/base_url to query"
-    url = f"{base_url}{_TING_WORKFLOWS_PATH}"
-    resp = await client.get(url)
-    if resp.status_code != 200 or not isinstance(resp.body, list):
-        return [], f"GET {url} -> HTTP {resp.status_code} (expected a workflow list)"
-    workflows = [_workflow_from_body(item) for item in resp.body if isinstance(item, dict)]
+    card_url = str(getattr(backend, "card_url", "") or "")
+    if not card_url:
+        return [], (
+            f"the {type(backend).__name__} backend exposes no workflow catalog — "
+            "workflow discovery reads the A2A agent card"
+        )
+    workflows = await _list_a2a_skills(backend)
+    if workflows is None:
+        return [], f"could not read workflow skills from the agent card at {card_url}"
     return workflows, ""
 
 
@@ -1996,9 +1993,9 @@ def tool_build_workflows(
     config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
     json_output: bool = typer.Option(False, "--json", help="Emit workflows as structured JSON."),
 ) -> None:
-    """List Ting workflows and mark those matching the tool-build selector.
+    """List agent-card workflows and mark those matching the tool-build selector.
 
-    READ-ONLY inspection of the "configure from existing Ting workflows" UX.
+    READ-ONLY inspection of the "configure from existing workflows" UX.
     The selector is the realm build grant's workflow (when a realm is
     configured and grants one) or the static ``tool_builder_workflow``.
     """
@@ -2014,7 +2011,7 @@ def tool_build_workflows(
         raise typer.Exit(1)
 
     try:
-        workflows, error = asyncio.run(_discover_ting_workflows(backend))
+        workflows, error = asyncio.run(_discover_workflows(backend))
     except Exception as exc:  # noqa: BLE001 — inspection must never throw a traceback
         typer.echo(f"Failed to list workflows: {exc}", err=True)
         raise typer.Exit(1) from exc

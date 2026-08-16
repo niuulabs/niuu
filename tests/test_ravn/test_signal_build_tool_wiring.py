@@ -149,8 +149,8 @@ def test_build_tool_build_backend_is_inline_by_default_and_dynamic_when_configur
 def test_build_tool_build_backend_injects_configured_workflow_selector() -> None:
     configured = Settings(
         resident_evolution={
-            "tool_build_adapter": "ravn.adapters.tool_build.TingWorkflowToolBuildBackend",
-            "tool_build_kwargs": {"base_url": "http://ting"},
+            "tool_build_adapter": "ravn.adapters.tool_build.A2AToolBuildBackend",
+            "tool_build_kwargs": {"card_url": "http://ting/.well-known/agent-card.json"},
             "tool_builder_workflow": {"tags": ["tool-builder"]},
         }
     )
@@ -158,15 +158,15 @@ def test_build_tool_build_backend_injects_configured_workflow_selector() -> None
     backend = _build_tool_build_backend(configured)
 
     assert backend is not None
-    assert backend.name == "ting_workflow"
+    assert backend.name == "a2a"
     assert backend._workflow_selector.tags == ["tool-builder"]
 
 
 def test_build_tool_build_backend_applies_realm_selector_override() -> None:
     configured = Settings(
         resident_evolution={
-            "tool_build_adapter": "ravn.adapters.tool_build.TingWorkflowToolBuildBackend",
-            "tool_build_kwargs": {"base_url": "http://ting"},
+            "tool_build_adapter": "ravn.adapters.tool_build.A2AToolBuildBackend",
+            "tool_build_kwargs": {"card_url": "http://ting/.well-known/agent-card.json"},
             "tool_builder_workflow": {"tags": ["static-only"]},
         }
     )
@@ -207,8 +207,12 @@ def test_build_tool_build_backend_injects_a2a_activity_emitter() -> None:
 
 def _realm_settings(**overrides: Any) -> Settings:
     base = {
-        "tool_build_adapter": "ravn.adapters.tool_build.TingWorkflowToolBuildBackend",
-        "tool_build_kwargs": {"base_url": "http://volundr"},
+        "tool_build_adapter": "ravn.adapters.tool_build.A2AToolBuildBackend",
+        # base_url is what _resolve_realm_build_config derives the realm API from.
+        "tool_build_kwargs": {
+            "card_url": "http://volundr/.well-known/agent-card.json",
+            "base_url": "http://volundr",
+        },
     }
     base.update(overrides)
     return Settings(resident_evolution=base)

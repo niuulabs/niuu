@@ -1,4 +1,4 @@
-"""tool-build doctor CLI: diagnose the Valkyrie -> Ting/Forge path (Phase 0.2)."""
+"""tool-build doctor CLI: diagnose the Valkyrie -> A2A/Forge path (Phase 0.2)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from ravn.adapters.tool_build import (
     A2AToolBuildBackend,
     ForgeSessionToolBuildBackend,
     HttpResponse,
-    TingWorkflowToolBuildBackend,
 )
 from ravn.cli.commands import app
 from ravn.config import Settings
@@ -71,20 +70,6 @@ def _forge_backend(client: _FakeHttpClient) -> ForgeSessionToolBuildBackend:
     return ForgeSessionToolBuildBackend(client=client, base_url="http://forge")
 
 
-def _ting_backend(
-    client: _FakeHttpClient,
-    *,
-    workflow_id: str = "",
-    workflow_selector: dict[str, Any] | None = None,
-) -> TingWorkflowToolBuildBackend:
-    return TingWorkflowToolBuildBackend(
-        client=client,
-        base_url="http://ting",
-        workflow_id=workflow_id,
-        workflow_selector=workflow_selector,
-    )
-
-
 def _statuses(report: Any) -> dict[int, HopStatus]:
     return {hop.number: hop.status for hop in report.hops}
 
@@ -97,14 +82,14 @@ def _statuses(report: Any) -> dict[int, HopStatus]:
 def test_backend_accessors_expose_base_url_and_client() -> None:
     client = _FakeHttpClient()
     forge = _forge_backend(client)
-    ting = _ting_backend(client, workflow_id="wf-1")
+    a2a = _a2a_doctor_backend(client, workflow_id="wf-1")
 
     assert forge.base_url == "http://forge"
     assert forge.client is client
-    assert ting.base_url == "http://ting"
-    assert ting.client is client
-    assert ting.workflow_id == "wf-1"
-    assert ting.workflow_selector.configured is False
+    assert a2a.card_url == _A2A_CARD_URL
+    assert a2a.client is client
+    assert a2a.workflow_id == "wf-1"
+    assert a2a.workflow_selector.configured is False
 
 
 # ---------------------------------------------------------------------------
@@ -118,38 +103,6 @@ async def test_no_adapter_configured_skips_rest() -> None:
     assert _statuses(report) == {1: HopStatus.SKIP}
     assert report.ok is True
     assert "inline authoring" in report.hops[0].reason
-
-
-# ---------------------------------------------------------------------------
-# Happy path — Ting backend, all PASS
-# ---------------------------------------------------------------------------
-
-
-async def test_ting_happy_path_all_pass() -> None:
-    workflows = [
-        {"id": "wf-research", "name": "Research", "tags": ["research"]},
-        {"id": "wf-builder", "name": "Tool Builder", "tags": ["tool-builder"]},
-    ]
-    client = _FakeHttpClient({("GET", "/api/v1/ting/workflows"): HttpResponse(200, workflows)})
-    backend = _ting_backend(client, workflow_selector={"tags": ["tool-builder"]})
-    settings = _settings(
-        adapter="ravn.adapters.tool_build.TingWorkflowToolBuildBackend",
-        selector={"tags": ["tool-builder"]},
-    )
-
-    with patch("ravn.cli.commands._build_tool_build_backend", return_value=backend):
-        report = await diagnose_tool_build(settings)
-
-    statuses = _statuses(report)
-    assert statuses == {
-        1: HopStatus.PASS,
-        2: HopStatus.PASS,
-        3: HopStatus.PASS,
-        4: HopStatus.PASS,
-        5: HopStatus.PASS,
-    }
-    assert report.ok is True
-    assert "Tool Builder" in report.hops[4].reason
 
 
 async def test_forge_happy_path_skips_workflow_hop() -> None:
@@ -276,10 +229,10 @@ async def test_reachability_connection_error_fails() -> None:
     assert "ConnectionError" in hop4.reason
 
 
-async def test_ting_reachability_failure_skips_workflow_hop() -> None:
-    client = _FakeHttpClient({("GET", "/api/v1/ting/workflows"): HttpResponse(500, "boom")})
-    backend = _ting_backend(client, workflow_selector={"tags": ["tool-builder"]})
-    settings = _settings(adapter="ravn.adapters.tool_build.TingWorkflowToolBuildBackend")
+async def test_a2a_reachability_failure_skips_workflow_hop() -> None:
+    client = _FakeHttpClient({("GET", "/.well-known/agent-card.json"): HttpResponse(500, "boom")})
+    backend = _a2a_doctor_backend(client, workflow_selector={"tags": ["tool-builder"]})
+    settings = _settings(adapter="ravn.adapters.tool_build.a2a.A2AToolBuildBackend")
 
     with patch("ravn.cli.commands._build_tool_build_backend", return_value=backend):
         report = await diagnose_tool_build(settings)
@@ -295,9 +248,10 @@ async def test_ting_reachability_failure_skips_workflow_hop() -> None:
 
 
 async def test_workflow_id_configured_directly_passes() -> None:
-    client = _FakeHttpClient({("GET", "/api/v1/ting/workflows"): HttpResponse(200, [])})
-    backend = _ting_backend(client, workflow_id="wf-explicit")
-    settings = _settings(adapter="ravn.adapters.tool_build.TingWorkflowToolBuildBackend")
+    card = _a2a_doctor_card([])
+    client = _FakeHttpClient({("GET", "/.well-known/agent-card.json"): HttpResponse(200, card)})
+    backend = _a2a_doctor_backend(client, workflow_id="wf-explicit")
+    settings = _settings(adapter="ravn.adapters.tool_build.a2a.A2AToolBuildBackend")
 
     with patch("ravn.cli.commands._build_tool_build_backend", return_value=backend):
         report = await diagnose_tool_build(settings)
@@ -308,9 +262,10 @@ async def test_workflow_id_configured_directly_passes() -> None:
 
 
 async def test_workflow_no_selector_and_no_id_fails() -> None:
-    client = _FakeHttpClient({("GET", "/api/v1/ting/workflows"): HttpResponse(200, [])})
-    backend = _ting_backend(client)
-    settings = _settings(adapter="ravn.adapters.tool_build.TingWorkflowToolBuildBackend")
+    card = _a2a_doctor_card([])
+    client = _FakeHttpClient({("GET", "/.well-known/agent-card.json"): HttpResponse(200, card)})
+    backend = _a2a_doctor_backend(client)
+    settings = _settings(adapter="ravn.adapters.tool_build.a2a.A2AToolBuildBackend")
 
     with patch("ravn.cli.commands._build_tool_build_backend", return_value=backend):
         report = await diagnose_tool_build(settings)
@@ -320,28 +275,16 @@ async def test_workflow_no_selector_and_no_id_fails() -> None:
     assert "no workflow_id" in hop5.reason
 
 
-async def test_workflow_zero_matches_fails() -> None:
-    workflows = [{"id": "wf-research", "name": "Research", "tags": ["research"]}]
-    client = _FakeHttpClient({("GET", "/api/v1/ting/workflows"): HttpResponse(200, workflows)})
-    backend = _ting_backend(client, workflow_selector={"tags": ["tool-builder"]})
-    settings = _settings(adapter="ravn.adapters.tool_build.TingWorkflowToolBuildBackend")
-
-    with patch("ravn.cli.commands._build_tool_build_backend", return_value=backend):
-        report = await diagnose_tool_build(settings)
-
-    hop5 = report.hops[4]
-    assert hop5.status is HopStatus.FAIL
-    assert "zero workflows" in hop5.reason
-
-
 async def test_workflow_multiple_matches_fails() -> None:
-    workflows = [
-        {"id": "wf-a", "name": "Builder A", "tags": ["tool-builder"]},
-        {"id": "wf-b", "name": "Builder B", "tags": ["tool-builder"]},
-    ]
-    client = _FakeHttpClient({("GET", "/api/v1/ting/workflows"): HttpResponse(200, workflows)})
-    backend = _ting_backend(client, workflow_selector={"tags": ["tool-builder"]})
-    settings = _settings(adapter="ravn.adapters.tool_build.TingWorkflowToolBuildBackend")
+    card = _a2a_doctor_card(
+        [
+            {"id": "wf-a", "name": "Builder A", "tags": ["tool-builder"]},
+            {"id": "wf-b", "name": "Builder B", "tags": ["tool-builder"]},
+        ]
+    )
+    client = _FakeHttpClient({("GET", "/.well-known/agent-card.json"): HttpResponse(200, card)})
+    backend = _a2a_doctor_backend(client, workflow_selector={"tags": ["tool-builder"]})
+    settings = _settings(adapter="ravn.adapters.tool_build.a2a.A2AToolBuildBackend")
 
     with patch("ravn.cli.commands._build_tool_build_backend", return_value=backend):
         report = await diagnose_tool_build(settings)
@@ -353,10 +296,14 @@ async def test_workflow_multiple_matches_fails() -> None:
 
 async def test_workflow_discovery_non_list_body_fails() -> None:
     client = _FakeHttpClient(
-        {("GET", "/api/v1/ting/workflows"): HttpResponse(200, {"not": "a list"})}
+        {
+            ("GET", "/.well-known/agent-card.json"): HttpResponse(
+                200, {"name": "Niuu", "skills": "not a list"}
+            )
+        }
     )
-    backend = _ting_backend(client, workflow_selector={"tags": ["tool-builder"]})
-    settings = _settings(adapter="ravn.adapters.tool_build.TingWorkflowToolBuildBackend")
+    backend = _a2a_doctor_backend(client, workflow_selector={"tags": ["tool-builder"]})
+    settings = _settings(adapter="ravn.adapters.tool_build.a2a.A2AToolBuildBackend")
 
     with patch("ravn.cli.commands._build_tool_build_backend", return_value=backend):
         report = await diagnose_tool_build(settings)
@@ -367,17 +314,19 @@ async def test_workflow_discovery_non_list_body_fails() -> None:
 
 
 async def test_workflow_relist_non_200_fails() -> None:
-    """Hop 4 lists workflows once; Hop 5 re-lists — a flapping endpoint FAILs."""
-    workflows = [{"id": "wf-builder", "name": "Tool Builder", "tags": ["tool-builder"]}]
-    responses = iter([HttpResponse(200, workflows), HttpResponse(500, "flap")])
+    """Hop 4 probes the card once; Hop 5 re-reads it — a flapping card FAILs."""
+    card = _a2a_doctor_card(
+        [{"id": "wf-builder", "name": "Tool Builder", "tags": ["tool-builder"]}]
+    )
+    responses = iter([HttpResponse(200, card), HttpResponse(500, "flap")])
 
     class _FlappingClient(_FakeHttpClient):
         async def get(self, url: str) -> HttpResponse:
             self.calls.append(("GET", url))
             return next(responses)
 
-    backend = _ting_backend(_FlappingClient(), workflow_selector={"tags": ["tool-builder"]})
-    settings = _settings(adapter="ravn.adapters.tool_build.TingWorkflowToolBuildBackend")
+    backend = _a2a_doctor_backend(_FlappingClient(), workflow_selector={"tags": ["tool-builder"]})
+    settings = _settings(adapter="ravn.adapters.tool_build.a2a.A2AToolBuildBackend")
 
     with patch("ravn.cli.commands._build_tool_build_backend", return_value=backend):
         report = await diagnose_tool_build(settings)

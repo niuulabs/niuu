@@ -71,7 +71,6 @@ class DoctorReport:
         }
 
 
-_TING_WORKFLOWS_PATH = "/api/v1/ting/workflows"
 _FORGE_HEALTH_PATH = "/api/v1/forge/health"
 
 
@@ -241,8 +240,7 @@ async def _hop4_reachability(backend: Any, kind: str) -> HopResult:
         # discovery end to end (DNS, TLS, auth headers, card route).
         url = base_url
     else:
-        path = _TING_WORKFLOWS_PATH if kind == "ting" else _FORGE_HEALTH_PATH
-        url = f"{base_url}{path}"
+        url = f"{base_url}{_FORGE_HEALTH_PATH}"
     try:
         response = await client.get(url)
     except Exception as exc:  # noqa: BLE001 — doctor must never throw
@@ -273,7 +271,7 @@ async def _hop4_reachability(backend: Any, kind: str) -> HopResult:
 
 
 # ---------------------------------------------------------------------------
-# Hop 5 — workflow discovery (Ting only)
+# Hop 5 — workflow discovery (A2A only)
 # ---------------------------------------------------------------------------
 
 
@@ -303,12 +301,8 @@ async def _hop5_workflow(backend: Any, kind: str, hop4: HopResult) -> HopResult:
     if hop4.status is not HopStatus.PASS:
         return _skip(5, "workflow discovery", "reachability failed; cannot list workflows")
 
-    if kind == "a2a":
-        workflows = await _list_a2a_skills(backend)
-        source = "agent card"
-    else:
-        workflows = await _list_ting_workflows(backend)
-        source = f"GET {_TING_WORKFLOWS_PATH}"
+    workflows = await _list_a2a_skills(backend)
+    source = "agent card"
     if workflows is None:
         return HopResult(
             number=5,
@@ -373,27 +367,6 @@ async def _list_a2a_skills(backend: Any) -> list[WorkflowCapability] | None:
     return [_skill_capability(skill) for skill in skills]
 
 
-async def _list_ting_workflows(backend: Any) -> list[WorkflowCapability] | None:
-    base_url = _backend_base_url(backend)
-    client = _backend_client(backend)
-    if not base_url or client is None:
-        return None
-    try:
-        response = await client.get(f"{base_url}{_TING_WORKFLOWS_PATH}")
-    except Exception:  # noqa: BLE001 — doctor must never throw
-        return None
-    if getattr(response, "status_code", 0) != 200:
-        return None
-    body = getattr(response, "body", None)
-    if not isinstance(body, list):
-        return None
-    # The one catalog mapper lives in the Ting backend — the doctor must see
-    # exactly the workflows (including metadata) the backend it diagnoses sees.
-    from ravn.adapters.tool_build.ting_workflow import _workflow_from_body  # noqa: PLC0415
-
-    return [_workflow_from_body(item) for item in body if isinstance(item, dict)]
-
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -407,8 +380,6 @@ def _backend_kind(backend: Any) -> str:
     name = str(getattr(backend, "name", "") or "").lower()
     if name == "a2a" or "A2A" in type(backend).__name__:
         return "a2a"
-    if "ting" in name or "TingWorkflow" in type(backend).__name__:
-        return "ting"
     return "forge"
 
 
