@@ -649,6 +649,17 @@ class TestMountedConfig:
             assert env["HOME"] == "/workspace"
             assert env["RAVN_STATE_DIR"] == "/workspace/.ravn"
 
+        journals = {
+            yaml.safe_load(_extract_mounted_config(result.pod_spec, persona))["initiative"][
+                "queue_journal_path"
+            ]
+            for persona in ("coordinator", "reviewer")
+        }
+        assert journals == {
+            "/workspace/.ravn/daemon/coordinator-queue.json",
+            "/workspace/.ravn/daemon/reviewer-queue.json",
+        }
+
     async def test_ravn_config_uses_workspace_mount_root(self, session, flock_template):
         """Ravn sidecars must run tools and Codex transports from the writable workspace."""
         provider = MagicMock()

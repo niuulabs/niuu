@@ -1358,6 +1358,22 @@ class Broker(
     async def _run_workflow_trigger_task(self) -> None:
         """Dispatch the initial workflow trigger after broker startup completes."""
         cfg = self._settings.workflow_trigger
+        marker_path = (
+            Path(self.workspace_dir)
+            / CONVERSATION_HISTORY_DIR
+            / f"workflow_kickoff_{self.session_id}.json"
+        )
+        marker = {
+            "workflow_id": str(self._settings.workflow.workflow_id or ""),
+            "event_type": cfg.event_type,
+            "node_id": cfg.node_id,
+        }
+        try:
+            if json.loads(marker_path.read_text(encoding="utf-8")) == marker:
+                logger.info("Workflow kickoff already acknowledged — skipping restart dispatch")
+                return
+        except (FileNotFoundError, OSError, ValueError):
+            pass
         telemetry = get_observability()
         workflow_name = (
             str(getattr(self._settings.workflow, "name", "") or "").strip()
@@ -1408,6 +1424,10 @@ class Broker(
                 self._trace_workflow_span_id = None
                 logger.exception("Workflow trigger dispatch failed")
                 raise
+            marker_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = marker_path.with_name(f".{marker_path.name}.{uuid.uuid4().hex}.tmp")
+            temporary.write_text(json.dumps(marker, sort_keys=True), encoding="utf-8")
+            temporary.replace(marker_path)
             telemetry.event("skuld.workflow.dispatched", attributes=attributes)
 
     def _observer_peer_id(self) -> str:

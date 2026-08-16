@@ -194,6 +194,7 @@ _venv_python = tool_venv_python
 
 _TEST_RUNNER = """
 import importlib.util
+import inspect
 import sys
 
 spec = importlib.util.spec_from_file_location("_verify_tool", sys.argv[1])
@@ -210,6 +211,12 @@ tests = [
     for name in dir(test_module)
     if name.startswith("test") and callable(getattr(test_module, name))
 ]
+parameterized = [test.__name__ for test in tests if inspect.signature(test).parameters]
+if parameterized:
+    raise TypeError(
+        "verification tests must be zero-argument callables; unsupported parameters in: "
+        + ", ".join(parameterized)
+    )
 for test in tests:
     test()
 print("verify: ran %d test callable(s)" % len(tests))
