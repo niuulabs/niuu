@@ -216,10 +216,14 @@ class LocalResidentMemory(ResidentMemoryPort):
     def _case_is_resumable(self, case_dir: Path) -> bool:
         """Whether any mechanism can still bring this case back.
 
-        Exactly two things resume a case: a pending scheduled wake, and an
-        unanswered operator question. Both already record ``- status: pending``
-        under a known leaf — the same convention ``_list_case_entries`` reads —
-        so this needs no new state to answer.
+        Three things resume a case: a pending scheduled wake, an unanswered
+        operator question, and an operator answer the resident has not yet
+        consumed — ``ResidentRuntime.retry_unconsumed_answers`` drives that
+        last one. Answering a question flips its marker from pending to
+        answered, so a case waiting on nothing but a fresh answer looks
+        unresumable to the first two tests; pruning on that alone would
+        delete the operator's answer and the suspended work it was about to
+        resume, which is the one loss this sweep must never cause.
         """
         for leaf in (_SCHEDULED_WAKE_PATH, _OPERATOR_NEEDED_PATH):
             marker = case_dir / leaf
@@ -230,6 +234,13 @@ class LocalResidentMemory(ResidentMemoryPort):
                     return True
             except OSError:
                 # Unreadable marker: assume the case is live rather than delete it.
+                return True
+
+        answer = case_dir / _OPERATOR_ANSWER_PATH
+        if answer.is_file():
+            try:
+                return not _operator_answer_is_consumed(answer.read_text(encoding="utf-8"))
+            except OSError:
                 return True
         return False
 

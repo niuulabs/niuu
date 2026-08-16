@@ -342,3 +342,51 @@ async def test_count_cases_reports_live_and_total(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_count_cases_on_an_empty_store(tmp_path) -> None:
     assert await _memory(tmp_path).count_cases() == (0, 0)
+
+
+async def _answered_case(mem, case_id: str) -> None:
+    """A case whose question an operator answered and the resident has not read.
+
+    ``retry_unconsumed_answers`` is what brings this one back, so it is live
+    even though answering flipped its question marker out of "pending".
+    """
+    await _waiting_case(mem, case_id)
+    await mem.write_operator_answer("yes, go ahead", case_id=case_id)
+
+
+@pytest.mark.asyncio
+async def test_an_unconsumed_answer_keeps_a_case_live(tmp_path) -> None:
+    """Answering must not make a case prunable before the resident reads it."""
+    mem = _memory(tmp_path, retention_max_cases=1)
+    await _answered_case(mem, "answered")
+    for idx in range(3):
+        await _dead_case(mem, f"dead-{idx}")
+
+    removed = await mem.prune_cases()
+
+    assert "answered" in _case_ids(tmp_path), (
+        "pruning an answered case discards the operator's answer and the "
+        "suspended work it was about to resume"
+    )
+    assert removed == 3
+
+
+@pytest.mark.asyncio
+async def test_an_answered_case_counts_as_live(tmp_path) -> None:
+    """The gauges must agree with what the sweep spares."""
+    mem = _memory(tmp_path)
+    await _answered_case(mem, "answered")
+    await _dead_case(mem, "dead")
+
+    assert await mem.count_cases() == (1, 2)
+
+
+@pytest.mark.asyncio
+async def test_a_consumed_answer_lets_the_case_go(tmp_path) -> None:
+    """Once the resident has read the answer, nothing resumes the case."""
+    mem = _memory(tmp_path, retention_max_cases=0, retention_max_age_days=0.0)
+    await _answered_case(mem, "answered")
+    answer = (await mem.list_operator_answers())[0]
+    await mem.consume_operator_answer(answer)
+
+    assert await mem.count_cases() == (0, 1)
