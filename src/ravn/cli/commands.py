@@ -93,6 +93,10 @@ from ravn.cli.room import room_app  # noqa: E402
 
 app.add_typer(room_app, name="room")
 
+from ravn.cli.resident_commands import resident_app  # noqa: E402
+
+app.add_typer(resident_app, name="resident")
+
 
 @app.command("join")
 def join(
