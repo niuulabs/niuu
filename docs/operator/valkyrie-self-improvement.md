@@ -41,41 +41,29 @@ All Valkyrie-side levers live in `ResidentEvolutionConfig`
 
 ```yaml
 resident_evolution:
-  tool_build_adapter: ravn.adapters.tool_build.TingWorkflowToolBuildBackend
+  tool_build_adapter: ravn.adapters.tool_build.a2a.A2AToolBuildBackend
   tool_build_kwargs:
-    base_url: https://yggdrasil.niuu.world
+    card_url: https://yggdrasil.niuu.world/.well-known/agent-card.json
+    workflow_selector: {tags: [tool-builder]}
     # in-cluster (preferred): workload identity
     workload_token_file: /var/run/secrets/niuu-workload/token
     workload_exchange_url: https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange
     workload_audiences: [volundr-api, forge, ting, mimir, guild]
     # off-cluster alternative: a PAT (full owner authority — see Security)
     # external_token_env: RAVN_VOLUNDR_PAT
-  tool_builder_workflow:
-    tags: [tool-builder]        # discovery by tag; or pin names: ["Tool & Skill Builder"]
 ```
 
 Options:
-- `A2AToolBuildBackend` — launches the build as an A2A workflow task against
-  any agent card (Ting's facade or a foreign platform). Configuration shrinks
-  to a card URL plus credentials; workflow discovery happens via the card's
-  skills (see `docs/operator/a2a-workflow-tasks.md`):
-
-  ```yaml
-  resident_evolution:
-    tool_build_adapter: ravn.adapters.tool_build.a2a.A2AToolBuildBackend
-    tool_build_kwargs:
-      card_url: https://yggdrasil.niuu.world/.well-known/agent-card.json
-      workflow_selector: {tags: [tool-builder]}
-      workload_token_file: /var/run/secrets/niuu-workload/token
-      workload_exchange_url: https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange
-      workload_audiences: [volundr-api, forge, ting, mimir, guild]
-  ```
-- `TingWorkflowToolBuildBackend` — commissions a Ting workflow campaign over
-  the bespoke Ting REST API (superseded by the A2A backend; scheduled for
-  removal once the A2A path is validated in dev — NIU-1115).
+- `A2AToolBuildBackend` (shown above) — launches the build as an A2A workflow
+  task against any agent card (Ting's facade or a foreign platform).
+  Configuration is a card URL plus credentials; workflow discovery happens
+  via the card's skills (see `docs/operator/a2a-workflow-tasks.md`).
 - `ForgeSessionToolBuildBackend` — drives a single Forge session directly.
 - Empty `tool_build_adapter` — the investigating agent writes tool code
   inline in-session (no external build; verification still runs).
+
+(The old `TingWorkflowToolBuildBackend`, which drove the bespoke Ting REST
+API, was removed after the A2A path was validated in dev — NIU-1115.)
 
 The backend automatically requests a least-privilege build token scoped to
 exactly its launch endpoint (`ting:workflow:launch` or

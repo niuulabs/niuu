@@ -29,15 +29,12 @@ from ting.adapters.memory_event_bus import InMemoryEventBus
 from ting.adapters.ravn_outcome_handler import RavnOutcomeHandler, _extract_outcome
 from ting.config import ReviewConfig
 from ting.domain.models import (
-    ConfidenceEventType,
-    PRStatus,
     RavnOutcome,
     RunStatus,
     Saga,
     SagaStatus,
 )
 from ting.domain.services.review_engine import ReviewEngine
-from ting.ports.git import GitPort
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -94,36 +91,12 @@ def _make_saga(*, tracker_id: str = "saga-tracker-001") -> Saga:
 # ---------------------------------------------------------------------------
 
 
-class StubGit(GitPort):
-    async def create_branch(self, repo: str, branch: str, base: str) -> None:
-        pass
-
-    async def merge_branch(self, repo: str, source: str, target: str) -> None:
-        pass
-
-    async def delete_branch(self, repo: str, branch: str) -> None:
-        pass
-
-    async def create_pr(self, repo: str, source: str, target: str, title: str) -> str:
-        return "pr-1"
-
-    async def get_pr_status(self, pr_id: str) -> PRStatus:
-        raise RuntimeError("no PR in stub")
-
-    async def get_pr_changed_files(self, pr_id: str) -> list[str]:
-        return []
-
-
 def _make_engine(tracker: StubTracker, event_bus: InMemoryEventBus | None = None) -> ReviewEngine:
     factory = StubTrackerFactory(tracker)
     return ReviewEngine(
         tracker_factory=factory,
         volundr_factory=StubVolundrFactory(),
-        git=StubGit(),
-        review_config=ReviewConfig(
-            reviewer_session_enabled=False,
-            auto_approve_threshold=0.80,
-        ),
+        review_config=ReviewConfig(),
         event_bus=event_bus,
     )
 
@@ -213,135 +186,6 @@ class TestExtractOutcome:
 # ---------------------------------------------------------------------------
 
 
-class TestHandleRavnOutcomeSignals:
-    @pytest.mark.asyncio
-    async def test_tests_passing_true_emits_ci_pass(self):
-        run = make_run(status=RunStatus.REVIEW, confidence=0.5)
-        tracker = StubTracker(run)
-        engine = _make_engine(tracker)
-
-        outcome = RavnOutcome(
-            verdict="escalate",
-            tests_passing=True,
-            scope_adherence=1.0,
-            pr_url=None,
-            files_changed=[],
-            summary="",
-        )
-        await engine.handle_ravn_outcome(
-            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
-        )
-
-        event_types = [e.event_type for e in tracker.confidence_events.get(_TRACKER_ID, [])]
-        assert ConfidenceEventType.CI_PASS in event_types
-
-    @pytest.mark.asyncio
-    async def test_tests_passing_false_emits_ci_fail(self):
-        run = make_run(status=RunStatus.REVIEW, confidence=0.5)
-        tracker = StubTracker(run)
-        engine = _make_engine(tracker)
-
-        outcome = RavnOutcome(
-            verdict="escalate",
-            tests_passing=False,
-            scope_adherence=1.0,
-            pr_url=None,
-            files_changed=[],
-            summary="",
-        )
-        await engine.handle_ravn_outcome(
-            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
-        )
-
-        event_types = [e.event_type for e in tracker.confidence_events.get(_TRACKER_ID, [])]
-        assert ConfidenceEventType.CI_FAIL in event_types
-
-    @pytest.mark.asyncio
-    async def test_tests_passing_none_no_ci_event(self):
-        run = make_run(status=RunStatus.REVIEW)
-        tracker = StubTracker(run)
-        engine = _make_engine(tracker)
-
-        outcome = RavnOutcome(
-            verdict="escalate",
-            tests_passing=None,
-            scope_adherence=1.0,
-            pr_url=None,
-            files_changed=[],
-            summary="",
-        )
-        await engine.handle_ravn_outcome(
-            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
-        )
-
-        event_types = [e.event_type for e in tracker.confidence_events.get(_TRACKER_ID, [])]
-        assert ConfidenceEventType.CI_PASS not in event_types
-        assert ConfidenceEventType.CI_FAIL not in event_types
-
-    @pytest.mark.asyncio
-    async def test_low_scope_adherence_emits_scope_breach(self):
-        run = make_run(status=RunStatus.REVIEW, confidence=0.8)
-        tracker = StubTracker(run)
-        engine = _make_engine(tracker)
-
-        outcome = RavnOutcome(
-            verdict="escalate",
-            tests_passing=None,
-            scope_adherence=0.5,  # below threshold of 0.7
-            pr_url=None,
-            files_changed=[],
-            summary="",
-        )
-        await engine.handle_ravn_outcome(
-            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
-        )
-
-        event_types = [e.event_type for e in tracker.confidence_events.get(_TRACKER_ID, [])]
-        assert ConfidenceEventType.SCOPE_BREACH in event_types
-
-    @pytest.mark.asyncio
-    async def test_high_scope_adherence_no_breach(self):
-        run = make_run(status=RunStatus.REVIEW, confidence=0.8)
-        tracker = StubTracker(run)
-        engine = _make_engine(tracker)
-
-        outcome = RavnOutcome(
-            verdict="approve",
-            tests_passing=True,
-            scope_adherence=0.9,  # above threshold
-            pr_url=None,
-            files_changed=[],
-            summary="",
-        )
-        await engine.handle_ravn_outcome(
-            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
-        )
-
-        event_types = [e.event_type for e in tracker.confidence_events.get(_TRACKER_ID, [])]
-        assert ConfidenceEventType.SCOPE_BREACH not in event_types
-
-    @pytest.mark.asyncio
-    async def test_scope_adherence_none_no_breach(self):
-        run = make_run(status=RunStatus.REVIEW)
-        tracker = StubTracker(run)
-        engine = _make_engine(tracker)
-
-        outcome = RavnOutcome(
-            verdict="escalate",
-            tests_passing=None,
-            scope_adherence=None,
-            pr_url=None,
-            files_changed=[],
-            summary="",
-        )
-        await engine.handle_ravn_outcome(
-            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
-        )
-
-        event_types = [e.event_type for e in tracker.confidence_events.get(_TRACKER_ID, [])]
-        assert ConfidenceEventType.SCOPE_BREACH not in event_types
-
-
 # ---------------------------------------------------------------------------
 # Unit: ReviewEngine.handle_ravn_outcome — decision logic
 # ---------------------------------------------------------------------------
@@ -349,53 +193,28 @@ class TestHandleRavnOutcomeSignals:
 
 class TestHandleRavnOutcomeDecisions:
     @pytest.mark.asyncio
-    async def test_verdict_approve_high_confidence_auto_approved(self):
-        # ci_pass delta=0.30, starting at 0.6 → 0.9 >= 0.8 threshold → auto_approved
-        run = make_run(status=RunStatus.REVIEW, confidence=0.6)
+    async def test_non_authoritative_approve_escalates(self):
+        """An approve without workflow authority is an opinion, not a verdict."""
+        run = make_run(status=RunStatus.REVIEW, confidence=0.9)
         tracker = StubTracker(run)
         engine = _make_engine(tracker)
 
         outcome = RavnOutcome(
             verdict="approve",
-            tests_passing=True,  # ci_pass +0.30 → score=0.9
+            tests_passing=True,
             scope_adherence=1.0,
             pr_url=None,
             files_changed=[],
             summary="",
         )
-        decision = await engine.handle_ravn_outcome(
-            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
-        )
-
-        assert decision.action == "auto_approved"
-        updated_run = tracker._runs_by_id[_TRACKER_ID]
-        assert updated_run.status == RunStatus.MERGED
-
-    @pytest.mark.asyncio
-    async def test_verdict_approve_low_confidence_escalated(self):
-        # Starting at 0.4, ci_fail -0.30 → 0.1 < 0.8 threshold → escalated even with "approve"
-        run = make_run(status=RunStatus.REVIEW, confidence=0.4)
-        tracker = StubTracker(run)
-        engine = _make_engine(tracker)
-
-        outcome = RavnOutcome(
-            verdict="approve",
-            tests_passing=False,  # ci_fail -0.30 → score=0.1
-            scope_adherence=1.0,
-            pr_url=None,
-            files_changed=[],
-            summary="",
-        )
-        decision = await engine.handle_ravn_outcome(
-            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
-        )
+        decision = await engine.handle_ravn_outcome(_TRACKER_ID, _OWNER, outcome)
 
         assert decision.action == "escalated"
         updated_run = tracker._runs_by_id[_TRACKER_ID]
         assert updated_run.status == RunStatus.ESCALATED
 
     @pytest.mark.asyncio
-    async def test_authoritative_workflow_approval_auto_approves_even_below_threshold(self):
+    async def test_authoritative_workflow_approval_auto_approves(self):
         run = make_run(status=RunStatus.REVIEW, confidence=0.0)
         tracker = StubTracker(run)
         engine = _make_engine(tracker)
@@ -423,9 +242,7 @@ class TestHandleRavnOutcomeDecisions:
                 },
             ],
         )
-        decision = await engine.handle_ravn_outcome(
-            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
-        )
+        decision = await engine.handle_ravn_outcome(_TRACKER_ID, _OWNER, outcome)
 
         assert decision.action == "auto_approved"
         updated_run = tracker._runs_by_id[_TRACKER_ID]
@@ -455,9 +272,7 @@ class TestHandleRavnOutcomeDecisions:
             ],
         )
 
-        decision = await engine.handle_ravn_outcome(
-            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
-        )
+        decision = await engine.handle_ravn_outcome(_TRACKER_ID, _OWNER, outcome)
 
         assert decision.action == "auto_approved"
         updated_run = tracker._runs_by_id[_TRACKER_ID]
@@ -477,9 +292,7 @@ class TestHandleRavnOutcomeDecisions:
             files_changed=[],
             summary="",
         )
-        decision = await engine.handle_ravn_outcome(
-            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
-        )
+        decision = await engine.handle_ravn_outcome(_TRACKER_ID, _OWNER, outcome)
 
         assert decision.action == "retried"
         updated_run = tracker._runs_by_id[_TRACKER_ID]
@@ -501,9 +314,7 @@ class TestHandleRavnOutcomeDecisions:
             files_changed=[],
             summary="",
         )
-        decision = await engine.handle_ravn_outcome(
-            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
-        )
+        decision = await engine.handle_ravn_outcome(_TRACKER_ID, _OWNER, outcome)
 
         assert decision.action == "failed"
         updated_run = tracker._runs_by_id[_TRACKER_ID]
@@ -523,9 +334,7 @@ class TestHandleRavnOutcomeDecisions:
             files_changed=[],
             summary="",
         )
-        decision = await engine.handle_ravn_outcome(
-            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
-        )
+        decision = await engine.handle_ravn_outcome(_TRACKER_ID, _OWNER, outcome)
 
         assert decision.action == "escalated"
         updated_run = tracker._runs_by_id[_TRACKER_ID]
@@ -545,9 +354,7 @@ class TestHandleRavnOutcomeDecisions:
             files_changed=[],
             summary="",
         )
-        decision = await engine.handle_ravn_outcome(
-            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
-        )
+        decision = await engine.handle_ravn_outcome(_TRACKER_ID, _OWNER, outcome)
 
         assert decision.action == "escalated"
 
@@ -564,12 +371,11 @@ class TestHandleRavnOutcomeDecisions:
             pr_url=None,
             files_changed=[],
             summary="",
+            authoritative=True,
+            checks=[{"verdict": "pass"}],
         )
-        decision = await engine.handle_ravn_outcome(
-            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
-        )
+        decision = await engine.handle_ravn_outcome(_TRACKER_ID, _OWNER, outcome)
 
-        # After ci_pass (+0.30) starting at 0.6 → 0.9 ≥ 0.8 → auto_approved
         assert decision.action == "auto_approved"
         updated_run = tracker._runs_by_id[_TRACKER_ID]
         assert updated_run.status == RunStatus.MERGED
@@ -588,9 +394,7 @@ class TestHandleRavnOutcomeDecisions:
             files_changed=[],
             summary="",
         )
-        decision = await engine.handle_ravn_outcome(
-            _TRACKER_ID, _OWNER, outcome, scope_adherence_threshold=0.7
-        )
+        decision = await engine.handle_ravn_outcome(_TRACKER_ID, _OWNER, outcome)
 
         assert decision.action == "skipped"
         updated_run = tracker._runs_by_id[_TRACKER_ID]
@@ -609,8 +413,7 @@ class TestRavnOutcomeHandlerCorrelation:
         engine = ReviewEngine(
             tracker_factory=factory,
             volundr_factory=StubVolundrFactory(),
-            git=StubGit(),
-            review_config=ReviewConfig(reviewer_session_enabled=False),
+            review_config=ReviewConfig(),
             event_bus=bus,
         )
         handler = RavnOutcomeHandler(
@@ -647,7 +450,13 @@ class TestRavnOutcomeHandlerCorrelation:
         tracker = StubTracker(run)
         handler, _ = self._make_handler(tracker)
 
-        payload = {"verdict": "approve", "tests_passing": True, "scope_adherence": 1.0}
+        payload = {
+            "verdict": "approve",
+            "tests_passing": True,
+            "scope_adherence": 1.0,
+            "authoritative": True,
+            "checks": [{"verdict": "pass"}],
+        }
         event = _make_sleipnir_event(payload, correlation_id=_SESSION)
         await handler._process_event(event)
 
@@ -668,6 +477,8 @@ class TestRavnOutcomeHandlerCorrelation:
                     "verdict": "approve",
                     "tests_passing": True,
                     "scope_adherence": 1.0,
+                    "authoritative": True,
+                    "checks": [{"verdict": "pass"}],
                 },
             },
             event_type="ravn.session.ended",
@@ -691,6 +502,8 @@ class TestRavnOutcomeHandlerCorrelation:
                     "verdict": "approve",
                     "tests_passing": True,
                     "scope_adherence": 1.0,
+                    "authoritative": True,
+                    "checks": [{"verdict": "pass"}],
                 },
             },
             event_type="ravn.session.ended",
@@ -709,7 +522,13 @@ class TestRavnOutcomeHandlerCorrelation:
         handler, _ = self._make_handler(tracker)
 
         event = _make_sleipnir_event(
-            {"tracker_issue_id": _TRACKER_ID, "verdict": "approve", "tests_passing": True},
+            {
+                "tracker_issue_id": _TRACKER_ID,
+                "verdict": "approve",
+                "tests_passing": True,
+                "authoritative": True,
+                "checks": [{"verdict": "pass"}],
+            },
             correlation_id=_SESSION,
         )
         await handler._process_event(event)
@@ -725,7 +544,13 @@ class TestRavnOutcomeHandlerCorrelation:
         handler, _ = self._make_handler(tracker)
 
         event = _make_sleipnir_event(
-            {"run_id": "not-a-uuid", "verdict": "approve", "tests_passing": True},
+            {
+                "run_id": "not-a-uuid",
+                "verdict": "approve",
+                "tests_passing": True,
+                "authoritative": True,
+                "checks": [{"verdict": "pass"}],
+            },
             correlation_id="unrelated",
         )
         await handler._process_event(event)
@@ -741,8 +566,7 @@ class TestRavnOutcomeHandlerCorrelation:
         engine = ReviewEngine(
             tracker_factory=empty_factory,
             volundr_factory=StubVolundrFactory(),
-            git=StubGit(),
-            review_config=ReviewConfig(reviewer_session_enabled=False),
+            review_config=ReviewConfig(),
             event_bus=bus,
         )
         handler = RavnOutcomeHandler(
@@ -772,8 +596,7 @@ class TestRavnOutcomeHandlerIntegration:
         engine = ReviewEngine(
             tracker_factory=factory,
             volundr_factory=StubVolundrFactory(),
-            git=StubGit(),
-            review_config=ReviewConfig(reviewer_session_enabled=False),
+            review_config=ReviewConfig(),
         )
         handler = RavnOutcomeHandler(
             subscriber=bus,
@@ -791,6 +614,8 @@ class TestRavnOutcomeHandlerIntegration:
                     "verdict": "approve",
                     "tests_passing": True,
                     "scope_adherence": 0.95,
+                    "authoritative": True,
+                    "checks": [{"verdict": "pass"}],
                     "summary": "All tests pass",
                 },
                 summary="task done",
@@ -819,8 +644,7 @@ class TestRavnOutcomeHandlerIntegration:
         engine = ReviewEngine(
             tracker_factory=factory,
             volundr_factory=StubVolundrFactory(),
-            git=StubGit(),
-            review_config=ReviewConfig(reviewer_session_enabled=False),
+            review_config=ReviewConfig(),
         )
         handler = RavnOutcomeHandler(
             subscriber=bus,
@@ -863,8 +687,7 @@ class TestRavnOutcomeHandlerIntegration:
         engine = ReviewEngine(
             tracker_factory=factory,
             volundr_factory=StubVolundrFactory(),
-            git=StubGit(),
-            review_config=ReviewConfig(reviewer_session_enabled=False),
+            review_config=ReviewConfig(),
             dispatch_service=dispatch_service,
         )
         handler = RavnOutcomeHandler(
@@ -887,6 +710,8 @@ class TestRavnOutcomeHandlerIntegration:
                         "tests_passing": True,
                         "scope_adherence": 0.95,
                         "summary": "Ready for merge",
+                        "authoritative": True,
+                        "checks": [{"verdict": "pass"}],
                     },
                     "outcome_valid": True,
                     "files_changed": ["src/ting/domain/services/dispatch_service.py"],
@@ -918,8 +743,7 @@ class TestRavnOutcomeHandlerIntegration:
             review_engine=ReviewEngine(
                 tracker_factory=StubTrackerFactory(StubTracker()),
                 volundr_factory=StubVolundrFactory(),
-                git=StubGit(),
-                review_config=ReviewConfig(reviewer_session_enabled=False),
+                review_config=ReviewConfig(),
             ),
             owner_id=_OWNER,
         )
@@ -938,8 +762,7 @@ class TestRavnOutcomeHandlerIntegration:
         engine = ReviewEngine(
             tracker_factory=factory,
             volundr_factory=StubVolundrFactory(),
-            git=StubGit(),
-            review_config=ReviewConfig(reviewer_session_enabled=False),
+            review_config=ReviewConfig(),
         )
         handler = RavnOutcomeHandler(
             subscriber=subscriber,
@@ -964,8 +787,7 @@ class TestRavnOutcomeHandlerIntegration:
         engine = ReviewEngine(
             tracker_factory=factory,
             volundr_factory=StubVolundrFactory(),
-            git=StubGit(),
-            review_config=ReviewConfig(reviewer_session_enabled=False),
+            review_config=ReviewConfig(),
         )
         handler = RavnOutcomeHandler(
             subscriber=subscriber,
@@ -995,8 +817,7 @@ class TestRavnOutcomeHandlerIntegration:
         engine = ReviewEngine(
             tracker_factory=factory,
             volundr_factory=StubVolundrFactory(),
-            git=StubGit(),
-            review_config=ReviewConfig(reviewer_session_enabled=False),
+            review_config=ReviewConfig(),
         )
         engine.handle_ravn_outcome = AsyncMock(side_effect=RuntimeError("boom"))
         handler = RavnOutcomeHandler(
@@ -1027,8 +848,7 @@ class TestCoexistence:
         engine = ReviewEngine(
             tracker_factory=factory,
             volundr_factory=StubVolundrFactory(),
-            git=StubGit(),
-            review_config=ReviewConfig(reviewer_session_enabled=False),
+            review_config=ReviewConfig(),
         )
         handler = RavnOutcomeHandler(
             subscriber=InProcessBus(),
@@ -1054,8 +874,7 @@ class TestCoexistence:
         engine = ReviewEngine(
             tracker_factory=factory,
             volundr_factory=StubVolundrFactory(),
-            git=StubGit(),
-            review_config=ReviewConfig(reviewer_session_enabled=False),
+            review_config=ReviewConfig(),
         )
         handler = RavnOutcomeHandler(
             subscriber=InProcessBus(),

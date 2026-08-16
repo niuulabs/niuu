@@ -197,12 +197,6 @@ _BUILTIN_METADATA: dict[str, dict[str, str]] = {
         "summary": "Runs retrospective analysis on completed work.",
         "description": "Runs retrospective analysis on completed work.",
     },
-    "review-arbiter": {
-        "role": "arbiter",
-        "color": "var(--color-accent-indigo)",
-        "summary": "Final arbiter for contested code reviews.",
-        "description": "Final arbiter for contested code reviews.",
-    },
     "reviewer": {
         "role": "review",
         "color": "var(--color-accent-indigo)",

@@ -92,11 +92,10 @@ class MimirSourceTrigger(TriggerPort):
 
         for src in sources:
             if src.source_type in OPERATIONAL_SOURCE_TYPES:
-                # Records of the system's own activity — probe output, tool
-                # transcripts, run logs. No synthesis will ever cite one, so it
-                # stays "unprocessed" forever; sweeping it again every poll is
-                # work that can never finish. Ingest now refuses these, but the
-                # shared mount already holds 61 from before that gate existed.
+                # The port contract excludes operational exhaust from
+                # unprocessed listings, but a foreign mount may not honour it —
+                # without this guard one such mount would put the sweep back on
+                # a backlog it can never finish.
                 continue
 
             enqueued_at = self._enqueued.get(src.source_id)

@@ -4,7 +4,7 @@ Runs a single LLM turn with a persona's system prompt and parses the
 ``---outcome---`` block from the response.  No DriveLoop, no mesh, no
 discovery — just a persona, an initiative context, and one turn.
 
-Used by ReviewEngine (review-arbiter) and BifrostAdapter (decomposer).
+Used by BifrostAdapter (decomposer).
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ class RavnDispatcher:
         Parameters
         ----------
         persona_name:
-            Name of the persona to load (e.g. ``"review-arbiter"``).
+            Name of the persona to load (e.g. ``"decomposer"``).
         initiative_context:
             The user-facing context string passed to the agent.
         model:

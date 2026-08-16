@@ -103,24 +103,6 @@ data:
       {{- end }}
     {{- end }}
 
-    {{- if and .Values.review (or .Values.review.reviewerSystemPrompt .Values.review.reviewerInitialPromptTemplate .Values.review.reviewerModel .Values.review.maxReviewRounds .Values.review.autoApproveThreshold) }}
-    review:
-      {{- if .Values.review.reviewerSystemPrompt }}
-      reviewer_system_prompt: {{ .Values.review.reviewerSystemPrompt | quote }}
-      {{- end }}
-      {{- if .Values.review.reviewerInitialPromptTemplate }}
-      reviewer_initial_prompt_template: {{ .Values.review.reviewerInitialPromptTemplate | quote }}
-      {{- end }}
-      {{- if .Values.review.reviewerModel }}
-      reviewer_model: {{ .Values.review.reviewerModel | quote }}
-      {{- end }}
-      {{- if .Values.review.maxReviewRounds }}
-      max_review_rounds: {{ .Values.review.maxReviewRounds }}
-      {{- end }}
-      {{- if .Values.review.autoApproveThreshold }}
-      auto_approve_threshold: {{ .Values.review.autoApproveThreshold }}
-      {{- end }}
-    {{- end }}
     {{- if or .Values.a2a.agentName .Values.a2a.agentDescription .Values.a2a.cardMaxAgeSeconds .Values.a2a.inlineArtifactMaxChars .Values.a2a.extraArtifactFiles .Values.a2a.publicBaseUrl .Values.a2a.pushAuth.adapter }}
     a2a:
       {{- if .Values.a2a.agentName }}

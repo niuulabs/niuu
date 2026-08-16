@@ -13,4 +13,4 @@ pnpm install
 echo "▸ building packages"
 pnpm build
 
-echo "✔ bootstrap complete — run 'pnpm storybook' or 'pnpm dev'"
+echo "✔ bootstrap complete — run 'pnpm dev'"

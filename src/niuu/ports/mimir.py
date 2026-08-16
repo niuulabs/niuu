@@ -192,8 +192,11 @@ class MimirPort(ABC):
     async def list_sources(self, *, unprocessed_only: bool = False) -> list[MimirSourceMeta]:
         """List ingested raw sources.
 
-        When *unprocessed_only* is True, returns only sources that are not yet
-        referenced in any wiki page (i.e. no page carries a matching source_id).
+        When *unprocessed_only* is True, returns only sources awaiting
+        synthesis: not yet referenced in any wiki page (no page carries a
+        matching source_id) and not of an operational type
+        (``OPERATIONAL_SOURCE_TYPES``) — exhaust is never synthesis work, so
+        it must not read as backlog.
         """
         raise NotImplementedError
 

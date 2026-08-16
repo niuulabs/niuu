@@ -294,7 +294,6 @@ class WardenStore:
             "produce-recap": "report",
             "reporter": "report",
             "reviewer": "review",
-            "review-arbiter": "review",
             "verifier": "verify",
             "qa-agent": "verify",
             "planning-agent": "plan",

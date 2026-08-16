@@ -2034,13 +2034,3 @@
   filter: brightness(1.1);
 }
 
-/* ── Storybook story wrappers ─────────────────────────────────────────────── */
-.rv-story-wrapper {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  padding: var(--space-4);
-}
-.rv-story-wrapper--tall {
-  height: 600px;
-}

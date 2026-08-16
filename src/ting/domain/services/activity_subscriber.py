@@ -6,11 +6,6 @@ completion signals, and transitions runs accordingly.
 Uses VolundrAdapterFactory to resolve per-owner authenticated adapters —
 each user's PAT (from their IntegrationConnection) authenticates the SSE
 subscription to their Volundr instance.
-
-When a ReviewEngine is provided, the subscriber also detects reviewer session
-completion. If an idle session is not associated with a RUNNING run, the
-subscriber checks whether it is a tracked reviewer session and, if so, fetches
-the chronicle summary and delegates to ReviewEngine.handle_reviewer_completion.
 """
 
 from __future__ import annotations
@@ -70,7 +65,6 @@ class SessionActivitySubscriber:
         config: WatcherConfig,
         review_engine: ReviewEngine | None = None,
         sleipnir_publisher: object | None = None,
-        ravn_scope_adherence_threshold: float = 0.7,
         workflow_campaign_projector: WorkflowCampaignProjector | None = None,
     ) -> None:
         self._factory = volundr_factory
@@ -80,7 +74,6 @@ class SessionActivitySubscriber:
         self._config = config
         self._review_engine = review_engine
         self._sleipnir_publisher = sleipnir_publisher
-        self._ravn_scope_adherence_threshold = ravn_scope_adherence_threshold
         self._workflow_campaign_projector = workflow_campaign_projector
         self._running = False
         self._task: asyncio.Task[None] | None = None
@@ -388,20 +381,6 @@ class SessionActivitySubscriber:
 
         run, tracker = await self._find_run_for_session(event.session_id, owner_id)
         if run is None or tracker is None:
-            # Check if this is a reviewer session completing
-            await self._try_handle_reviewer_completion(event.session_id, volundr)
-            return
-
-        # Working session idle during an active review loop (round >= 1) —
-        # the reviewer drives the loop directly. Ting does not re-trigger.
-        # Round 0 means the working session just completed initial work and
-        # should proceed to normal completion → REVIEW transition.
-        if run.status == RunStatus.REVIEW and run.review_round >= 1:
-            logger.info(
-                "Working session %s idle during review loop (round %d) — reviewer drives",
-                event.session_id[:8],
-                run.review_round,
-            )
             return
 
         session = await volundr.get_session(event.session_id)
@@ -672,7 +651,6 @@ class SessionActivitySubscriber:
             run.tracker_id,
             owner_id,
             outcome,
-            scope_adherence_threshold=self._ravn_scope_adherence_threshold,
         )
         return True
 
@@ -754,33 +732,12 @@ class SessionActivitySubscriber:
 
         run, tracker = await self._find_run_for_session(event.session_id, owner_id)
         if run is None or tracker is None:
-            # Not a working-session failure. The session may still be a
-            # tracked reviewer that died early (e.g. provisioning hit the
-            # max-concurrent cap before the reviewer could start). Without
-            # this hop the run would sit in REVIEW indefinitely with a
-            # phantom reviewer_session_id.
-            await self._try_handle_reviewer_failure(
-                event.session_id, event.session_status or "failed"
-            )
             return
 
         reason = str(event.metadata.get("error") or event.metadata.get("message") or "").strip()
         if not reason:
             reason = f"Session {event.session_status or event.state or 'failed'}"
         await self._handle_failure(run, tracker, owner_id, reason=reason)
-
-    async def _try_handle_reviewer_failure(self, session_id: str, reason: str) -> None:
-        """If the failed session is a tracked reviewer, hand off to review_engine."""
-        if self._review_engine is None:
-            return
-        try:
-            await self._review_engine.handle_reviewer_failure(session_id, reason)
-        except Exception:
-            logger.warning(
-                "Failed to handle reviewer failure for session %s",
-                session_id,
-                exc_info=True,
-            )
 
     async def _handle_failure(
         self,
@@ -817,34 +774,6 @@ class SessionActivitySubscriber:
             run.tracker_id,
             reason,
         )
-
-    async def _try_handle_reviewer_completion(self, session_id: str, volundr: VolundrPort) -> None:
-        """If the session is a tracked reviewer, fetch its output and delegate."""
-        if self._review_engine is None:
-            return
-
-        mapping = self._review_engine.get_reviewer_run(session_id)
-        if mapping is None:
-            return
-
-        try:
-            reviewer_output = await volundr.get_last_assistant_message(session_id)
-        except Exception:
-            logger.error(
-                "Failed to fetch reviewer output for session %s",
-                session_id,
-                exc_info=True,
-            )
-            raise
-
-        try:
-            await self._review_engine.handle_reviewer_completion(session_id, reviewer_output)
-        except Exception:
-            logger.warning(
-                "Failed to handle reviewer completion for session %s",
-                session_id,
-                exc_info=True,
-            )
 
     async def _emit_state_changed(
         self,

@@ -4,7 +4,6 @@ import inspect
 
 import pytest
 
-from ting.ports.confidence import ConfidencePort
 from ting.ports.git import GitPort
 from ting.ports.llm import LLMPort
 from ting.ports.tracker import TrackerPort
@@ -124,21 +123,6 @@ class TestGitPort:
         abstract_methods = {
             name
             for name, _ in inspect.getmembers(GitPort, predicate=inspect.isfunction)
-            if not name.startswith("_")
-        }
-        assert methods == abstract_methods
-
-
-class TestConfidencePort:
-    def test_is_abstract(self) -> None:
-        with pytest.raises(TypeError):
-            ConfidencePort()  # type: ignore[abstract]
-
-    def test_methods_exist(self) -> None:
-        methods = {"score_initial", "update_score", "get_score"}
-        abstract_methods = {
-            name
-            for name, _ in inspect.getmembers(ConfidencePort, predicate=inspect.isfunction)
             if not name.startswith("_")
         }
         assert methods == abstract_methods

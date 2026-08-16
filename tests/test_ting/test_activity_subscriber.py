@@ -575,7 +575,6 @@ class TestActivityEventHandling:
         assert call.args[1] == OWNER_ID
         assert call.args[2].verdict == "approve"
         assert call.args[2].authoritative is False
-        assert call.kwargs["scope_adherence_threshold"] == pytest.approx(0.7)
 
     @pytest.mark.asyncio
     async def test_idle_event_persists_help_needed_and_emits_feedback_notification(self) -> None:

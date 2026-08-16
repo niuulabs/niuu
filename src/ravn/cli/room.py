@@ -44,6 +44,7 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import typer
 import yaml
@@ -108,6 +109,16 @@ def _rooms_dir_default() -> Path:
 # ---------------------------------------------------------------------------
 
 
+def _legacy_room_session_id(name: str) -> str:
+    """Deterministic session UUID for a room definition written before
+    session ids existed.
+
+    Derived from the room name so every load of the same old definition
+    agrees on one id without rewriting the file.
+    """
+    return str(uuid5(NAMESPACE_URL, f"niuu:ravn-room:{name}"))
+
+
 @dataclass
 class RoomDef:
     """Static room definition — created by create, read by every other command."""
@@ -117,6 +128,10 @@ class RoomDef:
     host: str
     port: int
     created_at: str
+    # The broker's session id. A real UUID, distinct from the room name:
+    # Volundr's event-log API types the session id as UUID, so a name here
+    # makes every durable-log call fail — see _write_broker_config.
+    session_id: str = ""
 
     @property
     def broker_url(self) -> str:
@@ -128,12 +143,14 @@ class RoomDef:
     @classmethod
     def from_yaml(cls, text: str) -> RoomDef:
         data = yaml.safe_load(text) or {}
+        name = str(data["name"])
         return cls(
-            name=str(data["name"]),
+            name=name,
             environment_id=str(data["environment_id"]),
             host=str(data.get("host", _DEFAULT_HOST)),
             port=int(data["port"]),
             created_at=str(data.get("created_at", "")),
+            session_id=str(data.get("session_id") or _legacy_room_session_id(name)),
         )
 
 
@@ -294,6 +311,13 @@ def _write_broker_config(room_def: RoomDef, rooms_dir: Path) -> Path:
 
     ``room.environment_id`` is the room name, which is what the participation
     subcommands and every joining Ravn address.
+
+    ``session.id`` is the room's own UUID, never the room name: Volundr's
+    event-log API types the session id as UUID, so a name there makes every
+    durable-log call 422 forever the moment ``volundr_api_url`` is added.
+
+    ``room.routed`` declares that the room's ravns do the work and the broker
+    owns no CLI agent, so it neither starts one nor routes chat to one.
     """
     room_dir = _room_dir(room_def.name, rooms_dir)
     workspace = room_dir / "workspace"
@@ -306,12 +330,16 @@ def _write_broker_config(room_def: RoomDef, rooms_dir: Path) -> Path:
         "port": room_def.port,
         "persistence_mount_path": str(persist),
         "session": {
-            "id": room_def.name,
+            "id": room_def.session_id,
             "workspace_dir": str(workspace),
         },
         "room": {
             "enabled": True,
             "environment_id": room_def.environment_id,
+            # This broker hosts ravns and owns no agent of its own. Without
+            # this the broker lazy-starts its own Claude on the first browser
+            # connect, which then answers chat meant for the room's ravn.
+            "routed": True,
         },
     }
     path = _broker_config_path(room_def.name, rooms_dir)
@@ -449,6 +477,7 @@ def room_create(
         host=host,
         port=resolved_port,
         created_at=datetime.now(UTC).isoformat(),
+        session_id=str(uuid4()),
     )
 
     _room_dir(name, resolved_dir).mkdir(parents=True, exist_ok=True)
@@ -507,6 +536,7 @@ def room_show(
 
     typer.echo(f"name:           {room_def.name}")
     typer.echo(f"environment_id: {room_def.environment_id}")
+    typer.echo(f"session_id:     {room_def.session_id}")
     typer.echo(f"broker_url:     {room_def.broker_url}")
     typer.echo(f"created_at:     {room_def.created_at}")
     typer.echo(f"status:         {'running' if pid is not None else 'stopped'}")

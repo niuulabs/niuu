@@ -233,6 +233,24 @@ class LocalResidentMemory(ResidentMemoryPort):
                 return True
         return False
 
+    async def count_cases(self) -> tuple[int, int] | None:
+        """Return (live, total) durable case counts for health reporting."""
+        return await asyncio.to_thread(self._count_cases_sync)
+
+    def _count_cases_sync(self) -> tuple[int, int]:
+        base = self._root / self._prefix / "cases"
+        if not base.is_dir():
+            return (0, 0)
+        live = 0
+        total = 0
+        for case_dir in base.iterdir():
+            if not case_dir.is_dir():
+                continue
+            total += 1
+            if self._case_is_resumable(case_dir):
+                live += 1
+        return (live, total)
+
     async def prune_cases(self) -> int:
         """Delete unresumable cases beyond the retention policy; return the count."""
         return await asyncio.to_thread(self._prune_cases_sync)

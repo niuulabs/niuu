@@ -53,9 +53,6 @@ class RavnOutcomeHandler:
         The ReviewEngine instance to delegate decisions to.
     owner_id:
         Owner ID used when looking up tracker adapters.
-    scope_adherence_threshold:
-        ``scope_adherence`` values below this threshold trigger a
-        :attr:`~ting.domain.models.ConfidenceEventType.SCOPE_BREACH` signal.
     """
 
     def __init__(
@@ -65,13 +62,11 @@ class RavnOutcomeHandler:
         tracker_factory: TrackerFactory,
         review_engine: ReviewEngine,
         owner_id: str,
-        scope_adherence_threshold: float = 0.7,
     ) -> None:
         self._subscriber = subscriber
         self._tracker_factory = tracker_factory
         self._review_engine = review_engine
         self._owner_id = owner_id
-        self._scope_adherence_threshold = scope_adherence_threshold
 
         self._subscription: Subscription | None = None
         self._pending_tasks: set[asyncio.Task[None]] = set()
@@ -165,7 +160,6 @@ class RavnOutcomeHandler:
                 run.tracker_id,
                 self._owner_id,
                 outcome,
-                scope_adherence_threshold=self._scope_adherence_threshold,
             )
             logger.info(
                 "RavnOutcomeHandler: run %s → %s (reason=%s)",

@@ -1585,6 +1585,7 @@ class DriveLoop:
             self._result_store.results(),
             active_parent_ids=active_parent_ids,
         )
+        health_snapshot = getattr(self._resident_runtime, "health_snapshot", None)
         return {
             "active_tasks": active,
             "active_count": len(active),
@@ -1595,6 +1596,9 @@ class DriveLoop:
             "a2a_tasks": a2a_tasks,
             "a2a_count": len(a2a_tasks),
             "model": self._settings.effective_model(),
+            # Durable-health counts (cases, wakes, inbox, decision streak) —
+            # one call answers "is this resident healthy" without Grafana.
+            "health": health_snapshot() if callable(health_snapshot) else {},
         }
 
     def queued_task_ids(self) -> list[str]:

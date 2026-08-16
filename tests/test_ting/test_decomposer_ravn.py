@@ -304,7 +304,8 @@ class TestRavnDispatcher:
         from ting.adapters.ravn_dispatcher import RavnDispatcher
 
         response_text = (
-            "Some reasoning...\n\n---outcome---\nverdict: approve\nreason: all good\n---end---"
+            "Some reasoning...\n\n---outcome---\nphases: '{}'\nverdict: approve\n"
+            "reason: all good\n---end---"
         )
         respx.post("http://dispatch.test/v1/messages").mock(
             return_value=httpx.Response(
@@ -319,7 +320,7 @@ class TestRavnDispatcher:
             model="claude-sonnet-4-6",
         )
         try:
-            result = await dispatcher.dispatch("review-arbiter", "context here")
+            result = await dispatcher.dispatch("decomposer", "context here")
         finally:
             await dispatcher.close()
 
@@ -362,7 +363,7 @@ class TestRavnDispatcher:
             api_key="test",
         )
         try:
-            result = await dispatcher.dispatch("review-arbiter", "context")
+            result = await dispatcher.dispatch("decomposer", "context")
         finally:
             await dispatcher.close()
 
@@ -383,20 +384,11 @@ class TestRavnDispatcher:
             api_key="test",
         )
         try:
-            result = await dispatcher.dispatch("review-arbiter", "context")
+            result = await dispatcher.dispatch("decomposer", "context")
         finally:
             await dispatcher.close()
 
         assert result is None
-
-    def test_load_persona_review_arbiter(self) -> None:
-        """RavnDispatcher.load_persona() can resolve 'review-arbiter'."""
-        from ting.adapters.ravn_dispatcher import RavnDispatcher
-
-        dispatcher = RavnDispatcher()
-        persona = dispatcher.load_persona("review-arbiter")
-        assert persona is not None
-        assert persona.name == "review-arbiter"
 
     def test_load_persona_decomposer(self) -> None:
         """RavnDispatcher.load_persona() can resolve 'decomposer'."""

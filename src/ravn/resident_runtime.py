@@ -47,6 +47,16 @@ from ravn.resident_text import compact_line
 
 logger = logging.getLogger(__name__)
 
+
+def _log_health_refresh_failure(task: asyncio.Task[dict[str, int]]) -> None:
+    """Surface a failed background health recount instead of losing it."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("resident health recount failed: %s", exc, exc_info=exc)
+
+
 EnqueueResidentTask = Callable[[AgentTask], Awaitable[bool | None]]
 
 _A2A_TERMINAL_STATES = frozenset(
@@ -128,6 +138,7 @@ class ResidentRuntime:
         tool_result_max_chars: int = 2000,
         scheduled_wake_default_seconds: float = 3600.0,
         repeated_decision_escalate_after: int = 5,
+        health_refresh_interval_seconds: float = 300.0,
         stewardship_interval_seconds: float = 0.0,
         directed_messages_enabled: bool = True,
         environment_id: str = "",
@@ -144,6 +155,7 @@ class ResidentRuntime:
         self._tool_result_max_chars = max(100, int(tool_result_max_chars))
         self._scheduled_wake_default_seconds = max(1.0, float(scheduled_wake_default_seconds))
         self._repeated_decision_escalate_after = max(0, int(repeated_decision_escalate_after))
+        self._health_refresh_interval_seconds = max(1.0, float(health_refresh_interval_seconds))
         self._stewardship_interval_seconds = max(0.0, float(stewardship_interval_seconds))
         self._directed_messages_enabled = directed_messages_enabled
         self._environment_id = environment_id.strip() or "unknown"
@@ -151,6 +163,11 @@ class ResidentRuntime:
         self._enqueue: EnqueueResidentTask | None = None
         self._inflight_cases: set[str] = set()
         self._inflight_refs: set[str] = set()
+        # Latest durable-health counts, refreshed off the hot path and
+        # re-stated as gauges on every telemetry heartbeat so they never age
+        # out of the metrics backend between refreshes.
+        self._health_snapshot: dict[str, int] = {}
+        self._health_refreshed_at: float | None = None
 
     @property
     def state(self) -> ResidentStatePort:
@@ -169,6 +186,99 @@ class ResidentRuntime:
 
     def bind_review_requester(self, requester: ReviewRequester | None) -> None:
         self._review_requester = requester
+
+    # ------------------------------------------------------------------
+    # Health scorecard
+    # ------------------------------------------------------------------
+
+    def health_snapshot(self) -> dict[str, int]:
+        """Latest durable-health counts (possibly empty before first refresh)."""
+        return dict(self._health_snapshot)
+
+    async def refresh_health_snapshot(self) -> dict[str, int]:
+        """Recount durable state and re-state the resident health gauges.
+
+        Every number here is a judgment surface: cases that can still resume,
+        wakes waiting to fire, inbox signals not yet triaged, and how long the
+        resident has been reaching the same conclusion. The counts are cached
+        so ``publish_health_gauges`` can restate them cheaply each heartbeat.
+        """
+        snapshot: dict[str, int] = {}
+
+        counts = await self._state.count_cases()
+        if counts is not None:
+            live, total = counts
+            snapshot["cases_live"] = live
+            snapshot["cases_total"] = total
+
+        wakes = await self._state.list_scheduled_wakes()
+        snapshot["scheduled_wakes_pending"] = len(wakes)
+
+        if self._inbox is not None:
+            pending = await self._inbox.list_signals(
+                status=ResidentInboxStatus.NEW.value, limit=1000
+            )
+            snapshot["inbox_pending"] = len(pending)
+
+        streak = await self._state.read_decision_streak(self._resident_id)
+        snapshot["repeated_decision_streak"] = streak.count if streak is not None else 0
+
+        self._health_snapshot = snapshot
+        self._health_refreshed_at = time.monotonic()
+        self._emit_health_gauges(snapshot)
+        return dict(snapshot)
+
+    def publish_health_gauges(self) -> None:
+        """Re-state cached health gauges; schedule a recount when stale.
+
+        Registered as a drive-loop telemetry refresher, so it must stay
+        synchronous and off the disk: it re-emits the cached counts and, at a
+        coarser cadence, kicks the actual recount off as a task.
+        """
+        if self._health_snapshot:
+            self._emit_health_gauges(self._health_snapshot)
+
+        now = time.monotonic()
+        if (
+            self._health_refreshed_at is not None
+            and now - self._health_refreshed_at < self._health_refresh_interval_seconds
+        ):
+            return
+        # Mark refreshed first so overlapping heartbeats do not stack recounts.
+        self._health_refreshed_at = now
+        task = asyncio.get_running_loop().create_task(self.refresh_health_snapshot())
+        task.add_done_callback(_log_health_refresh_failure)
+
+    def _emit_health_gauges(self, snapshot: Mapping[str, int]) -> None:
+        telemetry = get_observability()
+        attributes = {"ravn.resident.id": self._resident_id}
+        gauges = {
+            "cases_live": (
+                "ravn.resident.cases.live",
+                "Durable resident cases that can still resume.",
+            ),
+            "cases_total": (
+                "ravn.resident.cases.total",
+                "Durable resident cases on disk, live and dead.",
+            ),
+            "scheduled_wakes_pending": (
+                "ravn.resident.scheduled_wakes.pending",
+                "Durable scheduled resident wakes still pending.",
+            ),
+            "inbox_pending": (
+                "ravn.resident.inbox.pending",
+                "Resident inbox signals not yet triaged.",
+            ),
+            "repeated_decision_streak": (
+                "ravn.resident.decision_streak",
+                "Consecutive resident turns reaching an unchanged conclusion.",
+            ),
+        }
+        for key, (name, description) in gauges.items():
+            value = snapshot.get(key)
+            if value is None:
+                continue
+            telemetry.gauge(name, value, attributes=attributes, description=description)
 
     async def prepare_context(self, task: AgentTask) -> str:
         """Present the resident's exact prior working state to a new model turn."""
@@ -844,6 +954,9 @@ class ResidentRuntime:
                 updated_at=now,
             )
         await self._state.write_decision_streak(streak)
+        # Keep the cached scorecard honest between recounts — the streak is
+        # the one health number that can jump many steps within one interval.
+        self._health_snapshot["repeated_decision_streak"] = streak.count
 
         telemetry = get_observability()
         telemetry.count(

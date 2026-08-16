@@ -120,7 +120,12 @@ class GuildRegistryConfig(BaseModel):
 
 
 class ReviewConfig(BaseModel):
-    """Confidence deltas for run review actions."""
+    """Run review projection settings.
+
+    The confidence deltas here feed only the human review audit trail
+    (RunReviewService); the automated confidence gate they once tuned was
+    removed in favour of authoritative workflow outcomes.
+    """
 
     confidence_delta_approved: float = Field(default=0.15)
     confidence_delta_rejected: float = Field(default=-0.20)
@@ -129,205 +134,9 @@ class ReviewConfig(BaseModel):
         default=0.5,
         description="Starting confidence score for newly committed sagas, phases, and runs.",
     )
-    auto_approve_threshold: float = Field(
-        default=0.80,
-        description="Confidence threshold above which runs are auto-merged.",
-    )
     max_retries: int = Field(
         default=3,
         description="Maximum auto-retries before escalation to human review.",
-    )
-    scope_breach_threshold: float = Field(
-        default=0.30,
-        description="Fraction of undeclared changed files that flags a scope breach.",
-    )
-    confidence_delta_ci_pass: float = Field(default=0.30)
-    confidence_delta_ci_fail: float = Field(default=-0.30)
-    confidence_delta_mergeable: float = Field(default=0.10)
-    confidence_delta_conflict: float = Field(default=-0.20)
-    confidence_delta_scope_breach: float = Field(default=-0.25)
-    confidence_delta_retry_multiplier: float = Field(
-        default=-0.05,
-        description="Per-retry confidence penalty (multiplied by retry_count).",
-    )
-    reviewer_session_enabled: bool = Field(
-        default=True,
-        description="Spawn an LLM-powered reviewer session for runs in REVIEW state.",
-    )
-    reviewer_model: str = Field(
-        default="claude-opus-4-6",
-        description="AI model for reviewer sessions.",
-    )
-    reviewer_profile: str = Field(
-        default="reviewer",
-        description="Volundr profile name for reviewer sessions.",
-    )
-    reviewer_confidence_weight: float = Field(
-        default=0.60,
-        description="Weight applied to the reviewer's confidence score (0.0–1.0).",
-    )
-    reviewer_spawn_bonus: float = Field(
-        default=0.1,
-        description="Small confidence bonus applied when a reviewer session is spawned.",
-    )
-    max_review_rounds: int = Field(
-        default=6,
-        ge=6,
-        description="Maximum review rounds before escalating. Minimum 6.",
-    )
-    ravn_arbiter_enabled: bool = Field(
-        default=False,
-        description=(
-            "When True, ReviewEngine dispatches to the review-arbiter ravn persona "
-            "before falling back to imperative signal-based decisions."
-        ),
-    )
-    ravn_arbiter_model: str = Field(
-        default="claude-sonnet-4-6",
-        description="AI model used by the review-arbiter ravn persona.",
-    )
-    ravn_arbiter_timeout: float = Field(
-        default=60.0,
-        description="HTTP timeout in seconds for review-arbiter ravn dispatch calls.",
-    )
-    reviewer_system_prompt: str = Field(
-        default=(
-            "You are a senior code reviewer for the Niuu platform. You do not just check\n"
-            "rules — you READ the code, UNDERSTAND it, and provide substantive feedback\n"
-            "on quality, design, and correctness.\n"
-            "\n"
-            "## Setup\n"
-            "\n"
-            "1. Read CLAUDE.md and `.claude/rules/` — they are the authoritative project rules.\n"
-            "2. Ensure tools are available:\n"
-            "   - `gh` (GitHub CLI): check `~/` or PATH. Install if missing (`brew install gh`).\n"
-            "   - Linear MCP server may be available. If not, use LINEAR_API_KEY env.\n"
-            "\n"
-            "## Review Process\n"
-            "\n"
-            "Read the full diff and review EVERY changed file across three dimensions:\n"
-            "\n"
-            "### 1. Code Reuse\n"
-            "- Search the codebase for existing utilities that could replace newly written code.\n"
-            "- Flag new functions that duplicate existing functionality —"
-            " suggest the existing one.\n"
-            "- Flag inline logic that could use an existing utility (string manipulation, path\n"
-            "  handling, type guards, etc.).\n"
-            "\n"
-            "### 2. Code Quality\n"
-            "- **Redundant state**: state duplicating other state, values that could be derived.\n"
-            "- **Parameter sprawl**: adding params instead of restructuring.\n"
-            "- **Copy-paste with variation**: near-duplicate blocks that should be unified.\n"
-            "- **Leaky abstractions**: exposing internals, breaking abstraction boundaries.\n"
-            "- **Stringly-typed code**: raw strings where constants or enums exist.\n"
-            "- **Unnecessary comments**: comments explaining WHAT (delete), keep only WHY.\n"
-            "- **Architecture violations**: wrong layer imports, missing port/adapter separation.\n"
-            "\n"
-            "### 3. Efficiency\n"
-            "- **Unnecessary work**: redundant computations, repeated reads, N+1 patterns.\n"
-            "- **Missed concurrency**: independent operations run sequentially.\n"
-            "- **Hot-path bloat**: blocking work on startup or per-request paths.\n"
-            "- **Memory**: unbounded data structures, missing cleanup.\n"
-            "- **Overly broad operations**: reading entire files when a portion suffices.\n"
-            "\n"
-            "### 4. Correctness & Safety\n"
-            "- Verify acceptance criteria are met.\n"
-            "- Check the PR targets the feature branch, NOT `main`.\n"
-            "- Check `codecov/patch` — it is a hard gate, not advisory.\n"
-            "- Look for edge cases, error handling gaps, and security issues.\n"
-            "- Verify conventional commit messages.\n"
-            "\n"
-            "## Every Finding Must Be Addressed\n"
-            "\n"
-            "Every finding — bugs, quality issues, reuse opportunities, efficiency\n"
-            "improvements — is blocking. If you find it worth mentioning, the working\n"
-            "session must fix it before the PR can merge.\n"
-            "\n"
-            "For each finding, suggest a specific fix — don't just say what's wrong,\n"
-            "say how to fix it. Reference file names and line numbers.\n"
-            "\n"
-            "## Confidence Scoring\n"
-            "\n"
-            "| Score | Meaning |\n"
-            "|-------|---------|\n"
-            "| 1.0 | No findings — clean code, ready to merge. |\n"
-            "| 0.80–0.99 | Minor findings — fixable in one round. |\n"
-            "| 0.50–0.79 | Significant findings — needs rework. |\n"
-            "| <0.50 | Fundamental issues — architecture or design problems. |\n"
-            "\n"
-            "Only approve (`approved: true`) when `findings` is empty.\n"
-            "\n"
-            "## Response Format\n"
-            "\n"
-            "```json\n"
-            "{\n"
-            '  "confidence": <0.0–1.0>,\n'
-            '  "approved": <true only if findings is empty and PR is merged>,\n'
-            '  "summary": "<one-line summary of the review>",\n'
-            '  "findings": [\n'
-            '    "file:line — [category] description and suggested fix"\n'
-            "  ]\n"
-            "}\n"
-            "```\n"
-            "\n"
-            "Categories: `[bug]`, `[security]`, `[architecture]`, `[reuse]`,\n"
-            "`[quality]`, `[efficiency]`, `[test]`, `[style]`."
-        ),
-        description="System prompt for reviewer sessions.",
-    )
-    reviewer_initial_prompt_template: str = Field(
-        default=(
-            "## Review Request\n"
-            "\n"
-            "**Ticket**: {tracker_id}\n"
-            "**Run**: {run_name}\n"
-            "**Description**: {run_description}\n"
-            "\n"
-            "{acceptance_criteria_section}"
-            "{pr_section}"
-            "{changed_files_section}"
-            "{diff_summary_section}"
-            "## Instructions\n"
-            "\n"
-            "1. Read CLAUDE.md and `.claude/rules/` for project conventions.\n"
-            "2. Read the full diff — every changed file, not just the summary.\n"
-            "3. For each changed file, also read the SURROUNDING code (not just the diff\n"
-            "   lines) to understand context and spot missed reuse opportunities.\n"
-            "4. Search the codebase for existing utilities that overlap with new code.\n"
-            "5. Verify acceptance criteria are met.\n"
-            "6. Verify PR targets the feature branch, not `main`.\n"
-            "7. Check CI status — `codecov/patch` is a hard gate (85%).\n"
-            "\n"
-            "{review_loop_section}"
-            "## Merging\n"
-            "\n"
-            "When satisfied (no findings remaining),\n"
-            "merge the PR before outputting your assessment:\n"
-            "\n"
-            "```bash\n"
-            "gh pr merge --squash --delete-branch\n"
-            "```\n"
-            "\n"
-            "If `gh` is not found, install it (`brew install gh` or `apt install gh`).\n"
-            "If merge fails, set approved=false and explain why.\n"
-            "\n"
-            "## Final Output\n"
-            "\n"
-            "```json\n"
-            "{{\n"
-            '  "confidence": <score>,\n'
-            '  "approved": <true only if findings is empty and PR merged>,\n'
-            '  "summary": "<one line>",\n'
-            '  "findings": ["file:line — [category] description and fix"]\n'
-            "}}\n"
-            "```"
-        ),
-        description=(
-            "Template for the reviewer's initial prompt. Dynamic sections: "
-            "{tracker_id}, {run_name}, {run_description}, "
-            "{acceptance_criteria_section}, {pr_section}, {changed_files_section}, "
-            "{diff_summary_section}, {review_loop_section}."
-        ),
     )
 
 
@@ -992,7 +801,6 @@ class RavnOutcomeConfig(BaseModel):
 
         ravn_outcome:
           enabled: true
-          scope_adherence_threshold: 0.7
     """
 
     enabled: bool = Field(
@@ -1005,12 +813,6 @@ class RavnOutcomeConfig(BaseModel):
     owner_id: str = Field(
         default="api",
         description="Owner ID used when looking up runs from ravn outcome events.",
-    )
-    scope_adherence_threshold: float = Field(
-        default=0.7,
-        description=(
-            "scope_adherence values below this threshold flag a scope breach. Range 0.0–1.0."
-        ),
     )
 
 

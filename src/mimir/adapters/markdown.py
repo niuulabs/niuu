@@ -56,6 +56,7 @@ from mimir.config import EvidenceConfig, RankingConfig
 from mimir.learning import consolidate_source as compute_source_consolidation
 from mimir.ranking import apply_boosts, tokenize, zone_factor
 from niuu.domain.mimir import (
+    OPERATIONAL_SOURCE_TYPES,
     EntityType,
     LintIssue,
     MimirLintReport,
@@ -896,8 +897,11 @@ class MarkdownMimirAdapter(MimirPort):
     async def list_sources(self, *, unprocessed_only: bool = False) -> list[MimirSourceMeta]:
         """List all ingested raw sources.
 
-        When *unprocessed_only* is True, returns only sources not yet referenced
-        by any wiki page (cross-referenced via ``<!-- sources: ... -->`` footers).
+        When *unprocessed_only* is True, returns only sources awaiting
+        synthesis: not yet referenced by any wiki page (cross-referenced via
+        ``<!-- sources: ... -->`` footers), and not operational exhaust.
+        Operational types are never synthesis work — ingest refuses them now,
+        but sources stored before that gate must not read as backlog forever.
         """
         return await asyncio.to_thread(self._list_sources_sync, unprocessed_only)
 
@@ -905,9 +909,16 @@ class MarkdownMimirAdapter(MimirPort):
         """Synchronous body of ``list_sources`` — see there for semantics."""
         all_sources = self._read_source_meta()
 
+        if not unprocessed_only:
+            return all_sources
+
+        all_sources = [
+            src for src in all_sources if src.source_type not in OPERATIONAL_SOURCE_TYPES
+        ]
+
         # With nothing ingested there is nothing to cross-reference, so skip the
         # page walk the unprocessed filter would otherwise do.
-        if not unprocessed_only or not all_sources:
+        if not all_sources:
             return all_sources
 
         # Collect all source_ids referenced across wiki pages

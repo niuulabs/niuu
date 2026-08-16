@@ -2849,7 +2849,7 @@ class ResidentEvolutionConfig(BaseModel):
             "Fully-qualified ToolBuildBackend class commissioned by build_tool "
             "when the agent supplies a build_request (for example "
             "ravn.adapters.tool_build.ForgeSessionToolBuildBackend or "
-            "ravn.adapters.tool_build.TingWorkflowToolBuildBackend). Empty: the "
+            "ravn.adapters.tool_build.a2a.A2AToolBuildBackend). Empty: the "
             "investigating agent authors tool code inline in-session. The result "
             "flows through the same review/canary/install path regardless of "
             "backend."
@@ -2867,8 +2867,8 @@ class ResidentEvolutionConfig(BaseModel):
         default_factory=WorkflowSelectorConfig,
         description=(
             "Optional selector for the tool-builder workflow. When configured "
-            "with a Ting workflow build backend, the backend discovers the "
-            "matching workflow from the catalog instead of requiring a "
+            "with the A2A build backend, the backend discovers the matching "
+            "workflow skill from the agent card instead of requiring a "
             "hardcoded workflow_id."
         ),
     )
@@ -3178,6 +3178,16 @@ class ResidentStateConfig(BaseModel):
             "Per-case turn budgets do not catch this: a resident re-deriving one verdict "
             "in a fresh case each wake never accumulates turns in any single case. "
             "0 disables the guard."
+        ),
+    )
+    health_refresh_interval_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description=(
+            "Seconds between recounts of the resident health scorecard (durable "
+            "cases, pending wakes, inbox depth, decision streak). Gauges are "
+            "re-stated every telemetry heartbeat regardless; this only paces the "
+            "store walk behind them."
         ),
     )
     stewardship_interval_seconds: float = Field(

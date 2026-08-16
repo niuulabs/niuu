@@ -46,6 +46,16 @@ class ResidentStatePort(Protocol):
         """Return the resident's current repeated-decision streak, if any."""
         ...
 
+    async def count_cases(self) -> tuple[int, int] | None:
+        """Return (live, total) durable case counts, or None when the store
+        cannot answer without walking its whole backend.
+
+        None is an answer, not a degradation: health surfaces simply omit the
+        case gauges for such a store, the same way corpus gauges only exist
+        for memory backends that can sample them cheaply.
+        """
+        ...
+
     async def write_decision_streak(self, record: ResidentDecisionStreakRecord) -> str: ...
 
     async def read_a2a_task(self, task_id: str) -> ResidentMemoryEntry | None: ...

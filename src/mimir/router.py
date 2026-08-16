@@ -1852,7 +1852,15 @@ class MimirRouter:
                     )
                 )
             if unprocessed:
-                results = [source for source in results if not source.compiled_into]
+                # Same definition as the adapter's unprocessed_only: pending
+                # synthesis means uncited AND not operational exhaust —
+                # otherwise the API and the warden report different backlogs.
+                results = [
+                    source
+                    for source in results
+                    if not source.compiled_into
+                    and source.source_type not in OPERATIONAL_SOURCE_TYPES
+                ]
             return results
 
         @router.get("/page/sources", response_model=list[SourceMetaResponse])

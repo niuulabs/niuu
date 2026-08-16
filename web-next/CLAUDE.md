@@ -79,7 +79,7 @@ import { buildTingApiAdapter } from '@niuulabs/plugin-ting/adapters/http';
 const services = { ting: buildTingApiAdapter(config.services.ting) };
 ```
 
-Tests and Storybook supply mock adapters. Adapter swap = zero component changes.
+Tests supply mock adapters. Adapter swap = zero component changes.
 
 ### 4. TanStack Query wraps services — it does not replace them
 
@@ -165,7 +165,6 @@ web-next/
 ├── vitest.config.ts              unit test config (root)
 ├── playwright.config.ts          e2e config (root)
 ├── eslint.config.js              flat config
-├── .storybook/                   single root Storybook
 ├── packages/
 │   ├── design-tokens/            @niuulabs/design-tokens
 │   ├── plugin-sdk/               @niuulabs/plugin-sdk
@@ -196,14 +195,13 @@ web-next/
 
 - **React 19** (StrictMode in dev)
 - **TypeScript 5.7** — strict, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`
-- **Vite 7** — app + Storybook builder
+- **Vite 7** — app builder
 - **pnpm 9** workspaces
 - **TanStack Router** — code-based routes
 - **TanStack Query** — server state caching
 - **Zod** — runtime config validation
 - **Vitest + React Testing Library** — unit tests, 85% coverage minimum
 - **Playwright** — e2e
-- **Storybook 9** — single workshop at workspace root, globs `packages/*/src/**/*.stories.tsx`
 - **tsup** — library builds for each package (ESM only)
 - **ESLint flat config + Prettier** — code style
 
@@ -227,7 +225,6 @@ web-next/
 ```bash
 pnpm install            # install workspace deps (first thing in a fresh clone)
 pnpm dev                # run @niuulabs/niuu at :5173
-pnpm storybook          # run Storybook at :6006
 pnpm test               # vitest run with coverage
 pnpm test:watch         # vitest watch
 pnpm test:e2e           # playwright test

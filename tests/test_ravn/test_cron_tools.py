@@ -1076,3 +1076,50 @@ async def test_cron_create_guards_are_off_by_default(tmp_path):
 
     assert not result.is_error
     assert len(store.list()) == 2
+
+
+@pytest.mark.asyncio
+async def test_refusals_are_counted_as_health_signals(tmp_path, monkeypatch):
+    """A resident repeatedly refused by the backlog guard is thrashing —
+    the scorecard needs to see it."""
+    from unittest.mock import MagicMock
+
+    telemetry = MagicMock()
+    monkeypatch.setattr("ravn.adapters.tools.cron_tools.get_observability", lambda: telemetry)
+
+    tool = _guarded_tool(tmp_path, max_jobs=1)
+    await tool.execute(
+        {
+            "name": "etcd-latency-check",
+            "schedule": "every 30m",
+            "context": (
+                "Check etcd pod logs for latency warnings and apiserver logs for "
+                "connection errors to monitor ongoing etcd performance issues"
+            ),
+        }
+    )
+
+    duplicate = await tool.execute(
+        {
+            "name": "etcd-apiserver-latency-check",
+            "schedule": "every 15m",
+            "context": (
+                "Monitor etcd and kube-apiserver performance: check pod logs for etcd "
+                "apply latency warnings and kube-apiserver connection errors"
+            ),
+        }
+    )
+    assert duplicate.is_error
+
+    capped = await tool.execute(
+        {"name": "unrelated", "schedule": "every 10m", "context": "audit the certificates"}
+    )
+    assert capped.is_error
+
+    reasons = [
+        call.kwargs["attributes"]["ravn.cron.refusal_reason"]
+        for call in telemetry.count.call_args_list
+        if call.args and call.args[0] == "ravn.resident.cron_refusals"
+    ]
+    assert "duplicate" in reasons
+    assert "max_jobs" in reasons

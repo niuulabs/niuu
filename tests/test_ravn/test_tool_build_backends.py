@@ -15,7 +15,6 @@ from ravn.adapters.tool_build import (
     A2AToolBuildBackend,
     ForgeSessionToolBuildBackend,
     HttpResponse,
-    TingWorkflowToolBuildBackend,
 )
 from ravn.adapters.tool_build._contract import (
     build_prompts,
@@ -29,7 +28,6 @@ from ravn.adapters.tool_build.http import (
     client_from_workload_identity,
     normalize_http_origin,
 )
-from ravn.adapters.tool_build.ting_workflow import _decode_canonical_content
 from ravn.ports.tool_build_backend import (
     ToolBuildError,
     ToolBuildInputRequiredError,
@@ -329,141 +327,12 @@ async def test_forge_session_backend_raises_on_create_error() -> None:
         await backend.build(_request())
 
 
-# ---------------------------------------------------------------------------
-# Ting workflow backend
-# ---------------------------------------------------------------------------
-
-
-async def test_ting_workflow_backend_prefers_canonical_artifact() -> None:
-    client = _FakeHttpClient(
-        {
-            ("POST", "/api/v1/ting/workflows/wf-1/launch"): [
-                HttpResponse(200, {"campaign_id": "camp-1", "session_id": "sess-x"})
-            ],
-            ("GET", "/api/v1/ting/research/campaigns/camp-1"): [
-                HttpResponse(200, {"status": "RUNNING"}),
-                HttpResponse(200, {"status": "COMPLETED"}),
-            ],
-            # The campaign artifact endpoint returns the file body under "content".
-            ("GET", "/artifact?path=learned_tool.json"): [
-                HttpResponse(200, {"path": "learned_tool.json", "content": _BUILT_CONTRACT})
-            ],
-        }
-    )
-    backend = TingWorkflowToolBuildBackend(
-        client=client,
-        base_url="http://ting",
-        workflow_id="wf-1",
-        poll_interval_seconds=0,
-        sleep=_no_sleep,
-    )
-
-    result = await backend.build(_request())
-
-    assert result.tool_code.startswith("def run")
-    assert result.test_code.startswith("def test_run")
-    assert result.requirements == ["httpx>=0.27"]
-    assert result.build_evidence == {"retrieval": "canonical_file"}
-    assert result.provenance["backend"] == "ting_workflow"
-    assert result.provenance["ting_campaign_id"] == "camp-1"
-    # The launch body attributes the campaign to the commissioning Valkyrie.
-    launch_body = client.post_bodies[0]
-    provenance = launch_body["provenance"]
-    assert provenance["builder"] == "ravn.tool_build"
-    assert provenance["valkyrie_id"] == _request().valkyrie_id
-    assert provenance["environment_id"] == _request().environment_id
-    assert provenance["tool_name"] == _request().name
-
-
-async def test_ting_workflow_backend_falls_back_to_scrape() -> None:
-    client = _FakeHttpClient(
-        {
-            ("POST", "/api/v1/ting/workflows/wf-1/launch"): [
-                HttpResponse(200, {"campaign_id": "camp-1"})
-            ],
-            ("GET", "/api/v1/ting/research/campaigns/camp-1"): [
-                HttpResponse(
-                    200,
-                    {
-                        "status": "COMPLETED",
-                        "artifacts": [{"path": "tools/x.py", "content": _BUILT_CONTRACT}],
-                    },
-                ),
-            ],
-            # No canonical artifact -> 404 -> scrape the campaign artifacts.
-            ("GET", "/artifact?path=learned_tool.json"): [HttpResponse(404, "not found")],
-        }
-    )
-    backend = TingWorkflowToolBuildBackend(
-        client=client,
-        base_url="http://ting",
-        workflow_id="wf-1",
-        poll_interval_seconds=0,
-        sleep=_no_sleep,
-    )
-
-    result = await backend.build(_request())
-
-    assert result.tool_code.startswith("def run")
-    assert result.build_evidence == {"retrieval": "chronicle_scrape"}
-
-
-async def test_ting_workflow_backend_requires_workflow_id() -> None:
-    backend = TingWorkflowToolBuildBackend(
-        client=_FakeHttpClient({}), base_url="http://ting", workflow_id=""
-    )
-    with pytest.raises(ToolBuildError, match="workflow_id or workflow_selector"):
-        await backend.build(_request())
-
-
-async def test_ting_workflow_backend_resolves_workflow_selector() -> None:
-    client = _FakeHttpClient(
-        {
-            ("GET", "/api/v1/ting/workflows"): [
-                HttpResponse(
-                    200,
-                    [
-                        {"id": "wf-research", "name": "Research", "tags": ["research"]},
-                        {
-                            "id": "wf-builder",
-                            "name": "Tool Builder",
-                            "tags": ["tool-builder", "capability-builder"],
-                        },
-                    ],
-                )
-            ],
-            ("POST", "/api/v1/ting/workflows/wf-builder/launch"): [
-                HttpResponse(200, {"campaign_id": "camp-builder"})
-            ],
-            ("GET", "/api/v1/ting/research/campaigns/camp-builder"): [
-                HttpResponse(200, {"status": "COMPLETED", "result": _BUILT_CONTRACT})
-            ],
-            ("GET", "/artifact?path=learned_tool.json"): [HttpResponse(404, "not found")],
-        }
-    )
-    backend = TingWorkflowToolBuildBackend(
-        client=client,
-        base_url="http://ting",
-        workflow_selector={"tags": ["tool-builder"]},
-        poll_interval_seconds=0,
-        sleep=_no_sleep,
-    )
-
-    result = await backend.build(_request())
-
-    assert result.tool_code.startswith("def run")
-    assert result.provenance["ting_workflow_id"] == "wf-builder"
-
-
 def test_backends_construct_from_plain_yaml_kwargs() -> None:
     """The dynamic-adapter contract: dotted path + plain kwargs, no client."""
     forge = ForgeSessionToolBuildBackend(base_url="http://forge")
-    ting = TingWorkflowToolBuildBackend(
-        base_url="http://ting",
-        workflow_id="wf-1",
-    )
+    a2a = A2AToolBuildBackend(card_url="http://ting/.well-known/agent-card.json")
     assert forge.name == "forge_session"
-    assert ting.name == "ting_workflow"
+    assert a2a.name == "a2a"
 
 
 async def test_forge_create_rejects_non_object_body() -> None:
@@ -511,41 +380,6 @@ async def test_forge_empty_chronicle_has_no_contract() -> None:
     )
     with pytest.raises(ToolBuildError, match="no JSON object"):
         await backend.build(_request())
-
-
-async def test_ting_launch_rejects_non_object_body() -> None:
-    client = _FakeHttpClient(
-        {("POST", "/api/v1/ting/workflows/wf-1/launch"): [HttpResponse(200, "nope")]}
-    )
-    backend = TingWorkflowToolBuildBackend(
-        client=client, base_url="http://ting", workflow_id="wf-1"
-    )
-    with pytest.raises(ToolBuildError, match="non-object body"):
-        await backend.build(_request())
-
-
-async def test_ting_uses_inline_campaign_result() -> None:
-    client = _FakeHttpClient(
-        {
-            ("POST", "/api/v1/ting/workflows/wf-1/launch"): [
-                HttpResponse(200, {"campaign_id": "c1"})
-            ],
-            ("GET", "/api/v1/ting/research/campaigns/c1"): [
-                HttpResponse(200, {"status": "COMPLETED", "result": _BUILT_CONTRACT})
-            ],
-            ("GET", "/artifact?path=learned_tool.json"): [HttpResponse(404, "not found")],
-        }
-    )
-    backend = TingWorkflowToolBuildBackend(
-        client=client,
-        base_url="http://ting",
-        workflow_id="wf-1",
-        poll_interval_seconds=0,
-        sleep=_no_sleep,
-    )
-    result = await backend.build(_request())
-    assert result.tool_code.startswith("def run")
-    assert result.build_evidence == {"retrieval": "chronicle_scrape"}
 
 
 def test_client_from_workload_identity_exchanges_projected_token(tmp_path: Path) -> None:
@@ -620,28 +454,6 @@ async def test_http_client_refreshes_rejected_workload_identity_once(
     assert created[0].authorizations == ["Bearer expired", "Bearer fresh"]
 
 
-def test_ting_backend_requests_end_to_end_build_scopes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-
-    def fake_client_from_workload_identity(**kwargs: object) -> _FakeHttpClient:
-        captured.update(kwargs)
-        return _FakeHttpClient({})
-
-    monkeypatch.setattr(
-        "ravn.adapters.tool_build.ting_workflow.client_from_workload_identity",
-        fake_client_from_workload_identity,
-    )
-
-    TingWorkflowToolBuildBackend(base_url="https://ting.example", workflow_id="wf-1")
-
-    assert captured["workload_scopes"] == [
-        "ting:workflow:launch",
-        "forge:session:create",
-    ]
-
-
 def test_client_external_token_env_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EXTERNAL_TOOL_BUILD_TOKEN", "external-123")
 
@@ -682,29 +494,6 @@ def test_http_origin_normalization_preserves_ipv6_authority(url: str, expected: 
     assert normalize_http_origin(url) == expected
 
 
-async def test_ting_workflow_backend_raises_without_artifact() -> None:
-    client = _FakeHttpClient(
-        {
-            ("POST", "/api/v1/ting/workflows/wf-1/launch"): [
-                HttpResponse(200, {"campaign_id": "camp-2"})
-            ],
-            ("GET", "/api/v1/ting/research/campaigns/camp-2"): [
-                HttpResponse(200, {"status": "COMPLETED", "artifacts": []})
-            ],
-            ("GET", "/artifact?path=learned_tool.json"): [HttpResponse(404, "not found")],
-        }
-    )
-    backend = TingWorkflowToolBuildBackend(
-        client=client,
-        base_url="http://ting",
-        workflow_id="wf-1",
-        poll_interval_seconds=0,
-        sleep=_no_sleep,
-    )
-    with pytest.raises(ToolBuildError, match="no retrievable artifact"):
-        await backend.build(_request())
-
-
 # ---------------------------------------------------------------------------
 # canonical-artifact decode helpers
 # ---------------------------------------------------------------------------
@@ -717,15 +506,6 @@ def test_decode_canonical_body_handles_object_text_and_junk() -> None:
     assert _decode_canonical_body(b"bytes-not-str") is None
     assert _decode_canonical_body("not json") is None
     assert _decode_canonical_body("[1, 2, 3]") is None  # valid JSON, wrong shape
-
-
-def test_decode_canonical_content_handles_object_text_and_junk() -> None:
-    assert _decode_canonical_content({"manifest": {}}) == {"manifest": {}}
-    assert _decode_canonical_content(_BUILT_CONTRACT)["tool_code"].startswith("def run")
-    assert _decode_canonical_content("   ") is None
-    assert _decode_canonical_content(None) is None
-    assert _decode_canonical_content("not json") is None
-    assert _decode_canonical_content("[1, 2, 3]") is None  # valid JSON, wrong shape
 
 
 async def test_forge_malformed_canonical_file_falls_back_to_chronicle() -> None:
@@ -765,34 +545,6 @@ async def test_forge_canonical_download_transport_error_falls_back() -> None:
     )
     backend = ForgeSessionToolBuildBackend(
         client=client, base_url="http://forge", poll_interval_seconds=0, sleep=_no_sleep
-    )
-    result = await backend.build(_request())
-    assert result.build_evidence == {"retrieval": "chronicle_scrape"}
-
-
-async def test_ting_canonical_artifact_transport_error_falls_back() -> None:
-    class _RaisingClient(_FakeHttpClient):
-        async def get(self, url: str) -> HttpResponse:
-            if url.endswith("/artifact?path=learned_tool.json"):
-                raise RuntimeError("gateway down")
-            return await super().get(url)
-
-    client = _RaisingClient(
-        {
-            ("POST", "/api/v1/ting/workflows/wf-1/launch"): [
-                HttpResponse(200, {"campaign_id": "c1"})
-            ],
-            ("GET", "/api/v1/ting/research/campaigns/c1"): [
-                HttpResponse(200, {"status": "COMPLETED", "result": _BUILT_CONTRACT})
-            ],
-        }
-    )
-    backend = TingWorkflowToolBuildBackend(
-        client=client,
-        base_url="http://ting",
-        workflow_id="wf-1",
-        poll_interval_seconds=0,
-        sleep=_no_sleep,
     )
     result = await backend.build(_request())
     assert result.build_evidence == {"retrieval": "chronicle_scrape"}
@@ -1363,8 +1115,8 @@ async def test_a2a_backend_requires_workflow_id_or_selector() -> None:
         await backend.build(_request())
 
 
-async def test_a2a_backend_matches_ting_backend_result_shape() -> None:
-    """Parity: the same canned contract yields identical results on both backends."""
+async def test_a2a_backend_result_matches_canonical_contract() -> None:
+    """The canned canonical contract round-trips through the A2A backend intact."""
     a2a_client = _FakeHttpClient(
         {
             ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
@@ -1386,34 +1138,16 @@ async def test_a2a_backend_matches_ting_backend_result_shape() -> None:
             ],
         }
     )
-    ting_client = _FakeHttpClient(
-        {
-            ("POST", "/api/v1/ting/workflows/wf-1/launch"): [
-                HttpResponse(200, {"campaign_id": "camp-1"})
-            ],
-            ("GET", "/api/v1/ting/research/campaigns/camp-1"): [
-                HttpResponse(200, {"status": "COMPLETED"})
-            ],
-            ("GET", "/artifact?path=learned_tool.json"): [
-                HttpResponse(200, {"path": "learned_tool.json", "content": _BUILT_CONTRACT})
-            ],
-        }
-    )
 
     a2a_result = await _a2a_backend(a2a_client, workflow_id="wf-1").build(_request())
-    ting_result = await TingWorkflowToolBuildBackend(
-        client=ting_client,
-        base_url="http://ting",
-        workflow_id="wf-1",
-        poll_interval_seconds=0,
-        sleep=_no_sleep,
-    ).build(_request())
 
-    assert a2a_result.manifest == ting_result.manifest
-    assert a2a_result.tool_code == ting_result.tool_code
-    assert a2a_result.test_code == ting_result.test_code
-    assert a2a_result.requirements == ting_result.requirements
-    assert a2a_result.build_evidence == ting_result.build_evidence
+    document = parse_tool_build_document(
+        json.loads(_BUILT_CONTRACT), tool_name="mimir_metric_window"
+    )
+    assert a2a_result.manifest == document.manifest
+    assert a2a_result.tool_code == document.tool_code
+    assert a2a_result.test_code == document.test_code
+    assert a2a_result.requirements == document.requirements
 
 
 # ---------------------------------------------------------------------------
