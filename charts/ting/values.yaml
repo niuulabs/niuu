@@ -76,8 +76,8 @@ dispatch:
     observability: {}
 
   # -- In-process (single-turn) dispatch configuration.
-  # Controls the LLM used by the RavnDispatcher when running review-arbiter
-  # and decomposer personas inline (no mesh, no pod).
+  # Controls the LLM used by the RavnDispatcher when running the
+  # decomposer persona inline (no mesh, no pod).
   # When llmConfig is empty, falls back to dispatch.flock.llmConfig.
   #
   # Example — force opus for all in-process calls:
@@ -169,19 +169,6 @@ a2a:
   pushAuth:
     adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
     kwargs: {}
-
-# Review configuration
-review:
-  # -- System prompt for reviewer sessions. Leave empty for built-in default.
-  reviewerSystemPrompt: ""
-  # -- Template for the reviewer's initial prompt. Leave empty for built-in default.
-  reviewerInitialPromptTemplate: ""
-  # -- AI model for reviewer sessions
-  reviewerModel: "claude-opus-4-6"
-  # -- Maximum review rounds before escalating
-  maxReviewRounds: 6
-  # -- Confidence threshold for auto-merge
-  autoApproveThreshold: 0.80
 
 database:
   name: ting

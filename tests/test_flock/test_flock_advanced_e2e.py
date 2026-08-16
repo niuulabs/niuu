@@ -20,7 +20,6 @@ from tests.test_flock.harness import (
 from tests.test_ting.stubs import make_run
 from ting.config import ReviewConfig
 from ting.domain.models import (
-    ConfidenceEventType,
     Phase,
     PhaseStatus,
     Run,
@@ -65,53 +64,19 @@ summary: Implementation done but touched undeclared files
 ---end---"""
 
 
-async def test_scope_breach_confidence_event_recorded() -> None:
-    """Outcome with scope_adherence < threshold produces a SCOPE_BREACH event."""
-    async with FlockTestHarness(
-        cli_responses=[OUTCOME_LOW_SCOPE],
-        scope_adherence_threshold=0.7,
-    ) as h:
-        run = _make_running_run()
-        await h.dispatch_run(run)
-        events = await h.tracker.get_confidence_events(run.tracker_id)
-        event_types = [e.event_type.value for e in events]
-        assert "scope_breach" in event_types, (
-            f"Expected scope_breach confidence event; got {event_types}"
-        )
-
-
-async def test_scope_breach_reduces_confidence() -> None:
-    """Scope breach signal applies a negative confidence delta."""
-    async with FlockTestHarness(
-        cli_responses=[OUTCOME_LOW_SCOPE],
-        scope_adherence_threshold=0.7,
-    ) as h:
-        run = _make_running_run()
-        await h.dispatch_run(run)
-        events = await h.tracker.get_confidence_events(run.tracker_id)
-        breach_events = [e for e in events if e.event_type == ConfidenceEventType.SCOPE_BREACH]
-        assert len(breach_events) == 1
-        assert breach_events[0].delta < 0
-
-
-async def test_scope_within_threshold_no_breach() -> None:
-    """Outcome with scope_adherence above threshold does NOT produce breach event."""
-    outcome_high_scope = """\
+async def test_non_authoritative_approve_escalates() -> None:
+    """A coordinator approve without workflow authority goes to a human."""
+    outcome_plain_approve = """\
 ---outcome---
 verdict: approve
 tests_passing: true
 scope_adherence: 0.95
 summary: Clean implementation
 ---end---"""
-    async with FlockTestHarness(
-        cli_responses=[outcome_high_scope],
-        scope_adherence_threshold=0.7,
-    ) as h:
+    async with FlockTestHarness(cli_responses=[outcome_plain_approve]) as h:
         run = _make_running_run()
         await h.dispatch_run(run)
-        events = await h.tracker.get_confidence_events(run.tracker_id)
-        event_types = [e.event_type.value for e in events]
-        assert "scope_breach" not in event_types
+        await h.assert_run_state(run.tracker_id, RunStatus.ESCALATED)
 
 
 # ---------------------------------------------------------------------------
@@ -335,25 +300,3 @@ async def test_no_outcome_block_handles_gracefully() -> None:
 # ---------------------------------------------------------------------------
 # Scenario 12: Confidence accumulation across signals
 # ---------------------------------------------------------------------------
-
-
-async def test_multiple_confidence_signals_accumulate() -> None:
-    """CI_PASS and scope_breach signals both apply to the same run."""
-    outcome_mixed = """\
----outcome---
-verdict: approve
-tests_passing: true
-scope_adherence: 0.50
-summary: Tests pass but scope is breached
----end---"""
-    async with FlockTestHarness(
-        cli_responses=[outcome_mixed],
-        scope_adherence_threshold=0.7,
-    ) as h:
-        run = _make_running_run()
-        await h.dispatch_run(run)
-        events = await h.tracker.get_confidence_events(run.tracker_id)
-        event_types = {e.event_type.value for e in events}
-        assert "ci_pass" in event_types, "Expected CI_PASS signal"
-        assert "scope_breach" in event_types, "Expected SCOPE_BREACH signal"
-        assert len(events) >= 2, f"Expected at least 2 events; got {len(events)}"

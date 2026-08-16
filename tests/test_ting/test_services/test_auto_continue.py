@@ -16,7 +16,6 @@ import pytest
 from ting.domain.models import (
     DispatcherState,
     PhaseStatus,
-    PRStatus,
     Run,
     RunStatus,
     Saga,
@@ -329,16 +328,15 @@ class TestReviewEngineAutoContinue:
         from ting.domain.services.review_engine import ReviewEngine
 
         from ..test_review_engine import (
-            StubGit,
             StubTracker,
             StubTrackerFactory,
             StubVolundr,
+            _authoritative_approval,
             _make_run,
             _make_saga,
         )
 
         tracker = StubTracker()
-        git = StubGit()
         bus = InMemoryEventBus()
         volundr = StubVolundr()
         saga = _make_saga()
@@ -346,15 +344,6 @@ class TestReviewEngineAutoContinue:
         run = _make_run(confidence=0.9)
         tracker.runs[run.tracker_id] = run
         tracker.saga = saga
-
-        pr_id = run.pr_id
-        git.pr_statuses[pr_id] = PRStatus(
-            pr_id=pr_id,
-            url="https://github.com/org/repo/pull/42",
-            state="open",
-            mergeable=True,
-            ci_passed=True,
-        )
 
         # Track auto-continue calls
         auto_continue_calls: list[tuple[str, str]] = []
@@ -374,13 +363,14 @@ class TestReviewEngineAutoContinue:
         engine = ReviewEngine(
             tracker_factory=StubTrackerFactory(tracker),
             volundr_factory=_StubVolundrFactory(),
-            git=git,
-            review_config=ReviewConfig(auto_approve_threshold=0.80),
+            review_config=ReviewConfig(),
             event_bus=bus,
             dispatch_service=TrackingDispatchService(),
         )
 
-        decision = await engine.evaluate(run.tracker_id, "user-1")
+        decision = await engine.handle_ravn_outcome(
+            run.tracker_id, "user-1", _authoritative_approval()
+        )
         assert decision.action == "auto_approved"
         assert len(auto_continue_calls) == 1
         assert auto_continue_calls[0] == ("user-1", saga.tracker_id)
@@ -394,17 +384,16 @@ class TestReviewEngineAutoContinue:
 
         from ..test_review_engine import (
             PHASE_ID,
-            StubGit,
             StubTracker,
             StubTrackerFactory,
             StubVolundr,
+            _authoritative_approval,
             _make_phase,
             _make_run,
             _make_saga,
         )
 
         tracker = StubTracker()
-        git = StubGit()
         bus = InMemoryEventBus()
         volundr = StubVolundr()
         saga = _make_saga()
@@ -419,15 +408,6 @@ class TestReviewEngineAutoContinue:
 
         run = _make_run(confidence=0.9)
         tracker.runs[run.tracker_id] = run
-
-        pr_id = run.pr_id
-        git.pr_statuses[pr_id] = PRStatus(
-            pr_id=pr_id,
-            url="https://github.com/org/repo/pull/42",
-            state="open",
-            mergeable=True,
-            ci_passed=True,
-        )
 
         auto_continue_calls: list[tuple[str, str]] = []
 
@@ -446,13 +426,14 @@ class TestReviewEngineAutoContinue:
         engine = ReviewEngine(
             tracker_factory=StubTrackerFactory(tracker),
             volundr_factory=_StubVolundrFactory(),
-            git=git,
-            review_config=ReviewConfig(auto_approve_threshold=0.80),
+            review_config=ReviewConfig(),
             event_bus=bus,
             dispatch_service=TrackingDispatchService(),
         )
 
-        decision = await engine.evaluate(run.tracker_id, "user-1")
+        decision = await engine.handle_ravn_outcome(
+            run.tracker_id, "user-1", _authoritative_approval()
+        )
         assert decision.action == "auto_approved"
         assert decision.phase_gate_unlocked is True
         # Called twice: once from phase unlock, once from merge in _handle_auto_approve
@@ -465,31 +446,21 @@ class TestReviewEngineAutoContinue:
         from ting.domain.services.review_engine import ReviewEngine
 
         from ..test_review_engine import (
-            StubGit,
             StubTracker,
             StubTrackerFactory,
             StubVolundr,
+            _authoritative_approval,
             _make_run,
             _make_saga,
         )
 
         tracker = StubTracker()
-        git = StubGit()
         volundr = StubVolundr()
         saga = _make_saga()
 
         run = _make_run(confidence=0.9)
         tracker.runs[run.tracker_id] = run
         tracker.saga = saga
-
-        pr_id = run.pr_id
-        git.pr_statuses[pr_id] = PRStatus(
-            pr_id=pr_id,
-            url="https://github.com/org/repo/pull/42",
-            state="open",
-            mergeable=True,
-            ci_passed=True,
-        )
 
         class _StubVolundrFactory:
             async def for_owner(self, owner_id):
@@ -501,12 +472,13 @@ class TestReviewEngineAutoContinue:
         engine = ReviewEngine(
             tracker_factory=StubTrackerFactory(tracker),
             volundr_factory=_StubVolundrFactory(),
-            git=git,
-            review_config=ReviewConfig(auto_approve_threshold=0.80),
+            review_config=ReviewConfig(),
             # No dispatch_service passed
         )
 
-        decision = await engine.evaluate(run.tracker_id, "user-1")
+        decision = await engine.handle_ravn_outcome(
+            run.tracker_id, "user-1", _authoritative_approval()
+        )
         assert decision.action == "auto_approved"
 
     @pytest.mark.asyncio
@@ -517,31 +489,21 @@ class TestReviewEngineAutoContinue:
         from ting.domain.services.review_engine import ReviewEngine
 
         from ..test_review_engine import (
-            StubGit,
             StubTracker,
             StubTrackerFactory,
             StubVolundr,
+            _authoritative_approval,
             _make_run,
             _make_saga,
         )
 
         tracker = StubTracker()
-        git = StubGit()
         volundr = StubVolundr()
         saga = _make_saga()
 
         run = _make_run(confidence=0.9)
         tracker.runs[run.tracker_id] = run
         tracker.saga = saga
-
-        pr_id = run.pr_id
-        git.pr_statuses[pr_id] = PRStatus(
-            pr_id=pr_id,
-            url="https://github.com/org/repo/pull/42",
-            state="open",
-            mergeable=True,
-            ci_passed=True,
-        )
 
         class FailingDispatchService:
             async def try_auto_continue(self, owner_id: str, saga_tracker_id: str):
@@ -557,12 +519,13 @@ class TestReviewEngineAutoContinue:
         engine = ReviewEngine(
             tracker_factory=StubTrackerFactory(tracker),
             volundr_factory=_StubVolundrFactory(),
-            git=git,
-            review_config=ReviewConfig(auto_approve_threshold=0.80),
+            review_config=ReviewConfig(),
             event_bus=InMemoryEventBus(),
             dispatch_service=FailingDispatchService(),
         )
 
         # Should not raise
-        decision = await engine.evaluate(run.tracker_id, "user-1")
+        decision = await engine.handle_ravn_outcome(
+            run.tracker_id, "user-1", _authoritative_approval()
+        )
         assert decision.action == "auto_approved"

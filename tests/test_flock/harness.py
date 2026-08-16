@@ -71,6 +71,10 @@ tests_passing: true
 scope_adherence: 0.95
 pr_url: https://github.com/niuulabs/test/pull/1
 summary: Implementation complete with full test coverage
+authoritative: true
+checks:
+  - node: verify
+    verdict: pass
 ---end---"""
 
 OUTCOME_RETRY = """\
@@ -354,13 +358,7 @@ _DEFAULT_OWNER = "test-owner"
 _DEFAULT_SKULD_SESSION = "skuld-session-001"
 _DEFAULT_SKULD_PEER = "skuld-peer-001"
 
-_REVIEW_CONFIG_AUTO_APPROVE = ReviewConfig(
-    auto_approve_threshold=0.70,
-    confidence_delta_ci_pass=0.30,
-    confidence_delta_ci_fail=-0.30,
-    confidence_delta_approved=0.10,
-    reviewer_session_enabled=False,
-)
+_REVIEW_CONFIG = ReviewConfig()
 
 
 class FlockTestHarness:
@@ -380,11 +378,8 @@ class FlockTestHarness:
         Owner ID used by RavnOutcomeHandler when looking up runs.
     skuld_session_id:
         Session ID given to SkuldMeshAdapter.
-    scope_adherence_threshold:
-        Threshold below which scope_adherence triggers a SCOPE_BREACH signal.
     review_config:
-        ReviewConfig for ReviewEngine.  Defaults to a permissive config with
-        ``reviewer_session_enabled=False``.
+        ReviewConfig for ReviewEngine.
     """
 
     def __init__(
@@ -393,7 +388,6 @@ class FlockTestHarness:
         *,
         owner_id: str = _DEFAULT_OWNER,
         skuld_session_id: str = _DEFAULT_SKULD_SESSION,
-        scope_adherence_threshold: float = 0.7,
         review_config: ReviewConfig | None = None,
     ) -> None:
         self.owner_id = owner_id
@@ -441,12 +435,11 @@ class FlockTestHarness:
         # Git stub
         self.git = StubGit()
 
-        # Review engine (no reviewer sessions)
-        _cfg = review_config or _REVIEW_CONFIG_AUTO_APPROVE
+        # Review engine
+        _cfg = review_config or _REVIEW_CONFIG
         self.review_engine = ReviewEngine(
             tracker_factory=self.tracker_factory,
             volundr_factory=self.volundr_factory,
-            git=self.git,
             review_config=_cfg,
         )
 
@@ -456,7 +449,6 @@ class FlockTestHarness:
             tracker_factory=self.tracker_factory,
             review_engine=self.review_engine,
             owner_id=owner_id,
-            scope_adherence_threshold=scope_adherence_threshold,
         )
 
         # Mimir mounts

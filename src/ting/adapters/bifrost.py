@@ -146,9 +146,9 @@ class BifrostAdapter(LLMPort):
     def set_default_llm_config(self, config: dict) -> None:
         """Inject the default LLM config into the embedded RavnDispatcher.
 
-        Called from main.py after the in-process LLM config is resolved so that
-        the ravn decomposer path honours the same model/max_tokens overrides as
-        the review-arbiter path.  No-ops when ravn_decomposer_enabled=False.
+        Called from main.py after the in-process LLM config is resolved so the
+        ravn decomposer path honours the same model/max_tokens overrides.
+        No-ops when ravn_decomposer_enabled=False.
         """
         if self._ravn is not None:
             self._ravn._default_llm_config = config

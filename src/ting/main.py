@@ -88,7 +88,6 @@ from ting.domain.services.dispatch_service import (
 )
 from ting.domain.services.notification import NotificationService
 from ting.domain.services.review_engine import ReviewEngine
-from ting.domain.services.reviewer_session import ReviewerSessionService
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.infrastructure.database import database_pool
 from ting.ports.dispatcher_repository import DispatcherRepository
@@ -861,42 +860,13 @@ def create_app(
             if settings.notification.enabled:
                 await notification_service.start()
 
-            # Wire RavnDispatcher (shared instance for in-process single-turn calls)
-            from ting.adapters.ravn_dispatcher import RavnDispatcher  # noqa: PLC0415
-
-            ravn_dispatcher: RavnDispatcher | None = None
-            if settings.review.ravn_arbiter_enabled:
-                llm_kwargs_for_ravn = resolve_secret_kwargs(
-                    settings.llm.kwargs, settings.llm.secret_kwargs_env
-                )
-                ravn_dispatcher = RavnDispatcher(
-                    base_url=llm_kwargs_for_ravn.get("base_url", "https://api.anthropic.com"),
-                    api_key=llm_kwargs_for_ravn.get("api_key", ""),
-                    model=settings.review.ravn_arbiter_model,
-                    timeout=settings.review.ravn_arbiter_timeout,
-                    default_llm_config=in_process_llm_config or None,
-                )
-                logger.info(
-                    "RavnDispatcher wired: model=%s llm_config_keys=%s",
-                    settings.review.ravn_arbiter_model,
-                    list(in_process_llm_config.keys()) if in_process_llm_config else [],
-                )
-
-            # Wire automated review engine (subscribes to run.state_changed events)
-            reviewer_service = ReviewerSessionService(
-                volundr_factory=app.state.volundr_factory,
-                review_config=settings.review,
-            )
+            # Wire review engine (subscribes to run.state_changed events)
             review_engine = ReviewEngine(
                 tracker_factory=app.state.tracker_factory,
                 volundr_factory=app.state.volundr_factory,
-                git=git_adapter,
                 review_config=settings.review,
                 event_bus=event_bus,
-                reviewer_service=reviewer_service,
-                dispatcher_repo=dispatcher_repo,
                 dispatch_service=dispatch_svc,
-                ravn_dispatcher=ravn_dispatcher,
                 saga_repo=saga_repo,
             )
             app.state.review_engine = review_engine
@@ -912,7 +882,6 @@ def create_app(
                 config=settings.watcher,
                 review_engine=review_engine,
                 sleipnir_publisher=sleipnir_bus,
-                ravn_scope_adherence_threshold=settings.ravn_outcome.scope_adherence_threshold,
                 workflow_campaign_projector=workflow_campaign_projector,
             )
             app.state.subscriber = subscriber
@@ -973,7 +942,6 @@ def create_app(
                     tracker_factory=app.state.tracker_factory,
                     review_engine=review_engine,
                     owner_id=settings.ravn_outcome.owner_id,
-                    scope_adherence_threshold=settings.ravn_outcome.scope_adherence_threshold,
                 )
                 await ravn_outcome_handler.start()
                 app.state.ravn_outcome_handler = ravn_outcome_handler
@@ -996,8 +964,6 @@ def create_app(
             if a2a_push_dispatcher is not None:
                 await a2a_push_dispatcher.stop()
             await review_engine.stop()
-            if ravn_dispatcher is not None:
-                await ravn_dispatcher.close()
             await notification_service.stop()
             if telegram_polling is not None:
                 await telegram_polling.stop()

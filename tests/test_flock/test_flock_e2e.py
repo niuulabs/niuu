@@ -79,18 +79,6 @@ async def test_happy_path_skuld_receives_prompt() -> None:
         assert "Implement:" in h.cli.received_prompts[0]
 
 
-async def test_happy_path_confidence_event_recorded() -> None:
-    """CI_PASS confidence event is recorded in the tracker after approve."""
-    async with FlockTestHarness(cli_responses=[OUTCOME_APPROVE]) as h:
-        run = _make_running_run()
-        await h.dispatch_run(run)
-        events = await h.tracker.get_confidence_events(run.tracker_id)
-        event_types = [e.event_type for e in events]
-        assert any(et.value == "ci_pass" for et in event_types), (
-            f"Expected ci_pass confidence event; got {event_types}"
-        )
-
-
 # ---------------------------------------------------------------------------
 # Scenario 2: Retry path — first attempt retry, second attempt approve
 # ---------------------------------------------------------------------------
@@ -149,16 +137,6 @@ async def test_escalation_path_escalated_state() -> None:
         run = _make_running_run()
         await h.dispatch_run(run)
         await h.assert_run_state(run.tracker_id, RunStatus.ESCALATED)
-
-
-async def test_escalation_path_confidence_reduced() -> None:
-    """Escalation path: CI_FAIL confidence event recorded."""
-    async with FlockTestHarness(cli_responses=[OUTCOME_ESCALATE]) as h:
-        run = _make_running_run()
-        await h.dispatch_run(run)
-        events = await h.tracker.get_confidence_events(run.tracker_id)
-        event_types = [e.event_type.value for e in events]
-        assert "ci_fail" in event_types, f"Expected ci_fail confidence event; got {event_types}"
 
 
 async def test_escalation_path_run_not_merged() -> None:

@@ -43,7 +43,6 @@ _BUILTIN_NAMES: frozenset[str] = frozenset(
         "research-agent",
         "research-and-distill",
         "retro-analyst",
-        "review-arbiter",
         "reviewer",
         "security",
         "security-auditor",
