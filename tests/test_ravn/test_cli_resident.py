@@ -567,3 +567,168 @@ async def test_open_state_prefers_the_mesh_peer_id_for_the_resident_id(
     _built, resident_id = await resident_mod._open_state(_Settings())
 
     assert resident_id == "peer-regin"
+
+
+# ---------------------------------------------------------------------------
+# mutations
+# ---------------------------------------------------------------------------
+
+
+def test_streak_reset_clears_the_streak(populated: LocalResidentState) -> None:
+    result = runner.invoke(resident_app, ["streak-reset", "--yes"])
+
+    assert result.exit_code == 0
+    assert "Streak reset for regin." in result.stdout
+    assert asyncio.run(populated.read_decision_streak(RESIDENT_ID)) is None
+
+
+def test_streak_reset_shows_the_streak_before_asking(
+    populated: LocalResidentState,
+) -> None:
+    result = runner.invoke(resident_app, ["streak-reset"], input="n\n")
+
+    assert "34x  watch" in result.stdout
+    assert "waiting for research campaign findings" in result.stdout
+
+
+def test_streak_reset_declined_changes_nothing(populated: LocalResidentState) -> None:
+    result = runner.invoke(resident_app, ["streak-reset"], input="n\n")
+
+    assert result.exit_code == 1
+    assert "Aborted; nothing was changed." in result.stdout
+    assert asyncio.run(populated.read_decision_streak(RESIDENT_ID)) is not None
+
+
+def test_streak_reset_confirmed_at_the_prompt(populated: LocalResidentState) -> None:
+    result = runner.invoke(resident_app, ["streak-reset"], input="y\n")
+
+    assert result.exit_code == 0
+    assert asyncio.run(populated.read_decision_streak(RESIDENT_ID)) is None
+
+
+def test_streak_reset_with_nothing_recorded(wired: LocalResidentState) -> None:
+    result = runner.invoke(resident_app, ["streak-reset", "--yes"])
+
+    assert result.exit_code == 0
+    assert "nothing to reset" in result.stdout
+
+
+def test_case_drop_deletes_the_case(populated: LocalResidentState) -> None:
+    result = runner.invoke(resident_app, ["case-drop", "watch-case", "--yes"])
+
+    assert result.exit_code == 0
+    assert "Deleted" in result.stdout
+    remaining = {case["caseId"] for case in json.loads(_cases_json())}
+    assert "watch-case" not in remaining
+
+
+def test_case_drop_warns_that_a_live_case_would_lose_its_wake(
+    populated: LocalResidentState,
+) -> None:
+    result = runner.invoke(resident_app, ["case-drop", "watch-case"], input="n\n")
+
+    assert "this case is live — scheduled wake would be discarded" in result.stdout
+
+
+def test_case_drop_declined_changes_nothing(populated: LocalResidentState) -> None:
+    result = runner.invoke(resident_app, ["case-drop", "watch-case"], input="n\n")
+
+    assert result.exit_code == 1
+    remaining = {case["caseId"] for case in json.loads(_cases_json())}
+    assert "watch-case" in remaining
+
+
+def test_case_drop_exits_nonzero_for_an_unknown_case(
+    populated: LocalResidentState,
+) -> None:
+    result = runner.invoke(resident_app, ["case-drop", "no-such-case", "--yes"])
+
+    assert result.exit_code == 1
+
+
+def test_cases_prune_reports_when_nothing_is_prunable(
+    wired: LocalResidentState,
+) -> None:
+    result = runner.invoke(resident_app, ["cases-prune", "--yes"])
+
+    assert result.exit_code == 0
+    assert "Nothing is prunable" in result.stdout
+
+
+def test_cases_prune_says_when_retention_retained_everything(
+    populated: LocalResidentState,
+) -> None:
+    """Retention is disabled by default, so an inert case still survives."""
+    result = runner.invoke(resident_app, ["cases-prune", "--yes"])
+
+    assert result.exit_code == 0
+    assert "retention policy retained every inert case" in result.stdout
+
+
+def test_cases_prune_declined_changes_nothing(populated: LocalResidentState) -> None:
+    result = runner.invoke(resident_app, ["cases-prune"], input="n\n")
+
+    assert result.exit_code == 1
+    assert "Aborted; nothing was changed." in result.stdout
+
+
+def test_wake_cancel_makes_the_case_inert(populated: LocalResidentState) -> None:
+    result = runner.invoke(resident_app, ["wake-cancel", "watch-case", "--yes"])
+
+    assert result.exit_code == 0
+    cases = {case["caseId"]: case for case in json.loads(_cases_json())}
+    assert cases["watch-case"]["resumable"] is False
+
+
+def test_wake_cancel_keeps_the_case_itself(populated: LocalResidentState) -> None:
+    """Cancelling is not deleting — the record that a wake existed survives."""
+    runner.invoke(resident_app, ["wake-cancel", "watch-case", "--yes"])
+
+    assert "watch-case" in {case["caseId"] for case in json.loads(_cases_json())}
+
+
+def test_wake_cancel_exits_nonzero_without_a_pending_wake(
+    populated: LocalResidentState,
+) -> None:
+    result = runner.invoke(resident_app, ["wake-cancel", "inert-case", "--yes"])
+
+    assert result.exit_code == 1
+    assert "No pending wake" in result.stderr
+
+
+def test_answer_unblocks_the_case(populated: LocalResidentState) -> None:
+    result = runner.invoke(resident_app, ["answer", "escalation-case", "yes, it launched", "--yes"])
+
+    assert result.exit_code == 0
+    assert json.loads(runner.invoke(resident_app, ["questions", "--json"]).stdout) == []
+
+
+def test_an_answered_case_stays_live_until_the_resident_reads_it(
+    populated: LocalResidentState,
+) -> None:
+    """Regression: answering must not make the case prunable."""
+    runner.invoke(resident_app, ["answer", "escalation-case", "yes", "--yes"])
+
+    cases = {case["caseId"]: case for case in json.loads(_cases_json())}
+    assert cases["escalation-case"]["resumable"] is True
+    assert cases["escalation-case"]["resumeReason"] == "unconsumed answer"
+
+
+def test_answer_exits_nonzero_without_a_pending_question(
+    populated: LocalResidentState,
+) -> None:
+    result = runner.invoke(resident_app, ["answer", "inert-case", "hello", "--yes"])
+
+    assert result.exit_code == 1
+    assert "No pending question" in result.stderr
+
+
+def test_answer_declined_writes_nothing(populated: LocalResidentState) -> None:
+    result = runner.invoke(resident_app, ["answer", "escalation-case", "yes"], input="n\n")
+
+    assert result.exit_code == 1
+    assert asyncio.run(populated.list_operator_answers()) == []
+
+
+def _cases_json() -> str:
+    return runner.invoke(resident_app, ["cases", "--json"]).stdout

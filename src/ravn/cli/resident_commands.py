@@ -1,18 +1,24 @@
-"""Operator inspection of a resident's durable state.
+"""Operator inspection and repair of a resident's durable state.
 
 A deployed resident carries its whole continuation in a state store: open
 cases, the working state it believes, the questions it is waiting on, the
 wakes it scheduled, and the streak counting how many turns in a row reached
-the same conclusion. Until now the only way to look at any of it was to scale
-the deployment to zero and mount its volume in a helper pod, which is a
-diagnosis and an archaeology expedition at the same time.
+the same conclusion. Until now the only way to look at any of it — or to fix
+it — was to scale the deployment to zero and mount its volume in a helper
+pod, which is a diagnosis and an archaeology expedition at the same time.
 
-These commands read that state through the *configured* ``ResidentStatePort``
-— the same adapter, built by the same wiring, rooted at the same place as the
-daemon. That is the whole point: no path guessing, and no second answer to
-"what does this resident actually believe" that can drift from the first.
+These commands read and write that state through the *configured*
+``ResidentStatePort`` — the same adapter, built by the same wiring, rooted at
+the same place as the daemon. That is the whole point: no path guessing, and
+no second answer to "what does this resident actually believe" that can drift
+from the first.
 
-Read-only. Nothing here mutates resident state.
+The mutating commands (``streak-reset``, ``case-drop``, ``cases-prune``,
+``wake-cancel``, ``answer``) each show what they are about to change and stop
+for confirmation unless ``--yes`` is passed. They stay deliberately on the
+CLI: the resident gateway's HTTP surface authenticates with a static shared
+secret it documents as known debt (NIU-1121), and state mutation is not
+something to hang off that until it delegates to a real token flow.
 """
 
 from __future__ import annotations
@@ -28,7 +34,7 @@ import typer
 
 resident_app = typer.Typer(
     name="resident",
-    help="Inspect a resident's durable state (cases, beliefs, questions, wakes).",
+    help="Inspect and repair a resident's durable state (cases, beliefs, questions, wakes).",
     add_completion=False,
 )
 
@@ -41,16 +47,19 @@ class _CaseSummary:
     refs: tuple[str, ...]
     has_pending_wake: bool
     has_pending_question: bool
+    has_unconsumed_answer: bool = False
 
     @property
     def resumable(self) -> bool:
         """Whether anything can still bring this case back.
 
-        Exactly two mechanisms resume a case — a pending scheduled wake and an
-        unanswered operator question — so a case with neither is inert no
-        matter how recent it looks.
+        Three mechanisms resume a case — a pending scheduled wake, an
+        unanswered operator question, and an operator answer the resident has
+        not consumed yet. The third is easy to miss because answering flips
+        the question out of "pending"; the same three tests decide what the
+        store's own prune sweep will spare, so these must not diverge.
         """
-        return self.has_pending_wake or self.has_pending_question
+        return self.has_pending_wake or self.has_pending_question or self.has_unconsumed_answer
 
     @property
     def resume_reason(self) -> str:
@@ -60,6 +69,8 @@ class _CaseSummary:
             reasons.append("scheduled wake")
         if self.has_pending_question:
             reasons.append("operator question")
+        if self.has_unconsumed_answer:
+            reasons.append("unconsumed answer")
         return " + ".join(reasons)
 
 
@@ -134,6 +145,8 @@ async def _collect_cases(state: Any, *, prefix: str) -> list[_CaseSummary]:
     refs = await state.list_refs()
     pending_wakes = {entry.path for entry in await state.list_scheduled_wakes()}
     pending_questions = {entry.path for entry in await state.list_operator_needed()}
+    # list_operator_answers already filters out consumed ones.
+    live_answers = {entry.path for entry in await state.list_operator_answers()}
 
     grouped: dict[str, list[str]] = {}
     for ref in refs:
@@ -147,6 +160,7 @@ async def _collect_cases(state: Any, *, prefix: str) -> list[_CaseSummary]:
             refs=tuple(sorted(case_refs)),
             has_pending_wake=any(ref in pending_wakes for ref in case_refs),
             has_pending_question=any(ref in pending_questions for ref in case_refs),
+            has_unconsumed_answer=any(ref in live_answers for ref in case_refs),
         )
         for case_id, case_refs in grouped.items()
     ]
@@ -530,3 +544,231 @@ def resident_working_state(
         typer.echo(payload["content"])
 
     _emit(payload, json_output=json_output, render=_render)
+
+
+# ---------------------------------------------------------------------------
+# Mutations
+#
+# Each of these deletes or overwrites something a resident decided. They all
+# describe the change first and stop for confirmation, because the failure
+# mode being designed against is an operator repairing the wrong resident: the
+# CLI reads whichever config it was pointed at, and nothing about a state
+# store says out loud whose it is.
+# ---------------------------------------------------------------------------
+
+
+def _confirm(prompt: str, *, assume_yes: bool) -> bool:
+    """Ask before changing durable state; ``--yes`` answers in advance."""
+    if assume_yes:
+        return True
+    return typer.confirm(prompt)
+
+
+def _abort() -> None:
+    typer.echo("Aborted; nothing was changed.")
+    raise typer.Exit(1)
+
+
+@resident_app.command("streak-reset")
+def resident_streak_reset(
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+    assume_yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
+) -> None:
+    """Forget the repeated-decision streak once its cause is actually fixed.
+
+    The streak is what escalates a resident that keeps reaching the same
+    conclusion. After the underlying problem is resolved the count is stale
+    evidence, and leaving it makes the resident keep escalating a fixed issue.
+    """
+    settings = _load_settings(config)
+
+    async def _read() -> tuple[str, Any]:
+        state, resident_id = await _open_state(settings)
+        return resident_id, await state.read_decision_streak(resident_id)
+
+    resident_id, streak = _run(_read())
+    if streak is None:
+        typer.echo("No decision streak recorded; nothing to reset.")
+        return
+
+    typer.echo(f"resident:  {resident_id}")
+    typer.echo(f"streak:    {streak.count}x  {streak.decision or '-'}")
+    typer.echo(f"because:   {streak.rationale or '-'}")
+    typer.echo(f"since:     {streak.first_seen_at}")
+    if not _confirm("Forget this streak?", assume_yes=assume_yes):
+        _abort()
+
+    async def _clear() -> bool:
+        state, _resident_id = await _open_state(settings)
+        return await state.clear_decision_streak(resident_id)
+
+    if _run(_clear()):
+        typer.echo(f"Streak reset for {resident_id}.")
+        return
+    typer.echo("Streak had already gone; nothing was changed.")
+
+
+@resident_app.command("case-drop")
+def resident_case_drop(
+    case_id: str = typer.Argument(help="Case id (slug) to delete."),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+    assume_yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
+) -> None:
+    """Delete one case and everything under it.
+
+    This is how a belief built on a case that never existed gets retired.
+    Deleting a resumable case is allowed on purpose — a case an operator has
+    judged phantom is not made real by holding a pending wake — but the wake
+    is named in the confirmation so the choice is a deliberate one.
+    """
+    settings = _load_settings(config)
+
+    async def _read() -> _CaseSummary | None:
+        state, _resident_id = await _open_state(settings)
+        cases = await _collect_cases(state, prefix=_state_prefix(state))
+        return next((case for case in cases if case.case_id == case_id), None)
+
+    case = _run(_read())
+    if case is None:
+        typer.echo(f"Case not found: {case_id}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"case:  {case.case_id}")
+    typer.echo(f"refs:  {len(case.refs)}")
+    for ref in case.refs:
+        typer.echo(f"    {ref}")
+    if case.resumable:
+        typer.echo(f"NOTE:  this case is live — {case.resume_reason} would be discarded.")
+    if not _confirm(f"Delete case {case.case_id}?", assume_yes=assume_yes):
+        _abort()
+
+    async def _delete() -> int:
+        state, _resident_id = await _open_state(settings)
+        return await state.delete_case(case_id)
+
+    removed = _run(_delete())
+    typer.echo(f"Deleted {removed} ref(s) from {case_id}.")
+
+
+@resident_app.command("cases-prune")
+def resident_cases_prune(
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+    assume_yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
+) -> None:
+    """Delete cases nothing can resume, per the store's retention policy.
+
+    This runs the store's own sweep rather than a second pruning path, so an
+    operator prune and the daemon's background prune can never disagree about
+    what is safe to remove.
+    """
+    settings = _load_settings(config)
+
+    async def _read() -> dict[str, Any]:
+        state, _resident_id = await _open_state(settings)
+        return await _case_counts(state, prefix=_state_prefix(state))
+
+    counts = _run(_read())
+    typer.echo(
+        f"cases: {counts['total']} ({counts['live']} live, {counts['inert']} inert) "
+        f"[counted by {counts['countedBy']}]"
+    )
+    if not counts["inert"]:
+        typer.echo("Nothing is prunable; live cases are never swept.")
+        return
+    typer.echo("Only unresumable cases beyond the retention policy are removed.")
+    if not _confirm("Run the prune sweep?", assume_yes=assume_yes):
+        _abort()
+
+    async def _prune() -> int:
+        state, _resident_id = await _open_state(settings)
+        return await state.prune_cases()
+
+    removed = _run(_prune())
+    if removed:
+        typer.echo(f"Pruned {removed} case(s).")
+        return
+    typer.echo("Pruned 0 cases — the retention policy retained every inert case.")
+
+
+@resident_app.command("wake-cancel")
+def resident_wake_cancel(
+    case_id: str = typer.Argument(help="Case id (slug) whose wake should be cancelled."),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+    assume_yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
+) -> None:
+    """Cancel a case's scheduled wake so it stops resuming itself.
+
+    Consumes the wake exactly as the runtime would on firing, so the case goes
+    inert without losing the record that a wake was once scheduled — which
+    deleting the case would.
+    """
+    settings = _load_settings(config)
+
+    async def _read() -> Any:
+        state, _resident_id = await _open_state(settings)
+        prefix = _state_prefix(state)
+        for wake in await state.list_scheduled_wakes():
+            if _case_id_from_ref(wake.path, prefix=prefix) == case_id:
+                return wake
+        return None
+
+    wake = _run(_read())
+    if wake is None:
+        typer.echo(f"No pending wake for case: {case_id}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"case: {case_id}")
+    typer.echo(f"wake: {wake.path}")
+    if wake.summary:
+        typer.echo(f"      {wake.summary}")
+    if not _confirm("Cancel this wake?", assume_yes=assume_yes):
+        _abort()
+
+    async def _cancel() -> str:
+        state, _resident_id = await _open_state(settings)
+        return await state.consume_scheduled_wake(wake)
+
+    _run(_cancel())
+    typer.echo(f"Cancelled the wake on {case_id}; the case is now inert.")
+
+
+@resident_app.command("answer")
+def resident_answer(
+    case_id: str = typer.Argument(help="Case id (slug) the resident asked about."),
+    answer: str = typer.Argument(help="The answer to give it."),
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+    assume_yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
+) -> None:
+    """Answer the operator question a case is blocked on.
+
+    The one repair here that adds rather than removes: it unblocks the case
+    the resident actually suspended, so work resumes instead of a phantom
+    being deleted.
+    """
+    settings = _load_settings(config)
+
+    async def _read() -> Any:
+        state, _resident_id = await _open_state(settings)
+        prefix = _state_prefix(state)
+        for question in await state.list_operator_needed():
+            if _case_id_from_ref(question.path, prefix=prefix) == case_id:
+                return question
+        return None
+
+    question = _run(_read())
+    if question is None:
+        typer.echo(f"No pending question for case: {case_id}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"case:     {case_id}")
+    typer.echo(f"asked:    {question.summary or question.path}")
+    typer.echo(f"answer:   {answer}")
+    if not _confirm("Send this answer?", assume_yes=assume_yes):
+        _abort()
+
+    async def _write() -> str:
+        state, _resident_id = await _open_state(settings)
+        return await state.write_operator_answer(answer, case_id=case_id)
+
+    ref = _run(_write())
+    typer.echo(f"Answered {case_id} at {ref}.")

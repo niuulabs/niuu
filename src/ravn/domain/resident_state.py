@@ -58,6 +58,36 @@ class ResidentStatePort(Protocol):
 
     async def write_decision_streak(self, record: ResidentDecisionStreakRecord) -> str: ...
 
+    async def clear_decision_streak(self, resident_id: str) -> bool:
+        """Forget the repeated-decision streak; return whether one existed.
+
+        The streak is what escalates a resident that keeps reaching the same
+        conclusion. Once an operator has actually resolved the underlying
+        cause, the count is stale evidence: leaving it in place either keeps
+        the resident escalating over a fixed problem, or forces the operator
+        to delete state by hand, which is how a poisoned resident used to be
+        repaired.
+        """
+        ...
+
+    async def delete_case(self, case_id: str) -> int:
+        """Delete one durable case and everything under it; return refs removed.
+
+        Deleting a case is how a belief built on a case that never existed
+        gets retired. It is unconditional on purpose — a case an operator has
+        judged phantom is not made real by holding a pending wake, and the
+        caller is expected to have shown what would go first.
+        """
+        ...
+
+    async def prune_cases(self) -> int:
+        """Delete unresumable cases beyond the retention policy; return the count.
+
+        Resumability is the same test the health gauges count by, so a store
+        must never prune a case it would still report as live.
+        """
+        ...
+
     async def read_a2a_task(self, task_id: str) -> ResidentMemoryEntry | None: ...
 
     async def write_a2a_task(self, record: ResidentA2ATaskRecord) -> str: ...

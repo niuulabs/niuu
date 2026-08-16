@@ -404,6 +404,32 @@ class LocalResidentMemory(ResidentMemoryPort):
             self._decision_streak_path(record.resident_id), _render_decision_streak(record)
         )
 
+    async def clear_decision_streak(self, resident_id: str) -> bool:
+        """Forget the repeated-decision streak; return whether one existed."""
+        path = self._root / self._decision_streak_path(resident_id)
+        if not path.is_file():
+            return False
+        path.unlink()
+        return True
+
+    async def delete_case(self, case_id: str) -> int:
+        """Delete one durable case directory; return the number of refs removed."""
+        return await asyncio.to_thread(self._delete_case_sync, case_id)
+
+    def _delete_case_sync(self, case_id: str) -> int:
+        case_slug = _slug(case_id)
+        if not case_slug:
+            return 0
+        base = (self._root / self._prefix / "cases").resolve()
+        case_dir = (base / case_slug).resolve()
+        # A case id arriving from an operator is still input; refuse anything
+        # that resolves outside the cases tree rather than deleting it.
+        if not case_dir.is_relative_to(base) or case_dir == base or not case_dir.is_dir():
+            return 0
+        removed = sum(1 for path in case_dir.rglob("*") if path.is_file())
+        shutil.rmtree(case_dir)
+        return removed
+
     async def read_a2a_task(self, task_id: str) -> ResidentMemoryEntry | None:
         return await self.read(str(self._prefix / _a2a_task_path(task_id)))
 

@@ -124,6 +124,73 @@ class MimirResidentState(ResidentStatePort):
         await self._mimir.upsert_page(path, _render_decision_streak(record))
         return path
 
+    async def clear_decision_streak(self, resident_id: str) -> bool:
+        return await self._mimir.delete_page(self._decision_streak_path(resident_id))
+
+    async def delete_case(self, case_id: str) -> int:
+        """Delete every page under one case; return how many were removed."""
+        case_slug = _slug(case_id)
+        if not case_slug:
+            return 0
+        prefix = f"{self._prefix}/cases/{case_slug}"
+        removed = 0
+        for path in await self._case_page_paths(prefix=prefix):
+            if await self._mimir.delete_page(path):
+                removed += 1
+        return removed
+
+    async def prune_cases(self) -> int:
+        """Delete every case no wake or question can resume.
+
+        Unlike the local store this has no retention policy to respect: Mimir
+        residents never had a sweep, so there is no age or count bound here to
+        honour, only the resumability test the gauges count by.
+        """
+        # Unconsumed answers count as resumable for the same reason they do in
+        # the local store: retry_unconsumed_answers resumes from them, and
+        # answering flips the question marker out of "pending".
+        resumable = {
+            self._case_slug_of(entry.path)
+            for entry in (
+                (await self.list_scheduled_wakes())
+                + (await self.list_operator_needed())
+                + (await self.list_operator_answers())
+            )
+        }
+        removed = 0
+        for case_slug in sorted(await self._case_slugs()):
+            if case_slug in resumable:
+                continue
+            if await self.delete_case(case_slug):
+                removed += 1
+        return removed
+
+    async def _case_page_paths(self, *, prefix: str) -> list[str]:
+        """Every page path under a case prefix, boundary-safe.
+
+        ``list_pages(prefix=...)`` is a string prefix, so asking for
+        ``cases/watch`` would also match ``cases/watch-2``. Compare on the
+        path segment instead.
+        """
+        pages = await self._mimir.list_pages(prefix=prefix)
+        paths = []
+        for page in pages:
+            path = str(getattr(page, "path", "") or "")
+            if path == prefix or path.startswith(f"{prefix}/"):
+                paths.append(path)
+        return paths
+
+    async def _case_slugs(self) -> set[str]:
+        pages = await self._mimir.list_pages(prefix=f"{self._prefix}/cases")
+        slugs = {self._case_slug_of(str(getattr(page, "path", "") or "")) for page in pages}
+        return {slug for slug in slugs if slug}
+
+    def _case_slug_of(self, path: str) -> str:
+        marker = f"{self._prefix}/cases/"
+        if not path.startswith(marker):
+            return ""
+        return path[len(marker) :].split("/", 1)[0]
+
     async def read_a2a_task(self, task_id: str) -> ResidentMemoryEntry | None:
         return await self.read(str(Path(self._prefix) / _a2a_task_path(task_id)))
 

@@ -390,3 +390,67 @@ async def test_a_consumed_answer_lets_the_case_go(tmp_path) -> None:
     await mem.consume_operator_answer(answer)
 
     assert await mem.count_cases() == (0, 1)
+
+
+@pytest.mark.asyncio
+async def test_delete_case_removes_the_whole_case(tmp_path) -> None:
+    mem = _memory(tmp_path)
+    await _sleeping_case(mem, "phantom")
+    await _dead_case(mem, "keeper")
+
+    removed = await mem.delete_case("phantom")
+
+    assert removed >= 1
+    assert _case_ids(tmp_path) == {"keeper"}
+
+
+@pytest.mark.asyncio
+async def test_delete_case_is_unconditional_on_resumability(tmp_path) -> None:
+    """A case an operator judged phantom is not saved by a pending wake."""
+    mem = _memory(tmp_path)
+    await _sleeping_case(mem, "phantom")
+
+    await mem.delete_case("phantom")
+
+    assert _case_ids(tmp_path) == set()
+    assert await mem.count_cases() == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_delete_case_ignores_an_unknown_case(tmp_path) -> None:
+    mem = _memory(tmp_path)
+    await _dead_case(mem, "keeper")
+
+    assert await mem.delete_case("no-such-case") == 0
+    assert _case_ids(tmp_path) == {"keeper"}
+
+
+@pytest.mark.asyncio
+async def test_delete_case_refuses_to_escape_the_cases_tree(tmp_path) -> None:
+    """A case id is operator input; traversal must not delete the store."""
+    mem = _memory(tmp_path)
+    await _dead_case(mem, "keeper")
+
+    assert await mem.delete_case("../../..") == 0
+    assert await mem.delete_case("") == 0
+    assert _case_ids(tmp_path) == {"keeper"}
+
+
+@pytest.mark.asyncio
+async def test_clear_decision_streak_forgets_it(tmp_path) -> None:
+    from ravn.domain.resident_continuation import ResidentDecisionStreakRecord
+
+    mem = _memory(tmp_path)
+    await mem.write_decision_streak(
+        ResidentDecisionStreakRecord(
+            resident_id="regin", fingerprint="watch:x", count=34, decision="watch"
+        )
+    )
+
+    assert await mem.clear_decision_streak("regin") is True
+    assert await mem.read_decision_streak("regin") is None
+
+
+@pytest.mark.asyncio
+async def test_clear_decision_streak_reports_when_there_was_none(tmp_path) -> None:
+    assert await _memory(tmp_path).clear_decision_streak("regin") is False
