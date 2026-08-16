@@ -5,7 +5,6 @@ dist
 coverage
 playwright-report
 test-results
-storybook-static
 *.tsbuildinfo
 .DS_Store
 .env

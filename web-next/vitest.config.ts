@@ -46,7 +46,6 @@ export default defineConfig({
       reporter: isCi ? ['text', 'lcov'] : ['text', 'html', 'lcov'],
       include: ['packages/*/src/**/*.{ts,tsx}'],
       exclude: [
-        '**/*.stories.tsx',
         '**/*.test.{ts,tsx}',
         '**/index.{ts,tsx}',
         '**/ports.ts',

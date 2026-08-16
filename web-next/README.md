@@ -21,7 +21,6 @@ apps/
 ```bash
 pnpm install            # Install workspace deps
 pnpm dev                # Run the niuu app
-pnpm storybook          # Run Storybook at :6006
 pnpm test               # Run unit tests with coverage
 pnpm test:e2e           # Run Playwright e2e
 pnpm typecheck          # Type-check all packages

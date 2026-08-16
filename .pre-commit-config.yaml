@@ -47,7 +47,7 @@ repos:
         entry: bash -c 'export PATH="$HOME/.npm-global/bin:$HOME/.local/share/pnpm:/opt/homebrew/bin:/usr/local/bin:$PATH"; cd web-next && pnpm exec prettier --write "${@/#web-next\//}"' --
         language: system
         files: ^web-next/.*\.(ts|tsx|js|jsx|css|md|json|yaml|yml)$
-        exclude: ^web-next/(node_modules|dist|coverage|storybook-static|playwright-report)/
+        exclude: ^web-next/(node_modules|dist|coverage|playwright-report)/
         stages: [pre-commit]
 
       - id: eslint-web-next
