@@ -93,6 +93,14 @@ class TestSanitizeFtsQuery:
 
 class TestFtsSearch:
     @pytest.mark.asyncio
+    async def test_has_documents_tracks_persisted_rows(
+        self, adapter: sqlite_module.SqliteSearchAdapter
+    ) -> None:
+        assert await adapter.has_documents() is False
+        await adapter.index("doc-1", "persisted content", {})
+        assert await adapter.has_documents() is True
+
+    @pytest.mark.asyncio
     async def test_index_and_find_by_keyword(
         self, adapter: sqlite_module.SqliteSearchAdapter
     ) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock, patch
@@ -148,7 +149,7 @@ def test_create_app_no_embedding_model_uses_fts_only(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Lifespan — startup rebuilds search index
+# Lifespan — startup bootstraps an empty search index
 # ---------------------------------------------------------------------------
 
 
@@ -161,6 +162,25 @@ def test_lifespan_rebuilds_search_index_on_startup(tmp_path: Path) -> None:
         response = client.get("/mimir/health")
         assert response.status_code == 200
         assert response.json()["status"] == "healthy"
+
+
+def test_lifespan_reuses_persisted_search_index(tmp_path: Path) -> None:
+    from niuu.adapters.search.sqlite import SqliteSearchAdapter
+
+    root = tmp_path / "mimir"
+    search_db = root / "search.db"
+    persisted = SqliteSearchAdapter(path=str(search_db))
+    asyncio.run(persisted.index("doc-1", "persisted content", {}))
+
+    app = create_app(MimirServiceConfig(path=str(root), search_db=str(search_db)))
+    with patch(
+        "mimir.adapters.markdown.MarkdownMimirAdapter.rebuild_search_index",
+        new_callable=AsyncMock,
+    ) as rebuild:
+        with TestClient(app):
+            pass
+
+    rebuild.assert_not_awaited()
 
 
 def test_create_app_exposes_health_aliases(tmp_path: Path) -> None:

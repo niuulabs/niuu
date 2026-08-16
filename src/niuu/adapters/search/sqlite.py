@@ -244,6 +244,10 @@ class SqliteSearchAdapter(SearchPort):
     async def rebuild(self) -> None:
         await asyncio.to_thread(self._rebuild_sync)
 
+    async def has_documents(self) -> bool:
+        """Return whether the persisted index already contains documents."""
+        return await asyncio.to_thread(self._has_documents_sync)
+
     # ------------------------------------------------------------------
     # Synchronous internals (run via to_thread)
     # ------------------------------------------------------------------
@@ -476,6 +480,13 @@ class SqliteSearchAdapter(SearchPort):
                 conn.close()
 
         self._with_retry(_do)
+
+    def _has_documents_sync(self) -> bool:
+        conn = self._connect()
+        try:
+            return conn.execute("SELECT 1 FROM search_index LIMIT 1").fetchone() is not None
+        finally:
+            conn.close()
 
     def _rebuild_sync(self) -> None:
         def _do() -> None:
