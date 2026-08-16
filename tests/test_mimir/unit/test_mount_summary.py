@@ -43,12 +43,14 @@ def _write_page(adapter: MarkdownMimirAdapter, rel_path: str, content: str) -> P
     return page
 
 
-def _make_source(source_id: str, content: str = "body") -> MimirSource:
+def _make_source(
+    source_id: str, content: str = "body", source_type: str = "research"
+) -> MimirSource:
     return MimirSource(
         source_id=source_id,
         title=f"Source {source_id}",
         content=content,
-        source_type="research",
+        source_type=source_type,  # type: ignore[arg-type]
         ingested_at=datetime.now(UTC),
         content_hash=compute_content_hash(content),
     )
@@ -271,6 +273,30 @@ async def test_list_sources_unprocessed_excludes_referenced_sources(
     unprocessed = await adapter.list_sources(unprocessed_only=True)
 
     assert [s.source_id for s in unprocessed] == ["src-loose"]
+
+
+@pytest.mark.asyncio
+async def test_list_sources_unprocessed_excludes_operational_exhaust(
+    tmp_path: Path,
+) -> None:
+    """Exhaust ingested before the 422 gate must not read as backlog forever.
+
+    No synthesis will ever cite a tool transcript or a probe log, so counting
+    one as "unprocessed" puts the warden on a backlog it can never drain.
+    """
+    adapter = _make_adapter(tmp_path)
+    adapter._write_raw_source(_make_source("src-real", content="knowledge"))
+    adapter._write_raw_source(
+        _make_source("src-tool", content="probe output", source_type="tool_output")
+    )
+    adapter._write_raw_source(_make_source("src-diag", content="run log", source_type="diagnostic"))
+
+    unprocessed = await adapter.list_sources(unprocessed_only=True)
+
+    assert [s.source_id for s in unprocessed] == ["src-real"]
+    # The plain listing still shows everything — the exhaust exists, it is
+    # just never pending work.
+    assert len(await adapter.list_sources()) == 3
 
 
 @pytest.mark.asyncio

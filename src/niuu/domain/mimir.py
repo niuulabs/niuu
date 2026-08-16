@@ -100,7 +100,7 @@ class MimirSource:
     source_id: str
     title: str
     content: str
-    source_type: Literal["web", "document", "conversation", "tool_output", "research"]
+    source_type: Literal["web", "document", "conversation", "tool_output", "diagnostic", "research"]
     ingested_at: datetime
     content_hash: str  # SHA-256 hex — used for staleness detection
     origin_url: str | None = None

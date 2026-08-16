@@ -1093,6 +1093,44 @@ def test_empty_ravn_bindings_and_routing_rule_lifecycle(composite_client: TestCl
     assert all(rule["id"] != "rule-3" for rule in rules_after)
 
 
+def test_sources_unprocessed_excludes_operational_exhaust(tmp_path: Path) -> None:
+    """The API's backlog definition must match the adapter's: exhaust stored
+    before the ingest gate existed is never pending synthesis."""
+    from datetime import UTC, datetime
+
+    from niuu.domain.mimir import MimirSource, compute_content_hash
+
+    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    router = MimirRouter(adapter=adapter, name="test", role="local")
+    app = FastAPI()
+    app.include_router(router.router, prefix="/mimir")
+    tc = TestClient(app)
+
+    tc.post(
+        "/mimir/ingest",
+        json={"title": "Real", "content": "knowledge", "source_type": "document"},
+    )
+    # Ingest refuses operational types now, so plant one the way it actually
+    # got there: written before the gate existed.
+    adapter._write_raw_source(
+        MimirSource(
+            source_id="src-tool",
+            title="Probe output",
+            content="exit 0",
+            source_type="tool_output",
+            ingested_at=datetime.now(UTC),
+            content_hash=compute_content_hash("exit 0"),
+        )
+    )
+
+    unprocessed = tc.get("/mimir/sources", params={"unprocessed": True})
+    assert unprocessed.status_code == 200
+    assert [s["source_type"] for s in unprocessed.json()] == ["document"]
+
+    everything = tc.get("/mimir/sources")
+    assert len(everything.json()) == 2
+
+
 def test_sources_filters_unprocessed_and_missing_page_sources(
     client_with_sourced_page: TestClient,
 ) -> None:
