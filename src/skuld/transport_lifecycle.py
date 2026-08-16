@@ -47,6 +47,12 @@ class TransportLifecycleMixin:
             "resume_session_id": self._settings.session.resume_session_id,
             "ask_user_question_enabled": self._settings.ask_user_question_enabled,
             "acp_prompt_timeout_s": self._settings.acp_prompt_timeout_s,
+            "dsh_runtime_bin": self._settings.dsh.runtime_bin,
+            "dsh_cordis_config": self._settings.dsh.cordis_config,
+            "dsh_base_url": self._settings.dsh.base_url,
+            "dsh_api_key": self._settings.dsh.api_key,
+            "dsh_provider": self._settings.dsh.provider,
+            "dsh_prompt_timeout_s": self._settings.dsh.prompt_timeout_s,
         }
 
     def _create_codex_auth_provider(self) -> CodexAuthProviderPort:

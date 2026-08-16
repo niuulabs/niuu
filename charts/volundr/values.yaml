@@ -1355,6 +1355,96 @@ sessionDefinitions:
 
       runtimeClassName: ""
 
+  # Skuld-DeepSeek-Harness session definition (dsh — SDK JSON-RPC runtime)
+  # The Skuld image must include the deepseek-harness-runtime-bin package
+  # (or set broker.dsh.runtimeBin to a dsh-jsonrpc-agent executable).
+  skuldDeepSeekHarness:
+    # -- Enable skuld-deepseek-harness session definition (disabled by default)
+    enabled: false
+    # -- Human-readable name shown in the UI
+    displayName: "DeepSeek Harness"
+    # -- Short description for the session picker
+    description: "DeepSeek Harness (dsh) — streaming, tools, durable session events"
+    # -- Default model for this definition
+    defaultModel: "deepseek-v4-flash"
+    # -- Labels for agent routing
+    labels:
+      - session
+      - dsh
+    # -- Model providers this runtime accepts
+    compatibleProviders:
+      - deepseek
+    # -- Whether this session definition is active
+    active: true
+
+    # Helm chart configuration (same chart as skuld-claude)
+    helm:
+      chart: skuld
+      repo: "oci://ghcr.io/niuulabs/charts"
+      repoName: ""
+      version: "0.1.0"
+
+    defaults:
+      session:
+        # -- Default dsh model
+        model: "deepseek-v4-flash"
+
+      broker:
+        # -- AI CLI backend: "dsh" uses the SDK JSON-RPC stdio protocol
+        cliType: dsh
+        # -- Fully-qualified transport adapter class path
+        transportAdapter: "skuld.transports.dsh.DshJsonRpcTransport"
+        # -- Skip tool permission prompts (dsh composition auto-approves)
+        skipPermissions: true
+        agentTeams: false
+        dsh:
+          # -- dsh-jsonrpc-agent executable (empty = bundled runtime-bin package)
+          runtimeBin: ""
+          # -- Cordis composition file (empty = bundled default composition)
+          cordisConfig: ""
+          # -- OpenAI-compatible chat-completions base URL (empty = DeepSeek API)
+          baseUrl: ""
+          # -- Provider route registered by the runtime composition
+          provider: "deepseek-official"
+          # -- Max seconds to wait for a turn to reach idle
+          promptTimeoutS: 600
+
+      image:
+        repository: ghcr.io/niuulabs/skuld
+        tag: "latest"
+
+      resources:
+        requests:
+          memory: "256Mi"
+          cpu: "100m"
+        limits:
+          memory: "1Gi"
+          cpu: "500m"
+
+      imagePullSecrets:
+        - ghcr-pull-secret
+
+      ingress:
+        className: ""
+        annotations: {}
+        tls:
+          enabled: false
+          secretName: "skuld-wildcard-tls"
+
+      persistence:
+        mountPath: "/volundr/sessions"
+
+      homeVolume:
+        enabled: true
+        mountPath: "/volundr/home"
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      runtimeClassName: ""
+
   # Skuld-Reviewer session definition (lightweight LLM reviewer — no IDE)
   skuldReviewer:
     # -- Enable skuld-reviewer session definition
