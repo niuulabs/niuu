@@ -196,6 +196,7 @@ async def test_backend_recommission_repairs_on_verify_failure_then_installs(
 
     class _Backend:
         name = "fake"
+        supports_restart_recovery = True
 
         async def build(self, request: Any) -> ToolBuildResult:
             builds.append(request.signal_context)
@@ -233,6 +234,7 @@ async def test_backend_recommission_repairs_on_verify_failure_then_installs(
     prov = _persisted_provenance(tmp_path)
     assert prov["verification"]["ok"] is True
     assert prov["verification"]["attempts"] == 1
+    assert list((tmp_path / "arts" / "pending-commissions").glob("*.json")) == []
 
 
 async def test_verify_failure_exhausts_repair_budget_and_aborts(tmp_path, monkeypatch) -> None:
@@ -241,6 +243,7 @@ async def test_verify_failure_exhausts_repair_budget_and_aborts(tmp_path, monkey
 
     class _Backend:
         name = "fake"
+        supports_restart_recovery = True
 
         async def build(self, request: Any) -> ToolBuildResult:
             return ToolBuildResult(
@@ -268,6 +271,7 @@ async def test_verify_failure_exhausts_repair_budget_and_aborts(tmp_path, monkey
     prov = _persisted_provenance(tmp_path)
     assert prov["verification"]["ok"] is False
     assert prov["verification"]["attempts"] == 2
+    assert list((tmp_path / "arts" / "pending-commissions").glob("*.json")) == []
 
 
 async def test_commissioned_build_question_is_persisted_and_resumed(tmp_path) -> None:

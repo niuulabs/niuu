@@ -547,6 +547,10 @@ def _build_ravn_config(
         "initiative": {
             "enabled": True,
             "max_concurrent_tasks": max_tasks,
+            # All personas share /workspace, but each daemon owns its queue.
+            # Sharing the default journal makes every sidecar restore the same
+            # interrupted task after a pod restart.
+            "queue_journal_path": f"{_WORKSPACE_MOUNT_PATH}/.ravn/daemon/{persona}-queue.json",
         },
         "mimir": {
             "enabled": True,

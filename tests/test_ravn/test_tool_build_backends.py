@@ -200,7 +200,9 @@ def test_build_prompts_instructs_canonical_file_and_new_fields() -> None:
     assert "learned_tool.json" in initial
     assert "test_code" in initial
     assert "requirements" in initial
-    assert "imports\n  `_verify_tool`" in initial
+    assert "Import `_verify_tool`" in initial
+    assert "zero-argument `test_*`" in initial
+    assert "Do not import\n  pytest or use pytest fixtures" in initial
     assert "must not read `learned_tool.json`" in initial
 
 
@@ -1076,6 +1078,8 @@ async def test_a2a_backend_propagates_active_trace_in_message_metadata(
             ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
             ("POST", "/api/v1/ting/a2a"): [
                 _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_task("TASK_STATE_WORKING")),
+                _rpc_result(_a2a_task("TASK_STATE_WORKING")),
                 _rpc_result(_a2a_task("TASK_STATE_COMPLETED", artifacts=artifacts)),
             ],
         }
@@ -1095,6 +1099,12 @@ async def test_a2a_backend_propagates_active_trace_in_message_metadata(
 
     metadata = client.post_bodies[0]["params"]["message"]["metadata"]
     assert metadata["traceContext"] == telemetry.inject.return_value
+    state_events = [
+        call
+        for call in telemetry.event.call_args_list
+        if call.args and call.args[0] == "ravn.a2a.task.state"
+    ]
+    assert len(state_events) == 2
 
 
 async def test_a2a_backend_passes_connection_id_when_configured() -> None:

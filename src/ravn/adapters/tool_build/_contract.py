@@ -49,10 +49,13 @@ Requirements:
 - Declared reach (what it is allowed to touch):
 {reach}
 - {request.signal_context or "No additional signal context."}
-- Also produce `test_code`: a self-contained pytest/asserts module that imports
-  `_verify_tool` (the verifier loads `tool_code` under that module name) and
-  exercises `_verify_tool.{request.entry_point}` on representative input. The
-  tests must not read `learned_tool.json` or depend on the builder workspace.
+- Also produce `test_code`: a self-contained module of zero-argument `test_*`
+  functions using plain asserts. Import `_verify_tool` (the verifier loads
+  `tool_code` under that module name) and exercise
+  `_verify_tool.{request.entry_point}` on representative input. Do not import
+  pytest or use pytest fixtures such as `monkeypatch`; the verifier directly
+  invokes each test function. Tests must not read `learned_tool.json` or depend
+  on the builder workspace.
 - Also produce `requirements`: a list of pip package requirement strings the
   tool needs at runtime (use [] when the tool is stdlib-only).
 

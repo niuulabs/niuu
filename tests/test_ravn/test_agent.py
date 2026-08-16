@@ -411,10 +411,16 @@ class TestRavnAgentToolUse:
         first_result = await first_tool.execute(build_input)
 
         assert first_result.is_error
-        operation_id = interrupted.requests[0].operation_id
         pending = list((artifacts_dir / "pending-commissions").glob("*.json"))
         assert len(pending) == 1
         assert json.loads(pending[0].read_text())["state"] == "submitting"
+
+        # Reproduce the leaked repair records seen in the resident: recovery
+        # must execute only the newest record for one logical tool.
+        duplicate_operation_id = "newest-repair-operation"
+        duplicate_record = json.loads(pending[0].read_text())
+        duplicate_record["operation_id"] = duplicate_operation_id
+        first_tool._write_commission(duplicate_operation_id, duplicate_record)  # noqa: SLF001
 
         recovered = _Backend(interrupted=False)
         second_agent, _ = make_agent(make_simple_llm("unused"))
@@ -432,10 +438,11 @@ class TestRavnAgentToolUse:
         assert len(recovered_results) == 1
         second_result = recovered_results[0]
         assert not second_result.is_error
-        assert recovered.requests[0].operation_id == operation_id
+        assert len(recovered.requests) == 1
+        assert recovered.requests[0].operation_id == duplicate_operation_id
         assert list((artifacts_dir / "pending-commissions").glob("*.json")) == []
         persisted = json.loads((artifacts_dir / "restart_probe.json").read_text())
-        assert persisted["provenance"]["build_operation_id"] == operation_id
+        assert persisted["provenance"]["build_operation_id"] == duplicate_operation_id
 
     async def test_build_tool_reconciles_stale_commission_when_tool_is_installed(
         self,

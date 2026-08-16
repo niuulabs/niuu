@@ -579,6 +579,35 @@ class TestBroker:
                 await broker.startup()
 
     @pytest.mark.asyncio
+    async def test_acknowledged_workflow_kickoff_is_not_repeated_after_restart(self, tmp_path):
+        settings = SkuldSettings(
+            session={
+                "id": "wf-session-restarted",
+                "workspace_dir": str(tmp_path),
+                "initial_prompt": "Implement the requested change",
+            },
+            workflow_trigger={
+                "enabled": True,
+                "node_id": "trigger-1",
+                "event_type": "code.requested",
+            },
+        )
+        first = Broker(settings=settings)
+        first._trace_workflow_span_id = "trace-1"
+        first_publish = AsyncMock()
+        with patch.object(first, "_publish_workflow_trigger", new=first_publish):
+            await first._run_workflow_trigger_task()
+
+        restarted = Broker(settings=settings)
+        restarted._trace_workflow_span_id = "trace-2"
+        restarted_publish = AsyncMock()
+        with patch.object(restarted, "_publish_workflow_trigger", new=restarted_publish):
+            await restarted._run_workflow_trigger_task()
+
+        first_publish.assert_awaited_once()
+        restarted_publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_publish_workflow_trigger_waits_for_connected_consumers(self, tmp_path):
         settings = SkuldSettings(
             session={

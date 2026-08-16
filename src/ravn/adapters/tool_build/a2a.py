@@ -495,17 +495,17 @@ class A2AToolBuildBackend(ToolBuildBackend):
                             }
                         )
                         last_activity = activity
+                        telemetry.event(
+                            "ravn.a2a.task.state",
+                            attributes={
+                                "a2a.task.id": task_id,
+                                "a2a.task.state": state,
+                                "a2a.task.poll_attempt": attempt + 1,
+                            },
+                            content=task,
+                        )
                     span.set_attribute("a2a.task.state", state)
                     span.set_attribute("a2a.task.poll_attempt", attempt + 1)
-                    telemetry.event(
-                        "ravn.a2a.task.state",
-                        attributes={
-                            "a2a.task.id": task_id,
-                            "a2a.task.state": state,
-                            "a2a.task.poll_attempt": attempt + 1,
-                        },
-                        content=task,
-                    )
                     telemetry.count(
                         "ravn.a2a.task.polls",
                         attributes={"a2a.task.state": state},

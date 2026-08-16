@@ -80,6 +80,24 @@ def test_failing_tool_reports_not_ok() -> None:
     assert "AssertionError" in result.logs
 
 
+def test_pytest_fixture_parameter_is_rejected_with_actionable_error() -> None:
+    fixture_test = (
+        "import _verify_tool\n\n"
+        "def test_run(monkeypatch):\n"
+        "    assert _verify_tool.run({}) == {'echo': {}}\n"
+    )
+    result = verify_learned_tool_in_ephemeral_venv(
+        tool_name="echo_tool",
+        tool_code=_PASSING_TOOL,
+        test_code=fixture_test,
+        requirements=[],
+    )
+
+    assert result.ok is False
+    assert "must be zero-argument callables" in result.logs
+    assert "test_run" in result.logs
+
+
 def test_missing_module_is_surfaced_for_dependency_heal() -> None:
     tool_code = "import totally_absent_pkg\n\ndef run(payload):\n    return {}\n"
     test_code = "import _verify_tool\n\ndef test_import():\n    _verify_tool.run({})\n"

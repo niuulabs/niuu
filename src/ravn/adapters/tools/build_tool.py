@@ -336,15 +336,25 @@ class BuildTool(ToolPort):
     async def recover_pending(self) -> list[ToolResult]:
         """Continue commissioned builds interrupted before their result was durable."""
         results: list[ToolResult] = []
+        seen_tool_names: set[str] = set()
         for record in self._commission_records():
             if str(record.get("environment_id") or "") != self._environment_id:
                 continue
             if str(record.get("valkyrie_id") or "") != self._valkyrie_id:
                 continue
+            operation_id = str(record.get("operation_id") or "")
+            tool_name = str(record.get("tool_name") or "").strip()
             original = record.get("input")
             if not isinstance(original, dict):
                 continue
-            operation_id = str(record.get("operation_id") or "")
+            # Records are newest-first. A repair replaces the prior operation,
+            # so older records for the same logical tool are stale and must not
+            # launch another build after a restart.
+            if tool_name and tool_name in seen_tool_names:
+                self._delete_commission(operation_id)
+                continue
+            if tool_name:
+                seen_tool_names.add(tool_name)
             telemetry = get_observability()
             with telemetry.span(
                 "ravn.tool_build.commission.recover",
@@ -381,6 +391,9 @@ class BuildTool(ToolPort):
                     },
                 )
                 result = await self._execute_pipeline(dict(original))
+                # _execute_pipeline may replace this operation during repair.
+                # Either way, this source record has now been handled.
+                self._delete_commission(operation_id)
                 results.append(result)
                 telemetry.event(
                     "ravn.tool_build.commission.recovery_finished",
@@ -535,7 +548,7 @@ class BuildTool(ToolPort):
             # returned code in a throwaway venv, repairing on failure, BEFORE the
             # review/install path ever sees it. A hard-failed verification is
             # never installed.
-            artifact, verify_error = await self._verify_and_repair(input, artifact)
+            artifact, verify_error, input = await self._verify_and_repair(input, artifact)
 
             # Persist the artifact (with the recorded verification outcome) even
             # when verification hard-failed, so the failure is auditable, then
@@ -1270,7 +1283,7 @@ class BuildTool(ToolPort):
         self,
         input: dict,  # noqa: A002
         artifact: LearnedToolArtifact,
-    ) -> tuple[LearnedToolArtifact, ToolResult | None]:
+    ) -> tuple[LearnedToolArtifact, ToolResult | None, dict]:
         """Independently verify the built tool, repairing up to the bounded limit.
 
         Control flow, in order:
@@ -1322,16 +1335,20 @@ class BuildTool(ToolPort):
 
         artifact = _record_verification(artifact, result, attempts)
         if not result.ok:
-            return artifact, ToolResult(
-                tool_call_id="",
-                content=(
-                    "build_tool aborted: independent verification failed after "
-                    f"{attempts} repair attempt(s); tool was NOT installed.\n"
-                    f"{result.logs}"
+            return (
+                artifact,
+                ToolResult(
+                    tool_call_id="",
+                    content=(
+                        "build_tool aborted: independent verification failed after "
+                        f"{attempts} repair attempt(s); tool was NOT installed.\n"
+                        f"{result.logs}"
+                    ),
+                    is_error=True,
                 ),
-                is_error=True,
+                input,
             )
-        return artifact, None
+        return artifact, None, input
 
     def _verify(self, artifact: LearnedToolArtifact) -> VerificationResult:
         telemetry = get_observability()
