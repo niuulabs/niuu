@@ -1359,8 +1359,8 @@ sessionDefinitions:
   # The Skuld image must include the deepseek-harness-runtime-bin package
   # (or set broker.dsh.runtimeBin to a dsh-jsonrpc-agent executable).
   skuldDeepSeekHarness:
-    # -- Enable skuld-deepseek-harness session definition (disabled by default)
-    enabled: false
+    # -- Enable skuld-deepseek-harness session definition
+    enabled: true
     # -- Human-readable name shown in the UI
     displayName: "DeepSeek Harness"
     # -- Short description for the session picker
