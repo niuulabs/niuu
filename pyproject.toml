@@ -9,24 +9,24 @@ requires-python = ">=3.12"
 dependencies = [
     "a2a-sdk>=1.1.2,<2",
     "pydantic>=2.13.4",
-    "pydantic-settings>=2.14.2",
+    "pydantic-settings>=2.15.0",
     "pyyaml>=6.0.3",
-    "claude-agent-sdk==0.2.126",
+    "claude-agent-sdk==0.2.139",
     "asyncpg>=0.31.0",
     "httpx>=0.28.1",
     "idna>=3.18",
-    "fastapi>=0.139.2",
-    "starlette>=1.3.1",
+    "fastapi>=0.141.1",
+    "starlette>=1.6.0",
     "python-multipart>=0.0.32",
     "PyJWT>=2.13.0",
-    "cryptography>=49.0.0",
+    "cryptography>=50.0.0",
     "urllib3>=2.7.0",
-    "uvicorn>=0.51.0",
-    "websockets>=16.1.1",
+    "uvicorn>=0.52.3",
+    "websockets>=17.0.1",
     "python-on-whales>=0.81.0",
-    "gitpython>=3.1.55",
+    "gitpython>=3.1.59",
     "msgpack>=1.2.1",
-    "typer>=0.27.0",
+    "typer>=0.27.1",
     "respx>=0.23.1",
     "pynng>=0.9.0",
     "zeroconf>=0.150.0",
@@ -37,7 +37,7 @@ dependencies = [
 
 [project.optional-dependencies]
 openshell = [
-    "openshell==0.0.90; python_version >= '3.12'",
+    "openshell==0.0.106; python_version >= '3.12'",
 ]
 # DeepSeek Harness runtime for DshJsonRpcTransport (Skuld image only).
 # Exact pin: dsh is a developer preview with promised breaking changes.
@@ -50,21 +50,21 @@ nats = [
 # Semantic search for Mimir (NIU-1056): hybrid retrieval needs an embedding
 # model. FTS-only mode works without this extra.
 embeddings = [
-    "sentence-transformers>=5.6.1",
+    "sentence-transformers>=5.7.0",
 ]
 test = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "respx>=0.23.1",
-    "httpx2>=2.9.1",
+    "httpx2>=2.10.0",
     "aiohttp>=3.14.3",
 ]
 rabbitmq = [
     "aio-pika>=10.0.1",
 ]
 redis = [
-    "redis[hiredis]>=8.0.1",
+    "redis[hiredis]>=8.1.0",
 ]
 k8s = [
     "kubernetes-asyncio>=36.1.0",
@@ -76,20 +76,20 @@ otel = [
     "opentelemetry-exporter-otlp-proto-http>=1.44.0",
 ]
 encryption = [
-    "cryptography>=49.0.0",
+    "cryptography>=50.0.0",
 ]
 browser = [
-    "playwright>=1.61.0",
+    "playwright>=1.62.0",
 ]
 infra = [
-    "redis>=8.0.1",
+    "redis>=8.1.0",
 ]
 cli = [
-    "typer>=0.27.0",
+    "typer>=0.27.1",
     "textual>=8.2.8",
     "nuitka[onefile]>=4.1.3",
     "ordered-set>=4.1",
-    "patchelf>=0.17.2.4; sys_platform == 'linux'",
+    "patchelf>=0.19.1.0; sys_platform == 'linux'",
 ]
 tui = [
     "textual>=8.2.8",
@@ -98,12 +98,12 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.16.0,<0.17",
+    "ruff>=0.16.3,<0.17",
     "respx>=0.23.1",
-    "httpx2>=2.9.1",
-    "cryptography>=49.0.0",
+    "httpx2>=2.10.0",
+    "cryptography>=50.0.0",
     "textual>=8.2.8",
-    "typer>=0.27.0",
+    "typer>=0.27.1",
     "nats-py[nkeys]>=2.15.0",
     "aiohttp>=3.14.3",
 ]
@@ -218,5 +218,5 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.16.0,<0.17",
+    "ruff>=0.16.3,<0.17",
 ]
