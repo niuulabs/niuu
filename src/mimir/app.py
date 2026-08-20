@@ -139,10 +139,12 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        # Rebuild the search index from the filesystem on startup.
         try:
-            n = await adapter.rebuild_search_index()
-            logger.info("mimir[%s]: search index ready (%d pages)", config.name, n)
+            if await search_port.has_documents():
+                logger.info("mimir[%s]: using persisted search index", config.name)
+            else:
+                n = await adapter.rebuild_search_index()
+                logger.info("mimir[%s]: search index ready (%d pages)", config.name, n)
         except Exception as exc:  # noqa: BLE001
             logger.warning("mimir[%s]: search index rebuild failed: %s", config.name, exc)
 
