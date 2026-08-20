@@ -58,6 +58,22 @@ class TestAnthropicAdapter:
 
         assert "chat_template_kwargs" not in payload
 
+    def test_reasoning_effort_is_not_sent_but_thinking_is(self):
+        # reasoning_effort is a DeepSeek-dialect knob the Anthropic API rejects;
+        # thinking is a real Anthropic request field and must pass through.
+        adapter = AnthropicAdapter(api_key="test-key")
+        request = _simple_request().model_copy(
+            update={
+                "reasoning_effort": "high",
+                "thinking": {"type": "enabled", "budget_tokens": 2048},
+            }
+        )
+
+        payload = adapter._build_payload(request, "claude-sonnet-4-20250514")
+
+        assert "reasoning_effort" not in payload
+        assert payload["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+
     @pytest.mark.asyncio
     @respx.mock
     async def test_complete_success(self):

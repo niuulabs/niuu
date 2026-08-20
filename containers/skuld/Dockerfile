@@ -33,7 +33,9 @@ WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
 COPY src/ /app/src/
-RUN uv sync --frozen --no-dev --no-editable --extra otel
+# --extra dsh bundles the DeepSeek Harness runtime (single-file exe, exact-pinned)
+# for DshJsonRpcTransport; the binary needs no Node at runtime.
+RUN uv sync --frozen --no-dev --no-editable --extra otel --extra dsh
 
 # ---------------------------------------------------------------------------
 # Runtime — Node.js stays (needed for claude-code/codex CLI at runtime)
@@ -42,7 +44,7 @@ FROM ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bc
 
 
 LABEL org.opencontainers.image.title="skuld"
-LABEL org.opencontainers.image.description="Skuld — remote AI coding session broker (Claude Code, Codex, OpenCode)"
+LABEL org.opencontainers.image.description="Skuld — remote AI coding session broker (Claude Code, Codex, OpenCode, DeepSeek Harness)"
 LABEL org.opencontainers.image.vendor="Niuu Labs"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.source="https://github.com/niuulabs/volundr"

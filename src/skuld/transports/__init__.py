@@ -18,6 +18,7 @@ from skuld.transports.codex import (  # noqa: E402
     _map_codex_tool,
 )
 from skuld.transports.codex_ws import CodexWebSocketTransport  # noqa: E402
+from skuld.transports.dsh import DshJsonRpcTransport  # noqa: E402
 from skuld.transports.grok import (  # noqa: E402
     _GROK_TOOL_MAP,
     GrokACPTransport,
@@ -36,6 +37,7 @@ __all__ = [
     "CLITransport",
     "CodexSubprocessTransport",
     "CodexWebSocketTransport",
+    "DshJsonRpcTransport",
     "EventCallback",
     "GrokACPTransport",
     "OpenCodeHttpTransport",
