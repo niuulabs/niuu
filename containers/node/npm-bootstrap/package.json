@@ -2,6 +2,6 @@
   "name": "npm-bootstrap",
   "private": true,
   "dependencies": {
-    "npm": "11.15.0"
+    "npm": "11.19.1"
   }
 }
