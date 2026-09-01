@@ -25,10 +25,10 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "zod": "^4.4.3"
+    "zod": "^4.5.2"
   },
   "devDependencies": {
     "tsup": "^8.3.5",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   }
 }
