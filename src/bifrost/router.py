@@ -18,6 +18,7 @@ from bifrost.domain.routing import apply_rules
 from bifrost.ports.key_vault import KeyVaultPort
 from bifrost.ports.provider import ProviderError, ProviderPort
 from bifrost.ports.rules import RoutingContext, RuleEnginePort
+from bifrost.ports.selection import SelectionPort
 from bifrost.translation.models import AnthropicRequest, AnthropicResponse
 
 logger = logging.getLogger(__name__)
@@ -81,10 +82,12 @@ class ModelRouter:
         config: BifrostConfig,
         rule_engine: RuleEnginePort | None = None,
         key_vault: KeyVaultPort | None = None,
+        selection: SelectionPort | None = None,
     ) -> None:
         self._config = config
         self._rule_engine = rule_engine
         self._key_vault = key_vault
+        self._selection = selection
         self._adapters: dict[str, ProviderPort] = {}
         # Per-model request counter used by the round_robin strategy.
         self._round_robin_counters: dict[str, int] = {}
@@ -213,7 +216,7 @@ class ModelRouter:
         """
         ctx = context if context is not None else RoutingContext()
         request = apply_rules(request, ctx, self._rule_engine)
-        candidates = self._build_candidates(request.model)
+        candidates = await self._select_candidates(request.model)
         last_exc: Exception | None = None
 
         for pname, pmodel in candidates:
@@ -259,7 +262,7 @@ class ModelRouter:
         """
         ctx = context if context is not None else RoutingContext()
         request = apply_rules(request, ctx, self._rule_engine)
-        candidates = self._build_candidates(request.model)
+        candidates = await self._select_candidates(request.model)
         last_exc: Exception | None = None
 
         for pname, pmodel in candidates:
@@ -286,6 +289,20 @@ class ModelRouter:
         raise RouterError(
             f"All providers failed for model '{candidates[0][1]}': {last_exc}"
         ) from last_exc
+
+    async def _select_candidates(self, model: str) -> list[tuple[str, str]]:
+        if self._selection is None:
+            return self._build_candidates(model)
+        resolved = self._config.resolve_alias(model)
+        candidates = [
+            (provider, resolved) for provider in self._config.providers_for_model(resolved)
+        ]
+        if not candidates:
+            raise RouterError(f"No provider configured for model '{resolved}'")
+        selected = await self._selection.select(candidates)
+        if selected not in candidates:
+            raise RouterError("Selection adapter returned an unconfigured target")
+        return [selected]
 
     async def close(self) -> None:
         """Close all open provider adapters."""

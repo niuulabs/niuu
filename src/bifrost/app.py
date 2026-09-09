@@ -226,7 +226,18 @@ def create_app(config: BifrostConfig) -> FastAPI:
     """
     rule_engine = _build_rule_engine(config)
     key_vault = _build_key_vault(config)
-    router = ModelRouter(config, rule_engine=rule_engine, key_vault=key_vault)
+    selection = None
+    if config.selection is not None:
+        import importlib
+
+        from bifrost.ports.selection import SelectionPort
+
+        kwargs = dict(config.selection)
+        module, name = kwargs.pop("adapter").rsplit(".", 1)
+        selection = getattr(importlib.import_module(module), name)(**kwargs)
+        if not isinstance(selection, SelectionPort):
+            raise TypeError("Configured selection adapter must implement SelectionPort")
+    router = ModelRouter(config, rule_engine=rule_engine, key_vault=key_vault, selection=selection)
     store = _build_usage_store(config)
     cache = _build_cache(config)
     audit = _build_audit(config)
