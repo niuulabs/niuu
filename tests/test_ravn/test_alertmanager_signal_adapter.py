@@ -173,3 +173,40 @@ async def test_alertmanager_adapter_rejects_non_list_payloads() -> None:
 
     with pytest.raises(ValueError, match="non-list"):
         await adapter.collect()
+
+
+async def test_alertmanager_adapter_groups_instances_of_the_same_alert() -> None:
+    adapter = AlertmanagerSignalAdapter(
+        environment=k8s_environment_fixture(),
+        raw_items=[
+            _alert(
+                alertname="VolumeDegraded",
+                severity="warning",
+                fingerprint="v1",
+                starts_at="2026-09-09T10:00:00Z",
+            ),
+            _alert(
+                alertname="VolumeDegraded",
+                severity="warning",
+                fingerprint="v2",
+                starts_at="2026-09-09T09:00:00Z",
+            ),
+            _alert(alertname="BMCDown", severity="critical", fingerprint="b1"),
+        ],
+        group_by_alertname=True,
+    )
+
+    signals = await adapter.collect()
+
+    by_name = {signal.normalized_payload["alertname"]: signal for signal in signals}
+    assert set(by_name) == {"VolumeDegraded", "BMCDown"}
+    group = by_name["VolumeDegraded"]
+    assert group.normalized_payload["count"] == 2
+    assert group.timestamp.isoformat() == "2026-09-09T09:00:00+00:00"
+    assert group.dedupe_key == "alertmanager:group:VolumeDegraded@2026-09-09T09:00:00+00:00"
+    assert group.object_ref["kind"] == "AlertGroup"
+    assert group.object_ref["fingerprints"] == ["v2", "v1"]
+    assert "2 instances firing" in group.normalized_payload["summary"]
+    # A lone alert keeps its per-instance identity.
+    assert by_name["BMCDown"].object_ref["kind"] == "Alert"
+    assert by_name["BMCDown"].dedupe_key.startswith("alertmanager:b1@")

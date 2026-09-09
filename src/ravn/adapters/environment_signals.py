@@ -397,9 +397,11 @@ class AlertmanagerSignalAdapter(_IterableSignalAdapter):
         include_inhibited: bool = False,
         label_filters: list[str] | None = None,
         exclude_alertnames: list[str] | None = None,
+        group_by_alertname: bool = False,
         transport: Any | None = None,
     ) -> None:
         self._url = url.rstrip("/")
+        self._group_by_alertname = group_by_alertname
         self._timeout_seconds = timeout_seconds
         self._include_silenced = include_silenced
         self._include_inhibited = include_inhibited
@@ -440,15 +442,86 @@ class AlertmanagerSignalAdapter(_IterableSignalAdapter):
         return alerts
 
     async def collect(self) -> list[NormalizedSignal]:
-        signals = [self.normalize_alert(raw) for raw in await self._raw()]
+        raw_items = list(await self._raw())
         if self._exclude_alertnames:
-            signals = [
-                signal
-                for signal in signals
-                if _text(signal.normalized_payload.get("alertname")).lower()
+            raw_items = [
+                raw
+                for raw in raw_items
+                if _text((_field(raw, "labels", default={}) or {}).get("alertname")).lower()
                 not in self._exclude_alertnames
             ]
-        return signals
+        if self._group_by_alertname:
+            return self.normalize_groups(raw_items)
+        return [self.normalize_alert(raw) for raw in raw_items]
+
+    def normalize_groups(self, raw_items: list[Any]) -> list[NormalizedSignal]:
+        """One signal per (alertname, severity): the situation, not each instance.
+
+        61 degraded volumes are one thing for a resident to think about. The
+        episode starts when the first member fired; members joining a group
+        that is already firing do not re-signal.
+        """
+        groups: dict[tuple[str, str], list[NormalizedSignal]] = {}
+        for raw in raw_items:
+            signal = self.normalize_alert(raw)
+            key = (
+                _text(signal.normalized_payload.get("alertname")),
+                signal.severity,
+            )
+            groups.setdefault(key, []).append(signal)
+        grouped: list[NormalizedSignal] = []
+        for (alertname, severity), members in groups.items():
+            if len(members) == 1:
+                grouped.append(members[0])
+                continue
+            members.sort(key=lambda item: item.timestamp)
+            first = members[0]
+            subjects = [_text(member.object_ref.get("subject")) for member in members]
+            episode = f"{alertname}@{first.timestamp.isoformat()}"
+            dedupe_key = f"alertmanager:group:{episode}"
+            grouped.append(
+                NormalizedSignal(
+                    source_id=self.source_id,
+                    environment_id=self.environment.id,
+                    environment_type=self.environment.type,
+                    signal_type="metrics",
+                    severity=severity,  # type: ignore[arg-type]
+                    timestamp=first.timestamp,
+                    raw_payload_ref=f"alertmanager://{self.source_id}/group/{alertname}",
+                    normalized_payload={
+                        "alertname": alertname,
+                        "state": first.normalized_payload.get("state"),
+                        "severity_label": first.normalized_payload.get("severity_label"),
+                        "summary": (
+                            f"{alertname}: {len(members)} instances firing "
+                            f"(first: {first.normalized_payload.get('summary')})"
+                        ),
+                        "description": first.normalized_payload.get("description"),
+                        "count": len(members),
+                        "subjects": subjects,
+                        "labels": dict(first.normalized_payload.get("labels") or {}),
+                        "annotations": dict(first.normalized_payload.get("annotations") or {}),
+                        "starts_at": first.normalized_payload.get("starts_at"),
+                        "generator_url": first.normalized_payload.get("generator_url"),
+                    },
+                    dedupe_key=dedupe_key,
+                    correlation_id=_correlation(self.environment, dedupe_key),
+                    provider="alertmanager",
+                    provider_event_id=f"group:{episode}",
+                    object_ref={
+                        "kind": "AlertGroup",
+                        "name": alertname,
+                        "namespace": first.object_ref.get("namespace", ""),
+                        "subject": ", ".join(subjects[:5])
+                        + (f" +{len(subjects) - 5} more" if len(subjects) > 5 else ""),
+                        "fingerprints": [
+                            _text(member.object_ref.get("fingerprint")) for member in members
+                        ],
+                    },
+                    provenance={"adapter": "alertmanager.alerts", "source_id": self.source_id},
+                )
+            )
+        return grouped
 
     def normalize_alert(self, raw: Any) -> NormalizedSignal:
         labels = dict(_field(raw, "labels", default={}) or {})
