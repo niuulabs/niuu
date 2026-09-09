@@ -309,6 +309,93 @@ class TestAuthAndLifecycle:
             await client._ensure_authenticated()
 
     @respx.mock
+    async def test_jwt_auth_flow(self, tmp_path):
+        token_file = tmp_path / "token"
+        token_file.write_text("sa-jwt\n")
+        client = OpenBaoAdminClient(
+            OpenBaoAdminConfig(
+                url=BAO_URL,
+                auth_method="jwt",
+                jwt_mount_path="auth/jwt-ymir",
+                jwt_role="volundr-app",
+                jwt_token_file=str(token_file),
+            )
+        )
+        route = respx.post(f"{BAO_URL}/v1/auth/jwt-ymir/login").respond(
+            status_code=200,
+            json={"auth": {"client_token": "bao-token"}},
+        )
+
+        headers = await client._headers()
+
+        assert headers == {"X-Vault-Token": "bao-token"}
+        assert json.loads(route.calls.last.request.content) == {
+            "role": "volundr-app",
+            "jwt": "sa-jwt",
+        }
+
+    async def test_jwt_requires_role(self):
+        client = OpenBaoAdminClient(OpenBaoAdminConfig(auth_method="jwt"))
+
+        with pytest.raises(RuntimeError, match="requires jwt_role"):
+            await client._ensure_authenticated()
+
+    async def test_jwt_missing_token_file_raises(self, tmp_path):
+        client = OpenBaoAdminClient(
+            OpenBaoAdminConfig(
+                auth_method="jwt",
+                jwt_role="volundr-app",
+                jwt_token_file=str(tmp_path / "absent"),
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="could not read token file"):
+            await client._ensure_authenticated()
+
+    async def test_unknown_auth_method_raises(self):
+        client = OpenBaoAdminClient(OpenBaoAdminConfig(auth_method="ldap"))
+
+        with pytest.raises(RuntimeError, match="token, approle, or jwt"):
+            await client._ensure_authenticated()
+
+    @respx.mock
+    async def test_jwt_lease_expiry_reauthenticates_once(self, tmp_path):
+        token_file = tmp_path / "token"
+        token_file.write_text("sa-jwt")
+        client = OpenBaoAdminClient(
+            OpenBaoAdminConfig(
+                url=BAO_URL,
+                auth_method="jwt",
+                jwt_mount_path="auth/jwt-ymir",
+                jwt_role="volundr-app",
+                jwt_token_file=str(token_file),
+            )
+        )
+        login = respx.post(f"{BAO_URL}/v1/auth/jwt-ymir/login")
+        login.side_effect = [
+            httpx.Response(200, json={"auth": {"client_token": "expired"}}),
+            httpx.Response(200, json={"auth": {"client_token": "fresh"}}),
+        ]
+        policy = respx.put(f"{BAO_URL}/v1/sys/policy/p")
+        policy.side_effect = [
+            httpx.Response(403, text="permission denied"),
+            httpx.Response(204),
+        ]
+
+        await client.ensure_policy("p", "policy")
+
+        assert login.call_count == 2
+        assert policy.call_count == 2
+        assert policy.calls.last.request.headers["X-Vault-Token"] == "fresh"
+
+    @respx.mock
+    async def test_static_token_is_not_refreshed_on_403(self, client: OpenBaoAdminClient):
+        respx.put(f"{BAO_URL}/v1/sys/policy/p").respond(status_code=403, text="denied")
+
+        with pytest.raises(OpenBaoApiError):
+            await client.ensure_policy("p", "policy")
+
+    @respx.mock
     async def test_health_check_handles_success_and_exception(self, client: OpenBaoAdminClient):
         respx.get(f"{BAO_URL}/v1/sys/health").respond(status_code=429)
         assert await client.health_check() is True

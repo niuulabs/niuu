@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 
@@ -33,6 +34,9 @@ class OpenBaoAdminConfig:
     approle_mount_path: str = "auth/approle"
     role_id: str = ""
     secret_id: str = ""
+    jwt_mount_path: str = "auth/jwt"
+    jwt_role: str = ""
+    jwt_token_file: str = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 
 
 @dataclass(frozen=True)
@@ -130,24 +134,50 @@ class OpenBaoAdminClient:
         if self._client_token:
             return self._client_token
 
-        if self._config.auth_method != "approle":
-            raise RuntimeError("OpenBao admin client requires a token or approle credentials")
-        if not self._config.role_id or not self._config.secret_id:
-            raise RuntimeError("AppRole auth requires role_id and secret_id")
-
-        client = await self._get_client()
-        response = await client.post(
-            f"/v1/{self._config.approle_mount_path.strip('/')}/login",
-            json={
+        method = self._config.auth_method
+        if method == "approle":
+            if not self._config.role_id or not self._config.secret_id:
+                raise RuntimeError("AppRole auth requires role_id and secret_id")
+            path = f"/v1/{self._config.approle_mount_path.strip('/')}/login"
+            payload = {
                 "role_id": self._config.role_id,
                 "secret_id": self._config.secret_id,
-            },
-        )
+            }
+        elif method == "jwt":
+            if not self._config.jwt_role:
+                raise RuntimeError("JWT auth requires jwt_role")
+            try:
+                jwt = Path(self._config.jwt_token_file).read_text().strip()
+            except OSError as exc:
+                raise RuntimeError(f"JWT auth could not read token file: {exc}") from exc
+            if not jwt:
+                raise RuntimeError("JWT auth token file is empty")
+            path = f"/v1/{self._config.jwt_mount_path.strip('/')}/login"
+            payload = {"role": self._config.jwt_role, "jwt": jwt}
+        else:
+            raise RuntimeError("OpenBao admin client requires token, approle, or jwt credentials")
+
+        client = await self._get_client()
+        response = await client.post(path, json=payload)
         if response.status_code >= 400:
             raise OpenBaoApiError(response.status_code, response.text)
 
         self._client_token = response.json()["auth"]["client_token"]
         return self._client_token
+
+    async def _request(self, method: str, path: str, **kwargs: object) -> httpx.Response:
+        """Issue one authenticated request, re-authenticating once when a lease expires.
+
+        Static tokens are never refreshed; approle and jwt leases are.
+        """
+        client = await self._get_client()
+        request = getattr(client, method)
+        response = await request(path, headers=await self._headers(), **kwargs)
+        if response.status_code not in {401, 403} or self._config.auth_method == "token":
+            return response
+
+        self._client_token = None
+        return await request(path, headers=await self._headers(), **kwargs)
 
     async def _headers(self) -> dict[str, str]:
         token = await self._ensure_authenticated()
@@ -177,10 +207,9 @@ class OpenBaoAdminClient:
         if f"{mount_path}/" in mounts:
             return
 
-        client = await self._get_client()
-        response = await client.post(
+        response = await self._request(
+            "post",
             f"/v1/sys/mounts/{mount_path}",
-            headers=await self._headers(),
             json={
                 "type": "kv",
                 "description": description,
@@ -197,10 +226,9 @@ class OpenBaoAdminClient:
         if f"{path}/" in auth_backends:
             return
 
-        client = await self._get_client()
-        response = await client.post(
+        response = await self._request(
+            "post",
             f"/v1/sys/auth/{path}",
-            headers=await self._headers(),
             json={
                 "type": "jwt",
                 "description": description,
@@ -211,10 +239,9 @@ class OpenBaoAdminClient:
 
     async def configure_jwt_auth(self, config: OpenBaoJWTAuthConfig) -> None:
         """Apply JWT auth configuration idempotently."""
-        client = await self._get_client()
-        response = await client.post(
+        response = await self._request(
+            "post",
             f"/v1/auth/{config.path.strip('/')}/config",
-            headers=await self._headers(),
             json=config.payload(),
         )
         if response.status_code >= 400:
@@ -222,10 +249,9 @@ class OpenBaoAdminClient:
 
     async def ensure_policy(self, name: str, policy_hcl: str) -> None:
         """Write or replace an ACL policy."""
-        client = await self._get_client()
-        response = await client.put(
+        response = await self._request(
+            "put",
             f"/v1/sys/policy/{name}",
-            headers=await self._headers(),
             json={"policy": policy_hcl},
         )
         if response.status_code >= 400:
@@ -233,10 +259,9 @@ class OpenBaoAdminClient:
 
     async def ensure_jwt_role(self, role: OpenBaoJWTAuthRole) -> None:
         """Write or replace a JWT role."""
-        client = await self._get_client()
-        response = await client.post(
+        response = await self._request(
+            "post",
             f"/v1/auth/{role.auth_path.strip('/')}/role/{role.name}",
-            headers=await self._headers(),
             json=role.payload(),
         )
         if response.status_code >= 400:
@@ -244,10 +269,9 @@ class OpenBaoAdminClient:
 
     async def delete_jwt_role(self, name: str, auth_path: str = "jwt") -> None:
         """Delete a JWT role if it exists."""
-        client = await self._get_client()
-        response = await client.delete(
+        response = await self._request(
+            "delete",
             f"/v1/auth/{auth_path.strip('/')}/role/{name}",
-            headers=await self._headers(),
         )
         if response.status_code >= 400 and response.status_code != 404:
             raise OpenBaoApiError(response.status_code, response.text)
@@ -299,15 +323,13 @@ class OpenBaoAdminClient:
         return resolved_policy_name, resolved_role_name
 
     async def _list_mounts(self) -> dict[str, object]:
-        client = await self._get_client()
-        response = await client.get("/v1/sys/mounts", headers=await self._headers())
+        response = await self._request("get", "/v1/sys/mounts")
         if response.status_code >= 400:
             raise OpenBaoApiError(response.status_code, response.text)
         return response.json().get("data", {})
 
     async def _list_auth_backends(self) -> dict[str, object]:
-        client = await self._get_client()
-        response = await client.get("/v1/sys/auth", headers=await self._headers())
+        response = await self._request("get", "/v1/sys/auth")
         if response.status_code >= 400:
             raise OpenBaoApiError(response.status_code, response.text)
         return response.json().get("data", {})

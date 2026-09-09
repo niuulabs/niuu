@@ -63,6 +63,9 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
         approle_mount_path: str = "auth/approle",
         role_id: str = "",
         secret_id: str = "",
+        jwt_mount_path: str = "",
+        jwt_role: str = "",
+        jwt_token_file: str = "/var/run/secrets/kubernetes.io/serviceaccount/token",
         agent_image: str = "",
         service_account_prefix: str = "openbao-session",
         configmap_prefix: str = "openbao-agent",
@@ -92,6 +95,11 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
                 approle_mount_path=approle_mount_path,
                 role_id=role_id,
                 secret_id=secret_id,
+                # Default to the backend the session roles live on, so the pod
+                # can prove its own identity with its projected SA token.
+                jwt_mount_path=jwt_mount_path or f"auth/{self._auth_path}",
+                jwt_role=jwt_role,
+                jwt_token_file=jwt_token_file,
             )
         )
 

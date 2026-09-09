@@ -77,6 +77,31 @@ def adapter() -> OpenBaoAgentInjectionAdapter:
 
 
 class TestOpenBaoAgentInjectionAdapter:
+    def test_jwt_auth_defaults_to_session_backend(self) -> None:
+        adapter = OpenBaoAgentInjectionAdapter(
+            openbao_url="https://openbao.example.com",
+            auth_path="jwt-ymir",
+            auth_method="jwt",
+            jwt_role="volundr-app",
+            jwt_token_file="/tmp/sa-token",
+        )
+
+        config = adapter._admin._config
+        assert config.auth_method == "jwt"
+        assert config.jwt_mount_path == "auth/jwt-ymir"
+        assert config.jwt_role == "volundr-app"
+        assert config.jwt_token_file == "/tmp/sa-token"
+
+    def test_jwt_mount_path_override_wins(self) -> None:
+        adapter = OpenBaoAgentInjectionAdapter(
+            auth_path="jwt-ymir",
+            auth_method="jwt",
+            jwt_mount_path="auth/jwt-admin",
+            jwt_role="volundr-app",
+        )
+
+        assert adapter._admin._config.jwt_mount_path == "auth/jwt-admin"
+
     @pytest.mark.asyncio()
     async def test_pod_spec_additions_returns_service_account_and_annotations(self, adapter):
         result = await adapter.pod_spec_additions("alice", "session-123")
