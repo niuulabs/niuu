@@ -159,6 +159,21 @@ class TestOpenAIRequestToAnthropic:
             "force_nonempty_content": True,
         }
 
+    def test_deepseek_thinking_fields_threaded_to_canonical(self):
+        # DeepSeek-dialect clients (deepseek-harness) send thinking controls;
+        # dropping them silently would disable reasoning without any signal.
+        req = self._req(thinking={"type": "enabled"}, reasoning_effort="high")
+
+        result = openai_request_to_anthropic(req)
+
+        assert result.thinking == {"type": "enabled"}
+        assert result.reasoning_effort == "high"
+
+    def test_absent_thinking_fields_stay_none(self):
+        result = openai_request_to_anthropic(self._req())
+        assert result.thinking is None
+        assert result.reasoning_effort is None
+
     def test_assistant_tool_calls_become_tool_use_blocks(self):
         req = self._req(
             messages=[
@@ -797,6 +812,45 @@ class TestAnthropicStreamToOpenAI:
         assert finish[0]["usage"]["prompt_tokens"] == 7
         assert finish[0]["usage"]["completion_tokens"] == 3
         assert finish[0]["usage"]["total_tokens"] == 10
+
+    @pytest.mark.asyncio
+    async def test_late_input_tokens_from_message_delta(self):
+        # OpenAI-compat backends (vLLM, DeepSeek) surface usage only at stream
+        # end, so message_start carries input_tokens=0 and the real prompt count
+        # arrives in message_delta. It must not be dropped (regression: every
+        # OpenAI-inbound streaming client saw prompt_tokens=0 on such backends).
+        events = [
+            "event: message_start\ndata: "
+            + json.dumps(
+                {
+                    "type": "message_start",
+                    "message": {"id": "m", "usage": {"input_tokens": 0}},
+                }
+            )
+            + "\n\n",
+            "event: message_delta\ndata: "
+            + json.dumps(
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {"input_tokens": 1346, "output_tokens": 68},
+                }
+            )
+            + "\n\n",
+            "event: message_stop\ndata: " + json.dumps({"type": "message_stop"}) + "\n\n",
+        ]
+
+        chunks = []
+        async for line in anthropic_stream_to_openai(
+            _async_iter(events), message_id="cid", model="deepseek-v4-flash"
+        ):
+            chunks.append(line)
+
+        parsed = [json.loads(c[6:]) for c in chunks if c != "data: [DONE]\n\n"]
+        finish = [p for p in parsed if "usage" in p]
+        assert len(finish) == 1
+        assert finish[0]["usage"]["prompt_tokens"] == 1346
+        assert finish[0]["usage"]["completion_tokens"] == 68
 
     @pytest.mark.asyncio
     async def test_done_sentinel_terminates_stream(self):

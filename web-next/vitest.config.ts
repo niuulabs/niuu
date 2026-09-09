@@ -45,12 +45,7 @@ export default defineConfig({
       provider: 'v8',
       reporter: isCi ? ['text', 'lcov'] : ['text', 'html', 'lcov'],
       include: ['packages/*/src/**/*.{ts,tsx}'],
-      exclude: [
-        '**/*.test.{ts,tsx}',
-        '**/index.{ts,tsx}',
-        '**/ports.ts',
-        '**/*.d.ts',
-      ],
+      exclude: ['**/*.test.{ts,tsx}', '**/index.{ts,tsx}', '**/ports.ts', '**/*.d.ts'],
       thresholds: {
         statements: 85,
         branches: 85,

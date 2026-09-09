@@ -125,6 +125,9 @@ class AnthropicRequest(BaseModel):
     stream: bool = False
     metadata: dict[str, Any] | None = None
     thinking: dict[str, Any] | None = None
+    # DeepSeek-dialect effort knob ('high' | 'max'); OpenAI-compatible backends
+    # receive it verbatim, the Anthropic adapter excludes it from its payload.
+    reasoning_effort: str | None = None
     chat_template_kwargs: dict[str, Any] | None = None
 
 

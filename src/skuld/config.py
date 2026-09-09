@@ -501,6 +501,48 @@ class CodexAuthConfig(BaseModel):
     secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
 
 
+class DshRuntimeConfig(BaseModel):
+    """DeepSeek Harness (dsh) SDK runtime settings for DshJsonRpcTransport."""
+
+    runtime_bin: str = Field(
+        default="",
+        description=(
+            "Path to a dsh-jsonrpc-agent executable. Empty uses the bundled "
+            "runtime from the deepseek-harness-runtime-bin package."
+        ),
+    )
+    cordis_config: str = Field(
+        default="",
+        description=(
+            "Path to a Cordis composition file for the runtime. Empty uses the "
+            "default composition bundled with deepseek-harness-runtime-bin."
+        ),
+    )
+    base_url: str = Field(
+        default="",
+        description=(
+            "OpenAI-compatible chat-completions endpoint base "
+            "(the runtime requests {base}/chat/completions). Empty uses the "
+            "public DeepSeek API."
+        ),
+    )
+    api_key: str = Field(
+        default="",
+        description=(
+            "API key handed to the runtime as DEEPSEEK_API_KEY. Set via config "
+            "file or SKULD__DSH__API_KEY."
+        ),
+    )
+    provider: str = Field(
+        default="deepseek-official",
+        description="Provider route registered by the runtime's composition.",
+    )
+    prompt_timeout_s: float = Field(
+        default=600.0,
+        description="Maximum seconds to wait for a turn to reach idle.",
+    )
+
+
 # Legacy bare env vars (pre config-first rule) that deployed charts still set.
 # Mapped into the workload_identity section by LegacyWorkloadIdentityEnvSource;
 # the config file is canonical, these are a compatibility override.
@@ -659,6 +701,7 @@ class SkuldSettings(BaseSettings):
     )
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
     codex_auth: CodexAuthConfig = Field(default_factory=CodexAuthConfig)
+    dsh: DshRuntimeConfig = Field(default_factory=DshRuntimeConfig)
     service_user_id: str = Field(default="skuld-broker")
     service_tenant_id: str = Field(default="default")
     persistence_mount_path: str = Field(default="/volundr/sessions")
@@ -729,6 +772,10 @@ class SkuldSettings(BaseSettings):
 
         if self.cli_type == "opencode":
             self.transport_adapter = "skuld.transports.opencode.OpenCodeHttpTransport"
+            return self
+
+        if self.cli_type == "dsh":
+            self.transport_adapter = "skuld.transports.dsh.DshJsonRpcTransport"
             return self
 
         if self.cli_type == "grok":

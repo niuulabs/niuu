@@ -217,6 +217,38 @@ def _default_models() -> list[ManagedModelConfig]:
             supports_thinking=True,
         ),
         ManagedModelConfig(
+            id="deepseek-v4-flash",
+            name="DeepSeek V4 Flash",
+            vendor="deepseek",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.BALANCED,
+            color="#4D6BFE",
+            description=(
+                "DeepSeek V4 Flash — fast thinking-mode coding model; the "
+                "DeepSeek Harness (dsh) runtime default."
+            ),
+            cost_per_million_tokens=None,  # Annotate once DeepSeek pricing is pinned
+            session_definition="skuldDeepSeekHarness",
+            supports_tools=True,
+            supports_thinking=True,
+        ),
+        ManagedModelConfig(
+            id="deepseek-v4-pro",
+            name="DeepSeek V4 Pro",
+            vendor="deepseek",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.FRONTIER,
+            color="#3B5BDB",
+            description=(
+                "DeepSeek V4 Pro — frontier thinking-mode model for demanding "
+                "agentic coding via the DeepSeek Harness (dsh) runtime."
+            ),
+            cost_per_million_tokens=None,  # Annotate once DeepSeek pricing is pinned
+            session_definition="skuldDeepSeekHarness",
+            supports_tools=True,
+            supports_thinking=True,
+        ),
+        ManagedModelConfig(
             id="llama3.2:latest",
             name="Llama 3.2",
             vendor="local",

@@ -39,6 +39,11 @@ dependencies = [
 openshell = [
     "openshell==0.0.90; python_version >= '3.12'",
 ]
+# DeepSeek Harness runtime for DshJsonRpcTransport (Skuld image only).
+# Exact pin: dsh is a developer preview with promised breaking changes.
+dsh = [
+    "deepseek-harness-runtime-bin==0.1.0rc6",
+]
 nats = [
     "nats-py[nkeys]>=2.15.0",
 ]

@@ -57,6 +57,23 @@ class TestAnthropicToOpenAI:
             "force_nonempty_content": True,
         }
 
+    def test_thinking_fields_forwarded_to_openai_payload(self):
+        # DeepSeek-dialect backends understand these verbatim; vLLM ignores them.
+        req = self._simple_request(
+            thinking={"type": "enabled"},
+            reasoning_effort="max",
+        )
+
+        payload = anthropic_to_openai(req, "deepseek-v4-flash")
+
+        assert payload["thinking"] == {"type": "enabled"}
+        assert payload["reasoning_effort"] == "max"
+
+    def test_absent_thinking_fields_not_in_payload(self):
+        payload = anthropic_to_openai(self._simple_request(), "gpt-4o")
+        assert "thinking" not in payload
+        assert "reasoning_effort" not in payload
+
     def test_assistant_thinking_block_becomes_reasoning_content(self):
         req = self._simple_request(
             messages=[

@@ -80,6 +80,11 @@ class OpenAIChatRequest(BaseModel):
     tool_choice: str | dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
     chat_template_kwargs: dict[str, Any] | None = None
+    # DeepSeek-dialect thinking controls (deepseek-harness, deepseek-python).
+    # Threaded through the canonical request instead of being silently dropped;
+    # backends that do not understand them decide loudly for themselves.
+    thinking: dict[str, Any] | None = None
+    reasoning_effort: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +244,8 @@ def openai_request_to_anthropic(req: OpenAIChatRequest) -> AnthropicRequest:
         stop_sequences=stop_sequences,
         stream=req.stream,
         chat_template_kwargs=req.chat_template_kwargs,
+        thinking=req.thinking,
+        reasoning_effort=req.reasoning_effort,
     )
 
 
@@ -478,6 +485,10 @@ async def anthropic_stream_to_openai(
                 delta = payload.get("delta", {})
                 stop_reason = delta.get("stop_reason", "end_turn")
                 usage = payload.get("usage", {})
+                # OpenAI-compat backends only learn usage at stream end, so the
+                # translated message_start carried input_tokens=0; the final
+                # message_delta carries the real count for both directions.
+                input_tokens = usage.get("input_tokens", input_tokens)
                 output_tokens = usage.get("output_tokens", output_tokens)
                 finish_reason = STOP_REASON_TO_OPENAI.get(stop_reason, "stop")
 

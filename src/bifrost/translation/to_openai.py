@@ -166,6 +166,10 @@ def anthropic_to_openai(request: AnthropicRequest, model: str) -> dict[str, Any]
         payload["stop"] = request.stop_sequences
     if request.chat_template_kwargs is not None:
         payload["chat_template_kwargs"] = request.chat_template_kwargs
+    if request.thinking is not None:
+        payload["thinking"] = request.thinking
+    if request.reasoning_effort is not None:
+        payload["reasoning_effort"] = request.reasoning_effort
 
     if request.tools:
         payload["tools"] = [_tool_definition_to_openai(t) for t in request.tools]

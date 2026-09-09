@@ -54,7 +54,7 @@ class AnthropicAdapter(ProviderPort):
         """Serialise the request to a JSON-compatible dict for the Anthropic API."""
         payload = request.model_dump(
             exclude_none=True,
-            exclude={"chat_template_kwargs", "stream"},
+            exclude={"chat_template_kwargs", "stream", "reasoning_effort"},
         )
         payload["model"] = model
         return payload

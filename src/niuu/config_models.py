@@ -163,6 +163,24 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 },
             },
         ),
+        "skuldDeepSeekHarness": SessionDefinitionConfig(
+            enabled=True,
+            display_name="DeepSeek Harness",
+            description=(
+                "DeepSeek Harness (dsh) — SDK JSON-RPC stdio protocol with "
+                "streaming, tools, and durable session events"
+            ),
+            labels=["session", "dsh"],
+            default_model="deepseek-v4-flash",
+            compatible_providers=["deepseek"],
+            defaults={
+                "broker": {
+                    "cliType": "dsh",
+                    "transportAdapter": "skuld.transports.dsh.DshJsonRpcTransport",
+                    "agentTeams": False,
+                },
+            },
+        ),
         "skuldClaudeRemote": SessionDefinitionConfig(
             enabled=True,
             display_name="Claude Remote Control",
