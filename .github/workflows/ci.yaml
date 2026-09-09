@@ -98,7 +98,7 @@ jobs:
                   "devrunner": r"^containers/devrunner/",
                   "volundr-web": r"^containers/volundr-web/|^web-next/",
                   "niuu-web": r"^containers/niuu-web/|^web-next/",
-                  "niuu": r"^containers/niuu/|^(src/|pyproject\.toml$|uv\.lock$)",
+                  "niuu": r"^containers/niuu/|^tests/(container/|test_bifrost/|conftest\.py$|__init__\.py$)|^(src/|pyproject\.toml$|uv\.lock$|bifrost\.pi\.example\.yaml$)",
               }
               container_names = [
                   name for name, pattern in container_triggers.items() if matches(pattern)

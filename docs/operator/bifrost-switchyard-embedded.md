@@ -166,10 +166,44 @@ after judge spend, invalid classifier output, and model-specific usage records.
 Validation: 1,089 tests passed, 93.14% Bifrost coverage, and two opt-in live tests
 passed separately. Lint and formatting checks passed without test warnings.
 
-## Cluster packaging status
+## Container builds and cluster enablement
 
-The standard Niuu image still needs a Linux build with the pinned `switchyard`
-extra and its Rust build dependencies before these adapters can be enabled in
-the cluster. This branch has not been merged, published, or deployed. Once that
-image exists, the Bifrost chart passes the configuration above through under
-`config.selection`; no extra Switchyard service is required.
+The standard Niuu Dockerfile now builds Switchyard as part of the existing
+PR, dev, feature, and release image pipelines on native amd64 and arm64 runners.
+No separate wheel publication, release asset, or workflow-artifact download is
+required:
+
+1. An isolated stage compiles the exact Git revision in `uv.lock`, using pinned
+   Rust and Maturin versions and upstream's locked Cargo dependencies.
+2. The Python builder installs that wheel offline. A separate test stage runs
+   the Bifrost suite against it; test dependencies do not enter the final image.
+3. A fresh Python slim image receives only the installed runtime environment
+   and data directories. An offline smoke test, running as the unprivileged
+   runtime user, exercises native weighted and classifier routing and rejects
+   images containing Rust, C/C++ compilers, Git, uv, or test executables.
+
+BuildKit hands the wheel directly between stages. Existing per-architecture
+GitHub Actions caches reuse intermediate layers; these are build caches, not a
+private artifact store. The repository is public, so cache contents must not be
+treated as confidential. There is no separately published wheel, but the final
+container necessarily contains the compiled extension.
+
+The installed source revision, wheel SHA-256, version, and architecture are
+recorded at `/opt/venv/share/niuu/switchyard-build.json`. App-only changes reuse
+the wheel stage; changes to `uv.lock` or native build inputs rebuild it. Builds
+retain upstream CPU requirements (x86-64-v3 on amd64, Neoverse N1 on arm64).
+
+Build and inspect locally:
+
+```sh
+docker build -f containers/niuu/Dockerfile -t niuu-switchyard:local .
+docker run --rm --network=none --entrypoint python niuu-switchyard:local \
+  -c 'from pathlib import Path; print(Path("/opt/venv/share/niuu/switchyard-build.json").read_text())'
+```
+
+This branch has not been merged, published, or deployed. After publishing the
+image, update the cluster's Niuu image reference and set Bifrost's
+`config.selection` to one of the configurations above; the chart passes it
+through unchanged. No Rust installation or extra Switchyard service is required
+in the cluster. Classifier routing additionally requires the configured judge
+and answer models to be reachable through their providers.
