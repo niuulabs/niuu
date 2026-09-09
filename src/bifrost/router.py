@@ -9,7 +9,7 @@ from __future__ import annotations
 import importlib
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import httpx
 
@@ -88,6 +88,13 @@ class ModelRouter:
         self._rule_engine = rule_engine
         self._key_vault = key_vault
         self._selection = selection
+        if selection is not None:
+            for provider, model in selection.configured_targets():
+                if (
+                    provider not in config.providers
+                    or model not in config.providers[provider].models
+                ):
+                    raise ValueError(f"Routing target {provider}/{model} is not configured")
         self._adapters: dict[str, ProviderPort] = {}
         # Per-model request counter used by the round_robin strategy.
         self._round_robin_counters: dict[str, int] = {}
@@ -215,8 +222,12 @@ class ModelRouter:
                      budget-sensitive rules are skipped silently.
         """
         ctx = context if context is not None else RoutingContext()
-        request = apply_rules(request, ctx, self._rule_engine)
-        candidates = await self._select_candidates(request.model)
+        request = await self.prepare(request, ctx)
+        candidates = (
+            [(request._routed_provider, request.model)]
+            if request._routed_provider
+            else await self._select_candidates(request.model)
+        )
         last_exc: Exception | None = None
 
         for pname, pmodel in candidates:
@@ -261,8 +272,12 @@ class ModelRouter:
                      budget-sensitive rules are skipped silently.
         """
         ctx = context if context is not None else RoutingContext()
-        request = apply_rules(request, ctx, self._rule_engine)
-        candidates = await self._select_candidates(request.model)
+        request = await self.prepare(request, ctx)
+        candidates = (
+            [(request._routed_provider, request.model)]
+            if request._routed_provider
+            else await self._select_candidates(request.model)
+        )
         last_exc: Exception | None = None
 
         for pname, pmodel in candidates:
@@ -291,7 +306,7 @@ class ModelRouter:
         ) from last_exc
 
     async def _select_candidates(self, model: str) -> list[tuple[str, str]]:
-        if self._selection is None:
+        if self._selection is None or self._selection.configured_targets():
             return self._build_candidates(model)
         resolved = self._config.resolve_alias(model)
         candidates = [
@@ -303,6 +318,52 @@ class ModelRouter:
         if selected not in candidates:
             raise RouterError("Selection adapter returned an unconfigured target")
         return [selected]
+
+    async def prepare(
+        self,
+        request: AnthropicRequest,
+        context: RoutingContext | None = None,
+        authorize: Callable[[str], None] | None = None,
+        record_call: Callable[[str, str, AnthropicResponse, float], Awaitable[None]] | None = None,
+    ) -> AnthropicRequest:
+        """Resolve explicit routes before caching, accounting, and answer execution."""
+        if request._routing_prepared:
+            return request
+        request = apply_rules(request, context or RoutingContext(), self._rule_engine)
+        if self._selection is None or not self._selection.configured_targets():
+            return request
+        request = request.model_copy()
+        request._routing_prepared = True
+
+        async def call_model(provider: str, model: str, judge: AnthropicRequest):
+            if (provider, model) not in self._selection.configured_targets():
+                raise RouterError("Classifier requested an unconfigured target")
+            if authorize is not None:
+                authorize(model)
+            started = time.monotonic()
+            response = await self._get_adapter(provider).complete(judge, model)
+            if record_call is not None:
+                await record_call(provider, model, response, time.monotonic() - started)
+            return response
+
+        try:
+            selected = await self._selection.route(request, call_model)
+        except (ValueError, RuntimeError, ProviderError, httpx.HTTPError) as exc:
+            raise RouterError(f"Model selection failed: {exc}") from exc
+        if selected is None:
+            return request
+        provider, model = selected
+        if (provider, model) not in self._selection.configured_targets():
+            raise RouterError("Selection adapter returned an unconfigured target")
+        if authorize is not None:
+            authorize(model)
+        prepared = request.model_copy(update={"model": model})
+        prepared._routed_provider = provider
+        return prepared
+
+    @property
+    def has_model_routes(self) -> bool:
+        return self._selection is not None and bool(self._selection.configured_targets())
 
     async def close(self) -> None:
         """Close all open provider adapters."""

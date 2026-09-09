@@ -57,6 +57,13 @@ class AnthropicAdapter(ProviderPort):
             exclude={"chat_template_kwargs", "stream", "reasoning_effort"},
         )
         payload["model"] = model
+        if request._response_format is not None:
+            payload["output_config"] = {
+                "format": {
+                    "type": "json_schema",
+                    "schema": request._response_format["json_schema"]["schema"],
+                }
+            }
         return payload
 
     def _parse_content(self, raw_content: list[dict]) -> list[ContentBlock]:

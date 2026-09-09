@@ -9,10 +9,14 @@ providers:
     timeout: 120
     chat_template_kwargs:
       enable_thinking: false
-aliases:
-  local: nvidia/nemotron-3-super
 selection:
-  adapter: bifrost.adapters.switchyard.SwitchyardSelection
-  weights:
-    valaskjalf: 1
+  adapter: bifrost.adapters.switchyard_models.SwitchyardModelSelection
+  targets:
+    nemotron:
+      provider: valaskjalf
+      model: nvidia/nemotron-3-super
+      weight: 1
+  routes:
+    local:
+      targets: [nemotron]
   seed: 42

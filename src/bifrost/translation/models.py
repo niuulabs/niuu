@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 # ---------------------------------------------------------------------------
 # Content blocks
@@ -112,6 +112,9 @@ ToolChoice = ToolChoiceAuto | ToolChoiceAny | ToolChoiceTool
 
 
 class AnthropicRequest(BaseModel):
+    _routed_provider: str | None = PrivateAttr(default=None)
+    _routing_prepared: bool = PrivateAttr(default=False)
+    _response_format: dict[str, Any] | None = PrivateAttr(default=None)
     model: str
     max_tokens: int = 1024
     messages: list[Message]
