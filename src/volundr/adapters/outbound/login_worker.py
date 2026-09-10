@@ -22,7 +22,9 @@ from urllib.parse import urlparse
 ANSI_ESCAPE = re.compile(
     r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)|[@-_])"
 )
-CLAUDE_TOKEN = re.compile(r"sk-ant-oat01-[A-Za-z0-9_-]+")
+CLAUDE_TOKEN = re.compile(
+    r"Your OAuth token[^\r\n]*:\s*(.*?)\s*Store this token securely", re.DOTALL
+)
 CLAUDE_TOKEN_LIFETIME_DAYS = 365  # Duration documented by `claude setup-token`.
 DEFAULT_SHUTDOWN_TIMEOUT = 2.0
 
@@ -122,7 +124,8 @@ async def claude_login(
             raise RuntimeError("claude_token_not_found")
         expiry = datetime.now(UTC) + timedelta(days=CLAUDE_TOKEN_LIFETIME_DAYS)
         write_json(
-            root / "credential.json", {"token": token.group(0), "expires_at": expiry.isoformat()}
+            root / "credential.json",
+            {"token": "".join(token.group(1).split()), "expires_at": expiry.isoformat()},
         )
         write_json(root / "status.json", {"state": "complete"})
     finally:

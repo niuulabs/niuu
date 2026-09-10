@@ -62,7 +62,8 @@ async def test_claude_cli_authorization_code_is_consumed_and_token_is_kept_priva
         "print('Paste code here if prompted >',flush=True)\n"
         "assert os.read(sys.stdin.fileno(),4096)==b'test-browser-code'\n"
         "assert os.read(sys.stdin.fileno(),4096)==b'\\r'\n"
-        "print('Your token: sk-ant-oat01-test-only-secret',flush=True)\n"
+        "print('Your OAuth token (valid for 1 year):\\n'\n"
+        "      'sk-ant-oat01-test-only-\\nsecret\\nStore this token securely.',flush=True)\n"
     )
     executable.chmod(0o700)
     task = asyncio.create_task(claude_login(tmp_path, str(executable), 0.001))
