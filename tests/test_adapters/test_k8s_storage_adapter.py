@@ -8,10 +8,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from volundr.adapters.outbound.k8s_storage_adapter import K8sStorageAdapter
 from volundr.domain.models import StorageQuota
 
 
-def _install_k8s_mock():
+@pytest.fixture(autouse=True)
+def _install_k8s_mock(monkeypatch):
     """Install a mock kubernetes_asyncio module tree into sys.modules."""
     k8s = ModuleType("kubernetes_asyncio")
     k8s_client = ModuleType("kubernetes_asyncio.client")
@@ -40,17 +42,11 @@ def _install_k8s_mock():
     k8s.client = k8s_client
     k8s.config = k8s_config
 
-    sys.modules["kubernetes_asyncio"] = k8s
-    sys.modules["kubernetes_asyncio.client"] = k8s_client
-    sys.modules["kubernetes_asyncio.config"] = k8s_config
+    monkeypatch.setitem(sys.modules, "kubernetes_asyncio", k8s)
+    monkeypatch.setitem(sys.modules, "kubernetes_asyncio.client", k8s_client)
+    monkeypatch.setitem(sys.modules, "kubernetes_asyncio.config", k8s_config)
 
     return k8s_client
-
-
-# Install mocks before importing the adapter
-_install_k8s_mock()
-
-from volundr.adapters.outbound.k8s_storage_adapter import K8sStorageAdapter  # noqa: E402
 
 
 @pytest.fixture
