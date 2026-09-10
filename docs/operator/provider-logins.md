@@ -12,9 +12,8 @@ a session without an explicit integration selection. Codex's existing credential
 broker refreshes its login and supplies access tokens to Skuld. Claude's token
 is delivered through the existing secret-injection manifest as
 `CLAUDE_CODE_OAUTH_TOKEN`; it is intended for Claude Code/Agent SDK sessions.
-Claude setup tokens expire after one year; Connections shows the expiry and
-offers Reconnect. They do not support Claude Remote Control or claude.ai
-connectors. The separate Anthropic API connection remains available.
+Use Reconnect if Claude requires authorization again. These tokens do not
+support Claude Remote Control or claude.ai connectors. The separate Anthropic API connection remains available.
 
 ## Deployment
 

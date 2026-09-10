@@ -1463,8 +1463,7 @@ function IntegrationsResourceCard({
               ) : null}
               {selectedEnrollmentSpec?.method === 'claude_setup' ? (
                 <p className="settings-resource__copy">
-                  Connects Claude Code using your subscription. Reconnect after one year to renew
-                  access.
+                  Connects Claude Code using your subscription.
                 </p>
               ) : null}
               {currentEnrollment?.state === 'complete' ? (
