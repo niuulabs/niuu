@@ -1108,6 +1108,18 @@ class MimirRouter:
             self._deployed_mounts.reset(mounts_token)
             self._tenant.reset(tenant_token)
 
+    def _validate_registry_write(self, request: RegistryMountRequest) -> None:
+        if not self._tenant.get():
+            return
+        if request.kind != "remote" or request.path or request.secret_kwargs_env:
+            raise HTTPException(
+                422, "Tenant connections cannot access host files or environment secrets"
+            )
+        if request.adapter not in {"", "ravn.adapters.mimir.http.HttpMimirAdapter"}:
+            raise HTTPException(422, "Native adapters must be provisioned by the deployment target")
+        if set(request.kwargs) - {"base_url", "mount", "timeout"}:
+            raise HTTPException(422, "Unsupported tenant connection settings")
+
     def _registry_entry_by_name(self, mount_name: str) -> MimirRegistryEntry | None:
         if self._registry_store is None:
             return None
@@ -1324,6 +1336,7 @@ class MimirRouter:
                     detail="Registry persistence is not configured",
                 )
 
+            self._validate_registry_write(request)
             if request.auth_ref and not request.adapter:
                 raise HTTPException(
                     422, "Use a configured mount adapter for authenticated connections"
@@ -1349,6 +1362,7 @@ class MimirRouter:
             if existing is None:
                 raise HTTPException(status_code=404, detail=f"Unknown registry mount: {entry_id}")
 
+            self._validate_registry_write(request)
             if request.auth_ref and not request.adapter:
                 raise HTTPException(
                     422, "Use a configured mount adapter for authenticated connections"
@@ -1369,6 +1383,8 @@ class MimirRouter:
                     detail="Registry persistence is not configured",
                 )
 
+            if self._registry_store.get_entry(entry_id, tenant_id=self._tenant.get()) is None:
+                raise HTTPException(404, "Registry connection not found in this tenant")
             self._registry_store.delete_entry(entry_id, tenant_id=self._tenant.get())
             self._registry_local_ports.clear()
 

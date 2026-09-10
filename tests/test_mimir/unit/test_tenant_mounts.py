@@ -251,3 +251,30 @@ def test_standalone_instance_enforces_tenant_on_rest_and_mcp(tmp_path):
         assert client.get("/mimir/pages", headers=identity("b")).status_code == 403
         assert client.post("/mcp", headers=identity("b"), json={}).status_code == 403
         assert client.post("/api/v1/mimir/mcp", json={}).status_code == 403
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"kind": "local", "path": "/data/other-tenant"},
+        {
+            "adapter": "ravn.adapters.mimir.gbrain.GBrainMimirAdapter",
+            "kwargs": {"api_token_file": "/run/secrets/token"},
+        },
+        {"secret_kwargs_env": {"token": "OTHER_TENANT_TOKEN"}},
+    ],
+)
+def test_tenant_registry_cannot_import_adapters_or_read_host_secrets(tmp_path, settings):
+    app = FastAPI()
+    app.include_router(
+        MimirRouter(
+            MarkdownMimirAdapter(root=tmp_path / "wiki"), registry_store=MimirRegistryStore()
+        ).router
+    )
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/registry/mounts", headers=identity("a"), json={"name": "unsafe", **settings}
+            ).status_code
+            == 422
+        )
