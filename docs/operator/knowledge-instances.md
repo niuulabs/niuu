@@ -31,3 +31,16 @@ Legacy HelmReleases without `niuu.world/tenant-id` in their annotations are not
 claimed automatically. An operator must verify ownership, assign that annotation
 and `niuu.world/instance-name`, and upgrade the chart to enable its connection
 and tenant configuration. Instances and persistent volumes are preserved.
+
+## Global Helm releases
+
+Operators can deploy additional global brains through Helm/GitOps and expose
+those release names in the target's `global_instances` list. Each release must
+also declare the annotation `niuu.world/scope: global`, with no owning tenant
+annotation or `niuu.tenantId` value. An explicit global declaration and operator
+allowlist are both required; missing ownership alone never grants global access.
+
+These mounts are available to authenticated tenants through the same gateway and
+workload-identity descriptors. They are excluded from tenant deployment controls;
+upgrades and deletion remain owned by GitOps. Keep Mimir's Envoy JWT protection
+enabled and gbrain's native `connection.enabled` credential provisioning enabled.

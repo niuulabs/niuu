@@ -278,3 +278,65 @@ def test_tenant_registry_cannot_import_adapters_or_read_host_secrets(tmp_path, s
             ).status_code
             == 422
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["mimir", "gbrain"])
+async def test_operator_global_mounts_are_shared_but_not_tenant_managed(backend):
+    import base64
+    from types import SimpleNamespace
+
+    adapter = FluxKnowledgeDeploymentAdapter(
+        namespace="knowledge",
+        source_name="niuu",
+        chart_versions={},
+        images={},
+        global_instances=["global-brain"],
+    )
+    release = {
+        "metadata": {
+            "name": "global-brain",
+            "generation": 1,
+            "annotations": {"niuu.world/scope": "global"},
+            "labels": {"niuu.world/knowledge-backend": backend},
+        },
+        "status": {"observedGeneration": 1, "conditions": [{"type": "Ready", "status": "True"}]},
+    }
+    api = AsyncMock()
+    api.list_namespaced_custom_object.return_value = {"items": [release]}
+    api.get_namespaced_custom_object.return_value = release
+    adapter._get_api = AsyncMock(return_value=api)
+    core = AsyncMock()
+    core.list_namespaced_service.return_value = SimpleNamespace(
+        items=[
+            SimpleNamespace(
+                metadata=SimpleNamespace(
+                    name="global-brain", labels={"app.kubernetes.io/name": backend}
+                ),
+                spec=SimpleNamespace(ports=[SimpleNamespace(port=80)]),
+            )
+        ]
+    )
+    core.read_namespaced_secret.return_value = SimpleNamespace(
+        data={"token": base64.b64encode(b"native-global-token").decode()}
+    )
+    with patch("kubernetes_asyncio.client.CoreV1Api", return_value=core):
+        for tenant in ("a", "b"):
+            mounts = await adapter.discover_mounts(tenant, "Bearer caller-token")
+            assert [m["name"] for m in mounts] == ["global-brain"]
+            assert (await adapter.list_deployments(tenant_id=tenant))["releases"] == []
+            with pytest.raises(ValueError, match="not found"):
+                await adapter.control("global-brain", "stop", tenant_id=tenant)
+            if backend == "mimir":
+                await mounts[0]["port"].aclose()
+        with pytest.raises(ValueError, match="reserved"):
+            await adapter.deploy(
+                DeploymentRequest(name="global-brain", backend=backend, tenant_id="a")
+            )
+        release["metadata"]["annotations"]["niuu.world/tenant-id"] = "a"
+        with pytest.raises(ValueError, match="not explicitly global"):
+            await adapter.discover_mounts("b", "Bearer caller-token")
+        release["metadata"]["annotations"] = {}
+        with pytest.raises(ValueError, match="not explicitly global"):
+            await adapter.discover_mounts("b", "Bearer caller-token")
+    api.patch_namespaced_custom_object.assert_not_called()

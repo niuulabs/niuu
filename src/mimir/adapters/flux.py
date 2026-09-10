@@ -30,6 +30,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         secrets: dict[str, str] | None = None,
         warden: dict | None = None,
         envoy: dict | None = None,
+        global_instances: list[str] | None = None,
         source_namespace: str = "",
         in_cluster: bool = True,
         kube_context: str | None = None,
@@ -49,6 +50,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         self.storage_class = storage_class
         self.secrets = secrets or {}
         self.envoy = envoy or {}
+        self.global_instances = global_instances or []
         self.warden = warden
         self.in_cluster = in_cluster
         self.context = kube_context
@@ -142,6 +144,24 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         from ravn.domain.mimir import MimirAuth
 
         status = await self.list_deployments(tenant_id=tenant_id)
+        for name in self.global_instances:
+            obj = await self._get_helmrelease(name)
+            if obj is None:
+                raise ValueError(f"Configured global knowledge instance {name} does not exist")
+            annotations = obj.get("metadata", {}).get("annotations", {})
+            values = obj.get("spec", {}).get("values", {})
+            if (
+                annotations.get("niuu.world/scope") != "global"
+                or annotations.get("niuu.world/tenant-id")
+                or values.get("niuu", {}).get("tenantId")
+            ):
+                raise ValueError(f"Knowledge instance {name} is not explicitly global")
+            view = self._view(obj)
+            if any(release["name"] == view["name"] for release in status["releases"]):
+                raise ValueError(
+                    f"Global knowledge mount {view['name']} conflicts with a tenant mount"
+                )
+            status["releases"].append(view)
         core = client.CoreV1Api(self._client)
         mounts = []
         for release in status["releases"]:
@@ -200,6 +220,8 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
     async def deploy(self, request: DeploymentRequest) -> dict[str, Any]:
         if not request.tenant_id:
             raise ValueError("An authenticated tenant is required to deploy a knowledge instance")
+        if request.name in self.global_instances:
+            raise ValueError("This name is reserved for an operator-managed global instance")
         backend = request.backend
         if backend not in self.versions or backend not in self.images:
             raise ValueError(f"No chart and image configured for {backend}")
