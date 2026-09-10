@@ -1,0 +1,41 @@
+{{- if .Values.postgres.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "gbrain.name" . | trunc 38 | trimSuffix "-" }}-db-init-{{ .Files.Get "files/database-init.sql" | sha256sum | trunc 8 }}
+spec:
+  # A regular Job also repairs existing databases; Helm waits for completion.
+  backoffLimit: 6
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 26
+        runAsGroup: 26
+      containers:
+        - name: database-init
+          image: {{ .Values.postgres.image | quote }}
+          command: [psql, -X, -v, ON_ERROR_STOP=1, -c]
+          args:
+            - {{ .Files.Get "files/database-init.sql" | quote }}
+          env:
+            - name: PGHOST
+              value: {{ include "gbrain.name" . }}-db-rw
+            - {name: PGDATABASE, value: gbrain}
+            - {name: PGUSER, value: postgres}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "gbrain.name" . }}-db-superuser
+                  key: password
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 128Mi}
+{{- end }}

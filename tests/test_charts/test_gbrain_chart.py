@@ -198,3 +198,17 @@ def test_managed_database_discovery_relationship():
     assert (
         docs["Deployment"]["metadata"]["annotations"]["observatory.niuu.world/uses"] == database.id
     )
+
+
+def test_database_admin_bootstrap_is_isolated_from_application_credentials():
+    result = render("--set", "engine=postgres", "--set", "postgres.enabled=true")
+    assert result.returncode == 0, result.stderr
+    docs = {d["kind"]: d for d in yaml.safe_load_all(result.stdout)}
+    assert docs["Cluster"]["spec"]["enableSuperuserAccess"] is True
+    job = docs["Job"]["spec"]["template"]["spec"]
+    assert job["automountServiceAccountToken"] is False
+    assert job["containers"][0]["command"] == ["psql", "-X", "-v", "ON_ERROR_STOP=1", "-c"]
+    assert "CREATE EVENT TRIGGER auto_rls_on_create_table" in job["containers"][0]["args"][0]
+    assert "db-superuser" in yaml.safe_dump(job)
+    assert "db-superuser" not in yaml.safe_dump(docs["Deployment"])
+    assert "Job" not in {d["kind"] for d in yaml.safe_load_all(render().stdout)}

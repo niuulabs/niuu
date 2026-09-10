@@ -7,6 +7,8 @@ kind: Cluster
 metadata:
   name: {{ include "gbrain.name" . }}-db
 spec:
+  # Only the one-shot database-init Job consumes this generated credential.
+  enableSuperuserAccess: true
   inheritedMetadata:
     labels:
       niuu.world/cluster: {{ .Values.niuu.cluster | quote }}
