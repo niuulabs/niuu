@@ -209,6 +209,7 @@ def test_database_admin_bootstrap_is_isolated_from_application_credentials():
     assert job["automountServiceAccountToken"] is False
     assert job["containers"][0]["command"] == ["psql", "-X", "-v", "ON_ERROR_STOP=1", "-c"]
     assert "CREATE EVENT TRIGGER auto_rls_on_create_table" in job["containers"][0]["args"][0]
+    assert "ALTER FUNCTION public.auto_enable_rls() OWNER TO gbrain" in job["containers"][0]["args"][0]
     assert "db-superuser" in yaml.safe_dump(job)
     assert "db-superuser" not in yaml.safe_dump(docs["Deployment"])
     assert "Job" not in {d["kind"] for d in yaml.safe_load_all(render().stdout)}

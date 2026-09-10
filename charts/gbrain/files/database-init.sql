@@ -26,3 +26,6 @@ BEGIN
       EXECUTE FUNCTION public.auto_enable_rls();
   END IF;
 END $init$;
+-- Migration v120 hardens this function's search_path as the application role.
+-- The event trigger remains administrator-owned; no superuser grant is needed.
+ALTER FUNCTION public.auto_enable_rls() OWNER TO gbrain;
