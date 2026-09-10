@@ -47,3 +47,26 @@ it('shows native phase outcomes and selects actual process output', async () => 
     expect(service.mounts.controlDeployment).toHaveBeenCalledWith('brain', 'stop', 'local'),
   );
 });
+
+it('inspects the selected target when clusters reuse an instance name', async () => {
+  const service = createMimirMockAdapter();
+  service.mounts.getDeployments = async () => ({
+    cluster: '',
+    namespace: '',
+    backends: [],
+    releases: ['ymir', 'noatun'].map((target) => ({
+      name: 'brain',
+      target,
+      backend: 'gbrain',
+      ready: true,
+      message: 'Ready',
+    })),
+  });
+  service.mounts.inspectDeployment = vi
+    .fn()
+    .mockResolvedValue({ name: 'brain', ready: true, message: 'Ready', logs: {} });
+  renderWithMimir(<DeploymentInspection instanceName="brain" target="noatun" />, service);
+  await waitFor(() =>
+    expect(service.mounts.inspectDeployment).toHaveBeenCalledWith('brain', 'noatun'),
+  );
+});

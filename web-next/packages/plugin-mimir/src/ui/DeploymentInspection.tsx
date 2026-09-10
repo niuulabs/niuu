@@ -5,7 +5,13 @@ import { Field, Select } from '@niuulabs/ui';
 import type { IMimirService } from '../ports';
 import './DeploymentInspection.css';
 
-export function DeploymentInspection({ instanceName }: { instanceName: string }) {
+export function DeploymentInspection({
+  instanceName,
+  target,
+}: {
+  instanceName: string;
+  target?: string;
+}) {
   const { mounts } = useService<IMimirService>('mimir');
   const client = useQueryClient();
   const [stream, setStream] = useState('');
@@ -14,7 +20,9 @@ export function DeploymentInspection({ instanceName }: { instanceName: string })
     queryFn: () => mounts.getDeployments!(),
     enabled: !!mounts.getDeployments,
   });
-  const deployment = status.data?.releases.find((item) => item.name === instanceName);
+  const deployment = status.data?.releases.find(
+    (item) => item.name === instanceName && (target === undefined || item.target === target),
+  );
   const query = useQuery({
     queryKey: ['mimir', 'deployment', instanceName, deployment?.target],
     queryFn: () => mounts.inspectDeployment!(instanceName, deployment?.target),
@@ -22,7 +30,7 @@ export function DeploymentInspection({ instanceName }: { instanceName: string })
     refetchInterval: 5000,
   });
   const control = useMutation({
-    mutationFn: (action: 'start' | 'stop') =>
+    mutationFn: (action: 'start' | 'stop' | 'update') =>
       mounts.controlDeployment!(instanceName, action, deployment?.target),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['mimir'] });
@@ -57,6 +65,15 @@ export function DeploymentInspection({ instanceName }: { instanceName: string })
         </div>
         {mounts.controlDeployment && (
           <div className="instance-runtime-actions">
+            {deployment.can_update && (
+              <button
+                className="registry-primary"
+                disabled={control.isPending}
+                onClick={() => control.mutate('update')}
+              >
+                Update
+              </button>
+            )}
             <button
               className="registry-primary"
               disabled={control.isPending || ready}
@@ -80,7 +97,9 @@ export function DeploymentInspection({ instanceName }: { instanceName: string })
         <p role="status">
           {control.variables === 'start'
             ? 'Start requested. Waiting for service readiness.'
-            : 'Stop requested.'}
+            : control.variables === 'update'
+              ? 'Update requested. Flux will apply the target’s current chart and image.'
+              : 'Stop requested.'}
         </p>
       )}
       {query.error && <p role="alert">Runtime inspection failed: {query.error.message}</p>}

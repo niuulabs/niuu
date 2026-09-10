@@ -13,7 +13,7 @@ service:
 # Secret containing GBRAIN_ADMIN_BOOTSTRAP_TOKEN (32+ URL-safe characters).
 # May also contain model provider keys and GBRAIN_DATABASE_URL for PostgreSQL.
 existingSecret: ""
-# pglite uses the PVC; postgres requires GBRAIN_DATABASE_URL in existingSecret.
+# pglite uses the PVC; postgres uses the managed database or existingSecret.
 engine: pglite
 embedding:
   enabled: false

@@ -249,3 +249,25 @@ async def test_flux_target_supplies_storage_class_to_both_engines():
         assert values["persistence"]["storageClass"] == "harvester-data"
         if backend == "gbrain":
             assert values["postgres"]["storageClass"] == "harvester-data"
+
+
+@pytest.mark.asyncio
+async def test_update_uses_target_release_versions_without_replacing_instance_settings():
+    a = adapter()
+    obj = {
+        "metadata": {
+            "name": "brain",
+            "labels": {"niuu.world/managed-by": "mimir", "niuu.world/knowledge-backend": "gbrain"},
+        }
+    }
+    api = AsyncMock()
+    api.get_namespaced_custom_object.return_value = obj
+    api.patch_namespaced_custom_object.return_value = obj
+    a._api = AsyncMock(return_value=api)
+    await a.control("cluster/brain", "update")
+    patch = api.patch_namespaced_custom_object.call_args.args[-1]["spec"]
+    assert patch["chart"]["spec"]["version"] == "0.1.0"
+    assert patch["values"] == {"image": {"repository": "registry/gbrain", "tag": "0.48.5.0"}}
+    obj["metadata"]["labels"]["niuu.world/managed-by"] = "other"
+    with pytest.raises(ValueError, match="not managed"):
+        await a.control("brain", "update")

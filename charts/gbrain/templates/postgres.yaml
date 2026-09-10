@@ -14,6 +14,12 @@ spec:
     enablePodAntiAffinity: true
     topologyKey: kubernetes.io/hostname
     podAntiAffinityType: required
+  managed:
+    roles:
+      - name: gbrain
+        login: true
+        # gbrain migrations require its database owner to bypass its RLS policies.
+        bypassrls: true
   bootstrap:
     initdb:
       database: gbrain

@@ -34,6 +34,7 @@ export interface DeploymentStatus {
     message: string;
     target?: string;
     can_delete?: boolean;
+    can_update?: boolean;
   }[];
 }
 

@@ -1,3 +1,5 @@
+import { usePluginCtx } from '@niuulabs/plugin-sdk';
+import { DeploymentInspection } from './DeploymentInspection';
 import { InstanceInspection } from './InstanceInspection';
 /**
  * AnalyticsPage — retrieval quality and query-traffic analytics.
@@ -200,6 +202,8 @@ function QueryTraffic({ stats }: QueryTrafficProps) {
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export function AnalyticsPage() {
+  const ctx = usePluginCtx();
+  const deployment = ctx.tweaks['mimir.deployment'] as { name: string; target?: string } | null;
   const evalReport = useEvalReport();
   const queryStats = useQueryStats();
 
@@ -212,7 +216,13 @@ export function AnalyticsPage() {
         </p>
       </div>
 
-      <InstanceInspection />
+      <>
+        {deployment ? (
+          <DeploymentInspection instanceName={deployment.name} target={deployment.target} />
+        ) : (
+          <InstanceInspection />
+        )}
+      </>
 
       <details className="mimir-service-diagnostics">
         <summary>

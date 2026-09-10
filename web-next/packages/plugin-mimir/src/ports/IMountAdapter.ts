@@ -39,7 +39,7 @@ export interface IMountAdapter {
   inspectDeployment?(name: string, target?: string): Promise<DeploymentInspectionResult>;
   controlDeployment?(
     name: string,
-    action: 'start' | 'stop' | 'delete',
+    action: 'start' | 'stop' | 'delete' | 'update',
     target?: string,
   ): Promise<unknown>;
   getDeployments?(): Promise<DeploymentStatus>;

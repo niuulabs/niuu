@@ -71,6 +71,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         current = obj["metadata"].get("generation", 1)
         return {
             "name": obj["metadata"]["name"],
+            "can_update": True,
             "backend": obj["metadata"]["labels"]["niuu.world/knowledge-backend"],
             "ready": ready.get("status") == "True" and observed >= current,
             "message": ready.get("message", "Waiting for Flux reconciliation"),
@@ -196,10 +197,34 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
 
     async def control(self, name: str, action: str) -> dict:
         name = name.removeprefix("cluster/")
-        if action not in {"start", "stop"}:
-            raise ValueError("Supported actions: start, stop")
-        await self.inspect_deployment(name)
+        if action not in {"start", "stop", "update"}:
+            raise ValueError("Supported actions: start, stop, update")
         api = await self._api()
+        existing = await api.get_namespaced_custom_object(
+            HELMRELEASE_GROUP, HELMRELEASE_VERSION, self.namespace, HELMRELEASE_PLURAL, name
+        )
+        labels = existing.get("metadata", {}).get("labels", {})
+        if labels.get("niuu.world/managed-by") != "mimir":
+            raise ValueError("This release is not managed by the knowledge registry")
+        if action == "update":
+            backend = labels["niuu.world/knowledge-backend"]
+            if backend not in self.versions or backend not in self.images:
+                raise ValueError(f"No chart and image configured for {backend}")
+            repository, tag = self.images[backend].rsplit(":", 1)
+            updated = await api.patch_namespaced_custom_object(
+                HELMRELEASE_GROUP,
+                HELMRELEASE_VERSION,
+                self.namespace,
+                HELMRELEASE_PLURAL,
+                name,
+                {
+                    "spec": {
+                        "chart": {"spec": {"version": self.versions[backend]}},
+                        "values": {"image": {"repository": repository, "tag": tag}},
+                    }
+                },
+            )
+            return self._view(updated)
         obj = await api.patch_namespaced_custom_object(
             HELMRELEASE_GROUP,
             HELMRELEASE_VERSION,

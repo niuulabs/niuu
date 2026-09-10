@@ -454,7 +454,13 @@ export function RegistryPage() {
                         type="button"
                         className="registry-primary"
                         onClick={() => {
-                          ctx.setTweak('activeMount', mount.name);
+                          ctx.setTweak(
+                            'mimir.deployment',
+                            mount.release && !mount.connection
+                              ? { name: mount.name, target: mount.release.target }
+                              : null,
+                          );
+                          ctx.setTweak('activeMount', mount.connection ? mount.name : 'all');
                           ctx.setTweak('mimir.registryView', 'Analytics');
                         }}
                       >
