@@ -44,8 +44,9 @@ async def claude_login(
     root: Path, executable: str, interval: float, shutdown_timeout: float = DEFAULT_SHUTDOWN_TIMEOUT
 ) -> None:
     master, slave = pty.openpty()
-    # Keep the authorization URL and token on one line instead of reconstructing
-    # secrets from terminal cursor movement and wrapping.
+    output_reader, output_writer = os.pipe()
+    # Only stdin is a terminal. Piped output makes the CLI emit complete frames
+    # instead of screen deltas that cannot be decoded by stripping ANSI codes.
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 8192, 0, 0))
     environment = {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
@@ -60,21 +61,22 @@ async def claude_login(
             executable,
             "setup-token",
             stdin=slave,
-            stdout=slave,
-            stderr=slave,
+            stdout=output_writer,
+            stderr=output_writer,
             env=environment,
             cwd=root,
             start_new_session=True,
         )
     finally:
         os.close(slave)
-    os.set_blocking(master, False)
+        os.close(output_writer)
+    os.set_blocking(output_reader, False)
     output = ""
     challenge_sent = False
     try:
         while True:
             try:
-                chunk = os.read(master, 65536)
+                chunk = os.read(output_reader, 65536)
             except BlockingIOError:
                 chunk = None
             except OSError:
@@ -131,6 +133,7 @@ async def claude_login(
     finally:
         await stop_process(process, shutdown_timeout)
         os.close(master)
+        os.close(output_reader)
 
 
 def write_json(path: Path, value: dict) -> None:

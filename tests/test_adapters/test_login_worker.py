@@ -56,6 +56,7 @@ async def test_claude_cli_authorization_code_is_consumed_and_token_is_kept_priva
     executable.write_text(
         f"#!{sys.executable}\n"
         "import os,sys,tty\n"
+        "assert sys.stdin.isatty() and not sys.stdout.isatty()\n"
         "tty.setraw(sys.stdin.fileno())\n"
         "assert 'ANTHROPIC_API_KEY' not in os.environ\n"
         "print('https://claude.ai/oauth/authorize?state=test-only',flush=True)\n"
