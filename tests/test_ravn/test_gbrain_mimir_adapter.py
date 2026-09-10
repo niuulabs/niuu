@@ -15,7 +15,14 @@ import httpx
 import pytest
 import respx
 
-from niuu.domain.mimir import MimirPageMeta, MimirSource, PageConfidence, PageType
+from niuu.domain.mimir import (
+    MimirPageMeta,
+    MimirSource,
+    PageConfidence,
+    PageType,
+    compute_content_hash,
+    compute_source_id,
+)
 from niuu.ports.mimir import MimirPort
 from ravn.adapters.mimir.gbrain import GBrainMimirAdapter
 
@@ -392,7 +399,7 @@ class TestFailuresAreLoud:
             await adapter.search("anything")
         await adapter.close()
 
-    @pytest.mark.parametrize("op", ["lint", "list_sources"])
+    @pytest.mark.parametrize("op", ["lint"])
     async def test_unsupported_operations_raise_rather_than_look_empty(self, op: str) -> None:
         """gbrain cannot lint or enumerate raw sources.
 
@@ -404,13 +411,6 @@ class TestFailuresAreLoud:
 
         with pytest.raises(NotImplementedError, match="no equivalent"):
             await getattr(adapter, op)()
-        await adapter.close()
-
-    async def test_read_source_raises_too(self) -> None:
-        adapter = _adapter()
-
-        with pytest.raises(NotImplementedError, match="no equivalent"):
-            await adapter.read_source("src_abc")
         await adapter.close()
 
 
@@ -569,3 +569,163 @@ def test_sse_preserves_unicode_line_separators():
     assert (
         _parse_mcp_response("data: " + json.dumps(message, ensure_ascii=False) + "\n\n") == message
     )
+
+
+class TestRawSources:
+    @pytest.mark.parametrize("webhook", [False, True])
+    @respx.mock
+    async def test_lossless_source_roundtrip(self, webhook):
+        source = MimirSource(
+            source_id="src_raw",
+            title="Title: with YAML",
+            content=" \n---\ncontent\n<!-- timeline -->\n\n",
+            source_type="web",
+            ingested_at=datetime.now(UTC),
+            content_hash=compute_content_hash(" \n---\ncontent\n<!-- timeline -->\n\n"),
+            origin_url="https://example.test/source",
+        )
+        stored = {}
+
+        def transport(request):
+            if str(request.url) == _INGEST:
+                stored["content"] = request.content.decode()
+                return httpx.Response(202, json={"job_id": "ingestion"})
+            params = json.loads(request.content)["params"]
+            if params["name"] == "put_page":
+                stored["content"] = params["arguments"]["content"]
+                return httpx.Response(200, json=_tool_result())
+            return httpx.Response(
+                200,
+                json=_tool_result(
+                    structured=_page("sources/src_raw", content=stored["content"] + "\n")
+                ),
+            )
+
+        respx.post(_MCP).mock(side_effect=transport)
+        if webhook:
+            respx.post(_INGEST).mock(side_effect=transport)
+        adapter = _adapter(ingest_url=_INGEST if webhook else None)
+        await adapter.ingest(source)
+        assert await adapter.read_source(source.source_id) == source
+        excerpt = await adapter.read_source_excerpt(source.source_id, 4)
+        assert excerpt.content == source.content[:4]
+        assert excerpt.content_hash == source.content_hash
+        await adapter.close()
+
+    @respx.mock
+    async def test_missing_source_is_absent(self):
+        respx.post(_MCP).mock(
+            return_value=httpx.Response(
+                200, json=_tool_result(text=json.dumps({"error": "page_not_found"}), is_error=True)
+            )
+        )
+        adapter = _adapter()
+        assert await adapter.read_source("src_absent") is None
+        await adapter.close()
+
+    @pytest.mark.parametrize("tampered", [False, True])
+    @respx.mock
+    async def test_legacy_source_checks_original_content_id(self, tampered):
+        body = "Original evidence"
+        source_id = compute_source_id(body)
+        record = _page(
+            "sources/" + source_id,
+            title="Evidence",
+            content="# Evidence\n\n" + ("modified" if tampered else body) + "\n",
+            created_at="2026-09-10T00:00:00+00:00",
+            source_uri="https://example.test",
+        )
+        respx.post(_MCP).mock(
+            return_value=httpx.Response(200, json=_tool_result(structured=record))
+        )
+        adapter = _adapter()
+        if tampered:
+            with pytest.raises(ValueError, match="integrity check failed"):
+                await adapter.read_source(source_id)
+        else:
+            source = await adapter.read_source(source_id)
+            assert source.content == body
+            assert source.origin_url == "https://example.test"
+            assert source.source_type == "web"
+        await adapter.close()
+
+    @respx.mock
+    async def test_list_sources_filters_compiled_sources(self):
+        body = "evidence"
+        source_id = compute_source_id(body)
+
+        def transport(request):
+            params = json.loads(request.content)["params"]
+            if params["name"] == "list_pages":
+                return httpx.Response(
+                    200,
+                    json=_tool_result(
+                        structured=[
+                            _page("sources/" + source_id),
+                            _page("research/report", source_ids=[source_id]),
+                        ]
+                    ),
+                )
+            return httpx.Response(
+                200,
+                json=_tool_result(
+                    structured=_page(
+                        "sources/" + source_id,
+                        title="Evidence",
+                        content="# Evidence\n\n" + body,
+                        created_at="2026-09-10T00:00:00+00:00",
+                    )
+                ),
+            )
+
+        respx.post(_MCP).mock(side_effect=transport)
+        adapter = _adapter()
+        sources = await adapter.list_sources()
+        assert [s.source_id for s in sources] == [source_id]
+        assert await adapter.list_sources(unprocessed_only=True) == []
+        assert (await adapter.summarize()).source_count == 1
+        await adapter.close()
+
+    @pytest.mark.parametrize("payload", ["broken", "mismatch"])
+    @respx.mock
+    async def test_corrupt_source_is_not_accepted_as_evidence(self, payload):
+        content = "broken"
+        if payload == "mismatch":
+            content = (
+                "```json\n"
+                + json.dumps(
+                    {
+                        "source_id": "src_raw",
+                        "title": "Evidence",
+                        "content": "tampered",
+                        "source_type": "web",
+                        "ingested_at": "2026-09-10T00:00:00+00:00",
+                        "content_hash": compute_content_hash("original"),
+                    }
+                )
+                + "\n```"
+            )
+        respx.post(_MCP).mock(
+            return_value=httpx.Response(
+                200,
+                json=_tool_result(
+                    structured=_page(
+                        "sources/src_raw",
+                        content=content,
+                        frontmatter={"mimir_source_format": "json-v1"},
+                    )
+                ),
+            )
+        )
+        adapter = _adapter()
+        with pytest.raises(ValueError, match="Malformed|integrity"):
+            await adapter.read_source("src_raw")
+        await adapter.close()
+
+    @respx.mock
+    async def test_empty_response_is_not_source_absence(self):
+        respx.post(_MCP).mock(return_value=httpx.Response(200, json=_tool_result()))
+        adapter = _adapter()
+        with pytest.raises(RuntimeError, match="no source record"):
+            await adapter.read_source("src_raw")
+        await adapter.close()

@@ -22,8 +22,8 @@ content.
 
 What this adapter deliberately does not do
 ------------------------------------------
-gbrain has no equivalent of Mímir's lint pass or raw-source registry.
-Those methods raise instead of returning empty results: an operator
+Raw sources are stored as source pages with a lossless JSON payload so
+GBrain markdown normalization cannot alter the evidence. The lint method raises: an operator
 who points a workflow at a brain that cannot lint should be told so, not
 handed a clean report over an unlinted corpus. See
 ``.claude/rules/no-fallbacks.md``.
@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
 
@@ -49,6 +50,8 @@ from niuu.domain.mimir import (
     MimirSource,
     MimirSourceMeta,
     PageType,
+    compute_content_hash,
+    compute_source_id,
 )
 from niuu.ports.mimir import MimirPort
 
@@ -288,7 +291,14 @@ class GBrainMimirAdapter(MimirPort):
         doing the same write, not a degraded mode.
         """
         slug = _slug(f"sources/{source.source_id}")
-        markdown = f"# {source.title}\n\n{source.content}"
+        # JSON preserves the exact raw bytes represented by the string, including
+        # whitespace, frontmatter and timeline markers that GBrain otherwise parses.
+        payload = {**asdict(source), "ingested_at": source.ingested_at.isoformat()}
+        front = yaml.safe_dump(
+            {"type": "source", "title": source.title, "mimir_source_format": "json-v1"},
+            sort_keys=False,
+        )
+        markdown = f"---\n{front}---\n\n```json\n{json.dumps(payload, ensure_ascii=False)}\n```"
         if self._ingest_url:
             response = await self._get_client().post(
                 self._ingest_url,
@@ -316,10 +326,42 @@ class GBrainMimirAdapter(MimirPort):
         raise NotImplementedError(_UNSUPPORTED.format(op="lint"))
 
     async def read_source(self, source_id: str) -> MimirSource | None:
-        raise NotImplementedError(_UNSUPPORTED.format(op="read_source"))
+        try:
+            result = await self._call_tool(
+                "get_page", {"slug": _slug(f"sources/{source_id}"), "include_content": True}
+            )
+        except FileNotFoundError:
+            return None
+        records = _records(result)
+        if not records:
+            raise RuntimeError(f"gbrain returned no source record for {source_id}")
+        return _source_from_record(source_id, records[0])
 
     async def list_sources(self, *, unprocessed_only: bool = False) -> list[MimirSourceMeta]:
-        raise NotImplementedError(_UNSUPPORTED.format(op="list_sources"))
+        pages = await self.list_pages()
+        referenced = {source_id for page in pages for source_id in page.source_ids}
+        sources = []
+        for page in pages:
+            if not page.path.startswith("sources/src_"):
+                continue
+            source_id = page.path.removeprefix("sources/")
+            if unprocessed_only and source_id in referenced:
+                continue
+            source = await self.read_source(source_id)
+            if source is None:
+                continue
+            if unprocessed_only and source.source_type == "diagnostic":
+                continue
+            sources.append(
+                MimirSourceMeta(
+                    source_id=source.source_id,
+                    title=source.title,
+                    ingested_at=source.ingested_at,
+                    source_type=source.source_type,
+                    origin_url=source.origin_url,
+                )
+            )
+        return sources
 
     async def inspect_instance(self) -> dict:
         response = await self._get_client().get(self._mcp_url.removesuffix("/mcp") + "/health")
@@ -346,10 +388,56 @@ class GBrainMimirAdapter(MimirPort):
         pages = await self.list_pages()
         return MimirMountSummary(
             page_count=len(pages),
-            source_count=0,  # gbrain has no Mimir raw-source registry.
+            source_count=sum(page.path.startswith("sources/src_") for page in pages),
             categories=sorted({page.category for page in pages}),
             last_write=max((page.updated_at for page in pages), default=None),
         )
+
+
+def _source_from_record(source_id: str, record: dict[str, Any]) -> MimirSource:
+    """Decode source evidence, including the original heading-plus-body format."""
+    content = str(record.get("content") or "")
+    front = record.get("frontmatter") or {}
+    if content.startswith("---\n"):
+        _, header, content = content.split("---", 2)
+        front = {**(yaml.safe_load(header) or {}), **front}
+    body = str(record.get("compiled_truth", content)).strip()
+    if front.get("mimir_source_format") == "json-v1":
+        if not body.startswith("```json\n") or not body.endswith("\n```"):
+            raise ValueError(f"Malformed GBrain raw source: {source_id}")
+        payload = json.loads(body.removeprefix("```json\n").removesuffix("\n```"))
+        source = MimirSource(
+            **{**payload, "ingested_at": datetime.fromisoformat(payload["ingested_at"])}
+        )
+        if (
+            source.source_id != source_id
+            or compute_content_hash(source.content) != source.content_hash
+        ):
+            raise ValueError(f"GBrain raw source integrity check failed: {source_id}")
+        return source
+
+    # The old ingest stored '# title\n\ncontent' without Mimir metadata.
+    # GBrain trims markdown whitespace. Only accept a legacy body if its
+    # canonical content-addressed ID proves it is the original evidence.
+    heading = f"# {record.get('title') or front.get('title') or ''}\n\n"
+    raw = body.removeprefix(heading)
+    if compute_source_id(raw) != source_id:
+        raise ValueError(
+            f"GBrain legacy source integrity check failed: {source_id}; "
+            "re-ingest the original source"
+        )
+    origin_url = record.get("source_uri")
+    return MimirSource(
+        source_id=source_id,
+        title=str(record.get("title") or front.get("title") or source_id),
+        content=raw,
+        content_hash=compute_content_hash(raw),
+        source_type="web"
+        if origin_url and origin_url.startswith(("http://", "https://"))
+        else "document",
+        origin_url=origin_url,
+        ingested_at=datetime.fromisoformat(str(record.get("ingested_at") or record["created_at"])),
+    )
 
 
 # ---------------------------------------------------------------------------
