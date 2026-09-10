@@ -19,7 +19,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
-ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|[@-_])")
+ANSI_ESCAPE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)|[@-_])"
+)
 CLAUDE_TOKEN = re.compile(r"sk-ant-oat01-[A-Za-z0-9_-]+")
 CLAUDE_TOKEN_LIFETIME_DAYS = 365  # Duration documented by `claude setup-token`.
 DEFAULT_SHUTDOWN_TIMEOUT = 2.0
@@ -103,7 +105,11 @@ async def claude_login(
             if code_path.exists():
                 code = json.loads(code_path.read_text())["code"]
                 code_path.unlink()
-                os.write(master, (code + "\r").encode())
+                # Terminal UIs treat a multi-character read as pasted text. Send
+                # Enter in a separate event so it submits rather than joins the paste.
+                os.write(master, code.encode())
+                await asyncio.sleep(interval)
+                os.write(master, b"\r")
             if chunk == b"" or (process.returncode is not None and chunk is None):
                 break
             await asyncio.sleep(interval)

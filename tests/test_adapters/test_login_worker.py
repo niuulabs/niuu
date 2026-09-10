@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from volundr.adapters.outbound.login_worker import (
+    ANSI_ESCAPE,
     claude_login,
     codex_login,
     run,
@@ -54,11 +55,13 @@ async def test_claude_cli_authorization_code_is_consumed_and_token_is_kept_priva
     executable = tmp_path / "fake-claude"
     executable.write_text(
         f"#!{sys.executable}\n"
-        "import os,sys\n"
+        "import os,sys,tty\n"
+        "tty.setraw(sys.stdin.fileno())\n"
         "assert 'ANTHROPIC_API_KEY' not in os.environ\n"
         "print('https://claude.ai/oauth/authorize?state=test-only',flush=True)\n"
         "print('Paste code here if prompted >',flush=True)\n"
-        "assert input()=='test-browser-code'\n"
+        "assert os.read(sys.stdin.fileno(),4096)==b'test-browser-code'\n"
+        "assert os.read(sys.stdin.fileno(),4096)==b'\\r'\n"
         "print('Your token: sk-ant-oat01-test-only-secret',flush=True)\n"
     )
     executable.chmod(0o700)
@@ -109,3 +112,12 @@ async def test_unresponsive_cli_is_killed_after_shutdown_deadline():
     process.wait = AsyncMock(side_effect=[TimeoutError(), None])
     await stop_process(process, 0.01)
     process.kill.assert_called_once()
+
+
+def test_terminal_hyperlinks_do_not_erase_text_between_them():
+    output = (
+        "\x1b]8;;https://example.com\x1b\\login\x1b]8;;\x1b\\\n"
+        "sk-ant-oat01-test-only-secret\n"
+        "\x1b]8;;https://example.com\x1b\\docs\x1b]8;;\x1b\\"
+    )
+    assert ANSI_ESCAPE.sub("", output) == "login\nsk-ant-oat01-test-only-secret\ndocs"
