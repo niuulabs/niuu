@@ -1,4 +1,8 @@
-FROM python:3.14-slim-trixie@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS builder
+# BuildKit keeps the native wheel in its existing per-platform CI cache.
+# Only the installed Python environment reaches the final image.
+FROM rust:1.96.1-slim-trixie@sha256:31ee7fc65186be7e0e0ccb3f2ca305f14e4739e7642a1ae65753aa5d7b874523 AS rust-toolchain
+
+FROM python:3.14-slim-trixie@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS python-build
 
 ARG TARGETARCH
 
@@ -20,12 +24,41 @@ RUN set -eux; \
     install -m 0755 "/tmp/${UV_ARCHIVE%.tar.gz}/uv" /usr/local/bin/uv; \
     rm -rf "/tmp/${UV_ARCHIVE}" "/tmp/${UV_ARCHIVE%.tar.gz}"
 
+FROM python-build AS switchyard-wheel
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential git cmake pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
+COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup \
+    RUSTUP_TOOLCHAIN=1.96.1 PATH="/usr/local/cargo/bin:$PATH"
+WORKDIR /build
+COPY uv.lock /build/uv.lock
+COPY containers/niuu/build_switchyard.py containers/niuu/switchyard-build-constraints.txt /build/
+RUN python build_switchyard.py
+
+FROM python-build AS builder
 WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
 COPY src/ /app/src/
 RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats --extra openshell --extra otel \
+    --extra switchyard --no-install-package nemo-switchyard \
     && mkdir -p /dist-root/data/mimir
+RUN --mount=type=bind,from=switchyard-wheel,source=/wheels,target=/wheels \
+    uv pip install --python /opt/venv/bin/python --offline --no-deps --no-build /wheels/*.whl \
+    && mkdir -p /opt/venv/share/niuu \
+    && cp /wheels/switchyard-build.json /opt/venv/share/niuu/
+
+FROM builder AS switchyard-tests
+COPY bifrost.pi.example.yaml /app/
+COPY tests/conftest.py tests/__init__.py /app/tests/
+COPY tests/test_bifrost/ /app/tests/test_bifrost/
+RUN --mount=type=bind,from=switchyard-wheel,source=/wheels,target=/wheels \
+    uv sync --frozen --no-editable --extra dev --extra switchyard --no-install-package nemo-switchyard \
+    && uv pip install --python /opt/venv/bin/python --offline --no-deps --no-build /wheels/*.whl \
+    && /opt/venv/bin/python -m pytest tests/test_bifrost -q \
+    && touch /switchyard-tests-passed
 
 FROM python:3.14-slim-trixie@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6
 
@@ -45,6 +78,11 @@ COPY --from=builder --chown=65532:65532 /dist-root/data /data
 USER 65532:65532
 
 WORKDIR /app
+
+# Runs in the final filesystem as the runtime user, before CI can publish it.
+RUN --network=none --mount=type=bind,source=tests/container/switchyard_runtime.py,target=/tmp/verify_switchyard.py \
+    --mount=type=bind,from=switchyard-tests,source=/switchyard-tests-passed,target=/tmp/switchyard-tests-passed \
+    test -f /tmp/switchyard-tests-passed && python /tmp/verify_switchyard.py
 
 EXPOSE 8082
 

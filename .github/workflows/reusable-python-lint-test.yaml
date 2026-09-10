@@ -97,6 +97,12 @@ jobs:
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
 
+      - name: Set up Helm for chart rendering tests
+        if: matrix.pkg.name == 'Volundr'
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.14.0
+
       - name: Run tests with coverage
         run: |
           set -o pipefail

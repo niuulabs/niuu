@@ -8,6 +8,7 @@ from typing import Any
 from bifrost.translation.models import (
     AnthropicRequest,
     ContentBlock,
+    ImageBlock,
     Message,
     TextBlock,
     ThinkingBlock,
@@ -58,6 +59,7 @@ def _message_to_openai(msg: Message) -> list[dict[str, Any]]:
     text_parts: list[str] = []
     reasoning_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
+    multimodal: list[dict[str, Any]] = []
 
     for block in msg.content:
         if isinstance(block, ToolResultBlock):
@@ -77,14 +79,30 @@ def _message_to_openai(msg: Message) -> list[dict[str, Any]]:
             tool_calls.extend(_extract_tool_calls([block]))
         elif isinstance(block, TextBlock):
             text_parts.append(block.text)
+            multimodal.append({"type": "text", "text": block.text})
+        elif isinstance(block, ImageBlock):
+            source = block.source
+            url = (
+                source.url
+                if source.type == "url"
+                else f"data:{source.media_type};base64,{source.data}"
+            )
+            multimodal.append({"type": "image_url", "image_url": {"url": url}})
         elif isinstance(block, ThinkingBlock):
             reasoning_parts.append(block.thinking)
 
     if tool_result_messages:
         result: list[dict[str, Any]] = []
         text = "".join(text_parts)
-        if text:
-            result.append({"role": msg.role, "content": text})
+        if multimodal:
+            result.append(
+                {
+                    "role": msg.role,
+                    "content": (
+                        multimodal if any(isinstance(b, ImageBlock) for b in msg.content) else text
+                    ),
+                }
+            )
         result.extend(tool_result_messages)
         return result
 
@@ -92,11 +110,13 @@ def _message_to_openai(msg: Message) -> list[dict[str, Any]]:
     text = "".join(text_parts)
     if text:
         out["content"] = text
+    if any(isinstance(b, ImageBlock) for b in msg.content):
+        out["content"] = multimodal
     if reasoning_parts:
         out["reasoning_content"] = "".join(reasoning_parts)
     if tool_calls:
         out["tool_calls"] = tool_calls
-    if not text and not tool_calls:
+    if not text and not tool_calls and not multimodal:
         out["content"] = ""
     return [out]
 
@@ -160,6 +180,8 @@ def anthropic_to_openai(request: AnthropicRequest, model: str) -> dict[str, Any]
 
     if request.temperature is not None:
         payload["temperature"] = request.temperature
+    if request._response_format is not None:
+        payload["response_format"] = request._response_format
     if request.top_p is not None:
         payload["top_p"] = request.top_p
     if request.stop_sequences:

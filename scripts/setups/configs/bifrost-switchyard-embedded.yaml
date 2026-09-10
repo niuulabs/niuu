@@ -1,0 +1,22 @@
+host: 127.0.0.1
+port: 4010
+auth_mode: open
+routing_strategy: direct
+providers:
+  valaskjalf:
+    base_url: https://vllm.valaskjalf.asgard.niuu.world
+    models: [nvidia/nemotron-3-super]
+    timeout: 120
+    chat_template_kwargs:
+      enable_thinking: false
+selection:
+  adapter: bifrost.adapters.switchyard_models.SwitchyardModelSelection
+  targets:
+    nemotron:
+      provider: valaskjalf
+      model: nvidia/nemotron-3-super
+      weight: 1
+  routes:
+    local:
+      targets: [nemotron]
+  seed: 42

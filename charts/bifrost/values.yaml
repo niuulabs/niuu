@@ -267,28 +267,6 @@ deploymentAnnotations: {}
 #       secretKey: api-key
 providers: {}
 
-config:
-  host: 0.0.0.0
-  port: 8088
-  auth_mode: open
-  aliases: {}
-  providers: {}
-  routing_strategy: failover
-  guardrails: {}
-  default_quota: {}
-  tenant_quotas: {}
-  agent_permissions: {}
-  key_vault: {}
-  cache:
-    mode: disabled
-  events:
-    adapter: "null"
-  usage_store:
-    adapter: memory
-  audit:
-    adapter: "null"
-  rules: []
-
 database:
   name: bifrost
   createSecret: false
@@ -372,6 +350,11 @@ externalSecrets:
 # See bifrost.yaml.example in the repository root for all available options.
 config:
   routing_strategy: failover
+  # -- Optional dynamic routing adapter; null keeps existing routing unchanged.
+  # Switchyard is embedded in the niuu image built by MR #954, not a sidecar.
+  # Set adapter plus targets/routes for model selection, or weights for
+  # provider-only selection. See README.md and values-switchyard-nemotron.yaml.
+  selection: null
   host: "0.0.0.0"
   port: 8088
   auth_mode: open

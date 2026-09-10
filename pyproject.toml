@@ -36,6 +36,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+switchyard = [
+    "nemo-switchyard @ git+https://github.com/NVIDIA-NeMo/Switchyard.git@578e1b7cbd9db9577c4a9f14b0218ebc543b2049",
+]
 openshell = [
     "openshell==0.0.90; python_version >= '3.12'",
 ]
@@ -157,6 +160,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/audit", "src/cli", "src/credentials", "src/features", "src/guild", "src/identity", "src/integrations", "src/niuu", "src/volundr", "src/ting", "src/tracker", "src/skuld", "src/sleipnir", "src/ravn", "src/bifrost", "src/mimir", "src/observatory", "src/personas"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

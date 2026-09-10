@@ -646,6 +646,59 @@ def create_router(
 
     api_router = APIRouter()
 
+    async def _prepare_model_route(request, routing_ctx, identity, agent_perms, request_id):
+        if not router.has_model_routes:
+            return request
+
+        async def record_judge(provider, model, response, elapsed):
+            usage = TokenUsage(
+                input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens
+            )
+            cost = calculate_cost(model, usage, pricing_overrides)
+            await store.record(
+                UsageRecord(
+                    request_id=f"{request_id}:classifier:{uuid.uuid4().hex}",
+                    agent_id=identity.agent_id,
+                    tenant_id=identity.tenant_id,
+                    session_id=identity.session_id,
+                    saga_id=identity.saga_id,
+                    model=model,
+                    provider=provider,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    cost_usd=cost,
+                    timestamp=datetime.now(UTC),
+                    latency_ms=elapsed * 1000,
+                )
+            )
+            _metrics.record_request(
+                provider=provider,
+                model=model,
+                status="200",
+                duration_seconds=elapsed,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cost_usd=cost,
+            )
+            await emit_cost_events(
+                event_emitter,
+                store,
+                identity,
+                cost,
+                usage.input_tokens + usage.output_tokens,
+                model,
+                agent_perms.quota.max_cost_per_day,
+                config.events.budget_warning_threshold_pct,
+            )
+            await _check_quotas(identity, config, store, agent_perms)
+
+        return await router.prepare(
+            request,
+            routing_ctx,
+            authorize=lambda model: _check_model_access(identity, model, agent_perms),
+            record_call=record_judge,
+        )
+
     async def _emit_events(
         identity: AgentIdentity,
         cost: float,
@@ -954,6 +1007,10 @@ def create_router(
         agent_budget_limit = agent_perms.quota.max_cost_per_day
 
         try:
+            request = await _prepare_model_route(
+                request, routing_ctx, identity, agent_perms, request_id
+            )
+            provider = request._routed_provider or provider
             if request.stream:
                 stream_resp = StreamingResponse(
                     _stream_with_tracking(
@@ -1325,6 +1382,10 @@ def create_router(
         agent_budget_limit = agent_perms.quota.max_cost_per_day
 
         try:
+            request = await _prepare_model_route(
+                request, routing_ctx, identity, agent_perms, request_id
+            )
+            provider = request._routed_provider or provider
             if request.stream:
                 message_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
                 stream_resp = StreamingResponse(
@@ -1592,6 +1653,10 @@ def create_router(
         agent_budget_limit = agent_perms.quota.max_cost_per_day
 
         try:
+            request = await _prepare_model_route(
+                request, routing_ctx, identity, agent_perms, request_id
+            )
+            provider = request._routed_provider or provider
             if request.stream:
                 stream_resp = StreamingResponse(
                     stream_translate_fn(

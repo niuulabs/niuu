@@ -752,6 +752,10 @@ class BifrostConfig(BaseModel):
             "Example: {'claude-sonnet-4-6': 'failover', 'fast': 'round_robin'}"
         ),
     )
+    selection: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional provider selection adapter: fully-qualified adapter plus kwargs.",
+    )
     latency_ewma_alpha: float = Field(
         default=0.2,
         description=(
