@@ -1385,7 +1385,7 @@ function IntegrationsResourceCard({
           </div>
 
           {selectedIsDeviceCode ? (
-            <div className="settings-resource__actions">
+            <div className="settings-resource__actions settings-resource__actions--login">
               {selectedConnection ? (
                 <span
                   className={cn(
@@ -1401,9 +1401,14 @@ function IntegrationsResourceCard({
                 </span>
               ) : null}
               {currentEnrollment?.state === 'awaiting_user' ? (
-                <div className="settings-resource__row-note">
+                <div className="settings-resource__callout settings-login">
                   Open{' '}
-                  <a href={currentEnrollment.verificationUri} target="_blank" rel="noreferrer">
+                  <a
+                    className="settings-login__link"
+                    href={currentEnrollment.verificationUri}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     the provider login page
                   </a>{' '}
                   {currentEnrollment.inputRequired ? (
@@ -1414,10 +1419,17 @@ function IntegrationsResourceCard({
                     </>
                   )}
                   {currentEnrollment.inputRequired && !codeSubmitted ? (
-                    <div>
-                      <label htmlFor="provider-authorization-code">Authorization code</label>
+                    <div className="settings-login__code">
+                      <label
+                        className="settings-field__label"
+                        htmlFor="provider-authorization-code"
+                      >
+                        Authorization code
+                      </label>
                       <input
                         id="provider-authorization-code"
+                        className="settings-field__control"
+                        placeholder="Paste the code from Claude here"
                         type="password"
                         autoComplete="off"
                         value={authorizationCode}
@@ -1425,6 +1437,7 @@ function IntegrationsResourceCard({
                       />
                       <button
                         type="button"
+                        className="settings-shell__save-button"
                         disabled={!authorizationCode.trim() || codeMutation.isPending}
                         onClick={() => codeMutation.mutate()}
                       >

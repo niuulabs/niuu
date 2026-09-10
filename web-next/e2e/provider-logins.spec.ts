@@ -126,7 +126,14 @@ test('Codex shows startup, accepts keyboard activation, and completes', async ({
 test('Claude submits the authorization code and clears it', async ({ page }) => {
   await connections(page, 'claude-code');
   await page.getByRole('button', { name: 'Connect Claude Code' }).click();
-  await page.getByLabel('Authorization code').fill('test-browser-code');
+  const code = page.getByLabel('Authorization code');
+  await expect(code).toHaveCSS('border-top-style', 'solid');
+  await expect(code).toHaveCSS('border-top-width', '1px');
+  await expect(page.getByRole('link', { name: 'the provider login page' })).toHaveCSS(
+    'text-decoration-line',
+    'underline',
+  );
+  await code.fill('test-browser-code');
   await page.getByRole('button', { name: 'Complete sign-in' }).click();
   await expect(page.getByText('Claude Code account connected.')).toBeVisible();
   await expect(page.getByLabel('Authorization code')).toHaveCount(0);

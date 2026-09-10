@@ -696,3 +696,33 @@
     align-items: stretch;
   }
 }
+
+.settings-resource__actions--login {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.settings-login {
+  flex-basis: 100%;
+  min-width: 0;
+  margin-bottom: 0;
+  color: var(--color-text-primary);
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.settings-login__link {
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.settings-login__code {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
+
+.settings-login__code .settings-shell__save-button {
+  justify-self: start;
+}
