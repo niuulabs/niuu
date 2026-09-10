@@ -10,7 +10,7 @@ test.beforeEach(async ({ page }) => {
 
 // ── Login page ────────────────────────────────────────────────────────────────
 
-test('login page matches web2', async ({ page }) => {
+test('login page matches the aurora design', async ({ page }) => {
   await page.goto('/login');
   await page.waitForLoadState('networkidle');
   await expect(page).toHaveScreenshot('login-page.png');

@@ -48,14 +48,14 @@ async function stubOidc(page: import('@playwright/test').Page) {
   );
 }
 
-test('login page renders the sign-in card when auth is enabled', async ({ page }) => {
+test('login page renders the sign-in scene when auth is enabled', async ({ page }) => {
   await stubOidc(page);
   await page.goto('/login');
 
   // Shell resolves, login page overlays it
   await expect(page.getByTestId('login-page')).toBeVisible({ timeout: 5000 });
   await expect(page.getByTestId('sign-in-btn')).toBeVisible();
-  await expect(page.getByText('Sign in').first()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Continue to sign in' })).toBeVisible();
 });
 
 test('login page shows niuu wordmark', async ({ page }) => {
@@ -100,9 +100,10 @@ test('clicking sign-in triggers OIDC redirect (navigation away from /login)', as
 
   await page.getByTestId('sign-in-btn').click();
 
-  // After clicking, the browser should navigate away from /login (to IDP or back).
-  // We just verify no uncaught JS error occurs and the page is still alive.
-  await expect(page).toHaveURL(/localhost:5173|localhost:9876/, { timeout: 5000 });
+  // The handoff must reach the configured provider authorization endpoint.
+  await expect(page).toHaveURL(/localhost:9876\/realms\/test\/protocol\/openid-connect\/auth/, {
+    timeout: 5000,
+  });
 });
 
 test('auth-disabled mode: no redirect to /login', async ({ page }) => {
@@ -123,4 +124,16 @@ test('login page shows error state for OIDC failure in URL', async ({ page }) =>
   await expect(page.getByTestId('login-error')).toBeVisible();
   await expect(page.getByText('Authentication failed')).toBeVisible();
   await expect(page.getByText('User denied access')).toBeVisible();
+});
+
+test('login fits a phone and supports keyboard sign-in', async ({ page }) => {
+  await stubOidc(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/login');
+  const button = page.getByRole('button', { name: 'Continue to sign in' });
+  await expect(button).toBeVisible();
+  await button.focus();
+  await expect(button).toBeFocused();
+  await expect(page.getByText('You’ll continue to Niuu Identity.')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

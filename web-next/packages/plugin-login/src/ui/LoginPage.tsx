@@ -3,10 +3,8 @@ import { useAuth } from '@niuulabs/auth';
 import { AmbientTopology } from './AmbientTopology';
 import { AmbientConstellation } from './AmbientConstellation';
 import { AmbientLattice } from './AmbientLattice';
-import { LogoKnot } from './LogoKnot';
-import { useAmbient, type AmbientVariant } from './useAmbient';
-import { GithubIcon } from './icons/GithubIcon';
-import { GoogleIcon } from './icons/GoogleIcon';
+import { LoginScene, Emblem } from './LoginScene';
+import type { AmbientVariant } from './useAmbient';
 import './LoginPage.css';
 
 interface LoginPageProps {
@@ -14,7 +12,7 @@ interface LoginPageProps {
   oidcError?: string;
   /** Override the OIDC error description (default: read from ?error_description= URL param). */
   oidcErrorDescription?: string;
-  /** Force a specific ambient variant (default: reads/writes localStorage). */
+  /** Optional legacy ambient background override. */
   ambient?: AmbientVariant;
 }
 
@@ -55,8 +53,8 @@ export function buildBannerText(version = buildVersion, realm = buildRealm): str
 /**
  * Full-viewport login page.
  *
- * Shows the niuu knot rune, wordmark, and sign-in buttons that
- * kick off the configured OIDC flow via `useAuth().login()`.
+ * Shows the niuu cube constellation and a sign-in button that
+ * kicks off the configured OIDC flow via `useAuth().login()`.
  *
  * Uses `position: fixed` to overlay the Shell layout when rendered inside it.
  */
@@ -66,9 +64,7 @@ export function LoginPage({
   ambient: ambientProp,
 }: LoginPageProps = {}) {
   const { login, loading } = useAuth();
-  const [storedAmbient] = useAmbient();
-  const activeAmbient = ambientProp ?? storedAmbient;
-  const AmbientComponent = AMBIENT_MAP[activeAmbient];
+  const AmbientComponent = ambientProp ? AMBIENT_MAP[ambientProp] : LoginScene;
 
   const params =
     typeof window !== 'undefined'
@@ -82,24 +78,13 @@ export function LoginPage({
       <AmbientComponent />
 
       <div className="login-page__build login-page__mono" data-testid="build-banner">
-        <span className="login-page__build-dot" aria-hidden />
         {buildBannerText()}
       </div>
 
       <main className="login-page__card">
-        <div className="login-page__mark">
-          <LogoKnot size={72} stroke={1.6} glow />
-        </div>
-
-        <h1 className="login-page__wordmark">
-          <span className="login-page__wordmark-n">n</span>iuu
-        </h1>
-
-        <p className="login-page__tag login-page__mono">agentic infrastructure</p>
-
-        <div className="login-page__divider">
-          <span>sign in</span>
-        </div>
+        <div className="login-page__kicker">níu · the ninth world</div>
+        <Emblem />
+        <p className="login-page__tag">Where AI agents work, collaborate, and evolve.</p>
 
         {oidcError && (
           <div className="login-page__error" role="alert" data-testid="login-error">
@@ -115,50 +100,15 @@ export function LoginPage({
             className="login-page__btn"
             onClick={loading ? undefined : login}
             disabled={loading}
-            aria-label={
-              loading ? 'Redirecting to identity provider…' : 'Sign in with your identity provider'
-            }
+            aria-label={loading ? 'Redirecting to identity provider…' : 'Continue to sign in'}
             data-testid="sign-in-btn"
           >
             {loading ? <span className="login-page__spinner" aria-hidden /> : <LockIcon />}
-            <span>{loading ? 'redirecting…' : 'Continue with passkey'}</span>
-            {!loading && (
-              <span className="login-page__kbd login-page__mono" aria-hidden>
-                ↵
-              </span>
-            )}
+            <span>{loading ? 'Continuing to Niuu Identity…' : 'Continue to sign in'}</span>
+            {!loading && <span aria-hidden>→</span>}
           </button>
-
-          <div className="login-page__oauth-row" data-testid="oauth-row">
-            <button
-              className="login-page__btn login-page__btn--ghost"
-              onClick={loading ? undefined : login}
-              disabled={loading}
-              aria-label="Sign in with GitHub"
-              data-testid="github-btn"
-            >
-              <GithubIcon />
-              <span>GitHub</span>
-            </button>
-            <button
-              className="login-page__btn login-page__btn--ghost"
-              onClick={loading ? undefined : login}
-              disabled={loading}
-              aria-label="Sign in with Google"
-              data-testid="google-btn"
-            >
-              <GoogleIcon />
-              <span>Google</span>
-            </button>
-          </div>
         </div>
-
-        <div className="login-page__foot login-page__mono" data-testid="request-access-footer">
-          <span className="login-page__foot-dim">no account?</span>
-          <a href="#" className="login-page__link" data-testid="request-access-link">
-            request access
-          </a>
-        </div>
+        <p className="login-page__handoff">You’ll continue to Niuu Identity.</p>
       </main>
     </div>
   );
