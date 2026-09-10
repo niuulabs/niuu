@@ -50,6 +50,7 @@ def create_integrations_settings_router() -> APIRouter:
                             enrollment_start_path="/api/v1/integrations/enrollments",
                             enrollment_status_path="/api/v1/integrations/enrollments/{id}",
                             enrollment_cancel_path="/api/v1/integrations/enrollments/{id}",
+                            enrollment_code_path="/api/v1/integrations/enrollments/{id}/code",
                         )
                     ],
                 )

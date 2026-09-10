@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class, resolve_secret_kwargs
@@ -25,6 +26,19 @@ from volundr.domain.ports import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def integration_database_pool(settings: Settings, service_pool):
+    """Use the same connection records as the integrations-serving API."""
+    name = settings.integrations.database_name
+    if not name or name == settings.database.name:
+        yield service_pool
+        return
+    from niuu.service_database import database_pool
+
+    async with database_pool(settings.database.model_copy(update={"name": name})) as pool:
+        yield pool
 
 
 def _create_codex_credential_broker(

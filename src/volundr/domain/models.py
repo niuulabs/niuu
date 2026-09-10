@@ -1129,6 +1129,8 @@ class CredentialEnrollmentPoll:
     state: CredentialEnrollmentState
     credential_data: dict[str, str] = field(default_factory=dict)
     error_code: str = ""
+    verification_uri: str = ""
+    user_code: str = ""
 
 
 @dataclass(frozen=True)

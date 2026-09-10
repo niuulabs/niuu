@@ -257,6 +257,10 @@ class CredentialEnrollmentStartRequest(BaseModel):
     )
 
 
+class CredentialEnrollmentCodeRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=4096, repr=False)
+
+
 class CredentialEnrollmentResponse(BaseModel):
     """Secret-free status for an interactive credential enrollment."""
 
@@ -271,6 +275,7 @@ class CredentialEnrollmentResponse(BaseModel):
     user_code: str = Field(serialization_alias="userCode")
     expires_at: datetime = Field(serialization_alias="expiresAt")
     error_code: str = Field(serialization_alias="errorCode")
+    input_required: bool = Field(default=False, serialization_alias="inputRequired")
 
     @classmethod
     def from_domain(cls, enrollment: CredentialEnrollment) -> CredentialEnrollmentResponse:
@@ -284,6 +289,7 @@ class CredentialEnrollmentResponse(BaseModel):
             user_code=enrollment.user_code,
             expires_at=enrollment.expires_at,
             error_code=enrollment.error_code,
+            input_required=enrollment.method == "claude_setup",
         )
 
 
@@ -343,9 +349,14 @@ def _build_integrations_router(
                 credential_status="missing",
             )
         metadata = credential.metadata
+        expires_at = metadata.get("auth_expires_at")
+        auth_state = str(metadata.get("auth_state") or "configured")
+        if expires_at and datetime.fromisoformat(str(expires_at)) <= datetime.now(UTC):
+            auth_state = "auth_required"
         return IntegrationResponse.from_connection(
             connection,
-            credential_status=str(metadata.get("auth_state") or "configured"),
+            credential_status=auth_state,
+            credential_expires_at=str(expires_at) if expires_at else None,
             credential_error_code=(
                 str(metadata["auth_error_code"]) if metadata.get("auth_error_code") else None
             ),
@@ -443,6 +454,22 @@ def _build_integrations_router(
             enrollment = await credential_enrollment_service.cancel(enrollment_id, principal)
         except CredentialEnrollmentError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        return CredentialEnrollmentResponse.from_domain(enrollment)
+
+    @router.post("/enrollments/{enrollment_id}/code", response_model=CredentialEnrollmentResponse)
+    async def submit_enrollment_code(
+        enrollment_id: UUID,
+        data: CredentialEnrollmentCodeRequest,
+        principal: Principal = Depends(extract_principal),
+    ) -> CredentialEnrollmentResponse:
+        if credential_enrollment_service is None:
+            raise HTTPException(status_code=503, detail="Interactive enrollment is unavailable")
+        try:
+            enrollment = await credential_enrollment_service.submit_code(
+                enrollment_id, principal, data.code
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return CredentialEnrollmentResponse.from_domain(enrollment)
 
     @router.get(

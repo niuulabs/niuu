@@ -115,6 +115,7 @@ from volundr.composition_builders import (  # noqa: F401
     _create_resource_provider,
     _create_secret_injection_adapter,
     _runtime_backend,
+    integration_database_pool,
 )
 from volundr.config import Settings
 from volundr.domain.models import SessionStatus
@@ -416,7 +417,10 @@ def create_app(
 
         await _bootstrap_startup_schema(settings)
 
-        async with database_pool(settings.database) as pool:
+        async with (
+            database_pool(settings.database) as pool,
+            integration_database_pool(settings, pool) as integration_pool,
+        ):
             # Identity & authorization adapters (dynamic adapter pattern)
             tenant_repository = PostgresTenantRepository(pool)
             user_repository = PostgresUserRepository(pool)
@@ -641,11 +645,11 @@ def create_app(
                 [d.model_dump() for d in settings.integrations.definitions],
             )
             integration_registry = IntegrationRegistry(integration_definitions)
-            integration_repo = PostgresIntegrationRepository(pool)
+            integration_repo = PostgresIntegrationRepository(integration_pool)
             mapping_repository = PostgresMappingRepository(pool)
             tracker_factory = TrackerFactory(credential_store)
             credential_enrollment_service = CredentialEnrollmentService(
-                repository=PostgresCredentialEnrollmentRepository(pool),
+                repository=PostgresCredentialEnrollmentRepository(integration_pool),
                 runner=credential_enrollment_runner,
                 integration_repository=integration_repo,
                 integration_registry=integration_registry,

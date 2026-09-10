@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ConfigProvider } from '@niuulabs/plugin-sdk';
 import type { ReactNode } from 'react';
@@ -573,18 +573,21 @@ describe('SettingsPage', () => {
     expect(screen.queryByText('Create a new credential')).toBeNull();
   });
 
-  it('starts a user-scoped Codex device login from shared Integrations', async () => {
+  it.each(['codex', 'claude-code'])('connects %s through shared Integrations', async (slug) => {
+    const isClaude = slug === 'claude-code';
+    const label = isClaude ? 'Claude Code' : 'Codex';
     routerMocks.params = { providerId: 'integrations', sectionId: 'connections' };
     const challenge = {
       id: 'enrollment-1',
       connectionId: 'codex-connection-1',
-      providerSlug: 'codex',
+      providerSlug: slug,
       credentialName: 'codex-credentials',
       state: 'awaiting_user',
       verificationUri: 'https://auth.openai.com/codex/device',
       userCode: 'ABCD-EFGH',
       expiresAt: '2026-08-01T12:15:00Z',
       errorCode: '',
+      inputRequired: isClaude,
     };
     apiMocks.post.mockImplementation(async (path: string) => {
       if (path === '/api/v1/integrations/enrollments') return challenge;
@@ -616,6 +619,7 @@ describe('SettingsPage', () => {
                   enrollmentStartPath: '/api/v1/integrations/enrollments',
                   enrollmentStatusPath: '/api/v1/integrations/enrollments/{id}',
                   enrollmentCancelPath: '/api/v1/integrations/enrollments/{id}',
+                  enrollmentCodePath: '/api/v1/integrations/enrollments/{id}/code',
                 },
               ],
             },
@@ -627,7 +631,7 @@ describe('SettingsPage', () => {
         return [
           {
             id: 'codex-connection-1',
-            slug: 'codex',
+            slug,
             integrationType: 'ai_provider',
             credentialName: 'codex-credentials',
             credentialStatus: 'auth_required',
@@ -638,15 +642,15 @@ describe('SettingsPage', () => {
       if (path === '/api/v1/integrations/catalog') {
         return [
           {
-            id: 'codex',
-            slug: 'codex',
-            name: 'OpenAI Codex (ChatGPT)',
+            id: slug,
+            slug,
+            name: isClaude ? 'Claude Code (subscription)' : 'OpenAI Codex (ChatGPT)',
             integration_type: 'ai_provider',
-            auth_type: 'device_code',
+            auth_type: isClaude ? 'browser_login' : 'device_code',
             credential_schema: {},
             config_schema: {},
             credential_enrollment: {
-              method: 'codex_device',
+              method: isClaude ? 'claude_setup' : 'codex_device',
               credential_field: 'auth.json',
               default_credential_name: 'codex-credentials',
             },
@@ -659,16 +663,30 @@ describe('SettingsPage', () => {
 
     wrap(<SettingsPage />);
 
-    const reconnect = await screen.findByRole('button', { name: 'Reconnect Codex' });
+    const reconnect = await screen.findByRole('button', { name: `Reconnect ${label}` });
     expect(screen.getByText('Reconnect required')).toBeTruthy();
     fireEvent.click(reconnect);
 
-    expect(await screen.findByText('ABCD-EFGH')).toBeTruthy();
+    if (isClaude) {
+      fireEvent.change(await screen.findByLabelText('Authorization code'), {
+        target: { value: 'test-browser-code' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Complete sign-in' }));
+      await waitFor(() =>
+        expect(apiMocks.post).toHaveBeenCalledWith(
+          '/api/v1/integrations/enrollments/enrollment-1/code',
+          { code: 'test-browser-code' },
+        ),
+      );
+      expect(await screen.findByText('Completing sign-in…')).toBeTruthy();
+    } else {
+      expect(await screen.findByText('ABCD-EFGH')).toBeTruthy();
+    }
     expect(screen.getByRole('link', { name: 'the provider login page' }).getAttribute('href')).toBe(
       challenge.verificationUri,
     );
     expect(apiMocks.post).toHaveBeenCalledWith('/api/v1/integrations/enrollments', {
-      slug: 'codex',
+      slug,
       credential_name: 'codex-credentials',
       connection_id: 'codex-connection-1',
     });

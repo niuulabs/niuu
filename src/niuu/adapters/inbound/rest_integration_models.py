@@ -37,6 +37,7 @@ class IntegrationResponse(BaseModel):
         default=None,
         description="ISO 8601 timestamp of the latest credential state transition",
     )
+    credential_expires_at: str | None = None
 
     @model_serializer(mode="wrap")
     def _serialize_with_camel_case_aliases(self, handler):
@@ -49,6 +50,7 @@ class IntegrationResponse(BaseModel):
         data["credentialStatus"] = data["credential_status"]
         data["credentialErrorCode"] = data["credential_error_code"]
         data["credentialStatusUpdatedAt"] = data["credential_status_updated_at"]
+        data["credentialExpiresAt"] = data["credential_expires_at"]
         return data
 
     @classmethod
@@ -59,6 +61,7 @@ class IntegrationResponse(BaseModel):
         credential_status: str = "unknown",
         credential_error_code: str | None = None,
         credential_status_updated_at: str | None = None,
+        credential_expires_at: str | None = None,
     ) -> IntegrationResponse:
         """Create response from domain model."""
         return cls(
@@ -75,6 +78,7 @@ class IntegrationResponse(BaseModel):
             credential_status=credential_status,
             credential_error_code=credential_error_code,
             credential_status_updated_at=credential_status_updated_at,
+            credential_expires_at=credential_expires_at,
         )
 
 

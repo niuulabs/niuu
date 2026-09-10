@@ -75,6 +75,7 @@ class SettingsIntegrationsResourceSchema(SettingsResourceSchemaBase):
     enrollment_start_path: str = Field(serialization_alias="enrollmentStartPath")
     enrollment_status_path: str = Field(serialization_alias="enrollmentStatusPath")
     enrollment_cancel_path: str = Field(serialization_alias="enrollmentCancelPath")
+    enrollment_code_path: str = Field(default="", serialization_alias="enrollmentCodePath")
 
 
 SettingsResourceSchema = Annotated[

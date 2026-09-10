@@ -341,7 +341,8 @@ codexCredentialBroker:
   secretKwargs: []
 
 # Trusted login runner is independent of the selected session pod manager.
-# Clusters with OpenShell configure OpenShellCredentialEnrollmentRunner here.
+# Configure KubernetesLoginRunner with kwargs.image (a pinned Skuld image) and
+# kwargs.namespace (a dedicated login namespace) for Codex and Claude sign-in.
 credentialEnrollmentRunner:
   adapter: "volundr.adapters.outbound.credential_enrollment_runner.UnsupportedCredentialEnrollmentRunner"
   kwargs: {}
@@ -1830,6 +1831,7 @@ sidecars: []
 # _default_integration_definitions() is used (GitHub, GitLab, Linear,
 # Anthropic, OpenAI). Override here only to customise the catalog.
 integrations: {}
+  # databaseName: niuu_shared  # Same records used by the shared Connections API.
   # definitions:
     # - slug: linear
     #   name: Linear

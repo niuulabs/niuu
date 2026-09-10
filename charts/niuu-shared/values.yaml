@@ -132,9 +132,9 @@ credentialStore:
   secretKwargs: []
 
 # Trusted login runner for interactive credential enrollment (e.g. the Codex
-# ChatGPT device login). Clusters with OpenShell configure
-# OpenShellCredentialEnrollmentRunner here; otherwise the integrations API
-# reports interactive enrollment as unavailable.
+# ChatGPT device login and Claude setup-token). Configure KubernetesLoginRunner
+# with kwargs.image (a pinned Skuld image) and kwargs.namespace (niuu-logins).
+# The chart creates the dedicated namespace and scoped permissions automatically.
 credentialEnrollmentRunner:
   adapter: "volundr.adapters.outbound.credential_enrollment_runner.UnsupportedCredentialEnrollmentRunner"
   kwargs: {}

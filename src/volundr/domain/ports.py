@@ -256,6 +256,10 @@ class CredentialEnrollmentRunnerPort(ABC):
     async def cancel_enrollment(self, enrollment: CredentialEnrollment) -> None:
         """Destroy any runtime resources belonging to the enrollment."""
 
+    async def submit_code(self, enrollment: CredentialEnrollment, code: str) -> None:
+        """Pass a browser authorization code to a login that requires one."""
+        raise ValueError("This login does not accept a browser authorization code")
+
 
 class ExternalSessionProvider(ABC):
     """Port for discovering CLI sessions that live outside Volundr.

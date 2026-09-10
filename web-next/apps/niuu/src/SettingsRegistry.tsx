@@ -64,6 +64,7 @@ export interface RemoteSettingsIntegrationsResource {
   enrollmentStartPath?: string;
   enrollmentStatusPath?: string;
   enrollmentCancelPath?: string;
+  enrollmentCodePath?: string;
 }
 
 export type RemoteSettingsResource =

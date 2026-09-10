@@ -946,6 +946,10 @@ class SessionService:
                     *(self._integration_repo.get_connection(cid) for cid in integration_ids),
                 )
                 resolved_connections = [c for c in fetched if c is not None and c.enabled]
+                if principal and any(
+                    connection.owner_id != principal.user_id for connection in resolved_connections
+                ):
+                    raise ValueError("Integration connection not found")
         elif principal and self._integration_repo:
             all_connections = await self._integration_repo.list_connections(
                 principal.user_id,

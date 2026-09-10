@@ -181,12 +181,14 @@ class CredentialEnrollmentService:
                     {
                         "source": "credential_enrollment",
                         "integration": enrollment.provider_slug,
-                        "auth_type": "device_code",
+                        "auth_type": definition.auth_type,
                         "auth_state": "active",
                         "auth_state_updated_at": now.isoformat(),
                     }
                 )
                 metadata.pop("auth_error_code", None)
+                if enrollment.method == "claude_setup":
+                    metadata["auth_expires_at"] = poll.credential_data["expires_at"]
                 await self._credential_store.store(
                     "user",
                     enrollment.owner_id,
@@ -217,6 +219,16 @@ class CredentialEnrollmentService:
             )
             return await self._repository.save(terminal)
 
+        if poll.state == CredentialEnrollmentState.AWAITING_USER:
+            return await self._repository.save(
+                replace(
+                    enrollment,
+                    state=poll.state,
+                    verification_uri=poll.verification_uri or enrollment.verification_uri,
+                    user_code=poll.user_code or enrollment.user_code,
+                    updated_at=now,
+                )
+            )
         return enrollment
 
     async def cancel(self, enrollment_id: UUID, principal: Principal) -> CredentialEnrollment:
@@ -237,6 +249,21 @@ class CredentialEnrollmentService:
                     state="auth_required",
                     error_code="enrollment_cancelled",
                 )
+        return enrollment
+
+    async def submit_code(
+        self, enrollment_id: UUID, principal: Principal, code: str
+    ) -> CredentialEnrollment:
+        enrollment = await self.get(enrollment_id, principal)
+        if (
+            enrollment.method != "claude_setup"
+            or enrollment.state != CredentialEnrollmentState.AWAITING_USER
+        ):
+            raise CredentialEnrollmentError("This login is not waiting for an authorization code")
+        # A terminal control sequence must never reach the provider's CLI.
+        if not code or len(code) > 4096 or any(ord(char) < 33 or ord(char) > 126 for char in code):
+            raise CredentialEnrollmentError("Invalid authorization code")
+        await self._runner.submit_code(enrollment, code)
         return enrollment
 
     async def expire_stale(self, now: datetime | None = None) -> int:
@@ -327,11 +354,12 @@ class CredentialEnrollmentService:
             connection.credential_name,
         )
         metadata = dict(stored.metadata) if stored is not None else {}
+        definition = self._integration_registry.get_definition(connection.slug)
         metadata.update(
             {
                 "source": "credential_enrollment",
                 "integration": connection.slug,
-                "auth_type": "device_code",
+                "auth_type": definition.auth_type if definition is not None else "device_code",
                 "auth_state": state,
                 "auth_state_updated_at": datetime.now(UTC).isoformat(),
             }
