@@ -195,6 +195,7 @@ export const EDGE3D = {
   DIMMED_ALPHA: 0.07,
   /** Travelling motes on edges that report a measured rate. */
   FLOW_SPEED: 0.16,
+  /** Screen pixels: traffic stays legible even when viewing the whole estate. */
   FLOW_SIZE: 9,
   FLOW_ALPHA: 0.95,
   /** Calls a minute at which an edge carries its full complement of motes. */

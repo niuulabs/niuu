@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { Line, LineLoop, LineSegments, Points, Sprite, type Object3D } from 'three';
+import { Line, LineLoop, LineSegments, Points, PointsMaterial, Sprite, type Object3D } from 'three';
 import type { Topology, TopologyEdge, TopologyNode } from '../../domain';
 import { computeLayout } from '../TopologyCanvas/layoutEngine';
 import { buildTypeStyles, nodeStyle, type NodeStyle } from '../TopologyCanvas/nodeStyle';
@@ -14,7 +14,7 @@ import {
   type Scene3DFrame,
 } from './observatoryScene';
 import { defaultOrbitCamera } from './orbitCamera';
-import { MESH_PULSE3D, NODE3D, STARS3D } from './scene3dConfig';
+import { EDGE3D, MESH_PULSE3D, NODE3D, STARS3D } from './scene3dConfig';
 import { installCanvas2DMock } from './test-helpers';
 
 const originalGetContext = HTMLCanvasElement.prototype.getContext;
@@ -422,6 +422,13 @@ describe('createObservatoryScene', () => {
     const flow = motes.find(
       (candidate) => candidate.geometry.getAttribute('position').count < STARS3D.COUNT,
     )!;
+
+    // World-sized points disappear at estate viewing distances. Like the 2D
+    // marks, traffic must keep its screen size as the operator zooms out.
+    expect(flow.visible).toBe(true);
+    expect(flow.material).toBeInstanceOf(PointsMaterial);
+    expect((flow.material as PointsMaterial).sizeAttenuation).toBe(false);
+    expect((flow.material as PointsMaterial).size).toBe(EDGE3D.FLOW_SIZE);
 
     scene.update(frame({ now: 0 }));
     const start = Array.from(flow.geometry.getAttribute('position').array);
