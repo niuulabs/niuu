@@ -550,6 +550,8 @@ jobs:
 
       - name: Push Helm charts to OCI registry
         run: |
+          helm push .helm-packages/mimir-*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/gbrain-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/agent-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/bifrost-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/ravn-*.tgz ${{ env.CHART_REPO }}
