@@ -1152,21 +1152,15 @@ class MimirRouter:
         if cached is not None and cached[0] == cache_key:
             return cached[1]
 
-        if entry.adapter:
-            from niuu.utils import import_class, resolve_secret_kwargs
+        from mimir.connections import resolve_mimir_connection
 
-            cls = import_class(entry.adapter)
-            if not isinstance(cls, type) or not issubclass(cls, MimirPort):
-                raise TypeError(f"Registry adapter {entry.adapter} must implement MimirPort")
-            port = cls(**resolve_secret_kwargs(entry.kwargs, entry.secret_kwargs_env))
-        elif entry.kind == "remote":
-            from ravn.adapters.mimir.http import HttpMimirAdapter
-
-            port = HttpMimirAdapter(base_url=entry.url)
-        else:
-            from mimir.adapters.markdown import MarkdownMimirAdapter
-
-            port = MarkdownMimirAdapter(root=entry.path)
+        port = resolve_mimir_connection(
+            adapter=entry.adapter,
+            kwargs=entry.kwargs,
+            secret_kwargs_env=entry.secret_kwargs_env,
+            url=entry.url if entry.kind == "remote" else "",
+            path=entry.path if entry.kind == "local" else "",
+        )
         self._registry_local_ports[mount_name] = (cache_key, port)
         return port
 

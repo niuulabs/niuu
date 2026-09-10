@@ -852,35 +852,21 @@ def _build_mimir(settings: Settings) -> Any:
         return None
 
     if settings.mimir.instances:
-        from mimir.adapters.markdown import MarkdownMimirAdapter
+        from mimir.connections import resolve_mimir_connection
         from ravn.adapters.mimir.composite import CompositeMimirAdapter
-        from ravn.adapters.mimir.http import HttpMimirAdapter
         from ravn.domain.mimir import MimirMount, WriteRouting
 
         mounts: list[Any] = []
         for inst in settings.mimir.instances:
-            if inst.adapter:
-                cls = _import_class(inst.adapter)
-                kwargs = _inject_secrets(dict(inst.kwargs), inst.secret_kwargs_env)
-                if issubclass(cls, HttpMimirAdapter) and inst.auth is not None:
-                    kwargs["auth"] = _build_mimir_auth(settings, inst.auth)
-                port: Any = cls(**kwargs)
-            elif inst.path:
-                port = MarkdownMimirAdapter(root=inst.path)
-            elif inst.url:
-                auth = None
-                if inst.auth is not None:
-                    auth = _build_mimir_auth(settings, inst.auth)
-                port = HttpMimirAdapter(
-                    base_url=inst.url, auth=auth, environment_id=settings.environment.id
-                )
-            else:
-                # Skipping left the mount silently absent: reads returned fewer
-                # results and nothing said a configured instance was missing.
-                raise ValueError(
-                    f"Mímir instance {inst.name!r} has no adapter, path or url. "
-                    f"Give it one, or remove it from mimir.instances."
-                )
+            port = resolve_mimir_connection(
+                adapter=inst.adapter,
+                kwargs=inst.kwargs,
+                secret_kwargs_env=inst.secret_kwargs_env,
+                path=inst.path,
+                url=inst.url,
+                environment_id=settings.environment.id,
+                auth=_build_mimir_auth(settings, inst.auth) if inst.auth is not None else None,
+            )
             mounts.append(
                 MimirMount(
                     name=inst.name,

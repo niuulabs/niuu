@@ -55,10 +55,10 @@ from ting.api.a2a_card import _endpoint_url as _card_endpoint_url
 from ting.api.a2a_card import build_agent_card
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.research import (
+    _campaign_knowledge,
     _campaign_status_from_session,
     _emit_campaign_event,
     _initial_stage_state,
-    _resolve_campaign_mimir_port,
     resolve_workflow_campaign_repo,
 )
 from ting.api.workflows import (
@@ -779,7 +779,7 @@ class WorkflowTaskHandler(RequestHandler):
         research campaigns retain their campaign-prefix discovery behavior.
         """
         settings = self._request.app.state.settings
-        adapter = _resolve_campaign_mimir_port(campaign, settings)
+        adapter = _campaign_knowledge(campaign, settings, bearer_token=self._bearer_token)
         if adapter is None:
             return
         loaded: list[Any] = []

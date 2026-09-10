@@ -13,13 +13,10 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
-from mimir.adapters.markdown import MarkdownMimirAdapter
+from mimir.connections import resolve_mimir_workload
 from niuu.domain.mimir import MimirPage, MimirPageMeta
 from niuu.domain.models import Principal
 from niuu.ports.mimir import MimirPort
-from niuu.utils import import_class, resolve_secret_kwargs
-from ravn.adapters.mimir.http import HttpMimirAdapter
-from ravn.domain.mimir import MimirAuth
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.workflows import (
@@ -32,10 +29,6 @@ from ting.domain.models import (
     WorkflowCampaign,
     WorkflowCampaignStatus,
     WorkflowDefinition,
-)
-from ting.domain.services.dispatch_service import (
-    _normalize_mimir_workload_config,
-    _resolve_mimir_registry_refs,
 )
 from ting.domain.utils import _session_name, _slugify
 from ting.domain.workflow_snapshot import (
@@ -233,6 +226,7 @@ def create_research_router() -> APIRouter:
         summaries = await _campaign_artifact_summaries(
             refreshed,
             settings=request.app.state.settings,
+            bearer_token=extract_bearer_token(request),
         )
         return [
             _to_campaign_response(campaign, artifact_summary=summary)
@@ -344,6 +338,7 @@ def create_research_router() -> APIRouter:
             artifacts, canonical = await _load_campaign_artifacts(
                 refreshed,
                 settings=request.app.state.settings,
+                bearer_token=extract_bearer_token(request),
             )
         except _CampaignArtifactsUnavailableError:
             artifacts, canonical = [], {}
@@ -474,6 +469,7 @@ def create_research_router() -> APIRouter:
             artifacts, _canonical = await _load_campaign_artifacts(
                 campaign,
                 settings=request.app.state.settings,
+                bearer_token=extract_bearer_token(request),
             )
         except _CampaignArtifactsUnavailableError as exc:
             # This route's whole payload IS the artifact list, so an empty 200
@@ -498,7 +494,9 @@ def create_research_router() -> APIRouter:
             raise HTTPException(status_code=404, detail="Campaign not found")
         if not _campaign_owns_path(campaign, path):
             raise HTTPException(status_code=404, detail="Artifact not found")
-        adapter = _resolve_campaign_mimir_port(campaign, request.app.state.settings)
+        adapter = _campaign_knowledge(
+            campaign, request.app.state.settings, bearer_token=extract_bearer_token(request)
+        )
         if adapter is None:
             raise HTTPException(
                 status_code=503,
@@ -808,8 +806,9 @@ async def _load_campaign_artifacts(
     campaign: WorkflowCampaign,
     *,
     settings: Any,
+    bearer_token: str | None = None,
 ) -> tuple[list[CampaignArtifactResponse], dict[str, str]]:
-    adapter = _resolve_campaign_mimir_port(campaign, settings)
+    adapter = _campaign_knowledge(campaign, settings, bearer_token=bearer_token)
     if adapter is None:
         return [], {}
 
@@ -874,6 +873,7 @@ async def _campaign_artifact_summaries(
     campaigns: list[WorkflowCampaign],
     *,
     settings: Any,
+    bearer_token: str | None = None,
 ) -> list[CampaignArtifactSummaryResponse]:
     """Summarise a whole list of campaigns in three reads per mount.
 
@@ -894,11 +894,9 @@ async def _campaign_artifact_summaries(
     # Campaigns can resolve to different mounts, so group by the adapter each
     # one lands on and read each mount once.
     adapters: list[tuple[MimirPort, list[int]]] = []
-    unmounted: set[int] = set()
     for index, campaign in enumerate(campaigns):
-        adapter = _resolve_campaign_mimir_port(campaign, settings)
+        adapter = _campaign_knowledge(campaign, settings, bearer_token=bearer_token)
         if adapter is None:
-            unmounted.add(index)
             continue
         for known_adapter, indexes in adapters:
             if known_adapter is adapter or _same_mimir_mount(known_adapter, adapter):
@@ -933,7 +931,9 @@ def _same_mimir_mount(left: MimirPort, right: MimirPort) -> bool:
     left_url = getattr(left, "_base_url", None)
     right_url = getattr(right, "_base_url", None)
     if left_url is not None or right_url is not None:
-        return left_url == right_url
+        return left_url == right_url and getattr(left, "_mount", None) == getattr(
+            right, "_mount", None
+        )
     left_root = left.filesystem_root()
     right_root = right.filesystem_root()
     return left_root is not None and left_root == right_root
@@ -1149,59 +1149,15 @@ def _active_stage_id(stage_state: list[CampaignStageState]) -> str | None:
     return stage_state[-1].stage_id if stage_state else None
 
 
-def _resolve_campaign_mimir_port(campaign: WorkflowCampaign, settings: Any) -> MimirPort | None:
-    normalized = _resolve_mimir_registry_refs(
-        _normalize_mimir_workload_config(
-            workflow_mimir_from_snapshot(campaign.workflow_snapshot),
-            hosted_url=settings.dispatch.flock.mimir_hosted_url,
-        ),
+def _campaign_knowledge(
+    campaign: WorkflowCampaign, settings: Any, *, bearer_token: str | None = None
+) -> MimirPort | None:
+    return resolve_mimir_workload(
+        workflow_mimir_from_snapshot(campaign.workflow_snapshot),
+        hosted_url=settings.dispatch.flock.mimir_hosted_url,
         registry_path=settings.dispatch.flock.mimir_registry_path,
+        bearer_token=bearer_token,
     )
-    default_mounts = list(normalized.get("default_mounts") or [])
-    registry_refs = list(normalized.get("registry_refs") or [])
-    ephemeral_locals = list(normalized.get("ephemeral_locals") or [])
-
-    for collection in (ephemeral_locals, registry_refs):
-        for ref in collection:
-            if not isinstance(ref, dict):
-                continue
-            mount_name = str(ref.get("mount_name") or "")
-            if default_mounts and mount_name not in default_mounts:
-                continue
-            url = str(ref.get("url") or "").strip()
-            path = str(ref.get("path") or "").strip()
-            if url:
-                return HttpMimirAdapter(base_url=url, auth=_mimir_http_auth(settings))
-            if path:
-                return MarkdownMimirAdapter(root=path)
-
-    hosted_url = str(settings.dispatch.flock.mimir_hosted_url or "").strip()
-    if hosted_url:
-        return HttpMimirAdapter(base_url=hosted_url, auth=_mimir_http_auth(settings))
-    return None
-
-
-def _mimir_http_auth(settings: Any) -> MimirAuth | None:
-    config = getattr(getattr(settings, "volundr", None), "auth", None)
-    if config is None:
-        return None
-
-    try:
-        cls = import_class(config.adapter)
-        kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
-        adapter = cls(**kwargs)
-        header = str(adapter.headers().get("Authorization") or "")
-    except Exception as exc:
-        logger.warning("Unable to build Mimir HTTP auth from Ting outbound auth: %s", exc)
-        return None
-
-    prefix = "Bearer "
-    if not header.startswith(prefix):
-        return None
-    token = header[len(prefix) :].strip()
-    if not token:
-        return None
-    return MimirAuth(type="bearer", token=token)
 
 
 def _campaign_owns_path(campaign: WorkflowCampaign, path: str) -> bool:

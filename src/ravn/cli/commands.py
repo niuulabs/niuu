@@ -2123,17 +2123,17 @@ def _build_single_mimir(settings: Settings, name: str) -> Any:
     for inst in settings.mimir.instances:
         if inst.name != name:
             continue
-        if inst.path:
-            from mimir.adapters.markdown import MarkdownMimirAdapter
+        from mimir.connections import resolve_mimir_connection
 
-            return MarkdownMimirAdapter(root=inst.path)
-        if inst.url:
-            from ravn.adapters.mimir.http import HttpMimirAdapter
-
-            auth = None
-            if inst.auth is not None:
-                auth = _build_mimir_auth(settings, inst.auth)
-            return HttpMimirAdapter(base_url=inst.url, auth=auth)
+        return resolve_mimir_connection(
+            adapter=inst.adapter,
+            kwargs=inst.kwargs,
+            secret_kwargs_env=inst.secret_kwargs_env,
+            path=inst.path,
+            url=inst.url,
+            environment_id=settings.environment.id,
+            auth=_build_mimir_auth(settings, inst.auth) if inst.auth is not None else None,
+        )
 
     # No instances configured — accept "local" as alias for the single path adapter
     if not settings.mimir.instances and name == "local":

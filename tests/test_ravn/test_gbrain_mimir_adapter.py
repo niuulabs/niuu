@@ -73,7 +73,7 @@ class TestRetrieval:
 
         pages = await adapter.search("retrieval fusion")
 
-        assert [p.meta.path for p in pages] == ["concepts/rrf", "ops/pods"]
+        assert [p.meta.path for p in pages] == ["concepts/rrf.md", "ops/pods.md"]
         assert pages[0].content == "body of concepts/rrf"
         await adapter.close()
 
@@ -138,7 +138,7 @@ class TestRetrieval:
         result = await adapter.query("why were pods failing?")
 
         assert result.answer == "Pods were failing readiness after the 1.32 upgrade."
-        assert [p.meta.path for p in result.sources] == ["ops/pods"]
+        assert [p.meta.path for p in result.sources] == ["ops/pods.md"]
         await adapter.close()
 
     @respx.mock
@@ -239,8 +239,8 @@ class TestRetrieval:
         result = await adapter.query("who caused the delay?")
 
         assert [p.meta.path for p in result.sources] == [
-            "entities/nordvolt",
-            "projects/helios",
+            "entities/nordvolt.md",
+            "projects/helios.md",
         ]
         await adapter.close()
 
@@ -424,7 +424,7 @@ class TestTransportQuirks:
 
         pages = await adapter.search("x")
 
-        assert [p.meta.path for p in pages] == ["a/b"]
+        assert [p.meta.path for p in pages] == ["a/b.md"]
         await adapter.close()
 
     @respx.mock
@@ -439,7 +439,7 @@ class TestTransportQuirks:
 
         pages = await adapter.search("x")
 
-        assert [p.meta.path for p in pages] == ["c/d"]
+        assert [p.meta.path for p in pages] == ["c/d.md"]
         await adapter.close()
 
     @respx.mock
@@ -728,4 +728,18 @@ class TestRawSources:
         adapter = _adapter()
         with pytest.raises(RuntimeError, match="no source record"):
             await adapter.read_source("src_raw")
+        await adapter.close()
+
+
+@respx.mock
+async def test_canonical_paths_and_directory_prefixes_are_consistent():
+    records = [_page("research/campaigns/run/final"), _page("research/campaigns/run-other/final")]
+    respx.post(_MCP).mock(return_value=httpx.Response(200, json=_tool_result(structured=records)))
+    adapter = _adapter()
+    try:
+        pages = await adapter.list_pages(prefix="research/campaigns/run/")
+        assert [page.path for page in pages] == ["research/campaigns/run/final.md"]
+        page = await adapter.get_page(pages[0].path)
+        assert page.meta.path == pages[0].path
+    finally:
         await adapter.close()

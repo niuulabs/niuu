@@ -7,11 +7,11 @@ import pytest
 import respx
 import yaml
 
+from mimir.connections import resolve_mimir_registry_refs
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
 from ravn.adapters.tools.mimir_tools import MimirReadTool, MimirSearchTool, MimirWriteTool
 from ravn.cli.runtime_builders import _build_mimir
 from ravn.config import Settings
-from ting.domain.services.dispatch_service import _resolve_mimir_registry_refs
 from ting.domain.workflow_snapshot import workflow_mimir_from_snapshot
 from volundr.adapters.outbound.contributors.ravn_flock import _build_ravn_config
 
@@ -40,7 +40,7 @@ async def test_gbrain_well_reaches_runtime_with_tools_and_guidance(tmp_path):
             }
         ]
     }
-    payload = _resolve_mimir_registry_refs(
+    payload = resolve_mimir_registry_refs(
         workflow_mimir_from_snapshot(snapshot), registry_path=str(registry_path)
     )
     config_text = _build_ravn_config(
@@ -115,6 +115,140 @@ def test_disabled_registry_well_fails_before_dispatch(tmp_path):
     path = tmp_path / "registry.json"
     entry = MimirRegistryStore(path).save_entry(MimirRegistryEntry(name="brain", enabled=False))
     with pytest.raises(ValueError, match="disabled"):
-        _resolve_mimir_registry_refs(
+        resolve_mimir_registry_refs(
             {"registry_refs": [{"registry_entry_id": entry.id}]}, registry_path=str(path)
         )
+
+
+@pytest.mark.parametrize("backend", ["mimir", "gbrain"])
+@respx.mock
+async def test_research_reads_the_same_gateway_mount_as_the_runtime(backend, tmp_path, monkeypatch):
+    """Write through the runtime, read through research, resolve only in Mímir."""
+
+    from fastapi import FastAPI
+
+    from mimir.adapters.markdown import MarkdownMimirAdapter
+    from mimir.router import MimirRouter
+    from ravn.adapters.mimir.composite import CompositeMimirAdapter
+    from ravn.adapters.mimir.gbrain import GBrainMimirAdapter
+    from ravn.adapters.mimir.http import HttpMimirAdapter
+    from ravn.domain.mimir import MimirMount
+    from tests.test_ting_research_mimir_auth import _campaign, _settings
+    from ting.api.research import _campaign_artifact_summaries, _load_campaign_artifacts
+
+    records = {}
+
+    def brain_reply(request):
+        params = json.loads(request.content)["params"]
+        args = params["arguments"]
+        if params["name"] == "put_page":
+            records[args["slug"]] = {"slug": args["slug"], "content": args["content"]}
+            result = {}
+        elif params["name"] == "list_pages":
+            # Native listings contain slugs, not Mímir filenames or page bodies.
+            result = {"structuredContent": [{"slug": slug} for slug in records]}
+        else:
+            assert params["name"] == "get_page"
+            result = {
+                "structuredContent": [records[args["slug"]]] if args["slug"] in records else []
+            }
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": result})
+
+    respx.post("https://brain.test/mcp").mock(side_effect=brain_reply)
+    well = (
+        GBrainMimirAdapter("https://brain.test/mcp", "test-token")
+        if backend == "gbrain"
+        else MarkdownMimirAdapter(root=tmp_path / "well")
+    )
+    gateway = FastAPI()
+    gateway.include_router(
+        MimirRouter(
+            CompositeMimirAdapter(
+                mounts=[
+                    MimirMount(
+                        name="shared",
+                        role="shared",
+                        port=MarkdownMimirAdapter(root=tmp_path / "empty"),
+                    ),
+                    MimirMount(name="research-well", role="shared", port=well),
+                ]
+            )
+        ).router,
+        prefix="/api/v1/mimir",
+    )
+    requests = []
+
+    async def gateway_client(adapter):
+        if adapter._client is None:
+
+            async def observe(request):
+                requests.append(request)
+                assert request.headers["authorization"] == "Bearer caller-token"
+                assert request.url.params["mount"] == "research-well"
+
+            adapter._client = httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=gateway),
+                base_url=adapter._base_url,
+                event_hooks={"request": [observe]},
+                headers={"x-auth-user-id": "owner", "x-auth-tenant": "tenant"},
+            )
+        return adapter._client
+
+    monkeypatch.setattr(HttpMimirAdapter, "_get_client", gateway_client)
+    connection = {
+        "adapter": "ravn.adapters.mimir.http.HttpMimirAdapter",
+        "kwargs": {"base_url": "https://knowledge.test/api/v1", "mount": "research-well"},
+    }
+    campaign = _campaign()
+    campaign.workflow_snapshot["mimir"] = {
+        "default_mounts": ["research-well"],
+        "registry_refs": [{"mount_name": "research-well", **connection}],
+    }
+    runtime = _build_mimir(
+        Settings.model_validate(
+            {
+                "mimir": {
+                    "enabled": True,
+                    "instances": [
+                        {
+                            "name": "research-well",
+                            **connection,
+                            "auth": {"type": "bearer", "token": "caller-token"},
+                        }
+                    ],
+                    "write_routing": {"default": ["research-well"]},
+                }
+            }
+        )
+    )
+    prefix = f"research/campaigns/{campaign.slug}/"
+    bodies = {
+        prefix + "final.md": "# Verified runbook\nEvidence exists.",
+        prefix + "manifest.md": f"Published: {prefix}final.md",
+        f"learnings/research/{campaign.slug}.md": "# Learning",
+        f"followups/research/{campaign.slug}.md": "# Follow-up",
+    }
+    for path, body in bodies.items():
+        await runtime.upsert_page(path, body)
+    settings = _settings()
+    # A different default store must never replace the selected mount.
+    settings.dispatch.flock.mimir_hosted_url = "https://wrong-store.test/api/v1"
+    artifacts, canonical = await _load_campaign_artifacts(
+        campaign, settings=settings, bearer_token="caller-token"
+    )
+    assert {artifact.path for artifact in artifacts} == set(bodies)
+    assert canonical["final"] == prefix + "final.md"
+    assert next(a for a in artifacts if a.kind == "final").publish_state == "published"
+    summaries = await _campaign_artifact_summaries(
+        [campaign], settings=settings, bearer_token="caller-token"
+    )
+    assert summaries[0].artifact_count == 4
+    assert summaries[0].published
+    assert summaries[0].learning_count == summaries[0].follow_up_count == 1
+    page = await runtime.get_page(canonical["final"])
+    assert page.content == bodies[canonical["final"]]
+    assert page.meta.path == canonical["final"]
+    assert requests
+    await runtime._mounts[0].port.aclose()
+    if backend == "gbrain":
+        await well.close()

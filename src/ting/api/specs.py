@@ -23,12 +23,12 @@ from ting.api.research import (
     ResearchCampaignDetailResponse,
     ResearchCampaignResponse,
     _active_stage_id,
+    _campaign_knowledge,
     _campaign_status_from_session,
     _emit_campaign_event,
     _initial_stage_state,
     _normalize_campaign_slug,
     _refresh_campaign_runtime,
-    _resolve_campaign_mimir_port,
     _resolve_campaign_volundr_adapter,
     _title_from_path,
     _to_campaign_detail_response,
@@ -233,6 +233,7 @@ def create_specs_router() -> APIRouter:
         artifacts, canonical = await _load_spec_artifacts(
             refreshed,
             settings=request.app.state.settings,
+            bearer_token=extract_bearer_token(request),
         )
         stage_state = _derive_spec_stage_state(
             refreshed.workflow_snapshot,
@@ -280,6 +281,7 @@ def create_specs_router() -> APIRouter:
         artifacts, _canonical = await _load_spec_artifacts(
             campaign,
             settings=request.app.state.settings,
+            bearer_token=extract_bearer_token(request),
         )
         return artifacts
 
@@ -294,7 +296,9 @@ def create_specs_router() -> APIRouter:
         campaign = await _get_spec_campaign(repo, slug, principal)
         if not _spec_campaign_owns_path(campaign.slug, path):
             raise HTTPException(status_code=404, detail="Artifact not found")
-        adapter = _resolve_campaign_mimir_port(campaign, request.app.state.settings)
+        adapter = _campaign_knowledge(
+            campaign, request.app.state.settings, bearer_token=extract_bearer_token(request)
+        )
         if adapter is None:
             raise HTTPException(
                 status_code=503,
@@ -617,8 +621,9 @@ async def _load_spec_artifacts(
     campaign: WorkflowCampaign,
     *,
     settings: Any,
+    bearer_token: str | None = None,
 ) -> tuple[list[CampaignArtifactResponse], dict[str, str]]:
-    adapter = _resolve_campaign_mimir_port(campaign, settings)
+    adapter = _campaign_knowledge(campaign, settings, bearer_token=bearer_token)
     if adapter is None:
         return [], {}
 

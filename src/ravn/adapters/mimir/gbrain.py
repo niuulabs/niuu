@@ -258,7 +258,12 @@ class GBrainMimirAdapter(MimirPort):
         return [
             page
             for page in pages
-            if (not prefix or page.path.startswith(_slug(prefix)))
+            if (
+                not prefix
+                or _slug(page.path).startswith(
+                    _slug(prefix) + ("/" if prefix.endswith("/") else "")
+                )
+            )
             and (not category or page.category == category)
         ]
 
@@ -344,7 +349,7 @@ class GBrainMimirAdapter(MimirPort):
         for page in pages:
             if not page.path.startswith("sources/src_"):
                 continue
-            source_id = page.path.removeprefix("sources/")
+            source_id = page.path.removeprefix("sources/").removesuffix(".md")
             if unprocessed_only and source_id in referenced:
                 continue
             source = await self.read_source(source_id)
@@ -534,6 +539,10 @@ def _page_from_record(record: dict[str, Any], *, default_path: str = "") -> Mimi
     # `think` citations key the page as `page_slug`; the retrieval tools use
     # `slug`. Reading only one of them silently produced empty-path sources.
     path = str(record.get("slug") or record.get("page_slug") or record.get("path") or default_path)
+    # The port exposes markdown paths, not the backend's extensionless slugs.
+    # Keep list/search/get consistent so callers can classify and re-read pages.
+    if path and not path.endswith(".md"):
+        path += ".md"
     content = str(record.get("content") or record.get("body") or "")
     updated_raw = record.get("updated_at") or record.get("updatedAt")
     try:
