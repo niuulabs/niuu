@@ -79,7 +79,9 @@ jobs:
           push: true
           tags: ${{ inputs.registry }}/${{ github.repository_owner }}/${{ matrix.container }}:${{ inputs.tag-prefix }}-${{ matrix.platform }}
           build-args: ${{ inputs.build-args }}
-          labels: ${{ inputs.labels }}
+          labels: |
+            ${{ inputs.labels }}
+            org.opencontainers.image.licenses=${{ matrix.container == 'gbrain' && 'MIT' || 'Apache-2.0' }}
           cache-from: type=gha,scope=${{ matrix.container }}-${{ matrix.platform }}
           cache-to: type=gha,mode=max,ignore-error=true,scope=${{ matrix.container }}-${{ matrix.platform }}
           platforms: linux/${{ matrix.platform }}

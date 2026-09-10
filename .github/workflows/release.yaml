@@ -82,7 +82,7 @@ jobs:
           labels: |
             org.opencontainers.image.title=${{ matrix.container }}
             org.opencontainers.image.description=${{ steps.meta.outputs.description }}
-            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.licenses=${{ matrix.container == 'gbrain' && 'MIT' || 'Apache-2.0' }}
             org.opencontainers.image.vendor=Niuu Labs
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.documentation=https://github.com/${{ github.repository }}
@@ -140,7 +140,7 @@ jobs:
           ANNOTATIONS=(
             --annotation "index:org.opencontainers.image.title=${{ matrix.container }}"
             --annotation "index:org.opencontainers.image.description=${{ steps.meta.outputs.description }}"
-            --annotation "index:org.opencontainers.image.licenses=Apache-2.0"
+            --annotation "index:org.opencontainers.image.licenses=${{ matrix.container == 'gbrain' && 'MIT' || 'Apache-2.0' }}"
             --annotation "index:org.opencontainers.image.vendor=Niuu Labs"
             --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}"
             --annotation "index:org.opencontainers.image.documentation=https://github.com/${{ github.repository }}"
