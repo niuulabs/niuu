@@ -151,9 +151,7 @@ async def test_exec_decodes_worker_status_without_stderr(runner):
         SimpleNamespace(data=b'\x01{"state":"pending"}'),
         SimpleNamespace(data=b'\x03{"status":"Success"}'),
     ]
-    core = SimpleNamespace(
-        connect_get_namespaced_pod_exec=AsyncMock(return_value=websocket)
-    )
+    core = SimpleNamespace(connect_get_namespaced_pod_exec=AsyncMock(return_value=websocket))
     with patch("kubernetes_asyncio.client.CoreV1Api", return_value=core):
         assert await runner._read("pod", ["read-status"]) == {"state": "pending"}
     assert core.connect_get_namespaced_pod_exec.call_args.kwargs["stderr"] is False
