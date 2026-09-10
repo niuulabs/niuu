@@ -29,7 +29,10 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
   const navigate = useNavigate();
 
   const { activeMount, mountName } = useActiveMount();
-  const setActiveMount = (m: string) => ctx.setTweak('activeMount', m);
+  const setActiveMount = (m: string) => {
+    ctx.setTweak('mimir.deployment', null);
+    ctx.setTweak('activeMount', m);
+  };
   const subnavCollapsed = Boolean(ctx.tweaks['mimir.subnavCollapsed']);
   const setSubnavCollapsed = (value: boolean) => ctx.setTweak('mimir.subnavCollapsed', value);
 
@@ -116,7 +119,7 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
                   className="mm-subnav-collapsed-item"
                   onClick={() => {
                     ctx.setTweak('mimir.selectedWardenId', ravn.ravnId);
-                    ctx.setTweak('activeMount', ravn.writeMount || ravn.mountNames[0] || 'all');
+                    setActiveMount(ravn.writeMount || ravn.mountNames[0] || 'all');
                     ctx.setTweak('mimir.registryView', 'Analytics');
                     navigate({ to: '/mimir/registry/analytics' });
                   }}
@@ -239,7 +242,7 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
               className="mm-subnav-btn"
               onClick={() => {
                 ctx.setTweak('mimir.selectedWardenId', ravn.ravnId);
-                ctx.setTweak('activeMount', ravn.writeMount || ravn.mountNames[0] || 'all');
+                setActiveMount(ravn.writeMount || ravn.mountNames[0] || 'all');
                 ctx.setTweak('mimir.registryView', 'Analytics');
                 navigate({ to: '/mimir/registry/analytics' });
               }}

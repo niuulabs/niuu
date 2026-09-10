@@ -36,6 +36,7 @@ export function RegistryWorkspace() {
             className={`niuu:px-4 niuu:py-2 niuu:rounded-md niuu:text-sm niuu:cursor-pointer ${view.path === item.path ? 'niuu:bg-bg-tertiary niuu:text-text-primary' : 'niuu:bg-transparent niuu:text-text-muted'}`}
             onClick={() => {
               ctx.setTweak('mimir.registryView', '');
+              ctx.setTweak('mimir.deployment', null);
               void navigate({ to: item.path });
             }}
           >

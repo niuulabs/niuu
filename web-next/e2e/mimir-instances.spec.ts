@@ -129,3 +129,81 @@ test('uses modals for both entry points and labels connection removal', async ({
   await page.getByRole('button', { name: 'Remove connection', exact: true }).hover();
   await expect(page.getByRole('tooltip')).toContainText('Remove connection');
 });
+
+test('Inspect preserves the analytics dashboard for an auto-mounted Helm instance', async ({
+  page,
+}) => {
+  await setup(page);
+  await page.route('**/instance-test-api/mounts', (route) =>
+    route.fulfill({
+      json: [
+        {
+          name: 'gbrain-ui',
+          role: 'shared',
+          access_scope: 'tenant',
+          host: 'ymir',
+          url: '',
+          priority: 10,
+          categories: [],
+          status: 'healthy',
+          pages: 3,
+          sources: 0,
+          lint_issues: 0,
+          last_write: '',
+          embedding: 'fts',
+          size_kb: 0,
+          desc: '',
+        },
+      ],
+    }),
+  );
+  await page.route('**/instance-test-api/deployments', (route) =>
+    route.fulfill({
+      json: {
+        cluster: 'ymir',
+        namespace: 'knowledge',
+        backends: ['gbrain'],
+        releases: [
+          {
+            name: 'gbrain-ui',
+            backend: 'gbrain',
+            target: 'cluster',
+            ready: true,
+            message: 'Ready',
+          },
+        ],
+      },
+    }),
+  );
+  await page.route('**/instance-test-api/deployments/gbrain-ui*', (route) =>
+    route.fulfill({
+      json: {
+        name: 'gbrain-ui',
+        ready: true,
+        message: 'Ready',
+        logs: {},
+        dream_results: [],
+      },
+    }),
+  );
+  await page.route('**/instance-test-api/instances/inspect*', (route) =>
+    route.fulfill({
+      json: [
+        {
+          mount: 'gbrain-ui',
+          backend: 'gbrain',
+          metrics: { Pages: 3, 'Storage engine': 'postgres' },
+          unavailable: [],
+        },
+      ],
+    }),
+  );
+  await page.goto('/mimir/registry');
+  await expect(page.getByText(/gbrain · Managed/)).toBeVisible();
+  await page.getByRole('button', { name: 'Inspect', exact: true }).click();
+  await expect(page.locator('.mimir-instance-cards')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Knowledge composition' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Relationship coverage' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Instance runtime' })).toBeVisible();
+  await expect(page.locator('.mimir-instance-cards')).toHaveCSS('display', 'grid');
+});

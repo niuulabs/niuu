@@ -293,6 +293,7 @@ export function RegistryPage() {
         pages: mounted?.pages,
         accessScope: mounted?.accessScope ?? attached?.accessScope ?? release?.access_scope,
         connection: attached,
+        hasMount: !!mounted || !!attached,
         release,
         targetLabel: target?.source_name
           ? `${target.source_name} · ${target.cluster}`
@@ -473,11 +474,11 @@ export function RegistryPage() {
                         onClick={() => {
                           ctx.setTweak(
                             'mimir.deployment',
-                            mount.release && !mount.connection
+                            mount.release && !mount.hasMount
                               ? { name: mount.name, target: mount.release.target }
                               : null,
                           );
-                          ctx.setTweak('activeMount', mount.connection ? mount.name : 'all');
+                          ctx.setTweak('activeMount', mount.hasMount ? mount.name : 'all');
                           ctx.setTweak('mimir.registryView', 'Analytics');
                         }}
                       >

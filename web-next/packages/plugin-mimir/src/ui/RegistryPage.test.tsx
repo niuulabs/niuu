@@ -159,3 +159,25 @@ it('displays tenant and global access on instance cards', async () => {
   expect((await screen.findByText('mimir-ui')).closest('article')).toHaveTextContent('Tenant');
   expect(screen.getByText('mimir-global').closest('article')).toHaveTextContent('Global');
 });
+
+it('opens the full dashboard for an automatically mounted Helm deployment', async () => {
+  const service = createMimirMockAdapter();
+  const [base] = await service.mounts.listMounts();
+  const setTweak = vi.fn();
+  service.mounts.listMounts = async () => [{ ...base!, name: 'gbrain-ui' }];
+  service.mounts.listRegistryMounts = async () => [];
+  service.mounts.getDeployments = async () => ({
+    cluster: 'ymir',
+    namespace: 'knowledge',
+    backends: ['gbrain'],
+    releases: [
+      { name: 'gbrain-ui', backend: 'gbrain', target: 'cluster', ready: true, message: 'Ready' },
+    ],
+  });
+  render(<RegistryPage />, service, { setTweak });
+  await screen.findByText(/gbrain · Managed/);
+  fireEvent.click(screen.getByRole('button', { name: 'Inspect' }));
+  expect(setTweak).toHaveBeenCalledWith('mimir.deployment', null);
+  expect(setTweak).toHaveBeenCalledWith('activeMount', 'gbrain-ui');
+  expect(setTweak).toHaveBeenCalledWith('mimir.registryView', 'Analytics');
+});
