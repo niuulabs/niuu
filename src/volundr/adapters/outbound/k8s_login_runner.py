@@ -162,7 +162,7 @@ class KubernetesLoginRunner(CredentialEnrollmentRunnerPort):
         from kubernetes_asyncio.stream import WsApiClient
 
         async with asyncio.timeout(self._timeout), WsApiClient() as api:
-            output = await client.CoreV1Api(api).connect_get_namespaced_pod_exec(
+            socket = await client.CoreV1Api(api).connect_get_namespaced_pod_exec(
                 pod_name,
                 self._namespace,
                 container="login",
@@ -172,8 +172,19 @@ class KubernetesLoginRunner(CredentialEnrollmentRunnerPort):
                 stdin=False,
                 tty=False,
                 _request_timeout=self._timeout,
+                _preload_content=False,
             )
-        return json.loads(output)
+            output = []
+            async with socket as websocket:
+                async for message in websocket:
+                    if not isinstance(message.data, bytes) or not message.data:
+                        continue
+                    channel, data = message.data[0], message.data[1:]
+                    if channel == 1:
+                        output.append(data)
+                    elif channel == 3 and WsApiClient.parse_error_data(data) != 0:
+                        raise RuntimeError("login_worker_read_failed")
+        return json.loads(b"".join(output))
 
     async def poll_enrollment(self, enrollment: CredentialEnrollment) -> CredentialEnrollmentPoll:
         from kubernetes_asyncio import client

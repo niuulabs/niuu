@@ -145,12 +145,19 @@ async def test_completed_poll_transfers_secret_only_to_service(runner):
 
 
 async def test_exec_decodes_worker_status_without_stderr(runner):
+    websocket = AsyncMock()
+    websocket.__aenter__.return_value = websocket
+    websocket.__aiter__.return_value = [
+        SimpleNamespace(data=b'\x01{"state":"pending"}'),
+        SimpleNamespace(data=b'\x03{"status":"Success"}'),
+    ]
     core = SimpleNamespace(
-        connect_get_namespaced_pod_exec=AsyncMock(return_value='{"state":"pending"}')
+        connect_get_namespaced_pod_exec=AsyncMock(return_value=websocket)
     )
     with patch("kubernetes_asyncio.client.CoreV1Api", return_value=core):
         assert await runner._read("pod", ["read-status"]) == {"state": "pending"}
     assert core.connect_get_namespaced_pod_exec.call_args.kwargs["stderr"] is False
+    assert core.connect_get_namespaced_pod_exec.call_args.kwargs["_preload_content"] is False
 
 
 async def test_browser_code_uses_stdin_not_audited_command_arguments(runner):
