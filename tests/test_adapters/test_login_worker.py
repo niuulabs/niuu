@@ -121,3 +121,24 @@ def test_terminal_hyperlinks_do_not_erase_text_between_them():
         "\x1b]8;;https://example.com\x1b\\docs\x1b]8;;\x1b\\"
     )
     assert ANSI_ESCAPE.sub("", output) == "login\nsk-ant-oat01-test-only-secret\ndocs"
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        ("claude_exit_-9", "claude_exit_-9"),
+        ("claude_token_not_found", "claude_token_not_found"),
+        ("unexpected secret from provider", "provider_login_failed"),
+    ],
+)
+async def test_worker_preserves_only_safe_diagnostic_codes(tmp_path, reason, expected):
+    with (
+        patch("os.umask"),
+        patch(
+            "volundr.adapters.outbound.login_worker.claude_login",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError(reason),
+        ),
+    ):
+        await run(tmp_path, "claude_setup", "test-only-cli", 0.01)
+    assert json.loads((tmp_path / "status.json").read_text())["error_code"] == expected

@@ -116,8 +116,10 @@ async def claude_login(
         await process.wait()
         clean = ANSI_ESCAPE.sub("", output)
         token = CLAUDE_TOKEN.search(clean)
-        if process.returncode != 0 or token is None:
-            raise RuntimeError("provider_login_failed")
+        if process.returncode != 0:
+            raise RuntimeError(f"claude_exit_{process.returncode}")
+        if token is None:
+            raise RuntimeError("claude_token_not_found")
         expiry = datetime.now(UTC) + timedelta(days=CLAUDE_TOKEN_LIFETIME_DAYS)
         write_json(
             root / "credential.json", {"token": token.group(0), "expires_at": expiry.isoformat()}
@@ -240,8 +242,17 @@ async def run(
             await asyncio.Event().wait()
     except TimeoutError:
         write_json(root / "status.json", {"state": "expired"})
-    except Exception:
-        write_json(root / "status.json", {"state": "failed", "error_code": "provider_login_failed"})
+    except Exception as exc:
+        # Only fixed diagnostic codes may leave the private CLI process.
+        reason = str(exc)
+        safe_reason = (
+            reason
+            if re.fullmatch(
+                r"claude_exit_-?\d+|claude_token_not_found|unexpected_login_url", reason
+            )
+            else "provider_login_failed"
+        )
+        write_json(root / "status.json", {"state": "failed", "error_code": safe_reason})
         # Keep the safe error readable until the Job's deadline, even if the
         # user has closed the browser. Kubernetes then reaps the Job and home.
         await asyncio.sleep(ttl)
