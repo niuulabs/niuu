@@ -2565,3 +2565,16 @@ def test_two_connection_providers_do_not_collide(
     assert set(adapter._provider_credential_slots(first)) != set(
         adapter._provider_credential_slots(second)
     )
+
+
+def test_claude_subscription_uses_bearer_provider_route():
+    from volundr.adapters.outbound.openshell_gateway import _provider_target
+
+    subscription = _provider_target("CLAUDE_CODE_OAUTH_TOKEN")
+    api_key = _provider_target("ANTHROPIC_API_KEY")
+    assert subscription["hosts"] == ("api.anthropic.com",)
+    assert subscription["binaries"] == api_key["binaries"]
+    assert subscription["auth_style"] == "bearer"
+    assert subscription["header_name"] == "Authorization"
+    assert api_key["auth_style"] == "header"
+    assert api_key["header_name"] == "x-api-key"

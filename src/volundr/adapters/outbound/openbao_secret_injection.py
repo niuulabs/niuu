@@ -9,20 +9,26 @@ The resulting flow is:
 1. Volundr stores credentials in OpenBao KV v2 under
    ``<mount>/data/users/{user_id}/{credential_name}``.
 2. When a session starts, Volundr creates a dedicated ServiceAccount and
-   session-specific JWT role bound to that account.
+   session-specific JWT role bound to that account with read-only access to
+   the exact mapped credential paths.
 3. Volundr creates a ConfigMap with OpenBao Agent config that renders the
    requested credential fields to env/file destinations.
 4. The OpenBao injector mutates the session pod and runs the init agent.
-5. On cleanup, the session role, ConfigMap, and ServiceAccount are deleted.
+5. On cleanup, the session role, policy, ConfigMap, and ServiceAccount are deleted.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import textwrap
 
-from volundr.adapters.outbound.openbao import OpenBaoAdminClient, OpenBaoAdminConfig
+from volundr.adapters.outbound.openbao import (
+    OpenBaoAdminClient,
+    OpenBaoAdminConfig,
+    OpenBaoJWTAuthRole,
+)
 from volundr.domain.models import CredentialMapping, PodSpecAdditions
 from volundr.domain.ports import SecretInjectionPort
 
@@ -146,20 +152,22 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
 
         service_account_name = self._service_account_name(session_id)
         role_name = self._role_name(session_id)
-        policy_name = self._admin.user_policy_name(self._mount_path, user_id)
+        policy_name = role_name
+        policy = self._session_policy(user_id, credential_mappings)
 
         await self._ensure_service_account(service_account_name, session_id, user_id)
-        await self._admin.ensure_service_account_access(
-            mount_path=self._mount_path,
-            user_id=user_id,
-            tenant_id=tenant_id or "",
-            auth_path=self._auth_path,
-            audience=self._audience,
-            service_account_namespace=self._namespace,
-            service_account_name=service_account_name,
-            policy_name=policy_name,
-            role_name=role_name,
-            ttl=self._role_ttl,
+        await self._admin.ensure_policy(policy_name, policy)
+        await self._admin.ensure_jwt_role(
+            OpenBaoJWTAuthRole(
+                name=role_name,
+                auth_path=self._auth_path,
+                bound_audiences=(self._audience,),
+                bound_subject=self._admin.service_account_subject(
+                    self._namespace, service_account_name
+                ),
+                policies=(policy_name,),
+                ttl=self._role_ttl,
+            )
         )
         await self._create_or_update_configmap(
             name=self._configmap_name(session_id),
@@ -195,8 +203,23 @@ class OpenBaoAgentInjectionAdapter(SecretInjectionPort):
         except Exception:
             logger.warning("Failed to delete OpenBao role %s", role_name, exc_info=True)
 
+        await self._admin.delete_policy(role_name)
         await self._delete_configmap(configmap_name)
         await self._delete_service_account(service_account_name)
+
+    def _session_policy(self, user_id: str, mappings: list[CredentialMapping]) -> str:
+        paths = sorted(
+            {
+                self._credential_path(user_id, mapping.credential_name)
+                for mapping in mappings
+                if mapping.env_mappings or mapping.file_mappings
+            }
+        )
+        if any(any(char in path for char in ("*", "+", "${", "%{")) for path in paths):
+            raise ValueError("Session credential paths must be literal OpenBao paths")
+        return "\n".join(
+            f'path {json.dumps(path)} {{\n  capabilities = ["read"]\n}}' for path in paths
+        )
 
     def _configmap_name(self, session_id: str) -> str:
         return self._k8s_name(self._configmap_prefix, session_id)

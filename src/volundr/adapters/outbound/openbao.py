@@ -257,6 +257,12 @@ class OpenBaoAdminClient:
         if response.status_code >= 400:
             raise OpenBaoApiError(response.status_code, response.text)
 
+    async def delete_policy(self, name: str) -> None:
+        """Delete a session policy if it exists."""
+        response = await self._request("delete", f"/v1/sys/policy/{name}")
+        if response.status_code >= 400 and response.status_code != 404:
+            raise OpenBaoApiError(response.status_code, response.text)
+
     async def ensure_jwt_role(self, role: OpenBaoJWTAuthRole) -> None:
         """Write or replace a JWT role."""
         response = await self._request(

@@ -3414,10 +3414,11 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
             ),
             "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
         }
-    if env_name in {"ANTHROPIC_API_KEY", "CLAUDE_API_KEY"}:
+    if env_name in {"ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}:
+        subscription = env_name == "CLAUDE_CODE_OAUTH_TOKEN"
         return {
-            "auth_style": "header",
-            "header_name": "x-api-key",
+            "auth_style": "bearer" if subscription else "header",
+            "header_name": "Authorization" if subscription else "x-api-key",
             "hosts": ("api.anthropic.com",),
             "binaries": (
                 "/usr/local/bin/claude",
