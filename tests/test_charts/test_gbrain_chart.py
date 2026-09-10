@@ -117,6 +117,7 @@ def test_managed_postgres_uses_operator_credentials_and_configured_storage():
     docs = {d["kind"]: d for d in yaml.safe_load_all(result.stdout)}
     db = docs["Cluster"]["spec"]
     assert db["storage"] == {"storageClass": "harvester-data", "size": "5Gi"}
+    assert db["managed"]["roles"] == [{"name": "gbrain", "login": True, "bypassrls": True}]
     assert "secret" not in db["bootstrap"]["initdb"]
     assert docs["PersistentVolumeClaim"]["spec"]["storageClassName"] == "harvester-data"
     assert docs["Secret"]["metadata"]["name"] == "brain-gbrain-admin"

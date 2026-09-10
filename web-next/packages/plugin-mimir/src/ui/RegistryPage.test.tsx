@@ -116,3 +116,33 @@ it('keeps deletion visible but disabled for instances managed outside this regis
   }
   expect(screen.queryByRole('button', { name: 'Inspect instance' })).not.toBeInTheDocument();
 });
+
+it('keeps identically named deployments on separate Guild targets', async () => {
+  const service = createMimirMockAdapter();
+  const setTweak = vi.fn();
+  service.mounts.getDeployments = async () => ({
+    cluster: '',
+    namespace: '',
+    backends: [],
+    releases: ['ymir:cluster', 'noatun:cluster'].map((target) => ({
+      name: 'research-brain',
+      target,
+      backend: 'gbrain',
+      ready: true,
+      message: 'Ready',
+    })),
+  });
+  render(<RegistryPage />, service, { setTweak });
+  const names = await screen.findAllByText('research-brain');
+  expect(names).toHaveLength(2);
+  const card =
+    screen.getByText('gbrain · Managed · noatun:cluster').closest('article') ??
+    screen.getByText('gbrain · Managed · noatun:cluster').parentElement!.parentElement!
+      .parentElement!;
+  fireEvent.click(within(card).getByRole('button', { name: 'Inspect' }));
+  expect(setTweak).toHaveBeenCalledWith('mimir.deployment', {
+    name: 'research-brain',
+    target: 'noatun:cluster',
+  });
+  expect(setTweak).toHaveBeenCalledWith('activeMount', 'all');
+});

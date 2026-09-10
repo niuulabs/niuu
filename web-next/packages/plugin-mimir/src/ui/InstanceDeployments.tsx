@@ -22,7 +22,10 @@ export function InstanceDeployments() {
   });
   const targets =
     query.data?.targets ?? (query.data ? [{ ...query.data, id: query.data.target ?? '' }] : []);
-  const target = targets.find((item) => item.id === request.target) ?? targets[0];
+  const target =
+    request.target === undefined
+      ? (targets.find((item) => item.backends.length > 0) ?? targets[0])
+      : targets.find((item) => item.id === request.target);
   const deploy = useMutation({
     mutationFn: () => mounts.deployInstance!({ ...request, target: target?.id }),
     onSuccess: () => {
@@ -84,6 +87,18 @@ export function InstanceDeployments() {
             </button>
           </div>
         )}
+        {!query.isPending && !query.error && targets.length === 0 && (
+          <p role="status">
+            No deployment services are available in your Guild. Register an enabled platform Mimir
+            service with a configured deployment target.
+          </p>
+        )}
+        {request.target !== undefined && !target && (
+          <p role="alert">
+            The selected deployment target is no longer available. Close and reopen this dialog to
+            choose another target.
+          </p>
+        )}
         {target && (
           <>
             <div className="niuu:grid niuu:grid-cols-2 niuu:gap-4 niuu:my-4">
@@ -112,8 +127,10 @@ export function InstanceDeployments() {
                     value: item.id,
                     label:
                       item.id === 'local' || item.target === 'local'
-                        ? 'This computer'
-                        : item.cluster,
+                        ? `${item.source_name ? item.source_name + ' · ' : ''}This computer`
+                        : item.source_name
+                          ? `${item.source_name} · ${item.cluster}`
+                          : item.cluster,
                   }))}
                 />
               </Field>

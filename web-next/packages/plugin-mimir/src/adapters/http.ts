@@ -727,7 +727,10 @@ export async function listLegacySources(client: ApiClient): Promise<Source[]> {
 // Adapter factory
 // ---------------------------------------------------------------------------
 
-export function buildMimirHttpAdapter(client: ApiClient): IMimirService {
+export function buildMimirHttpAdapter(
+  client: ApiClient,
+  deployments: ApiClient = client,
+): IMimirService {
   return {
     mounts: {
       async listMounts(): Promise<Mount[]> {
@@ -902,14 +905,14 @@ export function buildMimirHttpAdapter(client: ApiClient): IMimirService {
         );
       },
       async inspectDeployment(name, target) {
-        return client.get(
+        return deployments.get(
           '/deployments/' +
             encodeURIComponent(name) +
             (target ? '?target=' + encodeURIComponent(target) : ''),
         );
       },
       async controlDeployment(name, action, target) {
-        return client.post(
+        return deployments.post(
           '/deployments/' +
             encodeURIComponent(name) +
             '/' +
@@ -919,10 +922,10 @@ export function buildMimirHttpAdapter(client: ApiClient): IMimirService {
         );
       },
       async getDeployments(): Promise<DeploymentStatus> {
-        return client.get('/deployments');
+        return deployments.get('/deployments');
       },
       async deployInstance(request) {
-        return client.post('/deployments', request);
+        return deployments.post('/deployments', request);
       },
       async getDoctor(mountName?: string): Promise<DoctorReport | null> {
         return nullOnMissingRoute(async () =>

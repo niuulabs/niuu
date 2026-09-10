@@ -20,6 +20,7 @@ export interface KnowledgeDeployment {
   dream?: { enabled: boolean; schedule: string; phases: string[] };
 }
 export interface DeploymentStatus {
+  source_name?: string;
   cluster: string;
   namespace: string;
   backends: string[];

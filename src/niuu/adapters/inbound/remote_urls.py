@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit, urlunsplit
 
+from fastapi import Request
+
 
 def build_remote_url(base_url: str, prefix: str, path: str) -> str:
     """Construct a remote URL from a validated base and a relative API path."""
@@ -35,3 +37,18 @@ def build_remote_url(base_url: str, prefix: str, path: str) -> str:
             "",
         )
     )
+
+
+def forward_identity_headers(request: Request) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for name in (
+        "authorization",
+        "x-auth-user-id",
+        "x-auth-email",
+        "x-auth-tenant",
+        "x-auth-roles",
+    ):
+        value = request.headers.get(name)
+        if value:
+            headers[name] = value
+    return headers

@@ -1397,3 +1397,28 @@ describe('buildMimirHttpAdapter', () => {
     });
   });
 });
+
+it('routes deployments through Guild while keeping knowledge queries on Mimir', async () => {
+  const knowledge = makeClient();
+  const guild = makeClient();
+  const service = buildMimirHttpAdapter(knowledge, guild);
+  await service.mounts.listMounts();
+  await service.mounts.getDeployments!();
+  await service.mounts.deployInstance!({
+    name: 'brain',
+    backend: 'gbrain',
+    target: 'ymir:cluster',
+  });
+  await service.mounts.inspectDeployment!('brain', 'ymir:cluster');
+  await service.mounts.controlDeployment!('brain', 'update', 'ymir:cluster');
+  expect(knowledge.get).toHaveBeenCalledWith('/mounts');
+  expect(knowledge.post).not.toHaveBeenCalled();
+  expect(guild.get).toHaveBeenCalledWith('/deployments');
+  expect(guild.get).toHaveBeenCalledWith('/deployments/brain?target=ymir%3Acluster');
+  expect(guild.post).toHaveBeenCalledWith('/deployments', {
+    name: 'brain',
+    backend: 'gbrain',
+    target: 'ymir:cluster',
+  });
+  expect(guild.post).toHaveBeenCalledWith('/deployments/brain/update?target=ymir%3Acluster', {});
+});

@@ -264,25 +264,39 @@ export function RegistryPage() {
       ...(deployments.data?.releases ?? []).map((r) => r.name),
     ]),
   ];
-  const instances = names.map((name) => {
+  const instances = names.flatMap((name) => {
     const connection = registryMounts.find(
       (m) => m.name === name && !m.id.startsWith('deployment:'),
     );
     const runtime = live.data?.find((m) => m.name === name);
-    const release = deployments.data?.releases.find((r) => r.name === name);
-    return {
-      ...EMPTY_REGISTRY_MOUNT,
-      ...connection,
-      name,
-      id: connection?.id ?? name,
-      healthStatus: runtime?.status ?? connection?.healthStatus ?? 'unknown',
-      url: connection?.url || runtime?.url || '',
-      desc: connection?.desc || runtime?.desc || '',
-      defaultReadPriority: connection?.defaultReadPriority ?? runtime?.priority ?? 10,
-      pages: runtime?.pages,
-      connection,
-      release,
-    };
+    const releases = deployments.data?.releases.filter((r) => r.name === name) ?? [];
+    // Names can repeat across Guild targets; never merge those deployments together.
+    const choices: ((typeof releases)[number] | undefined)[] = releases.length
+      ? [...releases]
+      : [undefined];
+    if (releases.length > 1 && (connection || runtime)) choices.unshift(undefined);
+    return choices.map((release) => {
+      const attached = releases.length > 1 && release ? undefined : connection;
+      const mounted = releases.length > 1 && release ? undefined : runtime;
+      const target = deployments.data?.targets?.find((t) => t.id === release?.target);
+      return {
+        ...EMPTY_REGISTRY_MOUNT,
+        ...attached,
+        name,
+        id: attached?.id ?? (release ? `${release.target ?? ''}/${name}` : name),
+        healthStatus:
+          mounted?.status ?? attached?.healthStatus ?? (release?.ready ? 'healthy' : 'unknown'),
+        url: attached?.url || mounted?.url || '',
+        desc: attached?.desc || mounted?.desc || '',
+        defaultReadPriority: attached?.defaultReadPriority ?? mounted?.priority ?? 10,
+        pages: mounted?.pages,
+        connection: attached,
+        release,
+        targetLabel: target?.source_name
+          ? `${target.source_name} · ${target.cluster}`
+          : release?.target,
+      };
+    });
   });
   const activeCount = instances.filter((m) => m.enabled).length;
 
@@ -438,7 +452,7 @@ export function RegistryPage() {
                         </span>
                         <span className="niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
                           {mount.release
-                            ? `${mount.release.backend} · Managed · ${mount.release.target ?? 'cluster'}`
+                            ? `${mount.release.backend} · Managed · ${mount.targetLabel ?? 'cluster'}`
                             : 'Connected'}
                         </span>
                       </div>

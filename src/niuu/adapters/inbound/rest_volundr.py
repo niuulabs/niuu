@@ -16,24 +16,14 @@ from fastapi.responses import StreamingResponse
 from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.auth import extract_principal
-from niuu.adapters.inbound.remote_urls import build_remote_url
+from niuu.adapters.inbound.remote_urls import (
+    build_remote_url,
+)
+from niuu.adapters.inbound.remote_urls import (
+    forward_identity_headers as _forward_headers,
+)
 from niuu.domain.models import InstanceKind, Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
-
-
-def _forward_headers(request: Request) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    for name in (
-        "authorization",
-        "x-auth-user-id",
-        "x-auth-email",
-        "x-auth-tenant",
-        "x-auth-roles",
-    ):
-        value = request.headers.get(name)
-        if value:
-            headers[name] = value
-    return headers
 
 
 async def _visible_instances(
