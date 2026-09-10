@@ -555,3 +555,17 @@ async def test_memory_well_auth_ref_injects_owner_credential_without_manual_sele
     store.get.return_value = None
     with pytest.raises(ValueError, match="token field"):
         await contributor.contribute(session, context)
+
+
+@pytest.mark.asyncio
+async def test_workload_memory_identity_does_not_request_a_stored_token():
+    store = AsyncMock()
+    contributor = SecretInjectionContributor(credential_store=store)
+    context = SessionContext(
+        credential_names=("workload:mimir",),
+        workload_config={
+            "mimir": {"registry_refs": [{"mount_name": "gbrain-ui", "auth_ref": "workload:mimir"}]}
+        },
+    )
+    assert await contributor._build_mappings(context, "user-1") == []
+    store.get.assert_not_called()

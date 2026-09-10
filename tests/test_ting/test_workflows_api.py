@@ -728,3 +728,16 @@ class TestWorkflowCatalogAPI:
 
         assert response.status_code == 201
         assert len(adapter.requests) == 1
+
+
+def test_workload_memory_ref_is_not_a_credential_name():
+    from ting.api.workflows import _mimir_auth_credential_names
+
+    assert _mimir_auth_credential_names(
+        {
+            "registry_refs": [
+                {"auth_ref": "workload:mimir"},
+                {"auth_ref": "brain-token"},
+            ]
+        }
+    ) == ["brain-token"]

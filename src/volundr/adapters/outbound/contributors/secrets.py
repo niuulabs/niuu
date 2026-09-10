@@ -151,6 +151,9 @@ class SecretInjectionContributor(SessionContributor):
             )
         names = dict.fromkeys([*context.credential_names, *sorted(refs - integration_refs)])
         for cred_name in names:
+            # This reference uses the projected session identity, not a stored secret.
+            if cred_name == "workload:mimir":
+                continue
             if cred_name in refs:
                 if self._credential_store is None:
                     raise ValueError(

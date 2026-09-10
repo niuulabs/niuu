@@ -566,7 +566,12 @@ def _mimir_auth_credential_names(mimir_config: dict[str, Any]) -> list[str]:
         if not isinstance(raw_ref, dict):
             continue
         auth_ref = str(raw_ref.get("auth_ref") or raw_ref.get("authRef") or "").strip()
-        if not auth_ref or auth_ref.startswith("integration:") or auth_ref in seen:
+        if (
+            not auth_ref
+            or auth_ref == "workload:mimir"
+            or auth_ref.startswith("integration:")
+            or auth_ref in seen
+        ):
             continue
         seen.add(auth_ref)
         names.append(auth_ref)
