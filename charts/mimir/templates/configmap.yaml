@@ -17,8 +17,15 @@ data:
   MIMIR_CATEGORIES: {{ .Values.config.categories | join "," | quote }}
   {{- end }}
 
-  {{- if .Values.knowledgeDeployment }}
+  {{- if or .Values.knowledgeDeployment .Values.niuu.tenantId }}
   config.yaml: |
+    tenant_id: {{ .Values.niuu.tenantId | default "" | quote }}
+    {{- if .Values.knowledgeDeployment }}
     deployment:
+      {{- if eq .Values.knowledgeDeployment.adapter "mimir.adapters.flux.FluxKnowledgeDeploymentAdapter" }}
+      {{- toYaml (mergeOverwrite (deepCopy .Values.knowledgeDeployment) (dict "envoy" .Values.envoy)) | nindent 6 }}
+      {{- else }}
       {{- toYaml .Values.knowledgeDeployment | nindent 6 }}
+      {{- end }}
+    {{- end }}
   {{- end }}

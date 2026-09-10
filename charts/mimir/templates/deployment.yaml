@@ -87,7 +87,7 @@ spec:
               containerPort: {{ .Values.service.targetPort | default 7477 }}
               protocol: TCP
           env:
-            {{- if .Values.knowledgeDeployment }}
+            {{- if or .Values.knowledgeDeployment .Values.niuu.tenantId }}
             - name: MIMIR_CONFIG
               value: /etc/mimir/config.yaml
             {{- end }}
@@ -134,7 +134,7 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
-            {{- if .Values.knowledgeDeployment }}
+            {{- if or .Values.knowledgeDeployment .Values.niuu.tenantId }}
             - name: deployment-config
               mountPath: /etc/mimir
               readOnly: true
@@ -209,7 +209,7 @@ spec:
           configMap:
             name: {{ include "mimir.fullname" . }}-warden
         {{- end }}
-        {{- if .Values.knowledgeDeployment }}
+        {{- if or .Values.knowledgeDeployment .Values.niuu.tenantId }}
         - name: deployment-config
           configMap:
             name: {{ include "mimir.fullname" . }}

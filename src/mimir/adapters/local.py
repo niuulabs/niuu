@@ -133,7 +133,7 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             "url": record["url"],
         }
 
-    async def list_deployments(self) -> dict:
+    async def list_deployments(self, *, tenant_id: str = "") -> dict:
         return {
             "cluster": "This computer",
             "namespace": "local",
@@ -141,12 +141,16 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             "backends": ["mimir", *(["gbrain"] if self.gbrain_command else [])],
             "warden_available": self.warden_defaults is not None,
             "dream_available": bool(self.database or self.environment.get("GBRAIN_DATABASE_URL")),
-            "releases": [await self._view(r) for r in self._records()],
+            "releases": [
+                await self._view(r) for r in self._records() if r.get("tenant_id", "") == tenant_id
+            ],
         }
 
-    def mounted_ports(self) -> list[dict]:
+    def mounted_ports(self, tenant_id: str | None = None) -> list[dict]:
         result = []
         for record in self._records():
+            if tenant_id is not None and record.get("tenant_id", "") != tenant_id:
+                continue
             if not record.get("initialized"):
                 continue
             name = record["name"]
@@ -164,6 +168,7 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
                 connection_kwargs["api_token_file"] = str(token_path)
             result.append(
                 {
+                    "tenant_id": record.get("tenant_id", ""),
                     "connection": {"adapter": cfg["adapter"], "kwargs": connection_kwargs},
                     "name": name,
                     "role": "local",
@@ -173,6 +178,9 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
                 }
             )
         return result
+
+    async def discover_mounts(self, tenant_id: str, authorization: str = "") -> list[dict]:
+        return self.mounted_ports(tenant_id)
 
     async def deploy(self, request: DeploymentRequest) -> dict:
         async with self._lock:
@@ -191,6 +199,8 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
         directory = self.root / request.name
         if directory.exists():
             record = self._record(request.name)
+            if record.get("tenant_id", "") != request.tenant_id:
+                raise ValueError("Knowledge instance not found in this tenant")
             if record["backend"] != request.backend or not record.get("initialized"):
                 raise ValueError(
                     f"A different or uninitialized deployment named {request.name} exists"
@@ -214,6 +224,7 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             port = sock.getsockname()[1]
         url = f"http://127.0.0.1:{port}"
         record = {
+            "tenant_id": request.tenant_id,
             "name": request.name,
             "backend": request.backend,
             "url": url,
@@ -353,8 +364,10 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
         config_file.write_text(json.dumps(record))
         await asyncio.to_thread(self.wardens.install, warden.id, self.workspace)
 
-    async def inspect_deployment(self, name: str) -> dict:
+    async def inspect_deployment(self, name: str, *, tenant_id: str = "") -> dict:
         record = self._record(name)
+        if record.get("tenant_id", "") != tenant_id:
+            raise ValueError("Knowledge instance not found in this tenant")
         directory = self.root / record["name"]
         logs = {}
         for stream in ("stdout", "stderr", "dream"):
@@ -370,10 +383,12 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             "dream_results": dream_results(logs["dream"]),
         }
 
-    async def control(self, name: str, action: str) -> dict:
+    async def control(self, name: str, action: str, *, tenant_id: str = "") -> dict:
         if action == "delete":
-            return await self._delete(name)
+            return await self._delete(name, tenant_id=tenant_id)
         record = self._record(name)
+        if record.get("tenant_id", "") != tenant_id:
+            raise ValueError("Knowledge instance not found in this tenant")
         service = self._service_file(record["name"])
         if action not in {"start", "stop"}:
             raise ValueError("Supported actions: start, stop")
@@ -395,9 +410,11 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             await asyncio.to_thread(self.wardens.start, record["warden_id"])
         return await self._view(record)
 
-    async def _delete(self, name: str) -> dict:
+    async def _delete(self, name: str, *, tenant_id: str = "") -> dict:
         async with self._lock:
             record = self._record(name)
+            if record.get("tenant_id", "") != tenant_id:
+                raise ValueError("Knowledge instance not found in this tenant")
             instance = record["name"]
             directory = self.root / instance
             if (

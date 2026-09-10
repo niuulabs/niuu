@@ -17,4 +17,36 @@ data:
       gbrain init {{ if eq .Values.engine "pglite" }}--pglite{{ else }}--non-interactive{{ end }} {{ if .Values.embedding.enabled }}--embedding-model {{ required "embedding.model is required" .Values.embedding.model | squote }} --embedding-dimensions {{ .Values.embedding.dimensions }}{{ else }}--no-embedding{{ end }}
     fi
     bun -e 'const p="/data/.gbrain/config.json"; const c=await Bun.file(p).json(); const extra=await Bun.file("/etc/gbrain/config.json").json(); await Bun.write(p,JSON.stringify({...c,...extra}));'
+    {{- if .Values.connection.enabled }}
+    bun /etc/gbrain/connection.ts
+    {{- end }}
     exec gbrain serve --http --bind 0.0.0.0 --port 3131
+
+  {{- if .Values.connection.enabled }}
+  connection.ts: |
+    import { chmod, rename } from "node:fs/promises";
+    const directory = "/var/run/secrets/kubernetes.io/serviceaccount";
+    const path = "/data/.gbrain/niuu-connection-token";
+    if (!(await Bun.file(path).exists())) {
+      const child = Bun.spawn(["gbrain", "auth", "create", "niuu-mimir-" + crypto.randomUUID(), "--scopes", "read,write"], { stdout: "pipe", stderr: "pipe" });
+      const output = await new Response(child.stdout).text();
+      const error = await new Response(child.stderr).text();
+      if (await child.exited !== 0) throw new Error("gbrain connection token creation failed: " + error);
+      const token = output.match(/^\s+(gbrain_[A-Za-z0-9_-]+)\s*$/m)?.[1];
+      if (!token) throw new Error("gbrain did not return a connection token");
+      await Bun.write(path + ".tmp", token, { mode: 0o600 });
+      await chmod(path + ".tmp", 0o600);
+      await rename(path + ".tmp", path);
+    }
+    const namespace = (await Bun.file(directory + "/namespace").text()).trim();
+    const identity = (await Bun.file(directory + "/token").text()).trim();
+    const name = {{ printf "%s-connection" (include "gbrain.name" .) | toJson }};
+    const url = `https://kubernetes.default.svc/api/v1/namespaces/${namespace}/secrets/${name}`;
+    const options = {headers: {Authorization: `Bearer ${identity}`, "Content-Type": "application/json"}, tls: {ca: await Bun.file(directory + "/ca.crt").text()}};
+    const current = await fetch(url, options);
+    if (!current.ok) throw new Error(`Cannot read instance connection secret: ${current.status}`);
+    const secret = await current.json();
+    secret.data = {...secret.data, token: Buffer.from((await Bun.file(path).text()).trim()).toString("base64")};
+    const result = await fetch(url, {...options, method: "PUT", body: JSON.stringify(secret)});
+    if (!result.ok) throw new Error(`Cannot publish instance connection secret: ${result.status}`);
+  {{- end }}

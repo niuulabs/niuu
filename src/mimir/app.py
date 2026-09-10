@@ -22,7 +22,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.config import MimirServiceConfig
@@ -137,6 +138,8 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         deployment = getattr(importlib.import_module(module), name)(**settings)
     mimir_router = MimirRouter(
         deployment=deployment,
+        public_url=config.announce_url or "",
+        tenant_id=config.tenant_id,
         adapter=adapter,
         name=config.name,
         role=config.role,
@@ -192,6 +195,20 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         redoc_url=None,
         lifespan=lifespan,
     )
+
+    @app.middleware("http")
+    async def enforce_instance_tenant(request: Request, call_next):
+        health_paths = {"/health", "/mimir/health", "/api/v1/mimir/health"}
+        if config.tenant_id and request.url.path not in health_paths:
+            if (
+                not request.headers.get("x-auth-user-id")
+                or request.headers.get("x-auth-tenant") != config.tenant_id
+            ):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Knowledge instance belongs to a different tenant"},
+                )
+        return await call_next(request)
 
     app.include_router(mimir_router.router, prefix="/mimir")
     app.include_router(mimir_router.router, prefix="/api/v1/mimir", include_in_schema=False)

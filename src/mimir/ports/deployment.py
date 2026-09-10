@@ -38,6 +38,7 @@ class WardenOverrides(BaseModel):
 
 
 class DeploymentRequest(BaseModel):
+    tenant_id: str = Field(default="", exclude=True)
     name: str = Field(pattern=r"^[a-z][a-z0-9-]{0,39}$")
     backend: Literal["mimir", "gbrain"]
     dream: DreamSchedule = Field(default_factory=DreamSchedule)
@@ -63,7 +64,7 @@ class DeploymentRequest(BaseModel):
 
 class KnowledgeDeploymentPort(ABC):
     @abstractmethod
-    async def list_deployments(self) -> dict[str, Any]: ...
+    async def list_deployments(self, *, tenant_id: str = "") -> dict[str, Any]: ...
 
     @abstractmethod
     async def deploy(self, request: DeploymentRequest) -> dict[str, Any]: ...
@@ -71,10 +72,13 @@ class KnowledgeDeploymentPort(ABC):
     def mounted_ports(self) -> list[dict]:
         return []
 
-    async def inspect_deployment(self, name: str) -> dict:
+    async def discover_mounts(self, tenant_id: str, authorization: str = "") -> list[dict]:
+        return [m for m in self.mounted_ports() if m.get("tenant_id", "") == tenant_id]
+
+    async def inspect_deployment(self, name: str, *, tenant_id: str = "") -> dict:
         raise NotImplementedError("Deployment inspection is not supported by this target")
 
-    async def control(self, name: str, action: str) -> dict:
+    async def control(self, name: str, action: str, *, tenant_id: str = "") -> dict:
         raise NotImplementedError("Lifecycle control is not supported by this target")
 
     async def close(self) -> None:

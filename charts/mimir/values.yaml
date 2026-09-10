@@ -12,6 +12,8 @@ global:
 niuu:
   cluster: ""
   instanceId: ""
+  # Owning tenant for named instances; empty denotes an operator-shared service.
+  tenantId: ""
 
 replicaCount: 1
 

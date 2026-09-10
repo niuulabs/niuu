@@ -25,6 +25,9 @@ spec:
         checksum/config: {{ include (print $.Template.BasePath "/config.yaml") . | sha256sum }}
     spec:
       automountServiceAccountToken: false
+      {{- if .Values.connection.enabled }}
+      serviceAccountName: {{ include "gbrain.name" . }}-connection
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -70,9 +73,28 @@ spec:
               drop: [ALL]
           resources: {{ toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            {{- if .Values.connection.enabled }}
+            - {name: connection-identity, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
+            {{- end }}
             - {name: data, mountPath: /data}
             - {name: config, mountPath: /etc/gbrain, readOnly: true}
       volumes:
+        {{- if .Values.connection.enabled }}
+        - name: connection-identity
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - {key: ca.crt, path: ca.crt}
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef: {fieldPath: metadata.namespace}
+        {{- end }}
         - name: data
           persistentVolumeClaim:
             claimName: {{ default (include "gbrain.name" .) .Values.persistence.existingClaim }}

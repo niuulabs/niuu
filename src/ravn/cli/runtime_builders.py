@@ -861,7 +861,10 @@ def _build_mimir(settings: Settings) -> Any:
         for inst in settings.mimir.instances:
             if inst.adapter:
                 cls = _import_class(inst.adapter)
-                port: Any = cls(**_inject_secrets(dict(inst.kwargs), inst.secret_kwargs_env))
+                kwargs = _inject_secrets(dict(inst.kwargs), inst.secret_kwargs_env)
+                if issubclass(cls, HttpMimirAdapter) and inst.auth is not None:
+                    kwargs["auth"] = _build_mimir_auth(settings, inst.auth)
+                port: Any = cls(**kwargs)
             elif inst.path:
                 port = MarkdownMimirAdapter(root=inst.path)
             elif inst.url:

@@ -69,7 +69,9 @@ class HttpMimirAdapter(MimirPort):
         auth: MimirAuth | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
         environment_id: str = "",
+        mount: str | None = None,
     ) -> None:
+        self._mount = mount
         self._base_url = base_url.rstrip("/")
         self._environment_id = environment_id
         self._auth = auth
@@ -148,6 +150,10 @@ class HttpMimirAdapter(MimirPort):
         is the single place that can report whether the shared knowledge base
         is reachable at all.
         """
+        if self._mount is not None:
+            kwargs["params"] = {**(kwargs.get("params") or {}), "mount": self._mount}
+            if isinstance(kwargs.get("json"), dict):
+                kwargs["json"] = {**kwargs["json"], "mount": self._mount}
         started = monotonic()
         operation = f"{method} {path}"
         client = await self._get_client()

@@ -9,7 +9,7 @@ rules:
     resources: [helmreleases]
     verbs: [get, list, create, patch]
   - apiGroups: [""]
-    resources: [pods, pods/log]
+    resources: [pods, pods/log, services, secrets]
     verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

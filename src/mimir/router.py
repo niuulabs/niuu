@@ -31,6 +31,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Callable
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
 from posixpath import normpath
@@ -38,7 +39,17 @@ from typing import Annotated, Any, Literal
 from urllib.parse import unquote, urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from pydantic import BaseModel, ConfigDict, Field
 
 from mimir.compiled_truth import CompiledTruthPage
@@ -492,13 +503,20 @@ class SourceResponse(BaseModel):
 def _require_deploy_auth(
     user: Annotated[str | None, Header(alias="x-auth-user-id")] = None,
     roles: Annotated[str, Header(alias="x-auth-roles")] = "",
+    tenant: Annotated[str, Header(alias="x-auth-tenant")] = "",
 ) -> None:
     """Identity is supplied by the authenticated Niuu/Envoy gateway."""
     from niuu.adapters.identity_headers import parse_roles_header
 
     # Accept the configured gateway claim and its platform-normalized form.
-    if not user or not {"admin", "volundr:admin"}.intersection(parse_roles_header(roles)):
-        raise HTTPException(403, "Instance deployment requires an authenticated administrator")
+    if (
+        not user
+        or not tenant
+        or not {"admin", "volundr:admin"}.intersection(parse_roles_header(roles))
+    ):
+        raise HTTPException(
+            403, "Instance deployment requires an authenticated tenant administrator"
+        )
 
 
 def _require_write_auth(authorization: Annotated[str | None, Header()] = None) -> None:
@@ -823,6 +841,7 @@ async def _merged_mount_responses(
     default_role: str,
     registry_store: MimirRegistryStore | None,
     mounts: list[dict[str, Any]] | None = None,
+    tenant_id: str = "",
 ) -> list[MountResponse]:
     live_summaries = [
         await _summarize_mount(mount)
@@ -836,7 +855,7 @@ async def _merged_mount_responses(
         )
     ]
     live_by_name = {mount.name: mount for mount in live_summaries}
-    entries = registry_store.list_entries() if registry_store is not None else []
+    entries = registry_store.list_entries(tenant_id=tenant_id) if registry_store is not None else []
     if not entries:
         return sorted(live_summaries, key=lambda mount: mount.priority)
 
@@ -1041,7 +1060,13 @@ class MimirRouter:
         registry_store: MimirRegistryStore | None = None,
         eval_capture_dir: Path | None = None,
         deployment: KnowledgeDeploymentPort | None = None,
+        public_url: str = "",
+        tenant_id: str = "",
     ) -> None:
+        self._owner_tenant = tenant_id
+        self._public_url = public_url
+        self._tenant: ContextVar[str] = ContextVar("mimir_tenant", default="")
+        self._deployed_mounts: ContextVar[list] = ContextVar("mimir_deployed_mounts", default=[])
         self._deployment = deployment
         self._adapter = adapter
         self._name = name
@@ -1049,13 +1074,44 @@ class MimirRouter:
         self._registry_store = registry_store
         self._registry_local_ports: dict[str, tuple[str, MimirPort]] = {}
         self._eval_capture_dir = eval_capture_dir
-        self.router = APIRouter()
+        self.router = APIRouter(dependencies=[Depends(self._request_scope)])
         self._register_routes()
+
+    async def _request_scope(self, request: Request):
+        tenant = (
+            request.headers.get("x-auth-tenant", "")
+            if request.headers.get("x-auth-user-id")
+            else ""
+        )
+        if (
+            request.headers.get("x-auth-user-id")
+            and not tenant
+            and request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        ):
+            raise HTTPException(403, "An authenticated tenant is required for knowledge changes")
+        if self._owner_tenant and tenant != self._owner_tenant:
+            raise HTTPException(403, "Knowledge instance belongs to a different tenant")
+        tenant_token = self._tenant.set(tenant)
+        mounts_token = self._deployed_mounts.set([])
+        try:
+            if self._deployment is not None and "/deployments" not in request.url.path:
+                self._deployed_mounts.set(
+                    await self._deployment.discover_mounts(
+                        tenant, request.headers.get("authorization", "")
+                    )
+                )
+            yield
+        finally:
+            for mount in self._deployed_mounts.get():
+                if mount.get("close_after_request"):
+                    await mount["port"].aclose()
+            self._deployed_mounts.reset(mounts_token)
+            self._tenant.reset(tenant_token)
 
     def _registry_entry_by_name(self, mount_name: str) -> MimirRegistryEntry | None:
         if self._registry_store is None:
             return None
-        for entry in self._registry_store.list_entries():
+        for entry in self._registry_store.list_entries(tenant_id=self._tenant.get()):
             if entry.name == mount_name:
                 return entry
         return None
@@ -1102,12 +1158,12 @@ class MimirRouter:
             default_role=self._role,
         )
         if self._deployment is not None:
-            mounts.extend(self._deployment.mounted_ports())
+            mounts.extend(self._deployed_mounts.get())
         seen = {mount["name"] for mount in mounts}
         if self._registry_store is None:
             return mounts
 
-        for entry in self._registry_store.list_entries():
+        for entry in self._registry_store.list_entries(tenant_id=self._tenant.get()):
             if entry.name in seen:
                 continue
             port = self._registry_port(entry.name)
@@ -1203,6 +1259,7 @@ class MimirRouter:
                 default_name=self._name,
                 default_role=self._role,
                 registry_store=self._registry_store,
+                tenant_id=self._tenant.get(),
                 mounts=mounts,
             )
 
@@ -1227,23 +1284,31 @@ class MimirRouter:
                     for mount in mounts
                 ]
             else:
-                entries = self._registry_store.list_entries()
+                entries = self._registry_store.list_entries(tenant_id=self._tenant.get())
             names = {entry.name for entry in entries}
             if self._deployment is not None:
-                for mount in self._deployment.mounted_ports():
+                for mount in self._deployed_mounts.get():
                     connection = mount.get("connection")
+                    if mount.get("kind") == "remote" and self._public_url:
+                        connection = {
+                            "adapter": "ravn.adapters.mimir.http.HttpMimirAdapter",
+                            "kwargs": {"base_url": self._public_url, "mount": mount["name"]},
+                            "auth_ref": "workload:mimir",
+                        }
                     if mount["name"] in names or not connection:
                         continue
                     entries.append(
                         MimirRegistryEntry(
                             id=f"deployment:{mount['name']}",
                             name=mount["name"],
-                            kind="local",
+                            kind=mount.get("kind", "local"),
                             role=mount["role"],
                             **connection,
                             categories=mount["categories"],
                             default_read_priority=mount["priority"],
-                            desc="Managed local instance; session must run on this host.",
+                            desc=mount.get(
+                                "desc", "Managed local instance; session must run on this host."
+                            ),
                         )
                     )
             return [_registry_to_response(entry) for entry in entries]
@@ -1263,7 +1328,7 @@ class MimirRouter:
                 raise HTTPException(
                     422, "Use a configured mount adapter for authenticated connections"
                 )
-            entry = MimirRegistryEntry(**request.model_dump())
+            entry = MimirRegistryEntry(**request.model_dump(), tenant_id=self._tenant.get())
             self._registry_store.save_entry(entry)
             self._registry_local_ports.clear()
             return _registry_to_response(entry)
@@ -1280,7 +1345,7 @@ class MimirRouter:
                     detail="Registry persistence is not configured",
                 )
 
-            existing = self._registry_store.get_entry(entry_id)
+            existing = self._registry_store.get_entry(entry_id, tenant_id=self._tenant.get())
             if existing is None:
                 raise HTTPException(status_code=404, detail=f"Unknown registry mount: {entry_id}")
 
@@ -1304,7 +1369,7 @@ class MimirRouter:
                     detail="Registry persistence is not configured",
                 )
 
-            self._registry_store.delete_entry(entry_id)
+            self._registry_store.delete_entry(entry_id, tenant_id=self._tenant.get())
             self._registry_local_ports.clear()
 
         @router.get("/routing/rules", response_model=list[RoutingRuleResponse])
@@ -1636,6 +1701,7 @@ class MimirRouter:
                 port,
                 Path(root),
                 registry_store=self._registry_store,
+                tenant_id=self._tenant.get(),
             )
             return report.to_dict()
 
@@ -1699,6 +1765,7 @@ class MimirRouter:
                 port,
                 Path(root),
                 registry_store=self._registry_store,
+                tenant_id=self._tenant.get(),
             )
             return report.to_dict()
 
@@ -1823,7 +1890,7 @@ class MimirRouter:
         async def deployments(_auth: None = Depends(_require_deploy_auth)) -> dict:
             if self._deployment is None:
                 raise HTTPException(501, "No knowledge deployment target is configured")
-            return await self._deployment.list_deployments()
+            return await self._deployment.list_deployments(tenant_id=self._tenant.get())
 
         @router.get("/deployments/{name}")
         async def inspect_deployment(
@@ -1833,7 +1900,7 @@ class MimirRouter:
                 raise HTTPException(501, "No knowledge deployment target is configured")
             try:
                 return await self._deployment.inspect_deployment(
-                    f"{target}/{name}" if target else name
+                    f"{target}/{name}" if target else name, tenant_id=self._tenant.get()
                 )
             except ValueError as exc:
                 raise HTTPException(404, str(exc)) from exc
@@ -1848,7 +1915,7 @@ class MimirRouter:
                 raise HTTPException(501, "No knowledge deployment target is configured")
             try:
                 return await self._deployment.control(
-                    f"{target}/{name}" if target else name, action
+                    f"{target}/{name}" if target else name, action, tenant_id=self._tenant.get()
                 )
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
@@ -1863,7 +1930,9 @@ class MimirRouter:
             if self._deployment is None:
                 raise HTTPException(501, "No knowledge deployment target is configured")
             try:
-                return await self._deployment.deploy(request)
+                return await self._deployment.deploy(
+                    request.model_copy(update={"tenant_id": self._tenant.get()})
+                )
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
 
@@ -2049,7 +2118,8 @@ class MimirRouter:
             request: UpsertPageRequest,
             _auth: None = Depends(_require_write_auth),
         ) -> None:
-            await adapter.upsert_page(request.path, request.content, mimir=request.mount)
+            port, _ = self._resolve_port(request.mount)
+            await port.upsert_page(request.path, request.content)
 
         @router.delete("/page", status_code=204)
         async def delete_page(
@@ -2057,7 +2127,8 @@ class MimirRouter:
             mount: str | None = Query(default=None),
             _auth: None = Depends(_require_write_auth),
         ) -> None:
-            if not await adapter.delete_page(path, mimir=mount):
+            port, _ = self._resolve_port(mount)
+            if not await port.delete_page(path):
                 raise HTTPException(status_code=404, detail=f"Page not found: {path}")
 
         @router.post("/ingest", response_model=IngestResponse)

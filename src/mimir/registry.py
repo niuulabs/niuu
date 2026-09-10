@@ -19,6 +19,7 @@ class MimirRegistryEntry(BaseModel):
 
     id: str = Field(default_factory=lambda: f"mimir-{uuid4().hex[:12]}")
     name: str
+    tenant_id: str = ""
     kind: RegistryMountKind = "remote"
     lifecycle: RegistryMountLifecycle = "registered"
     role: str = "shared"
@@ -44,12 +45,18 @@ class MimirRegistryStore:
         self._entries: list[MimirRegistryEntry] = []
         self._load()
 
-    def list_entries(self) -> list[MimirRegistryEntry]:
-        return list(self._entries)
+    def list_entries(self, *, tenant_id: str | None = None) -> list[MimirRegistryEntry]:
+        return [
+            e
+            for e in self._entries
+            if tenant_id is None or not e.tenant_id or e.tenant_id == tenant_id
+        ]
 
-    def get_entry(self, entry_id: str) -> MimirRegistryEntry | None:
+    def get_entry(
+        self, entry_id: str, *, tenant_id: str | None = None
+    ) -> MimirRegistryEntry | None:
         for entry in self._entries:
-            if entry.id == entry_id:
+            if entry.id == entry_id and (tenant_id is None or entry.tenant_id == tenant_id):
                 return entry
         return None
 
@@ -65,8 +72,12 @@ class MimirRegistryStore:
         self._save()
         return entry
 
-    def delete_entry(self, entry_id: str) -> None:
-        self._entries = [entry for entry in self._entries if entry.id != entry_id]
+    def delete_entry(self, entry_id: str, *, tenant_id: str | None = None) -> None:
+        self._entries = [
+            entry
+            for entry in self._entries
+            if entry.id != entry_id or (tenant_id is not None and entry.tenant_id != tenant_id)
+        ]
         self._save()
 
     def ensure_entry(

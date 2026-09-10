@@ -215,3 +215,29 @@ def test_database_admin_bootstrap_is_isolated_from_application_credentials():
     assert "db-superuser" in yaml.safe_dump(job)
     assert "db-superuser" not in yaml.safe_dump(docs["Deployment"])
     assert "Job" not in {d["kind"] for d in yaml.safe_load_all(render().stdout)}
+
+
+def test_connection_bootstrap_uses_native_scoped_token_and_one_secret():
+    import yaml
+
+    result = render("--set", "connection.enabled=true")
+    assert result.returncode == 0, result.stderr
+    manifests = list(yaml.safe_load_all(result.stdout))
+    role = next(d for d in manifests if d and d.get("kind") == "Role")
+    assert role["rules"] == [
+        {
+            "apiGroups": [""],
+            "resources": ["secrets"],
+            "resourceNames": ["brain-gbrain-connection"],
+            "verbs": ["get", "update"],
+        }
+    ]
+    config = next(d for d in manifests if d and d.get("kind") == "ConfigMap")["data"]
+    assert '"--scopes", "read,write"' in config["connection.ts"]
+    assert "tls: {ca:" in config["connection.ts"]
+    assert "bun /etc/gbrain/connection.ts" in config["start.sh"]
+    pod = next(d for d in manifests if d and d.get("kind") == "Deployment")["spec"]["template"][
+        "spec"
+    ]
+    assert pod["serviceAccountName"] == "brain-gbrain-connection"
+    assert pod["automountServiceAccountToken"] is False

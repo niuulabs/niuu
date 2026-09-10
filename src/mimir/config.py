@@ -203,6 +203,8 @@ class MimirServiceConfig(BaseSettings):
         default=None,
         description="Category filter for domain-scoped Mímirs. None means all categories.",
     )
+    tenant_id: str = Field(default="", description="Owning tenant; enforced on instance API calls.")
+
     announce_url: str | None = Field(
         default=None,
         description=(
