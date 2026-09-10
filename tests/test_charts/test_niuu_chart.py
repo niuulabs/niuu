@@ -63,6 +63,10 @@ class TestIngressTemplate:
         assert "$root.Values.guild.enabled" in helpers_tpl
         assert "$root.Values.volundr.enabled" in helpers_tpl
 
+    def test_knowledge_deployments_route_to_guild(self) -> None:
+        rendered = _render_niuu_chart()
+        assert _service_for_path(rendered, "/api/v1/niuu/knowledge") == "niuu-test-guild"
+
     def test_renders_forge_route_to_guild_when_guild_enabled(self) -> None:
         """Render proof for the default aggregate deployment."""
         rendered = _render_niuu_chart()
