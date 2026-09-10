@@ -496,7 +496,8 @@ def _require_deploy_auth(
     """Identity is supplied by the authenticated Niuu/Envoy gateway."""
     from niuu.adapters.identity_headers import parse_roles_header
 
-    if not user or "volundr:admin" not in parse_roles_header(roles):
+    # Accept the configured gateway claim and its platform-normalized form.
+    if not user or not {"admin", "volundr:admin"}.intersection(parse_roles_header(roles)):
         raise HTTPException(403, "Instance deployment requires an authenticated administrator")
 
 

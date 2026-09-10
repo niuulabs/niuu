@@ -216,6 +216,9 @@ async def test_warden_overrides_preserve_target_settings_and_secrets():
     "roles,user,expected",
     [
         (["volundr:developer", "volundr:admin"], "admin", 200),
+        (["admin"], "admin", 200),
+        (["developer"], "user", 403),
+        (["admin"], "", 403),
         (["volundr:developer"], "user", 403),
         (["volundr:admin"], "", 403),
     ],
