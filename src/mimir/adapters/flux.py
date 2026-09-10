@@ -108,6 +108,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         values: dict[str, Any] = {
             "image": {"repository": repository, "tag": tag},
             "persistence": {"storageClass": self.storage_class},
+            "niuu": {"cluster": self.cluster, "instanceId": request.name},
         }
         if backend == "gbrain":
             values.update(
@@ -215,7 +216,10 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
                 {
                     "spec": {
                         "chart": {"spec": {"version": self.versions[backend]}},
-                        "values": {"image": {"repository": repository, "tag": tag}},
+                        "values": {
+                            "image": {"repository": repository, "tag": tag},
+                            "niuu": {"cluster": self.cluster, "instanceId": name},
+                        },
                     }
                 },
             )

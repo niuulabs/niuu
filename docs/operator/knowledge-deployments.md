@@ -34,3 +34,11 @@ schema migrations. This does not require a superuser or a Doppler credential.
 Use **Inspect → Update** to move a Flux-managed instance to the chart/image
 versions configured by its deployment target, preserving its database, dream
 settings, and warden configuration.
+
+Flux deployment targets supply the cluster and stable instance identity to both
+charts. Observatory's existing Kubernetes discovery picks them up when its
+namespace scope and label selector cover the deployment target. Each instance
+keeps its own identity, health and service endpoint. Managed gbrain databases
+carry the same cluster label and a separate database identity linked from the
+service. For standalone Helm installs, set `niuu.cluster` (and optionally
+`niuu.instanceId`); Mimir also honors the umbrella `global.niuu.cluster`.

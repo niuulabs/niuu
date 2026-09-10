@@ -8,6 +8,11 @@ global:
     # -- Deployment cluster label used by Guild/Observatory discovery.
     cluster: unknown
 
+# Optional per-instance discovery identity, supplied by the deployment target.
+niuu:
+  cluster: ""
+  instanceId: ""
+
 replicaCount: 1
 
 # -- How many old ReplicaSets to retain.

@@ -22,3 +22,10 @@ app.kubernetes.io/component: knowledge-service
       key: uri
 {{- end }}
 {{- end -}}
+
+{{/* Discovery metadata is separate from immutable workload selectors. */}}
+{{- define "gbrain.niuuLabels" -}}
+niuu.world/cluster: {{ .Values.niuu.cluster | quote }}
+niuu.world/namespace: {{ .Release.Namespace | quote }}
+niuu.world/entity-id: {{ .Values.niuu.instanceId | default .Release.Name | quote }}
+{{- end -}}

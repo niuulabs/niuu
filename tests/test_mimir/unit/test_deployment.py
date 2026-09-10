@@ -247,6 +247,7 @@ async def test_flux_target_supplies_storage_class_to_both_engines():
         await a.deploy(DeploymentRequest(name="brain", backend=backend))
         values = api.create_namespaced_custom_object.call_args.args[-1]["spec"]["values"]
         assert values["persistence"]["storageClass"] == "harvester-data"
+        assert values["niuu"] == {"cluster": a.cluster, "instanceId": "brain"}
         if backend == "gbrain":
             assert values["postgres"]["storageClass"] == "harvester-data"
 
@@ -271,7 +272,10 @@ async def test_update_uses_target_release_versions_without_replacing_instance_se
         == "application/merge-patch+json"
     )
     assert patch["chart"]["spec"]["version"] == "0.1.0"
-    assert patch["values"] == {"image": {"repository": "registry/gbrain", "tag": "0.48.5.0"}}
+    assert patch["values"] == {
+        "image": {"repository": "registry/gbrain", "tag": "0.48.5.0"},
+        "niuu": {"cluster": a.cluster, "instanceId": "brain"},
+    }
     obj["metadata"]["labels"]["niuu.world/managed-by"] = "other"
     with pytest.raises(ValueError, match="not managed"):
         await a.control("brain", "update")

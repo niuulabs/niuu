@@ -1,3 +1,7 @@
+# Observatory discovery identity; supplied by the deployment target in Niuu.
+niuu:
+  cluster: unknown
+  instanceId: ""
 # Published by the Niuu container release pipeline.
 image:
   repository: ghcr.io/niuulabs/gbrain

@@ -128,3 +128,73 @@ def test_managed_postgres_uses_operator_credentials_and_configured_storage():
     for container in containers:
         env = next(e for e in container["env"] if e["name"] == "GBRAIN_DATABASE_URL")
         assert env["valueFrom"]["secretKeyRef"] == {"name": "brain-gbrain-db-app", "key": "uri"}
+
+
+@pytest.mark.parametrize("backend", ["mimir", "gbrain"])
+def test_discovery_identity_keeps_instances_distinct_and_selectors_stable(backend):
+    def workload(instance):
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                instance,
+                str(CHART.parent / backend),
+                "--namespace",
+                "knowledge",
+                "--set",
+                "niuu.cluster=ymir",
+                "--set",
+                f"niuu.instanceId={instance}",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return next(d for d in yaml.safe_load_all(result.stdout) if d["kind"] == "Deployment")
+
+    from observatory.entity_discovery import KubernetesDiscoveryAdapter
+
+    discovery = KubernetesDiscoveryAdapter(cluster="ymir")
+    ids = []
+    for name in ("brain-one", "brain-two"):
+        deployment = workload(name)
+        for metadata in (deployment["metadata"], deployment["spec"]["template"]["metadata"]):
+            assert metadata["labels"]["niuu.world/cluster"] == "ymir"
+            assert metadata["labels"]["niuu.world/entity-id"] == name
+        assert not any(
+            key.startswith("niuu.world/") for key in deployment["spec"]["selector"]["matchLabels"]
+        )
+        entity = discovery._entity_from_k8s("deployment", deployment)
+        assert entity.name == name
+        ids.append(entity.id)
+    assert ids[0] != ids[1]
+
+
+def test_managed_database_discovery_relationship():
+    result = render(
+        "--namespace",
+        "knowledge",
+        "--set",
+        "engine=postgres",
+        "--set",
+        "postgres.enabled=true",
+        "--set",
+        "niuu.cluster=ymir",
+    )
+    assert result.returncode == 0, result.stderr
+    docs = {d["kind"]: d for d in yaml.safe_load_all(result.stdout)}
+    from observatory.entity_discovery import KubernetesDiscoveryAdapter
+
+    database = KubernetesDiscoveryAdapter(cluster="ymir")._entity_from_k8s(
+        "pod",
+        {
+            "metadata": {
+                "name": "brain-db-1",
+                "namespace": "knowledge",
+                "labels": docs["Cluster"]["spec"]["inheritedMetadata"]["labels"],
+            }
+        },
+    )
+    assert (
+        docs["Deployment"]["metadata"]["annotations"]["observatory.niuu.world/uses"] == database.id
+    )
