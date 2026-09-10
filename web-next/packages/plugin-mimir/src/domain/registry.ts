@@ -7,6 +7,9 @@ export interface RegistryMount {
   url: string;
   path: string;
   categories: string[] | null;
+  adapter?: string;
+  kwargs?: Record<string, unknown>;
+  secretKwargsEnv?: Record<string, string>;
   authRef?: string | null;
   defaultReadPriority: number;
   enabled: boolean;

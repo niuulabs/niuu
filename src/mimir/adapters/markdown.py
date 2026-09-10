@@ -55,6 +55,7 @@ except ImportError:
 from mimir.config import EvidenceConfig, RankingConfig
 from mimir.learning import consolidate_source as compute_source_consolidation
 from mimir.ranking import apply_boosts, tokenize, zone_factor
+from niuu.domain.knowledge_graph import extract_typed_edges as _extract_typed_edges
 from niuu.domain.mimir import (
     OPERATIONAL_SOURCE_TYPES,
     EntityType,
@@ -241,20 +242,6 @@ _CATEGORY_TO_PAGE_TYPE: dict[str, str] = {
 _COMPILED_TRUTH_HEADING = "## Compiled Truth"
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
 
-# Typed relationship edges (NIU-1058), an additive FORMAT.md extension:
-#   - [[slug]] — rel: works_at — description
-# Untyped relationship lines remain valid; the rel label is optional metadata.
-_TYPED_EDGE_RE = re.compile(
-    r"^\s*-\s*\[\[([^\[\]]+)\]\]\s*[—-]+\s*rel:\s*([a-zA-Z_]+)", re.MULTILINE
-)
-
-
-def _extract_typed_edges(content: str) -> dict[str, str]:
-    """Map wikilink slug → relationship type for typed edge lines."""
-    return {
-        slug.strip().lower(): rel_type.lower() for slug, rel_type in _TYPED_EDGE_RE.findall(content)
-    }
-
 
 def _parse_meta_frontmatter(content: str) -> dict[str, Any]:
     """Parse the frontmatter fields MimirPageMeta carries; tolerant of junk."""
@@ -341,6 +328,22 @@ class MarkdownMimirAdapter(MimirPort):
             automatically indexed on write.  When ``None``, the adapter
             falls back to its built-in keyword-counting search.
     """
+
+    async def inspect_instance(self) -> dict:
+        summary = await self.summarize()
+        return {
+            "backend": "Markdown Mimir",
+            "metrics": {
+                "Pages": summary.page_count,
+                "Sources": summary.source_count,
+                "Categories": len(summary.categories),
+                "Last write": summary.last_write.isoformat() if summary.last_write else "None",
+                "Lint checked": summary.lint_checked_at.isoformat()
+                if summary.lint_checked_at
+                else "Never",
+            },
+            "unavailable": ["Compilation history", "Source coverage"],
+        }
 
     def __init__(
         self,

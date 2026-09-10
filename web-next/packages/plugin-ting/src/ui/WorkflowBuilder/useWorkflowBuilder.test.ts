@@ -355,6 +355,9 @@ describe('useWorkflowBuilder — addNode', () => {
           path: '/shared',
           categories: ['decision', 'entity'],
           authRef: 'mimir-secret',
+          adapter: 'ravn.adapters.mimir.gbrain.GBrainMimirAdapter',
+          kwargs: { mcp_url: 'https://brain.test/mcp' },
+          secretKwargsEnv: { api_token: 'BRAIN_TOKEN' },
           defaultReadPriority: 3,
           enabled: true,
           healthStatus: 'healthy',
@@ -367,6 +370,9 @@ describe('useWorkflowBuilder — addNode', () => {
     const resourceNode = result.current.workflow.nodes.find((node) => node.kind === 'resource');
     expect(resourceNode).toBeDefined();
     expect(resourceNode?.label).toBe('Shared Mimir');
+    expect(resourceNode?.adapter).toBe('ravn.adapters.mimir.gbrain.GBrainMimirAdapter');
+    expect(resourceNode?.kwargs).toEqual({ mcp_url: 'https://brain.test/mcp' });
+    expect(resourceNode?.secretKwargsEnv).toEqual({ api_token: 'BRAIN_TOKEN' });
     expect(resourceNode?.position).toEqual({ x: 420, y: 240 });
     expect(result.current.workflow.resourceBindings).toHaveLength(1);
     expect(result.current.workflow.resourceBindings?.[0]?.targetType).toBe('workflow');

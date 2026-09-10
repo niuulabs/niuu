@@ -16,3 +16,9 @@ data:
   {{- if .Values.config.categories }}
   MIMIR_CATEGORIES: {{ .Values.config.categories | join "," | quote }}
   {{- end }}
+
+  {{- if .Values.knowledgeDeployment }}
+  config.yaml: |
+    deployment:
+      {{- toYaml .Values.knowledgeDeployment | nindent 6 }}
+  {{- end }}

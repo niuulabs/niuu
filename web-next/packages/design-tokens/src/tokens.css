@@ -215,6 +215,16 @@
   --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1);
   --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1);
 
+  /* Knowledge categories: calm categorical colors, separate from status colors. */
+  --knowledge-lavender: #b8a5ed;
+  --knowledge-blue: #83b5e8;
+  --knowledge-mint: #80c8b6;
+  --knowledge-sand: #dbb080;
+  --knowledge-periwinkle: #93a2dc;
+  --knowledge-sage: #c6cc8d;
+  --knowledge-aqua: #8bbfcb;
+  --knowledge-lilac: #baa9cf;
+
   /* ── Motion ──────────────────────────────────────────── */
   --transition-fast: 150ms ease;
   --transition-normal: 200ms ease;

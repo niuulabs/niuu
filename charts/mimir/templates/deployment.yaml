@@ -3,6 +3,11 @@ kind: Deployment
 metadata:
   name: {{ include "mimir.fullname" . }}
   labels:
+    {{- if .Values.warden.enabled }}
+    niuu.world/kind: warden
+    niuu.world/warden-id: {{ printf "%s-warden" .Values.config.name | quote }}
+    niuu.world/mimir-mount: {{ .Values.config.name | quote }}
+    {{- end }}
     {{- include "mimir.labels" . | nindent 4 }}
   {{- with .Values.deploymentAnnotations }}
   annotations:
@@ -21,6 +26,7 @@ spec:
   template:
     metadata:
       annotations:
+        checksum/warden: {{ include (print $.Template.BasePath "/warden.yaml") . | sha256sum }}
         {{- include "mimir.checksumAnnotations" . | nindent 8 }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -71,6 +77,7 @@ spec:
             - {{ .Values.config.name | default "local" | quote }}
             - "--role"
             - {{ .Values.config.role | default "local" | quote }}
+            - {{ ternary "--eval-capture" "--no-eval-capture" .Values.config.evalCapture | quote }}
             {{- if .Values.config.announceUrl }}
             - "--announce-url"
             - {{ .Values.config.announceUrl | quote }}
@@ -80,6 +87,10 @@ spec:
               containerPort: {{ .Values.service.targetPort | default 7477 }}
               protocol: TCP
           env:
+            {{- if .Values.knowledgeDeployment }}
+            - name: MIMIR_CONFIG
+              value: /etc/mimir/config.yaml
+            {{- end }}
             - name: LOG_LEVEL
               value: {{ .Values.config.logLevel | default "info" | quote }}
             {{- with .Values.extraEnv }}
@@ -123,6 +134,11 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
+            {{- if .Values.knowledgeDeployment }}
+            - name: deployment-config
+              mountPath: /etc/mimir
+              readOnly: true
+            {{- end }}
             - name: data
               mountPath: {{ .Values.config.dataPath | default "/data/mimir" }}
             - name: tmp
@@ -165,7 +181,39 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 15
         {{- end }}
+        {{- if .Values.warden.enabled }}
+        - name: warden
+          image: {{ required "warden.image is required" .Values.warden.image | quote }}
+          command: ["python", "-m", "ravn.cli.embedded_warden"]
+          args:
+            - --spec
+            - /etc/warden/spec.yaml
+            - --name
+            - {{ .Values.config.name | quote }}
+            - --data-path
+            - {{ .Values.config.dataPath | quote }}
+          env:
+            - name: HOME
+              value: {{ printf "%s/.warden" .Values.config.dataPath | quote }}
+          {{- with .Values.warden.envFrom }}
+          envFrom: {{ toYaml . | nindent 12 }}
+          {{- end }}
+          resources: {{ toYaml .Values.warden.resources | nindent 12 }}
+          volumeMounts:
+            - {name: data, mountPath: {{ .Values.config.dataPath | quote }}}
+            - {name: warden-config, mountPath: /etc/warden, readOnly: true}
+        {{- end }}
       volumes:
+        {{- if .Values.warden.enabled }}
+        - name: warden-config
+          configMap:
+            name: {{ include "mimir.fullname" . }}-warden
+        {{- end }}
+        {{- if .Values.knowledgeDeployment }}
+        - name: deployment-config
+          configMap:
+            name: {{ include "mimir.fullname" . }}
+        {{- end }}
         - name: data
           {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:

@@ -39,7 +39,7 @@ jobs:
       - name: Lint leaf charts
         if: inputs.run_lint
         run: |
-          for chart in agent ravn skuld volundr ting skuld-planner niuu-shared bifrost; do
+          for chart in agent ravn skuld volundr ting skuld-planner niuu-shared bifrost mimir; do
             echo "::group::helm lint $chart"
             helm lint "charts/${chart}/"
             echo "::endgroup::"
@@ -48,6 +48,10 @@ jobs:
       - name: Lint Bifrost Switchyard values
         if: inputs.run_lint
         run: helm lint charts/bifrost -f charts/bifrost/values-switchyard-nemotron.yaml
+
+      - name: Lint gbrain chart
+        if: inputs.run_lint
+        run: helm lint charts/gbrain --set image.repository=ghcr.io/niuulabs/gbrain --set existingSecret=gbrain-runtime
 
       - name: Lint niuu umbrella chart
         if: inputs.run_lint

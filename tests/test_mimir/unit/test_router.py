@@ -789,7 +789,8 @@ def test_graph_has_nodes(client_with_page: TestClient) -> None:
     assert resp.status_code == 200
     data = resp.json()
     assert len(data["nodes"]) == 1
-    assert data["nodes"][0]["id"] == "technical/test.md"
+    assert data["nodes"][0]["path"] == "technical/test.md"
+    assert data["nodes"][0]["mount"] == "test"
     assert data["nodes"][0]["category"] == "technical"
 
 
@@ -1254,7 +1255,11 @@ def test_graph_edges_entity_filters_and_type_inference(client: TestClient) -> No
     edges = graph.json()["edges"]
     assert len(edges) == 1
     edge_pair = {edges[0]["source"], edges[0]["target"]}
-    assert edge_pair == {"policies/directives/style.md", "policies/preferences/team.md"}
+    paths = {node["id"]: node["path"] for node in graph.json()["nodes"]}
+    assert {paths[node_id] for node_id in edge_pair} == {
+        "policies/directives/style.md",
+        "policies/preferences/team.md",
+    }
 
     people = client.get("/mimir/entities", params={"kind": "person"})
     assert people.status_code == 200
@@ -1401,3 +1406,125 @@ def test_page_response_still_reports_its_mount(client: TestClient) -> None:
 
     assert resp.status_code == 200
     assert resp.json()["mounts"] == ["test"]
+
+
+def test_graph_keeps_duplicate_paths_in_separate_mounts(tmp_path):
+    client = TestClient(_make_composite_app(tmp_path))
+    for mount in ("local", "shared"):
+        assert (
+            client.put(
+                "/mimir/page",
+                json={
+                    "path": "research/comparison.md",
+                    "content": "# Comparison\n\n[[result]]",
+                    "mount": mount,
+                },
+            ).status_code
+            == 204
+        )
+        assert (
+            client.put(
+                "/mimir/page",
+                json={
+                    "path": "research/result.md",
+                    "content": "# Result",
+                    "mount": mount,
+                },
+            ).status_code
+            == 204
+        )
+    response = client.get("/mimir/graph")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["nodes"]) == 4
+    assert len({node["id"] for node in data["nodes"]}) == 4
+    by_id = {node["id"]: node for node in data["nodes"]}
+    assert len(data["edges"]) == 2
+    assert all(by_id[e["source"]]["mount"] == by_id[e["target"]]["mount"] for e in data["edges"])
+    selected = client.get("/mimir/graph?mount=shared").json()
+    assert len(selected["nodes"]) == 2
+    assert {node["mount"] for node in selected["nodes"]} == {"shared"}
+
+
+def test_graph_preserves_shared_provenance_across_mounts(tmp_path):
+    client = TestClient(_make_composite_app(tmp_path))
+    for mount in ("local", "shared"):
+        response = client.put(
+            "/mimir/page",
+            json={
+                "path": f"research/{mount}.md",
+                "content": "# Shared evidence\n\n<!-- sources: source-paper -->",
+                "mount": mount,
+            },
+        )
+        assert response.status_code == 204
+    data = client.get("/mimir/graph").json()
+    assert len(data["nodes"]) == 2
+    assert len(data["edges"]) == 1
+    assert data["edges"][0]["type"] == "shared_source"
+
+
+def test_remote_registry_connection_becomes_a_routable_mount(tmp_path):
+    from mimir.registry import MimirRegistryEntry
+    from ravn.adapters.mimir.http import HttpMimirAdapter
+
+    store = MimirRegistryStore(tmp_path / "registry.json")
+    entry = store.save_entry(MimirRegistryEntry(name="ymir", url="http://ymir.test"))
+    router = MimirRouter(MarkdownMimirAdapter(root=tmp_path / "local"), registry_store=store)
+    port, name = router._resolve_port("ymir")
+    assert isinstance(port, HttpMimirAdapter)
+    assert name == "ymir"
+    assert port._base_url == "http://ymir.test"
+    assert router._resolve_port("ymir")[0] is port
+    store.save_entry(entry.model_copy(update={"url": "http://moved.test"}))
+    assert router._resolve_port("ymir")[0]._base_url == "http://moved.test"
+    store.save_entry(entry.model_copy(update={"enabled": False}))
+    assert "ymir" not in {m["name"] for m in router._mount_definitions()}
+
+
+def test_federation_diagnostics_read_configured_capture_directory(tmp_path):
+    from ravn.adapters.mimir.composite import CompositeMimirAdapter
+    from ravn.domain.mimir import MimirMount
+
+    adapter = CompositeMimirAdapter(
+        mounts=[
+            MimirMount(
+                name="notes", port=MarkdownMimirAdapter(root=tmp_path / "notes"), role="local"
+            )
+        ]
+    )
+    app = FastAPI()
+    app.include_router(MimirRouter(adapter, eval_capture_dir=tmp_path / "captures").router)
+    with TestClient(app) as client:
+        assert client.get("/eval/queries").status_code == 404
+        assert (
+            client.get("/search", params={"q": "test query", "mount": "notes"}).status_code == 200
+        )
+        stats = client.get("/eval/queries").json()
+        assert stats["total"] == 1
+        assert stats["recent"][0]["query"] == "test query"
+        assert client.get("/eval/latest").status_code == 404
+        (tmp_path / "captures/eval-latest.json").write_text('{"query_count": 2}')
+        assert client.get("/eval/latest").json() == {"query_count": 2}
+
+
+def test_doctor_can_check_a_selected_filesystem_mount_in_a_federation(tmp_path):
+    client = TestClient(_make_composite_app(tmp_path))
+    response = client.get("/mimir/doctor", params={"mount": "local"})
+    assert response.status_code == 200
+    assert len(response.json()["checks"]) == 8
+
+
+@pytest.mark.parametrize(
+    "cause,status", [(NotImplementedError("unsupported lint"), 501), (RuntimeError("offline"), 503)]
+)
+def test_federated_lint_failure_returns_json(tmp_path: Path, monkeypatch, cause, status) -> None:
+    from ravn.domain.exceptions import MimirUnavailableError
+
+    async def fail_lint(self, fix=False):
+        raise MimirUnavailableError("Mount cannot run lint") from cause
+
+    monkeypatch.setattr(CompositeMimirAdapter, "lint", fail_lint)
+    response = TestClient(_make_composite_app(tmp_path)).get("/mimir/lint")
+    assert response.status_code == status
+    assert response.json() == {"detail": "Mount cannot run lint"}

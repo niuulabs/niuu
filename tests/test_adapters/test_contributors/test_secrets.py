@@ -532,3 +532,26 @@ class TestSecretsContributor:
     async def test_cleanup_noop_without_repo(self, session):
         c = SecretsContributor()
         await c.cleanup(session, SessionContext())
+
+
+async def test_memory_well_auth_ref_injects_owner_credential_without_manual_selection(session):
+    store = AsyncMock()
+    store.get.return_value = MagicMock(keys=("token",))
+    injection = AsyncMock()
+    injection.pod_spec_additions.return_value = PodSpecAdditions()
+    contributor = SecretInjectionContributor(credential_store=store, secret_injection=injection)
+    context = SessionContext(
+        workload_config={
+            "mimir": {"registry_refs": [{"mount_name": "brain", "auth_ref": "brain-token"}]}
+        }
+    )
+    await contributor.contribute(session, context)
+    store.get.assert_awaited_with("user", session.owner_id, "brain-token")
+    mappings = injection.ensure_secret_provider_class.call_args.args[1]
+    assert mappings[0].file_mappings == {"/run/secrets/mimir/brain-token/token": "token"}
+    injection.ensure_secret_provider_class.side_effect = RuntimeError("credential service down")
+    with pytest.raises(RuntimeError, match="credential service down"):
+        await contributor.contribute(session, context)
+    store.get.return_value = None
+    with pytest.raises(ValueError, match="token field"):
+        await contributor.contribute(session, context)

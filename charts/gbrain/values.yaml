@@ -1,0 +1,37 @@
+# Published by the Niuu container release pipeline.
+image:
+  repository: ghcr.io/niuulabs/gbrain
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+persistence:
+  existingClaim: ""
+  storageClass: ""
+  size: 5Gi
+service:
+  port: 3131
+# Secret containing GBRAIN_ADMIN_BOOTSTRAP_TOKEN (32+ URL-safe characters).
+# May also contain model provider keys and GBRAIN_DATABASE_URL for PostgreSQL.
+existingSecret: ""
+# pglite uses the PVC; postgres requires GBRAIN_DATABASE_URL in existingSecret.
+engine: pglite
+embedding:
+  enabled: false
+  model: ""
+  dimensions: 1024
+# Additional native gbrain config, excluding credentials and storage settings.
+config: {}
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+dream:
+  enabled: false
+  schedule: "0 2 * * *"
+  # PostgreSQL only: a separate job must not open the live PGLite store.
+  phases: [lint, backlinks, orphans]
+  activeDeadlineSeconds: 1800
+
+replicaCount: 1

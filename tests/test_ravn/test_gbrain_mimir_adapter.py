@@ -248,7 +248,7 @@ class TestRetrieval:
         await adapter.close()
 
     @respx.mock
-    async def test_list_pages_passes_a_slugified_prefix(self) -> None:
+    async def test_list_pages_filters_prefix_locally(self) -> None:
         route = respx.post(_MCP).mock(
             return_value=httpx.Response(200, json=_tool_result(structured=[_page("wiki/x")]))
         )
@@ -256,10 +256,12 @@ class TestRetrieval:
 
         metas = await adapter.list_pages(prefix="wiki/entities/")
 
-        assert json.loads(route.calls[0].request.content)["params"]["arguments"]["prefix"] == (
-            "wiki/entities"
-        )
-        assert [m.path for m in metas] == ["wiki/x"]
+        assert json.loads(route.calls[0].request.content)["params"]["arguments"] == {
+            "limit": 100,
+            "offset": 0,
+            "sort": "slug",
+        }
+        assert metas == []
         await adapter.close()
 
 
@@ -345,6 +347,27 @@ class TestWrites:
 
 
 class TestFailuresAreLoud:
+    @pytest.mark.parametrize("method", ["read_page", "get_page"])
+    @pytest.mark.parametrize(
+        "error,expected",
+        [
+            ({"error": "page_not_found", "message": "Page not found: log"}, FileNotFoundError),
+            ({"error": "db_access", "message": "database unavailable"}, RuntimeError),
+            (["page_not_found"], RuntimeError),
+            ("rate limited", RuntimeError),
+        ],
+    )
+    @respx.mock
+    async def test_page_error_contract(self, method, error, expected) -> None:
+        text = error if isinstance(error, str) else json.dumps(error)
+        respx.post(_MCP).mock(
+            return_value=httpx.Response(200, json=_tool_result(text=text, is_error=True))
+        )
+        adapter = _adapter()
+        with pytest.raises(expected):
+            await getattr(adapter, method)("log.md")
+        await adapter.close()
+
     @respx.mock
     async def test_a_tool_error_raises(self) -> None:
         respx.post(_MCP).mock(
@@ -369,7 +392,7 @@ class TestFailuresAreLoud:
             await adapter.search("anything")
         await adapter.close()
 
-    @pytest.mark.parametrize("op", ["lint", "list_sources", "summarize"])
+    @pytest.mark.parametrize("op", ["lint", "list_sources"])
     async def test_unsupported_operations_raise_rather_than_look_empty(self, op: str) -> None:
         """gbrain cannot lint or enumerate raw sources.
 
@@ -478,3 +501,71 @@ class TestConfigWiring:
 
         with pytest.raises(ValueError, match="no adapter, path or url"):
             _build_mimir(settings)
+
+
+@respx.mock
+async def test_graph_uses_stored_links_and_frontmatter():
+    records = {
+        "research/experiment": _page(
+            "research/experiment",
+            content=(
+                "---\ncategory: research\ntype: observation\nsummary: Retrieval comparison\n"
+                "source_ids: [paper]\n---\n[[concepts/retrieval]]"
+            ),
+        ),
+        "concepts/retrieval": _page(
+            "concepts/retrieval",
+            content=(
+                "---\ncategory: concepts\ntype: entity\nentity_type: concept\n"
+                "source_ids: [paper]\n---\n# Retrieval"
+            ),
+        ),
+    }
+
+    def reply(request):
+        params = json.loads(request.content)["params"]
+        if params["name"] == "list_pages":
+            return httpx.Response(200, json=_tool_result(structured=list(records.values())))
+        assert params["name"] == "get_page"
+        return httpx.Response(
+            200, json=_tool_result(structured=records[params["arguments"]["slug"]])
+        )
+
+    respx.post(_MCP).mock(side_effect=reply)
+    adapter = _adapter()
+    try:
+        graph = await adapter.get_graph()
+        assert graph.nodes[0].category == "research"
+        assert graph.nodes[0].kind == "observation"
+        assert graph.nodes[0].summary == "Retrieval comparison"
+        assert graph.nodes[1].kind == "concept"
+        assert {edge.type for edge in graph.edges} == {"wikilink", "shared_source"}
+    finally:
+        await adapter.close()
+
+
+@respx.mock
+async def test_summary_paginates_all_pages():
+    route = respx.post(_MCP).mock(
+        side_effect=[
+            httpx.Response(
+                200, json=_tool_result(structured=[_page(f"notes/{i}") for i in range(100)])
+            ),
+            httpx.Response(200, json=_tool_result(structured=[_page("research/last")])),
+        ]
+    )
+    adapter = _adapter()
+    summary = await adapter.summarize()
+    assert summary.page_count == 101
+    assert summary.categories == ["notes", "research"]
+    assert json.loads(route.calls[1].request.content)["params"]["arguments"]["offset"] == 100
+    await adapter.close()
+
+
+def test_sse_preserves_unicode_line_separators():
+    from ravn.adapters.mimir.gbrain import _parse_mcp_response
+
+    message = {"result": {"content": [{"text": "first\u2028second"}]}}
+    assert (
+        _parse_mcp_response("data: " + json.dumps(message, ensure_ascii=False) + "\n\n") == message
+    )

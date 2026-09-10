@@ -578,6 +578,17 @@ def create_app(
             deployment_kwargs=body.deployment_kwargs,
             features=body.features or WardenFeatures(),
             mimir={
+                "instance_configs": {
+                    item.name: item.model_dump(exclude_none=True)
+                    for item in loaded_settings.mimir.instances
+                    if item.name
+                    in {
+                        *body.mount_names,
+                        *body.read_mount_names,
+                        *body.write_mount_names,
+                        body.write_mount,
+                    }
+                },
                 "mount_names": body.mount_names,
                 "write_mount": body.write_mount,
                 "read_mount_names": body.read_mount_names,

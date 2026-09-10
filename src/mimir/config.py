@@ -248,6 +248,9 @@ class MimirServiceConfig(BaseSettings):
             "On by default; disable for privacy-sensitive deployments."
         ),
     )
+    deployment: dict | None = Field(
+        default=None, description="Dynamic knowledge deployment adapter and constructor kwargs."
+    )
     ranking: RankingConfig = Field(
         default_factory=RankingConfig,
         description="Post-retrieval ranking boosts (NIU-1057/1058/1062).",

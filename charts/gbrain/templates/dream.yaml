@@ -1,0 +1,66 @@
+{{- if .Values.dream.enabled }}
+{{- if ne .Values.engine "postgres" }}
+{{- fail "Scheduled dreams require engine=postgres; PGLite cannot be opened by a separate job" }}
+{{- end }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "gbrain.name" . }}-dream
+spec:
+  suspend: {{ .Values.dream.suspend | default false }}
+  timeZone: Etc/UTC
+  schedule: {{ .Values.dream.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: {{ .Values.dream.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/instance: {{ .Release.Name }}
+            app.kubernetes.io/component: dream
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets: {{ toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: dream
+              image: {{ include "gbrain.image" . | quote }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: [sh, -ec]
+              args:
+                - |
+                  : "${GBRAIN_DATABASE_URL:?Set GBRAIN_DATABASE_URL in existingSecret}"
+                  mkdir -p /data/.gbrain
+                  cp /etc/gbrain/config.json /data/.gbrain/config.json
+                  exec gbrain dream --json{{ range .Values.dream.phases }} --phase {{ . | squote }}{{ end }}
+              env:
+                - {name: GBRAIN_HOME, value: /data}
+              envFrom:
+                - secretRef:
+                    name: {{ .Values.existingSecret }}
+              resources: {{ toYaml .Values.resources | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - {name: data, mountPath: /data}
+                - {name: config, mountPath: /etc/gbrain, readOnly: true}
+          volumes:
+            - name: data
+              emptyDir: {}
+            - name: config
+              configMap:
+                name: {{ include "gbrain.name" . }}
+{{- end }}

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -25,6 +25,9 @@ class MimirRegistryEntry(BaseModel):
     url: str = ""
     path: str = ""
     categories: list[str] | None = None
+    adapter: str = ""
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
     auth_ref: str | None = None
     default_read_priority: int = 10
     enabled: bool = True

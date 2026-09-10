@@ -1,0 +1,92 @@
+.instance-runtime {
+  color: var(--color-text-primary);
+}
+.instance-runtime-heading,
+.instance-runtime-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.instance-runtime-heading h4 {
+  margin: 0;
+}
+.instance-runtime-heading p {
+  margin: var(--space-2) 0 0;
+}
+.instance-runtime-heading > span {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+.instance-runtime button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.instance-dreams,
+.instance-process-logs {
+  border-top: 1px solid var(--color-border-subtle);
+  margin-top: var(--space-5);
+  padding-top: var(--space-5);
+}
+.instance-runtime-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+  margin: var(--space-4) 0 var(--space-6);
+}
+.instance-runtime-facts dt {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+.instance-runtime-facts dd {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+}
+.instance-dream-phases {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: var(--space-3);
+}
+.instance-dream-phases li {
+  padding: var(--space-3);
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+}
+.instance-dream-phases li > div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+}
+.instance-dream-phases li span {
+  color: var(--color-text-secondary);
+}
+.instance-dream-phases li p {
+  margin: var(--space-2) 0 0;
+}
+.instance-runtime summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+.instance-runtime summary span {
+  margin-left: var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+.instance-runtime details[open] > summary {
+  margin-bottom: var(--space-4);
+}
+.instance-runtime pre {
+  padding: var(--space-4);
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  max-height: 320px;
+  overflow: auto;
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

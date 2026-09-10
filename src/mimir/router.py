@@ -43,7 +43,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from mimir.compiled_truth import CompiledTruthPage
 from mimir.compiled_truth import parse_page as parse_compiled_truth_page
+from mimir.ports.deployment import DeploymentRequest, KnowledgeDeploymentPort
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
+from niuu.domain.knowledge_graph import cross_mount_source_edges
 from niuu.domain.mimir import (
     OPERATIONAL_SOURCE_TYPES,
     MimirLintReport,
@@ -55,6 +57,7 @@ from niuu.domain.mimir import (
 )
 from niuu.ports.mimir import MimirPort
 from ravn.adapters.tools._url_security import check_ssrf
+from ravn.domain.exceptions import MimirUnavailableError
 
 logger = logging.getLogger(__name__)
 _ALLOWED_INGEST_URL_SCHEMES = {"http", "https"}
@@ -224,11 +227,17 @@ class GraphNode(BaseModel):
     id: str
     title: str
     category: str
+    path: str = ""
+    kind: str = "page"
+    summary: str = ""
+    mount: str = ""
+    source_ids: list[str] = Field(default_factory=list)
 
 
 class GraphEdge(BaseModel):
     source: str
     target: str
+    type: str = "shared_source"
 
 
 class GraphResponse(BaseModel):
@@ -298,6 +307,9 @@ class RegistryMountRequest(BaseModel):
     url: str = ""
     path: str = ""
     categories: list[str] | None = None
+    adapter: str = ""
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
     auth_ref: str | None = None
     default_read_priority: int = 10
     enabled: bool = True
@@ -315,6 +327,9 @@ class RegistryMountResponse(BaseModel):
     url: str
     path: str
     categories: list[str] | None
+    adapter: str = ""
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
     auth_ref: str | None = None
     default_read_priority: int
     enabled: bool
@@ -472,6 +487,15 @@ class SourceResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Auth dependency (bearer token or SPIFFE — pass-through for now)
 # ---------------------------------------------------------------------------
+
+
+def _require_deploy_auth(
+    user: Annotated[str | None, Header(alias="x-auth-user-id")] = None,
+    roles: Annotated[str, Header(alias="x-auth-roles")] = "",
+) -> None:
+    """Identity is supplied by the authenticated Niuu/Envoy gateway."""
+    if not user or "volundr:admin" not in {role.strip() for role in roles.split(",")}:
+        raise HTTPException(403, "Instance deployment requires an authenticated administrator")
 
 
 def _require_write_auth(authorization: Annotated[str | None, Header()] = None) -> None:
@@ -1013,7 +1037,9 @@ class MimirRouter:
         role: str = "local",
         registry_store: MimirRegistryStore | None = None,
         eval_capture_dir: Path | None = None,
+        deployment: KnowledgeDeploymentPort | None = None,
     ) -> None:
+        self._deployment = deployment
         self._adapter = adapter
         self._name = name
         self._role = role
@@ -1031,19 +1057,39 @@ class MimirRouter:
                 return entry
         return None
 
-    def _local_registry_port(self, mount_name: str) -> MimirPort | None:
+    def _registry_port(self, mount_name: str) -> MimirPort | None:
         entry = self._registry_entry_by_name(mount_name)
-        if entry is None or not entry.enabled or entry.kind != "local" or not entry.path:
+        if entry is None or not entry.enabled:
             return None
-
+        endpoint = entry.path if entry.kind == "local" else entry.url
+        if not endpoint and not entry.adapter:
+            return None
+        if entry.auth_ref and not entry.adapter:
+            raise ValueError(
+                "Authenticated connections must use a configured mount adapter; "
+                "auth_ref resolution is not configured"
+            )
+        cache_key = entry.model_dump_json()
         cached = self._registry_local_ports.get(mount_name)
-        if cached is not None and cached[0] == entry.path:
+        if cached is not None and cached[0] == cache_key:
             return cached[1]
 
-        from mimir.adapters.markdown import MarkdownMimirAdapter
+        if entry.adapter:
+            from niuu.utils import import_class, resolve_secret_kwargs
 
-        port: MimirPort = MarkdownMimirAdapter(root=entry.path)
-        self._registry_local_ports[mount_name] = (entry.path, port)
+            cls = import_class(entry.adapter)
+            if not isinstance(cls, type) or not issubclass(cls, MimirPort):
+                raise TypeError(f"Registry adapter {entry.adapter} must implement MimirPort")
+            port = cls(**resolve_secret_kwargs(entry.kwargs, entry.secret_kwargs_env))
+        elif entry.kind == "remote":
+            from ravn.adapters.mimir.http import HttpMimirAdapter
+
+            port = HttpMimirAdapter(base_url=entry.url)
+        else:
+            from mimir.adapters.markdown import MarkdownMimirAdapter
+
+            port = MarkdownMimirAdapter(root=entry.path)
+        self._registry_local_ports[mount_name] = (cache_key, port)
         return port
 
     def _mount_definitions(self) -> list[dict[str, Any]]:
@@ -1052,6 +1098,8 @@ class MimirRouter:
             default_name=self._name,
             default_role=self._role,
         )
+        if self._deployment is not None:
+            mounts.extend(self._deployment.mounted_ports())
         seen = {mount["name"] for mount in mounts}
         if self._registry_store is None:
             return mounts
@@ -1059,7 +1107,7 @@ class MimirRouter:
         for entry in self._registry_store.list_entries():
             if entry.name in seen:
                 continue
-            port = self._local_registry_port(entry.name)
+            port = self._registry_port(entry.name)
             if port is None:
                 continue
             mounts.append(
@@ -1105,15 +1153,10 @@ class MimirRouter:
         if mount_name is None:
             return self._read_adapter(), self._name
 
-        try:
-            return _resolve_mount_port(self._adapter, mount_name, default_name=self._name)
-        except HTTPException as exc:
-            if exc.status_code != 404:
-                raise
-            port = self._local_registry_port(mount_name)
-            if port is None:
-                raise
-            return port, mount_name
+        for mount in self._mount_definitions():
+            if mount["name"] == mount_name:
+                return mount["port"], mount_name
+        raise HTTPException(404, f"Unknown mount: {mount_name}")
 
     def _register_routes(self) -> None:
         router = self.router
@@ -1168,22 +1211,39 @@ class MimirRouter:
                     default_name=self._name,
                     default_role=self._role,
                 )
-                return [
-                    _registry_to_response(
-                        MimirRegistryEntry(
-                            name=mount["name"],
-                            kind="remote" if getattr(mount["port"], "_base_url", "") else "local",
-                            role=mount["role"],
-                            categories=mount["categories"],
-                            url=getattr(mount["port"], "_base_url", ""),
-                            default_read_priority=mount["priority"],
-                            desc=f"{mount['role']} mount",
-                        )
+                entries = [
+                    MimirRegistryEntry(
+                        name=mount["name"],
+                        kind="remote" if getattr(mount["port"], "_base_url", "") else "local",
+                        role=mount["role"],
+                        categories=mount["categories"],
+                        url=getattr(mount["port"], "_base_url", ""),
+                        default_read_priority=mount["priority"],
+                        desc=f"{mount['role']} mount",
                     )
                     for mount in mounts
                 ]
-
-            return [_registry_to_response(entry) for entry in self._registry_store.list_entries()]
+            else:
+                entries = self._registry_store.list_entries()
+            names = {entry.name for entry in entries}
+            if self._deployment is not None:
+                for mount in self._deployment.mounted_ports():
+                    connection = mount.get("connection")
+                    if mount["name"] in names or not connection:
+                        continue
+                    entries.append(
+                        MimirRegistryEntry(
+                            id=f"deployment:{mount['name']}",
+                            name=mount["name"],
+                            kind="local",
+                            role=mount["role"],
+                            **connection,
+                            categories=mount["categories"],
+                            default_read_priority=mount["priority"],
+                            desc="Managed local instance; session must run on this host.",
+                        )
+                    )
+            return [_registry_to_response(entry) for entry in entries]
 
         @router.post("/registry/mounts", response_model=RegistryMountResponse)
         async def create_registry_mount(
@@ -1196,6 +1256,10 @@ class MimirRouter:
                     detail="Registry persistence is not configured",
                 )
 
+            if request.auth_ref and not request.adapter:
+                raise HTTPException(
+                    422, "Use a configured mount adapter for authenticated connections"
+                )
             entry = MimirRegistryEntry(**request.model_dump())
             self._registry_store.save_entry(entry)
             self._registry_local_ports.clear()
@@ -1217,6 +1281,10 @@ class MimirRouter:
             if existing is None:
                 raise HTTPException(status_code=404, detail=f"Unknown registry mount: {entry_id}")
 
+            if request.auth_ref and not request.adapter:
+                raise HTTPException(
+                    422, "Use a configured mount adapter for authenticated connections"
+                )
             entry = existing.model_copy(update=request.model_dump())
             self._registry_store.save_entry(entry)
             self._registry_local_ports.clear()
@@ -1504,7 +1572,13 @@ class MimirRouter:
         async def lint(mount: str | None = Query(default=None)) -> LintResponse:
             mounts = self._mount_definitions()
             port, resolved_mount = self._resolve_port(mount)
-            report = await port.lint()
+            try:
+                report = await port.lint()
+            except NotImplementedError as exc:
+                raise HTTPException(501, str(exc)) from exc
+            except MimirUnavailableError as exc:
+                status = 501 if isinstance(exc.__cause__, NotImplementedError) else 503
+                raise HTTPException(status, str(exc)) from exc
             mount_map = await _page_mount_map(
                 adapter,
                 default_name=self._name,
@@ -1545,17 +1619,18 @@ class MimirRouter:
             )
 
         @router.get("/doctor")
-        async def doctor_report() -> dict[str, Any]:
+        async def doctor_report(mount: str | None = Query(default=None)) -> dict[str, Any]:
             from mimir.doctor import run_doctor
 
-            root = adapter.filesystem_root()
+            port, _ = self._resolve_port(mount)
+            root = port.filesystem_root()
             if root is None:
                 raise HTTPException(
                     status_code=501,
                     detail="doctor requires a filesystem-backed Mimir adapter",
                 )
             report = await run_doctor(
-                adapter,
+                port,
                 Path(root),
                 registry_store=self._registry_store,
             )
@@ -1566,9 +1641,10 @@ class MimirRouter:
             """Latest retrieval eval report (written by `mimir eval --out
             <root>/evals/eval-latest.json`). 404 when none has been recorded."""
             root = adapter.filesystem_root()
-            if root is None:
-                raise HTTPException(status_code=501, detail="No filesystem root")
-            report_path = Path(root) / "evals" / "eval-latest.json"
+            if self._eval_capture_dir is None and root is None:
+                raise HTTPException(status_code=501, detail="No evaluation storage configured")
+            evals_dir = self._eval_capture_dir or Path(root) / "evals"
+            report_path = evals_dir / "eval-latest.json"
             if not report_path.exists():
                 raise HTTPException(status_code=404, detail="No eval report recorded")
             import json as _json
@@ -1581,9 +1657,9 @@ class MimirRouter:
             from mimir.eval import load_capture
 
             root = adapter.filesystem_root()
-            if root is None:
-                raise HTTPException(status_code=501, detail="No filesystem root")
-            evals_dir = Path(root) / "evals"
+            if self._eval_capture_dir is None and root is None:
+                raise HTTPException(status_code=501, detail="No query capture storage configured")
+            evals_dir = self._eval_capture_dir or Path(root) / "evals"
             captures = []
             for capture_file in sorted(evals_dir.glob("queries-*.jsonl")):
                 captures.extend(load_capture(capture_file))
@@ -1604,19 +1680,20 @@ class MimirRouter:
             }
 
         @router.post("/doctor/fix", dependencies=[Depends(_require_write_auth)])
-        async def doctor_fix() -> dict[str, Any]:
+        async def doctor_fix(mount: str | None = Query(default=None)) -> dict[str, Any]:
             """Run the safe auto-remediations, then return a fresh report."""
             from mimir.doctor import run_doctor, run_fixes
 
-            root = adapter.filesystem_root()
+            port, _ = self._resolve_port(mount)
+            root = port.filesystem_root()
             if root is None:
                 raise HTTPException(
                     status_code=501,
                     detail="doctor requires a filesystem-backed Mimir adapter",
                 )
-            await run_fixes(adapter)
+            await run_fixes(port)
             report = await run_doctor(
-                adapter,
+                port,
                 Path(root),
                 registry_store=self._registry_store,
             )
@@ -1729,27 +1806,94 @@ class MimirRouter:
             events.sort(key=lambda event: event.timestamp, reverse=True)
             return events[:limit]
 
+        @router.get("/instances/inspect")
+        async def inspect_instances(mount: str | None = Query(default=None)) -> list[dict]:
+            mounts = self._mount_definitions()
+            if mount is not None:
+                port, name = self._resolve_port(mount)
+                mounts = [{"name": name, "port": port}]
+            return [
+                {"mount": item["name"], **await item["port"].inspect_instance()} for item in mounts
+            ]
+
+        @router.get("/deployments")
+        async def deployments(_auth: None = Depends(_require_deploy_auth)) -> dict:
+            if self._deployment is None:
+                raise HTTPException(501, "No knowledge deployment target is configured")
+            return await self._deployment.list_deployments()
+
+        @router.get("/deployments/{name}")
+        async def inspect_deployment(
+            name: str, target: str = "", _auth: None = Depends(_require_deploy_auth)
+        ) -> dict:
+            if self._deployment is None:
+                raise HTTPException(501, "No knowledge deployment target is configured")
+            try:
+                return await self._deployment.inspect_deployment(
+                    f"{target}/{name}" if target else name
+                )
+            except ValueError as exc:
+                raise HTTPException(404, str(exc)) from exc
+            except NotImplementedError as exc:
+                raise HTTPException(501, str(exc)) from exc
+
+        @router.post("/deployments/{name}/{action}")
+        async def control_deployment(
+            name: str, action: str, target: str = "", _auth: None = Depends(_require_deploy_auth)
+        ) -> dict:
+            if self._deployment is None:
+                raise HTTPException(501, "No knowledge deployment target is configured")
+            try:
+                return await self._deployment.control(
+                    f"{target}/{name}" if target else name, action
+                )
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            except NotImplementedError as exc:
+                raise HTTPException(501, str(exc)) from exc
+
+        @router.post("/deployments", status_code=202)
+        async def deploy_instance(
+            request: DeploymentRequest,
+            _auth: None = Depends(_require_deploy_auth),
+        ) -> dict:
+            if self._deployment is None:
+                raise HTTPException(501, "No knowledge deployment target is configured")
+            try:
+                return await self._deployment.deploy(request)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+
         @router.get("/graph", response_model=GraphResponse)
         async def graph(mount: str | None = Query(default=None)) -> GraphResponse:
-            port, _ = self._resolve_port(mount)
-            pages = await port.list_pages()
-            nodes = [GraphNode(id=p.path, title=p.title, category=p.category) for p in pages]
-            # Build edges from source_ids overlap (pages sharing a source are related)
-            source_to_pages: dict[str, list[str]] = {}
-            for p in pages:
-                for sid in p.source_ids:
-                    source_to_pages.setdefault(sid, []).append(p.path)
+            from dataclasses import asdict
+            from urllib.parse import quote
 
+            mounts = self._mount_definitions()
+            if mount is not None:
+                port, name = self._resolve_port(mount)
+                mounts = [{"name": name, "port": port}]
+            nodes: list[GraphNode] = []
             edges: list[GraphEdge] = []
-            seen: set[tuple[str, str]] = set()
-            for page_paths in source_to_pages.values():
-                for i, src in enumerate(page_paths):
-                    for tgt in page_paths[i + 1 :]:
-                        key = (min(src, tgt), max(src, tgt))
-                        if key not in seen:
-                            seen.add(key)
-                            edges.append(GraphEdge(source=src, target=tgt))
-
+            for item in mounts:
+                result = await item["port"].get_graph()
+                # Keep identical paths in different mounts independently navigable.
+                prefix = quote(item["name"], safe="") + ":"
+                ids = {node.id: prefix + quote(node.id, safe="") for node in result.nodes}
+                for node in result.nodes:
+                    data = asdict(node)
+                    data.update(id=ids[node.id], mount=item["name"])
+                    nodes.append(GraphNode(**data))
+                edges.extend(
+                    GraphEdge(source=ids[edge.source], target=ids[edge.target], type=edge.type)
+                    for edge in result.edges
+                )
+            edges.extend(
+                GraphEdge(**asdict(edge))
+                for edge in cross_mount_source_edges(
+                    {node.id: (node.mount, node.source_ids) for node in nodes}
+                )
+            )
             return GraphResponse(nodes=nodes, edges=edges)
 
         @router.get("/entities", response_model=list[EntityMetaResponse])

@@ -138,7 +138,27 @@ class SecretInjectionContributor(SessionContributor):
             )
 
         # Direct credential names — mapping comes from SecretMountStrategy
-        for cred_name in context.credential_names:
+        refs = self._mimir_auth_refs(context)
+        integration_refs = {
+            _integration_auth_ref(conn.slug) for conn in context.integration_connections
+        }
+        missing_integrations = {
+            ref for ref in refs if ref.startswith("integration:")
+        } - integration_refs
+        if missing_integrations:
+            raise ValueError(
+                f"Memory well requires attached integration(s): {sorted(missing_integrations)}"
+            )
+        names = dict.fromkeys([*context.credential_names, *sorted(refs - integration_refs)])
+        for cred_name in names:
+            if cred_name in refs:
+                if self._credential_store is None:
+                    raise ValueError(
+                        "Memory well credentials require a configured credential store"
+                    )
+                stored = await self._credential_store.get("user", owner_id, cred_name)
+                if stored is None or "token" not in stored.keys:
+                    raise ValueError(f"Memory well credential {cred_name!r} requires a token field")
             mapping = await self._resolve_credential_mapping(owner_id, cred_name)
             if cred_name in self._mimir_auth_refs(context):
                 mapping.file_mappings[
@@ -245,6 +265,8 @@ class SecretInjectionContributor(SessionContributor):
             return SessionContribution(values=values)
 
         if not self._secret_injection:
+            if self._mimir_auth_refs(context):
+                raise ValueError("Memory well credentials require configured secret injection")
             return SessionContribution(values=values)
 
         # Ensure injection config exists (ConfigMap, SPC, etc.)
@@ -256,6 +278,8 @@ class SecretInjectionContributor(SessionContributor):
                 tenant_id=session.tenant_id,
             )
         except Exception:
+            if self._mimir_auth_refs(context):
+                raise
             logger.warning(
                 "Failed to ensure injection config for user %s — skipping secret volume injection",
                 session.owner_id,

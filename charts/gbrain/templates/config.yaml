@@ -1,0 +1,20 @@
+{{- if not (has .Values.engine (list "pglite" "postgres")) }}
+{{- fail "engine must be pglite or postgres" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gbrain.name" . }}
+data:
+  config.json: {{ .Values.config | toJson | quote }}
+  start.sh: |
+    #!/bin/sh
+    set -eu
+    {{- if eq .Values.engine "postgres" }}
+    : "${GBRAIN_DATABASE_URL:?Set GBRAIN_DATABASE_URL in existingSecret}"
+    {{- end }}
+    if [ ! -f /data/.gbrain/config.json ]; then
+      gbrain init {{ if eq .Values.engine "pglite" }}--pglite{{ else }}--non-interactive{{ end }} {{ if .Values.embedding.enabled }}--embedding-model {{ required "embedding.model is required" .Values.embedding.model | squote }} --embedding-dimensions {{ .Values.embedding.dimensions }}{{ else }}--no-embedding{{ end }}
+    fi
+    bun -e 'const p="/data/.gbrain/config.json"; const c=await Bun.file(p).json(); const extra=await Bun.file("/etc/gbrain/config.json").json(); await Bun.write(p,JSON.stringify({...c,...extra}));'
+    exec gbrain serve --http --bind 0.0.0.0 --port 3131

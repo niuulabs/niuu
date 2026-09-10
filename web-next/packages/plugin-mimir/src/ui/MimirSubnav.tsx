@@ -81,7 +81,7 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
           <button
             type="button"
             className="mm-subnav-collapsed-item"
-            onClick={() => navigate({ to: '/mimir/lint' })}
+            onClick={() => navigate({ to: '/mimir/registry/health' })}
             aria-label={`Lint errors ${errorCount}`}
             title={`Errors ${errorCount}`}
           >
@@ -115,7 +115,9 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
                   className="mm-subnav-collapsed-item"
                   onClick={() => {
                     ctx.setTweak('mimir.selectedWardenId', ravn.ravnId);
-                    navigate({ to: '/mimir/ravns' });
+                    ctx.setTweak('activeMount', ravn.writeMount || ravn.mountNames[0] || 'all');
+                    ctx.setTweak('mimir.registryView', 'Analytics');
+                    navigate({ to: '/mimir/registry/analytics' });
                   }}
                   aria-label={`Warden ${ravn.ravnId}`}
                   title={ravn.ravnId}
@@ -190,7 +192,7 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
         <button
           type="button"
           className="mm-subnav-btn"
-          onClick={() => navigate({ to: '/mimir/lint' })}
+          onClick={() => navigate({ to: '/mimir/registry/health' })}
           aria-label={`${errorCount} lint errors`}
         >
           <span className="mm-subnav-btn__glyph mm-subnav-btn__glyph--err" aria-hidden>
@@ -228,7 +230,7 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
       {/* ── Wardens roster ────────────────────────────────────────── */}
       {ravns.length > 0 && (
         <div className="mm-subnav-block">
-          <div className="mm-subnav-label">Wardens</div>
+          <div className="mm-subnav-label">Instance activity</div>
           {ravns.slice(0, 6).map((ravn) => (
             <button
               key={ravn.ravnId}
@@ -236,7 +238,9 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
               className="mm-subnav-btn"
               onClick={() => {
                 ctx.setTweak('mimir.selectedWardenId', ravn.ravnId);
-                navigate({ to: '/mimir/ravns' });
+                ctx.setTweak('activeMount', ravn.writeMount || ravn.mountNames[0] || 'all');
+                ctx.setTweak('mimir.registryView', 'Analytics');
+                navigate({ to: '/mimir/registry/analytics' });
               }}
               aria-label={`Warden ${ravn.ravnId}`}
             >

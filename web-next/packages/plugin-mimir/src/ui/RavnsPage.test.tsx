@@ -8,15 +8,6 @@ import { renderWithMimir } from '../testing/renderWithMimir';
 
 const wrap = renderWithMimir;
 
-function submitCreateForm() {
-  const submit = screen.getByRole('button', { name: /^create warden$/i });
-  const form = submit.closest('form');
-  if (!form) {
-    throw new Error('Create warden form not found');
-  }
-  fireEvent.submit(form);
-}
-
 function createStaticWardenService(warden: RavnWardenSummary): IRavnWardenService {
   return {
     async listWardens() {
@@ -86,11 +77,15 @@ function createFailingWardenService(
 }
 
 describe('RavnsPage', () => {
+  it('does not offer standalone creation', () => {
+    wrap(<RavnsPage instanceName="local" />);
+    expect(screen.queryByRole('button', { name: /create warden/i })).not.toBeInTheDocument();
+  });
   it('renders the page title', () => {
     wrap(<RavnsPage />);
-    expect(screen.getByRole('heading', { name: /wardens/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /attached warden/i })).toBeInTheDocument();
     expect(
-      screen.getByText(/long-lived ravn daemons that watch mimir mounts/i),
+      screen.getByText(/inspect maintenance, logs, and the live console/i),
     ).toBeInTheDocument();
   });
 
@@ -113,7 +108,9 @@ describe('RavnsPage', () => {
   it('opens the selected warden from plugin context and shows the merged daemon log viewer', async () => {
     wrap(<RavnsPage />, undefined, { tweaks: { 'mimir.selectedWardenId': 'ravn-fjolnir' } });
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /back to wardens list/i })).toBeInTheDocument(),
+      expect(
+        screen.getByRole('button', { name: /back to instance maintenance/i }),
+      ).toBeInTheDocument(),
     );
     expect(screen.getByRole('tab', { name: 'Overview' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Console' })).toBeInTheDocument();
@@ -139,7 +136,7 @@ describe('RavnsPage', () => {
       tweaks: { 'mimir.selectedWardenId': 'missing-warden' },
       setTweak,
     });
-    await waitFor(() => expect(screen.getByText(/no wardens found/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/no warden is attached/i)).toBeInTheDocument());
     expect(setTweak).toHaveBeenCalledWith('mimir.selectedWardenId', '');
   });
 
@@ -197,7 +194,7 @@ describe('RavnsPage', () => {
     await waitFor(() => expect(screen.getAllByTestId('ravn-item').length).toBeGreaterThan(0));
     fireEvent.click(screen.getAllByTestId('ravn-item')[0]!);
     await waitFor(() => screen.getByTestId('ravn-profile'));
-    fireEvent.click(screen.getByRole('button', { name: /back to wardens/i }));
+    fireEvent.click(screen.getByRole('button', { name: /back to instance maintenance/i }));
     await waitFor(() => expect(screen.getAllByTestId('ravn-item').length).toBeGreaterThan(0));
   });
 
@@ -540,117 +537,7 @@ describe('RavnsPage', () => {
       },
     };
     wrap(<RavnsPage />, empty);
-    await waitFor(() => expect(screen.getByText(/no wardens found/i)).toBeInTheDocument());
-  });
-
-  it('can create a new warden from the page form', async () => {
-    wrap(<RavnsPage />);
-
-    fireEvent.click(screen.getByRole('button', { name: /create warden/i }));
-    fireEvent.change(screen.getByLabelText(/warden name/i), {
-      target: { value: 'Research Warden' },
-    });
-    submitCreateForm();
-
-    await waitFor(() => expect(screen.getByTestId('ravn-profile')).toBeInTheDocument());
-    expect(screen.getByRole('heading', { name: 'Research Warden' })).toBeInTheDocument();
-  });
-
-  it('uses a persona dropdown with the curated warden default and hides profile input', async () => {
-    wrap(<RavnsPage />);
-
-    fireEvent.click(screen.getByRole('button', { name: /create warden/i }));
-
-    const personaField = screen.getByLabelText(/persona/i) as HTMLSelectElement;
-    await waitFor(() =>
-      expect(screen.getByRole('option', { name: 'mimir-warden' })).toBeInTheDocument(),
-    );
-    await waitFor(() =>
-      expect(screen.getByRole('option', { name: 'architect' })).toBeInTheDocument(),
-    );
-
-    expect(personaField.tagName).toBe('SELECT');
-    expect(personaField.value).toBe('mimir-warden');
-    await waitFor(() =>
-      expect(
-        screen.getByText(
-          /long-lived mimir warden for curation, refresh, and dream-cycle maintenance/i,
-        ),
-      ).toBeInTheDocument(),
-    );
-    expect(screen.queryByLabelText(/profile/i)).not.toBeInTheDocument();
-  });
-
-  it('can create a GitOps warden with deployment settings', async () => {
-    wrap(<RavnsPage />);
-
-    fireEvent.click(screen.getByRole('button', { name: /create warden/i }));
-    fireEvent.change(screen.getByLabelText(/warden name/i), {
-      target: { value: 'Cluster Warden' },
-    });
-    fireEvent.change(screen.getByLabelText(/deployment target/i), {
-      target: { value: 'k8s-gitops' },
-    });
-    fireEvent.change(screen.getByLabelText(/kubernetes namespace/i), {
-      target: { value: 'ravn-dev' },
-    });
-    fireEvent.change(screen.getByLabelText(/gitops repo path/i), {
-      target: { value: '/tmp/gitops' },
-    });
-    fireEvent.change(screen.getByLabelText(/gitops manifests subdir/i), {
-      target: { value: 'clusters/dev/wardens' },
-    });
-    submitCreateForm();
-
-    await waitFor(() => expect(screen.getByTestId('ravn-profile')).toBeInTheDocument());
-    expect(screen.getByText(/kubernetes \(gitops\)/i)).toBeInTheDocument();
-    expect(screen.getByTestId('warden-deployment-config')).toHaveTextContent('/tmp/gitops');
-    expect(screen.getByTestId('warden-deployment-config')).toHaveTextContent('ravn-dev');
-  });
-
-  it('surfaces create failures and lets the operator close the form', async () => {
-    const failingCreate = createFailingWardenService(
-      {
-        id: 'warden-failing-create',
-        name: 'Failing Create',
-        persona: 'research-and-distill',
-        profile: '',
-        deployment: 'launchd',
-        deploymentKwargs: {},
-        mountNames: ['local'],
-        writeMount: 'local',
-        categoryScope: [],
-        features: {
-          wakefulnessEnabled: true,
-          dreamCycleEnabled: true,
-          threadQueueEnabled: true,
-          threadEnricherEnabled: true,
-          recapEnabled: true,
-          sourceTriggerEnabled: true,
-          stalenessTriggerEnabled: true,
-        },
-        autostart: false,
-        createdAt: '2026-05-11T00:00:00Z',
-        createdBy: 'test',
-        runtime: { state: 'offline', pagesTouched: 0, lastDream: null },
-        supervisor: { installed: false },
-      },
-      { create: 'create exploded' },
-    );
-
-    wrap(<RavnsPage />, undefined, {}, failingCreate);
-
-    fireEvent.click(screen.getByRole('button', { name: /create warden/i }));
-    fireEvent.change(screen.getByLabelText(/warden name/i), {
-      target: { value: 'Broken Warden' },
-    });
-    submitCreateForm();
-
-    await waitFor(() => expect(screen.getByText('create exploded')).toBeInTheDocument());
-
-    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
-    await waitFor(() => expect(screen.queryByLabelText(/warden name/i)).not.toBeInTheDocument());
-    expect(screen.queryByText('create exploded')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/no warden is attached/i)).toBeInTheDocument());
   });
 
   it('can install and start an offline warden from the profile view', async () => {
@@ -670,28 +557,6 @@ describe('RavnsPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /start service/i }));
     await waitFor(() => expect(screen.getByTestId('ravn-state')).toHaveTextContent('active'));
-  });
-
-  it('shows target-aware lifecycle labels for a GitOps warden', async () => {
-    wrap(<RavnsPage />);
-
-    fireEvent.click(screen.getByRole('button', { name: /create warden/i }));
-    fireEvent.change(screen.getByLabelText(/warden name/i), {
-      target: { value: 'Cluster Warden' },
-    });
-    fireEvent.change(screen.getByLabelText(/deployment target/i), {
-      target: { value: 'k8s-gitops' },
-    });
-    fireEvent.change(screen.getByLabelText(/gitops repo path/i), {
-      target: { value: '/tmp/gitops' },
-    });
-    submitCreateForm();
-
-    await waitFor(() => expect(screen.getByTestId('ravn-profile')).toBeInTheDocument());
-    expect(screen.getByRole('button', { name: /render gitops bundle/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /set desired scale to 1/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /remove gitops manifest/i })).toBeInTheDocument();
-    expect(screen.getByTestId('warden-observed-placement')).toHaveTextContent('/tmp/gitops');
   });
 
   it('renders systemd-specific placement and lifecycle labels', async () => {

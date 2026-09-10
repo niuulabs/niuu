@@ -274,7 +274,16 @@ def _resolve_mimir_runtime(
         }
         url = str(raw_ref.get("url") or "").strip()
         path = str(raw_ref.get("path") or "").strip()
-        if url:
+        if raw_ref.get("adapter"):
+            instance["adapter"] = str(raw_ref["adapter"])
+            instance["kwargs"] = dict(raw_ref.get("kwargs") or {})
+            instance["secret_kwargs_env"] = dict(raw_ref.get("secret_kwargs_env") or {})
+            auth_ref = raw_ref.get("auth_ref") or raw_ref.get("authRef")
+            if instance["adapter"] == "ravn.adapters.mimir.gbrain.GBrainMimirAdapter" and auth_ref:
+                instance["kwargs"].pop("api_token", None)
+                instance["secret_kwargs_env"].pop("api_token", None)
+                instance["kwargs"]["api_token_file"] = _mimir_token_file(str(auth_ref))
+        elif url:
             instance["url"] = url
         elif path:
             instance["path"] = path
@@ -286,6 +295,10 @@ def _resolve_mimir_runtime(
         if auth := _mimir_auth_from_ref(raw_ref.get("auth_ref") or raw_ref.get("authRef")):
             instance["auth"] = auth
 
+        if "default_read_priority" in raw_ref or "defaultReadPriority" in raw_ref:
+            instance["read_priority"] = int(
+                raw_ref.get("default_read_priority", raw_ref.get("defaultReadPriority"))
+            )
         categories = _string_list(raw_ref.get("categories"))
         if categories:
             instance["categories"] = categories
@@ -402,13 +415,19 @@ def _normalize_instance(raw_instance: dict[str, Any]) -> dict[str, Any] | None:
     }
     url = str(raw_instance.get("url") or "").strip()
     path = str(raw_instance.get("path") or "").strip()
-    if url:
+    if raw_instance.get("adapter"):
+        instance["adapter"] = str(raw_instance["adapter"])
+        instance["kwargs"] = dict(raw_instance.get("kwargs") or {})
+        instance["secret_kwargs_env"] = dict(raw_instance.get("secret_kwargs_env") or {})
+    elif url:
         instance["url"] = url
     elif path:
         instance["path"] = path
     else:
         return None
 
+    if "read_priority" in raw_instance:
+        instance["read_priority"] = int(raw_instance["read_priority"])
     categories = _string_list(raw_instance.get("categories"))
     if categories:
         instance["categories"] = categories
@@ -581,6 +600,19 @@ def _build_ravn_config(
     # iteration_budget is also mirrored to initiative for future initiative-level use.
     po: dict = {}
     system_prompt_extra = persona_override.get("system_prompt_extra") or ""
+    if mimir_instances:
+        wells = ", ".join(instance["name"] for instance in mimir_instances)
+        system_prompt_extra += (
+            f"\n\nAttached memory wells: {wells}. Use mimir_search before writing; "
+            "use mimir_read to inspect results, mimir_write to save durable findings, "
+            "and use the mimir parameter on writes to target a named well. Read operations "
+            "search across configured mounts in priority order. Respect the configured "
+            "write routing and preserve source attribution. These tools use the actual "
+            "backend attached to each well. gbrain wells support search, read, write, "
+            "query and ingestion; they do not support Mimir raw-source retrieval or "
+            "Mimir lint. Native dream cycles run on the gbrain service; do not attach "
+            "a warden or pretend unsupported operations succeeded."
+        )
     if system_prompt_extra.strip():
         po["system_prompt_extra"] = system_prompt_extra
     budget = persona_override.get("iteration_budget") or 0
@@ -929,7 +961,10 @@ class RavnFlockContributor(SessionContributor):
         requires_local_mimir_mount = _requires_local_mimir_mount(mimir_instances)
         ravn_container_names = [f"ravn-{pd['name']}" for pd in persona_dicts]
         requires_secret_mount = any(
-            isinstance(instance.get("auth"), dict)
+            str((instance.get("kwargs") or {}).get("api_token_file") or "").startswith(
+                f"{_OPENBAO_SECRET_VOLUME_PATH}/"
+            )
+            or isinstance(instance.get("auth"), dict)
             and str(instance["auth"].get("token_file") or "").startswith(
                 f"{_OPENBAO_SECRET_VOLUME_PATH}/"
             )

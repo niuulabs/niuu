@@ -660,3 +660,28 @@ def test_k8s_gitops_read_manifest_replicas_raises_for_invalid_yaml(tmp_path: Pat
         match="failed to parse GitOps manifest",
     ):
         KubernetesGitOpsWardenDeploymentAdapter._read_manifest_replicas(manifest_path)
+
+
+def test_explicit_backend_binding_is_preserved_in_runtime_and_mcp(tmp_path):
+    import yaml
+
+    from ravn.warden.artifacts import write_runtime_config
+
+    instance = {
+        "adapter": "ravn.adapters.mimir.gbrain.GBrainMimirAdapter",
+        "kwargs": {"mcp_url": "http://brain.test/mcp"},
+        "secret_kwargs_env": {"api_token": "BRAIN_TOKEN"},
+    }
+    spec = WardenSpec(
+        id="bound",
+        name="bound",
+        mimir={"mount_names": ["research"], "instance_configs": {"research": instance}},
+    )
+    path = write_runtime_config(spec, warden_dir=tmp_path)
+    config = yaml.safe_load(path.read_text())
+    assert config["mimir"]["instances"][0]["adapter"] == instance["adapter"]
+    server = config["mcp_servers"][0]
+    assert "--path" not in server["args"]
+    config_path = Path(server["args"][server["args"].index("--adapter-config") + 1])
+    assert yaml.safe_load(config_path.read_text()) == instance
+    assert config_path.stat().st_mode & 0o777 == 0o600

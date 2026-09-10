@@ -288,6 +288,27 @@ class HttpMimirAdapter(MimirPort):
         response.raise_for_status()
         return [_parse_page_meta(m) for m in response.json()]
 
+    async def inspect_instance(self) -> dict:
+        response = await self._request("GET", "/mimir/instances/inspect")
+        if response.status_code == 404:
+            return {
+                "backend": "Mimir HTTP",
+                "metrics": {},
+                "unavailable": [
+                    "This server does not expose instance inspection. Upgrade the remote Mimir "
+                    "service for backend metrics and maintenance details."
+                ],
+            }
+        response.raise_for_status()
+        instances = response.json()
+        if len(instances) == 1:
+            return {key: value for key, value in instances[0].items() if key != "mount"}
+        return {
+            "backend": "Mimir federation",
+            "metrics": {"Instances": len(instances)},
+            "unavailable": ["Select an individual backend to inspect its native metrics"],
+        }
+
     async def summarize(self) -> MimirMountSummary:
         """GET /mimir/summary — counts and last-write time in one cheap call.
 

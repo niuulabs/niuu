@@ -238,7 +238,29 @@ config:
   categories: []
   # -- Path inside the container where the wiki is stored.
   dataPath: "/data/mimir"
+  # Record real search traffic for service diagnostics.
+  evalCapture: true
   # -- HTTP port the service listens on.
   port: 7477
   # -- Log level.
   logLevel: "info"
+
+# Optional dynamic Flux deployment adapter configuration. Disabled by default.
+# Supply namespace, source_name, chart_versions, images and cluster in this map.
+knowledgeDeployment: null
+
+# Optional resident attached to this knowledge instance. Configure the existing
+# Ravn runtime and provider credentials at the deployment target.
+warden:
+  enabled: false
+  image: ""
+  # Same fields as a manually created WardenSpec: model, persona, profile,
+  # features, schedules, console and broker. Instance binding is supplied by the chart.
+  spec:
+    console:
+      host: "127.0.0.1"
+      port: 8764
+  # Advanced Ravn Settings overrides; credentials remain in envFrom Secrets.
+  config: {}
+  envFrom: []
+  resources: {}

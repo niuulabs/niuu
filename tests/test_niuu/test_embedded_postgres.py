@@ -587,3 +587,13 @@ class TestPgBinDir:
             from niuu.adapters.embedded_postgres import pg_bin_dir
 
             assert pg_bin_dir() is None
+
+
+def test_embedded_postgres_only_allows_explicit_loopback_tcp():
+    with pytest.raises(ValueError, match="loopback"):
+        EmbeddedPostgresDatabase(listen_host="0.0.0.0")
+    db = EmbeddedPostgresDatabase(
+        listen_host="127.0.0.1", listen_port=6543, listen_password="test-password"
+    )
+    assert db._listen_host == "127.0.0.1"
+    assert db._listen_port == 6543

@@ -1,0 +1,3 @@
+{{- if dig "warden" "enabled" false .Values.AsMap }}
+{{- fail "gbrain uses native dream cycles; wardens are only supported for Mimir" }}
+{{- end }}

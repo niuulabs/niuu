@@ -379,6 +379,9 @@ describe('WorkflowDetailPanel', () => {
     });
     expect(props.onUpdateNode).toHaveBeenCalledWith('resource-1', {
       label: 'Domain Mimir',
+      adapter: '',
+      kwargs: {},
+      secretKwargsEnv: {},
       bindingMode: 'registry',
       registryEntryId: 'domain-mimir',
       categories: ['playbook'],

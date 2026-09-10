@@ -43,7 +43,7 @@ jobs:
     strategy:
       matrix:
         platform: [amd64, arm64]
-        container: [agent, skuld, openshell, devrunner, volundr-web, niuu-web, niuu]
+        container: [agent, skuld, openshell, devrunner, volundr-web, niuu-web, niuu, gbrain]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
@@ -102,7 +102,7 @@ jobs:
       id-token: write
     strategy:
       matrix:
-        container: [agent, skuld, openshell, devrunner, volundr-web, niuu-web, niuu]
+        container: [agent, skuld, openshell, devrunner, volundr-web, niuu-web, niuu, gbrain]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
@@ -183,7 +183,7 @@ jobs:
       packages: read
     strategy:
       matrix:
-        container: [agent, skuld, openshell, devrunner, volundr-web, niuu-web, niuu]
+        container: [agent, skuld, openshell, devrunner, volundr-web, niuu-web, niuu, gbrain]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
@@ -373,6 +373,17 @@ jobs:
           print(f"pgvector_version={namespace['PGVECTOR_VERSION']}")
           PY
 
+      - name: Install PostgreSQL extension build dependencies
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            brew install openssl@3 pkg-config
+          else
+            sudo apt-get update
+            sudo apt-get install -y libssl-dev pkg-config
+          fi
+
       - name: Build embedded PostgreSQL bundle
         if: steps.pg-cache.outputs.cache-hit != 'true'
         env:
@@ -506,7 +517,7 @@ jobs:
         run: |
           VERSION="${{ needs.version.outputs.version }}"
 
-          for CHART in agent bifrost ravn skuld volundr ting skuld-planner niuu-shared niuu; do
+          for CHART in agent bifrost ravn skuld volundr ting skuld-planner niuu-shared niuu mimir gbrain; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
@@ -516,6 +527,8 @@ jobs:
 
       - name: Package Helm charts
         run: |
+          helm package charts/mimir -d .helm-packages/
+          helm package charts/gbrain -d .helm-packages/
           helm package charts/bifrost -d .helm-packages/
           helm package charts/agent -d .helm-packages/
           helm package charts/ravn -d .helm-packages/

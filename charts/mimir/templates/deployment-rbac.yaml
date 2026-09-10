@@ -1,0 +1,28 @@
+{{- if .Values.knowledgeDeployment }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "mimir.fullname" . }}-deploy
+  namespace: {{ required "knowledgeDeployment.namespace is required" .Values.knowledgeDeployment.namespace }}
+rules:
+  - apiGroups: [helm.toolkit.fluxcd.io]
+    resources: [helmreleases]
+    verbs: [get, list, create, patch]
+  - apiGroups: [""]
+    resources: [pods, pods/log]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "mimir.fullname" . }}-deploy
+  namespace: {{ .Values.knowledgeDeployment.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "mimir.fullname" . }}-deploy
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "mimir.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

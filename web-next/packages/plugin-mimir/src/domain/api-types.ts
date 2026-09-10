@@ -65,6 +65,11 @@ export interface GraphNode {
   id: string;
   title: string;
   category: string;
+  /** Original page path; id is opaque and may be mount-qualified. */
+  path?: string;
+  kind?: string;
+  summary?: string;
+  mount?: string;
   /** Number of inbound edges -- set during graph processing. */
   inboundCount?: number;
 }

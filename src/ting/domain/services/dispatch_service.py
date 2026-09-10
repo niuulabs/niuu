@@ -278,6 +278,12 @@ def _resolve_mimir_registry_refs(
             resolved_refs.append(resolved)
             continue
 
+        if entry.adapter:
+            resolved["adapter"] = entry.adapter
+            resolved["kwargs"] = dict(entry.kwargs)
+            resolved["secret_kwargs_env"] = dict(entry.secret_kwargs_env)
+        if not entry.enabled:
+            raise ValueError(f"Memory well {entry.name!r} is disabled")
         if entry.path and not str(resolved.get("path") or "").strip():
             resolved["path"] = entry.path
         if entry.url and not str(resolved.get("url") or "").strip():
@@ -1196,6 +1202,10 @@ class DispatchService:
                 self._flow_provider,
                 tpl_run.prompt,
             )
+            if workload_config and workload_config.get("mimir"):
+                workload_config["mimir"] = _resolve_mimir_registry_refs(
+                    workload_config["mimir"], registry_path=self._config.flock_mimir_registry_path
+                )
             request = SpawnRequest(
                 name=session_name,
                 repo=repo,

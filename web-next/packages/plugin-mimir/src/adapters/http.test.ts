@@ -160,6 +160,9 @@ describe('buildMimirHttpAdapter', () => {
       const mount = await buildMimirHttpAdapter(client).mounts.createRegistryMount(registryMount);
 
       expect(client.post).toHaveBeenCalledWith('/registry/mounts', {
+        adapter: '',
+        kwargs: {},
+        secret_kwargs_env: {},
         name: 'shared',
         kind: 'remote',
         lifecycle: 'registered',
@@ -209,6 +212,9 @@ describe('buildMimirHttpAdapter', () => {
       );
 
       expect(client.put).toHaveBeenCalledWith('/registry/mounts/registry-shared', {
+        adapter: '',
+        kwargs: {},
+        secret_kwargs_env: {},
         name: 'shared',
         kind: 'remote',
         lifecycle: 'registered',

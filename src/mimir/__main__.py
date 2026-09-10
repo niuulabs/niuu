@@ -102,6 +102,7 @@ def serve(
 def mcp(
     path: str = typer.Option("~/.ravn/mimir", help="Root directory for the Mímir store."),
     name: str = typer.Option("local", help="Instance name reported in the MCP handshake."),
+    adapter_config: str | None = typer.Option(None, help="Backend instance YAML configuration."),
 ) -> None:
     """Run the Mímir MCP server in stdio mode (no running Mímir service required).
 
@@ -119,7 +120,21 @@ def mcp(
     """
     from mimir.mcp import MimirMcpServer
 
-    adapter = _mcp_adapter(path)
+    if adapter_config:
+        import yaml
+
+        from ravn.cli.commands import _build_mimir
+        from ravn.config import MimirConfig, MimirInstanceConfig, Settings
+
+        instance = yaml.safe_load(Path(adapter_config).read_text())
+        instance["name"] = name
+        adapter = _build_mimir(
+            Settings(mimir=MimirConfig(enabled=True, instances=[MimirInstanceConfig(**instance)]))
+        )
+        if adapter is None:
+            raise ValueError("No knowledge adapter configured")
+    else:
+        adapter = _mcp_adapter(path)
     server = MimirMcpServer(adapter=adapter, name=name)
     asyncio.run(server.run_stdio())
 

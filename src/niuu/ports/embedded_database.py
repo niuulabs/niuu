@@ -14,6 +14,7 @@ class ConnectionInfo:
     port: int
     dbname: str
     user: str
+    password: str = ""
 
 
 class EmbeddedDatabasePort(ABC):

@@ -56,7 +56,7 @@ describe('MimirSubnav', () => {
 
   it('renders wardens roster when ravns are present', async () => {
     wrap();
-    await waitFor(() => expect(screen.getByText('Wardens')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Instance activity')).toBeInTheDocument());
     // ravns from mock: ravn-fjolnir, ravn-skald
     await waitFor(() => expect(screen.getByText('ravn-fjolnir')).toBeInTheDocument());
   });
@@ -111,7 +111,7 @@ describe('MimirSubnav', () => {
     await waitFor(() => expect(screen.getByText('ravn-fjolnir')).toBeInTheDocument());
     fireEvent.click(screen.getByText('ravn-fjolnir'));
     expect(setTweak).toHaveBeenCalledWith('mimir.selectedWardenId', 'ravn-fjolnir');
-    expect(navigateMock).toHaveBeenCalledWith({ to: '/mimir/ravns' });
+    expect(navigateMock).toHaveBeenCalledWith({ to: '/mimir/registry/analytics' });
   });
 
   it('can collapse the Mímir subnav', async () => {
@@ -149,7 +149,7 @@ describe('MimirSubnav', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: /warden ravn-fjolnir/i }));
     expect(setTweak).toHaveBeenCalledWith('mimir.selectedWardenId', 'ravn-fjolnir');
-    expect(navigateMock).toHaveBeenCalledWith({ to: '/mimir/ravns' });
+    expect(navigateMock).toHaveBeenCalledWith({ to: '/mimir/registry/analytics' });
   });
 
   it('omits collapsed warden shortcuts when no wardens are bound', async () => {

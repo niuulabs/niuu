@@ -9,7 +9,7 @@ const wrap = renderWithMimir;
 
 describe('HealthPage', () => {
   it('stacks the doctor checklist above the lint detail', async () => {
-    wrap(<HealthPage />);
+    wrap(<HealthPage />, undefined, { tweaks: { activeMount: 'local' } });
     expect(screen.getByTestId('health-page')).toBeInTheDocument();
     // Doctor section (from the mock adapter's doctor report)
     await waitFor(() => expect(screen.getByRole('heading', { name: /doctor/i })).toBeVisible());
@@ -25,8 +25,24 @@ describe('HealthPage', () => {
         getDoctor: async () => null,
       },
     };
-    wrap(<HealthPage />, service);
+    wrap(<HealthPage />, service, { tweaks: { activeMount: 'local' } });
     await waitFor(() => expect(screen.getByTestId('doctor-empty')).toBeInTheDocument());
     await waitFor(() => expect(screen.getByLabelText('Lint checks')).toBeVisible());
   });
+});
+
+it('asks for an instance instead of linting incompatible backends together', async () => {
+  wrap(<HealthPage />);
+  expect(await screen.findByText('Select an instance to run its health checks.')).toBeVisible();
+  expect(screen.queryByLabelText('Lint checks')).not.toBeInTheDocument();
+});
+
+it('directs gbrain to its native maintenance results', async () => {
+  const service = createMimirMockAdapter();
+  service.mounts.inspectInstances = async () => [
+    { mount: 'brain', backend: 'gbrain', metrics: {}, unavailable: [] },
+  ];
+  wrap(<HealthPage />, service, { tweaks: { activeMount: 'brain' } });
+  expect(await screen.findByRole('heading', { name: 'gbrain maintenance' })).toBeVisible();
+  expect(screen.queryByLabelText('Lint checks')).not.toBeInTheDocument();
 });

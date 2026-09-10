@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { LintPage } from './LintPage';
 import { createMimirMockAdapter } from '../adapters/mock';
@@ -6,8 +6,25 @@ import type { IMimirService } from '../ports';
 import { renderWithMimir } from '../testing/renderWithMimir';
 
 const wrap = renderWithMimir;
+const navigate = vi.fn();
+vi.mock('@tanstack/react-router', async () => ({
+  ...(await vi.importActual<typeof import('@tanstack/react-router')>('@tanstack/react-router')),
+  useNavigate: () => navigate,
+}));
 
 describe('LintPage', () => {
+  it('opens the issue page in its owning instance', async () => {
+    const service = createMimirMockAdapter();
+    const issue = (await service.lint.getLintReport()).issues[0]!;
+    const setTweak = vi.fn();
+    wrap(<LintPage />, service, { setTweak });
+    const buttons = await screen.findAllByRole('button', { name: `Open ${issue.page}` });
+    fireEvent.click(buttons[0]!);
+    expect(setTweak).toHaveBeenCalledWith('mimir.selectedPagePath', issue.page);
+    expect(setTweak).toHaveBeenCalledWith('activeMount', issue.mount);
+    expect(navigate).toHaveBeenCalledWith({ to: '/mimir/pages' });
+  });
+
   it('shows loading state initially', () => {
     wrap(<LintPage />);
     expect(screen.getByText(/loading lint report/)).toBeInTheDocument();

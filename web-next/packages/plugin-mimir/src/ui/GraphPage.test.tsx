@@ -1,4 +1,17 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+vi.mock('@tanstack/react-router', () => ({
+  Link: ({ children, onClick }: { children: React.ReactNode; onClick: () => void }) => (
+    <a href="/mimir/pages" onClick={onClick}>
+      {children}
+    </a>
+  ),
+}));
+
+Object.defineProperty(SVGElement.prototype, 'getScreenCTM', {
+  configurable: true,
+  value: () => null,
+});
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import {
   GraphPage,
@@ -24,13 +37,13 @@ describe('GraphPage', () => {
   it('renders the SVG graph canvas', async () => {
     wrap(<GraphPage />);
     await waitFor(() =>
-      expect(screen.getByRole('img', { name: /knowledge graph/i })).toBeInTheDocument(),
+      expect(screen.getByRole('group', { name: /knowledge graph/i })).toBeInTheDocument(),
     );
   });
 
   it('renders graph legend with category label', async () => {
     wrap(<GraphPage />);
-    await waitFor(() => screen.getByRole('img', { name: /knowledge graph/i }));
+    await waitFor(() => screen.getByRole('group', { name: /knowledge graph/i }));
     expect(screen.getByLabelText(/graph legend/i)).toBeInTheDocument();
     expect(screen.getByText('Category')).toBeInTheDocument();
   });
@@ -50,15 +63,15 @@ describe('GraphPage', () => {
 
   it('SVG contains glow filter definition', async () => {
     wrap(<GraphPage />);
-    await waitFor(() => screen.getByRole('img', { name: /knowledge graph/i }));
-    const svg = screen.getByRole('img', { name: /knowledge graph/i });
+    await waitFor(() => screen.getByRole('group', { name: /knowledge graph/i }));
+    const svg = screen.getByRole('group', { name: /knowledge graph/i });
     expect(svg.querySelector('filter#niuu-node-glow')).toBeInTheDocument();
   });
 
   it('unfocused edges have low-opacity class', async () => {
     wrap(<GraphPage />);
-    await waitFor(() => screen.getByRole('img', { name: /knowledge graph/i }));
-    const svg = screen.getByRole('img', { name: /knowledge graph/i });
+    await waitFor(() => screen.getByRole('group', { name: /knowledge graph/i }));
+    const svg = screen.getByRole('group', { name: /knowledge graph/i });
     const lines = svg.querySelectorAll('line');
     expect(lines.length).toBeGreaterThan(0);
     expect(lines[0]!.classList.toString()).toContain('niuu:opacity-40');
@@ -66,8 +79,8 @@ describe('GraphPage', () => {
 
   it('clicking a node toggles focus', async () => {
     wrap(<GraphPage />);
-    await waitFor(() => screen.getByRole('img', { name: /knowledge graph/i }));
-    const svg = screen.getByRole('img', { name: /knowledge graph/i });
+    await waitFor(() => screen.getByRole('group', { name: /knowledge graph/i }));
+    const svg = screen.getByRole('group', { name: /knowledge graph/i });
     const nodeGroups = svg.querySelectorAll('g[role="button"]');
     expect(nodeGroups.length).toBeGreaterThan(0);
     fireEvent.click(nodeGroups[0]!);
@@ -90,16 +103,16 @@ describe('GraphPage', () => {
 
   it('legend shows Edges section', async () => {
     wrap(<GraphPage />);
-    await waitFor(() => screen.getByRole('img', { name: /knowledge graph/i }));
+    await waitFor(() => screen.getByRole('group', { name: /knowledge graph/i }));
     expect(screen.getByText('Edges')).toBeInTheDocument();
     expect(screen.getByText('shared source')).toBeInTheDocument();
-    expect(screen.getByText('wikilink')).toBeInTheDocument();
+    expect(screen.queryByText('wikilink')).not.toBeInTheDocument();
   });
 
   it('scrolling zooms the viewBox in and out', async () => {
     wrap(<GraphPage />);
-    await waitFor(() => screen.getByRole('img', { name: /knowledge graph/i }));
-    const svg = screen.getByRole('img', { name: /knowledge graph/i });
+    await waitFor(() => screen.getByRole('group', { name: /knowledge graph/i }));
+    const svg = screen.getByRole('group', { name: /knowledge graph/i });
     const initial = svg.getAttribute('viewBox')!;
     const initialW = Number(initial.split(' ')[2]);
 
@@ -115,11 +128,11 @@ describe('GraphPage', () => {
 
   it('dragging pans the viewBox', async () => {
     wrap(<GraphPage />);
-    await waitFor(() => screen.getByRole('img', { name: /knowledge graph/i }));
-    const svg = screen.getByRole('img', { name: /knowledge graph/i });
+    await waitFor(() => screen.getByRole('group', { name: /knowledge graph/i }));
+    const svg = screen.getByRole('group', { name: /knowledge graph/i });
     const initial = svg.getAttribute('viewBox')!;
 
-    fireEvent.pointerDown(svg, { pointerId: 1, clientX: 200, clientY: 200 });
+    fireEvent.pointerDown(svg, { pointerId: 1, clientX: 200, clientY: 200, shiftKey: true });
     fireEvent.pointerMove(svg, { pointerId: 1, clientX: 150, clientY: 170 });
     fireEvent.pointerUp(svg, { pointerId: 1 });
 
@@ -133,8 +146,8 @@ describe('GraphPage', () => {
 
   it('pointer moves without a preceding pointer down do not pan', async () => {
     wrap(<GraphPage />);
-    await waitFor(() => screen.getByRole('img', { name: /knowledge graph/i }));
-    const svg = screen.getByRole('img', { name: /knowledge graph/i });
+    await waitFor(() => screen.getByRole('group', { name: /knowledge graph/i }));
+    const svg = screen.getByRole('group', { name: /knowledge graph/i });
     const initial = svg.getAttribute('viewBox')!;
     fireEvent.pointerMove(svg, { pointerId: 1, clientX: 50, clientY: 50 });
     expect(svg.getAttribute('viewBox')).toBe(initial);
@@ -142,16 +155,16 @@ describe('GraphPage', () => {
 
   it('node radius scales with edge count', async () => {
     wrap(<GraphPage />);
-    await waitFor(() => screen.getByRole('img', { name: /knowledge graph/i }));
-    const svg = screen.getByRole('img', { name: /knowledge graph/i });
+    await waitFor(() => screen.getByRole('group', { name: /knowledge graph/i }));
+    const svg = screen.getByRole('group', { name: /knowledge graph/i });
     const radii = [...svg.querySelectorAll('g[role="button"] circle')].map((c) =>
       Number(c.getAttribute('r')),
     );
     expect(radii.length).toBeGreaterThan(0);
     // The mock graph has both connected and unconnected nodes.
     expect(new Set(radii).size).toBeGreaterThan(1);
-    expect(Math.min(...radii)).toBeGreaterThanOrEqual(4);
-    expect(Math.max(...radii)).toBeLessThanOrEqual(10);
+    expect(Math.min(...radii)).toBeGreaterThan(0);
+    expect(Math.max(...radii)).toBeLessThanOrEqual(20);
   });
 });
 
@@ -309,4 +322,32 @@ describe('layoutForceDirected', () => {
     const edges = [{ source: 'n1', target: 'ghost' }];
     expect(layoutForceDirected(nodes, edges)).toHaveLength(2);
   });
+});
+
+it('narrows by category and search, then resets', async () => {
+  wrap(<GraphPage />);
+  await waitFor(() => screen.getByLabelText('Graph legend'));
+  const svg = screen.getByRole('group', { name: /knowledge graph/i });
+  const before = svg.querySelectorAll('g[role="button"]').length;
+  const category = screen.getByLabelText('Graph legend').querySelector('button')!;
+  fireEvent.click(category);
+  expect(svg.querySelectorAll('g[role="button"]').length).toBeLessThan(before);
+  fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'no-such-knowledge' } });
+  expect(screen.getByRole('status')).toHaveTextContent('No pages match');
+  fireEvent.click(screen.getByRole('button', { name: 'Reset filters' }));
+  expect(svg.querySelectorAll('g[role="button"]').length).toBe(before);
+});
+
+it('rotates with the keyboard and can pause motion', async () => {
+  wrap(<GraphPage />);
+  const svg = await screen.findByRole('group', { name: /knowledge graph/i });
+  const node = svg.querySelector('g[role="button"]')!;
+  const before = node.getAttribute('transform');
+  fireEvent.keyDown(svg, { key: 'ArrowRight' });
+  expect(node.getAttribute('transform')).not.toBe(before);
+  fireEvent.click(screen.getByRole('button', { name: 'Motion on' }));
+  expect(screen.getByRole('button', { name: 'Motion off' })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  );
 });

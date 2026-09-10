@@ -195,7 +195,10 @@ class KubernetesWardenDiscoveryAdapter(KubernetesDeploymentDiscovery):
         containers = getattr(pod_spec, "containers", None) or []
         if not containers:
             return ""
-        return str(getattr(containers[0], "image", "") or "")
+        warden = next(
+            (item for item in containers if getattr(item, "name", "") == "warden"), containers[0]
+        )
+        return str(getattr(warden, "image", "") or "")
 
     def _observed_status(self, replicas: int, ready_replicas: int) -> str:
         if replicas <= 0:

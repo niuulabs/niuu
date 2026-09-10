@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import replace
 from pathlib import Path
 
+from niuu.domain.knowledge_graph import KnowledgeGraph
 from niuu.domain.mimir import (
     MimirLintReport,
     MimirMountSummary,
@@ -44,6 +45,25 @@ class MimirPort(ABC):
         internals. Remote/composite adapters keep the ``None`` default.
         """
         return None
+
+    async def inspect_instance(self) -> dict:
+        return {
+            "backend": "unknown",
+            "metrics": {},
+            "unavailable": ["Instance inspection is not supported by this adapter"],
+        }
+
+    async def get_graph(self) -> KnowledgeGraph:
+        """Project stored pages into the common exploration graph.
+
+        This complete implementation reads page bodies for explicit links.
+        Indexed backends may override it with an equivalent bulk projection.
+        Errors propagate: a partial corpus must not appear to be a full graph.
+        """
+        from niuu.domain.knowledge_graph import project_pages
+
+        pages = [await self.get_page(meta.path) for meta in await self.list_pages()]
+        return project_pages(pages)
 
     async def summarize(self) -> MimirMountSummary:
         """Return a cheap scale/health summary of this mount.

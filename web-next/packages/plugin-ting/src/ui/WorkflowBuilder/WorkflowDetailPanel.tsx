@@ -615,6 +615,9 @@ function ResourceInspector({
       path: mount.path || null,
       url: mount.url || null,
       role: mount.role,
+      adapter: mount.adapter ?? '',
+      kwargs: mount.kwargs ?? {},
+      secretKwargsEnv: mount.secretKwargsEnv ?? {},
       authRef: mount.authRef ?? null,
       defaultReadPriority: mount.defaultReadPriority,
     });

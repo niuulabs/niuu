@@ -1,3 +1,4 @@
+import type { InstanceInspection, DeploymentStatus } from '../domain/instances';
 /**
  * HTTP adapter for the Mímir service.
  *
@@ -59,6 +60,9 @@ interface RawRegistryMount {
   url: string;
   path: string;
   categories: string[] | null;
+  adapter?: string;
+  kwargs?: Record<string, unknown>;
+  secret_kwargs_env?: Record<string, string>;
   auth_ref?: string | null;
   default_read_priority: number;
   enabled: boolean;
@@ -184,12 +188,17 @@ interface RawGraphNode {
   id: string;
   title: string;
   category: string;
+  path?: string;
+  kind?: string;
+  summary?: string;
+  mount?: string;
   inbound_count?: number;
 }
 
 interface RawGraphEdge {
   source: string;
   target: string;
+  type?: string;
 }
 
 interface RawGraph {
@@ -273,6 +282,9 @@ export function toRegistryMount(raw: RawRegistryMount): RegistryMount {
     url: raw.url,
     path: raw.path,
     categories: raw.categories,
+    adapter: raw.adapter,
+    kwargs: raw.kwargs,
+    secretKwargsEnv: raw.secret_kwargs_env,
     authRef: raw.auth_ref,
     defaultReadPriority: raw.default_read_priority,
     enabled: raw.enabled,
@@ -556,12 +568,16 @@ export function toGraphNode(raw: RawGraphNode): GraphNode {
     id: raw.id,
     title: raw.title,
     category: raw.category,
+    path: raw.path,
+    kind: raw.kind,
+    summary: raw.summary,
+    mount: raw.mount,
     inboundCount: raw.inbound_count,
   };
 }
 
 export function toGraphEdge(raw: RawGraphEdge): GraphEdge {
-  return { source: raw.source, target: raw.target };
+  return { source: raw.source, target: raw.target, type: raw.type };
 }
 
 export function toGraph(raw: RawGraph): MimirGraph {
@@ -777,6 +793,9 @@ export function buildMimirHttpAdapter(client: ApiClient): IMimirService {
           url: mount.url,
           path: mount.path,
           categories: mount.categories,
+          adapter: mount.adapter ?? '',
+          kwargs: mount.kwargs ?? {},
+          secret_kwargs_env: mount.secretKwargsEnv ?? {},
           auth_ref: mount.authRef ?? null,
           default_read_priority: mount.defaultReadPriority,
           enabled: mount.enabled,
@@ -799,6 +818,9 @@ export function buildMimirHttpAdapter(client: ApiClient): IMimirService {
           url: mount.url,
           path: mount.path,
           categories: mount.categories,
+          adapter: mount.adapter ?? '',
+          kwargs: mount.kwargs ?? {},
+          secret_kwargs_env: mount.secretKwargsEnv ?? {},
           auth_ref: mount.authRef ?? null,
           default_read_priority: mount.defaultReadPriority,
           enabled: mount.enabled,
@@ -874,15 +896,52 @@ export function buildMimirHttpAdapter(client: ApiClient): IMimirService {
         );
       },
 
-      async getDoctor(): Promise<DoctorReport | null> {
+      async inspectInstances(mount?: string): Promise<InstanceInspection[]> {
+        return client.get(
+          '/instances/inspect' + (mount ? '?mount=' + encodeURIComponent(mount) : ''),
+        );
+      },
+      async inspectDeployment(name, target) {
+        return client.get(
+          '/deployments/' +
+            encodeURIComponent(name) +
+            (target ? '?target=' + encodeURIComponent(target) : ''),
+        );
+      },
+      async controlDeployment(name, action, target) {
+        return client.post(
+          '/deployments/' +
+            encodeURIComponent(name) +
+            '/' +
+            action +
+            (target ? '?target=' + encodeURIComponent(target) : ''),
+          {},
+        );
+      },
+      async getDeployments(): Promise<DeploymentStatus> {
+        return client.get('/deployments');
+      },
+      async deployInstance(request) {
+        return client.post('/deployments', request);
+      },
+      async getDoctor(mountName?: string): Promise<DoctorReport | null> {
         return nullOnMissingRoute(async () =>
-          toDoctorReport(await client.get<RawDoctorReport>('/doctor')),
+          toDoctorReport(
+            await client.get<RawDoctorReport>(
+              '/doctor' + (mountName ? '?mount=' + encodeURIComponent(mountName) : ''),
+            ),
+          ),
         );
       },
 
-      async runDoctorFixes(): Promise<DoctorReport | null> {
+      async runDoctorFixes(mountName?: string): Promise<DoctorReport | null> {
         return nullOnMissingRoute(async () =>
-          toDoctorReport(await client.post<RawDoctorReport>('/doctor/fix', {})),
+          toDoctorReport(
+            await client.post<RawDoctorReport>(
+              '/doctor/fix' + (mountName ? '?mount=' + encodeURIComponent(mountName) : ''),
+              {},
+            ),
+          ),
         );
       },
     },

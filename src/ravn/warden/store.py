@@ -74,6 +74,7 @@ class WardenStore:
             yaml.safe_dump(payload, sort_keys=False, allow_unicode=False),
             encoding="utf-8",
         )
+        self.spec_path(spec.id).chmod(0o600)
         return spec
 
     def delete(self, warden_id: str) -> bool:

@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gbrain.name" . }}
+  labels:
+    {{- include "gbrain.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "gbrain.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gbrain.labels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/config.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: gbrain
+          image: {{ include "gbrain.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [sh, /etc/gbrain/start.sh]
+          env:
+            - name: GBRAIN_HOME
+              value: /data
+            - name: GBRAIN_ADMIN_BOOTSTRAP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "existingSecret is required" .Values.existingSecret }}
+                  key: GBRAIN_ADMIN_BOOTSTRAP_TOKEN
+          envFrom:
+            - secretRef:
+                name: {{ .Values.existingSecret }}
+          ports:
+            - name: http
+              containerPort: 3131
+          startupProbe:
+            httpGet: {path: /health, port: http}
+            failureThreshold: 60
+            periodSeconds: 5
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources: {{ toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: config, mountPath: /etc/gbrain, readOnly: true}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ default (include "gbrain.name" .) .Values.persistence.existingClaim }}
+        - name: config
+          configMap:
+            name: {{ include "gbrain.name" . }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gbrain.name" . }}
+spec:
+  selector:
+    {{- include "gbrain.labels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http

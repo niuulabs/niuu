@@ -203,7 +203,7 @@ test('/mimir/search — clicking a result opens it in pages', async ({ page }) =
 
 test('/mimir/graph renders the graph workspace', async ({ page }) => {
   await page.goto('/mimir/graph');
-  await expect(page.getByRole('img', { name: /knowledge graph/i })).toBeVisible({
+  await expect(page.getByRole('group', { name: /knowledge graph/i })).toBeVisible({
     timeout: 5000,
   });
   await expect(page.locator('[aria-label="Graph legend"]')).toBeVisible();
@@ -211,7 +211,7 @@ test('/mimir/graph renders the graph workspace', async ({ page }) => {
 
 test('/mimir/graph shows the graph SVG after load', async ({ page }) => {
   await page.goto('/mimir/graph');
-  await expect(page.getByRole('img', { name: /knowledge graph/i })).toBeVisible({
+  await expect(page.getByRole('group', { name: /knowledge graph/i })).toBeVisible({
     timeout: 5000,
   });
 });

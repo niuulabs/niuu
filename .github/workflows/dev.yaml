@@ -170,7 +170,7 @@ jobs:
       packages: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
-      containers: '["agent","skuld","openshell","devrunner","volundr-web","niuu-web","niuu"]'
+      containers: '["agent","skuld","openshell","devrunner","volundr-web","niuu-web","niuu","gbrain"]'
       platforms: '["amd64","arm64"]'
       tag-prefix: ${{ github.sha }}
       manifest-tags: "dev dev-${{ github.sha }}"
@@ -194,7 +194,7 @@ jobs:
       security-events: write
     uses: ./.github/workflows/reusable-container-scan.yaml
     with:
-      containers: '["agent","skuld","openshell","devrunner","volundr-web","niuu-web","niuu"]'
+      containers: '["agent","skuld","openshell","devrunner","volundr-web","niuu-web","niuu","gbrain"]'
       tag: dev
 
   # ---------------------------------------------------------------------------
@@ -307,13 +307,16 @@ jobs:
         run: |
           VERSION="${{ needs.tag.outputs.version }}"
 
-          for CHART in agent bifrost ravn skuld volundr ting niuu-shared niuu skuld-planner; do
+          for CHART in agent bifrost ravn skuld volundr ting niuu-shared niuu skuld-planner mimir gbrain; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
+          sed -i 's/^  tag: ""/  tag: "dev-${{ github.sha }}"/' charts/gbrain/values.yaml
 
       - name: Package Helm charts
         run: |
+          helm package charts/mimir -d .helm-packages/
+          helm package charts/gbrain -d .helm-packages/
           helm package charts/bifrost -d .helm-packages/
           helm package charts/agent -d .helm-packages/
           helm package charts/ravn -d .helm-packages/

@@ -22,8 +22,8 @@ content.
 
 What this adapter deliberately does not do
 ------------------------------------------
-gbrain has no equivalent of Mímir's lint pass, raw-source registry, or mount
-summary. Those methods raise instead of returning empty results: an operator
+gbrain has no equivalent of Mímir's lint pass or raw-source registry.
+Those methods raise instead of returning empty results: an operator
 who points a workflow at a brain that cannot lint should be told so, not
 handed a clean report over an unlinted corpus. See
 ``.claude/rules/no-fallbacks.md``.
@@ -37,8 +37,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+import yaml
 
 from niuu.domain.mimir import (
+    EntityType,
     MimirLintReport,
     MimirMountSummary,
     MimirPage,
@@ -46,6 +48,7 @@ from niuu.domain.mimir import (
     MimirQueryResult,
     MimirSource,
     MimirSourceMeta,
+    PageType,
 )
 from niuu.ports.mimir import MimirPort
 
@@ -82,8 +85,9 @@ class GBrainMimirAdapter(MimirPort):
     def __init__(
         self,
         mcp_url: str,
-        api_token: str,
+        api_token: str = "",
         *,
+        api_token_file: str = "",
         ingest_url: str | None = None,
         timeout_seconds: float = _DEFAULT_TIMEOUT,
         search_limit: int = _DEFAULT_SEARCH_LIMIT,
@@ -92,6 +96,10 @@ class GBrainMimirAdapter(MimirPort):
     ) -> None:
         if not mcp_url:
             raise ValueError("GBrainMimirAdapter requires an MCP URL")
+        if api_token_file:
+            from pathlib import Path
+
+            api_token = Path(api_token_file).expanduser().read_text().strip()
         if not api_token:
             raise ValueError(
                 "GBrainMimirAdapter requires an API token; create one with "
@@ -145,7 +153,15 @@ class GBrainMimirAdapter(MimirPort):
         if not isinstance(result, dict):
             raise RuntimeError(f"gbrain MCP returned no result object from {name}: {message}")
         if result.get("isError"):
-            raise RuntimeError(f"gbrain MCP tool {name} failed: {_text_result(result)}")
+            detail = _text_result(result)
+            if name == "get_page":
+                try:
+                    error = json.loads(detail)
+                except json.JSONDecodeError:
+                    error = None
+                if isinstance(error, dict) and error.get("error") == "page_not_found":
+                    raise FileNotFoundError(arguments["slug"])
+            raise RuntimeError(f"gbrain MCP tool {name} failed: {detail}")
         return result
 
     # ------------------------------------------------------------------
@@ -204,7 +220,7 @@ class GBrainMimirAdapter(MimirPort):
         )
 
     async def read_page(self, path: str) -> str:
-        result = await self._call_tool("get_page", {"slug": _slug(path)})
+        result = await self._call_tool("get_page", {"slug": _slug(path), "include_content": True})
         records = _records(result)
         if not records:
             text = _text_result(result)
@@ -214,7 +230,7 @@ class GBrainMimirAdapter(MimirPort):
         return str(records[0].get("content") or records[0].get("body") or "")
 
     async def get_page(self, path: str) -> MimirPage:
-        result = await self._call_tool("get_page", {"slug": _slug(path)})
+        result = await self._call_tool("get_page", {"slug": _slug(path), "include_content": True})
         records = _records(result)
         if not records:
             raise FileNotFoundError(path)
@@ -225,13 +241,23 @@ class GBrainMimirAdapter(MimirPort):
         category: str | None = None,
         prefix: str | None = None,
     ) -> list[MimirPageMeta]:
-        arguments: dict[str, Any] = {}
-        if prefix:
-            arguments["prefix"] = _slug(prefix)
-        if category:
-            arguments["category"] = category
-        result = await self._call_tool("list_pages", arguments)
-        return [_page_from_record(r).meta for r in _records(result)]
+        pages: list[MimirPageMeta] = []
+        offset = 0
+        while True:
+            result = await self._call_tool(
+                "list_pages", {"limit": 100, "offset": offset, "sort": "slug"}
+            )
+            records = _records(result)
+            pages.extend(_page_from_record(record).meta for record in records)
+            if len(records) < 100:
+                break
+            offset += len(records)
+        return [
+            page
+            for page in pages
+            if (not prefix or page.path.startswith(_slug(prefix)))
+            and (not category or page.category == category)
+        ]
 
     # ------------------------------------------------------------------
     # Writes
@@ -295,8 +321,35 @@ class GBrainMimirAdapter(MimirPort):
     async def list_sources(self, *, unprocessed_only: bool = False) -> list[MimirSourceMeta]:
         raise NotImplementedError(_UNSUPPORTED.format(op="list_sources"))
 
+    async def inspect_instance(self) -> dict:
+        response = await self._get_client().get(self._mcp_url.removesuffix("/mcp") + "/health")
+        response.raise_for_status()
+        health = response.json()
+        summary = await self.summarize()
+        return {
+            "backend": "gbrain",
+            "metrics": {
+                "Version": health.get("version", "Not reported"),
+                "Storage engine": health.get("engine", "Not reported"),
+                "Health": health.get("status", "Not reported"),
+                "Pages": summary.page_count,
+                "Categories": len(summary.categories),
+            },
+            "unavailable": [
+                "Dream-cycle history is not exposed by this MCP adapter",
+                "Embedding coverage",
+                "Synthesis activity",
+            ],
+        }
+
     async def summarize(self) -> MimirMountSummary:
-        raise NotImplementedError(_UNSUPPORTED.format(op="summarize"))
+        pages = await self.list_pages()
+        return MimirMountSummary(
+            page_count=len(pages),
+            source_count=0,  # gbrain has no Mimir raw-source registry.
+            categories=sorted({page.category for page in pages}),
+            last_write=max((page.updated_at for page in pages), default=None),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +364,7 @@ def _parse_mcp_response(raw: str) -> dict[str, Any]:
         raise RuntimeError("gbrain MCP returned an empty response")
     if text.startswith("{"):
         return json.loads(text)
-    for line in text.splitlines():
+    for line in text.split("\n"):
         line = line.strip()
         if line.startswith("data:"):
             body = line[len("data:") :].strip()
@@ -337,6 +390,8 @@ def _records(result: dict[str, Any]) -> list[dict[str, Any]]:
     otherwise; both shapes are read here so callers never have to care.
     """
     structured = result.get("structuredContent")
+    if isinstance(structured, dict) and (structured.get("slug") or structured.get("path")):
+        return [structured]
     nested = structured.get("results") if isinstance(structured, dict) else None
     for candidate in (structured, nested):
         if isinstance(candidate, list):
@@ -351,6 +406,8 @@ def _records(result: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(parsed, list):
         return [r for r in parsed if isinstance(r, dict)]
     if isinstance(parsed, dict):
+        if parsed.get("slug") or parsed.get("path"):
+            return [parsed]
         results = parsed.get("results") or parsed.get("pages")
         if isinstance(results, list):
             return [r for r in results if isinstance(r, dict)]
@@ -397,13 +454,34 @@ def _page_from_record(record: dict[str, Any], *, default_path: str = "") -> Mimi
         updated = datetime.now(UTC)
     if updated.tzinfo is None:
         updated = updated.replace(tzinfo=UTC)
+    front: dict[str, Any] = {}
+    if content.startswith("---\n"):
+        sections = content.split("---", 2)
+        if len(sections) == 3:
+            parsed = yaml.safe_load(sections[1])
+            if isinstance(parsed, dict):
+                front = parsed
+    metadata = {
+        **front,
+        **record.get("frontmatter", {}),
+        **{key: value for key, value in record.items() if value is not None},
+    }
+    page_type = metadata.get("type")
+    entity_type = metadata.get("entity_type")
     meta = MimirPageMeta(
         path=path,
         title=str(record.get("title") or path),
-        summary=str(record.get("summary") or record.get("snippet") or ""),
-        category=str(record.get("category") or "gbrain"),
+        summary=str(metadata.get("summary") or metadata.get("snippet") or ""),
+        category=str(
+            metadata.get("category") or (path.split("/", 1)[0] if "/" in path else "gbrain")
+        ),
         updated_at=updated,
-        source_ids=[],
+        source_ids=list(metadata.get("source_ids") or []),
+        related_entities=list(metadata.get("related_entities") or []),
+        page_type=PageType(page_type) if page_type in PageType._value2member_map_ else None,
+        entity_type=EntityType(entity_type)
+        if entity_type in EntityType._value2member_map_
+        else None,
     )
     return MimirPage(meta=meta, content=content)
 

@@ -223,6 +223,10 @@ def workflow_mimir_from_snapshot(snapshot: dict[str, Any] | None) -> dict[str, A
             "label": str(node.get("label") or mount_name),
             "categories": categories,
         }
+        if adapter := _optional_string(node.get("adapter")):
+            ref["adapter"] = adapter
+            ref["kwargs"] = dict(node.get("kwargs") or {})
+            ref["secret_kwargs_env"] = dict(node.get("secretKwargsEnv") or {})
         if path := _optional_string(node.get("path")):
             ref["path"] = path
         if url := _optional_string(node.get("url")):

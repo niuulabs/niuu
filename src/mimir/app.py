@@ -128,7 +128,15 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         desc="Current Mimir service instance",
     )
     eval_capture_dir = Path(config.path).expanduser() / "evals" if config.eval_capture else None
+    deployment = None
+    if config.deployment:
+        import importlib
+
+        settings = dict(config.deployment)
+        module, name = settings.pop("adapter").rsplit(".", 1)
+        deployment = getattr(importlib.import_module(module), name)(**settings)
     mimir_router = MimirRouter(
+        deployment=deployment,
         adapter=adapter,
         name=config.name,
         role=config.role,
@@ -166,7 +174,11 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.debug("mimir: sleipnir announce skipped (%s)", exc)
-        yield
+        try:
+            yield
+        finally:
+            if deployment is not None:
+                await deployment.close()
 
     app = FastAPI(
         title=f"Mímir — {config.name}",

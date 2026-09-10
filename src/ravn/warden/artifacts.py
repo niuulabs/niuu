@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import plistlib
 import shlex
@@ -158,6 +159,9 @@ def runtime_config_payload(
 
     instances = []
     for index, mount_name in enumerate(all_mounts):
+        if mount_name in spec.mimir.instance_configs:
+            instances.append({**spec.mimir.instance_configs[mount_name], "name": mount_name})
+            continue
         instances.append(
             {
                 "name": mount_name,
@@ -168,6 +172,18 @@ def runtime_config_payload(
         )
 
     mimir_mcp_servers = _mimir_mcp_servers(all_mounts)
+    for server, mount_name in zip(mimir_mcp_servers, all_mounts, strict=True):
+        if mount_name in spec.mimir.instance_configs:
+            digest = hashlib.sha256(mount_name.encode()).hexdigest()[:16]
+            server["args"] = [
+                "-m",
+                "mimir",
+                "mcp",
+                "--adapter-config",
+                str(state_root / f"mount-{digest}.yaml"),
+                "--name",
+                mount_name,
+            ]
     payload = {
         "permission": {
             "mode": "workspace_write",
@@ -406,6 +422,12 @@ def write_runtime_config(
 ) -> Path:
     """Render and persist the runtime config for one warden."""
     config_path = runtime_config_path(warden_dir)
+    for name, instance in spec.mimir.instance_configs.items():
+        digest = hashlib.sha256(name.encode()).hexdigest()[:16]
+        mount_path = warden_dir / f"mount-{digest}.yaml"
+        mount_path.parent.mkdir(parents=True, exist_ok=True)
+        mount_path.write_text(yaml.safe_dump(instance), encoding="utf-8")
+        mount_path.chmod(0o600)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
         yaml.safe_dump(
