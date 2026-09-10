@@ -49,8 +49,10 @@ async def test_gbrain_creates_postgres_flux_release():
     assert body["spec"]["values"]["existingSecret"] == "brain"
     assert not result["ready"]
     assert body["spec"]["chart"]["spec"]["sourceRef"]["name"] == "niuu"
-    with pytest.raises(ValueError, match="Secret"):
-        await a.deploy(DeploymentRequest(name="empty", backend="gbrain"))
+    await a.deploy(DeploymentRequest(name="new-brain", backend="gbrain"))
+    values = api.create_namespaced_custom_object.call_args.args[-1]["spec"]["values"]
+    assert values["postgres"]["enabled"] is True
+    assert values["existingSecret"] == ""
 
 
 def test_deployment_requires_admin_and_inspection_reports_real_counts(tmp_path):
@@ -229,3 +231,18 @@ def test_deployment_auth_accepts_envoy_array_claims(tmp_path, roles, user, expec
     }
     with TestClient(app) as client:
         assert client.get("/deployments", headers=headers).status_code == expected
+
+
+@pytest.mark.asyncio
+async def test_flux_target_supplies_storage_class_to_both_engines():
+    a = adapter()
+    a.storage_class = "harvester-data"
+    api = AsyncMock()
+    api.create_namespaced_custom_object.side_effect = lambda *args: args[-1]
+    a._api = AsyncMock(return_value=api)
+    for backend in ("mimir", "gbrain"):
+        await a.deploy(DeploymentRequest(name="brain", backend=backend))
+        values = api.create_namespaced_custom_object.call_args.args[-1]["spec"]["values"]
+        assert values["persistence"]["storageClass"] == "harvester-data"
+        if backend == "gbrain":
+            assert values["postgres"]["storageClass"] == "harvester-data"

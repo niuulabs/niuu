@@ -24,6 +24,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         chart_versions: dict[str, str],
         images: dict[str, str],
         cluster: str = "current",
+        storage_class: str = "",
         secrets: dict[str, str] | None = None,
         warden: dict | None = None,
         source_namespace: str = "",
@@ -42,6 +43,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         self.versions = chart_versions
         self.images = images
         self.cluster = cluster
+        self.storage_class = storage_class
         self.secrets = secrets or {}
         self.warden = warden
         self.in_cluster = in_cluster
@@ -88,7 +90,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
             "namespace": self.namespace,
             "target": "cluster",
             "warden_available": self.warden is not None,
-            "dream_available": bool(self.secrets.get("gbrain")),
+            "dream_available": "gbrain" in self.versions,
             "backends": sorted(set(self.versions) & set(self.images)),
             "releases": [self._view(item) for item in result["items"]],
         }
@@ -100,14 +102,18 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         secret = request.secret or self.secrets.get(backend, "").replace("{name}", request.name)
         if request.warden and self.warden is None:
             raise ValueError("Configure a warden runtime on this target before enabling it")
-        if backend == "gbrain" and not secret:
-            raise ValueError("gbrain requires a Secret with database and admin credentials")
         image = self.images[backend]
         repository, tag = image.rsplit(":", 1)
-        values: dict[str, Any] = {"image": {"repository": repository, "tag": tag}}
+        values: dict[str, Any] = {
+            "image": {"repository": repository, "tag": tag},
+            "persistence": {"storageClass": self.storage_class},
+        }
         if backend == "gbrain":
             values.update(
-                engine="postgres", existingSecret=secret, dream=request.dream.model_dump()
+                engine="postgres",
+                existingSecret=secret,
+                postgres={"enabled": not bool(secret), "storageClass": self.storage_class},
+                dream=request.dream.model_dump(),
             )
         else:
             values["image"]["registry"] = ""

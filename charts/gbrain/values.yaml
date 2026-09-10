@@ -35,3 +35,11 @@ dream:
   activeDeadlineSeconds: 1800
 
 replicaCount: 1
+
+# Provision a database per release through the installed CloudNativePG operator.
+postgres:
+  enabled: false
+  image: ghcr.io/cloudnative-pg/postgresql:17
+  instances: 2
+  storageClass: ""
+  size: 5Gi

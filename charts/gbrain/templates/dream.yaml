@@ -46,9 +46,12 @@ spec:
                   exec gbrain dream --json{{ range .Values.dream.phases }} --phase {{ . | squote }}{{ end }}
               env:
                 - {name: GBRAIN_HOME, value: /data}
+                {{- include "gbrain.databaseEnv" . | nindent 16 }}
+              {{- if .Values.existingSecret }}
               envFrom:
                 - secretRef:
                     name: {{ .Values.existingSecret }}
+              {{- end }}
               resources: {{ toYaml .Values.resources | nindent 16 }}
               securityContext:
                 allowPrivilegeEscalation: false

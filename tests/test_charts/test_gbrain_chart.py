@@ -61,7 +61,7 @@ def test_postgres_maintenance_has_no_access_to_live_pglite_files():
     "args, message",
     [
         (["--set", "dream.enabled=true"], "Scheduled dreams require engine=postgres"),
-        (["--set", "existingSecret="], "existingSecret is required"),
+        (["--set", "postgres.enabled=true"], "postgres.enabled requires engine=postgres"),
         (["--set", "engine=invalid"], "engine must be pglite or postgres"),
         (["--set", "embedding.enabled=true"], "embedding.model is required"),
     ],
@@ -96,3 +96,34 @@ def test_gbrain_rejects_warden():
     result = render("--set", "warden.enabled=true")
     assert result.returncode != 0
     assert "gbrain uses native dream cycles" in result.stderr
+
+
+def test_managed_postgres_uses_operator_credentials_and_configured_storage():
+    result = render(
+        "--set",
+        "engine=postgres",
+        "--set",
+        "postgres.enabled=true",
+        "--set",
+        "existingSecret=",
+        "--set",
+        "dream.enabled=true",
+        "--set",
+        "postgres.storageClass=harvester-data",
+        "--set",
+        "persistence.storageClass=harvester-data",
+    )
+    assert result.returncode == 0, result.stderr
+    docs = {d["kind"]: d for d in yaml.safe_load_all(result.stdout)}
+    db = docs["Cluster"]["spec"]
+    assert db["storage"] == {"storageClass": "harvester-data", "size": "5Gi"}
+    assert "secret" not in db["bootstrap"]["initdb"]
+    assert docs["PersistentVolumeClaim"]["spec"]["storageClassName"] == "harvester-data"
+    assert docs["Secret"]["metadata"]["name"] == "brain-gbrain-admin"
+    containers = [
+        docs["Deployment"]["spec"]["template"]["spec"]["containers"][0],
+        docs["CronJob"]["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0],
+    ]
+    for container in containers:
+        env = next(e for e in container["env"] if e["name"] == "GBRAIN_DATABASE_URL")
+        assert env["valueFrom"]["secretKeyRef"] == {"name": "brain-gbrain-db-app", "key": "uri"}

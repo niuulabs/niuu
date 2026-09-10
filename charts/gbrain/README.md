@@ -3,13 +3,36 @@
 Deploy upstream gbrain as a standalone knowledge service. The image recipe at
 `containers/gbrain/Dockerfile` pins upstream commit
 `43597b19e50a3abf56409337f248f7966860293c` (0.48.5.0), with Bun 1.4.2.
-Build and publish that image to your registry, then set `image.repository` and
-`image.tag`. This chart does not assume a published Niuu gbrain image exists.
+The Niuu release pipeline publishes the container and chart to GHCR.
 
-Create a Kubernetes Secret and set `existingSecret` to its name. It must contain
-`GBRAIN_ADMIN_BOOTSTRAP_TOKEN`, at least 32 URL-safe characters. Generate this
-credential securely; do not place it in Helm values or commit it. Provider keys
-such as `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` may be included in the same Secret.
+For a database managed with the release, set `engine: postgres` and
+`postgres.enabled: true`. The installed CloudNativePG operator creates a dedicated
+database and generates its application Secret. Both the server and dream job
+consume the Secret's `uri` directly; no database password is entered in the UI or
+copied into Doppler. The chart generates a separate admin bootstrap Secret once
+and preserves it across upgrades. `existingSecret` remains available for externally
+managed credentials and provider keys.
+
+Configure storage for each workload explicitly:
+
+```yaml
+engine: postgres
+persistence:
+  storageClass: harvester-data
+  size: 5Gi
+postgres:
+  enabled: true
+  storageClass: harvester-data
+  size: 5Gi
+  instances: 2
+dream:
+  enabled: true
+```
+
+Storage classes default to the cluster default when omitted. Choose classes that
+support expansion if volumes need to grow. The deployment target's `storage_class`
+setting supplies both classes for UI-created instances.
+
 The admin bootstrap credential is not a Mimir API token: create a scoped gbrain
 read/write token using gbrain's admin flow before configuring the Mimir adapter.
 

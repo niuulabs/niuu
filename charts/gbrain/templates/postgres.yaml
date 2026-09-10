@@ -1,0 +1,36 @@
+{{- if .Values.postgres.enabled }}
+{{- if ne .Values.engine "postgres" }}
+{{- fail "postgres.enabled requires engine=postgres" }}
+{{- end }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "gbrain.name" . }}-db
+spec:
+  instances: {{ .Values.postgres.instances }}
+  imageName: {{ .Values.postgres.image | quote }}
+  primaryUpdateMethod: switchover
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: required
+  bootstrap:
+    initdb:
+      database: gbrain
+      owner: gbrain
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS vector
+        - CREATE EXTENSION IF NOT EXISTS pg_trgm
+        - CREATE EXTENSION IF NOT EXISTS pgcrypto
+  storage:
+    {{- if .Values.postgres.storageClass }}
+    storageClass: {{ .Values.postgres.storageClass | quote }}
+    {{- end }}
+    size: {{ .Values.postgres.size | quote }}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+{{- end }}
