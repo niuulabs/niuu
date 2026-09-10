@@ -168,6 +168,10 @@ passed separately. Lint and formatting checks passed without test warnings.
 
 ## Container builds and cluster enablement
 
+The [Bifrost chart guide](../../charts/bifrost/README.md) includes the
+Nemotron-only values overlay, standalone and umbrella GitOps value paths,
+authentication and image prerequisites, rollout verification, and rollback.
+
 The standard Niuu Dockerfile now builds Switchyard as part of the existing
 PR, dev, feature, and release image pipelines on native amd64 and arm64 runners.
 No separate wheel publication, release asset, or workflow-artifact download is

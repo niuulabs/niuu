@@ -1,0 +1,21 @@
+# Overlay for the real Valaskjalf vLLM endpoint; requires a Switchyard-enabled
+# niuu image. Set image.tag separately to the published immutable build tag.
+# Preserve the environment's existing authentication and secret configuration.
+config:
+  selection:
+    adapter: bifrost.adapters.switchyard_models.SwitchyardModelSelection
+    targets:
+      nemotron:
+        provider: valaskjalf
+        model: nvidia/nemotron-3-super
+        weight: 1
+    routes:
+      local:
+        targets: [nemotron]
+  providers:
+    valaskjalf:
+      base_url: https://vllm.valaskjalf.asgard.niuu.world
+      models: [nvidia/nemotron-3-super]
+      timeout: 120
+      chat_template_kwargs:
+        enable_thinking: false

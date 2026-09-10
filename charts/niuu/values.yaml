@@ -162,6 +162,9 @@ guild:
 
 bifrost:
   enabled: true
+  # Embedded Switchyard: set bifrost.config.selection and bifrost.image.tag.
+  # Nest charts/bifrost/values-switchyard-nemotron.yaml under this key.
+  # See charts/bifrost/README.md for the infrastructure-repo rollout guide.
 
 ravn:
   enabled: true
