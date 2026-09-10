@@ -432,6 +432,10 @@ data:
 
     {{- if .Values.integrations }}
     integrations:
+      {{- with .Values.integrations.repository }}
+      repository:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       database_name: {{ .Values.integrations.databaseName | default "" | quote }}
       {{- if .Values.integrations.definitions }}
       definitions:

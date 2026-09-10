@@ -61,3 +61,16 @@ async def test_foreign_connection_rejected_before_session_launch():
         )
     contributor.contribute.assert_not_awaited()
     assert not pods.mock_calls
+
+
+@pytest.mark.parametrize("connection", [None, SimpleNamespace(enabled=False)])
+async def test_missing_or_disabled_selection_is_not_silently_dropped(connection):
+    integrations = AsyncMock()
+    integrations.get_connection.return_value = connection
+    pods = AsyncMock()
+    service = SessionService(AsyncMock(), pods, integration_repo=integrations)
+    with pytest.raises(ValueError, match="missing or disabled"):
+        await service._start_with_pipeline(
+            SimpleNamespace(), None, None, None, False, integration_ids=["selected"]
+        )
+    pods.start.assert_not_called()

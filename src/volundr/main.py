@@ -645,7 +645,15 @@ def create_app(
                 [d.model_dump() for d in settings.integrations.definitions],
             )
             integration_registry = IntegrationRegistry(integration_definitions)
-            integration_repo = PostgresIntegrationRepository(integration_pool)
+            if settings.integrations.repository is not None:
+                repository_config = settings.integrations.repository
+                integration_repo = import_class(repository_config.adapter)(
+                    **resolve_secret_kwargs(
+                        repository_config.kwargs, repository_config.secret_kwargs_env
+                    )
+                )
+            else:
+                integration_repo = PostgresIntegrationRepository(integration_pool)
             mapping_repository = PostgresMappingRepository(pool)
             tracker_factory = TrackerFactory(credential_store)
             credential_enrollment_service = CredentialEnrollmentService(
@@ -1303,6 +1311,8 @@ def create_app(
                 if hasattr(gateway_adapter, "close"):
                     await gateway_adapter.close()
                 await git_registry.close()
+                if hasattr(integration_repo, "close"):
+                    await integration_repo.close()
                 if audit_subscriber is not None:
                     await audit_subscriber.stop()
                 if sleipnir_bus is not None and hasattr(sleipnir_bus, "stop"):

@@ -268,27 +268,14 @@ class SecretInjectionContributor(SessionContributor):
             return SessionContribution(values=values)
 
         if not self._secret_injection:
-            if self._mimir_auth_refs(context):
-                raise ValueError("Memory well credentials require configured secret injection")
-            return SessionContribution(values=values)
+            raise ValueError("Attached credentials require configured secret injection")
 
-        # Ensure injection config exists (ConfigMap, SPC, etc.)
-        try:
-            await self._secret_injection.ensure_secret_provider_class(
-                session.owner_id,
-                mappings,
-                session_id=str(session.id),
-                tenant_id=session.tenant_id,
-            )
-        except Exception:
-            if self._mimir_auth_refs(context):
-                raise
-            logger.warning(
-                "Failed to ensure injection config for user %s — skipping secret volume injection",
-                session.owner_id,
-                exc_info=True,
-            )
-            return SessionContribution(values=values)
+        await self._secret_injection.ensure_secret_provider_class(
+            session.owner_id,
+            mappings,
+            session_id=str(session.id),
+            tenant_id=session.tenant_id,
+        )
 
         # Get pod spec additions (annotations, volumes, mounts)
         pod_spec = await self._secret_injection.pod_spec_additions(

@@ -661,6 +661,49 @@ class TestSessionServiceStart:
 
         assert provision.await_args.kwargs["initial_prompt"] == (override or "Research PXE boot")
 
+    async def test_restart_preserves_selected_connections(
+        self, repository, pod_manager, monkeypatch
+    ):
+        service = SessionService(repository, pod_manager)
+        session = await service.create_session(name="subscription", model="claude-sonnet-5")
+        await repository.update(
+            session.model_copy(
+                update={
+                    "status": SessionStatus.STOPPED,
+                    "workload_config": {"integration_ids": ["claude-connection"]},
+                }
+            )
+        )
+        provision = AsyncMock()
+        monkeypatch.setattr(service, "_provision_background", provision)
+        await service.start_session(session.id)
+        await asyncio.gather(*service._provisioning_tasks.values())
+        assert provision.await_args.kwargs["integration_ids"] == ["claude-connection"]
+
+    @pytest.mark.parametrize("launch_fails", [False, True])
+    async def test_resolved_connections_survive_provisioning(
+        self, repository, pod_manager, monkeypatch, launch_fails
+    ):
+        from types import SimpleNamespace
+
+        integrations = AsyncMock()
+        integrations.list_connections.return_value = [
+            SimpleNamespace(id="subscription", enabled=True)
+        ]
+        service = SessionService(repository, pod_manager, integration_repo=integrations)
+        monkeypatch.setattr(service, "_poll_readiness", AsyncMock())
+        if launch_fails:
+            monkeypatch.setattr(pod_manager, "start", AsyncMock(side_effect=RuntimeError("failed")))
+        session = await service.create_session(name="subscription", model="claude-sonnet-5")
+        await service._provision_background(
+            session, SimpleNamespace(user_id="owner"), None, None, False
+        )
+        stored = await repository.get(session.id)
+        assert stored.workload_config["integration_ids"] == ["subscription"]
+        expected = SessionStatus.FAILED if launch_fails else SessionStatus.PROVISIONING
+        assert stored.status == expected
+        await asyncio.gather(*service._provisioning_tasks.values())
+
     async def test_start_session_prefers_public_host_for_browser_endpoints(
         self,
         repository: Repo,

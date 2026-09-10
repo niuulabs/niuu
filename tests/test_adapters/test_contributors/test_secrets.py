@@ -87,7 +87,7 @@ class TestSecretInjectionContributor:
         assert result.values == {}
         assert result.pod_spec is None
 
-    async def test_no_adapter_returns_openshell_mapping_values(self, session):
+    async def test_openshell_uses_its_native_credential_mapping(self, session):
         defn = _definition(
             slug="openai",
             env_from_credentials={"OPENAI_API_KEY": "api_key"},
@@ -95,6 +95,7 @@ class TestSecretInjectionContributor:
         registry = _registry([defn])
 
         ctx = SessionContext(
+            runtime_backend="openshell",
             integration_connections=(_connection("openai-cred", "openai"),),
         )
         c = SecretInjectionContributor(integration_registry=registry)
@@ -491,15 +492,15 @@ class TestSecretInjectionContributor:
         adapter.pod_spec_additions.assert_not_called()
         assert result.pod_spec is None
 
-    async def test_ensure_failure_skips_volume(self, session):
+    async def test_ensure_failure_stops_credential_launch(self, session):
         adapter = AsyncMock()
         adapter.ensure_secret_provider_class.side_effect = RuntimeError("403")
         ctx = SessionContext(
             integration_connections=(_connection("some-cred"),),
         )
         c = SecretInjectionContributor(secret_injection=adapter)
-        result = await c.contribute(session, ctx)
-        assert result.pod_spec is None
+        with pytest.raises(RuntimeError, match="403"):
+            await c.contribute(session, ctx)
         adapter.pod_spec_additions.assert_not_called()
 
     async def test_cleanup_calls_adapter(self, session):

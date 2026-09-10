@@ -1123,6 +1123,8 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
 class IntegrationsConfig(BaseModel):
     """Integration catalog configuration."""
 
+    repository: DynamicAdapterConfig | None = None
+
     database_name: str = Field(
         default="",
         description=(

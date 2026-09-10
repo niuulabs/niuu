@@ -57,11 +57,15 @@ class IntegrationContributor(SessionContributor):
         active = context.integration_connections
         manifest: dict[str, Any] = {"env": {}, "files": {}}
         mcp_servers: list[dict[str, Any]] = []
+        env_vars: list[dict[str, str]] = []
 
         for conn in active:
             defn = self._registry.get_definition(conn.slug)
             if defn is None:
                 continue
+
+            if defn.credential_enrollment and defn.credential_enrollment.method == "claude_setup":
+                env_vars.append({"name": "SKULD__CLAUDE_AUTH", "value": "subscription"})
 
             # Build manifest entries from definition's env_from_credentials
             for env_var, cred_key in defn.env_from_credentials.items():
@@ -97,6 +101,8 @@ class IntegrationContributor(SessionContributor):
                 }
 
         values: dict[str, Any] = {}
+        if env_vars:
+            values["envVars"] = env_vars
         if mcp_servers:
             values["mcpServers"] = mcp_servers
 

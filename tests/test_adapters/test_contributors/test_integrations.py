@@ -266,3 +266,22 @@ class TestIntegrationContributor:
         assert result.values["mcpServers"][0]["env"] == {}
         # Manifest still produced
         assert "secretManifest" in result.values
+
+
+async def test_claude_subscription_selects_subscription_auth(session, principal):
+    from dataclasses import replace
+
+    registry = IntegrationRegistry(
+        definitions_from_config([d.model_dump() for d in Settings().integrations.definitions])
+    )
+    connection = replace(
+        _linear_connection(), slug="claude-code", credential_name="claude-code-credentials"
+    )
+    result = await IntegrationContributor(integration_registry=registry).contribute(
+        session, SessionContext(principal=principal, integration_connections=(connection,))
+    )
+    assert result.values["envVars"] == [{"name": "SKULD__CLAUDE_AUTH", "value": "subscription"}]
+    assert result.values["secretManifest"]["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == {
+        "file": "claude-code-credentials",
+        "key": "token",
+    }
