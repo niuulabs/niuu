@@ -104,7 +104,7 @@ describe('OverviewView', () => {
     // Expanded detail shows "recent activity" heading
     expect(within(card).getByText('recent activity')).toBeInTheDocument();
     // Shows role label (host is shown in collapsed portion, not repeated)
-    expect(within(card).getByText('role')).toBeInTheDocument();
+    expect(within(card).getByText('memory role')).toBeInTheDocument();
     // Shows size label
     expect(within(card).getByText('size')).toBeInTheDocument();
     // Does NOT show a duplicate host label in the expanded section

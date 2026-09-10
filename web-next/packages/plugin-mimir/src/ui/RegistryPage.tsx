@@ -12,6 +12,7 @@ import {
   useUpdateRegistryMount,
 } from '../application/useRegistryMounts';
 import type { RegistryMount } from '../domain/registry';
+import { accessScopeLabel } from '../domain/access-scope';
 
 const INPUT_CLS =
   'niuu:w-full niuu:py-2 niuu:px-3 niuu:bg-bg-secondary niuu:border niuu:border-solid niuu:border-border ' +
@@ -290,6 +291,7 @@ export function RegistryPage() {
         desc: attached?.desc || mounted?.desc || '',
         defaultReadPriority: attached?.defaultReadPriority ?? mounted?.priority ?? 10,
         pages: mounted?.pages,
+        accessScope: mounted?.accessScope ?? attached?.accessScope ?? release?.access_scope,
         connection: attached,
         release,
         targetLabel: target?.source_name
@@ -451,6 +453,7 @@ export function RegistryPage() {
                           {mount.name}
                         </span>
                         <span className="niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
+                          {accessScopeLabel(mount.accessScope)} ·{' '}
                           {mount.release
                             ? `${mount.release.backend} · Managed · ${mount.targetLabel ?? 'cluster'}`
                             : 'Connected'}

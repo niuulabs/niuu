@@ -129,7 +129,7 @@ export function OverviewView() {
                     <span className="niuu:text-sm niuu:font-semibold niuu:text-text-primary niuu:flex-1">
                       {mount.name}
                     </span>
-                    <MountChip name={mount.name} role={mount.role} />
+                    <MountChip name={mount.name} accessScope={mount.accessScope ?? 'unknown'} />
                   </div>
                   <div className="niuu:text-xs niuu:font-mono niuu:text-text-muted niuu:mb-2">
                     {mount.host}
@@ -177,7 +177,7 @@ export function OverviewView() {
                       {/* Config detail grid — host already visible above, not repeated */}
                       <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3 niuu:mb-3 niuu:font-mono niuu:text-xs">
                         <div>
-                          <div className="niuu:text-text-muted">role</div>
+                          <div className="niuu:text-text-muted">memory role</div>
                           <div className="niuu:text-text-primary">{mount.role}</div>
                         </div>
                         <div>

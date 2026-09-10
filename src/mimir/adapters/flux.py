@@ -85,6 +85,13 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
             .get("annotations", {})
             .get("niuu.world/instance-name", obj["metadata"]["name"]),
             "release_name": obj["metadata"]["name"],
+            "access_scope": (
+                "tenant"
+                if obj["metadata"].get("annotations", {}).get("niuu.world/tenant-id")
+                else "global"
+                if obj["metadata"].get("annotations", {}).get("niuu.world/scope") == "global"
+                else "unknown"
+            ),
             "can_update": True,
             "backend": obj["metadata"]["labels"]["niuu.world/knowledge-backend"],
             "ready": ready.get("status") == "True" and observed >= current,
@@ -206,6 +213,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
                 {
                     "name": release["name"],
                     "tenant_id": tenant_id,
+                    "access_scope": "global" if name in self.global_instances else "tenant",
                     "kind": "remote",
                     "role": "shared",
                     "categories": None,

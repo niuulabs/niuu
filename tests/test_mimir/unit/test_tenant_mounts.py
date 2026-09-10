@@ -34,6 +34,7 @@ class TenantDeployments(KnowledgeDeploymentPort):
         return [
             {
                 "name": "brain",
+                "access_scope": "tenant",
                 "kind": "remote",
                 "role": "shared",
                 "categories": None,
@@ -75,9 +76,15 @@ def test_mount_discovery_reads_writes_and_credentials_are_tenant_scoped(tmp_path
             )
             assert response.status_code == 200
             assert f"Tenant {tenant}" in response.json()["content"]
+            scopes = {
+                m["name"]: m["access_scope"]
+                for m in client.get("/mounts", headers=identity(tenant)).json()
+            }
+            assert scopes == {"local": "global", "brain": "tenant"}
             registry = client.get("/registry/mounts", headers=identity(tenant)).json()
             mount = next(m for m in registry if m["name"] == "brain")
             assert mount["kind"] == "remote"
+            assert mount["access_scope"] == "tenant"
             assert mount["kwargs"] == {"base_url": "https://mimir.test/api/v1", "mount": "brain"}
             assert mount["auth_ref"] == "workload:mimir"
             assert not mount["secret_kwargs_env"]
@@ -206,6 +213,7 @@ async def test_ready_gbrain_is_discovered_with_its_own_native_secret():
         mounts = await adapter.discover_mounts("a")
     assert mounts[0]["name"] == "brain"
     assert mounts[0]["tenant_id"] == "a"
+    assert mounts[0]["access_scope"] == "tenant"
     assert mounts[0]["port"]._api_token == "native-secret"
     assert "connection" not in mounts[0]
     core.read_namespaced_secret.assert_awaited_once_with(
@@ -324,6 +332,8 @@ async def test_operator_global_mounts_are_shared_but_not_tenant_managed(backend)
         for tenant in ("a", "b"):
             mounts = await adapter.discover_mounts(tenant, "Bearer caller-token")
             assert [m["name"] for m in mounts] == ["global-brain"]
+            assert mounts[0]["access_scope"] == "global"
+            assert mounts[0]["role"] == "shared"
             assert (await adapter.list_deployments(tenant_id=tenant))["releases"] == []
             with pytest.raises(ValueError, match="not found"):
                 await adapter.control("global-brain", "stop", tenant_id=tenant)

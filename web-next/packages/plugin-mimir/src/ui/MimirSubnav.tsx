@@ -19,6 +19,7 @@ import { useLint } from '../application/useLint';
 import { useRavns } from '../application/useRavns';
 import { RAVN_DOT_STATE, MOUNT_DOT_STATE } from './mimir.constants';
 import './MimirSubnav.css';
+import { accessScopeLabel } from '../domain/access-scope';
 
 interface MimirSubnavProps {
   ctx: PluginCtx;
@@ -180,7 +181,7 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
             >
               <StateDot state={MOUNT_DOT_STATE[m.status]} size={6} />
               <span className="mm-mount-row__name">{m.name}</span>
-              <span className="mm-mount-row__role">{m.role}</span>
+              <span className="mm-mount-row__role">{accessScopeLabel(m.accessScope)}</span>
             </button>
           ))}
         </div>

@@ -37,6 +37,7 @@ import { tallySeverity } from '../domain/lint';
 interface RawMount {
   name: string;
   role: string;
+  access_scope?: Mount['accessScope'];
   host: string;
   url: string;
   priority: number;
@@ -57,6 +58,7 @@ interface RawRegistryMount {
   kind: 'local' | 'remote';
   lifecycle: 'registered' | 'ephemeral';
   role: string;
+  access_scope?: Mount['accessScope'];
   url: string;
   path: string;
   categories: string[] | null;
@@ -257,6 +259,7 @@ export function toMount(raw: RawMount): Mount {
   return {
     name: raw.name,
     role: raw.role as Mount['role'],
+    accessScope: raw.access_scope,
     host: raw.host,
     url: raw.url,
     priority: raw.priority,
@@ -279,6 +282,7 @@ export function toRegistryMount(raw: RawRegistryMount): RegistryMount {
     kind: raw.kind,
     lifecycle: raw.lifecycle,
     role: raw.role as RegistryMount['role'],
+    accessScope: raw.access_scope,
     url: raw.url,
     path: raw.path,
     categories: raw.categories,

@@ -206,3 +206,17 @@ describe('MimirSubnav', () => {
     expect(screen.getByRole('button', { name: /archive/i })).toHaveClass('mm-mount-row--muted');
   });
 });
+
+it('labels access independently from the shared memory role', async () => {
+  const service = createMimirMockAdapter();
+  const [base] = await service.mounts.listMounts();
+  service.mounts.listMounts = async () => [
+    { ...base!, name: 'gbrain-ui', role: 'shared', accessScope: 'tenant' },
+    { ...base!, name: 'gbrain-global', role: 'shared', accessScope: 'global' },
+  ];
+  renderWithMimir(<MimirSubnav ctx={mockCtx} />, service, mockCtx);
+  await waitFor(() => expect(screen.getByText('gbrain-ui')).toBeInTheDocument());
+  expect(screen.getByText('gbrain-ui').closest('button')).toHaveTextContent('Tenant');
+  expect(screen.getByText('gbrain-global').closest('button')).toHaveTextContent('Global');
+  expect(screen.queryByText('shared')).not.toBeInTheDocument();
+});

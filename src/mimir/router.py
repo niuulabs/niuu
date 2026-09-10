@@ -291,6 +291,7 @@ class LintReassignRequest(BaseModel):
 
 
 class MountResponse(BaseModel):
+    access_scope: str = "unknown"
     name: str
     role: str
     host: str
@@ -330,6 +331,7 @@ class RegistryMountRequest(BaseModel):
 
 
 class RegistryMountResponse(BaseModel):
+    access_scope: str = "unknown"
     id: str
     name: str
     kind: str
@@ -782,6 +784,7 @@ async def _summarize_mount(
     return MountResponse(
         name=mount["name"],
         role=mount["role"],
+        access_scope=mount.get("access_scope", "unknown"),
         host=host,
         url=url,
         priority=mount["priority"],
@@ -796,12 +799,15 @@ async def _summarize_mount(
         last_write=summary.last_write.isoformat() if summary.last_write is not None else "",
         embedding="fts",
         size_kb=0,
-        desc=f"{mount['role']} mount",
+        desc=f"{mount.get('access_scope', 'unknown')} knowledge instance",
     )
 
 
 def _registry_to_response(entry: MimirRegistryEntry) -> RegistryMountResponse:
-    return RegistryMountResponse(**entry.model_dump(mode="json"))
+    return RegistryMountResponse(
+        **entry.model_dump(mode="json"),
+        access_scope="tenant" if entry.tenant_id else "global",
+    )
 
 
 def _registry_mount_host(entry: MimirRegistryEntry) -> str:
@@ -819,6 +825,7 @@ def _mount_from_registry(entry: MimirRegistryEntry) -> MountResponse:
     return MountResponse(
         name=entry.name,
         role=entry.role,
+        access_scope="tenant" if entry.tenant_id else "global",
         host=_registry_mount_host(entry),
         url=entry.url,
         priority=entry.default_read_priority,
@@ -830,7 +837,7 @@ def _mount_from_registry(entry: MimirRegistryEntry) -> MountResponse:
         last_write="",
         embedding="fts",
         size_kb=0,
-        desc=entry.desc or f"registered {entry.role} mount",
+        desc=entry.desc or "Registered knowledge connection",
     )
 
 
@@ -1169,6 +1176,8 @@ class MimirRouter:
             default_name=self._name,
             default_role=self._role,
         )
+        for mount in mounts:
+            mount["access_scope"] = "tenant" if self._owner_tenant else "global"
         if self._deployment is not None:
             mounts.extend(self._deployed_mounts.get())
         seen = {mount["name"] for mount in mounts}
@@ -1184,6 +1193,7 @@ class MimirRouter:
             mounts.append(
                 {
                     "name": entry.name,
+                    "access_scope": "tenant" if entry.tenant_id else "global",
                     "role": entry.role,
                     "categories": entry.categories,
                     "priority": entry.default_read_priority,
@@ -1291,7 +1301,7 @@ class MimirRouter:
                         categories=mount["categories"],
                         url=getattr(mount["port"], "_base_url", ""),
                         default_read_priority=mount["priority"],
-                        desc=f"{mount['role']} mount",
+                        desc=f"{mount.get('access_scope', 'unknown')} knowledge instance",
                     )
                     for mount in mounts
                 ]
@@ -1323,7 +1333,19 @@ class MimirRouter:
                             ),
                         )
                     )
-            return [_registry_to_response(entry) for entry in entries]
+            scopes = {
+                m["name"]: m.get("access_scope", "unknown") for m in self._mount_definitions()
+            }
+            return [
+                _registry_to_response(entry).model_copy(
+                    update={
+                        "access_scope": scopes.get(
+                            entry.name, "tenant" if entry.tenant_id else "global"
+                        )
+                    }
+                )
+                for entry in entries
+            ]
 
         @router.post("/registry/mounts", response_model=RegistryMountResponse)
         async def create_registry_mount(

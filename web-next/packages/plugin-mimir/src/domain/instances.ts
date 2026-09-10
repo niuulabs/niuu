@@ -34,6 +34,7 @@ export interface DeploymentStatus {
     ready: boolean;
     message: string;
     target?: string;
+    access_scope?: 'tenant' | 'global' | 'local' | 'unknown';
     can_delete?: boolean;
     can_update?: boolean;
   }[];

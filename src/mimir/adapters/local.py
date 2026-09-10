@@ -129,6 +129,7 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             "ready": ready,
             "message": message,
             "target": "local",
+            "access_scope": "tenant" if record.get("tenant_id") else "local",
             "can_delete": True,
             "url": record["url"],
         }
@@ -169,6 +170,7 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             result.append(
                 {
                     "tenant_id": record.get("tenant_id", ""),
+                    "access_scope": "tenant" if record.get("tenant_id") else "local",
                     "connection": {"adapter": cfg["adapter"], "kwargs": connection_kwargs},
                     "name": name,
                     "role": "local",

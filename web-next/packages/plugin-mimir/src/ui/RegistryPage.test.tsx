@@ -46,7 +46,7 @@ it('shows a managed instance only once when it is also connected', async () => {
   expect(screen.getAllByText(name)).toHaveLength(1);
   expect(screen.queryByText('Deployed instances')).not.toBeInTheDocument();
   expect(screen.queryByText('Registered connections')).not.toBeInTheDocument();
-  expect(await screen.findByText('mimir · Managed · local')).toBeInTheDocument();
+  expect(await screen.findByText(/mimir · Managed · local/)).toBeInTheDocument();
 });
 
 it('opens both forms in dialogs and closes them consistently', async () => {
@@ -136,8 +136,8 @@ it('keeps identically named deployments on separate Guild targets', async () => 
   const names = await screen.findAllByText('research-brain');
   expect(names).toHaveLength(2);
   const card =
-    screen.getByText('gbrain · Managed · noatun:cluster').closest('article') ??
-    screen.getByText('gbrain · Managed · noatun:cluster').parentElement!.parentElement!
+    screen.getByText(/gbrain · Managed · noatun:cluster/).closest('article') ??
+    screen.getByText(/gbrain · Managed · noatun:cluster/).parentElement!.parentElement!
       .parentElement!;
   fireEvent.click(within(card).getByRole('button', { name: 'Inspect' }));
   expect(setTweak).toHaveBeenCalledWith('mimir.deployment', {
@@ -145,4 +145,17 @@ it('keeps identically named deployments on separate Guild targets', async () => 
     target: 'noatun:cluster',
   });
   expect(setTweak).toHaveBeenCalledWith('activeMount', 'all');
+});
+
+it('displays tenant and global access on instance cards', async () => {
+  const service = createMimirMockAdapter();
+  const [base] = await service.mounts.listMounts();
+  service.mounts.listRegistryMounts = async () => [];
+  service.mounts.listMounts = async () => [
+    { ...base!, name: 'mimir-ui', role: 'shared', accessScope: 'tenant' },
+    { ...base!, name: 'mimir-global', role: 'shared', accessScope: 'global' },
+  ];
+  render(<RegistryPage />, service);
+  expect((await screen.findByText('mimir-ui')).closest('article')).toHaveTextContent('Tenant');
+  expect(screen.getByText('mimir-global').closest('article')).toHaveTextContent('Global');
 });

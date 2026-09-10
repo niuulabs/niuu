@@ -23,3 +23,14 @@ describe('MountChip', () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 });
+
+it('shows tenant access instead of a shared memory role', () => {
+  render(<MountChip name="gbrain-ui" role="shared" accessScope="tenant" />);
+  expect(screen.getByText('Tenant')).toBeInTheDocument();
+  expect(screen.queryByText('shared')).not.toBeInTheDocument();
+});
+
+it('shows explicitly global access without guessing from the name', () => {
+  render(<MountChip name="knowledge" accessScope="global" />);
+  expect(screen.getByText('Global')).toBeInTheDocument();
+});
