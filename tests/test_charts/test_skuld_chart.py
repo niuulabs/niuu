@@ -416,6 +416,11 @@ class TestHelpersTemplate:
         assert 'define "skuld.labels"' in helpers_tpl
 
 
+def test_session_restart_never_overlaps_workers(tmp_path):
+    rendered = _render_skuld_chart(tmp_path, {"session": {"id": "research"}})
+    assert _deployment_from_rendered(rendered)["spec"]["strategy"] == {"type": "Recreate"}
+
+
 class TestResidentWorkloadIdentityConfigFirst:
     """Workload identity is rendered into config files, not env vars."""
 

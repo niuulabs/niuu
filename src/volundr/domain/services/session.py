@@ -809,6 +809,8 @@ class SessionService:
             workload_type = session.workload_type
         if not workload_config and session.workload_config:
             workload_config = dict(session.workload_config)
+        if workload_type == "ravn_flock" and not initial_prompt:
+            initial_prompt = str((workload_config or {}).get("initiative_context") or "")
 
         # Set chat_endpoint eagerly — Flux/Gateway sessions know their public
         # route before the pod is ready; local mode falls back to the root proxy.

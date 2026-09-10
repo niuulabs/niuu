@@ -638,6 +638,29 @@ class TestSessionServiceStart:
         assert result.workload_type == "ravn_flock"
         assert result.workload_config["personas"] == ["product-steward"]
 
+    @pytest.mark.parametrize("override", ["", "Continue with the revised brief"])
+    async def test_restart_restores_workflow_brief(
+        self, repository: Repo, pod_manager: Pods, monkeypatch, override
+    ):
+        service = SessionService(repository, pod_manager)
+        session = await service.create_session(name="research", model="gpt-5.5")
+        await repository.update(
+            session.model_copy(
+                update={
+                    "status": SessionStatus.STOPPED,
+                    "workload_type": "ravn_flock",
+                    "workload_config": {"initiative_context": "Research PXE boot"},
+                }
+            )
+        )
+        provision = AsyncMock()
+        monkeypatch.setattr(service, "_provision_background", provision)
+
+        await service.start_session(session.id, initial_prompt=override)
+        await asyncio.gather(*service._provisioning_tasks.values())
+
+        assert provision.await_args.kwargs["initial_prompt"] == (override or "Research PXE boot")
+
     async def test_start_session_prefers_public_host_for_browser_endpoints(
         self,
         repository: Repo,
