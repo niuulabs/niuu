@@ -1,3 +1,5 @@
+import base64
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -206,3 +208,24 @@ async def test_warden_overrides_preserve_target_settings_and_secrets():
         DeploymentRequest(
             name="custom", backend="mimir", warden=True, warden_overrides={"api_key": "not-allowed"}
         )
+
+
+@pytest.mark.parametrize(
+    "roles,user,expected",
+    [
+        (["volundr:developer", "volundr:admin"], "admin", 200),
+        (["volundr:developer"], "user", 403),
+        (["volundr:admin"], "", 403),
+    ],
+)
+def test_deployment_auth_accepts_envoy_array_claims(tmp_path, roles, user, expected):
+    a = adapter()
+    a.list_deployments = AsyncMock(return_value={"releases": []})
+    app = FastAPI()
+    app.include_router(MimirRouter(MarkdownMimirAdapter(root=tmp_path), deployment=a).router)
+    headers = {
+        "x-auth-user-id": user,
+        "x-auth-roles": base64.b64encode(json.dumps(roles).encode()).decode(),
+    }
+    with TestClient(app) as client:
+        assert client.get("/deployments", headers=headers).status_code == expected

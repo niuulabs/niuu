@@ -494,7 +494,9 @@ def _require_deploy_auth(
     roles: Annotated[str, Header(alias="x-auth-roles")] = "",
 ) -> None:
     """Identity is supplied by the authenticated Niuu/Envoy gateway."""
-    if not user or "volundr:admin" not in {role.strip() for role in roles.split(",")}:
+    from niuu.adapters.identity_headers import parse_roles_header
+
+    if not user or "volundr:admin" not in parse_roles_header(roles):
         raise HTTPException(403, "Instance deployment requires an authenticated administrator")
 
 
