@@ -132,9 +132,9 @@ class FluxHelmReleases:
                 return None
             raise
 
-    async def _patch_helmrelease(self, name: str, body: dict[str, Any]) -> None:
+    async def _patch_helmrelease(self, name: str, body: dict[str, Any]) -> dict[str, Any]:
         api = await self._get_api()
-        await api.patch_namespaced_custom_object(
+        return await api.patch_namespaced_custom_object(
             group=HELMRELEASE_GROUP,
             version=HELMRELEASE_VERSION,
             namespace=self._namespace,

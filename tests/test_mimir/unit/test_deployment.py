@@ -30,7 +30,7 @@ async def test_gbrain_creates_postgres_flux_release():
         return args[-1]
 
     api.create_namespaced_custom_object.side_effect = create
-    a._api = AsyncMock(return_value=api)
+    a._get_api = AsyncMock(return_value=api)
     result = await a.deploy(
         DeploymentRequest(
             name="research",
@@ -93,7 +93,7 @@ async def test_status_ignores_stale_ready_and_mimir_keeps_its_storage():
     }
     api.list_namespaced_custom_object.return_value = {"items": [obj]}
     api.create_namespaced_custom_object.side_effect = lambda *args: args[-1]
-    a._api = AsyncMock(return_value=api)
+    a._get_api = AsyncMock(return_value=api)
     result = await a.list_deployments()
     assert result["releases"][0]["ready"] is False
     await a.deploy(DeploymentRequest(name="notes", backend="mimir"))
@@ -131,7 +131,7 @@ async def test_flux_uses_operator_credentials_and_attaches_warden():
     a.warden = {"image": "registry/ravn:1", "config": {"llm": {"model": "test-model"}}}
     api = AsyncMock()
     api.create_namespaced_custom_object.side_effect = lambda *args: args[-1]
-    a._api = AsyncMock(return_value=api)
+    a._get_api = AsyncMock(return_value=api)
     await a.deploy(DeploymentRequest(name="research", backend="gbrain"))
     values = api.create_namespaced_custom_object.call_args.args[-1]["spec"]["values"]
     assert values["existingSecret"] == "brain-research"
@@ -184,7 +184,7 @@ async def test_warden_overrides_preserve_target_settings_and_secrets():
     }
     api = AsyncMock()
     api.create_namespaced_custom_object.side_effect = lambda *args: args[-1]
-    a._api = AsyncMock(return_value=api)
+    a._get_api = AsyncMock(return_value=api)
     await a.deploy(
         DeploymentRequest(
             name="custom",
@@ -242,7 +242,7 @@ async def test_flux_target_supplies_storage_class_to_both_engines():
     a.storage_class = "harvester-data"
     api = AsyncMock()
     api.create_namespaced_custom_object.side_effect = lambda *args: args[-1]
-    a._api = AsyncMock(return_value=api)
+    a._get_api = AsyncMock(return_value=api)
     for backend in ("mimir", "gbrain"):
         await a.deploy(DeploymentRequest(name="brain", backend=backend))
         values = api.create_namespaced_custom_object.call_args.args[-1]["spec"]["values"]
@@ -263,11 +263,38 @@ async def test_update_uses_target_release_versions_without_replacing_instance_se
     api = AsyncMock()
     api.get_namespaced_custom_object.return_value = obj
     api.patch_namespaced_custom_object.return_value = obj
-    a._api = AsyncMock(return_value=api)
+    a._get_api = AsyncMock(return_value=api)
     await a.control("cluster/brain", "update")
-    patch = api.patch_namespaced_custom_object.call_args.args[-1]["spec"]
+    patch = api.patch_namespaced_custom_object.call_args.kwargs["body"]["spec"]
+    assert (
+        api.patch_namespaced_custom_object.call_args.kwargs["_content_type"]
+        == "application/merge-patch+json"
+    )
     assert patch["chart"]["spec"]["version"] == "0.1.0"
     assert patch["values"] == {"image": {"repository": "registry/gbrain", "tag": "0.48.5.0"}}
     obj["metadata"]["labels"]["niuu.world/managed-by"] = "other"
     with pytest.raises(ValueError, match="not managed"):
         await a.control("brain", "update")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action,replicas", [("start", 1), ("stop", 0)])
+async def test_lifecycle_actions_use_shared_merge_patch(action, replicas):
+    a = adapter()
+    obj = {
+        "metadata": {
+            "name": "brain",
+            "labels": {"niuu.world/managed-by": "mimir", "niuu.world/knowledge-backend": "gbrain"},
+        }
+    }
+    api = AsyncMock()
+    api.get_namespaced_custom_object.return_value = obj
+    api.patch_namespaced_custom_object.return_value = obj
+    a._get_api = AsyncMock(return_value=api)
+    await a.control("brain", action)
+    call = api.patch_namespaced_custom_object.call_args.kwargs
+    assert call["_content_type"] == "application/merge-patch+json"
+    assert call["body"]["spec"]["values"] == {
+        "replicaCount": replicas,
+        "dream": {"suspend": action == "stop"},
+    }

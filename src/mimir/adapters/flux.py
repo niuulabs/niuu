@@ -50,7 +50,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         self.context = kube_context
         self._client = None
 
-    async def _api(self):
+    async def _get_api(self):
         from kubernetes_asyncio import client
 
         if self._client is None:
@@ -78,7 +78,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         }
 
     async def list_deployments(self) -> dict[str, Any]:
-        api = await self._api()
+        api = await self._get_api()
         result = await api.list_namespaced_custom_object(
             HELMRELEASE_GROUP,
             HELMRELEASE_VERSION,
@@ -157,7 +157,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
             chart_version=self.versions[backend],
             labels={"niuu.world/managed-by": "mimir", "niuu.world/knowledge-backend": backend},
         )
-        api = await self._api()
+        api = await self._get_api()
         obj = await api.create_namespaced_custom_object(
             HELMRELEASE_GROUP, HELMRELEASE_VERSION, self.namespace, HELMRELEASE_PLURAL, body
         )
@@ -167,7 +167,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         from kubernetes_asyncio import client
 
         name = name.removeprefix("cluster/")
-        api = await self._api()
+        api = await self._get_api()
         obj = await api.get_namespaced_custom_object(
             HELMRELEASE_GROUP, HELMRELEASE_VERSION, self.namespace, HELMRELEASE_PLURAL, name
         )
@@ -199,10 +199,9 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         name = name.removeprefix("cluster/")
         if action not in {"start", "stop", "update"}:
             raise ValueError("Supported actions: start, stop, update")
-        api = await self._api()
-        existing = await api.get_namespaced_custom_object(
-            HELMRELEASE_GROUP, HELMRELEASE_VERSION, self.namespace, HELMRELEASE_PLURAL, name
-        )
+        existing = await self._get_helmrelease(name)
+        if existing is None:
+            raise ValueError("Deployment does not exist")
         labels = existing.get("metadata", {}).get("labels", {})
         if labels.get("niuu.world/managed-by") != "mimir":
             raise ValueError("This release is not managed by the knowledge registry")
@@ -211,11 +210,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
             if backend not in self.versions or backend not in self.images:
                 raise ValueError(f"No chart and image configured for {backend}")
             repository, tag = self.images[backend].rsplit(":", 1)
-            updated = await api.patch_namespaced_custom_object(
-                HELMRELEASE_GROUP,
-                HELMRELEASE_VERSION,
-                self.namespace,
-                HELMRELEASE_PLURAL,
+            updated = await self._patch_helmrelease(
                 name,
                 {
                     "spec": {
@@ -225,11 +220,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
                 },
             )
             return self._view(updated)
-        obj = await api.patch_namespaced_custom_object(
-            HELMRELEASE_GROUP,
-            HELMRELEASE_VERSION,
-            self.namespace,
-            HELMRELEASE_PLURAL,
+        obj = await self._patch_helmrelease(
             name,
             {
                 "spec": {
