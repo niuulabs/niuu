@@ -6,11 +6,12 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from volundr.adapters.inbound.rest_trace import create_trace_router
-from volundr.domain.models import SessionSpanStatus
+from volundr.domain.models import SessionSpan, SessionSpanStatus
 from volundr.domain.services.resident_runtime import ResidentRuntimeNotFoundError
 
 
@@ -321,3 +322,68 @@ def test_complete_span_derives_missing_duration_and_trace_bounds() -> None:
     )
     assert summary.status_code == 200
     assert summary.json()["total_duration_ms"] >= 250
+
+
+@pytest.mark.parametrize("clean_shutdown", [True, False])
+@pytest.mark.parametrize("resumed_work_finished", [True, False])
+def test_trace_bounds_cover_all_restart_attempts(
+    clean_shutdown: bool, resumed_work_finished: bool
+) -> None:
+    session_id = uuid4()
+    client, repository, _, _ = _client(uuid4(), session_id=session_id)
+    started_at = datetime(2026, 9, 10, 12, 0, tzinfo=UTC)
+    first = SessionSpan(
+        id=uuid4(),
+        session_id=session_id,
+        trace_id=session_id,
+        kind="session.lifecycle",
+        name="first attempt",
+        source_service="skuld",
+        started_at=started_at,
+        ended_at=started_at + timedelta(minutes=1) if clean_shutdown else None,
+        duration_ms=60_000 if clean_shutdown else None,
+    )
+    resumed = replace(
+        first,
+        id=uuid4(),
+        name="resumed attempt",
+        started_at=started_at + timedelta(minutes=5),
+        ended_at=None,
+        duration_ms=None,
+    )
+    before = replace(
+        first,
+        id=uuid4(),
+        kind="turn.peer",
+        parent_span_id=first.id,
+        ended_at=started_at + timedelta(seconds=30),
+        duration_ms=30_000,
+    )
+    after = replace(
+        resumed,
+        id=uuid4(),
+        kind="turn.peer",
+        parent_span_id=resumed.id,
+        started_at=started_at + timedelta(minutes=6),
+        ended_at=started_at + timedelta(minutes=7) if resumed_work_finished else None,
+        duration_ms=60_000 if resumed_work_finished else None,
+    )
+    # Ordering must not decide which attempt contributes to the session bounds.
+    repository.spans = [resumed, before, first, after]
+    expected_minutes = 7 if resumed_work_finished else 6
+
+    trace = client.get(f"/api/v1/forge/sessions/{session_id}/trace", headers=_headers())
+    summary = client.get(f"/api/v1/forge/sessions/{session_id}/trace/summary", headers=_headers())
+
+    assert trace.status_code == summary.status_code == 200
+    assert trace.json()["started_at"] == started_at.isoformat()
+    assert (
+        trace.json()["ended_at"] == (started_at + timedelta(minutes=expected_minutes)).isoformat()
+    )
+    assert trace.json()["duration_ms"] == expected_minutes * 60_000
+    assert summary.json()["total_duration_ms"] == expected_minutes * 60_000
+    assert summary.json()["turn_count"] == 2
+    assert {span["id"]: span["parent_span_id"] for span in trace.json()["spans"]} == {
+        str(span.id): str(span.parent_span_id) if span.parent_span_id else None
+        for span in repository.spans
+    }

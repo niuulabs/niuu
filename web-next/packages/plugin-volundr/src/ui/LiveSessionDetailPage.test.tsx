@@ -1044,6 +1044,29 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByTestId('telemetry-breakdown')).toBeInTheDocument();
     });
 
+    it('renders the stage breakdown when an earlier lifecycle has no children', async () => {
+      const firstRoot = TELEMETRY_TRACE.spans[0]!;
+      wrap('test-session-id-1234', {
+        volundr: {
+          getSessionTrace: vi.fn().mockResolvedValue({
+            ...TELEMETRY_TRACE,
+            spans: [
+              { ...firstRoot, id: 'empty-attempt', durationMs: 1_000 },
+              ...TELEMETRY_TRACE.spans,
+            ],
+          }),
+        },
+      });
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('tab', { name: /Telemetry/i }));
+
+      const breakdown = await screen.findByTestId('telemetry-breakdown');
+      expect(breakdown).toHaveTextContent('execution');
+      expect(screen.getByText('Timeline')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /execution trace details/i }));
+      expect(screen.getByTestId('telemetry-breakdown-task-segment-tool')).toBeInTheDocument();
+    });
+
     it('keeps nested active child work out of top timeline segments', () => {
       const rows = buildTelemetryTimelineRows(TELEMETRY_TRACE);
       const executionRow = rows.find((row) => row.label === 'execution');
