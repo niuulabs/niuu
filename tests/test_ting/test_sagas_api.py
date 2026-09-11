@@ -1087,6 +1087,7 @@ class TestSpawnPlanSession:
         adapter = MagicMock()
         adapter.name = "local"
         adapter.target_id = "local"
+        adapter.list_integration_ids = AsyncMock(return_value=[])
         adapter.spawn_session = AsyncMock(
             return_value=VolundrSession(
                 id="plan-1",
