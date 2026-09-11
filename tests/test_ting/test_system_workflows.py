@@ -224,7 +224,7 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     assert delivery_resources["Delivery Memory"]["url"] == (
         "https://mimir.yggdrasil.niuu.world/api/v1"
     )
-    assert delivery_resources["Delivery Memory"]["authRef"] == "integration:volundr"
+    assert delivery_resources["Delivery Memory"]["authRef"] == "workload:mimir"
 
     code_review_flow = next(
         workflow for workflow in workflows if workflow.name == "Code & Review Flow"
