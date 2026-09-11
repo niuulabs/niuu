@@ -1528,3 +1528,26 @@ def test_federated_lint_failure_returns_json(tmp_path: Path, monkeypatch, cause,
     response = TestClient(_make_composite_app(tmp_path)).get("/mimir/lint")
     assert response.status_code == status
     assert response.json() == {"detail": "Mount cannot run lint"}
+
+
+def test_registry_mounts_preserve_named_service_write_destination(tmp_path):
+    from mimir.registry import MimirRegistryEntry
+
+    store = MimirRegistryStore(tmp_path / "registry.json")
+    store.save_entry(MimirRegistryEntry(name="remote", url="https://mimir.example"))
+    adapter = MarkdownMimirAdapter(root=tmp_path / "shared")
+    router = MimirRouter(adapter, name="shared", role="shared", registry_store=store)
+    app = FastAPI()
+    app.include_router(router.router, prefix="/mimir")
+    with TestClient(app) as client:
+        response = client.put(
+            "/mimir/page",
+            json={
+                "path": "deliveries/test/10-implementation.md",
+                "content": "# Delivery\nVerified.",
+            },
+        )
+    assert response.status_code == 204
+    assert (
+        tmp_path / "shared/wiki/deliveries/test/10-implementation.md"
+    ).read_text() == "# Delivery\nVerified."

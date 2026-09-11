@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -40,6 +42,7 @@ class A2ATaskTool(ToolPort):
         activity_emitter: Callable[[dict[str, object]], Awaitable[None]] | None = None,
         activity_finder: A2AActivityFinder | None = None,
         default_connection_id: str = "",
+        default_metadata: dict[str, Any] | None = None,
         push_callback_url: str = "",
     ) -> None:
         self._directory = agent_directory
@@ -51,8 +54,10 @@ class A2ATaskTool(ToolPort):
         self._message_max_chars = max(1_000, message_max_chars)
         self._activity_emitter = activity_emitter
         self._activity_finder = activity_finder
+        self._default_metadata = dict(default_metadata or {})
         self._default_connection_id = default_connection_id.strip()
         self._push_callback_url = push_callback_url.strip()
+        self._start_lock = asyncio.Lock()
 
     @property
     def name(self) -> str:
@@ -101,7 +106,8 @@ class A2ATaskTool(ToolPort):
                 "metadata": {
                     "type": "object",
                     "description": (
-                        "Optional continuation metadata returned by the peer. For a "
+                        "Launch metadata: repo is the repository URL, branch is the starting "
+                        "branch, and connectionId selects the target. For a "
                         "pending question, preserve requestId. For a pending gate, send "
                         "gateId plus gateDecision=approve or request_changes; include "
                         "review notes in answer when requesting changes."
@@ -139,7 +145,11 @@ class A2ATaskTool(ToolPort):
         }
         with telemetry.span("ravn.a2a.task", attributes=attributes) as span:
             try:
-                result = await self._execute_observed(input)
+                if operation == "start":
+                    async with self._start_lock:
+                        result = await self._execute_observed(input)
+                else:
+                    result = await self._execute_observed(input)
             except Exception as exc:
                 telemetry.mark_error(span, type(exc).__name__, str(exc))
                 telemetry.event(
@@ -212,6 +222,38 @@ class A2ATaskTool(ToolPort):
         if self._trusted_origins and endpoint_origin not in self._trusted_origins:
             return _error(f"Agent {agent_id!r} uses untrusted origin {endpoint_origin}")
 
+        request_fingerprint = ""
+        if operation == "start":
+            supplied = input.get("metadata")
+            metadata = {
+                **self._default_metadata,
+                **(supplied if isinstance(supplied, dict) else {}),
+            }
+            input = {**input, "metadata": metadata}
+            request_fingerprint = hashlib.sha256(
+                json.dumps(
+                    [
+                        agent_id,
+                        input.get("skill_id"),
+                        input.get("prompt"),
+                        metadata,
+                        self._default_connection_id,
+                    ],
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+            if self._activity_finder is not None:
+                active = await self._activity_finder(
+                    query=request_fingerprint,
+                    active_only=True,
+                    limit=1,
+                )
+                if active:
+                    return _error(
+                        "This request already has an active A2A task. Use get or reply "
+                        "with its handle instead of starting it again: " + json.dumps(active[0])
+                    )
+
         try:
             result = await self._execute_operation(operation, input, agent, endpoint)
         except _A2ATaskError as exc:
@@ -267,6 +309,7 @@ class A2ATaskTool(ToolPort):
                     500,
                 ),
                 "source_tool": self.name,
+                "request_fingerprint": request_fingerprint,
                 **({"push_registered": push_registered} if push_registered is not None else {}),
             }
         )

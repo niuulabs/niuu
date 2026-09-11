@@ -1208,7 +1208,7 @@ class MimirRouter:
             return self._adapter
 
         from ravn.adapters.mimir.composite import CompositeMimirAdapter
-        from ravn.domain.mimir import MimirMount
+        from ravn.domain.mimir import MimirMount, WriteRouting
 
         return CompositeMimirAdapter(
             mounts=[
@@ -1221,7 +1221,8 @@ class MimirRouter:
                 )
                 for mount in mounts
             ],
-            write_routing=getattr(self._adapter, "_write_routing", None),
+            write_routing=getattr(self._adapter, "_write_routing", None)
+            or WriteRouting(default=[self._name]),
         )
 
     def _resolve_port(self, mount_name: str | None) -> tuple[MimirPort, str]:

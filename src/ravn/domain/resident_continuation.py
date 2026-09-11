@@ -179,6 +179,7 @@ class ResidentA2ATaskRecord:
     case_output_tokens: int = 0
     case_started_at: str = ""
     push_registered: bool | None = None
+    request_fingerprint: str = ""
     update_fingerprint: str = ""
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 

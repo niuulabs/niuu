@@ -137,6 +137,21 @@ Return the proper image name (global overrides local)
 {{- printf "%s:%s" $repository $tag -}}
 {{- end }}
 
+{{/* Git and GitHub CLI credentials for session runtimes. */}}
+{{- define "skuld.gitCredentialEnv" -}}
+{{- if and .Values.git.credentials.secretName (not .Values.git.credentials.tokenFile) -}}
+- name: GIT_USERNAME
+  value: {{ .Values.git.credentials.username | default "x-access-token" | quote }}
+{{- range list "GIT_TOKEN" "GITHUB_TOKEN" "GH_TOKEN" }}
+- name: {{ . }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ $.Values.git.credentials.secretName }}
+      key: {{ $.Values.git.credentials.tokenKey | default "token" }}
+{{- end }}
+{{- end }}
+{{- end }}
+
 {{/*
 Return image pull secrets (global overrides top-level, converts strings to objects)
 */}}

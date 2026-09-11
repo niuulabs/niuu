@@ -1184,6 +1184,10 @@ class PlatformToolsConfig(BaseModel):
         default="",
         description="Default Volundr target injected into newly started A2A workflows.",
     )
+    a2a_default_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Default A2A launch metadata; explicit per-call metadata takes precedence.",
+    )
     a2a_push_callback_url: str = Field(
         default="",
         description=("Public HTTPS callback registered for A2A tasks that advertise push support."),

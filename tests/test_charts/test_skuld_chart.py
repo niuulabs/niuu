@@ -253,6 +253,7 @@ class TestDeploymentTemplate:
         rendered = _render_skuld_chart(
             tmp_path,
             {
+                "git": {"credentials": {"secretName": "github-token"}},
                 "envVars": [{"name": "SKULD__MESH__ENABLED", "value": "true"}],
                 "mesh": {
                     "enabled": True,
@@ -303,6 +304,14 @@ class TestDeploymentTemplate:
         containers = {container["name"]: container for container in pod_spec["containers"]}
         assert "skuld" in containers
         assert "ravn-coder" in containers
+        for name in ("skuld", "ravn-coder"):
+            env = {entry["name"]: entry for entry in containers[name]["env"]}
+            for variable in ("GIT_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
+                assert env[variable]["valueFrom"]["secretKeyRef"] == {
+                    "name": "github-token",
+                    "key": "token",
+                }
+        assert not any(entry["name"] == "GIT_TOKEN" for entry in containers["nginx"].get("env", []))
         assert {"name": "SKULD__MESH__ENABLED", "value": "true"} in containers["skuld"]["env"]
         assert {"name": "mesh-pub", "containerPort": 7480, "protocol": "TCP"} in containers[
             "skuld"

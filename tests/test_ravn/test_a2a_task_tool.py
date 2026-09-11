@@ -607,3 +607,45 @@ async def test_agent_discovers_peer_handles_question_and_uses_returned_artifact(
         "No blocking findings; tests cover the change." in str(message)
         for message in llm.messages[-1]
     )
+
+
+@pytest.mark.asyncio
+async def test_start_reuses_durable_request_identity_after_tool_restart(tmp_path) -> None:
+    from ravn.adapters.resident_state.mimir import LocalResidentState
+    from ravn.resident_runtime import ResidentRuntime
+
+    runtime = ResidentRuntime(state=LocalResidentState(tmp_path), resident_id="regin")
+    client = _Client(
+        [
+            {"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}},
+            {"id": "task-2", "status": {"state": "TASK_STATE_SUBMITTED"}},
+        ]
+    )
+
+    def tool():
+        return A2ATaskTool(
+            agent_directory=_Directory(_agent()),
+            client=client,
+            activity_emitter=runtime.record_a2a_activity,
+            activity_finder=runtime.find_a2a_tasks,
+            default_metadata={"repo": "https://github.com/example/repo", "branch": "regin"},
+        )
+
+    request = {
+        "operation": "start",
+        "agent_id": "agent-aggregate-1",
+        "skill_id": "review",
+        "prompt": "Review the change",
+    }
+    assert not (await tool().execute(request)).is_error
+    assert client.posts[0][1]["params"]["message"]["metadata"]["branch"] == "regin"
+    duplicate = await tool().execute(request)
+    assert duplicate.is_error
+    assert "task-1" in duplicate.content
+    assert len(client.posts) == 1
+    # A status update must preserve the request identity; a terminal task allows retry.
+    await runtime.record_a2a_activity({"task_id": "task-1", "state": "TASK_STATE_WORKING"})
+    assert (await tool().execute(request)).is_error
+    await runtime.record_a2a_activity({"task_id": "task-1", "state": "TASK_STATE_FAILED"})
+    assert not (await tool().execute(request)).is_error
+    assert len(client.posts) == 2

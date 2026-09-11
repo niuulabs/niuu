@@ -798,6 +798,7 @@ def _render_a2a_task(record: ResidentA2ATaskRecord) -> str:
         "case_output_tokens": record.case_output_tokens,
         "case_started_at": record.case_started_at,
         "push_registered": record.push_registered,
+        "request_fingerprint": record.request_fingerprint,
         "update_fingerprint": record.update_fingerprint,
         "updated_at": record.updated_at.isoformat(),
     }
@@ -831,6 +832,7 @@ def _parse_a2a_task(content: str) -> ResidentA2ATaskRecord | None:
         push_registered = None
     return ResidentA2ATaskRecord(
         task_id=str(payload["task_id"]),
+        request_fingerprint=str(payload.get("request_fingerprint") or ""),
         agent_id=str(payload.get("agent_id") or ""),
         skill_id=str(payload.get("skill_id") or ""),
         state=str(payload.get("state") or "TASK_STATE_UNSPECIFIED"),

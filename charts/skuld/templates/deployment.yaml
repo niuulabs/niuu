@@ -412,18 +412,7 @@ spec:
             - name: {{ .name }}
               value: {{ .value | quote }}
             {{- end }}
-            {{- if and .Values.git.credentials.secretName (not .Values.git.credentials.tokenFile) }}
-            - name: GITHUB_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.git.credentials.secretName }}
-                  key: {{ .Values.git.credentials.tokenKey | default "token" }}
-            - name: GH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.git.credentials.secretName }}
-                  key: {{ .Values.git.credentials.tokenKey | default "token" }}
-            {{- end }}
+            {{- include "skuld.gitCredentialEnv" . | nindent 12 }}
             {{- if .Values.session.systemPrompt }}
             - name: SKULD__SESSION__SYSTEM_PROMPT
               value: {{ .Values.session.systemPrompt | quote }}
@@ -541,6 +530,15 @@ spec:
         {{- end }}
         {{- range .Values.extraContainers }}
         {{- $container := deepCopy . }}
+        {{- if hasPrefix "ravn-" $container.name }}
+        {{- $env := $container.env | default list }}
+        {{- $names := dict }}
+        {{- range $env }}{{- $_ := set $names .name true }}{{- end }}
+        {{- range (include "skuld.gitCredentialEnv" $ | fromYamlArray) }}
+        {{- if not (hasKey $names .name) }}{{- $env = append $env . }}{{- end }}
+        {{- end }}
+        {{- $_ := set $container "env" $env }}
+        {{- end }}
         {{- if and $.Values.homeVolume.enabled $.Values.homeVolume.persistentTmp }}
         {{- $scratchMounts := include "skuld.scratchMounts" (dict "root" $ "container" $container.name) | fromYamlArray }}
         {{- $mounts := $container.volumeMounts | default list }}
