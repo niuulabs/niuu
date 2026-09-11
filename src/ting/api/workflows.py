@@ -410,6 +410,10 @@ async def launch_workflow_execution(
             detail="No Volundr connection is available for this user",
         )
 
+    integration_ids = await target_adapter.list_integration_ids(
+        auth_token=bearer_token,
+        principal=principal,
+    )
     session = await target_adapter.spawn_session(
         SpawnRequest(
             name=session_name,
@@ -455,6 +459,7 @@ async def launch_workflow_execution(
                 ),
             },
             credential_names=_mimir_auth_credential_names(workflow_mimir),
+            integration_ids=integration_ids,
             definition=resolved_definition,
         ),
         auth_token=bearer_token,
