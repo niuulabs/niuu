@@ -67,6 +67,18 @@ config:
     allowCredentials: true
   extra: {}
 
+# -- Ting API OpenTelemetry export settings (disabled by default).
+observability:
+  enabled: false
+  service_name: ting
+  trace_endpoint: ""
+  metric_endpoint: ""
+  insecure: false
+  metric_export_interval_milliseconds: 10000
+  capture_content: false
+  content_max_chars: 8192
+  headers: {}
+
 # Dispatcher configuration
 dispatch:
   flock:

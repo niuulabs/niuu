@@ -17,6 +17,17 @@ logging:
   level: info
   format: text      # text or json
 
+observability:
+  enabled: false
+  service_name: ting
+  trace_endpoint: ""
+  metric_endpoint: ""
+  insecure: false
+  metric_export_interval_milliseconds: 10000
+  capture_content: false
+  content_max_chars: 8192
+  headers: {}
+
 volundr:
   url: http://localhost:8080
   # Keep false for the classic single-Volundr local setup. Set true when you

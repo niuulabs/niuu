@@ -40,10 +40,16 @@ class TestSettings:
         settings = Settings()
         assert isinstance(settings.database, DatabaseConfig)
         assert isinstance(settings.logging, LoggingConfig)
+        assert settings.observability.enabled is False
+        assert settings.observability.service_name == "ting"
 
     def test_nested_override(self) -> None:
         settings = Settings(database=DatabaseConfig(host="custom-host"))
         assert settings.database.host == "custom-host"
+
+    def test_observability_requires_trace_and_metric_endpoints(self) -> None:
+        with pytest.raises(ValueError, match="trace_endpoint and metric_endpoint"):
+            Settings(observability={"enabled": True, "trace_endpoint": "http://tempo:4317"})
 
     def test_server_and_platform_legacy_aliases(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HOST", "127.0.0.2")

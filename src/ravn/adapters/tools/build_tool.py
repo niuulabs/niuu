@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 
@@ -432,6 +433,7 @@ class BuildTool(ToolPort):
         manifest = input.get("manifest")
         if isinstance(manifest, dict):
             attributes["ravn.tool_build.name"] = str(manifest.get("name") or "")
+        started = monotonic()
         with telemetry.span("ravn.tool_build.lifecycle", attributes=attributes) as span:
             telemetry.event("ravn.tool_build.requested", attributes=attributes, content=input)
             try:
@@ -446,6 +448,23 @@ class BuildTool(ToolPort):
                         "ravn.tool_build.outcome": "exception",
                         "error.type": type(exc).__name__,
                     },
+                )
+                telemetry.count(
+                    "ravn_tool_build_total",
+                    attributes={
+                        "backend": attributes["ravn.tool_build.backend"],
+                        "outcome": "exception",
+                    },
+                    description="Ravn tool-build operations by backend and outcome.",
+                )
+                telemetry.duration(
+                    "ravn_tool_build_duration_seconds",
+                    monotonic() - started,
+                    attributes={
+                        "backend": attributes["ravn.tool_build.backend"],
+                        "outcome": "exception",
+                    },
+                    description="Ravn tool-build operation duration.",
                 )
                 raise
             outcome = _build_result_outcome(result)
@@ -464,6 +483,23 @@ class BuildTool(ToolPort):
                     "ravn.tool_build.backend": attributes["ravn.tool_build.backend"],
                     "ravn.tool_build.outcome": outcome,
                 },
+            )
+            telemetry.count(
+                "ravn_tool_build_total",
+                attributes={
+                    "backend": attributes["ravn.tool_build.backend"],
+                    "outcome": outcome,
+                },
+                description="Ravn tool-build operations by backend and outcome.",
+            )
+            telemetry.duration(
+                "ravn_tool_build_duration_seconds",
+                monotonic() - started,
+                attributes={
+                    "backend": attributes["ravn.tool_build.backend"],
+                    "outcome": outcome,
+                },
+                description="Ravn tool-build operation duration.",
             )
             return result
 
@@ -566,6 +602,11 @@ class BuildTool(ToolPort):
             )
             if verify_error is not None:
                 self._complete_commission(input)
+                telemetry.count(
+                    "ravn_learned_tool_installs_total",
+                    attributes={"outcome": "verification_failed"},
+                    description="Learned-tool install attempts by outcome.",
+                )
                 return verify_error
 
             canary_input = input.get("canary_input")
@@ -596,6 +637,11 @@ class BuildTool(ToolPort):
                     },
                 )
                 self._complete_commission(input)
+                telemetry.count(
+                    "ravn_learned_tool_installs_total",
+                    attributes={"outcome": "rejected"},
+                    description="Learned-tool install attempts by outcome.",
+                )
                 return ToolResult(
                     tool_call_id="",
                     content="build_tool rejected by review: " + "; ".join(review.blocking_findings),
@@ -611,6 +657,11 @@ class BuildTool(ToolPort):
                     },
                 )
                 self._complete_commission(input)
+                telemetry.count(
+                    "ravn_learned_tool_installs_total",
+                    attributes={"outcome": "held"},
+                    description="Learned-tool install attempts by outcome.",
+                )
                 return ToolResult(
                     tool_call_id="",
                     content=_review_summary(artifact, artifact_path, review_filed=review_filed),
@@ -655,6 +706,11 @@ class BuildTool(ToolPort):
                         attributes={"ravn.tool_build.canary.outcome": canary_outcome},
                     )
                 if canary.is_error:
+                    telemetry.count(
+                        "ravn_learned_tool_installs_total",
+                        attributes={"outcome": "canary_failed"},
+                        description="Learned-tool install attempts by outcome.",
+                    )
                     return ToolResult(
                         tool_call_id="",
                         content=(
@@ -665,6 +721,11 @@ class BuildTool(ToolPort):
                     )
 
             if self._register_tool is None:
+                telemetry.count(
+                    "ravn_learned_tool_installs_total",
+                    attributes={"outcome": "registration_unavailable"},
+                    description="Learned-tool install attempts by outcome.",
+                )
                 return ToolResult(
                     tool_call_id="",
                     content=(
@@ -715,6 +776,11 @@ class BuildTool(ToolPort):
                     "ravn.tool_build.name": artifact.manifest.name,
                     "ravn.tool_build.replaced": replace,
                 },
+            )
+            telemetry.count(
+                "ravn_learned_tool_installs_total",
+                attributes={"outcome": "installed"},
+                description="Learned-tool install attempts by outcome.",
             )
             flock_warning = ""
             try:

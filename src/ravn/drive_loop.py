@@ -1460,6 +1460,12 @@ class DriveLoop:
             description="Current pending resident task count.",
         )
         telemetry.gauge(
+            "ravn_drive_loop_queue_size",
+            self._queue.qsize(),
+            attributes=attributes,
+            description="Current pending resident drive-loop task count.",
+        )
+        telemetry.gauge(
             "ravn.agent.active_tasks",
             len(self._active_tasks),
             attributes=attributes,

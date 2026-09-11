@@ -63,6 +63,7 @@ class TestConfigMapTemplate:
     def test_has_embedded_config_yaml(self, template_yaml):
         assert "config.yaml: |" in template_yaml
         assert "database:" in template_yaml
+        assert "observability:" in template_yaml
         assert "volundr:" in template_yaml
         assert "guild_registry:" in template_yaml
         assert ".Values.guildRegistry.baseUrl" in template_yaml

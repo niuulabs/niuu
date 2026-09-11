@@ -6,6 +6,7 @@ import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 
+from niuu.observability import get_observability
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
 from ting.ports.a2a_push import A2APushDispatcherPort
 from ting.ports.event_bus import EventBusPort, TingEvent
@@ -270,9 +271,17 @@ class WorkflowCampaignProjector:
         )
         if self._push_dispatcher is not None:
             await self._push_dispatcher.queue_campaign(saved)
+        _record_a2a_state_transition(saved)
 
 
 _PENDING_BLOCKER_STATUSES = frozenset({"", "pending", "open", "waiting", "help_needed", "blocked"})
+_A2A_STATE_BY_STATUS = {
+    WorkflowCampaignStatus.PENDING: "TASK_STATE_SUBMITTED",
+    WorkflowCampaignStatus.RUNNING: "TASK_STATE_WORKING",
+    WorkflowCampaignStatus.BLOCKED: "TASK_STATE_INPUT_REQUIRED",
+    WorkflowCampaignStatus.COMPLETED: "TASK_STATE_COMPLETED",
+    WorkflowCampaignStatus.FAILED: "TASK_STATE_FAILED",
+}
 
 
 def _has_pending_entry(entries: list, status_key: str = "status") -> bool:
@@ -280,6 +289,30 @@ def _has_pending_entry(entries: list, status_key: str = "status") -> bool:
         isinstance(entry, dict)
         and str(entry.get(status_key) or "").strip().lower() in _PENDING_BLOCKER_STATUSES
         for entry in entries
+    )
+
+
+def _record_a2a_state_transition(campaign: WorkflowCampaign) -> None:
+    telemetry = get_observability()
+    attributes = {
+        "state": _A2A_STATE_BY_STATUS[campaign.status],
+    }
+    telemetry.count(
+        "a2a_task_state_transitions_total",
+        attributes=attributes,
+        description="A2A task state transitions observed by Ting.",
+    )
+    if campaign.status not in {
+        WorkflowCampaignStatus.COMPLETED,
+        WorkflowCampaignStatus.FAILED,
+    }:
+        return
+    finished_at = campaign.completed_at or campaign.updated_at
+    telemetry.duration(
+        "a2a_send_to_terminal_duration_seconds",
+        max(0.0, (finished_at - campaign.created_at).total_seconds()),
+        attributes=attributes,
+        description="Time from A2A SendMessage campaign creation to terminal state.",
     )
 
 

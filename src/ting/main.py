@@ -16,6 +16,11 @@ from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
 from niuu.domain.services.pat_validator import PATValidator
+from niuu.observability import (
+    configure_observability,
+    enable_trace_log_correlation,
+    shutdown_observability,
+)
 from niuu.ports.integrations import IntegrationRepository
 from niuu.service_runtime import create_workload_identity_service
 from niuu.utils import import_class, resolve_secret_kwargs
@@ -121,14 +126,29 @@ def _configure_logging(settings: Settings) -> None:
     level_name = settings.logging.level.upper()
     log_format = settings.logging.format.lower()
     level = getattr(logging, level_name, logging.INFO)
+    if settings.observability.enabled:
+        enable_trace_log_correlation()
 
     if log_format == "json":
-        fmt = (
-            '{"time":"%(asctime)s","level":"%(levelname)s",'
-            '"logger":"%(name)s","message":"%(message)s"}'
-        )
+        fields = [
+            '"time":"%(asctime)s"',
+            '"level":"%(levelname)s"',
+            '"logger":"%(name)s"',
+            '"message":"%(message)s"',
+        ]
+        if settings.observability.enabled:
+            fields.extend(
+                [
+                    '"trace_id":"%(trace_id)s"',
+                    '"span_id":"%(span_id)s"',
+                ]
+            )
+        fmt = "{" + ",".join(fields) + "}"
     else:
-        fmt = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        fmt = "%(asctime)s - %(name)s - %(levelname)s"
+        if settings.observability.enabled:
+            fmt += " - trace_id=%(trace_id)s span_id=%(span_id)s"
+        fmt += " - %(message)s"
 
     logging.basicConfig(
         level=level,
@@ -344,6 +364,10 @@ def create_app(
     if settings is None:
         settings = Settings()
 
+    configure_observability(
+        settings.observability,
+        resource_attributes={"ravn.runtime.component": "ting_api"},
+    )
     _configure_logging(settings)
 
     app = FastAPI(
@@ -975,6 +999,7 @@ def create_app(
             if hasattr(llm_adapter, "close"):
                 await llm_adapter.close()
             logger.info("Ting shutting down")
+            shutdown_observability()
 
     app.router.lifespan_context = lifespan
     apply_cors_middleware(app, settings.cors)

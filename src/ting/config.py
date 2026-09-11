@@ -31,6 +31,7 @@ from niuu.config_models import (
     WorkloadIdentityConfig,
     default_session_definitions,
 )
+from niuu.domain.observability import ObservabilityConfig
 
 
 # Config file search paths (in order of priority).
@@ -1034,6 +1035,9 @@ class Settings(BaseSettings):
     event_triggers: EventTriggerConfig = Field(default_factory=EventTriggerConfig)
     ravn_outcome: RavnOutcomeConfig = Field(default_factory=RavnOutcomeConfig)
     flock_flows: FlockFlowsConfig = Field(default_factory=FlockFlowsConfig)
+    observability: ObservabilityConfig = Field(
+        default_factory=lambda: ObservabilityConfig(service_name="ting")
+    )
     server_host: str = Field(
         default="0.0.0.0",
         validation_alias=AliasChoices("server_host", "HOST"),

@@ -33,11 +33,22 @@ def _resolve_extended_thinking(
 def _configure_logging(settings: Settings) -> None:
     """Apply logging config from settings."""
     level = getattr(logging, settings.logging.level.upper(), logging.WARNING)
-    fmt = (
-        "%(asctime)s %(name)s %(levelname)s %(message)s"
-        if settings.logging.format == "text"
-        else "%(message)s"
-    )
+    if settings.observability.enabled:
+        from niuu.observability import enable_trace_log_correlation
+
+        enable_trace_log_correlation()
+    if settings.logging.format == "text":
+        fmt = "%(asctime)s %(name)s %(levelname)s"
+        if settings.observability.enabled:
+            fmt += " trace_id=%(trace_id)s span_id=%(span_id)s"
+        fmt += " %(message)s"
+    elif settings.observability.enabled:
+        fmt = (
+            '{"message":"%(message)s","trace_id":"%(trace_id)s",'
+            '"span_id":"%(span_id)s"}'
+        )
+    else:
+        fmt = "%(message)s"
     logging.basicConfig(level=level, format=fmt, force=True)
 
 

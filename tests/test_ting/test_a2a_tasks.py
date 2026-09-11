@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -471,14 +473,89 @@ class TestSendMessage:
             "tracestate": "niuu=resident",
         }
 
-        import asyncio
-
         campaign = asyncio.run(campaigns.get_campaign_by_slug(result["id"]))
         assert campaign is not None
         assert campaign.owner_id == "user-1"
         assert campaign.metadata["surface"] == "a2a"
         assert campaign.metadata["a2a_message_id"] == "msg-1"
         assert campaign.metadata["a2a_workflow_slug"] == "build-the-widget-tool"
+
+    def test_jsonrpc_span_uses_traceparent_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class Span:
+            def set_attribute(self, _name, _value) -> None:
+                return None
+
+        class RecordingTelemetry:
+            def __init__(self) -> None:
+                self.spans: list[tuple[str, dict[str, Any]]] = []
+                self.counts: list[tuple[str, dict[str, Any]]] = []
+                self.durations: list[str] = []
+
+            @contextmanager
+            def span(self, name, **kwargs):
+                self.spans.append(
+                    (
+                        name,
+                        {
+                            key: dict(value) if isinstance(value, dict) else value
+                            for key, value in kwargs.items()
+                        },
+                    )
+                )
+                yield Span()
+
+            def event(self, *_args, **_kwargs) -> None:
+                return None
+
+            def inject(self) -> dict[str, str]:
+                return {}
+
+            def mark_error(self, *_args, **_kwargs) -> None:
+                return None
+
+            def count(self, name, *, attributes=None, **_kwargs) -> None:
+                self.counts.append((name, dict(attributes or {})))
+
+            def duration(self, name, *_args, **_kwargs) -> None:
+                self.durations.append(name)
+
+        telemetry = RecordingTelemetry()
+        monkeypatch.setattr("ting.api.a2a.get_observability", lambda: telemetry)
+        workflow = _make_workflow()
+        client, _campaigns, _port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+        traceparent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+
+        response = _rpc(
+            client,
+            "SendMessage",
+            _send_params(str(workflow.id)),
+            headers={**_headers(), "traceparent": traceparent},
+        )
+
+        assert response.status_code == 200
+        assert telemetry.spans[0] == (
+            "ting.a2a.SendMessage",
+            {
+                "attributes": {
+                    "rpc.system": "jsonrpc",
+                    "rpc.method": "SendMessage",
+                    "workflowId": str(workflow.id),
+                    "a2a.skill.id": str(workflow.id),
+                    "a2a.message.id": "msg-1",
+                },
+                "carrier": {"traceparent": traceparent},
+            },
+        )
+        assert (
+            "a2a_requests_total",
+            {
+                "method": "SendMessage",
+                "outcome": "ok",
+            },
+        ) in telemetry.counts
+        assert "a2a_request_duration_seconds" in telemetry.durations
 
     def test_reuses_task_when_message_is_retried(self) -> None:
         workflow = _make_workflow()

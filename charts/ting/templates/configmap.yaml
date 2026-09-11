@@ -25,6 +25,8 @@ data:
       level: {{ .Values.config.logLevel | default "info" | quote }}
       format: {{ .Values.config.logFormat | default "json" | quote }}
 
+    observability: {{ .Values.observability | default dict | toJson }}
+
     notification:
       public_origin: {{ .Values.config.publicOrigin | default "" | quote }}
 

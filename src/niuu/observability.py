@@ -276,6 +276,44 @@ class Observability:
 
 
 _active = Observability()
+_previous_log_record_factory: Any | None = None
+_trace_log_correlation_enabled = False
+
+
+def enable_trace_log_correlation() -> None:
+    """Add active OTel trace ids to Python log records."""
+    global _previous_log_record_factory, _trace_log_correlation_enabled
+    if _trace_log_correlation_enabled:
+        return
+
+    previous = logging.getLogRecordFactory()
+
+    def record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+        record = previous(*args, **kwargs)
+        trace_id, span_id = _current_span_ids()
+        record.trace_id = trace_id
+        record.span_id = span_id
+        # OpenTelemetry's logging instrumentation exposes these camel-case
+        # fields; keep both spellings so stdout collectors can key derived
+        # fields without depending on one formatter.
+        record.otelTraceID = trace_id
+        record.otelSpanID = span_id
+        return record
+
+    _previous_log_record_factory = previous
+    logging.setLogRecordFactory(record_factory)
+    _trace_log_correlation_enabled = True
+
+
+def disable_trace_log_correlation() -> None:
+    """Restore the prior log-record factory when OTel is disabled."""
+    global _previous_log_record_factory, _trace_log_correlation_enabled
+    if not _trace_log_correlation_enabled:
+        return
+    if _previous_log_record_factory is not None:
+        logging.setLogRecordFactory(_previous_log_record_factory)
+    _previous_log_record_factory = None
+    _trace_log_correlation_enabled = False
 
 
 def configure_observability(
@@ -287,6 +325,7 @@ def configure_observability(
     global _active
     _active.shutdown()
     if not config.enabled:
+        disable_trace_log_correlation()
         _active = Observability()
         return _active
     try:
@@ -329,6 +368,7 @@ def configure_observability(
         capture_content=config.capture_content,
         content_max_chars=config.content_max_chars,
     )
+    enable_trace_log_correlation()
     atexit.register(_active.shutdown)
     logger.info(
         "Niuu OpenTelemetry enabled: traces=%s metrics=%s service=%s",
@@ -347,6 +387,7 @@ def shutdown_observability() -> None:
     global _active
     _active.shutdown()
     _active = Observability()
+    disable_trace_log_correlation()
 
 
 def _clean_attributes(values: dict[str, Any]) -> dict[str, Any]:
@@ -395,9 +436,22 @@ def _redact_string(value: str) -> str:
     return _JWT_RE.sub("[REDACTED_JWT]", _BEARER_RE.sub("Bearer [REDACTED]", value))
 
 
+def _current_span_ids() -> tuple[str, str]:
+    try:
+        from opentelemetry import trace
+    except ImportError:
+        return "", ""
+    context = trace.get_current_span().get_span_context()
+    if not context.is_valid:
+        return "", ""
+    return f"{context.trace_id:032x}", f"{context.span_id:016x}"
+
+
 __all__ = [
     "Observability",
     "configure_observability",
+    "disable_trace_log_correlation",
+    "enable_trace_log_correlation",
     "get_observability",
     "shutdown_observability",
 ]

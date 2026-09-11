@@ -14,6 +14,17 @@
 #
 # Precedence (highest to lowest): env vars > yaml file > defaults
 
+observability:
+  enabled: false
+  service_name: ravn
+  trace_endpoint: ""
+  metric_endpoint: ""
+  insecure: false
+  metric_export_interval_milliseconds: 10000
+  capture_content: false
+  content_max_chars: 8192
+  headers: {}
+
 # ---------------------------------------------------------------------------
 # Anthropic API
 # ---------------------------------------------------------------------------
