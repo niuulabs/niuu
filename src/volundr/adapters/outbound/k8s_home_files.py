@@ -137,7 +137,7 @@ async def manage_home(
         raise NotImplementedError("Home file management is not enabled on this cluster")
     name = browser_pod_name(user_id)
     if operation == "delete":
-        pods = await api.list_namespaced_pod(namespace, label_selector=f"volundr/owner={user_id}")
+        pods = await api.list_namespaced_pod(namespace)
         for pod in pods.items:
             if pod.metadata.name == name or pod.status.phase not in {"Pending", "Running"}:
                 continue
@@ -146,7 +146,7 @@ async def manage_home(
                 for v in pod.spec.volumes or []
             ):
                 raise HomeStorageBusyError(
-                    "Stop sessions on this cluster before deleting home files"
+                    "Stop workloads using this home on this cluster before deleting files"
                 )
     try:
         pod = await api.read_namespaced_pod(name, namespace)

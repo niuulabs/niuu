@@ -89,9 +89,12 @@ async def test_browser_lifecycle_and_busy_delete(monkeypatch):
     monkeypatch.setattr("volundr.adapters.outbound.k8s_home_files._execute", execute)
     assert (await manage_home(*args, "list", "tmp"))["status"] == "ready"
     execute.assert_awaited_once_with("skuld", browser_pod_name("alice"), "list", "tmp", 20)
-    api.list_namespaced_pod.return_value = SimpleNamespace(items=[pod(name="coder")])
+    resident = pod(name="resident")
+    resident.metadata.labels = {}
+    api.list_namespaced_pod.return_value = SimpleNamespace(items=[resident])
     with pytest.raises(HomeStorageBusyError):
         await manage_home(*args, "delete", "tmp")
+    api.list_namespaced_pod.assert_awaited_once_with("skuld")
     api.list_namespaced_pod.return_value = SimpleNamespace(items=[pod()])
     assert (await manage_home(*args, "delete", "tmp"))["status"] == "ready"
     for bad in [pod(owner="bob"), pod(claim="other")]:

@@ -172,14 +172,15 @@ def _deployment_image(rendered_yaml: str, name: str) -> str:
     raise AssertionError(f"deployment not found: {name}")
 
 
+@pytest.mark.parametrize("component", ["niuu-shared", "guild"])
 @pytest.mark.parametrize("local_tag,expected", [("shared-tag", "shared-tag"), ("", "global-tag")])
-def test_shared_image_tag_can_be_deployed_independently(local_tag, expected):
+def test_shared_image_tag_can_be_deployed_independently(component, local_tag, expected):
     rendered = _render_niuu_chart(
         "--set",
         "global.image.tag=global-tag",
         "--set",
-        f"niuu-shared.image.tag={local_tag}",
+        f"{component}.image.tag={local_tag}",
     )
     assert (
-        _deployment_image(rendered, "niuu-test-niuu-shared") == f"ghcr.io/niuulabs/niuu:{expected}"
+        _deployment_image(rendered, f"niuu-test-{component}") == f"ghcr.io/niuulabs/niuu:{expected}"
     )
