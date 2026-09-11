@@ -28,10 +28,26 @@ Entries are tagged `NEW` on the turn they appear and struck through as
 size of each list across every turn — knowledge accumulating, hypotheses
 resolving, capability gaps closing.
 
-The current-activity strip shows factual drive-loop progress while a turn is
-running. Judgment badges are copied from the resident's structured outcome;
-the renderer does not infer that a hypothesis was falsified or a capability
-was acquired merely from list changes.
+## Live progress and persisted judgments
+
+The current-activity strip is ephemeral runtime telemetry for the task that is
+executing now: its status, elapsed time, iteration and tool-call counters, and
+observable activity events. It is useful for following in-flight work, but it
+is not a judgment and is not retained as the resident's durable timeline. For
+an active task the judgment field deliberately says `Not emitted yet`.
+
+A judgment becomes authoritative only when the resident completes the turn and
+persists its structured outcome. The HUD then reads the decision and judgment
+badges from that matching completed turn, and reads the durable working-state
+snapshot from the append-only turn record. The renderer does not infer that a
+hypothesis was falsified or a capability was acquired merely from live progress
+or list changes.
+
+When a completed task is restored, its persisted outcome and working state are
+available, but detailed live activity is not retained unless the task has a
+trace. `LIVE` means the HUD is receiving fresh polling responses; `STALE`
+means those responses have stopped arriving, not that the resident reached a
+new judgment.
 
 ## Pointing it at any resident
 
