@@ -51,6 +51,8 @@ _MIMIR_MOUNT_PATH = "/mimir/local"
 _WORKSPACE_VOLUME_NAME = "sessions"
 _WORKSPACE_MOUNT_PATH = "/workspace"
 _DEFAULT_WORKLOAD_IDENTITY_MOUNT_PATH = "/var/run/secrets/niuu-workload"
+_SKULD_BROKER_ROOM_URL = "ws://127.0.0.1:8081/ws/ravn"
+_SKULD_CHANNEL_MAX_RECONNECT_ATTEMPTS = 60
 _RAVN_IMAGE_DEFAULT = "ghcr.io/niuulabs/skuld:dev"
 _RAVN_COMMAND = [
     "python",
@@ -545,6 +547,12 @@ def _build_ravn_config(
         },
         "permission": {
             "workspace_root": _WORKSPACE_MOUNT_PATH,
+        },
+        "skuld": {
+            "enabled": True,
+            "broker_url": _SKULD_BROKER_ROOM_URL,
+            "display_name": persona,
+            "max_reconnect_attempts": _SKULD_CHANNEL_MAX_RECONNECT_ATTEMPTS,
         },
         "logging": {"level": "INFO"},
     }

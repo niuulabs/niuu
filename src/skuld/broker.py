@@ -891,9 +891,10 @@ class Broker(
         """Return True when a workflow-trigger consumer can receive mesh events."""
         if self._room_bridge is None:
             return True
-        participant = self._room_bridge.participants.get(peer_id)
-        if participant is not None and getattr(participant, "participant_kind", "") == "mesh":
-            return True
+        # Static discovery can register mesh peers before the Ravn sidecar has
+        # connected its SkuldChannel and subscribed to the mesh. Treat only the
+        # live room connection as readiness so the startup trigger is not
+        # published into an empty NNG subscription set.
         return bool(self._room_bridge.is_connected(peer_id))
 
     async def _wait_for_event_consumers(

@@ -7,7 +7,7 @@ import os
 import time
 import uuid
 from types import SimpleNamespace
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import httpx
 import pytest
@@ -428,8 +428,7 @@ class TestBroker:
         broker._mesh_adapter.publish.assert_awaited_once()
         room_bridge.is_connected.assert_called()
 
-    @pytest.mark.asyncio
-    async def test_publish_workflow_trigger_treats_mesh_consumers_as_ready(self, tmp_path):
+    def test_workflow_trigger_mesh_consumer_requires_live_room_connection(self, tmp_path):
         settings = SkuldSettings(
             session={
                 "id": "wf-session-2b",
@@ -448,7 +447,6 @@ class TestBroker:
             chronicle_watcher_enabled=False,
         )
         broker = Broker(settings=settings)
-        broker._mesh_adapter = MagicMock(peer_id="skuld-wf", publish=AsyncMock())
 
         consumer = SimpleNamespace(
             peer_id="flock-research-framer",
@@ -462,10 +460,14 @@ class TestBroker:
         room_bridge.is_connected.return_value = False
         broker._room_bridge = room_bridge
 
-        await broker._publish_workflow_trigger()
+        assert broker._workflow_trigger_peer_ready("flock-research-framer") is False
 
-        broker._mesh_adapter.publish.assert_awaited_once()
-        room_bridge.is_connected.assert_not_called()
+        room_bridge.is_connected.return_value = True
+        assert broker._workflow_trigger_peer_ready("flock-research-framer") is True
+        assert room_bridge.is_connected.call_args_list == [
+            call("flock-research-framer"),
+            call("flock-research-framer"),
+        ]
 
     @pytest.mark.asyncio
     async def test_publish_workflow_trigger_fails_when_consumers_never_connect(self, tmp_path):

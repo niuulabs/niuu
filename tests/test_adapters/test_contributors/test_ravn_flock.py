@@ -621,6 +621,24 @@ class TestMountedConfig:
 
         assert reviewer_cfg["permission"]["workspace_root"] == "/workspace"
 
+    async def test_ravn_config_enables_skuld_channel_for_workflow_readiness(
+        self, session, flock_template
+    ):
+        """Ravn sidecars register with Skuld so workflow startup waits for live consumers."""
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        c = RavnFlockContributor(launch_spec_provider=provider)
+        result = await c.contribute(session, SessionContext(launch_spec="ravn-flock"))
+
+        reviewer_cfg = yaml.safe_load(_extract_mounted_config(result.pod_spec, "reviewer"))
+
+        assert reviewer_cfg["skuld"] == {
+            "enabled": True,
+            "broker_url": "ws://127.0.0.1:8081/ws/ravn",
+            "display_name": "reviewer",
+            "max_reconnect_attempts": 60,
+        }
+
     async def test_ravn_sidecars_use_unique_service_ports(self, session, flock_template):
         """Each Ravn API server must bind its own port inside the shared pod netns."""
         provider = MagicMock()
