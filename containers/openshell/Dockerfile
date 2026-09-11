@@ -27,5 +27,8 @@ RUN uv sync --frozen --no-dev --no-editable --extra nats \
 ENV VIRTUAL_ENV=/opt/niuu
 ENV PATH="/opt/niuu/bin:$PATH"
 
+RUN apt-get update && apt-get install -y --no-install-recommends file \
+    && rm -rf /var/lib/apt/lists/*
+
 USER sandbox
 WORKDIR /sandbox
