@@ -244,7 +244,7 @@ class TestDriveLoopOutcomeContract:
             def __init__(self) -> None:
                 self.prompts: list[str] = []
 
-            async def run_turn(self, prompt: str) -> TurnResult:
+            async def repair_outcome(self, prompt: str) -> TurnResult:
                 self.prompts.append(prompt)
                 return TurnResult(
                     response=_valid_valkyrie_judgment_text(),
@@ -400,7 +400,7 @@ class TestDriveLoopOutcomeContract:
         assert "working_state` must be a mapping" in prompt
         assert "empty list as `field: []`" in prompt
         assert "at most five entries per list" in prompt
-        assert "already present in this conversation" in prompt
+        assert "Use only the supplied response and parsed fields" in prompt
         assert "<initiative_context>" not in prompt
 
         working_state_prompt = _build_resident_valkyrie_schema_repair_prompt(

@@ -12,10 +12,12 @@ from niuu.domain.outcome import OutcomeField
 from ravn.adapters.personas.loader import PersonaConfig, PersonaProduces
 from ravn.adapters.tools.build_tool import attach_build_tool
 from ravn.agent import RavnAgent, _build_assistant_content
+from ravn.budget import IterationBudget
 from ravn.domain.events import RavnEventType
-from ravn.domain.exceptions import MaxIterationsError
+from ravn.domain.exceptions import MaxIterationsError, PromptBudgetExceededError
 from ravn.domain.models import (
     LLMResponse,
+    Message,
     StopReason,
     StreamEvent,
     StreamEventType,
@@ -66,6 +68,58 @@ def make_agent(
 
 async def _record(events: list[SleipnirEvent], event: SleipnirEvent) -> None:
     events.append(event)
+
+
+@pytest.mark.asyncio
+async def test_outcome_repair_is_tool_free_and_does_not_replay_history() -> None:
+    llm = AsyncMock(spec=LLMPort)
+    usage = TokenUsage(input_tokens=100, output_tokens=50)
+    llm.generate.return_value = LLMResponse(
+        content="working_state:\n  observations: []",
+        tool_calls=[],
+        stop_reason=StopReason.END_TURN,
+        usage=usage,
+    )
+    agent, _ = make_agent(llm, tools=[EchoTool()], max_prompt_tokens=1000)
+    history = Message(role="user", content="old observations " * 20000)
+    agent.session.messages.append(history)
+
+    result = await agent.repair_outcome("Repair working_state as a mapping")
+
+    assert result.response == llm.generate.return_value.content
+    assert result.usage == usage
+    assert agent.session.messages == [history]
+    assert llm.generate.call_args.args[0] == [
+        {"role": "user", "content": "Repair working_state as a mapping"}
+    ]
+    assert llm.generate.call_args.kwargs["tools"] == []
+    assert agent.prompt_budget_status["estimated_prompt_tokens"] < 1000
+
+    llm.generate.reset_mock()
+    with pytest.raises(PromptBudgetExceededError):
+        await agent.repair_outcome("oversized repair " * 20000)
+    llm.generate.assert_not_called()
+
+    llm.generate.return_value = LLMResponse(
+        content="",
+        tool_calls=[ToolCall(id="x", name="echo", input={})],
+        stop_reason=StopReason.TOOL_USE,
+        usage=usage,
+    )
+    with pytest.raises(ValueError, match="not tool calls"):
+        await agent.repair_outcome("Repair working_state")
+
+    budget = IterationBudget(total=1)
+    agent, _ = make_agent(llm, iteration_budget=budget)
+    llm.generate.return_value = LLMResponse(
+        content="repaired", tool_calls=[], stop_reason=StopReason.END_TURN, usage=usage
+    )
+    await agent.repair_outcome("Repair working_state")
+    assert budget.exhausted
+    llm.generate.reset_mock()
+    with pytest.raises(MaxIterationsError):
+        await agent.repair_outcome("Repair working_state")
+    llm.generate.assert_not_called()
 
 
 class _FakeSandboxShell:
