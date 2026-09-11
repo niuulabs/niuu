@@ -1631,6 +1631,24 @@ summary: post-mortem source captured
         assert "transport check only" in enqueued.initiative_context
 
     @pytest.mark.asyncio
+    async def test_mesh_directed_message_keeps_its_reply_channel_and_session(self) -> None:
+        from ravn.domain.models import OutputMode
+
+        dl = _make_drive_loop()
+        dl.enqueue = AsyncMock(return_value=True)
+        dl._try_steer_active_agent = AsyncMock(return_value=True)
+        await dl.handle_directed_message(
+            "Reply to the originating room",
+            {"session_id": "remote-room", "root_correlation_id": "remote-room"},
+            output_mode=OutputMode.AMBIENT,
+        )
+        dl._try_steer_active_agent.assert_not_awaited()
+        task = dl.enqueue.await_args.args[0]
+        assert task.output_mode == OutputMode.AMBIENT
+        assert task.session_id == "remote-room"
+        assert task.root_correlation_id == "remote-room"
+
+    @pytest.mark.asyncio
     async def test_handle_directed_message_attaches_durable_inbox_ref(self) -> None:
         dl = _make_drive_loop()
         dl.enqueue = AsyncMock(return_value=True)
