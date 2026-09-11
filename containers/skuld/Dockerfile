@@ -57,6 +57,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     git \
+    file \
     iproute2 \
     jq \
     tmux \

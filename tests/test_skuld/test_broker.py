@@ -477,8 +477,9 @@ class TestBroker:
         assert test_broker._transport is not None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("room_enabled", [False, True])
     async def test_startup_dispatches_workflow_trigger_instead_of_auto_starting_transport(
-        self, tmp_path
+        self, tmp_path, room_enabled
     ):
         settings = SkuldSettings(
             session={
@@ -486,6 +487,7 @@ class TestBroker:
                 "workspace_dir": str(tmp_path),
                 "initial_prompt": "Implement the requested change",
             },
+            room={"enabled": room_enabled},
             mesh={"enabled": True, "peer_id": "skuld-wf"},
             workflow_trigger={
                 "enabled": True,
@@ -515,6 +517,8 @@ class TestBroker:
         broker._channels.add(mock_channel)
 
         with (
+            patch.object(broker, "_wait_for_event_consumers", return_value=True),
+            patch.object(broker, "_wait_for_workflow_kickoff_acks", return_value=True),
             patch.object(broker, "_create_transport", return_value=mock_transport),
             patch("skuld.broker.ServiceManager") as mock_service_manager_cls,
             patch.object(
@@ -528,6 +532,14 @@ class TestBroker:
             mock_service_manager = AsyncMock()
             mock_service_manager_cls.return_value = mock_service_manager
             await broker.startup()
+
+        if broker._room_bridge is not None:
+            await broker._room_bridge.stop_presence_sweep()
+        if broker._peer_watchdog_task is not None:
+            broker._peer_watchdog_task.cancel()
+        replay_broker = Broker(settings=settings)
+        replay_broker._load_conversation_history()
+        assert replay_broker._conversation_turns[0].content == settings.session.initial_prompt
 
         mock_transport.start.assert_not_called()
         mock_adapter.publish.assert_awaited_once()

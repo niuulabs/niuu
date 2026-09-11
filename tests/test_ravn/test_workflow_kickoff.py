@@ -154,10 +154,11 @@ class TestWorkflowKickoffAcknowledger:
 # ---------------------------------------------------------------------------
 
 
-def _wire_kickoff_handler(mesh: MagicMock):
+def _wire_kickoff_handler(mesh: MagicMock, workspace: str = ""):
     """Wire a coder persona through _wire_cascade and return (drive_loop, handler)."""
     dl = _make_drive_loop()
     settings = Settings()
+    settings.permission.workspace_root = workspace
     settings.mesh.enabled = True
     settings.mesh.own_peer_id = "flock-coder"
     settings.discovery.enabled = False
@@ -225,3 +226,20 @@ async def test_non_kickoff_outcome_is_not_acked():
 
     assert len(dl.queued_task_ids()) == 1
     mesh.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workspace", ["/workspace", "/sandbox/workspace"])
+async def test_kickoff_uses_receiver_workspace_without_mutating_event(workspace):
+    mesh = MagicMock(publish=AsyncMock())
+    dl, handler = _wire_kickoff_handler(mesh, workspace)
+    dl.enqueue = MagicMock(wraps=dl.enqueue)
+    event = _kickoff_event()
+    event.payload["workspace_path"] = "/volundr/sessions/session-123/workspace"
+
+    await handler(event)
+
+    task = dl.enqueue.call_args.args[0]
+    assert f"Workspace path: {workspace}" in task.initiative_context
+    assert "/volundr/sessions/" not in task.initiative_context
+    assert event.payload["workspace_path"] == "/volundr/sessions/session-123/workspace"

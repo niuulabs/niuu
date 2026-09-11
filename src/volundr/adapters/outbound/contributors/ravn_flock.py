@@ -510,6 +510,7 @@ def _build_ravn_config(
     persona_source_http_base_url: str = "",
     workflow: dict[str, Any] | None = None,
     extra_ravn_config: dict[str, Any] | None = None,
+    workspace_root: str = _WORKSPACE_MOUNT_PATH,
 ) -> str:
     """Generate the ravn daemon YAML config for a single flock node.
 
@@ -569,7 +570,7 @@ def _build_ravn_config(
             # All personas share /workspace, but each daemon owns its queue.
             # Sharing the default journal makes every sidecar restore the same
             # interrupted task after a pod restart.
-            "queue_journal_path": f"{_WORKSPACE_MOUNT_PATH}/.ravn/daemon/{persona}-queue.json",
+            "queue_journal_path": f"{workspace_root}/.ravn/daemon/{persona}-queue.json",
         },
         "mimir": {
             "enabled": True,
@@ -577,7 +578,7 @@ def _build_ravn_config(
             "write_routing": mimir_write_routing,
         },
         "permission": {
-            "workspace_root": _WORKSPACE_MOUNT_PATH,
+            "workspace_root": workspace_root,
         },
         "logging": {"level": "INFO"},
     }
@@ -1164,6 +1165,11 @@ class RavnFlockContributor(SessionContributor):
             gw = _ravn_gateway_port_for(ravn_index, base_port)
 
             config_yaml = _build_ravn_config(
+                workspace_root=(
+                    "/sandbox/workspace"
+                    if runtime_backend == "openshell"
+                    else _WORKSPACE_MOUNT_PATH
+                ),
                 persona=persona,
                 persona_override=persona_dict,
                 global_llm=global_llm,

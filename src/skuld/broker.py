@@ -694,6 +694,7 @@ class Broker(
                 content=prompt,
             )
         )
+        self._enqueue_human_turn_event(prompt, turn_id)
         await self._complete_trace_span(
             kind="turn.user",
             name=prompt[:120] or "workflow prompt",

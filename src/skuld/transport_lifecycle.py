@@ -195,6 +195,9 @@ class TransportLifecycleMixin:
         # lifespan returns promptly and uvicorn binds — otherwise the
         # transport's first turn (which can take seconds to minutes)
         # blocks the HTTP listener and the chat UI gets 502s.
+        if self._has_workflow_trigger():
+            await self._ensure_workflow_prompt_turn()
+
         if self._is_room_routed_session():
             # Room-routed sessions (flock workflows and residents) have no CLI
             # transport of their own — chat flows to mesh peers / the resident.
@@ -208,7 +211,6 @@ class TransportLifecycleMixin:
                 logger.info(
                     "Workflow trigger configured — holding initial prompt for mesh dispatch"
                 )
-                await self._ensure_workflow_prompt_turn()
             else:
                 logger.info("Initial prompt configured — auto-starting transport in background")
                 asyncio.create_task(self._auto_start_transport())
