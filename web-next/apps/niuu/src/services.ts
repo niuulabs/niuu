@@ -915,6 +915,8 @@ function buildSplitVolundrService(
     getStats: () => forge.getStats(),
     getRepos: () => forge.getRepos(),
     getTargets: () => Promise.resolve(forge.getTargets?.() ?? []),
+    listUserHome: (instanceId, path) => forge.listUserHome(instanceId, path),
+    deleteUserHomePath: (instanceId, path) => forge.deleteUserHomePath(instanceId, path),
     subscribe: (callback) => forge.subscribe(callback),
     subscribeStats: (callback) => forge.subscribeStats(callback),
     getAvailableMcpServers: () => forge.getAvailableMcpServers(),

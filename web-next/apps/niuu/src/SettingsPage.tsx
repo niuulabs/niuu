@@ -1813,8 +1813,12 @@ function SettingsSectionPanel({
     );
   }
 
+  const localSection =
+    snapshot.provider.source === 'local'
+      ? snapshot.provider.sections.find((item) => item.id === section.id)
+      : null;
   const hasWritableFields = Boolean(client && section.fields.some((field) => !field.readOnly));
-  const isWritable = Boolean(client && section.writable);
+  const isWritable = Boolean(localSection || (client && section.writable));
 
   return (
     <div className="settings-shell__panel">
@@ -1845,6 +1849,8 @@ function SettingsSectionPanel({
           {isWritable ? 'Editable' : 'Read only'}
         </div>
       </div>
+
+      {localSection?.render()}
 
       {section.fields.length > 0 ? (
         <form

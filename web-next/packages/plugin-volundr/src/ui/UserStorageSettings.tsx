@@ -5,6 +5,7 @@ import { useService } from '@niuulabs/plugin-sdk';
 import type { IVolundrService } from '../ports/IVolundrService';
 
 const STORAGE_PREPARATION_POLL_MS = 2000;
+const errorText = (error: Error & { detail?: string }) => error.detail ?? error.message;
 const bytes = (value: number) => `${(value / 1024 ** 3).toFixed(1)} GiB`;
 
 export function UserStorageSettings() {
@@ -37,7 +38,7 @@ export function UserStorageSettings() {
         sessions on the selected cluster before deleting files.
       </p>
       {targets.isPending && <p role="status">Loading clusters…</p>}
-      {targets.error && <p role="alert">{targets.error.message}</p>}
+      {targets.error && <p role="alert">{errorText(targets.error)}</p>}
       {targets.data?.length === 0 && <p>No clusters are available to your account.</p>}
       {clusterId && <HomeBrowser key={clusterId} clusterId={clusterId} service={service} />}
     </div>
@@ -99,7 +100,7 @@ function HomeBrowser({ clusterId, service }: { clusterId: string; service: IVolu
       {(query.isPending || listing?.status === 'starting') && (
         <p role="status">{listing?.detail ?? 'Opening your home storage…'}</p>
       )}
-      {query.error && <p role="alert">{query.error.message}</p>}
+      {query.error && <p role="alert">{errorText(query.error)}</p>}
       {listing?.status === 'ready' && (
         <table className="niuu:w-full niuu:text-left">
           <thead>
@@ -158,7 +159,7 @@ function HomeBrowser({ clusterId, service }: { clusterId: string; service: IVolu
             Permanently delete <code>Home/{deleting}</code> and its contents on this cluster? This
             cannot be undone.
           </p>
-          {remove.error && <p role="alert">{remove.error.message}</p>}
+          {remove.error && <p role="alert">{errorText(remove.error)}</p>}
           <button
             className={buttonClass}
             disabled={remove.isPending}

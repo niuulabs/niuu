@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { ConfigProvider } from '@niuulabs/plugin-sdk';
+import { ConfigProvider, ServicesProvider } from '@niuulabs/plugin-sdk';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsPage } from './SettingsPage';
@@ -831,4 +831,27 @@ describe('SettingsPage', () => {
     expect(await screen.findByText(expectedCopy)).toBeTruthy();
     expect(await screen.findByText('Response detail:')).toBeTruthy();
   });
+});
+
+it('renders locally mounted storage management inside the settings shell', async () => {
+  routerMocks.params = { providerId: 'storage', sectionId: 'home' };
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <ConfigProvider
+      value={{
+        demoMode: false,
+        theme: 'ice',
+        plugins: { volundr: { enabled: true, order: 1 } },
+        services: {},
+      }}
+    >
+      <QueryClientProvider client={queryClient}>
+        <ServicesProvider services={{ volundr: { getTargets: async () => [] } }}>
+          <SettingsPage />
+        </ServicesProvider>
+      </QueryClientProvider>
+    </ConfigProvider>,
+  );
+  expect(await screen.findByRole('combobox', { name: 'Storage cluster' })).toBeInTheDocument();
+  expect(await screen.findByText('No clusters are available to your account.')).toBeInTheDocument();
 });
