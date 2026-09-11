@@ -531,6 +531,10 @@ spec:
         {{- range .Values.extraContainers }}
         {{- $container := deepCopy . }}
         {{- if hasPrefix "ravn-" $container.name }}
+        {{- if and $.Values.git.credentials.tokenFile $container.command }}
+        {{- $loader := list "/bin/sh" "-c" "set -e; if [ -f /run/secrets/env.sh ]; then . /run/secrets/env.sh; fi; exec \"$@\"" "--" }}
+        {{- $_ := set $container "command" (concat $loader $container.command) }}
+        {{- end }}
         {{- $env := $container.env | default list }}
         {{- $names := dict }}
         {{- range $env }}{{- $_ := set $names .name true }}{{- end }}

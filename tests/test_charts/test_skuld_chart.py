@@ -941,10 +941,16 @@ def test_user_git_integration_authenticates_nested_checkout(tmp_path):
                     "username": "x-access-token",
                 },
             },
-            "extraContainers": [{"name": "ravn-coder", "image": "test"}],
+            "extraContainers": [
+                {"name": "ravn-coder", "image": "test", "command": ["python", "-m", "ravn"]}
+            ],
         },
     )
     containers = _deployment_from_rendered(rendered)["spec"]["template"]["spec"]["containers"]
+    coder = next(c for c in containers if c["name"] == "ravn-coder")
+    assert coder["command"][:2] == ["/bin/sh", "-c"]
+    assert ". /run/secrets/env.sh" in coder["command"][2]
+    assert coder["command"][4:] == ["python", "-m", "ravn"]
     for name in ("skuld", "ravn-coder"):
         env = next(c["env"] for c in containers if c["name"] == name)
         assert not any(
