@@ -35,7 +35,16 @@ describe('UserStorageSettings', () => {
   it('browses home, temp and caches on the selected cluster and confirms deletion', async () => {
     const service = setup();
     expect(await screen.findByText('63.0 GiB available of 64.0 GiB')).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: 'Home files' })).toHaveClass('niuu-table');
+    expect(screen.getByRole('button', { name: 'Home', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Temporary files' }));
+    expect(screen.getByRole('button', { name: 'Temporary files' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
     await waitFor(() =>
       expect(service.listUserHome).toHaveBeenCalledWith('valhalla', 'tmp/sessions'),
     );
