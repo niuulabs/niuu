@@ -201,10 +201,17 @@ Persistent home directory shared across all sessions for a given user. Stores CL
 
 Optional git repository cloned on session start via an init container. Each session clones into its own workspace directory, so multiple sessions with different repos can coexist on the same PVC.
 
+Forge sessions use an attached source-control integration from Settings. OpenShell uses its attached dynamic credential provider for clone and subsequent Git requests, without copying the token into the sandbox. For plain Kubernetes (Helm or direct), its token is injected into a session-mounted file; `git.credentials.tokenFile` takes precedence over any cluster `secretName`. The clone step installs a repository-scoped credential helper that reads this file for each fetch or push, including operations from Skuld, Ravn sidecars, and the terminal. Tokens are not stored in Helm values or repository URLs. Missing integration credentials fail startup with an actionable error.
+
+Commit identity defaults to the session owner's email when Git has no identity configured. Existing repository identity is preserved. When a saved selection contains no source-control integration, startup automatically attaches the owner's enabled source-control integrations, including ones added after the session was created. An explicit source-control selection is preserved. The token needs Contents read access to clone and write access to push.
+
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `git.repoUrl` | string | `""` | Git repository URL to clone (empty = no clone) |
 | `git.branch` | string | `""` | Branch to checkout (empty = default branch) |
+| `git.credentials.tokenFile` | string | `""` | Injected integration token file used for cloning and runtime Git operations |
+| `git.userName` | string | `""` | Commit author name when not already configured |
+| `git.userEmail` | string | `""` | Commit author email when not already configured |
 | `git.credentials.secretName` | string | `""` | Name of a Kubernetes secret containing a git token |
 | `git.credentials.tokenKey` | string | `"token"` | Key within the secret that holds the token |
 | `git.credentials.username` | string | `"x-access-token"` | Username for HTTPS auth (default works with GitHub PATs and deploy tokens) |

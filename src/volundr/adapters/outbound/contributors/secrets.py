@@ -5,7 +5,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from volundr.domain.models import CredentialMapping, MountType, Session, StoredCredential
+from volundr.domain.models import (
+    CredentialMapping,
+    IntegrationType,
+    MountType,
+    Session,
+    StoredCredential,
+)
 from volundr.domain.ports import (
     CredentialStorePort,
     SecretInjectionPort,
@@ -14,6 +20,7 @@ from volundr.domain.ports import (
     SessionContribution,
     SessionContributor,
 )
+from volundr.domain.services.user_integration import git_token_path
 
 if TYPE_CHECKING:
     from volundr.domain.services.integration_registry import IntegrationRegistry
@@ -128,6 +135,12 @@ class SecretInjectionContributor(SessionContributor):
                         file_mappings[
                             f"{_MIMIR_SECRET_VOLUME_PATH}/{_secret_file_name(auth_ref)}/token"
                         ] = "token"
+
+            if (
+                conn.integration_type == IntegrationType.SOURCE_CONTROL
+                and context.runtime_backend != "openshell"
+            ):
+                file_mappings[git_token_path(conn.id)] = "token"
 
             mappings.append(
                 CredentialMapping(

@@ -570,3 +570,42 @@ async def test_workload_memory_identity_does_not_request_a_stored_token():
     )
     assert await contributor._build_mappings(context, "user-1") == []
     store.get.assert_not_called()
+
+
+async def test_source_control_token_is_projected_for_git(session):
+    from dataclasses import replace
+
+    from volundr.domain.services.user_integration import git_token_path
+
+    connection = replace(_connection(), integration_type=IntegrationType.SOURCE_CONTROL)
+    injection = AsyncMock()
+    contributor = SecretInjectionContributor(secret_injection=injection)
+    await contributor.contribute(session, SessionContext(integration_connections=(connection,)))
+    mappings = injection.ensure_secret_provider_class.call_args.args[1]
+    assert mappings[0].file_mappings == {git_token_path(connection.id): "token"}
+
+
+async def test_openshell_source_control_uses_dynamic_provider_without_token_file(session):
+    from dataclasses import replace
+
+    connection = replace(
+        _connection(slug="github"), integration_type=IntegrationType.SOURCE_CONTROL
+    )
+    registry = _registry(
+        [_definition(slug="github", env_from_credentials={"GITHUB_TOKEN": "token"})]
+    )
+    contributor = SecretInjectionContributor(integration_registry=registry)
+    result = await contributor.contribute(
+        session,
+        SessionContext(
+            runtime_backend="openshell",
+            integration_connections=(connection,),
+        ),
+    )
+    assert result.values["openshell"]["credentialMappings"] == [
+        {
+            "credentialName": connection.credential_name,
+            "envMappings": {"GITHUB_TOKEN": "token"},
+            "fileMappings": {},
+        }
+    ]

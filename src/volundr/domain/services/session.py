@@ -21,6 +21,7 @@ from volundr.domain.models import (
     EventType,
     GitSource,
     IntegrationConnection,
+    IntegrationType,
     Principal,
     RealtimeEvent,
     Session,
@@ -975,6 +976,23 @@ class SessionService:
 
         if integration_ids and self._integration_repo is None:
             raise ValueError("Selected integrations require a configured integration repository")
+        # A saved selection can predate the owner's Git integration. Preserve
+        # explicit source-control choices; otherwise attach enabled sources.
+        if (
+            session.repo
+            and principal
+            and self._integration_repo
+            and integration_ids
+            and not any(
+                c.integration_type == IntegrationType.SOURCE_CONTROL for c in resolved_connections
+            )
+        ):
+            source_connections = await self._integration_repo.list_connections(
+                principal.user_id,
+                integration_type=IntegrationType.SOURCE_CONTROL,
+            )
+            resolved_connections.extend(c for c in source_connections if c.enabled)
+
         if resolved_connections:
             workload_config = {
                 **(workload_config or {}),

@@ -1777,7 +1777,27 @@ export function buildVolundrHttpAdapter(
     deleteTenantCredential: (name) => credentialsClient.delete<void>(`/tenant/${name}`),
 
     getIntegrationCatalog: () => sharedClient.get<CatalogEntry[]>('/integrations/catalog'),
-    getIntegrations: () => sharedClient.get<IntegrationConnection[]>('/integrations'),
+    getIntegrations: async () => {
+      const connections = await sharedClient.get<
+        (Partial<IntegrationConnection> & {
+          id: string;
+          integration_type?: string;
+          credential_name?: string;
+          created_at?: string;
+          updated_at?: string;
+        })[]
+      >('/integrations');
+      return connections.map((connection) => ({
+        id: connection.id,
+        slug: connection.slug,
+        adapter: connection.adapter,
+        enabled: connection.enabled,
+        integrationType: connection.integrationType ?? connection.integration_type,
+        credentialName: connection.credentialName ?? connection.credential_name,
+        createdAt: connection.createdAt ?? connection.created_at ?? '',
+        updatedAt: connection.updatedAt ?? connection.updated_at ?? '',
+      }));
+    },
     createIntegration: (connection) =>
       sharedClient.post<IntegrationConnection>('/integrations', connection),
     deleteIntegration: (id) => sharedClient.delete<void>(`/integrations/${id}`),

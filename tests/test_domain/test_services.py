@@ -704,6 +704,60 @@ class TestSessionServiceStart:
         assert stored.status == expected
         await asyncio.gather(*service._provisioning_tasks.values())
 
+    @pytest.mark.parametrize("explicit_git", [False, True])
+    async def test_restart_auto_attaches_new_source_control_integration(
+        self,
+        repository,
+        pod_manager,
+        monkeypatch,
+        explicit_git,
+    ):
+        from types import SimpleNamespace
+
+        from volundr.domain.models import IntegrationType, Principal
+
+        ai = SimpleNamespace(
+            id="ai", owner_id="owner", enabled=True, integration_type=IntegrationType.AI_PROVIDER
+        )
+        github = SimpleNamespace(
+            id="github",
+            owner_id="owner",
+            enabled=True,
+            integration_type=IntegrationType.SOURCE_CONTROL,
+        )
+        disabled = SimpleNamespace(id="disabled", enabled=False)
+        integrations = AsyncMock()
+        integrations.get_connection.side_effect = lambda cid: {"ai": ai, "github": github}[cid]
+        integrations.list_connections.return_value = [github, disabled]
+        service = SessionService(repository, pod_manager, integration_repo=integrations)
+        monkeypatch.setattr(service, "_poll_readiness", AsyncMock())
+        selected = ["ai", "github"] if explicit_git else ["ai"]
+        session = await service.create_session(
+            name="git-session",
+            model="claude",
+            source=GitSource(repo="https://github.com/org/repo"),
+        )
+        await repository.update(
+            session.model_copy(
+                update={
+                    "status": SessionStatus.STOPPED,
+                    "workload_config": {"integration_ids": selected},
+                }
+            )
+        )
+        principal = Principal(user_id="owner", email="owner@test.local", tenant_id="t", roles=[])
+        await service.start_session(session.id, principal=principal)
+        await asyncio.gather(*service._provisioning_tasks.values())
+        stored = await repository.get(session.id)
+        assert stored.workload_config["integration_ids"] == ["ai", "github"]
+        if explicit_git:
+            integrations.list_connections.assert_not_called()
+        else:
+            integrations.list_connections.assert_awaited_once_with(
+                "owner",
+                integration_type=IntegrationType.SOURCE_CONTROL,
+            )
+
     async def test_start_session_prefers_public_host_for_browser_endpoints(
         self,
         repository: Repo,

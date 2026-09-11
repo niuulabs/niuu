@@ -27,7 +27,16 @@ spec:
         {{- if and (include "skuld.residentEnabled" .) (not (hasKey .Values.podAnnotations "niuu.world/resident-name")) }}
         niuu.world/resident-name: {{ include "skuld.residentName" . | quote }}
         {{- end }}
-        {{- with .Values.podAnnotations }}
+        {{- $annotations := deepCopy (.Values.podAnnotations | default dict) }}
+        {{- if and .Values.git.credentials.tokenFile (hasKey $annotations "vault.hashicorp.com/agent-inject") }}
+        {{- $names := list "git-clone" "skuld" "devrunner" }}
+        {{- range .Values.extraContainers }}
+        {{- $names = append $names .name }}
+        {{- end }}
+        {{- $existing := splitList "," (index $annotations "vault.hashicorp.com/agent-inject-containers" | default "") }}
+        {{- $_ := set $annotations "vault.hashicorp.com/agent-inject-containers" (join "," (uniq (compact (concat $existing $names)))) }}
+        {{- end }}
+        {{- with $annotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
       {{- end }}
@@ -164,31 +173,51 @@ spec:
               set -e
               export GIT_TERMINAL_PROMPT=0
               WORKSPACE="{{ include "skuld.workspacePath" . }}"
-              REPO_URL="{{ .Values.git.repoUrl }}"
-              BRANCH="{{ .Values.git.branch | default "main" }}"
-              BASE_BRANCH="{{ .Values.git.baseBranch | default "" }}"
-              {{- if .Values.git.credentials.secretName }}
-              # Inject credentials into HTTPS URL for fetch
-              PROTO="${REPO_URL%%://*}"
-              HOST_AND_PATH="${REPO_URL#*://}"
-              AUTH_URL="${PROTO}://${GIT_USERNAME}:${GIT_TOKEN}@${HOST_AND_PATH}"
-              {{- else }}
-              AUTH_URL="$REPO_URL"
-              {{- end }}
-              if [ -d "$WORKSPACE/.git" ] && git -C "$WORKSPACE" rev-parse HEAD >/dev/null 2>&1; then
-                echo "Workspace already contains a valid git repository, skipping clone"
-              else
-                # Clean up any broken .git state
-                rm -rf "$WORKSPACE/.git"
+              REPO_URL={{ .Values.git.repoUrl | replace "'" "'\\''" | squote }}
+              BRANCH={{ .Values.git.branch | default "main" | replace "'" "'\\''" | squote }}
+              BASE_BRANCH={{ .Values.git.baseBranch | default "" | replace "'" "'\\''" | squote }}
+              if ! git -C "$WORKSPACE" rev-parse --git-dir >/dev/null 2>&1; then
                 mkdir -p "$WORKSPACE"
                 git init "$WORKSPACE"
-                git -C "$WORKSPACE" remote add origin "$AUTH_URL"
+              fi
+              if git -C "$WORKSPACE" remote get-url origin >/dev/null 2>&1; then
+                git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
+              else
+                git -C "$WORKSPACE" remote add origin "$REPO_URL"
+              fi
+              {{- if .Values.git.credentials.tokenFile }}
+              # Persist references, never tokens. Every Git process reads the mounted secret.
+              test -s {{ .Values.git.credentials.tokenFile | replace "'" "'\\''" | squote }} || {
+                echo "Selected Git integration token was not injected" >&2; exit 1;
+              }
+              git -C "$WORKSPACE" config niuu.gitTokenFile {{ .Values.git.credentials.tokenFile | replace "'" "'\\''" | squote }}
+              git -C "$WORKSPACE" config niuu.gitUsername {{ .Values.git.credentials.username | replace "'" "'\\''" | squote }}
+              git -C "$WORKSPACE" config credential.helper ''
+              git -C "$WORKSPACE" config credential.useHttpPath true
+              git -C "$WORKSPACE" config "credential.$REPO_URL.helper" \
+                '!f() { [ "$1" = get ] || return 0; token=$(cat "$(git config niuu.gitTokenFile)") || return 1; [ -n "$token" ] || return 1; printf "username=%s\npassword=%s\n" "$(git config niuu.gitUsername)" "$token"; }; f'
+              {{- else if .Values.git.credentials.secretName }}
+              git -C "$WORKSPACE" config credential.helper \
+                '!f() { [ "$1" = get ] || return 0; printf "username=%s\npassword=%s\n" "${GIT_USERNAME:-x-access-token}" "$GIT_TOKEN"; }; f'
+              {{- end }}
+              {{- if .Values.git.userName }}
+              if ! git -C "$WORKSPACE" config user.name >/dev/null; then
+                git -C "$WORKSPACE" config user.name {{ .Values.git.userName | replace "'" "'\\''" | squote }}
+              fi
+              {{- end }}
+              {{- if .Values.git.userEmail }}
+              if ! git -C "$WORKSPACE" config user.email >/dev/null; then
+                git -C "$WORKSPACE" config user.email {{ .Values.git.userEmail | replace "'" "'\\''" | squote }}
+              fi
+              {{- end }}
+              if git -C "$WORKSPACE" rev-parse HEAD >/dev/null 2>&1; then
+                echo "Workspace already contains a valid git repository, skipping clone"
+              else
                 git -C "$WORKSPACE" fetch origin
                 if git -C "$WORKSPACE" rev-parse --verify "origin/$BRANCH" >/dev/null 2>&1; then
                   git -C "$WORKSPACE" checkout -B "$BRANCH" "origin/$BRANCH"
                   echo "Checked out existing branch $BRANCH"
                 else
-                  # Use explicit base branch, or fall back to remote HEAD
                   if [ -n "$BASE_BRANCH" ] && git -C "$WORKSPACE" rev-parse --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
                     FALLBACK="$BASE_BRANCH"
                   else
@@ -199,21 +228,18 @@ spec:
                   git -C "$WORKSPACE" checkout -B "$FALLBACK" "origin/$FALLBACK"
                   git -C "$WORKSPACE" checkout -b "$BRANCH"
                 fi
-                # Store clean URL without embedded credentials
-                git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
                 echo "Repository cloned successfully"
               fi
               mkdir -p "$WORKSPACE/.services"
               touch "$WORKSPACE/.services/nginx.conf"
               echo "Ensured dynamic service nginx config exists"
-              {{- if .Values.git.credentials.secretName }}
-              # Configure credential helper so git push uses GIT_TOKEN env var
-              git -C "$WORKSPACE" config credential.helper \
-                '!f() { echo "username=${GIT_USERNAME:-x-access-token}"; echo "password=$GIT_TOKEN"; }; f'
-              echo "Git credential helper configured"
-              {{- end }}
-          {{- if .Values.git.credentials.secretName }}
+          {{- if or .Values.homeVolume.enabled (and .Values.git.credentials.secretName (not .Values.git.credentials.tokenFile)) }}
           env:
+            {{- if .Values.homeVolume.enabled }}
+            - name: HOME
+              value: {{ .Values.homeVolume.mountPath | quote }}
+            {{- end }}
+            {{- if and .Values.git.credentials.secretName (not .Values.git.credentials.tokenFile) }}
             - name: GIT_USERNAME
               value: {{ .Values.git.credentials.username | default "x-access-token" | quote }}
             - name: GIT_TOKEN
@@ -221,10 +247,19 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.git.credentials.secretName }}
                   key: {{ .Values.git.credentials.tokenKey | default "token" }}
+            {{- end }}
           {{- end }}
           volumeMounts:
             - name: sessions
               mountPath: {{ .Values.persistence.mountPath }}
+            {{- if .Values.homeVolume.enabled }}
+            - name: home
+              mountPath: {{ .Values.homeVolume.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- range .Values.extraVolumeMounts }}
+            - {{- toYaml . | nindent 14 }}
+            {{- end }}
         {{- end }}
         {{- range .Values.extraInitContainers }}
         - {{- toYaml . | nindent 10 }}
@@ -336,7 +371,7 @@ spec:
             - name: {{ .name }}
               value: {{ .value | quote }}
             {{- end }}
-            {{- if .Values.git.credentials.secretName }}
+            {{- if and .Values.git.credentials.secretName (not .Values.git.credentials.tokenFile) }}
             - name: GITHUB_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -461,7 +496,22 @@ spec:
             {{- end }}
         {{- end }}
         {{- range .Values.extraContainers }}
-        - {{- toYaml . | nindent 10 }}
+        {{- $container := deepCopy . }}
+        {{- if $.Values.git.credentials.tokenFile }}
+        {{- $mounts := $container.volumeMounts | default list }}
+        {{- $paths := dict }}
+        {{- range $mounts }}
+        {{- $_ := set $paths .mountPath true }}
+        {{- end }}
+        {{- range $.Values.extraVolumeMounts }}
+        {{- if not (hasKey $paths .mountPath) }}
+        {{- $mounts = append $mounts . }}
+        {{- $_ := set $paths .mountPath true }}
+        {{- end }}
+        {{- end }}
+        {{- $_ := set $container "volumeMounts" $mounts }}
+        {{- end }}
+        - {{- toYaml $container | nindent 10 }}
         {{- end }}
         {{- if .Values.localServices.enabled }}
         # Devrunner - minimal runtime for local service testing

@@ -1707,6 +1707,12 @@ async def test_start_creates_dynamic_openbao_providers_without_secret_environmen
         "OPENAI_API_KEY",
         "GITHUB_PERSONAL_ACCESS_TOKEN",
     }
+    github_grant = next(
+        g for g in client.provider_grants if g["config"]["volundr_credential_name"] == "github-cred"
+    )
+    assert github_grant["profile"].credentials[0].auth_style == "header"
+    assert github_grant["profile"].credentials[0].header_name == "Authorization"
+    assert github_grant["config"]["volundr_basic_auth_username"] == "x-access-token"
     assert all(not grant["profile"].credentials[0].required for grant in client.provider_grants)
     assert all(
         grant["config"]["volundr_session_id"] == str(session.id) for grant in client.provider_grants
@@ -2247,8 +2253,10 @@ def test_credential_file_path_rejects_escape(monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("basic_username", ["", "x-access-token"])
 async def test_credential_grant_binds_svid_sandbox_provider_session_and_openbao(
     monkeypatch: pytest.MonkeyPatch,
+    basic_username: str,
 ) -> None:
     adapter = _import_adapter(monkeypatch)
     session = _session()
@@ -2269,6 +2277,7 @@ async def test_credential_grant_binds_svid_sandbox_provider_session_and_openbao(
             "volundr_session_id": str(session.id),
             "volundr_credential_name": "openai-cred",
             "volundr_credential_field": "api_key",
+            "volundr_basic_auth_username": basic_username,
         },
     )
 
@@ -2299,7 +2308,10 @@ async def test_credential_grant_binds_svid_sandbox_provider_session_and_openbao(
         scope="",
     )
 
-    assert token.access_token == "sk-from-openbao"
+    expected = "sk-from-openbao"
+    if basic_username:
+        expected = "Basic " + base64.b64encode(f"{basic_username}:{expected}".encode()).decode()
+    assert token.access_token == expected
     assert token.expires_in == 300
 
 

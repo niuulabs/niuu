@@ -2408,3 +2408,30 @@ describe('buildVolundrHttpAdapter — full method sweep', () => {
     expect(client.delete).toHaveBeenCalled();
   });
 });
+
+it('normalizes Settings integration fields for session defaults', async () => {
+  const service = buildVolundrHttpAdapter(makeClient());
+  const sharedClient = getDerivedClient('http://localhost:8080/api/v1');
+  sharedClient.get.mockResolvedValueOnce([
+    {
+      id: 'github',
+      slug: 'github',
+      enabled: true,
+      integration_type: 'source_control',
+      credential_name: 'github-credential',
+      created_at: 'created',
+      updated_at: 'updated',
+    },
+  ]);
+  expect(await service.getIntegrations()).toEqual([
+    {
+      id: 'github',
+      slug: 'github',
+      enabled: true,
+      integrationType: 'source_control',
+      credentialName: 'github-credential',
+      createdAt: 'created',
+      updatedAt: 'updated',
+    },
+  ]);
+});

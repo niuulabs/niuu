@@ -40,3 +40,35 @@ class TestFileSecretInjectionAdapter:
     def test_accepts_extra_kwargs(self, tmp_path):
         adapter = FileSecretInjectionAdapter(base_dir=str(tmp_path), unknown="ignored")
         assert adapter is not None
+
+
+async def test_git_token_projection_and_cleanup(tmp_path):
+    import json
+    from pathlib import Path
+
+    from volundr.domain.models import CredentialMapping
+
+    source = tmp_path / "user" / "user-1" / "github"
+    source.parent.mkdir(parents=True)
+    source.write_text(json.dumps({"token": "test-token"}))
+    adapter = FileSecretInjectionAdapter(base_dir=str(tmp_path))
+    await adapter.ensure_secret_provider_class(
+        "user-1",
+        [
+            CredentialMapping(
+                credential_name="github",
+                file_mappings={
+                    "/run/secrets/git/selected/token": "token",
+                },
+            )
+        ],
+        session_id="session-1",
+    )
+    additions = await adapter.pod_spec_additions("user-1", "session-1")
+    projected = additions.volumes[1]["hostPath"]["path"]
+    assert Path(projected).read_text() == "test-token"
+    assert additions.volume_mounts[1]["mountPath"] == "/run/secrets/git/selected/token"
+    assert additions.volume_mounts[1]["readOnly"]
+    await adapter.cleanup_session("session-1")
+    assert not Path(projected).exists()
+    assert source.exists()

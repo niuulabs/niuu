@@ -575,6 +575,20 @@ class TestStartSession:
         # code_endpoint set in background task
         # pod_name set in background task
 
+    async def test_restart_forwards_selected_integrations(self, client, service):
+        session = await service.create_session(
+            "Test",
+            "claude",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        with patch.object(service, "start_session", AsyncMock(return_value=session)) as start:
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/start",
+                json={"integration_ids": ["existing-ai", "new-github"]},
+            )
+        assert response.status_code == 200
+        assert start.call_args.kwargs["integration_ids"] == ["existing-ai", "new-github"]
+
     def test_start_session_not_found(self, client: TestClient):
         """Returns 404 for non-existent session."""
         fake_id = uuid4()

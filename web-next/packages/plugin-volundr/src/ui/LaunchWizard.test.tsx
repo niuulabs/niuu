@@ -84,6 +84,32 @@ async function advanceToConfirm() {
 }
 
 describe('LaunchWizard', () => {
+  it('automatically checks the enabled GitHub integration for a Git session', async () => {
+    const service = createMockVolundrService();
+    service.getIntegrations = vi.fn().mockResolvedValue([
+      {
+        id: 'github',
+        slug: 'github',
+        integrationType: 'source_control',
+        enabled: true,
+        createdAt: '',
+        updatedAt: '',
+      },
+      {
+        id: 'disabled',
+        slug: 'gitlab',
+        integrationType: 'source_control',
+        enabled: false,
+        createdAt: '',
+        updatedAt: '',
+      },
+    ]);
+    wrap(true, vi.fn(), service);
+    await advanceToRuntime();
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: /^github$/i })).toBeChecked());
+    expect(screen.getByRole('checkbox', { name: /^gitlab$/i })).not.toBeChecked();
+  });
+
   it('renders when open', async () => {
     wrap();
     await waitFor(() => expect(screen.getByText('Launch pod')).toBeInTheDocument());

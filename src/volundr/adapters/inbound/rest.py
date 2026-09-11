@@ -573,6 +573,11 @@ class SessionStart(BaseModel):
         description="Launch spec name to use when starting",
     )
 
+    integration_ids: list[str] | None = Field(
+        default=None,
+        description="Integration connection IDs to use on restart; omitted preserves the selection",
+    )
+
     model_config = {
         "json_schema_extra": {
             "example": {
@@ -1954,6 +1959,7 @@ def create_router(
                 session_id,
                 launch_spec=launch_spec,
                 principal=principal,
+                integration_ids=data.integration_ids if data else None,
             )
             return _session_response(session)
         except SessionAccessDeniedError:

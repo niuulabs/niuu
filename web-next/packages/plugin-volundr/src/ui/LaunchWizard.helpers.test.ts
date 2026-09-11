@@ -1,3 +1,4 @@
+import { withDefaultSourceControlIntegrations } from './launchWizardModel';
 import { describe, expect, it } from 'vitest';
 import type {
   ClusterResourceInfo,
@@ -504,5 +505,41 @@ describe('LaunchWizard helpers', () => {
       envVars: { LOG_LEVEL: 'debug' },
       source: { type: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },
     });
+  });
+});
+
+describe('default source-control integrations', () => {
+  const integrations: IntegrationConnection[] = [
+    {
+      id: 'github',
+      integrationType: 'source_control',
+      enabled: true,
+      createdAt: '',
+      updatedAt: '',
+    },
+    {
+      id: 'disabled',
+      integrationType: 'source_control',
+      enabled: false,
+      createdAt: '',
+      updatedAt: '',
+    },
+    { id: 'claude', integrationType: 'ai_provider', enabled: true, createdAt: '', updatedAt: '' },
+  ];
+
+  it('adds enabled Git credentials to an existing AI-only selection', () => {
+    expect(withDefaultSourceControlIntegrations(['claude'], integrations)).toEqual([
+      'claude',
+      'github',
+    ]);
+    expect(withDefaultSourceControlIntegrations([], integrations)).toEqual(['github']);
+  });
+
+  it('preserves an explicit source-control choice without duplicates', () => {
+    expect(withDefaultSourceControlIntegrations(['github', 'claude'], integrations)).toEqual([
+      'github',
+      'claude',
+    ]);
+    expect(withDefaultSourceControlIntegrations(['disabled'], integrations)).toEqual(['disabled']);
   });
 });

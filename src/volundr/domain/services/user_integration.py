@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from hashlib import sha256
 from typing import Any
 
 from volundr.domain.models import IntegrationConnection, IntegrationType
@@ -26,6 +27,11 @@ from volundr.utils import import_class
 from .integration_registry import IntegrationRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def git_token_path(connection_id: str) -> str:
+    """Stable, session-mounted token location without credential values in pod specs."""
+    return f"/run/secrets/git/{sha256(connection_id.encode()).hexdigest()}/token"
 
 
 class UserIntegrationService:
@@ -81,7 +87,7 @@ class UserIntegrationService:
             user_id,
             IntegrationType.SOURCE_CONTROL,
         )
-        return [*self._shared_git, *user_providers]
+        return [*user_providers, *self._shared_git]
 
     async def get_issue_providers(
         self,
@@ -122,6 +128,36 @@ class UserIntegrationService:
         for provider in providers:
             if provider.supports(repo_url):
                 return provider
+        return None
+
+    async def find_session_git_provider(
+        self,
+        repo_url: str,
+        user_id: str,
+        connections: tuple[IntegrationConnection, ...],
+    ) -> tuple[IntegrationConnection, GitProvider] | None:
+        """Resolve only source-control integrations attached to this session.
+
+        A configured connection must be usable; never substitute a cluster token.
+        """
+        for conn in connections:
+            if conn.integration_type != IntegrationType.SOURCE_CONTROL:
+                continue
+            if conn.owner_id != user_id or not conn.enabled:
+                raise ValueError("Git integration is unavailable for the session owner")
+            credentials = await self.get_credential_for_connection(user_id, conn)
+            provider = self._build_provider(conn, credentials)
+            if provider is None:
+                raise ValueError(f"Cannot configure Git integration {conn.slug!r}")
+            if not provider.supports(repo_url):
+                continue
+            if not credentials.get("token"):
+                raise ValueError(f"Git integration {conn.slug!r} requires a token in Settings")
+            if "token" in conn.config:
+                raise ValueError(
+                    "Store the Git token in the integration credential, not its config"
+                )
+            return conn, provider
         return None
 
     async def resolve_credentials(

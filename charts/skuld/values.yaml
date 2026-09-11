@@ -205,8 +205,13 @@ git:
   branch: ""
   # -- Base branch to create feature branch from if it doesn't exist on the remote
   baseBranch: ""
+  # -- Default commit identity, used only when Git has no identity configured
+  userName: ""
+  userEmail: ""
   # Credentials for private repos (HTTPS token auth)
   credentials:
+    # -- Session-injected integration token file; takes precedence over secretName
+    tokenFile: ""
     # -- Name of a Kubernetes secret containing a git token
     secretName: ""
     # -- Key within the secret that holds the token

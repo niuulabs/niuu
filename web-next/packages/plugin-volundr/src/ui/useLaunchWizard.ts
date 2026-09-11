@@ -37,6 +37,7 @@ import {
   normalizeDefinitionKey,
   pickDefaultModelForDefinition,
   validateSessionName,
+  withDefaultSourceControlIntegrations,
   type RuntimeModelDescriptor,
   type WizardForm,
   type WizardStep,
@@ -155,6 +156,13 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
         setWorkspaces(nextWorkspaces);
         setCredentials(nextCredentials);
         setIntegrations(nextIntegrations);
+        setForm((current) => ({
+          ...current,
+          selectedIntegrations:
+            current.sourcetype === 'git'
+              ? withDefaultSourceControlIntegrations(current.selectedIntegrations, nextIntegrations)
+              : current.selectedIntegrations,
+        }));
         setClusterResources(nextClusterResources);
         setPresets(nextPresets);
         setTargets(nextTargets);
@@ -306,7 +314,10 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
           typeof preset.workloadConfig.persona === 'string' ? preset.workloadConfig.persona : '',
         workloadConfig: { ...preset.workloadConfig },
         selectedCredentials: [...preset.envSecretRefs],
-        selectedIntegrations: [...preset.integrationIds],
+        selectedIntegrations:
+          preset.source?.type === 'git' || (!preset.source && current.sourcetype === 'git')
+            ? withDefaultSourceControlIntegrations(preset.integrationIds, integrations)
+            : [...preset.integrationIds],
         mcpServers: [...preset.mcpServers],
         envVars: Object.entries(preset.envVars).map(([key, value]) => ({ key, value })),
         setupScripts: [...preset.setupScripts],
@@ -329,7 +340,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
         yamlContent: '',
       }));
     },
-    [presets],
+    [presets, integrations],
   );
 
   useEffect(() => {

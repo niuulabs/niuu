@@ -318,6 +318,15 @@ export function formatModelOption(id: string, model?: RuntimeModelDescriptor): s
   return parts.join(' · ');
 }
 
+export function withDefaultSourceControlIntegrations(
+  selected: string[],
+  integrations: IntegrationConnection[],
+): string[] {
+  const sources = integrations.filter((item) => item.integrationType === 'source_control');
+  if (sources.some((item) => selected.includes(item.id))) return selected;
+  return [...selected, ...sources.filter((item) => item.enabled).map((item) => item.id)];
+}
+
 export function formatIntegrationLabel(integration: IntegrationConnection): string {
   const base = integration.slug
     ? integration.slug.replace(/[-_]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase())
