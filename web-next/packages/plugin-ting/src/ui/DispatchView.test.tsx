@@ -518,3 +518,45 @@ describe('DispatchView', () => {
     );
   });
 });
+
+it('persists auto-continue through a fresh view and query cache', async () => {
+  const user = userEvent.setup();
+  let saved = false;
+  const save = vi.fn(async (value: boolean) => {
+    saved = value;
+  });
+  const services = makeServices({
+    dispatcher: {
+      getState: async () => makeDispatcherState({ autoContinue: saved }),
+      setAutoContinue: save,
+    },
+  });
+  const view = render(<DispatchView />, { wrapper: wrap(services) });
+  await user.click(await screen.findByRole('button', { name: /^edit$/i }));
+  await user.click(screen.getByRole('button', { name: /toggle auto-continue/i }));
+  await user.click(screen.getByRole('button', { name: /^save$/i }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  expect(save).toHaveBeenCalledWith(true);
+  view.unmount();
+  render(<DispatchView />, { wrapper: wrap(services) });
+  expect(await screen.findByText('on')).toBeInTheDocument();
+});
+
+it('keeps the draft open and reports a failed auto-continue save', async () => {
+  const user = userEvent.setup();
+  const services = makeServices({
+    dispatcher: {
+      setAutoContinue: vi.fn().mockRejectedValue(new Error('Save failed')),
+    },
+  });
+  render(<DispatchView />, { wrapper: wrap(services) });
+  await user.click(await screen.findByRole('button', { name: /^edit$/i }));
+  await user.click(screen.getByRole('button', { name: /toggle auto-continue/i }));
+  await user.click(screen.getByRole('button', { name: /^save$/i }));
+  expect(await screen.findByText('Failed to save auto-continue')).toBeInTheDocument();
+  expect(screen.getByRole('dialog')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /toggle auto-continue/i })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+});

@@ -543,7 +543,6 @@ function DispatchViewContent() {
   const [workflowOverride, setWorkflowOverride] = useState<Map<string, Workflow>>(new Map());
   const [rulesOverride, setRulesOverride] = useState<{
     maxConcurrentRuns: number;
-    autoContinue: boolean;
     retryCount: number;
   } | null>(null);
 
@@ -559,8 +558,7 @@ function DispatchViewContent() {
   const effectiveThreshold = thresholdOverride ?? dispatcherState?.threshold ?? 70;
   const effectiveMaxConcurrent =
     rulesOverride?.maxConcurrentRuns ?? dispatcherState?.maxConcurrentRuns ?? 3;
-  const effectiveAutoContinue =
-    rulesOverride?.autoContinue ?? dispatcherState?.autoContinue ?? false;
+  const effectiveAutoContinue = dispatcherState?.autoContinue ?? false;
   const effectiveRetryCount = rulesOverride?.retryCount ?? DEFAULT_MAX_RETRIES;
 
   // Enrich each entry with feasibility + optimistic status
@@ -754,14 +752,21 @@ function DispatchViewContent() {
     toast({ title: `Threshold → ${threshold.toFixed(2)}` });
   }
 
-  function handleSaveRules(rules: RulesFormState) {
-    setThresholdOverride(rules.threshold);
-    setRulesOverride({
-      maxConcurrentRuns: rules.maxConcurrentRuns,
-      autoContinue: rules.autoContinue,
-      retryCount: rules.retryCount,
-    });
-    toast({ title: 'Dispatch rules updated' });
+  async function handleSaveRules(rules: RulesFormState): Promise<boolean> {
+    try {
+      await dispatcherService.setAutoContinue(rules.autoContinue);
+      await dispatcherQuery.refetch();
+      setThresholdOverride(rules.threshold);
+      setRulesOverride({
+        maxConcurrentRuns: rules.maxConcurrentRuns,
+        retryCount: rules.retryCount,
+      });
+      toast({ title: 'Dispatch rules updated' });
+      return true;
+    } catch {
+      toast({ title: 'Failed to save auto-continue', tone: 'critical' });
+      return false;
+    }
   }
 
   function toggleId(id: string) {

@@ -16,7 +16,7 @@ export interface EditRulesModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   rules: RulesFormState;
-  onSave: (rules: RulesFormState) => void;
+  onSave: (rules: RulesFormState) => void | boolean | Promise<void | boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -24,6 +24,7 @@ export interface EditRulesModalProps {
 // ---------------------------------------------------------------------------
 
 export function EditRulesModal({ open, onOpenChange, rules, onSave }: EditRulesModalProps) {
+  const [isSaving, setIsSaving] = useState(false);
   const rulesKey = `${rules.threshold}:${rules.maxConcurrentRuns}:${rules.autoContinue}:${rules.retryCount}`;
   const [draft, setDraft] = useState<{ key: string; value: RulesFormState } | null>(null);
   const current = draft?.key === rulesKey ? draft.value : rules;
@@ -42,10 +43,15 @@ export function EditRulesModal({ open, onOpenChange, rules, onSave }: EditRulesM
     onOpenChange(nextOpen);
   }
 
-  function handleSave() {
-    onSave(current);
-    setDraft(null);
-    onOpenChange(false);
+  async function handleSave() {
+    setIsSaving(true);
+    try {
+      if ((await onSave(current)) === false) return;
+      setDraft(null);
+      onOpenChange(false);
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   const inputClass =
@@ -58,7 +64,13 @@ export function EditRulesModal({ open, onOpenChange, rules, onSave }: EditRulesM
       title="Edit dispatch rules"
       actions={[
         { label: 'Cancel', variant: 'secondary' },
-        { label: 'Save', variant: 'primary', onClick: handleSave, closes: false },
+        {
+          label: isSaving ? 'Saving…' : 'Save',
+          variant: 'primary',
+          onClick: handleSave,
+          closes: false,
+          disabled: isSaving,
+        },
       ]}
     >
       <div className="niuu:mt-2 niuu:flex niuu:flex-col niuu:gap-3">
