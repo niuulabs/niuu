@@ -175,20 +175,25 @@ spec:
         - name: scratch-setup
           image: "{{ .Values.git.image.repository }}:{{ .Values.git.image.tag }}"
           securityContext:
-            runAsUser: {{ .Values.securityContext.runAsUser }}
-            runAsNonRoot: true
+            runAsUser: 0
+            runAsNonRoot: false
             allowPrivilegeEscalation: false
           command: ["/bin/sh", "-ec"]
           args:
             - |
               umask 007
-              mkdir -p /home/tmp/cache
+              # Kubelet may create subPath directories as root before init runs.
+              # Hand back only these directories, never traverse retained files.
+              TARGET_OWNER="{{ .Values.securityContext.runAsUser }}:{{ .Values.securityContext.fsGroup }}"
+              mkdir -p /home/tmp/cache "/home/tmp/sessions/{{ include "skuld.sessionId" . }}"
+              chown -h "$TARGET_OWNER" /home/tmp /home/tmp/cache /home/tmp/sessions "/home/tmp/sessions/{{ include "skuld.sessionId" . }}"
               {{- $names := list "skuld" "devrunner" "ravn" }}
               {{- range .Values.extraContainers }}
               {{- $names = append $names .name }}
               {{- end }}
               {{- range $names }}
               mkdir -p "/home/tmp/sessions/{{ include "skuld.sessionId" $ }}/{{ . }}"
+              chown -h "$TARGET_OWNER" "/home/tmp/sessions/{{ include "skuld.sessionId" $ }}/{{ . }}"
               chmod 1777 "/home/tmp/sessions/{{ include "skuld.sessionId" $ }}/{{ . }}"
               {{- end }}
           volumeMounts:

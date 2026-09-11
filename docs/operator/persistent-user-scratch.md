@@ -8,7 +8,9 @@ home PVCs and is not covered by this feature.
 Each runtime container mounts `tmp/sessions/<session-id>/<container-name>` from
 the user's home at `/tmp`. This catches explicit `/tmp` writes as well as tools
 using `TMPDIR`. Concurrent sessions and agents get separate temporary directories;
-restarting the same session preserves its temporary files. Do not use retained
+restarting the same session preserves its temporary files. The init container
+repairs ownership of scratch directories that kubelet pre-created as root,
+without recursively changing retained files. Do not use retained
 `/tmp` files as evidence that a previous process is still running.
 
 All of that user's sessions mount `tmp/cache` at `/var/cache/niuu`. Environment

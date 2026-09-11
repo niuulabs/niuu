@@ -1,5 +1,6 @@
 """Verify actual scratch mounts, isolation and reuse in both Kubernetes launchers."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -72,7 +73,10 @@ def test_chart_isolates_temp_and_reuses_user_cache(tmp_path):
     # Execute the real init script twice: retained files survive restart.
     home = tmp_path / "home"
     init = next(c for c in pod["initContainers"] if c["name"] == "scratch-setup")
+    assert init["securityContext"]["runAsUser"] == 0
+    assert 'chown -h "$TARGET_OWNER"' in init["args"][0]
     script = init["args"][0].replace("/home/", f"{home}/")
+    script = script.replace("1000:1000", f"{os.getuid()}:{os.getgid()}")
     subprocess.run(["sh", "-ec", script], check=True)
     retained = home / "tmp/sessions/session-one/ravn-coder/build-output"
     retained.write_text("keep")
@@ -118,7 +122,10 @@ def test_direct_launcher_mounts_home_scratch_without_git():
     pod = DirectK8sPodManager()._build_deployment_manifest(session, spec)["spec"]["template"][
         "spec"
     ]
-    assert pod["initContainers"][1]["name"] == "scratch-setup"
+    init = pod["initContainers"][1]
+    assert init["name"] == "scratch-setup"
+    assert init["securityContext"]["runAsUser"] == 0
+    assert "chown -h 1000:1000" in init["command"][2]
     for c in pod["containers"]:
         if c["name"] == "nginx":
             continue

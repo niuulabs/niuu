@@ -939,7 +939,12 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
             "PIP_CACHE_DIR": "/var/cache/niuu/pip",
             "UV_CACHE_DIR": "/var/cache/niuu/uv",
         }
-        setup = ["umask 007", "mkdir -p /home/tmp/cache"]
+        session_tmp = shlex.quote(f"/home/tmp/sessions/{session.id}")
+        setup = [
+            "umask 007",
+            f"mkdir -p /home/tmp/cache {session_tmp}",
+            f"chown -h 1000:1000 /home/tmp /home/tmp/cache /home/tmp/sessions {session_tmp}",
+        ]
         for container in pod_spec["containers"]:
             if container["name"] == "nginx":
                 continue
@@ -958,7 +963,9 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
             existing = {e["name"] for e in env}
             env.extend({"name": k, "value": v} for k, v in cache_env.items() if k not in existing)
             target = shlex.quote(f"/home/{subpath}")
-            setup.extend([f"mkdir -p {target}", f"chmod 1777 {target}"])
+            setup.extend(
+                [f"mkdir -p {target}", f"chown -h 1000:1000 {target}", f"chmod 1777 {target}"]
+            )
         # HostPath does not apply fsGroup. Only change ownership of the mount root.
         pod_spec["initContainers"].insert(
             0,
@@ -976,7 +983,11 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
                 "name": "scratch-setup",
                 "image": "busybox:latest",
                 "command": ["sh", "-ec", "\n".join(setup)],
-                "securityContext": {"runAsUser": 1000, "allowPrivilegeEscalation": False},
+                "securityContext": {
+                    "runAsUser": 0,
+                    "runAsNonRoot": False,
+                    "allowPrivilegeEscalation": False,
+                },
                 "volumeMounts": [{"name": "home", "mountPath": "/home"}],
             },
         )
