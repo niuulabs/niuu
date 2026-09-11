@@ -205,7 +205,7 @@ def _default_instance_catalog() -> list[InstanceCatalogEntryConfig]:
         ),
         InstanceCatalogEntryConfig(
             kind=InstanceKind.TING,
-            label="Tyr",
+            label="Ting",
             rune="✦",
             summary="saga coordinator",
             detail="dispatch ravens",
