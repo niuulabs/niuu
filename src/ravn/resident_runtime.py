@@ -1932,8 +1932,14 @@ def _extreme_payload_lines(
     if signal.observation_count <= 1 or not extremes:
         return []
     lines = ["  Observations at numeric extremes:"]
+    keys_by_ref: dict[str, list[str]] = {}
     for key in sorted(extremes):
-        ref = extremes[key]
+        keys_by_ref.setdefault(extremes[key], []).append(key)
+    # Several sensor extrema can refer to the same event. Include it once,
+    # and share this slot's payload budget across the distinct events.
+    payload_budget = max(1, budget // len(keys_by_ref))
+    for ref, keys in keys_by_ref.items():
+        key = ", ".join(keys)
         record = archive.read(ref) if archive is not None else None
         payload = (record or {}).get("signal", {}).get("payload") if record else None
         if payload is None:
@@ -1952,7 +1958,7 @@ def _extreme_payload_lines(
                             ensure_ascii=False,
                             default=str,
                         ),
-                        budget,
+                        payload_budget,
                     ),
                     "  ",
                 ),

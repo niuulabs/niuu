@@ -454,6 +454,13 @@ function Hero({
           <p className={`niuu:text-xs ${MUTED}`}>
             Configured mode — the realm build grant still wins for tool builds.
           </p>
+          {updateAutonomy.isError ? (
+            <p role="alert" className="niuu:text-xs niuu:text-critical">
+              {updateAutonomy.error instanceof Error
+                ? updateAutonomy.error.message
+                : 'Unable to change autonomy'}
+            </p>
+          ) : null}
         </div>
       ) : null}
       {composing && huddle?.joined ? (
