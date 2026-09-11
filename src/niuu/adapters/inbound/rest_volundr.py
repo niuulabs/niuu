@@ -447,7 +447,8 @@ def create_volundr_router(
     """Create a registry-aware Forge runtime router."""
     router = APIRouter(prefix="/api/v1/forge", tags=["Forge"])
 
-    @router.api_route("/storage/home", methods=["GET", "DELETE"])
+    @router.get("/storage/home")
+    @router.delete("/storage/home")
     async def manage_user_home(
         request: Request,
         instance_id: str = Query(...),

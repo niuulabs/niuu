@@ -10,7 +10,8 @@ from volundr.domain.ports import HomeStorageBusyError, StoragePort
 def create_user_storage_router(storage: StoragePort) -> APIRouter:
     router = APIRouter(prefix="/api/v1/forge", tags=["User Storage"])
 
-    @router.api_route("/storage/home", methods=["GET", "DELETE"])
+    @router.get("/storage/home")
+    @router.delete("/storage/home")
     async def user_home(
         request: Request,
         path: str = Query(default=""),
