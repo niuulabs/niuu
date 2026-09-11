@@ -852,6 +852,6 @@ it('renders locally mounted storage management inside the settings shell', async
       </QueryClientProvider>
     </ConfigProvider>,
   );
-  expect(await screen.findByRole('combobox', { name: 'Storage cluster' })).toBeInTheDocument();
-  expect(await screen.findByText('No clusters are available to your account.')).toBeInTheDocument();
+  expect(await screen.findByRole('combobox', { name: 'Storage cluster' })).toBeTruthy();
+  expect(await screen.findByText('No clusters are available to your account.')).toBeTruthy();
 });
