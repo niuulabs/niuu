@@ -1579,6 +1579,9 @@ class OpenShellGatewayPodManager(
         )
         if sandbox is None or not sandbox.ready:
             raise RuntimeError("OpenShell resident sandbox is not ready")
+        credential_context = await self._resolve_credential_context(
+            self._resident_subject(runtime), values
+        )
         processes = self._resident_processes(runtime, values)
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
@@ -1588,7 +1591,7 @@ class OpenShellGatewayPodManager(
         )
         if exit_code != 0:
             raise RuntimeError(f"OpenShell resident process stop failed: {output.strip()}")
-        files = self._resident_config_files(runtime, values)
+        files = {**credential_context.files, **self._resident_config_files(runtime, values)}
         for process in processes:
             files.update(_shared_resident_process_files(runtime, process.files))
         await asyncio.to_thread(
@@ -1597,6 +1600,9 @@ class OpenShellGatewayPodManager(
             files=files,
         )
         env = self._resident_environment(runtime, values)
+        env.update(resident_flock_environment(runtime))
+        env.update(credential_context.environment)
+        env.update(credential_context.process_environment)
         if runtime.engine is ResidentEngine.OPENCLAW:
             if self._credential_store is None:
                 raise RuntimeError("OpenClaw residents require the configured credential store")
@@ -2924,6 +2930,11 @@ def _resident_api_urls(values: dict[str, Any]) -> tuple[str, ...]:
     kwargs = provider.get("kwargs") if isinstance(provider.get("kwargs"), dict) else {}
     if kwargs.get("base_url") or kwargs.get("baseUrl"):
         urls.append(str(kwargs.get("base_url") or kwargs.get("baseUrl")))
+    broker = values.get("broker") or {}
+    codex_auth = broker.get("codexAuth") or {}
+    token_path = (codex_auth.get("kwargs") or {}).get("token_path", "")
+    if urlparse(token_path).scheme:
+        urls.append(token_path)
     return tuple(urls)
 
 

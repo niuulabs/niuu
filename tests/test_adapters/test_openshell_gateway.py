@@ -1376,6 +1376,25 @@ async def test_resident_materializes_raw_protocol_credential_from_openbao(
         for grant in client.provider_grants
     )
 
+    await manager.restart(runtime, profile)
+
+    assert client.execs[-1]["env"]["RAVN_NATS_PASSWORD"] == "nats-from-openbao"
+
+
+@pytest.mark.parametrize(
+    "token_path",
+    [
+        "/api/v1/internal/credentials/codex/tokens",
+        "https://target.example.test/api/v1/internal/credentials/codex/tokens",
+    ],
+)
+def test_resident_api_urls_include_absolute_codex_broker(monkeypatch, token_path):
+    adapter = _import_adapter(monkeypatch)
+    urls = adapter._resident_api_urls(
+        {"broker": {"codexAuth": {"kwargs": {"token_path": token_path}}}}
+    )
+    assert urls == ((token_path,) if token_path.startswith("https://") else ())
+
 
 @pytest.mark.asyncio
 async def test_resident_restart_reuses_sandbox_and_dynamic_provider_environment(
