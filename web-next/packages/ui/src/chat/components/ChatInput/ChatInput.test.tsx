@@ -334,5 +334,9 @@ describe('mesh ordinary chat', () => {
     fireEvent.change(textarea, { target: { value: '@', selectionStart: 1 } });
     expect(screen.getByRole('option', { name: /Bragi/ })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: /Heimdall/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('option', { name: /Bragi/ }));
+    fireEvent.change(textarea, { target: { value: '@resident-codex hello' } });
+    fireEvent.click(screen.getByTestId('send-btn'));
+    expect(onSendDirected.mock.calls[1]?.[0]).toEqual([bragi]);
   });
 });

@@ -53,15 +53,19 @@ function resolveInlineAgentMentions(
   input: string,
   participants: ReadonlyMap<string, RoomParticipant>,
 ): RoomParticipant[] {
-  const byPersona = new Map(
-    Array.from(participants.values())
-      .filter((participant) => participant.participantType === 'ravn')
-      .flatMap((participant) =>
-        [participant.persona, participant.displayName, participant.peerId]
-          .filter((label): label is string => Boolean(label))
-          .map((label) => [label.toLowerCase(), participant] as const),
-      ),
-  );
+  const byPersona = new Map<string, RoomParticipant | null>();
+  for (const participant of participants.values()) {
+    if (participant.participantType !== 'ravn') continue;
+    for (const label of [participant.persona, participant.displayName, participant.peerId]) {
+      if (!label) continue;
+      const key = label.toLowerCase();
+      const existing = byPersona.get(key);
+      byPersona.set(
+        key,
+        existing !== undefined && existing?.peerId !== participant.peerId ? null : participant,
+      );
+    }
+  }
   const seen = new Set<string>();
   const matches = input.matchAll(/(^|\s)@([^\s@]+)/g);
   const resolved: RoomParticipant[] = [];
