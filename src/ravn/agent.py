@@ -376,6 +376,39 @@ class RavnAgent:
                 "Failed to emit ravn.session.ended with outcome; continuing.", exc_info=True
             )
 
+    async def repair_outcome(self, prompt: str) -> TurnResult:
+        """Repair output formatting without replaying history or executing tools."""
+        if self._iteration_budget is not None and self._iteration_budget.exhausted:
+            raise MaxIterationsError(self._max_iterations)
+        system = "Repair the supplied outcome contract. Preserve the evidence and decisions."
+        messages = [{"role": "user", "content": prompt}]
+        sections = {
+            name: TokenEstimator.conservative(tokens, self._token_estimate_safety_factor)
+            for name, tokens in {
+                "system": TokenEstimator.rough(system),
+                "repair": TokenEstimator.rough_structured(messages),
+            }.items()
+        }
+        self._record_prompt_budget(sections, compressed=False)
+        self._enforce_prompt_budget(sections)
+        response = await self._llm.generate(
+            messages,
+            tools=[],
+            system=system,
+            model=self._model,
+            max_tokens=self._max_tokens,
+        )
+        if self._iteration_budget is not None:
+            self._iteration_budget.consume()
+        if response.tool_calls:
+            raise ValueError("Outcome repair must return text, not tool calls")
+        return TurnResult(
+            response=response.content,
+            tool_calls=[],
+            tool_results=[],
+            usage=response.usage,
+        )
+
     async def run_turn(self, user_input: str) -> TurnResult:
         """Process one user turn and return the result.
 
