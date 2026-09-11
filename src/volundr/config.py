@@ -454,7 +454,7 @@ def _default_launch_specs() -> list[LaunchSpecConfig]:
             description="Default Codex session for OpenAI-backed coding work.",
             session_definition="skuldCodex",
             workload_type="session",
-            model="gpt-5.4",
+            model="gpt-5.6-terra",
             resource_config={"cpu": "1", "memory": "2Gi"},
             cli_tool="codex",
         ),
