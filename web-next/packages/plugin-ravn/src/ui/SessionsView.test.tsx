@@ -742,7 +742,7 @@ describe('SessionsView — live chat', () => {
     fireEvent.change(screen.getByTestId('chat-textarea'), {
       target: { value: 'Coordinate this work' },
     });
-    expect(screen.getByTestId('send-btn')).toBeDisabled();
+    expect(screen.getByTestId('send-btn')).toBeEnabled();
 
     fireEvent.change(screen.getByTestId('chat-textarea'), {
       target: { value: '@', selectionStart: 1 },
