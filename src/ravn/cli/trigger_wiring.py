@@ -361,7 +361,9 @@ def _wire_cascade(
                 return {"status": "rejected", "error": "empty content"}
             if not isinstance(metadata, dict):
                 metadata = {}
-            accepted = await drive_loop.handle_directed_message(content, metadata)
+            accepted = await drive_loop.handle_directed_message(
+                content, metadata, output_mode=OutputMode.AMBIENT
+            )
             return {"status": "accepted" if accepted else "rejected"}
 
         if msg_type == "task_result":

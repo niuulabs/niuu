@@ -315,7 +315,9 @@ async def test_mesh_rpc_directed_message_queues_without_waiting_for_result():
     )
 
     assert reply == {"status": "accepted"}
-    dl.handle_directed_message.assert_awaited_once_with("Use the local artifact.", metadata)
+    dl.handle_directed_message.assert_awaited_once_with(
+        "Use the local artifact.", metadata, output_mode=OutputMode.AMBIENT
+    )
 
 
 @pytest.mark.asyncio

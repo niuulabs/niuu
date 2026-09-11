@@ -2147,6 +2147,8 @@ class DriveLoop:
         self,
         content: str,
         metadata: dict[str, Any] | None = None,
+        *,
+        output_mode: OutputMode = OutputMode.SURFACE,
     ) -> bool:
         """Enqueue a directed message from the browser as an agent task."""
         for handler in list(self._directed_message_interceptors):
@@ -2157,7 +2159,7 @@ class DriveLoop:
             except Exception:
                 logger.exception("drive_loop: directed message interceptor failed")
 
-        if await self._try_steer_active_agent(content):
+        if output_mode == OutputMode.SURFACE and await self._try_steer_active_agent(content):
             return True
 
         import time
@@ -2179,7 +2181,7 @@ class DriveLoop:
             title="Directed message from user",
             initiative_context=self._directed_message_context(content, metadata),
             triggered_by="skuld:directed_message",
-            output_mode=OutputMode.SURFACE,
+            output_mode=output_mode,
             persona=persona,
             priority=0,  # user input precedes autonomous continuation work
             human_initiated=True,
