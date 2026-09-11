@@ -23,10 +23,6 @@ interface GatewaySectionProps {
   region?: string;
 }
 
-function isMeshVisibleParticipant(participant: RoomParticipant): boolean {
-  return participant.participantType === 'ravn' || participant.participantType === 'skuld';
-}
-
 function formatParticipantLabel(participant: RoomParticipant): string {
   const role = participant.participantType === 'skuld' ? 'observer' : participant.persona;
   const baseName = participant.displayName ?? participant.persona ?? participant.peerId;
@@ -189,10 +185,9 @@ export function MeshSidebar({
   collapsed = false,
   onToggleCollapsed,
 }: MeshSidebarProps) {
-  const ravnPeers = Array.from(participants.values()).filter((p) => p.participantType === 'ravn');
-  const peers = Array.from(participants.values()).filter(isMeshVisibleParticipant);
+  const peers = Array.from(participants.values()).filter((p) => p.participantType === 'ravn');
 
-  if (ravnPeers.length === 0 || peers.length === 0) return null;
+  if (peers.length === 0) return null;
 
   if (collapsed) {
     return (

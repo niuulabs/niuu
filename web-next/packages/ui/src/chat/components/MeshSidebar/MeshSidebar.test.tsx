@@ -32,21 +32,21 @@ describe('MeshSidebar', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('renders ravn peers plus the skuld observer when a flock exists', () => {
+  it('renders agents without duplicating their session gateways', () => {
     render(
       <MeshSidebar participants={participants} selectedPeerId={null} onSelectPeer={vi.fn()} />,
     );
     expect(screen.getByTestId('peer-card-peer-1')).toBeInTheDocument();
     expect(screen.getByTestId('peer-card-peer-2')).toBeInTheDocument();
-    expect(screen.getByTestId('peer-card-peer-3')).toBeInTheDocument();
-    expect(screen.getByText('Skuld (observer)')).toBeInTheDocument();
+    expect(screen.queryByTestId('peer-card-peer-3')).not.toBeInTheDocument();
+    expect(screen.queryByText('Skuld (observer)')).not.toBeInTheDocument();
   });
 
   it('shows peer count', () => {
     render(
       <MeshSidebar participants={participants} selectedPeerId={null} onSelectPeer={vi.fn()} />,
     );
-    expect(screen.getByText('3')).toBeInTheDocument();
+    expect(screen.getByText('2')).toBeInTheDocument();
   });
 
   it('calls onSelectPeer when peer clicked', () => {

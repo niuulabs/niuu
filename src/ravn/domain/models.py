@@ -441,6 +441,8 @@ class RavnIdentity:
     rep_address: str | None = None  # nng REP address for mesh.send()
     pub_address: str | None = None  # nng PUB address for mesh.send()
     spiffe_id: str | None = None  # infra mode only
+    display_name: str = ""
+    participant_type: str = "ravn"
     sleipnir_routing_key: str | None = None  # for SleipnirMeshAdapter routing
 
 

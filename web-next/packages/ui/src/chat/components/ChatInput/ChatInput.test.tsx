@@ -257,7 +257,7 @@ describe('ChatInput', () => {
 
     const textarea = screen.getByTestId('chat-textarea');
     fireEvent.change(textarea, { target: { value: 'Review this' } });
-    expect(screen.getByTestId('send-btn')).toBeDisabled();
+    expect(screen.getByTestId('send-btn')).toBeEnabled();
 
     fireEvent.change(textarea, { target: { value: '@', selectionStart: 1 } });
     fireEvent.click(screen.getByRole('option', { name: /review\.requested.*Hermes reviewer/ }));
@@ -292,5 +292,47 @@ describe('ChatInput', () => {
     rerender(<ChatInput {...defaultProps} disabled={true} />);
     fireEvent.click(screen.getByTestId('attach-btn'));
     expect(click).not.toHaveBeenCalled();
+  });
+});
+
+describe('mesh ordinary chat', () => {
+  it('sends plain messages and directs display-name mentions without event subscriptions', () => {
+    const onSend = vi.fn();
+    const onSendDirected = vi.fn();
+    const bragi = {
+      peerId: 'bragi',
+      persona: 'resident-codex',
+      displayName: 'Bragi',
+      participantType: 'ravn',
+    };
+    const heimdall = {
+      peerId: 'heimdall',
+      persona: 'resident-codex',
+      displayName: 'Heimdall',
+      participantType: 'ravn',
+    };
+    render(
+      <ChatInput
+        onSend={onSend}
+        onSendDirected={onSendDirected}
+        eventRouting
+        participants={
+          new Map([
+            [bragi.peerId, bragi],
+            [heimdall.peerId, heimdall],
+          ])
+        }
+      />,
+    );
+    const textarea = screen.getByTestId('chat-textarea');
+    fireEvent.change(textarea, { target: { value: 'Hello' } });
+    fireEvent.click(screen.getByTestId('send-btn'));
+    expect(onSend).toHaveBeenCalled();
+    fireEvent.change(textarea, { target: { value: '@Bragi hello' } });
+    fireEvent.click(screen.getByTestId('send-btn'));
+    expect(onSendDirected).toHaveBeenCalledWith([bragi], '@Bragi hello', []);
+    fireEvent.change(textarea, { target: { value: '@', selectionStart: 1 } });
+    expect(screen.getByRole('option', { name: /Bragi/ })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /Heimdall/ })).toBeInTheDocument();
   });
 });

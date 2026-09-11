@@ -123,6 +123,7 @@ def _build_discovery(
         peer_id=peer_id,
         realm_id=realm_id,
         persona=persona_name,
+        display_name=settings.skuld.display_name or settings.environment.resident_name,
         capabilities=capabilities,
         permission_mode=settings.permission.mode,
         version=version,

@@ -10,6 +10,8 @@ def _identity(peer_id: str, realm_id: str = "flock-a") -> MeshIdentity:
         peer_id=peer_id,
         realm_id=realm_id,
         persona=peer_id,
+        display_name=f"Name {peer_id}",
+        participant_type="skuld" if peer_id == "second" else "ravn",
         capabilities=["chat"],
         permission_mode="permissive",
         version="test",
@@ -31,6 +33,9 @@ async def test_event_bus_discovery_converges_immediately_and_handles_leave() -> 
 
     assert set(first.peers()) == {"second"}
     assert set(second.peers()) == {"first"}
+    assert first.peers()["second"].display_name == "Name second"
+    assert first.peers()["second"].participant_type == "skuld"
+    assert second.peers()["first"].display_name == "Name first"
     assert second.peers()["first"].capabilities == ["chat"]
     assert second.peers()["first"].consumes_event_types == ["code.changed"]
     assert second.peers()["first"].emits_event_types == ["review.completed"]
