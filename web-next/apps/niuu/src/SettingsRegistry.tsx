@@ -1,3 +1,4 @@
+import { UserStorageSettings } from '@niuulabs/plugin-volundr';
 import { useMemo } from 'react';
 import {
   useConfig,
@@ -102,7 +103,24 @@ export type MountedSettingsProvider =
       defaultSectionId?: string;
     };
 
-const LOCAL_PROVIDERS: MountedSettingsProviderDescriptor[] = [];
+const LOCAL_PROVIDERS: MountedSettingsProviderDescriptor[] = [
+  {
+    id: 'storage',
+    pluginId: 'volundr',
+    title: 'Storage',
+    subtitle: 'your files across clusters',
+    scope: 'user',
+    defaultSectionId: 'home',
+    sections: [
+      {
+        id: 'home',
+        label: 'Home & temporary files',
+        description: 'Manage your own home, retained temporary files and caches on each cluster.',
+        render: () => <UserStorageSettings />,
+      },
+    ],
+  },
+];
 
 const REMOTE_PROVIDER_DEFS = [
   {
@@ -184,14 +202,14 @@ function isPluginEnabled(config: NiuuConfig, pluginId: string): boolean {
 }
 
 export function buildMountedSettingsProviders(config: NiuuConfig): MountedSettingsProvider[] {
-  const localPluginIds = new Set(LOCAL_PROVIDERS.map((provider) => provider.pluginId));
+  const localProviderIds = new Set(LOCAL_PROVIDERS.map((provider) => provider.id));
 
   const providers: MountedSettingsProvider[] = LOCAL_PROVIDERS.filter((provider) =>
     isPluginEnabled(config, provider.pluginId),
   ).map((provider) => ({ ...provider, source: 'local' as const }));
 
   for (const def of REMOTE_PROVIDER_DEFS) {
-    if (localPluginIds.has(def.pluginId)) continue;
+    if (localProviderIds.has(def.id)) continue;
     if (
       !isPluginEnabled(config, def.pluginId) &&
       !(def.id === 'identity' && def.resolver(config)) &&

@@ -1126,6 +1126,10 @@ class SecretRepository(ABC):
         """Delete ephemeral session secrets."""
 
 
+class HomeStorageBusyError(RuntimeError):
+    """A running session prevents destructive home-storage operations."""
+
+
 class StoragePort(ABC):
     """Port for persistent volume claim management."""
 
@@ -1185,6 +1189,10 @@ class StoragePort(ABC):
         user_id: str,
     ) -> None:
         """Delete a user's home PVC."""
+
+    async def manage_user_home(self, user_id: str, operation: str, path: str = "") -> dict:
+        """Browse or delete entries in this user's home without a coder session."""
+        raise NotImplementedError("Home file management is not supported on this cluster")
 
     async def list_workspaces(
         self,

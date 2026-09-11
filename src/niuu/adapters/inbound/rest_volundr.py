@@ -447,6 +447,28 @@ def create_volundr_router(
     """Create a registry-aware Forge runtime router."""
     router = APIRouter(prefix="/api/v1/forge", tags=["Forge"])
 
+    @router.api_route("/storage/home", methods=["GET", "DELETE"])
+    async def manage_user_home(
+        request: Request,
+        instance_id: str = Query(...),
+        path: str = Query(default=""),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        instance = await _resolve_target_instance(service, principal, instance_id)
+        response = await _request_remote(
+            instance,
+            request,
+            method=request.method,
+            path="/storage/home",
+            params=[("path", path)],
+            embedded_app=embedded_forge_app,
+        )
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            media_type="application/json",
+        )
+
     @router.get("/resident-profiles")
     async def list_resident_profiles(
         request: Request,

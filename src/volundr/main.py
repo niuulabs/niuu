@@ -59,6 +59,7 @@ from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_route
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
 from volundr.adapters.inbound.rest_trace import create_trace_router
 from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
+from volundr.adapters.inbound.rest_user_storage import create_user_storage_router
 from volundr.adapters.outbound.bifrost_catalog_http import HttpBifrostCatalogAdapter
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
 from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
@@ -1023,6 +1024,7 @@ def create_app(
             # Admin settings (config-driven, runtime-toggleable)
             admin_settings_router = create_admin_settings_router()
             app.include_router(admin_settings_router)
+            app.include_router(create_user_storage_router(storage_adapter))
 
             # Workspace management — PVCs are the source of truth
             workspace_service = WorkspaceService(storage_adapter)

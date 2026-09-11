@@ -1483,6 +1483,13 @@ export function buildVolundrHttpAdapter(
           SharedRepoResponse | SharedRepoPayload[] | VolundrRepo[]
         >('/repos'),
       ),
+    listUserHome: (instanceId, path) =>
+      client.get(`/storage/home?${new URLSearchParams({ instance_id: instanceId, path })}`),
+    deleteUserHomePath: async (instanceId, path) => {
+      await client.delete(
+        `/storage/home?${new URLSearchParams({ instance_id: instanceId, path })}`,
+      );
+    },
     getTargets: async () => {
       const targetClient = niuuClient ?? sharedClient;
       const payload = await targetClient.get<InstanceTargetPayload[]>(

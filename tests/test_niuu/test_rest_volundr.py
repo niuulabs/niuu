@@ -1238,3 +1238,27 @@ def test_event_log_replay_passes_list_through_verbatim() -> None:
 
     assert isinstance(payload, list)
     assert [entry["seq"] for entry in payload] == [1, 2]
+
+
+@pytest.mark.parametrize("method", ["GET", "DELETE"])
+@respx.mock
+def test_home_storage_routes_only_to_selected_visible_cluster(method):
+    instances = [
+        _instance("a", base_url="https://a.test"),
+        _instance("b", base_url="https://b.test"),
+    ]
+    route = respx.route(
+        method=method, url="https://b.test/api/v1/forge/storage/home?path=tmp%2Fcache"
+    ).mock(return_value=Response(200, json={"status": "ready"}))
+    response = _client(instances).request(
+        method, "/api/v1/forge/storage/home?instance_id=b&path=tmp%2Fcache", headers=_headers()
+    )
+    assert response.status_code == 200
+    assert route.called
+    assert route.calls[0].request.headers["authorization"] == "Bearer test-token"
+    assert (
+        _client(instances)
+        .request(method, "/api/v1/forge/storage/home?instance_id=hidden", headers=_headers())
+        .status_code
+        == 404
+    )

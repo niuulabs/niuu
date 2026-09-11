@@ -55,20 +55,29 @@ runtime deployments are recreated, not by merely restarting a container.
 
 ## User management
 
-Open a running session's Files view, select **Home**, and open **tmp**:
+Open **Settings → Storage → Home & temporary files** and select a cluster.
+Home browses the user's home volume, Temporary files opens `tmp/sessions`, and
+Caches opens `tmp/cache`. The page shows filesystem capacity and free space,
+folder navigation and confirmed deletion. No coding session is required.
+Files stay on their selected cluster; this is not cross-cluster synchronization.
 
-- `sessions/<session-id>/<container-name>` contains retained temporary files.
-- `cache` contains reusable tool caches shared by the user's sessions.
+Enable Kubernetes file access with storage adapter kwargs `file_browser_image`
+(a pinned Skuld image with Python), `file_browser_lifetime_seconds` (default 600)
+and `file_browser_timeout_seconds` (default 20). The chart grants pod lifecycle
+and exec access to the storage adapter. The backend mounts only the authenticated
+user's existing home in a non-root helper pod, without a service-account token.
+It expands smaller existing homes to `home_size_gb` when accessed. Unprovisioned
+homes and unsupported storage adapters are reported explicitly.
 
-The existing file manager supports browsing, downloading and deleting these files
-and directories. Stop the sessions using a directory before deleting it; stop all
-of your sessions that use shared caches before clearing `cache`. A separate
-management session can browse Home while other sessions are stopped. Do not
-remove the `tmp` mount directories of that management session. No temp data is
-removed automatically on session deletion. The next session start recreates any
+The helper exits after its configured lifetime. Its next use replaces the expired
+pod. Deprovisioning also removes the helper. File contents are not sent to pod
+logs. Paths cannot leave the home, and symlinks cannot be followed. DELETE rejects
+requests while other Pending or Running pods use the home; stop those sessions
+first. Deleting a folder permanently removes its contents. Retained temp data is
+not automatically removed when sessions are deleted; new sessions recreate
 missing scratch/cache directories.
 
-The Home file API uses the configured persistent home mount. Its existing path
-containment checks also apply to scratch, including symlinks that point outside
-that user's home. Account storage deprovisioning removes the home claim, including
-retained scratch and caches.
+The shared gateway routes requests to the explicitly selected, visible cluster,
+preserving the user's authentication. Local filesystem storage implements the
+same operations. OpenShell home mounts remain unsupported and are reported as
+such; they do not silently use another cluster's home.

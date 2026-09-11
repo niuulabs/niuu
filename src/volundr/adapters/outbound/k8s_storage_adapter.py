@@ -76,11 +76,19 @@ class K8sStorageAdapter(StoragePort):
         workspace_mount_path: str = "/volundr/sessions",
         workspace_size_gb: int = 2,
         home_size_gb: int = 1,
+        file_browser_image: str = "",
+        file_browser_lifetime_seconds: int = 600,
+        file_browser_timeout_seconds: float = 20,
         **_extra: object,
     ) -> None:
         if home_size_gb < 1:
             raise ValueError("home_size_gb must be positive")
+        if file_browser_lifetime_seconds <= 0 or file_browser_timeout_seconds <= 0:
+            raise ValueError("Home file browser lifetime and timeout must be positive")
         self._home_size_gb = home_size_gb
+        self._file_browser_image = file_browser_image
+        self._file_browser_lifetime = file_browser_lifetime_seconds
+        self._file_browser_timeout = file_browser_timeout_seconds
         self._namespace = namespace
         self._home_storage_class = home_storage_class
         self._workspace_storage_class = workspace_storage_class
@@ -377,6 +385,37 @@ class K8sStorageAdapter(StoragePort):
                 return
             raise
 
+    async def manage_user_home(self, user_id: str, operation: str, path: str = "") -> dict:
+        from volundr.adapters.outbound.k8s_home_files import manage_home
+
+        if not self._file_browser_image:
+            raise NotImplementedError("Home file management is not enabled on this cluster")
+        api = await self._get_api()
+        claim = self._home_pvc_name(user_id)
+        try:
+            pvc = await api.read_namespaced_persistent_volume_claim(claim, self._namespace)
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                raise FileNotFoundError(
+                    "No home storage has been provisioned on this cluster"
+                ) from exc
+            raise
+        if (pvc.metadata.labels or {}).get(LABEL_OWNER) != user_id:
+            raise PermissionError("Home storage is not owned by this user")
+        if _storage_bytes(pvc.spec.resources.requests["storage"]) < self._home_size_gb * 1024**3:
+            await self.provision_user_storage(user_id, StorageQuota(home_gb=self._home_size_gb))
+        return await manage_home(
+            api,
+            self._namespace,
+            user_id,
+            claim,
+            self._file_browser_image,
+            self._file_browser_lifetime,
+            self._file_browser_timeout,
+            operation,
+            path,
+        )
+
     async def get_user_storage_usage(
         self,
         user_id: str,
@@ -392,6 +431,22 @@ class K8sStorageAdapter(StoragePort):
         """Delete a user's home PVC. No-op if not found."""
         api = await self._get_api()
         name = self._home_pvc_name(user_id)
+        if self._file_browser_image:
+            from volundr.adapters.outbound.k8s_home_files import browser_pod_name
+
+            try:
+                pod = await api.read_namespaced_pod(browser_pod_name(user_id), self._namespace)
+            except Exception as exc:
+                if getattr(exc, "status", None) != 404:
+                    raise
+            else:
+                if (pod.metadata.labels or {}).get(LABEL_OWNER) != user_id:
+                    raise PermissionError("Home browser is not owned by this user")
+                await api.delete_namespaced_pod(
+                    browser_pod_name(user_id),
+                    self._namespace,
+                    body={"preconditions": {"uid": pod.metadata.uid}},
+                )
 
         try:
             await api.delete_namespaced_persistent_volume_claim(

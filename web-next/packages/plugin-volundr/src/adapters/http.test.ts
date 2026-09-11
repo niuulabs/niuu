@@ -2435,3 +2435,12 @@ it('normalizes Settings integration fields for session defaults', async () => {
     },
   ]);
 });
+
+it('routes personal home operations with encoded cluster and relative path', async () => {
+  const client = makeClient();
+  const service = buildVolundrHttpAdapter(client);
+  await service.listUserHome('cluster-a', 'tmp/cache');
+  expect(client.get).toHaveBeenCalledWith('/storage/home?instance_id=cluster-a&path=tmp%2Fcache');
+  await service.deleteUserHomePath('cluster-b', 'tmp/a b');
+  expect(client.delete).toHaveBeenCalledWith('/storage/home?instance_id=cluster-b&path=tmp%2Fa+b');
+});

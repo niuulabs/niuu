@@ -79,3 +79,15 @@ describe('buildMountedSettingsProviders', () => {
     expect(providers).toEqual([]);
   });
 });
+
+it('mounts personal storage alongside Volundr service settings', () => {
+  const providers = buildMountedSettingsProviders({
+    demoMode: false,
+    theme: 'ice',
+    plugins: { volundr: { enabled: true, order: 1 } },
+    services: {},
+  });
+  expect(providers.map((p) => p.id)).toEqual(['storage', 'volundr']);
+  expect(providers[0]).toMatchObject({ source: 'local', scope: 'user' });
+  expect(providers[1]).toMatchObject({ source: 'remote', scope: 'service' });
+});

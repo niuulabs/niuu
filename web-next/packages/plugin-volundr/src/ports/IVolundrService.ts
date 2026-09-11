@@ -99,6 +99,20 @@ export interface ResolveWorkflowGateRequest {
   source?: string;
 }
 
+export interface UserHomeListing {
+  status: 'starting' | 'ready';
+  detail?: string;
+  path?: string;
+  capacity_bytes?: number;
+  available_bytes?: number;
+  entries?: Array<{
+    name: string;
+    path: string;
+    kind: 'directory' | 'file' | 'symlink';
+    size: number;
+  }>;
+}
+
 export interface IVolundrService {
   // Feature flags
   getFeatures(): Promise<VolundrFeatures>;
@@ -113,6 +127,8 @@ export interface IVolundrService {
   getStats(): Promise<VolundrStats>;
   getRepos(): Promise<VolundrRepo[]>;
   getTargets(): Promise<VolundrTarget[]>;
+  listUserHome(instanceId: string, path: string): Promise<UserHomeListing>;
+  deleteUserHomePath(instanceId: string, path: string): Promise<void>;
 
   /** Subscribe to live session updates via SSE. Returns an unsubscribe function. */
   subscribe(callback: (sessions: VolundrSession[]) => void): () => void;
