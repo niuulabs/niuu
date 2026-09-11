@@ -884,3 +884,16 @@ describe('hero actions', () => {
     await waitFor(() => expect(select).toHaveValue('guarded'));
   });
 });
+
+it('shows an autonomy update failure instead of silently resetting the selector', async () => {
+  const user = userEvent.setup();
+  const service = createMockValkyrieService();
+  service.updateAutonomy = async () => {
+    throw new Error('Valkyrie not found');
+  };
+  render(<ValkyrieConsolePage />, { wrapper: wrapWithValkyrie({ valkyrie: service }) });
+  await screen.findByTestId('valkyrie-console-page');
+  await user.click(screen.getByTestId('valkyrie-change-autonomy'));
+  await user.selectOptions(screen.getByLabelText('Autonomy mode for Sigrun'), ['guarded']);
+  expect(await screen.findByRole('alert')).toHaveTextContent('Valkyrie not found');
+});

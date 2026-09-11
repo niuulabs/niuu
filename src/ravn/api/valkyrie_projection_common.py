@@ -63,12 +63,7 @@ def _environment_id(record: dict[str, Any]) -> str:
     if explicit:
         return explicit
     raw_id = _slug(str(_field(record, "id", "name", default="environment")))
-    kind = str(_field(record, "kind", default="generic"))
-    if raw_id.startswith("env-"):
-        return raw_id
-    if kind == "kubernetes":
-        return f"env-k8s-{raw_id}"
-    return f"env-{raw_id}"
+    return canonical_environment_id(raw_id)
 
 
 def _canonical_environment_id(value: Any) -> str:

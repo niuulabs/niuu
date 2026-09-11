@@ -77,7 +77,8 @@ class ValkyrieDashboardProjection:
 
     def dashboard(self) -> Dashboard:
         self._refresh_live_report()
-        return _merge_observed_runtime(deepcopy(self._dashboard))
+        self._dashboard = _merge_observed_runtime(self._dashboard)
+        return deepcopy(self._dashboard)
 
     def record_event(
         self,
@@ -637,6 +638,7 @@ class ValkyrieDashboardProjection:
         }
 
     def update_autonomy(self, request: AutonomyUpdateRequest) -> Dashboard:
+        self.dashboard()  # Resolve the same discovered roster used by GET /dashboard.
         valid_modes = {"guarded", "autonomous", "yolo"}
         if request.mode not in valid_modes:
             raise HTTPException(status_code=422, detail="Unsupported autonomy mode")
