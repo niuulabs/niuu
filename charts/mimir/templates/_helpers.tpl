@@ -95,9 +95,17 @@ Return the proper image name (global overrides local)
   {{- end -}}
 {{- end -}}
 {{- if $registryName }}
+{{- if .Values.image.digest }}
+{{- printf "%s/%s@%s" $registryName $repositoryName .Values.image.digest -}}
+{{- else }}
 {{- printf "%s/%s:%s" $registryName $repositoryName $tag -}}
+{{- end }}
+{{- else }}
+{{- if .Values.image.digest }}
+{{- printf "%s@%s" $repositoryName .Values.image.digest -}}
 {{- else }}
 {{- printf "%s:%s" $repositoryName $tag -}}
+{{- end }}
 {{- end }}
 {{- end }}
 

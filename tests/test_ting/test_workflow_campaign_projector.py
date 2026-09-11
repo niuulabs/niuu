@@ -271,7 +271,7 @@ async def test_blocker_fetch_failure_reads_as_not_blocked() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stopped_session_completes_without_blocker_checks() -> None:
+async def test_stopped_session_blocks_without_claiming_completion() -> None:
     adapter = _Adapter(
         session_status="stopped",
         blocker_error=RuntimeError("must not be called"),
@@ -281,7 +281,8 @@ async def test_stopped_session_completes_without_blocker_checks() -> None:
     await projector._refresh_campaign(_campaign())
 
     saved = repo.save_campaign.await_args.args[0]
-    assert saved.status == WorkflowCampaignStatus.COMPLETED
+    assert saved.status == WorkflowCampaignStatus.BLOCKED
+    assert saved.completed_at is None
 
 
 @pytest.mark.asyncio
@@ -305,7 +306,7 @@ async def test_terminal_activity_error_fails_running_campaign() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sse_terminal_event_completes_and_queues_push_without_session_read() -> None:
+async def test_sse_stopped_event_blocks_and_queues_push_without_session_read() -> None:
     adapter = _Adapter()
     campaign = _campaign()
     repo = AsyncMock()
@@ -332,7 +333,8 @@ async def test_sse_terminal_event_completes_and_queues_push_without_session_read
 
     assert handled is True
     saved = repo.save_campaign.await_args.args[0]
-    assert saved.status == WorkflowCampaignStatus.COMPLETED
+    assert saved.status == WorkflowCampaignStatus.BLOCKED
+    assert saved.completed_at is None
     push_dispatcher.queue_campaign.assert_awaited_once_with(saved)
 
 

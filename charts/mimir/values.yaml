@@ -27,6 +27,8 @@ image:
   repository: niuu
   # -- Image tag. Defaults to Chart.appVersion.
   tag: ""
+  # -- Immutable image digest; takes precedence over local and global tags.
+  digest: ""
   # -- Image pull policy.
   pullPolicy: IfNotPresent
 

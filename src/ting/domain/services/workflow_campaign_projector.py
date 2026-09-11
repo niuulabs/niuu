@@ -82,7 +82,9 @@ class WorkflowCampaignProjector:
                 WorkflowCampaignStatus.FAILED,
                 failure_error=error,
             )
-        elif event.session_status in {"stopped", "completed", "complete", "succeeded"}:
+        elif event.session_status == "stopped":
+            await self._save_transition(campaign, WorkflowCampaignStatus.BLOCKED)
+        elif event.session_status in {"completed", "complete", "succeeded"}:
             await self._save_transition(campaign, WorkflowCampaignStatus.COMPLETED)
         elif campaign.status == WorkflowCampaignStatus.PENDING and event.state in {
             "active",
@@ -291,9 +293,9 @@ def _status_from_session(
         return WorkflowCampaignStatus.PENDING
     if normalized in {"running", "active", "busy"}:
         return WorkflowCampaignStatus.RUNNING
-    if normalized in {"blocked", "waiting", "paused"}:
+    if normalized in {"blocked", "waiting", "paused", "stopped"}:
         return WorkflowCampaignStatus.BLOCKED
-    if normalized in {"stopped", "completed", "complete", "succeeded", "success"}:
+    if normalized in {"completed", "complete", "succeeded", "success"}:
         return WorkflowCampaignStatus.COMPLETED
     if normalized in {"failed", "error", "cancelled", "canceled"}:
         return WorkflowCampaignStatus.FAILED

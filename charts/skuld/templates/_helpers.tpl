@@ -142,6 +142,12 @@ Return the proper image name (global overrides local)
 {{- if and .Values.git.credentials.secretName (not .Values.git.credentials.tokenFile) -}}
 - name: GIT_USERNAME
   value: {{ .Values.git.credentials.username | default "x-access-token" | quote }}
+- name: GIT_CONFIG_COUNT
+  value: "1"
+- name: GIT_CONFIG_KEY_0
+  value: credential.https://github.com.helper
+- name: GIT_CONFIG_VALUE_0
+  value: '!f() { [ "$1" = get ] || return 0; printf "username=%s\npassword=%s\n" "$GIT_USERNAME" "$GIT_TOKEN"; }; f'
 {{- range list "GIT_TOKEN" "GITHUB_TOKEN" "GH_TOKEN" }}
 - name: {{ . }}
   valueFrom:
