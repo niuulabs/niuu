@@ -790,7 +790,10 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
         # HOME env var — set when home volume is mounted
         home_env: list[dict[str, str]] = []
         if home_enabled:
-            home_env = [{"name": "HOME", "value": home_mount}]
+            home_env = [
+                {"name": "HOME", "value": home_mount},
+                {"name": "SKULD__PERSISTENT_HOME_PATH", "value": home_mount},
+            ]
 
         safe_hostname = re.sub(r"[^a-z0-9-]", "-", session.name.lower())
         safe_hostname = safe_hostname.strip("-")[:63] or "session"
@@ -878,6 +881,9 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
             ],
         }
 
+        if home_enabled and home_vol.get("persistentTmp"):
+            self._add_persistent_scratch(pod_spec, session)
+
         if node_selector:
             pod_spec["nodeSelector"] = node_selector
         if tolerations:
@@ -920,6 +926,60 @@ git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
                 },
             },
         }
+
+    @staticmethod
+    def _add_persistent_scratch(pod_spec: dict[str, Any], session: Session) -> None:
+        """Keep temporary files and reusable caches on the owner's home volume."""
+        cache_env = {
+            "TMPDIR": "/tmp",
+            "XDG_CACHE_HOME": "/var/cache/niuu",
+            "GOCACHE": "/var/cache/niuu/go-build",
+            "GOMODCACHE": "/var/cache/niuu/go-mod",
+            "npm_config_cache": "/var/cache/niuu/npm",
+            "PIP_CACHE_DIR": "/var/cache/niuu/pip",
+            "UV_CACHE_DIR": "/var/cache/niuu/uv",
+        }
+        setup = ["umask 007", "mkdir -p /home/tmp/cache"]
+        for container in pod_spec["containers"]:
+            if container["name"] == "nginx":
+                continue
+            subpath = f"tmp/sessions/{session.id}/{container['name']}"
+            mounts = list(container.get("volumeMounts", []))
+            container["volumeMounts"] = mounts
+            if any(m["mountPath"] in ("/tmp", "/var/cache/niuu") for m in mounts):
+                raise ValueError("persistentTmp conflicts with an existing scratch mount")
+            mounts.extend(
+                [
+                    {"name": "home", "mountPath": "/tmp", "subPath": subpath},
+                    {"name": "home", "mountPath": "/var/cache/niuu", "subPath": "tmp/cache"},
+                ]
+            )
+            env = container.setdefault("env", [])
+            existing = {e["name"] for e in env}
+            env.extend({"name": k, "value": v} for k, v in cache_env.items() if k not in existing)
+            target = shlex.quote(f"/home/{subpath}")
+            setup.extend([f"mkdir -p {target}", f"chmod 1777 {target}"])
+        # HostPath does not apply fsGroup. Only change ownership of the mount root.
+        pod_spec["initContainers"].insert(
+            0,
+            {
+                "name": "home-permissions",
+                "image": "busybox:latest",
+                "command": ["sh", "-ec", "chown 1000:1000 /home"],
+                "securityContext": {"runAsUser": 0, "allowPrivilegeEscalation": False},
+                "volumeMounts": [{"name": "home", "mountPath": "/home"}],
+            },
+        )
+        pod_spec["initContainers"].insert(
+            1,
+            {
+                "name": "scratch-setup",
+                "image": "busybox:latest",
+                "command": ["sh", "-ec", "\n".join(setup)],
+                "securityContext": {"runAsUser": 1000, "allowPrivilegeEscalation": False},
+                "volumeMounts": [{"name": "home", "mountPath": "/home"}],
+            },
+        )
 
     def _build_service_manifest(self, session: Session) -> dict[str, Any]:
         """Build a Kubernetes Service manifest dict for the session."""

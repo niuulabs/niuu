@@ -1,3 +1,14 @@
+{{- if and .Values.homeVolume.enabled .Values.homeVolume.persistentTmp }}
+{{- $id := include "skuld.sessionId" . }}
+{{- if not (regexMatch "^[a-zA-Z0-9][a-zA-Z0-9._-]*$" $id) }}
+{{- fail "persistentTmp requires a non-empty, path-safe session id" }}
+{{- end }}
+{{- range .Values.extraContainers }}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9-]*$" .name) }}
+{{- fail "persistentTmp requires valid Kubernetes container names" }}
+{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -159,6 +170,30 @@ spec:
               mountPath: {{ .Values.homeVolume.credentialFiles.secretMountPath }}
               readOnly: true
             {{- end }}
+        {{- end }}
+        {{- if and .Values.homeVolume.enabled .Values.homeVolume.persistentTmp }}
+        - name: scratch-setup
+          image: "{{ .Values.git.image.repository }}:{{ .Values.git.image.tag }}"
+          securityContext:
+            runAsUser: {{ .Values.securityContext.runAsUser }}
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              umask 007
+              mkdir -p /home/tmp/cache
+              {{- $names := list "skuld" "devrunner" "ravn" }}
+              {{- range .Values.extraContainers }}
+              {{- $names = append $names .name }}
+              {{- end }}
+              {{- range $names }}
+              mkdir -p "/home/tmp/sessions/{{ include "skuld.sessionId" $ }}/{{ . }}"
+              chmod 1777 "/home/tmp/sessions/{{ include "skuld.sessionId" $ }}/{{ . }}"
+              {{- end }}
+          volumeMounts:
+            - name: home
+              mountPath: /home
         {{- end }}
         {{- if .Values.git.repoUrl }}
         - name: git-clone
@@ -335,6 +370,7 @@ spec:
               protocol: TCP
             {{- end }}
           env:
+            {{- include "skuld.scratchEnv" . | nindent 12 }}
             - name: SKULD__SESSION__WORKSPACE_DIR
               value: {{ include "skuld.workspacePath" . | quote }}
             {{- if and .Values.volundr.apiUrl (not (include "skuld.residentEnabled" .)) }}
@@ -394,6 +430,7 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            {{- include "skuld.scratchMounts" (dict "root" . "container" "skuld") | nindent 12 }}
             - name: skuld-config
               mountPath: /etc/skuld/config.yaml
               subPath: config.yaml
@@ -444,6 +481,7 @@ spec:
             - --persona
             - {{ include "skuld.residentPersona" . | quote }}
           env:
+            {{- include "skuld.scratchEnv" . | nindent 12 }}
             - name: RAVN_PERSONA
               value: {{ include "skuld.residentPersona" . | quote }}
             - name: RAVN_PEER_ID
@@ -473,6 +511,7 @@ spec:
               containerPort: 7781
               protocol: TCP
           volumeMounts:
+            {{- include "skuld.scratchMounts" (dict "root" . "container" "ravn") | nindent 12 }}
             {{- if .Values.persistence.enabled }}
             - name: sessions
               mountPath: /workspace
@@ -497,6 +536,23 @@ spec:
         {{- end }}
         {{- range .Values.extraContainers }}
         {{- $container := deepCopy . }}
+        {{- if and $.Values.homeVolume.enabled $.Values.homeVolume.persistentTmp }}
+        {{- $scratchMounts := include "skuld.scratchMounts" (dict "root" $ "container" $container.name) | fromYamlArray }}
+        {{- $mounts := $container.volumeMounts | default list }}
+        {{- range $mounts }}
+        {{- if or (eq .mountPath "/tmp") (eq .mountPath "/var/cache/niuu") }}
+        {{- fail "persistentTmp conflicts with an extra container scratch mount" }}
+        {{- end }}
+        {{- end }}
+        {{- $_ := set $container "volumeMounts" (concat $mounts $scratchMounts) }}
+        {{- $env := $container.env | default list }}
+        {{- $names := dict }}
+        {{- range $env }}{{- $_ := set $names .name true }}{{- end }}
+        {{- range (include "skuld.scratchEnv" $ | fromYamlArray) }}
+        {{- if not (hasKey $names .name) }}{{- $env = append $env . }}{{- end }}
+        {{- end }}
+        {{- $_ := set $container "env" $env }}
+        {{- end }}
         {{- if $.Values.git.credentials.tokenFile }}
         {{- $mounts := $container.volumeMounts | default list }}
         {{- $paths := dict }}
@@ -523,6 +579,7 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false
           env:
+            {{- include "skuld.scratchEnv" . | nindent 12 }}
             - name: SESSION_ID
               value: {{ include "skuld.sessionId" . | quote }}
             - name: SESSION_NAME
@@ -546,6 +603,7 @@ spec:
           resources:
             {{- toYaml .Values.localServices.devrunner.resources | nindent 12 }}
           volumeMounts:
+            {{- include "skuld.scratchMounts" (dict "root" . "container" "devrunner") | nindent 12 }}
             {{- if .Values.persistence.enabled }}
             - name: sessions
               mountPath: {{ .Values.persistence.mountPath }}

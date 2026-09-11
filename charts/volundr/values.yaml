@@ -628,7 +628,8 @@ workloadIdentity:
 #       namespace: "skuld"
 #       home_storage_class: "longhorn"
 #       workspace_storage_class: "longhorn"
-#       workspace_size_gb: 2
+#       home_size_gb: 64
+#       workspace_size_gb: 20
 #
 storageAdapter:
   # -- Fully-qualified class path for the StoragePort adapter

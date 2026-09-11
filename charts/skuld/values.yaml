@@ -180,6 +180,9 @@ persistence:
 # Credential files are mounted from a K8s Secret and symlinked into
 # $HOME/<destDir>/ so they auto-update when the secret changes (~60s).
 homeVolume:
+  # -- Store /tmp per session/container and shared caches in the user home PVC.
+  # Enable only with a suitably sized home claim (64 GiB recommended).
+  persistentTmp: false
   # -- Enable persistent home volume
   enabled: false
   # -- Name of an existing PVC to use for the home directory

@@ -154,3 +154,34 @@ imagePullSecrets:
   {{- end }}
 {{- end -}}
 {{- end }}
+
+{{/* User-owned scratch: temporary files are isolated; caches survive new sessions. */}}
+{{- define "skuld.scratchMounts" -}}
+{{- if and .root.Values.homeVolume.enabled .root.Values.homeVolume.persistentTmp }}
+- name: home
+  mountPath: /tmp
+  subPath: {{ printf "tmp/sessions/%s/%s" (include "skuld.sessionId" .root) .container | quote }}
+- name: home
+  mountPath: /var/cache/niuu
+  subPath: tmp/cache
+{{- end }}
+{{- end }}
+
+{{- define "skuld.scratchEnv" -}}
+{{- if and .Values.homeVolume.enabled .Values.homeVolume.persistentTmp }}
+- name: TMPDIR
+  value: /tmp
+- name: XDG_CACHE_HOME
+  value: /var/cache/niuu
+- name: GOCACHE
+  value: /var/cache/niuu/go-build
+- name: GOMODCACHE
+  value: /var/cache/niuu/go-mod
+- name: npm_config_cache
+  value: /var/cache/niuu/npm
+- name: PIP_CACHE_DIR
+  value: /var/cache/niuu/pip
+- name: UV_CACHE_DIR
+  value: /var/cache/niuu/uv
+{{- end }}
+{{- end }}

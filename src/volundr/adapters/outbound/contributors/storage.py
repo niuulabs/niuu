@@ -23,11 +23,13 @@ class StorageContributor(SessionContributor):
         *,
         storage: StoragePort | None = None,
         home_enabled: bool = True,
+        persistent_tmp: bool = True,
         admin_settings: dict | None = None,
         **_extra: object,
     ):
         self._storage = storage
         self._default_home_enabled = home_enabled
+        self._persistent_tmp = persistent_tmp
         self._admin_settings = admin_settings
 
     @property
@@ -62,6 +64,7 @@ class StorageContributor(SessionContributor):
                 "enabled": True,
                 "existingClaim": home_pvc,
                 "mountPath": self._storage.home_mount_path,
+                "persistentTmp": self._persistent_tmp,
             }
         if workspace_pvc:
             values["persistence"] = {

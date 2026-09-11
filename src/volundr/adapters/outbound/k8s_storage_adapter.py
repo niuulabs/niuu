@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime
+from decimal import Decimal
 from uuid import UUID
 
 from volundr.domain.models import (
@@ -35,6 +36,27 @@ logger = logging.getLogger(__name__)
 _SESSION_ID_RE = re.compile(r"volundr-session-(.+)-workspace")
 
 
+def _storage_bytes(quantity: str) -> Decimal:
+    """Compare PVC quantities without rounding or shrinking a larger claim."""
+    binary = {f"{prefix}i": 1024**power for power, prefix in enumerate("KMGTPE", 1)}
+    decimal = {
+        "n": Decimal("1e-9"),
+        "u": Decimal("1e-6"),
+        "m": Decimal("1e-3"),
+        "k": 1000,
+        "K": 1000,
+        "M": 1000**2,
+        "G": 1000**3,
+        "T": 1000**4,
+        "P": 1000**5,
+        "E": 1000**6,
+    }
+    for suffix, multiplier in (binary | decimal).items():
+        if quantity.endswith(suffix):
+            return Decimal(quantity[: -len(suffix)]) * multiplier
+    return Decimal(quantity)
+
+
 class K8sStorageAdapter(StoragePort):
     """Kubernetes implementation of StoragePort.
 
@@ -53,8 +75,12 @@ class K8sStorageAdapter(StoragePort):
         home_mount_path: str = "/volundr/home",
         workspace_mount_path: str = "/volundr/sessions",
         workspace_size_gb: int = 2,
+        home_size_gb: int = 1,
         **_extra: object,
     ) -> None:
+        if home_size_gb < 1:
+            raise ValueError("home_size_gb must be positive")
+        self._home_size_gb = home_size_gb
         self._namespace = namespace
         self._home_storage_class = home_storage_class
         self._workspace_storage_class = workspace_storage_class
@@ -204,7 +230,7 @@ class K8sStorageAdapter(StoragePort):
 
         pvc = self._build_pvc_manifest(
             name=name,
-            storage_gb=quota.home_gb,
+            storage_gb=max(quota.home_gb, self._home_size_gb),
             storage_class=self._home_storage_class,
             access_mode=self._home_access_mode,
             labels=labels,
@@ -223,7 +249,38 @@ class K8sStorageAdapter(StoragePort):
         except Exception as exc:
             err_str = str(exc)
             if "409" in err_str or "AlreadyExists" in err_str:
-                logger.info("Home PVC %s already exists, returning existing", name)
+                existing = await api.read_namespaced_persistent_volume_claim(
+                    name=name,
+                    namespace=self._namespace,
+                )
+                if (existing.metadata.labels or {}).get(LABEL_OWNER) != user_id:
+                    raise ValueError(f"Home PVC {name} is not owned by the requested user")
+                requested = existing.spec.resources.requests["storage"]
+                desired = max(quota.home_gb, self._home_size_gb)
+                if _storage_bytes(requested) < desired * 1024**3:
+                    try:
+                        await api.patch_namespaced_persistent_volume_claim(
+                            name=name,
+                            namespace=self._namespace,
+                            body={
+                                "metadata": {"resourceVersion": existing.metadata.resource_version},
+                                "spec": {"resources": {"requests": {"storage": f"{desired}Gi"}}},
+                            },
+                        )
+                    except Exception:
+                        # Another session may have expanded this same user's home.
+                        current = await api.read_namespaced_persistent_volume_claim(
+                            name=name,
+                            namespace=self._namespace,
+                        )
+                        if (current.metadata.labels or {}).get(LABEL_OWNER) != user_id:
+                            raise
+                        if (
+                            _storage_bytes(current.spec.resources.requests["storage"])
+                            < desired * 1024**3
+                        ):
+                            raise
+                    logger.info("Expanded home PVC %s to %s GiB", name, desired)
             else:
                 raise
 

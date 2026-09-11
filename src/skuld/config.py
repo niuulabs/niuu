@@ -796,9 +796,16 @@ class SkuldSettings(BaseSettings):
             return self.session.workspace_dir
         return f"{self.persistence_mount_path}/{self.session.id}/workspace"
 
+    persistent_home_path: str = Field(
+        default="",
+        description="Mounted user home for file management; empty uses the session-local home.",
+    )
+
     @property
     def home_path(self) -> str:
         """Resolved home directory path for the session."""
+        if self.persistent_home_path:
+            return self.persistent_home_path
         return f"{self.persistence_mount_path}/{self.session.id}/home"
 
     @classmethod
