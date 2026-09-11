@@ -1,5 +1,6 @@
 """Tests for Skuld Helm chart templates."""
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -924,3 +925,43 @@ def _deployment_from_rendered(rendered_yaml: str) -> dict:
             return document
     pytest.fail("Deployment was not rendered")
     raise AssertionError("Deployment was not rendered")
+
+
+def test_user_git_integration_authenticates_nested_checkout(tmp_path):
+    token = tmp_path / "integration-token"
+    token.write_text("test-user-integration-token")
+    rendered = _render_skuld_chart(
+        tmp_path,
+        {
+            "git": {
+                "repoUrl": "https://github.com/niuulabs/niuu.git",
+                "credentials": {
+                    "tokenFile": str(token),
+                    "secretName": "unused-cluster-secret",
+                    "username": "x-access-token",
+                },
+            },
+            "extraContainers": [{"name": "ravn-coder", "image": "test"}],
+        },
+    )
+    containers = _deployment_from_rendered(rendered)["spec"]["template"]["spec"]["containers"]
+    for name in ("skuld", "ravn-coder"):
+        env = next(c["env"] for c in containers if c["name"] == name)
+        assert not any(
+            e.get("valueFrom", {}).get("secretKeyRef", {}).get("name") == "unused-cluster-secret"
+            for e in env
+        )
+        process_env = {**os.environ, **{e["name"]: e["value"] for e in env if "value" in e}}
+        process_env.update(
+            GIT_TERMINAL_PROMPT="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull
+        )
+        result = subprocess.run(
+            ["git", "credential", "fill"],
+            input="url=https://github.com/niuulabs/niuu.git\n\n",
+            text=True,
+            capture_output=True,
+            env=process_env,
+            cwd=tmp_path,
+            check=True,
+        )
+        assert "password=test-user-integration-token" in result.stdout

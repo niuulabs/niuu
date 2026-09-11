@@ -139,7 +139,18 @@ Return the proper image name (global overrides local)
 
 {{/* Git and GitHub CLI credentials for session runtimes. */}}
 {{- define "skuld.gitCredentialEnv" -}}
-{{- if and .Values.git.credentials.secretName (not .Values.git.credentials.tokenFile) -}}
+{{- if .Values.git.credentials.tokenFile -}}
+- name: GIT_USERNAME
+  value: {{ .Values.git.credentials.username | default "x-access-token" | quote }}
+- name: GIT_TOKEN_FILE
+  value: {{ .Values.git.credentials.tokenFile | quote }}
+- name: GIT_CONFIG_COUNT
+  value: "1"
+- name: GIT_CONFIG_KEY_0
+  value: {{ printf "credential.%s.helper" .Values.git.repoUrl | quote }}
+- name: GIT_CONFIG_VALUE_0
+  value: '!f() { [ "$1" = get ] || return 0; token=$(cat "$GIT_TOKEN_FILE") || return 1; [ -n "$token" ] || return 1; printf "username=%s\npassword=%s\n" "$GIT_USERNAME" "$token"; }; f'
+{{- else if .Values.git.credentials.secretName -}}
 - name: GIT_USERNAME
   value: {{ .Values.git.credentials.username | default "x-access-token" | quote }}
 - name: GIT_CONFIG_COUNT
