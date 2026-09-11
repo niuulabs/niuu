@@ -199,7 +199,7 @@ wait_running() {
 }
 
 suffix="$(date +%H%M%S)"
-codex_payload="$(create_session skuldCodex "openshell-codex-${suffix}" "gpt-5.4")"
+codex_payload="$(create_session skuldCodex "openshell-codex-${suffix}" "gpt-5.6-terra")"
 claude_payload="$(create_session skuldClaude "openshell-claude-${suffix}" "claude-sonnet-4-6")"
 
 codex_id="$(printf '%s' "${codex_payload}" | json_field id)"
