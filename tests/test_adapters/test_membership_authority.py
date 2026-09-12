@@ -40,3 +40,26 @@ async def test_local_authority_does_not_auto_enroll_unknown_users():
 def test_unknown_authority_is_configuration_error():
     with pytest.raises(ValueError, match="membership_authority"):
         EnvoyHeaderIdentityAdapter(user_repository=AsyncMock(), membership_authority="fallback")
+
+
+@pytest.mark.parametrize("credential_role", ["volundr:developer", "volundr:viewer"])
+async def test_membership_never_elevates_delegated_credential(credential_role):
+    repo = AsyncMock()
+    repo.get.return_value = User(id="alice", email="a@test", status=UserStatus.ACTIVE)
+    repo.get_memberships.return_value = [TenantMembership("alice", "acme", TenantRole.ADMIN)]
+    adapter = EnvoyHeaderIdentityAdapter(user_repository=repo, membership_authority="local")
+    principal = await adapter.validate_headers(
+        {"x-auth-user-id": "alice", "x-auth-tenant": "acme", "x-auth-roles": credential_role}
+    )
+    assert principal.roles == [credential_role]
+
+
+async def test_disjoint_membership_and_credential_roles_fail_closed():
+    repo = AsyncMock()
+    repo.get.return_value = User(id="alice", email="a@test", status=UserStatus.ACTIVE)
+    repo.get_memberships.return_value = [TenantMembership("alice", "acme", TenantRole.DEVELOPER)]
+    adapter = EnvoyHeaderIdentityAdapter(user_repository=repo, membership_authority="local")
+    with pytest.raises(InvalidTokenError, match="Credential roles"):
+        await adapter.validate_headers(
+            {"x-auth-user-id": "alice", "x-auth-tenant": "acme", "x-auth-roles": "volundr:viewer"}
+        )
