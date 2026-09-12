@@ -922,13 +922,21 @@ class OAuthSpecConfig(BaseModel):
     token_field_mapping: dict[str, str] = Field(default_factory=dict)
     extra_authorize_params: dict[str, str] = Field(default_factory=dict)
     extra_token_params: dict[str, str] = Field(default_factory=dict)
+    device_authorization_url: str = Field(
+        default="",
+        description="RFC 8628 device authorization endpoint; enables sign-in without a callback.",
+    )
 
 
 class OAuthClientConfig(BaseModel):
-    """Client credentials for a single OAuth integration."""
+    """Client credentials for a single OAuth integration.
+
+    The device flow only needs the (public) client id; the secret is for the
+    authorization-code flow behind a callback URL.
+    """
 
     client_id: str
-    client_secret: str
+    client_secret: str = ""
 
 
 class OAuthConfig(BaseModel):
@@ -955,6 +963,19 @@ class IntegrationDefinitionConfig(BaseModel):
     oauth: OAuthSpecConfig | None = None
     file_mounts: dict[str, str] = Field(default_factory=dict)
     credential_enrollment: dict[str, str] | None = None
+    key_probe: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Cheap authenticated request that proves an API key works: url, auth "
+            "('bearer' or a header name) and optional extra headers."
+        ),
+    )
+
+
+GITHUB_DEVICE_AUTHORIZATION_URL = "https://github.com/login/device/code"
+GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
+GITLAB_DEVICE_AUTHORIZATION_URL = "https://gitlab.com/oauth/authorize_device"
+GITLAB_TOKEN_URL = "https://gitlab.com/oauth/token"
 
 
 def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
@@ -990,6 +1011,18 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "args": ["-y", "@modelcontextprotocol/server-github"],
                 "env_from_credentials": {"GITHUB_PERSONAL_ACCESS_TOKEN": "token"},
             },
+            # Sign in with GitHub: device flow of a GitHub App whose public client
+            # id is configured under oauth.clients.github (no secret, no callback).
+            oauth=OAuthSpecConfig(
+                authorize_url="https://github.com/login/oauth/authorize",
+                token_url=GITHUB_TOKEN_URL,
+                device_authorization_url=GITHUB_DEVICE_AUTHORIZATION_URL,
+            ),
+            credential_enrollment={
+                "method": "oauth_device",
+                "credential_field": "token",
+                "default_credential_name": "github-signin",
+            },
         ),
         IntegrationDefinitionConfig(
             slug="gitlab",
@@ -1020,6 +1053,19 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "command": "npx",
                 "args": ["-y", "@modelcontextprotocol/server-gitlab"],
                 "env_from_credentials": {"GITLAB_PERSONAL_ACCESS_TOKEN": "token"},
+            },
+            # Sign in with GitLab (17.2+): device grant of an application whose
+            # public client id is configured under oauth.clients.gitlab.
+            oauth=OAuthSpecConfig(
+                authorize_url="https://gitlab.com/oauth/authorize",
+                token_url=GITLAB_TOKEN_URL,
+                device_authorization_url=GITLAB_DEVICE_AUTHORIZATION_URL,
+                scopes=["api"],
+            ),
+            credential_enrollment={
+                "method": "oauth_device",
+                "credential_field": "token",
+                "default_credential_name": "gitlab-signin",
             },
         ),
         IntegrationDefinitionConfig(
@@ -1052,6 +1098,11 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "properties": {"api_key": {"label": "API Key", "type": "password"}},
             },
             env_from_credentials={"ANTHROPIC_API_KEY": "api_key"},
+            key_probe={
+                "url": "https://api.anthropic.com/v1/models",
+                "auth": "x-api-key",
+                "headers": {"anthropic-version": "2023-06-01"},
+            },
         ),
         IntegrationDefinitionConfig(
             slug="openai",
@@ -1064,6 +1115,7 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "properties": {"api_key": {"label": "API Key", "type": "password"}},
             },
             env_from_credentials={"OPENAI_API_KEY": "api_key"},
+            key_probe={"url": "https://api.openai.com/v1/models", "auth": "bearer"},
         ),
         IntegrationDefinitionConfig(
             slug="xai",
@@ -1076,6 +1128,23 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "properties": {"api_key": {"label": "API Key", "type": "password"}},
             },
             env_from_credentials={"XAI_API_KEY": "api_key"},
+            key_probe={"url": "https://api.x.ai/v1/models", "auth": "bearer"},
+        ),
+        IntegrationDefinitionConfig(
+            slug="grok-build",
+            name="Grok Build (xAI sign-in)",
+            description="Sign in with your SuperGrok or X Premium+ account for Grok Build sessions",
+            integration_type="ai_provider",
+            icon="xai",
+            credential_schema={},
+            auth_type="device_code",
+            credential_enrollment={
+                "method": "grok_device",
+                "credential_field": "auth.json",
+                "default_credential_name": "grok-credentials",
+            },
+            # The grok CLI reads its session from ~/.grok/auth.json.
+            file_mounts={"/home/skuld/.grok/auth.json": "auth.json"},
         ),
         IntegrationDefinitionConfig(
             slug="deepseek",
@@ -1088,6 +1157,7 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "properties": {"api_key": {"label": "API Key", "type": "password"}},
             },
             env_from_credentials={"DEEPSEEK_API_KEY": "api_key"},
+            key_probe={"url": "https://api.deepseek.com/models", "auth": "bearer"},
         ),
         IntegrationDefinitionConfig(
             slug="claude-code",

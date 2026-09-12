@@ -108,6 +108,7 @@ class TestRender:
             "sessions_dir": f"{data}/session-secrets",
         }
         assert injection["secret_kwargs_env"] == {"encryption_key": "NIUU_CREDENTIAL_KEY"}
+        assert json.loads(env["OAUTH__CLIENTS"]) == {}
         login = json.loads(env["CREDENTIAL_ENROLLMENT_RUNNER"])
         assert login["adapter"] == sc.DOCKER_LOGIN_RUNNER_ADAPTER
         assert login["kwargs"] == {
@@ -124,6 +125,11 @@ class TestRender:
         assert env["NIUU_SETUP_STATE_FILE"] == f"{data}/setup-state.json"
         assert env["NIUU_HOST_FACTS_FILE"] == f"{data}/host-facts.json"
         assert services["postgres"]["environment"]["POSTGRES_DB"] == "volundr"
+
+    def test_sign_in_client_ids_reach_the_platform(self, settings: CLISettings) -> None:
+        settings.docker.sign_in_client_ids = {"github": "Iv1.abc", "gitlab": ""}
+        env = sc.render_compose(settings)["services"]["niuu"]["environment"]
+        assert json.loads(env["OAUTH__CLIENTS"]) == {"github": {"client_id": "Iv1.abc"}}
 
     def test_vllm_service_when_enabled(self, settings: CLISettings) -> None:
         settings.docker.vllm.enabled = True

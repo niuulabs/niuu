@@ -84,6 +84,7 @@ class DockerLoginRunner(CredentialEnrollmentRunnerPort):
         worker_python: str = DEFAULT_WORKER_PYTHON,
         codex_executable: str = "/usr/local/bin/codex",
         claude_executable: str = "/usr/local/bin/claude",
+        grok_executable: str = "/usr/local/bin/grok",
         worker_interval: float = 0.1,
         memory_limit: str = "512m",
         temporary_storage_limit: str = "32m",
@@ -98,6 +99,7 @@ class DockerLoginRunner(CredentialEnrollmentRunnerPort):
         self._worker_python = str(worker_python)
         self._codex_executable = str(codex_executable)
         self._claude_executable = str(claude_executable)
+        self._grok_executable = str(grok_executable)
         self._worker_interval = float(worker_interval)
         self._memory_limit = str(memory_limit)
         self._storage_limit = str(temporary_storage_limit)
@@ -113,7 +115,14 @@ class DockerLoginRunner(CredentialEnrollmentRunnerPort):
         )
 
     def supports_enrollment(self, method: str) -> bool:
-        return method in {"codex_device", "claude_setup"}
+        return method in {"codex_device", "claude_setup", "grok_device"}
+
+    def _executable(self, method: str) -> str:
+        if method == "codex_device":
+            return self._codex_executable
+        if method == "grok_device":
+            return self._grok_executable
+        return self._claude_executable
 
     def container_name(self, enrollment: CredentialEnrollment) -> str:
         return f"{self._container_prefix}{enrollment.id.hex}"
@@ -124,11 +133,7 @@ class DockerLoginRunner(CredentialEnrollmentRunnerPort):
 
     def _run_kwargs(self, enrollment: CredentialEnrollment) -> dict[str, Any]:
         ttl = max(1, int((enrollment.expires_at - datetime.now(UTC)).total_seconds()))
-        executable = (
-            self._codex_executable
-            if enrollment.method == "codex_device"
-            else self._claude_executable
-        )
+        executable = self._executable(enrollment.method)
         kwargs: dict[str, Any] = {
             "image": self._image,
             "name": self.container_name(enrollment),

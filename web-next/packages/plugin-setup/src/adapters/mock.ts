@@ -46,6 +46,12 @@ export const MOCK_CATALOG: CatalogEntry[] = [
     authType: 'browser_login',
     credentialSchema: {},
     configSchema: {},
+    credentialEnrollment: {
+      method: 'claude_setup',
+      credentialField: 'token',
+      defaultCredentialName: 'claude-code-credentials',
+    },
+    signInAvailable: true,
   },
   {
     slug: 'codex',
@@ -55,6 +61,27 @@ export const MOCK_CATALOG: CatalogEntry[] = [
     authType: 'device_code',
     credentialSchema: {},
     configSchema: {},
+    credentialEnrollment: {
+      method: 'codex_device',
+      credentialField: 'auth.json',
+      defaultCredentialName: 'codex-credentials',
+    },
+    signInAvailable: true,
+  },
+  {
+    slug: 'grok-build',
+    name: 'Grok Build (xAI sign-in)',
+    description: 'Sign in with your SuperGrok or X Premium+ account for Grok Build sessions',
+    integrationType: 'ai_provider',
+    authType: 'device_code',
+    credentialSchema: {},
+    configSchema: {},
+    credentialEnrollment: {
+      method: 'grok_device',
+      credentialField: 'auth.json',
+      defaultCredentialName: 'grok-credentials',
+    },
+    signInAvailable: true,
   },
   {
     slug: 'xai',
@@ -97,6 +124,12 @@ export const MOCK_CATALOG: CatalogEntry[] = [
         orgs: { label: 'Organizations', type: 'string[]' },
       },
     },
+    credentialEnrollment: {
+      method: 'oauth_device',
+      credentialField: 'token',
+      defaultCredentialName: 'github-signin',
+    },
+    signInAvailable: true,
   },
   {
     slug: 'linear',
@@ -385,22 +418,30 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
           workspace: null,
           user: null,
           error: 'No such connection',
+          detail: null,
+          repositories: [],
         };
       }
+      const sourceControl = connection.integrationType === 'source_control';
       return {
         success: true,
         provider: connection.slug,
         workspace: 'Niuu Labs',
         user: 'you',
         error: null,
+        detail: sourceControl ? '2 repositories reachable' : 'Key works · 12 models available',
+        repositories: sourceControl ? ['niuulabs/volundr', 'niuulabs/skuld'] : [],
       };
     },
     async startEnrollment(slug, credentialName) {
       await wait();
       const entry = catalog.find((candidate) => candidate.slug === slug);
       if (!entry) throw new Error(`Unknown integration ${slug}`);
-      if (entry.authType !== 'browser_login' && entry.authType !== 'device_code') {
+      if (!entry.credentialEnrollment) {
         throw new Error('Integration does not support interactive enrollment');
+      }
+      if (entry.signInAvailable === false) {
+        throw new Error(`Sign-in for ${slug} is not configured on this install`);
       }
       const existing = [...enrollments.values()].find(
         (row) =>
@@ -408,7 +449,7 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
       );
       if (existing) return publicEnrollment(existing);
       sequence += 1;
-      const isBrowser = entry.authType === 'browser_login';
+      const isBrowser = entry.credentialEnrollment.method === 'claude_setup';
       const row: Enrollment & { polls: number } = {
         id: `enroll-${sequence}`,
         connectionId: `pending-${sequence}`,

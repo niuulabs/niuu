@@ -24,6 +24,7 @@ from volundr.domain.ports import (
     SecretInjectionPort,
     SessionContributor,
 )
+from volundr.domain.services.integration_registry import IntegrationRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,24 @@ def _create_credential_enrollment_runner(settings: Settings) -> CredentialEnroll
         )
     logger.info("Credential enrollment runner: %s", config.adapter.rsplit(".", 1)[-1])
     return instance
+
+
+def with_oauth_device_runner(
+    runner: CredentialEnrollmentRunnerPort,
+    settings: Settings,
+    registry: IntegrationRegistry,
+) -> CredentialEnrollmentRunnerPort:
+    """Add the in-process OAuth device grant (GitHub, GitLab) next to the CLI runner."""
+    from volundr.adapters.outbound.oauth_device_runner import (
+        CompositeCredentialEnrollmentRunner,
+        OAuthDeviceFlowRunner,
+    )
+
+    device = OAuthDeviceFlowRunner(
+        registry=registry,
+        client_ids={slug: client.client_id for slug, client in settings.oauth.clients.items()},
+    )
+    return CompositeCredentialEnrollmentRunner([runner, device])
 
 
 def _create_pod_manager(settings: Settings) -> PodManager:

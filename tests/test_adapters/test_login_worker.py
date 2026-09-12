@@ -11,6 +11,7 @@ from volundr.adapters.outbound.login_worker import (
     ANSI_ESCAPE,
     claude_login,
     codex_login,
+    grok_login,
     run,
     stop_process,
     write_json,
@@ -90,12 +91,63 @@ async def test_claude_cli_authorization_code_is_consumed_and_token_is_kept_priva
     assert "secret" not in (tmp_path / "status.json").read_text()
 
 
-@pytest.mark.parametrize("method", ["codex_device", "claude_setup", "unknown"])
+@pytest.mark.parametrize("success", [True, False])
+async def test_grok_device_login_captures_the_session_file(tmp_path, success):
+    """The fake CLI prints the real challenge shape and writes $GROK_HOME/auth.json."""
+    executable = tmp_path / "fake-grok"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json,os,sys\n"
+        "assert sys.argv[1:]==['login','--device-auth']\n"
+        "assert 'XAI_API_KEY' not in os.environ\n"
+        "home=os.environ['GROK_HOME']\n"
+        "print('\\nTo sign in, open this URL in your browser:\\n\\n'\n"
+        "      '  https://accounts.x.ai/oauth2/device?user_code=5X2D-56W6\\n\\n'\n"
+        "      'Confirm this code in your browser:\\n\\n  5X2D-56W6\\n\\n'\n"
+        "      'Waiting for authorization...',flush=True)\n"
+        f"ok={success!r}\n"
+        "if ok:\n"
+        "    open(os.path.join(home,'auth.json'),'w').write(json.dumps({'token':'grok-secret'}))\n"
+        "    sys.exit(0)\n"
+        "sys.exit(3)\n"
+    )
+    executable.chmod(0o700)
+    task = asyncio.create_task(grok_login(tmp_path, str(executable)))
+    async with asyncio.timeout(5):
+        if success:
+            await task
+        else:
+            with pytest.raises(RuntimeError, match="grok_exit_3"):
+                await task
+    status = json.loads((tmp_path / "status.json").read_text())
+    if success:
+        assert status == {"state": "complete"}
+        credential = json.loads((tmp_path / "credential.json").read_text())
+        assert json.loads(credential["auth.json"]) == {"token": "grok-secret"}
+    else:
+        assert status["state"] == "awaiting_user"
+        assert status["verification_uri"] == (
+            "https://accounts.x.ai/oauth2/device?user_code=5X2D-56W6"
+        )
+        assert status["user_code"] == "5X2D-56W6"
+        assert not (tmp_path / "credential.json").exists()
+
+
+async def test_grok_login_without_session_file_is_a_visible_failure(tmp_path):
+    executable = tmp_path / "fake-grok"
+    executable.write_text(f"#!{sys.executable}\nprint('done',flush=True)\n")
+    executable.chmod(0o700)
+    with pytest.raises(RuntimeError, match="credential_missing"):
+        await grok_login(tmp_path, str(executable))
+
+
+@pytest.mark.parametrize("method", ["codex_device", "claude_setup", "grok_device", "unknown"])
 async def test_worker_deadline_and_safe_error_output(tmp_path, method):
     with (
         patch("os.umask"),
         patch("volundr.adapters.outbound.login_worker.codex_login", new_callable=AsyncMock),
         patch("volundr.adapters.outbound.login_worker.claude_login", new_callable=AsyncMock),
+        patch("volundr.adapters.outbound.login_worker.grok_login", new_callable=AsyncMock),
     ):
         await run(tmp_path, method, "test-only-cli", 0.01)
     status = json.loads((tmp_path / "status.json").read_text())

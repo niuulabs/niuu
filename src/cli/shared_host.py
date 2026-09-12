@@ -61,7 +61,10 @@ from volundr.adapters.outbound.postgres_credential_enrollments import (
 from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
-from volundr.composition_builders import _create_credential_enrollment_runner
+from volundr.composition_builders import (
+    _create_credential_enrollment_runner,
+    with_oauth_device_runner,
+)
 from volundr.config import Settings
 from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.credential_enrollment import (
@@ -162,7 +165,11 @@ def create_app(
             tracker_factory = TrackerFactory(credential_store)
             credential_enrollment_service = CredentialEnrollmentService(
                 repository=PostgresCredentialEnrollmentRepository(pool),
-                runner=_create_credential_enrollment_runner(loaded_settings),
+                runner=with_oauth_device_runner(
+                    _create_credential_enrollment_runner(loaded_settings),
+                    loaded_settings,
+                    integration_registry,
+                ),
                 integration_repository=integration_repo,
                 integration_registry=integration_registry,
                 credential_store=credential_store,

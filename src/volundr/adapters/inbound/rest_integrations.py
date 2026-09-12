@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -196,6 +197,10 @@ class CatalogEntryResponse(BaseModel):
         default=None,
         description="Interactive credential enrollment metadata when supported",
     )
+    sign_in_available: bool = Field(
+        default=False,
+        description="Whether the interactive sign-in can actually run on this install",
+    )
 
     @classmethod
     def from_definition(
@@ -293,6 +298,122 @@ class CredentialEnrollmentResponse(BaseModel):
         )
 
 
+SOURCE_CONTROL_PROBE_LIMIT = 100
+PROBE_TIMEOUT_SECONDS = 15.0
+
+
+async def probe_source_control(
+    connection: IntegrationConnection, credential: dict[str, str]
+) -> IntegrationTestResult:
+    """Prove the token works by listing what it can see, not by checking it exists."""
+    provider_name = connection.adapter.rsplit(".", 1)[-1]
+    token = credential.get("token", "")
+    if not token:
+        return IntegrationTestResult(
+            success=False, provider=provider_name, error="Credential has no token field"
+        )
+    config = connection.config or {}
+    if connection.slug == "gitlab":
+        base = str(config.get("base_url") or "https://gitlab.com").rstrip("/")
+        headers = {"PRIVATE-TOKEN": token, "Accept": "application/json"}
+        user_url = f"{base}/api/v4/user"
+        repos_url = (
+            f"{base}/api/v4/projects?membership=true&simple=true"
+            f"&order_by=last_activity_at&per_page={SOURCE_CONTROL_PROBE_LIMIT}"
+        )
+        name_key, login_key = "path_with_namespace", "username"
+    else:
+        base = str(config.get("base_url") or "https://api.github.com").rstrip("/")
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        user_url = f"{base}/user"
+        repos_url = f"{base}/user/repos?sort=updated&per_page={SOURCE_CONTROL_PROBE_LIMIT}"
+        name_key, login_key = "full_name", "login"
+    async with httpx.AsyncClient(timeout=PROBE_TIMEOUT_SECONDS, headers=headers) as client:
+        user_response = await client.get(user_url)
+        if user_response.status_code != 200:
+            return IntegrationTestResult(
+                success=False,
+                provider=provider_name,
+                error=(
+                    f"The token was rejected (HTTP {user_response.status_code}). "
+                    "Check it is valid and has repository access."
+                ),
+            )
+        user = str((user_response.json() or {}).get(login_key) or "")
+        repos_response = await client.get(repos_url)
+    if repos_response.status_code != 200:
+        return IntegrationTestResult(
+            success=False,
+            provider=provider_name,
+            user=user or None,
+            error=f"Signed in as {user}, but listing repositories failed "
+            f"(HTTP {repos_response.status_code}).",
+        )
+    rows = repos_response.json() or []
+    names = [str(row.get(name_key) or "") for row in rows if isinstance(row, dict)]
+    names = [name for name in names if name]
+    more = 'rel="next"' in repos_response.headers.get("link", "")
+    count = f"{len(names)}+" if more else str(len(names))
+    return IntegrationTestResult(
+        success=True,
+        provider=provider_name,
+        user=user or None,
+        detail=f"{count} repositories reachable",
+        repositories=names,
+    )
+
+
+async def probe_ai_provider(
+    connection: IntegrationConnection,
+    definition: IntegrationDefinition | None,
+    credential: dict[str, str],
+) -> IntegrationTestResult:
+    """Call the provider's cheapest authenticated endpoint with the stored key."""
+    provider_name = connection.adapter.rsplit(".", 1)[-1] or connection.slug
+    probe = dict(definition.key_probe) if definition is not None else {}
+    if not probe:
+        # Sign-in credentials (subscriptions) and providers without a probe
+        # are proven when a session uses them; existence is all we can say.
+        return IntegrationTestResult(
+            success=True, provider=provider_name, detail="Credential stored"
+        )
+    key = credential.get("api_key", "")
+    if not key:
+        return IntegrationTestResult(
+            success=False, provider=provider_name, error="Credential has no api_key field"
+        )
+    headers = dict(probe.get("headers") or {})
+    auth = str(probe.get("auth") or "bearer")
+    if auth == "bearer":
+        headers["Authorization"] = f"Bearer {key}"
+    else:
+        headers[auth] = key
+    async with httpx.AsyncClient(timeout=PROBE_TIMEOUT_SECONDS) as client:
+        response = await client.get(str(probe["url"]), headers=headers)
+    if response.status_code in (401, 403):
+        return IntegrationTestResult(
+            success=False,
+            provider=provider_name,
+            error=f"The provider rejected this key (HTTP {response.status_code}).",
+        )
+    if response.status_code != 200:
+        return IntegrationTestResult(
+            success=False,
+            provider=provider_name,
+            error=f"The provider answered HTTP {response.status_code} to the key check.",
+        )
+    payload = response.json() if "json" in response.headers.get("content-type", "") else {}
+    models = payload.get("data") if isinstance(payload, dict) else None
+    detail = (
+        f"Key works · {len(models)} models available" if isinstance(models, list) else "Key works"
+    )
+    return IntegrationTestResult(success=True, provider=provider_name, detail=detail)
+
+
 class IntegrationTestResult(BaseModel):
     """Response model for testing an integration connection."""
 
@@ -307,6 +428,14 @@ class IntegrationTestResult(BaseModel):
         default=None,
         description="Authenticated user if connected",
         examples=["user@example.com"],
+    )
+    detail: str | None = Field(
+        default=None,
+        description="What the check proved, e.g. '42 repositories' or '31 models'",
+    )
+    repositories: list[str] = Field(
+        default_factory=list,
+        description="Repositories the credential can see (first page), for source control",
     )
     error: str | None = Field(
         default=None,
@@ -388,7 +517,13 @@ def _build_integrations_router(
         if registry is None:
             return []
         definitions = registry.list_definitions()
-        return [CatalogEntryResponse.from_definition(d) for d in definitions]
+        entries = []
+        for definition in definitions:
+            entry = CatalogEntryResponse.from_definition(definition)
+            if credential_enrollment_service is not None:
+                entry.sign_in_available = credential_enrollment_service.available(definition.slug)
+            entries.append(entry)
+        return entries
 
     @router.post(
         "/enrollments",
@@ -786,10 +921,10 @@ def _build_integrations_router(
                         provider=existing.adapter.rsplit(".", 1)[-1],
                         error="Credential not found",
                     )
-                return IntegrationTestResult(
-                    success=True,
-                    provider=existing.adapter.rsplit(".", 1)[-1],
-                )
+                definition = registry.get_definition(existing.slug) if registry else None
+                if existing.integration_type == IntegrationType.SOURCE_CONTROL:
+                    return await probe_source_control(existing, cred_value)
+                return await probe_ai_provider(existing, definition, cred_value)
 
             return IntegrationTestResult(
                 success=False,

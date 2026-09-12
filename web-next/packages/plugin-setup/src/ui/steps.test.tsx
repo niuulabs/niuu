@@ -163,10 +163,15 @@ describe('IntegrationCard', () => {
           workspace: 'niuulabs',
           user: 'me',
           error: null,
+          detail: '3 repositories reachable',
+          repositories: ['niuulabs/volundr', 'niuulabs/skuld', 'niuulabs/site'],
         }}
       />,
     );
-    expect(screen.getByTestId('setup-test-ok-github')).toHaveTextContent('niuulabs');
+    expect(screen.getByTestId('setup-test-ok-github')).toHaveTextContent(
+      '3 repositories reachable',
+    );
+    expect(screen.getByTestId('setup-test-repos-github')).toHaveTextContent('niuulabs/volundr');
     rerender(
       <IntegrationCard
         {...base}
@@ -179,6 +184,8 @@ describe('IntegrationCard', () => {
           workspace: null,
           user: null,
           error: null,
+          detail: null,
+          repositories: [],
         }}
       />,
     );
@@ -209,7 +216,9 @@ describe('IntegrationsStep', () => {
   };
 
   it('renders catalog entries for the step with their connections', () => {
-    render(<IntegrationsStep {...props} catalog={MOCK_CATALOG} connections={[connection]} />);
+    renderWithSetup(
+      <IntegrationsStep {...props} catalog={MOCK_CATALOG} connections={[connection]} />,
+    );
     expect(screen.getByTestId('setup-integration-github')).toBeInTheDocument();
     expect(screen.queryByTestId('setup-integration-linear')).not.toBeInTheDocument();
     expect(screen.getByText('Connected')).toBeInTheDocument();
@@ -289,12 +298,19 @@ describe('ProviderPane', () => {
     expect(screen.getByTestId('setup-test-anthropic')).toBeInTheDocument();
   });
 
-  it('marks a pending sign-in and lists unavailable ways to connect', () => {
+  it('marks a pending sign-in and explains a sign-in this install cannot run', () => {
     const gitStep = WIZARD_STEPS.find((s) => s.id === 'git')!;
-    const github = providerGroups(MOCK_CATALOG, gitStep).find((g) => g.key === 'github')!;
+    const catalog = MOCK_CATALOG.map((e) =>
+      e.slug === 'github' ? { ...e, signInAvailable: false } : e,
+    );
+    const github = providerGroups(catalog, gitStep).find((g) => g.key === 'github')!;
     renderWithSetup(<ProviderPane group={github} {...noop} />);
-    expect(screen.getByTestId('setup-provider-unavailable-github')).toHaveTextContent('GitHub App');
-    expect(screen.queryByTestId('setup-provider-modes-github')).not.toBeInTheDocument();
+    // the usable mode (token) comes first; the sign-in tab explains what is missing
+    expect(screen.getByTestId('setup-input-github-token')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('setup-provider-mode-github-signin'));
+    expect(screen.getByTestId('setup-signin-unavailable-github')).toHaveTextContent(
+      'oauth.clients.github.client_id',
+    );
 
     const providers = WIZARD_STEPS.find((s) => s.id === 'providers')!;
     const openai = providerGroups(MOCK_CATALOG, providers).find((g) => g.key === 'openai')!;

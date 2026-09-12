@@ -238,6 +238,11 @@ class CredentialEnrollmentRunnerPort(ABC):
     def supports_enrollment(self, method: str) -> bool:
         """Return whether this runner implements the configured enrollment method."""
 
+    def available_for(self, slug: str, method: str) -> bool:
+        """Whether *slug* can be enrolled here right now (e.g. a client id is configured)."""
+        del slug
+        return self.supports_enrollment(method)
+
     @abstractmethod
     async def start_enrollment(
         self,

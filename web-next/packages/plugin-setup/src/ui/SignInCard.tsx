@@ -8,7 +8,9 @@ import {
   type CatalogEntry,
   type Enrollment,
   type IntegrationConnection,
+  type IntegrationTestResult,
 } from '../domain/setup';
+import { TestOutcome } from './TestOutcome';
 import { AlertIcon, CheckIcon } from './icons';
 import {
   useCancelEnrollment,
@@ -22,6 +24,9 @@ export interface SignInCardProps {
   connection: IntegrationConnection | undefined;
   /** Render only the body; the enclosing pane shows the title and status. */
   headless?: boolean;
+  testResult?: IntegrationTestResult;
+  testing?: boolean;
+  onTest?: (connectionId: string) => void;
 }
 
 /**
@@ -31,7 +36,14 @@ export interface SignInCardProps {
  * link (and device code) it produces, polls until the provider confirms, and
  * for Claude passes the authorization code the browser hands back.
  */
-export function SignInCard({ entry, connection, headless = false }: SignInCardProps) {
+export function SignInCard({
+  entry,
+  connection,
+  headless = false,
+  testResult,
+  testing = false,
+  onTest,
+}: SignInCardProps) {
   const [enrollmentId, setEnrollmentId] = useState<string | null>(null);
   const [code, setCode] = useState('');
   const start = useStartEnrollment();
@@ -87,9 +99,23 @@ export function SignInCard({ entry, connection, headless = false }: SignInCardPr
       )}
 
       {connectedNow ? (
-        <div className="setup-note" data-testid={`setup-signin-done-${entry.slug}`}>
-          <CheckIcon size={13} /> Signed in
-          {connection ? ` · credential ${connection.credentialName}` : ''}
+        <div className="setup-form__actions" data-testid={`setup-signin-done-${entry.slug}`}>
+          <span className="setup-note">
+            <CheckIcon size={13} /> Signed in
+            {connection ? ` · credential ${connection.credentialName}` : ''}
+          </span>
+          {connection && onTest ? (
+            <button
+              type="button"
+              className="setup-btn"
+              onClick={() => onTest(connection.id)}
+              disabled={testing}
+              data-testid={`setup-test-${entry.slug}`}
+            >
+              {testing ? 'Testing…' : 'Test connection'}
+            </button>
+          ) : null}
+          {testResult ? <TestOutcome slug={entry.slug} result={testResult} /> : null}
         </div>
       ) : active && enrollment ? (
         <div className="setup-col" data-testid={`setup-signin-${entry.slug}`}>

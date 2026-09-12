@@ -44,6 +44,12 @@ export interface CatalogEntryWire {
   auth_type?: string;
   credential_schema?: CatalogSchema;
   config_schema?: CatalogSchema;
+  credential_enrollment?: {
+    method: string;
+    credential_field: string;
+    default_credential_name: string;
+  } | null;
+  sign_in_available?: boolean;
 }
 
 /** Wire shape of `GET /api/v1/integrations` rows (snake_case). */
@@ -63,6 +69,8 @@ export interface IntegrationTestWire {
   workspace?: string | null;
   user?: string | null;
   error?: string | null;
+  detail?: string | null;
+  repositories?: string[];
 }
 
 /** Wire shape of `/api/v1/integrations/enrollments` responses (camelCase aliases). */
@@ -103,6 +111,14 @@ export function mapCatalogEntry(entry: CatalogEntryWire): CatalogEntry {
     authType: entry.auth_type ?? 'api_key',
     credentialSchema: entry.credential_schema ?? {},
     configSchema: entry.config_schema ?? {},
+    credentialEnrollment: entry.credential_enrollment
+      ? {
+          method: entry.credential_enrollment.method,
+          credentialField: entry.credential_enrollment.credential_field,
+          defaultCredentialName: entry.credential_enrollment.default_credential_name,
+        }
+      : null,
+    signInAvailable: entry.sign_in_available ?? false,
   };
 }
 
@@ -125,6 +141,8 @@ export function mapTestResult(result: IntegrationTestWire): IntegrationTestResul
     workspace: result.workspace ?? null,
     user: result.user ?? null,
     error: result.error ?? null,
+    detail: result.detail ?? null,
+    repositories: result.repositories ?? [],
   };
 }
 

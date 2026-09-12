@@ -3,6 +3,7 @@ import {
   connectionForSlug,
   connectionNeedsSignIn,
   groupConnection,
+  signInUnavailableReason,
   type ConnectIntegrationInput,
   type IntegrationConnection,
   type IntegrationTestResult,
@@ -45,6 +46,9 @@ export function ProviderPane({
   const modes: Mode[] = [];
   if (group.signInEntry) modes.push('signin');
   if (group.keyEntry) modes.push('key');
+  // A sign-in that cannot run here is still listed (so the user learns why),
+  // but the usable mode comes first.
+  if (group.signInEntry?.signInAvailable === false && group.keyEntry) modes.reverse();
   const [chosen, setChosen] = useState<Mode | null>(null);
   const connectedMode: Mode | null =
     connected && group.signInEntry && connected.slug === group.signInEntry.slug
@@ -103,7 +107,23 @@ export function ProviderPane({
       ) : null}
 
       {mode === 'signin' && group.signInEntry ? (
-        <SignInCard entry={group.signInEntry} connection={signInConnection} headless />
+        group.signInEntry.signInAvailable === false && !signInConnection ? (
+          <div
+            className="setup-note setup-note--warn"
+            data-testid={`setup-signin-unavailable-${group.signInEntry.slug}`}
+          >
+            <AlertIcon size={13} /> {signInUnavailableReason(group.signInEntry)}
+          </div>
+        ) : (
+          <SignInCard
+            entry={group.signInEntry}
+            connection={signInConnection}
+            headless
+            testResult={signInConnection ? testResults[signInConnection.id] : undefined}
+            testing={signInConnection ? testingId === signInConnection.id : false}
+            onTest={onTest}
+          />
+        )
       ) : null}
       {mode === 'key' && group.keyEntry ? (
         <IntegrationCard

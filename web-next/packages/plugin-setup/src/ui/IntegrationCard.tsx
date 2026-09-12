@@ -11,6 +11,7 @@ import {
   type IntegrationTestResult,
 } from '../domain/setup';
 import { CheckIcon, AlertIcon } from './icons';
+import { TestOutcome } from './TestOutcome';
 
 export interface IntegrationCardProps {
   entry: CatalogEntry;
@@ -97,22 +98,7 @@ export function IntegrationCard({
           >
             {testing ? 'Testing…' : 'Test connection'}
           </button>
-          {testResult ? (
-            testResult.success ? (
-              <span className="setup-note" data-testid={`setup-test-ok-${entry.slug}`}>
-                <CheckIcon size={13} /> Works
-                {testResult.workspace ? ` · ${testResult.workspace}` : ''}
-                {testResult.user ? ` · ${testResult.user}` : ''}
-              </span>
-            ) : (
-              <span
-                className="setup-note setup-note--warn"
-                data-testid={`setup-test-failed-${entry.slug}`}
-              >
-                <AlertIcon size={13} /> {testResult.error ?? 'Test failed'}
-              </span>
-            )
-          ) : null}
+          {testResult ? <TestOutcome slug={entry.slug} result={testResult} /> : null}
         </div>
       ) : connectable ? (
         <form className="setup-form" onSubmit={submit} data-testid={`setup-form-${entry.slug}`}>

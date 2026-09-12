@@ -221,8 +221,9 @@ const GROUP_SPECS: readonly GroupSpec[] = [
   {
     key: 'xai',
     title: 'xAI · Grok',
-    description: 'Grok models through the model gateway',
+    description: 'Grok Build sessions and Grok models through the model gateway',
     keySlug: 'xai',
+    signInSlug: 'grok-build',
   },
   {
     key: 'deepseek',
@@ -235,19 +236,14 @@ const GROUP_SPECS: readonly GroupSpec[] = [
     title: 'GitHub',
     description: 'Clone, push, open pull requests, MCP server',
     keySlug: 'github',
-    unavailable: [
-      {
-        label: 'GitHub App',
-        reason:
-          'Scoped to the repos you pick, no long-lived token. Needs a published app with a callback for this install; not shipped in the single-host bundle yet.',
-      },
-    ],
+    signInSlug: 'github',
   },
   {
     key: 'gitlab',
     title: 'GitLab',
     description: 'Clone, push, open merge requests, MCP server',
     keySlug: 'gitlab',
+    signInSlug: 'gitlab',
   },
 ];
 
@@ -257,10 +253,14 @@ export function providerGroups(entries: CatalogEntry[], step: WizardStep): Provi
   const used = new Set<string>();
   const groups: ProviderGroup[] = [];
   for (const spec of GROUP_SPECS) {
-    const keyEntry = spec.keySlug ? forStep.find((e) => e.slug === spec.keySlug) : undefined;
-    const signInEntry = spec.signInSlug
+    const keyCandidate = spec.keySlug ? forStep.find((e) => e.slug === spec.keySlug) : undefined;
+    const signInCandidate = spec.signInSlug
       ? forStep.find((e) => e.slug === spec.signInSlug)
       : undefined;
+    const keyEntry =
+      keyCandidate && isConnectableFromWizard(keyCandidate) ? keyCandidate : undefined;
+    const signInEntry =
+      signInCandidate && supportsSignIn(signInCandidate) ? signInCandidate : undefined;
     if (!keyEntry && !signInEntry) continue;
     if (keyEntry) used.add(keyEntry.slug);
     if (signInEntry) used.add(signInEntry.slug);
@@ -275,13 +275,12 @@ export function providerGroups(entries: CatalogEntry[], step: WizardStep): Provi
   }
   for (const entry of forStep) {
     if (used.has(entry.slug)) continue;
-    const interactive = needsInteractiveSignIn(entry);
     groups.push({
       key: entry.slug,
       title: entry.name,
       description: entry.description,
-      keyEntry: interactive ? undefined : entry,
-      signInEntry: interactive ? entry : undefined,
+      keyEntry: isConnectableFromWizard(entry) ? entry : undefined,
+      signInEntry: supportsSignIn(entry) ? entry : undefined,
       unavailable: [],
     });
   }
@@ -363,6 +362,12 @@ export interface CatalogSchema {
   properties?: Record<string, CatalogFieldSchema>;
 }
 
+export interface CredentialEnrollmentSpec {
+  method: string;
+  credentialField: string;
+  defaultCredentialName: string;
+}
+
 export interface CatalogEntry {
   slug: string;
   name: string;
@@ -371,6 +376,10 @@ export interface CatalogEntry {
   authType: string;
   credentialSchema: CatalogSchema;
   configSchema: CatalogSchema;
+  /** How this entry signs in interactively, when it can at all. */
+  credentialEnrollment?: CredentialEnrollmentSpec | null;
+  /** Whether that sign-in can actually run on this install (client id configured, CLI present). */
+  signInAvailable?: boolean;
 }
 
 export interface IntegrationConnection {
@@ -389,6 +398,10 @@ export interface IntegrationTestResult {
   workspace: string | null;
   user: string | null;
   error: string | null;
+  /** What the check proved, e.g. "42 repositories reachable" or "Key works · 31 models". */
+  detail: string | null;
+  /** Repositories the credential can see (first page), for source control. */
+  repositories: string[];
 }
 
 export interface ConnectIntegrationInput {
@@ -491,14 +504,28 @@ export function isStepDone(state: SetupState | undefined, step: WizardStepId): b
   return state.completedSteps.some((record) => record.step === id);
 }
 
-/** Entries connected with a pasted key or token (a form in the wizard). */
+/** Entries that take a pasted key or token: they have credential fields to fill in. */
 export function isConnectableFromWizard(entry: CatalogEntry): boolean {
-  return !needsInteractiveSignIn(entry);
+  return Object.keys(entry.credentialSchema.properties ?? {}).length > 0;
 }
 
-/** Entries connected by signing in through the provider (browser or device code). */
+/** Entries that can sign in through the provider (browser, device code or CLI). */
+export function supportsSignIn(entry: CatalogEntry): boolean {
+  return entry.credentialEnrollment != null;
+}
+
+/** Sign-in entries with no key form: the only way in is the provider's flow. */
 export function needsInteractiveSignIn(entry: CatalogEntry): boolean {
-  return entry.authType === 'browser_login' || entry.authType === 'device_code';
+  return supportsSignIn(entry) && !isConnectableFromWizard(entry);
+}
+
+/** Why a sign-in cannot run here, in the user's words. */
+export function signInUnavailableReason(entry: CatalogEntry): string {
+  const method = entry.credentialEnrollment?.method ?? '';
+  if (method === 'oauth_device') {
+    return `Sign in with ${entry.name} needs this install's public client id configured (oauth.clients.${entry.slug}.client_id). Use a token until then.`;
+  }
+  return `Sign in with ${entry.name} is not available on this install yet. Use an API key instead.`;
 }
 
 export function catalogForStep(entries: CatalogEntry[], step: WizardStep): CatalogEntry[] {

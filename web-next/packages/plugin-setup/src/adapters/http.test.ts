@@ -57,6 +57,8 @@ describe('buildSetupHttpAdapter', () => {
       authType: 'api_key',
       credentialSchema: { required: ['token'] },
       configSchema: {},
+      credentialEnrollment: null,
+      signInAvailable: false,
     });
     const [connection] = await adapter.listIntegrations();
     expect(connection).toEqual({
@@ -106,6 +108,8 @@ describe('buildSetupHttpAdapter', () => {
       workspace: null,
       user: null,
       error: 'bad key',
+      detail: null,
+      repositories: [],
     });
     expect(c.integrations.post).toHaveBeenLastCalledWith('/9/test');
   });
@@ -143,6 +147,8 @@ describe('buildSetupHttpAdapter', () => {
       workspace: 'w',
       user: 'u',
       error: null,
+      detail: null,
+      repositories: [],
     });
   });
 

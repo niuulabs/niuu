@@ -87,15 +87,12 @@ RUN cd /opt/npm-bootstrap \
     && npm ci --omit=dev \
     && ln -sf /opt/skuld-tools/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -sf /opt/skuld-tools/node_modules/.bin/codex /usr/local/bin/codex \
-    && ln -sf /opt/skuld-tools/node_modules/.bin/opencode /usr/local/bin/opencode
+    && ln -sf /opt/skuld-tools/node_modules/.bin/opencode /usr/local/bin/opencode \
+    && ln -sf /opt/skuld-tools/node_modules/.bin/grok /usr/local/bin/grok
 
-# Grok Build CLI (ACP stdio transport — Scaldy / Grok pipeline) is NOT pre-installed:
-# it is a large arch-specific binary distributed via the official xAI installer.
-# Provide it at deploy time via one of:
-#   - volumeMount the `grok` binary into PATH inside the pod, or
-#   - a custom image extending this one that runs the xAI grok installer, plus
-#   - XAI_API_KEY (and optional XAI_BASE_URL for the dev API) — see entrypoint.sh.
-# GrokACPTransport fails gracefully at start() if `grok` is missing from PATH.
+# Grok Build CLI (ACP stdio transport and the xAI device sign-in) ships from the
+# @xai-official/grok npm package above. Sessions authenticate with XAI_API_KEY or
+# the ~/.grok/auth.json the platform mounts after a wizard sign-in.
 
 # Create app user with UID 1000 (matches helm chart runAsUser)
 RUN existing=$(getent passwd 1000 | cut -d: -f1) && \

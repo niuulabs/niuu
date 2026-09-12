@@ -116,6 +116,7 @@ from volundr.composition_builders import (  # noqa: F401
     _create_secret_injection_adapter,
     _runtime_backend,
     integration_database_pool,
+    with_oauth_device_runner,
 )
 from volundr.config import Settings
 from volundr.domain.models import SessionStatus
@@ -659,7 +660,9 @@ def create_app(
             tracker_factory = TrackerFactory(credential_store)
             credential_enrollment_service = CredentialEnrollmentService(
                 repository=PostgresCredentialEnrollmentRepository(integration_pool),
-                runner=credential_enrollment_runner,
+                runner=with_oauth_device_runner(
+                    credential_enrollment_runner, settings, integration_registry
+                ),
                 integration_repository=integration_repo,
                 integration_registry=integration_registry,
                 credential_store=credential_store,

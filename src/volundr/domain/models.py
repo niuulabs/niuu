@@ -1068,6 +1068,8 @@ class OAuthSpec:
     scopes: tuple[str, ...] = ()
     token_field_mapping: dict[str, str] = ()  # type: ignore[assignment]
     extra_authorize_params: dict[str, str] = ()  # type: ignore[assignment]
+    # RFC 8628 device authorization endpoint; empty when the provider has none.
+    device_authorization_url: str = ""
     extra_token_params: dict[str, str] = ()  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
@@ -1159,6 +1161,9 @@ class IntegrationDefinition:
     oauth: OAuthSpec | None = None
     file_mounts: dict[str, str] = ()  # type: ignore[assignment]
     credential_enrollment: CredentialEnrollmentSpec | None = None
+    # How to check an API key works: {"url", "auth": "bearer" | "<header name>",
+    # "headers": {...}}. Empty when the provider offers no cheap probe.
+    key_probe: dict[str, Any] = ()  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if not isinstance(self.credential_schema, dict):

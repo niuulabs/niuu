@@ -284,6 +284,14 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         "NIUU_CREDENTIAL_KEY": "${NIUU_CREDENTIAL_KEY}",
         "CREDENTIAL_STORE": json.dumps(credential_store),
         "SECRET_INJECTION": json.dumps(secret_injection),
+        # Sign in with GitHub / GitLab (device flow) needs only a public client id.
+        "OAUTH__CLIENTS": json.dumps(
+            {
+                slug: {"client_id": client_id}
+                for slug, client_id in settings.docker.sign_in_client_ids.items()
+                if client_id
+            }
+        ),
         # Claude / Codex subscription sign-in runs the official CLI in a sealed
         # sibling container built from the same skuld image sessions use.
         "CREDENTIAL_ENROLLMENT_RUNNER": json.dumps(

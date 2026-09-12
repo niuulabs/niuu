@@ -224,6 +224,83 @@ async def codex_login(
         await stop_process(process, shutdown_timeout)
 
 
+GROK_DEVICE_URL = re.compile(r"https://accounts\.x\.ai/oauth2/device\?user_code=([A-Z0-9-]+)")
+
+
+async def grok_login(
+    root: Path, executable: str, shutdown_timeout: float = DEFAULT_SHUTDOWN_TIMEOUT
+) -> None:
+    """``grok login --device-auth``: prints a verification URL and code, then waits.
+
+    The CLI writes its session to ``$GROK_HOME/auth.json`` once the user has
+    approved; that file is the credential (mounted back at ``~/.grok/auth.json``
+    in sessions).
+    """
+    home = root / "grok"
+    home.mkdir(mode=0o700)
+    environment = {
+        "PATH": os.defpath,
+        "HOME": str(root),
+        "GROK_HOME": str(home),
+        "NO_COLOR": "1",
+        "TERM": "xterm",
+    }
+    master, slave = pty.openpty()
+    try:
+        process = await asyncio.create_subprocess_exec(
+            executable,
+            "login",
+            "--device-auth",
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            env=environment,
+            cwd=root,
+            start_new_session=True,
+        )
+    finally:
+        os.close(slave)
+    os.set_blocking(master, False)
+    output = ""
+    challenge_sent = False
+    try:
+        while True:
+            try:
+                chunk = os.read(master, 65536)
+            except BlockingIOError:
+                chunk = None
+            except OSError:
+                chunk = b""
+            if chunk:
+                output += chunk.decode(errors="replace")
+                if not challenge_sent:
+                    match = GROK_DEVICE_URL.search(ANSI_ESCAPE.sub("", output))
+                    if match:
+                        write_json(
+                            root / "status.json",
+                            {
+                                "state": "awaiting_user",
+                                "verification_uri": match.group(0),
+                                "user_code": match.group(1),
+                            },
+                        )
+                        challenge_sent = True
+            if chunk == b"" or (process.returncode is not None and chunk is None):
+                break
+            await asyncio.sleep(0.1)
+        await process.wait()
+        if process.returncode != 0:
+            raise RuntimeError(f"grok_exit_{process.returncode}")
+        auth = home / "auth.json"
+        if not auth.exists():
+            raise RuntimeError("credential_missing")
+        write_json(root / "credential.json", {"auth.json": auth.read_text()})
+        write_json(root / "status.json", {"state": "complete"})
+    finally:
+        await stop_process(process, shutdown_timeout)
+        os.close(master)
+
+
 async def run(
     root: Path,
     method: str,
@@ -241,6 +318,8 @@ async def run(
                 await codex_login(root, executable, shutdown_timeout)
             elif method == "claude_setup":
                 await claude_login(root, executable, interval, shutdown_timeout)
+            elif method == "grok_device":
+                await grok_login(root, executable, shutdown_timeout)
             else:
                 raise RuntimeError("unsupported_method")
             # The controller reads the secret over Kubernetes exec, persists it
@@ -254,7 +333,9 @@ async def run(
         safe_reason = (
             reason
             if re.fullmatch(
-                r"claude_exit_-?\d+|claude_token_not_found|unexpected_login_url", reason
+                r"claude_exit_-?\d+|grok_exit_-?\d+|claude_token_not_found|"
+                r"credential_missing|unexpected_login_url",
+                reason,
             )
             else "provider_login_failed"
         )

@@ -189,6 +189,13 @@ class DockerConfig(BaseModel):
         description="How long `niuu up` waits for the platform health endpoint.",
     )
     vllm: DockerVllmConfig = Field(default_factory=DockerVllmConfig)
+    sign_in_client_ids: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Public OAuth client ids for device-flow sign-in, keyed by integration slug "
+            "(github, gitlab). No secret is needed; the app must have the device flow enabled."
+        ),
+    )
     applier_image: str = Field(
         default="docker:28-cli",
         description=(

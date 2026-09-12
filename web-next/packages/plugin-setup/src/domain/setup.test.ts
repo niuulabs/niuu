@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { MOCK_CATALOG, MOCK_SYSTEM } from '../adapters/mock';
 import {
+  signInUnavailableReason,
+  supportsSignIn,
   connectionNeedsSignIn,
   accessMode,
   accessUrls,
@@ -73,6 +75,7 @@ describe('catalog helpers', () => {
       'openai',
       'claude-code',
       'codex',
+      'grok-build',
       'xai',
       'deepseek',
     ]);
@@ -82,7 +85,12 @@ describe('catalog helpers', () => {
   it('knows which entries the wizard can connect', () => {
     expect(isConnectableFromWizard(github)).toBe(true);
     expect(isConnectableFromWizard(claudeCode)).toBe(false);
-    expect(isConnectableFromWizard({ ...github, authType: 'device_code' })).toBe(false);
+    expect(isConnectableFromWizard({ ...github, credentialSchema: {} })).toBe(false);
+    expect(supportsSignIn(github)).toBe(true);
+    expect(supportsSignIn(claudeCode)).toBe(true);
+    expect(supportsSignIn({ ...github, credentialEnrollment: null })).toBe(false);
+    expect(signInUnavailableReason(github)).toMatch(/oauth\.clients\.github\.client_id/);
+    expect(signInUnavailableReason(claudeCode)).toMatch(/not available on this install/);
   });
 
   it('finds enabled connections by slug', () => {
@@ -190,8 +198,11 @@ describe('interactive sign-in helpers', () => {
   };
 
   it('knows which catalog entries sign in interactively', () => {
-    expect(needsInteractiveSignIn({ ...MOCK_CATALOG[0]!, authType: 'browser_login' })).toBe(true);
-    expect(needsInteractiveSignIn({ ...MOCK_CATALOG[0]!, authType: 'device_code' })).toBe(true);
+    const claudeCode = MOCK_CATALOG.find((e) => e.slug === 'claude-code')!;
+    const github = MOCK_CATALOG.find((e) => e.slug === 'github')!;
+    expect(needsInteractiveSignIn(claudeCode)).toBe(true);
+    // GitHub can sign in but also takes a token, so it is not sign-in only.
+    expect(needsInteractiveSignIn(github)).toBe(false);
     expect(needsInteractiveSignIn(MOCK_CATALOG[0]!)).toBe(false);
   });
 

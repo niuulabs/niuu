@@ -6,7 +6,9 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import httpx
 import pytest
+import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -689,6 +691,7 @@ class TestIntegrationEndpoints:
                 "auth_type": "oauth2_authorization_code",
                 "oauth_scopes": ["read", "write"],
                 "credential_enrollment": None,
+                "sign_in_available": False,
             }
         ]
 
@@ -832,9 +835,180 @@ class TestIntegrationTestEndpointBranches:
         )
         await integration_repo.save_connection(conn)
 
-        resp = client.post("/api/v1/integrations/sc-1/test")
+        with respx.mock(assert_all_called=True) as mock:
+            mock.get("https://api.github.com/user").mock(
+                return_value=httpx.Response(200, json={"login": "octocat"})
+            )
+            mock.get("https://api.github.com/user/repos").mock(
+                return_value=httpx.Response(
+                    200,
+                    json=[{"full_name": "niuulabs/volundr"}, {"full_name": "niuulabs/skuld"}],
+                    headers={"link": '<https://api.github.com/user/repos?page=2>; rel="next"'},
+                )
+            )
+            resp = client.post("/api/v1/integrations/sc-1/test")
         assert resp.status_code == 200
+        body = resp.json()
+        assert body["success"] is True
+        assert body["user"] == "octocat"
+        assert body["repositories"] == ["niuulabs/volundr", "niuulabs/skuld"]
+        assert body["detail"] == "2+ repositories reachable"
+
+        with respx.mock() as mock:
+            mock.get("https://api.github.com/user").mock(return_value=httpx.Response(401))
+            resp = client.post("/api/v1/integrations/sc-1/test")
+        assert resp.json()["success"] is False
+        assert "rejected" in resp.json()["error"]
+
+        with respx.mock() as mock:
+            mock.get("https://api.github.com/user").mock(
+                return_value=httpx.Response(200, json={"login": "octocat"})
+            )
+            mock.get("https://api.github.com/user/repos").mock(return_value=httpx.Response(403))
+            resp = client.post("/api/v1/integrations/sc-1/test")
+        assert resp.json()["success"] is False
+        assert "listing repositories failed" in resp.json()["error"]
+
+        credential_store.get_value.return_value = {"nope": "x"}
+        resp = client.post("/api/v1/integrations/sc-1/test")
+        assert resp.json()["error"] == "Credential has no token field"
+
+    async def test_gitlab_probe_lists_projects(
+        self,
+        integration_repo: InMemoryIntegrationRepository,
+        tracker_factory: TrackerFactory,
+        mock_principal: Principal,
+    ):
+        credential_store = AsyncMock()
+        credential_store.get_value.return_value = {"token": "glpat"}
+        app = FastAPI()
+
+        async def mock_extract_principal():
+            return mock_principal
+
+        app.include_router(
+            create_integrations_router(
+                integration_repo, tracker_factory, credential_store=credential_store
+            )
+        )
+        from volundr.adapters.inbound.auth import extract_principal
+
+        app.dependency_overrides[extract_principal] = mock_extract_principal
+        client = TestClient(app)
+        now = datetime.now(UTC)
+        await integration_repo.save_connection(
+            IntegrationConnection(
+                id="gl-1",
+                owner_id="user-1",
+                integration_type="source_control",
+                adapter="volundr.adapters.outbound.gitlab.GitLabProvider",
+                credential_name="gl-token",
+                config={"base_url": "https://gitlab.example.com/"},
+                enabled=True,
+                created_at=now,
+                updated_at=now,
+                slug="gitlab",
+            )
+        )
+        with respx.mock(assert_all_called=True) as mock:
+            mock.get("https://gitlab.example.com/api/v4/user").mock(
+                return_value=httpx.Response(200, json={"username": "jozef"})
+            )
+            mock.get(url__startswith="https://gitlab.example.com/api/v4/projects").mock(
+                return_value=httpx.Response(200, json=[{"path_with_namespace": "niuu/volundr"}])
+            )
+            resp = client.post("/api/v1/integrations/gl-1/test")
+        body = resp.json()
+        assert body["success"] is True
+        assert body["user"] == "jozef"
+        assert body["repositories"] == ["niuu/volundr"]
+        assert body["detail"] == "1 repositories reachable"
+
+    async def test_ai_provider_key_probe(
+        self,
+        integration_repo: InMemoryIntegrationRepository,
+        tracker_factory: TrackerFactory,
+        mock_principal: Principal,
+    ):
+        from volundr.config import _default_integration_definitions
+
+        registry = IntegrationRegistry(
+            definitions_from_config([d.model_dump() for d in _default_integration_definitions()])
+        )
+        credential_store = AsyncMock()
+        credential_store.get_value.return_value = {"api_key": "sk-ant"}
+        app = FastAPI()
+
+        async def mock_extract_principal():
+            return mock_principal
+
+        app.include_router(
+            create_integrations_router(
+                integration_repo,
+                tracker_factory,
+                registry=registry,
+                credential_store=credential_store,
+            )
+        )
+        from volundr.adapters.inbound.auth import extract_principal
+
+        app.dependency_overrides[extract_principal] = mock_extract_principal
+        client = TestClient(app)
+        now = datetime.now(UTC)
+        for slug in ("anthropic", "claude-code"):
+            await integration_repo.save_connection(
+                IntegrationConnection(
+                    id=f"ai-{slug}",
+                    owner_id="user-1",
+                    integration_type="ai_provider",
+                    adapter="",
+                    credential_name=f"{slug}-cred",
+                    config={},
+                    enabled=True,
+                    created_at=now,
+                    updated_at=now,
+                    slug=slug,
+                )
+            )
+
+        with respx.mock(assert_all_called=True) as mock:
+            route = mock.get("https://api.anthropic.com/v1/models").mock(
+                return_value=httpx.Response(200, json={"data": [{"id": "a"}, {"id": "b"}]})
+            )
+            resp = client.post("/api/v1/integrations/ai-anthropic/test")
         assert resp.json()["success"] is True
+        assert resp.json()["detail"] == "Key works · 2 models available"
+        request = route.calls[0].request
+        assert request.headers["x-api-key"] == "sk-ant"
+        assert request.headers["anthropic-version"] == "2023-06-01"
+
+        with respx.mock() as mock:
+            mock.get("https://api.anthropic.com/v1/models").mock(return_value=httpx.Response(401))
+            resp = client.post("/api/v1/integrations/ai-anthropic/test")
+        assert resp.json()["success"] is False
+        assert "rejected this key" in resp.json()["error"]
+
+        with respx.mock() as mock:
+            mock.get("https://api.anthropic.com/v1/models").mock(return_value=httpx.Response(500))
+            resp = client.post("/api/v1/integrations/ai-anthropic/test")
+        assert "HTTP 500" in resp.json()["error"]
+
+        # Subscription sign-ins have no cheap probe; existence is what we can say.
+        credential_store.get_value.return_value = {"token": "oat"}
+        resp = client.post("/api/v1/integrations/ai-claude-code/test")
+        assert resp.json() == {
+            "success": True,
+            "provider": "claude-code",
+            "workspace": None,
+            "user": None,
+            "detail": "Credential stored",
+            "repositories": [],
+            "error": None,
+        }
+
+        credential_store.get_value.return_value = {"token": "x"}
+        resp = client.post("/api/v1/integrations/ai-anthropic/test")
+        assert resp.json()["error"] == "Credential has no api_key field"
 
     async def test_ai_provider_with_missing_credential(
         self,

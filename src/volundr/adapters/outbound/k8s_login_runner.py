@@ -27,6 +27,7 @@ class KubernetesLoginRunner(CredentialEnrollmentRunnerPort):
         namespace: str = "niuu-logins",
         codex_executable: str = "/usr/local/bin/codex",
         claude_executable: str = "/usr/local/bin/claude",
+        grok_executable: str = "/usr/local/bin/grok",
         worker_interval: float = 0.1,
         cpu_request: str = "100m",
         request_timeout: float = 15,
@@ -41,6 +42,7 @@ class KubernetesLoginRunner(CredentialEnrollmentRunnerPort):
         self._namespace = namespace
         self._codex_executable = codex_executable
         self._claude_executable = claude_executable
+        self._grok_executable = grok_executable
         self._worker_interval = worker_interval
         self._cpu_request = cpu_request
         self._timeout = request_timeout
@@ -54,7 +56,14 @@ class KubernetesLoginRunner(CredentialEnrollmentRunnerPort):
         )
 
     def supports_enrollment(self, method: str) -> bool:
-        return method in {"codex_device", "claude_setup"}
+        return method in {"codex_device", "claude_setup", "grok_device"}
+
+    def _executable(self, method: str) -> str:
+        if method == "codex_device":
+            return self._codex_executable
+        if method == "grok_device":
+            return self._grok_executable
+        return self._claude_executable
 
     async def _configure(self) -> None:
         from kubernetes_asyncio import config
@@ -105,9 +114,7 @@ class KubernetesLoginRunner(CredentialEnrollmentRunnerPort):
                                     "--method",
                                     enrollment.method,
                                     "--executable",
-                                    self._codex_executable
-                                    if enrollment.method == "codex_device"
-                                    else self._claude_executable,
+                                    self._executable(enrollment.method),
                                     "--ttl",
                                     str(ttl),
                                     "--interval",

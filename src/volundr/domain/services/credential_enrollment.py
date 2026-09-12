@@ -68,6 +68,11 @@ class CredentialEnrollmentService:
             raise CredentialEnrollmentError("Integration does not support interactive enrollment")
         if not self._runner.supports_enrollment(spec.method):
             raise CredentialEnrollmentError("Interactive enrollment is unavailable on this runtime")
+        if not self._runner.available_for(slug, spec.method):
+            raise CredentialEnrollmentError(
+                f"Sign-in for {slug} is not configured on this install; use an API key or "
+                f"configure it (for OAuth device sign-in: oauth.clients.{slug}.client_id)"
+            )
 
         connection = await self._resolve_connection(
             principal=principal,
@@ -115,6 +120,16 @@ class CredentialEnrollmentService:
             )
             raise CredentialEnrollmentError("Could not start provider login") from exc
         return await self._repository.save(started)
+
+    def available(self, slug: str) -> bool:
+        """Whether the catalog entry *slug* can be signed into on this install."""
+        definition = self._integration_registry.get_definition(slug)
+        spec = definition.credential_enrollment if definition is not None else None
+        if spec is None:
+            return False
+        return self._runner.supports_enrollment(spec.method) and self._runner.available_for(
+            slug, spec.method
+        )
 
     async def get(self, enrollment_id: UUID, principal: Principal) -> CredentialEnrollment:
         enrollment = await self._repository.get(enrollment_id)

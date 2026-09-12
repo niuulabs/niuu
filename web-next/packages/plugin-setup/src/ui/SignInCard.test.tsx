@@ -30,6 +30,48 @@ describe('SignInCard', () => {
       'claude-code-setup',
     );
     expect(screen.queryByTestId('setup-signin-start-claude-code')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('setup-test-claude-code')).not.toBeInTheDocument();
+  });
+
+  it('tests a signed-in connection and shows the outcome', () => {
+    const onTest = vi.fn();
+    const connection = {
+      id: 'c1',
+      slug: 'github',
+      integrationType: 'source_control',
+      credentialName: 'github-signin',
+      enabled: true,
+      config: {},
+      credentialStatus: 'active',
+    };
+    const github = MOCK_CATALOG.find((entry) => entry.slug === 'github')!;
+    const first = renderWithSetup(
+      <SignInCard entry={github} connection={connection} onTest={onTest} testing={false} />,
+    );
+    fireEvent.click(screen.getByTestId('setup-test-github'));
+    expect(onTest).toHaveBeenCalledWith('c1');
+    first.unmount();
+    renderWithSetup(
+      <SignInCard
+        entry={github}
+        connection={connection}
+        onTest={onTest}
+        testing={false}
+        testResult={{
+          success: true,
+          provider: 'GitHubProvider',
+          workspace: null,
+          user: 'octocat',
+          error: null,
+          detail: '7 repositories reachable',
+          repositories: ['a/b', 'c/d', 'e/f', 'g/h', 'i/j', 'k/l', 'm/n'],
+        }}
+      />,
+    );
+    expect(screen.getByTestId('setup-test-ok-github')).toHaveTextContent(
+      '7 repositories reachable',
+    );
+    expect(screen.getByTestId('setup-test-repos-github')).toHaveTextContent('and 2 more');
   });
 
   it('offers to sign in again when the connection still needs auth', async () => {

@@ -97,7 +97,7 @@ def runner(client: _Client) -> DockerLoginRunner:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["codex_device", "claude_setup"])
+@pytest.mark.parametrize("method", ["codex_device", "claude_setup", "grok_device"])
 async def test_start_runs_sealed_worker_container(
     runner: DockerLoginRunner, client: _Client, method: str
 ) -> None:
@@ -115,7 +115,11 @@ async def test_start_runs_sealed_worker_container(
     command = kwargs["command"]
     assert command[:2] == ["/opt/venv/bin/python", "-c"]
     assert "login_worker" in command[2] or "def main" in command[2]
-    expected_exe = "/usr/local/bin/codex" if method == "codex_device" else "/usr/local/bin/claude"
+    expected_exe = {
+        "codex_device": "/usr/local/bin/codex",
+        "claude_setup": "/usr/local/bin/claude",
+        "grok_device": "/usr/local/bin/grok",
+    }[method]
     assert command[command.index("--executable") + 1] == expected_exe
     assert command[command.index("--method") + 1] == method
     assert int(command[command.index("--ttl") + 1]) > 0
