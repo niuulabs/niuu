@@ -109,6 +109,10 @@ class TestRender:
         }
         assert injection["secret_kwargs_env"] == {"encryption_key": "NIUU_CREDENTIAL_KEY"}
         assert json.loads(env["OAUTH__CLIENTS"]) == {}
+        assert json.loads(env["CODEX_CREDENTIAL_BROKER"]) == {
+            "adapter": sc.CODEX_CREDENTIAL_BROKER_ADAPTER,
+            "kwargs": {},
+        }
         login = json.loads(env["CREDENTIAL_ENROLLMENT_RUNNER"])
         assert login["adapter"] == sc.DOCKER_LOGIN_RUNNER_ADAPTER
         assert login["kwargs"] == {

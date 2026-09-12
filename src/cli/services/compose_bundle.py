@@ -45,6 +45,11 @@ WORKLOAD_IDENTITY_CONTRIBUTOR = (
     "volundr.adapters.outbound.contributors.workload_identity.WorkloadIdentityContributor"
 )
 DOCKER_LOGIN_RUNNER_ADAPTER = "volundr.adapters.outbound.docker_login_runner.DockerLoginRunner"
+# Despite its name this broker only needs the credential store and the
+# Postgres refresh lock, both of which the bundle has.
+CODEX_CREDENTIAL_BROKER_ADAPTER = (
+    "volundr.adapters.outbound.codex_credential_broker.OpenBaoCodexCredentialBroker"
+)
 SESSION_SECRET_INJECTION_ADAPTER = (
     "volundr.adapters.outbound.session_file_secret_injection.SessionFileSecretInjectionAdapter"
 )
@@ -291,6 +296,12 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
                 for slug, client_id in settings.docker.sign_in_client_ids.items()
                 if client_id
             }
+        ),
+        # Codex sessions fetch ChatGPT tokens from the platform, which refreshes
+        # them in the credential store; without this the bundle's default
+        # broker refuses and Codex sessions cannot authenticate.
+        "CODEX_CREDENTIAL_BROKER": json.dumps(
+            {"adapter": CODEX_CREDENTIAL_BROKER_ADAPTER, "kwargs": {}}
         ),
         # Claude / Codex subscription sign-in runs the official CLI in a sealed
         # sibling container built from the same skuld image sessions use.

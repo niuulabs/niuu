@@ -395,6 +395,7 @@ class TestRouteDomainSelection:
             "ravn-trigger-api",
             "ravn-valkyrie-api",
             "catalog-api",
+            "forge-internal-api",
             "dispatch-api",
             "event-api",
             "review-api",

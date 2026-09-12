@@ -176,6 +176,9 @@ class TestStart:
         assert env["EXTRA"] == "1"
         assert env["FROM_POD"] == "yes"
         assert env["SKULD__CLI_TYPE"] == "codex"
+        # Codex auth goes through the platform broker, never a host ~/.codex.
+        assert env["SKULD__CODEX_AUTH__ADAPTER"] == "skuld.codex_auth.VolundrCodexAuthProvider"
+        assert json.loads(env["SKULD__CODEX_AUTH__KWARGS"]) == {}
         assert env["SESSION_ID"] == sid
         assert env["WORKSPACE_DIR"] == f"/volundr/sessions/{sid}/workspace"
         assert env["SKULD__SESSION__WORKSPACE_DIR"] == env["WORKSPACE_DIR"]
@@ -306,6 +309,57 @@ class TestStart:
             pytest.raises(RuntimeError, match="Flock sidecars are not supported"),
         ):
             await manager.start(session, spec)
+
+
+class TestBrokeredCodexAuth:
+    @pytest.mark.asyncio
+    async def test_codex_auth_kwargs_from_contributors(
+        self,
+        manager: DockerContainerPodManager,
+        client: _Client,
+        workspaces: Path,
+        session: Session,
+    ) -> None:
+        spec = SessionSpec(
+            values={
+                "broker": {
+                    "cliType": "codex",
+                    "codexAuth": {
+                        "kwargs": {
+                            "credential_name": "codex-setup",
+                            "credential_field": "auth.json",
+                        }
+                    },
+                }
+            },
+            pod_spec=None,
+        )
+        ws = _workspace(workspaces, session)
+        with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
+            await manager.start(session, spec)
+        env = client.containers.run_kwargs[0]["environment"]
+        assert env["SKULD__CODEX_AUTH__ADAPTER"] == "skuld.codex_auth.VolundrCodexAuthProvider"
+        assert json.loads(env["SKULD__CODEX_AUTH__KWARGS"]) == {
+            "credential_name": "codex-setup",
+            "credential_field": "auth.json",
+        }
+        await manager.stop(session)
+
+    def test_custom_adapter_and_defaults(
+        self, client: _Client, workspaces: Path, tmp_path: Path
+    ) -> None:
+        del client
+        manager = DockerContainerPodManager(
+            workspaces_dir=str(workspaces),
+            state_file=str(tmp_path / "s.json"),
+            codex_auth_adapter="custom.Provider",
+            codex_auth_kwargs={"token_path": "/x"},
+        )
+        values = manager._with_brokered_credential_values({"broker": {}})
+        assert values["broker"]["codexAuth"] == {
+            "adapter": "custom.Provider",
+            "kwargs": {"token_path": "/x"},
+        }
 
 
 class TestHostPathBinds:

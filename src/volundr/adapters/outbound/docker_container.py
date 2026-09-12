@@ -32,6 +32,7 @@ import httpx
 from docker.errors import DockerException, ImageNotFound, NotFound
 
 from niuu.ports.session_proxy import SessionProxyTarget
+from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
 from volundr.adapters.outbound.local_process import (
     FlockPortPlan,
     LocalProcessPodManager,
@@ -51,6 +52,7 @@ DEFAULT_CONTAINER_PREFIX = "niuu-session-"
 DEFAULT_SANDBOX_SESSIONS_DIR = "/volundr/sessions"
 DEFAULT_SANDBOX_HOME = "/home/skuld"
 DEFAULT_PLATFORM_URL = "http://host.docker.internal:8080"
+DEFAULT_CODEX_AUTH_ADAPTER = "skuld.codex_auth.VolundrCodexAuthProvider"
 DEFAULT_LOG_TAIL = 100
 DEFAULT_MONITOR_INTERVAL_SECONDS = 2.0
 DEFAULT_READY_POLL_SECONDS = 0.5
@@ -80,7 +82,7 @@ class _NetworkRegistry:
             unregister(session_id)
 
 
-class DockerContainerPodManager(LocalProcessPodManager):
+class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodManager):
     """Run each Forge session as a Skuld container on the host Docker daemon."""
 
     def __init__(
@@ -100,6 +102,8 @@ class DockerContainerPodManager(LocalProcessPodManager):
         monitor_interval_seconds: float = DEFAULT_MONITOR_INTERVAL_SECONDS,
         ready_poll_seconds: float = DEFAULT_READY_POLL_SECONDS,
         ready_probe_timeout_seconds: float = DEFAULT_READY_PROBE_TIMEOUT_SECONDS,
+        codex_auth_adapter: str = DEFAULT_CODEX_AUTH_ADAPTER,
+        codex_auth_kwargs: dict | None = None,
         **kwargs: Any,
     ) -> None:
         # The base constructor recovers persisted sessions through
@@ -117,6 +121,11 @@ class DockerContainerPodManager(LocalProcessPodManager):
         self._monitor_interval = float(monitor_interval_seconds)
         self._ready_poll = float(ready_poll_seconds)
         self._ready_probe_timeout = float(ready_probe_timeout_seconds)
+        # A container has no host ~/.codex; Codex sessions fetch (and refresh)
+        # their ChatGPT tokens through the platform's broker instead.
+        self._configure_brokered_credentials(
+            codex_auth_adapter=codex_auth_adapter, codex_auth_kwargs=codex_auth_kwargs
+        )
         # Liveness as last observed by the monitor tasks. Consulted by the
         # synchronous base-class hooks so the event loop never waits on the
         # Docker API while serving requests.
@@ -261,7 +270,9 @@ class DockerContainerPodManager(LocalProcessPodManager):
     ) -> dict[str, str]:
         session_id = str(session.id)
         sandbox_workspace = self._sandbox_workspace(session_id)
-        env = self._session_env(spec, Path(sandbox_workspace))
+        brokered = self._with_brokered_credentials(spec)
+        env = self._session_env(brokered, Path(sandbox_workspace))
+        env.update(self._brokered_credential_environment(brokered))
         if spec.pod_spec and spec.pod_spec.env:
             for entry in spec.pod_spec.env:
                 if name := entry.get("name"):

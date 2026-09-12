@@ -131,6 +131,7 @@ _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "ravn-valkyrie-api": "ravn",
     "llm-api": "bifrost",
     "catalog-api": "volundr",
+    "forge-internal-api": "volundr",
     "dispatch-api": "ting",
     "event-api": "ting",
     "review-api": "ting",
