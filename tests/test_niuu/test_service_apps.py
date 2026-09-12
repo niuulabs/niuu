@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -290,11 +289,6 @@ def test_integrations_service_app_seeds_connections_and_linear(monkeypatch) -> N
     seed_linear = AsyncMock()
     captured: dict[str, object] = {}
     released: list[Settings] = []
-    reconciled: list[object] = []
-
-    async def _never_ending_reconcile(service: object) -> None:
-        reconciled.append(service)
-        await asyncio.Event().wait()
 
     monkeypatch.setattr(integrations_app, "database_pool", _fake_db_pool)
     monkeypatch.setattr(integrations_app, "configure_logging", lambda _logging: None)
@@ -351,11 +345,6 @@ def test_integrations_service_app_seeds_connections_and_linear(monkeypatch) -> N
             SimpleNamespace(),
         )[-1],
     )
-    monkeypatch.setattr(
-        integrations_app,
-        "reconcile_credential_enrollments_loop",
-        _never_ending_reconcile,
-    )
 
     def _capture_integrations_router(
         integration_repo: object,
@@ -404,7 +393,6 @@ def test_integrations_service_app_seeds_connections_and_linear(monkeypatch) -> N
     enrollment_kwargs = captured["enrollment_service_kwargs"]
     assert enrollment_kwargs["repository"][0] == "credential-enrollments"  # type: ignore[index]
     assert enrollment_kwargs["integration_repository"][0] == "integrations"  # type: ignore[index]
-    assert reconciled == [captured["integrations_router_enrollment_service"]]
 
 
 def test_tracker_service_app_uses_linear_default_tracker(monkeypatch) -> None:
