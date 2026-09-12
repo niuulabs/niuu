@@ -69,6 +69,18 @@ export const MOCK_CATALOG: CatalogEntry[] = [
     configSchema: {},
   },
   {
+    slug: 'deepseek',
+    name: 'DeepSeek',
+    description: 'DeepSeek API key for DeepSeek models and the DeepSeek Harness runtime',
+    integrationType: 'ai_provider',
+    authType: 'api_key',
+    credentialSchema: {
+      required: ['api_key'],
+      properties: { api_key: { label: 'API Key', type: 'password' } },
+    },
+    configSchema: {},
+  },
+  {
     slug: 'github',
     name: 'GitHub',
     description: 'GitHub source control — repo browsing, clone, PRs, and MCP server',

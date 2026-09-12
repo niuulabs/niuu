@@ -22,6 +22,7 @@ describe('RuntimeStep', () => {
       />,
     );
     expect(screen.getByTestId('setup-runtime-docker')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('setup-runtime-docker')).not.toBeDisabled();
     expect(screen.getByTestId('setup-runtime-openshell')).toBeDisabled();
     expect(screen.getByTestId('setup-runtime-image')).toHaveTextContent(
       'ghcr.io/niuulabs/skuld:dev',

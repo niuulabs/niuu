@@ -74,6 +74,7 @@ describe('catalog helpers', () => {
       'claude-code',
       'codex',
       'xai',
+      'deepseek',
     ]);
     expect(catalogForStep(MOCK_CATALOG, WIZARD_STEPS[0]!)).toEqual([]);
   });
@@ -215,6 +216,9 @@ describe('interactive sign-in helpers', () => {
     expect(
       enrollmentFailureMessage({ ...enrollment, errorCode: 'provider_login_rejected' }),
     ).toMatch(/rejected/);
+    expect(enrollmentFailureMessage({ ...enrollment, errorCode: 'login_worker_failed' })).toMatch(
+      /exited before finishing/,
+    );
     expect(
       enrollmentFailureMessage({ ...enrollment, errorCode: 'claude_token_not_found' }),
     ).toMatch(/without handing back/);

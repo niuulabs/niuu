@@ -225,6 +225,12 @@ const GROUP_SPECS: readonly GroupSpec[] = [
     keySlug: 'xai',
   },
   {
+    key: 'deepseek',
+    title: 'DeepSeek',
+    description: 'DeepSeek models and the DeepSeek Harness runtime',
+    keySlug: 'deepseek',
+  },
+  {
     key: 'github',
     title: 'GitHub',
     description: 'Clone, push, open pull requests, MCP server',
@@ -425,6 +431,9 @@ export function enrollmentFailureMessage(enrollment: Enrollment): string {
     return 'The sign-in helper could not be started on this host. Check the platform logs.';
   }
   if (code === 'provider_login_rejected') return 'The provider rejected the sign-in.';
+  if (code === 'login_worker_failed') {
+    return 'The sign-in helper exited before finishing. The platform log (docker compose logs niuu) has its exit code and output.';
+  }
   if (code === 'claude_token_not_found') {
     return 'Claude finished without handing back a token. Try again.';
   }

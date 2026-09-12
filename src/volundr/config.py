@@ -1078,6 +1078,18 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             env_from_credentials={"XAI_API_KEY": "api_key"},
         ),
         IntegrationDefinitionConfig(
+            slug="deepseek",
+            name="DeepSeek",
+            description="DeepSeek API key for DeepSeek models and the DeepSeek Harness runtime",
+            integration_type="ai_provider",
+            icon="deepseek",
+            credential_schema={
+                "required": ["api_key"],
+                "properties": {"api_key": {"label": "API Key", "type": "password"}},
+            },
+            env_from_credentials={"DEEPSEEK_API_KEY": "api_key"},
+        ),
+        IntegrationDefinitionConfig(
             slug="claude-code",
             name="Claude Code (subscription)",
             description="Connect your Claude subscription for Claude Code sessions",

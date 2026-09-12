@@ -80,6 +80,7 @@ export function RuntimeStep({
           title="Docker container"
           description="One container per session on this host: private workspace and home, no access to the platform's environment, only the credentials its integrations ask for."
           selected
+          onSelect={() => undefined}
           testId="setup-runtime-docker"
           aside={
             <span className="setup-chip setup-chip--ok">

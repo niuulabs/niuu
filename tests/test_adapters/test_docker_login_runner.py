@@ -41,9 +41,14 @@ class _Container:
     def __init__(self, name: str, status: str = "running") -> None:
         self.name = name
         self.status = status
+        self.attrs: dict[str, Any] = {"State": {"ExitCode": 137, "OOMKilled": True}}
         self.exec_calls: list[dict[str, Any]] = []
         self.exec_results: list[tuple[int, bytes]] = []
         self.removed: list[dict[str, Any]] = []
+
+    def logs(self, **kwargs: Any) -> bytes:
+        del kwargs
+        return b"Traceback: boom\n"
 
     def reload(self) -> None:
         return None
@@ -142,9 +147,14 @@ async def test_poll_reports_missing_pending_failed_and_worker_status(
     assert (await runner.poll_enrollment(item)).state == CredentialEnrollmentState.PENDING
 
     container.status = "exited"
-    failed = await runner.poll_enrollment(item)
+    with patch.object(dlr.logger, "error") as log_error:
+        failed = await runner.poll_enrollment(item)
     assert failed.state == CredentialEnrollmentState.FAILED
     assert failed.error_code == "login_worker_failed"
+    logged = log_error.call_args.args
+    assert "exited" in logged[0]
+    assert 137 in logged and True in logged
+    assert "Traceback: boom" in logged[-1]
 
     container.status = "running"
     container.exec_results.append(

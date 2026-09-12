@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 from importlib.resources import files
@@ -29,11 +30,15 @@ from volundr.domain.models import (
 )
 from volundr.domain.ports import CredentialEnrollmentRunnerPort
 
+logger = logging.getLogger(__name__)
+
 LOGIN_ROOT = "/tmp/login"
 LOGIN_LABEL = "niuu.io/credential-enrollment"
 DEFAULT_CONTAINER_PREFIX = "niuu-login-"
 DEFAULT_WORKER_PYTHON = "/opt/venv/bin/python"
 DEFAULT_CODE_ENV = "NIUU_LOGIN_CODE"
+DEFAULT_LOG_TAIL = 40
+DEFAULT_LOG_CHARS = 4000
 
 _READ_STATUS = (
     "from pathlib import Path; import json; "
@@ -82,6 +87,8 @@ class DockerLoginRunner(CredentialEnrollmentRunnerPort):
         worker_interval: float = 0.1,
         memory_limit: str = "512m",
         temporary_storage_limit: str = "32m",
+        log_tail: int = DEFAULT_LOG_TAIL,
+        log_chars: int = DEFAULT_LOG_CHARS,
         **_extra: object,
     ) -> None:
         self._image = str(image)
@@ -94,6 +101,8 @@ class DockerLoginRunner(CredentialEnrollmentRunnerPort):
         self._worker_interval = float(worker_interval)
         self._memory_limit = str(memory_limit)
         self._storage_limit = str(temporary_storage_limit)
+        self._log_tail = int(log_tail)
+        self._log_chars = int(log_chars)
         self._worker_source = (
             files("volundr.adapters.outbound").joinpath("login_worker.py").read_text()
         )
@@ -207,6 +216,21 @@ class DockerLoginRunner(CredentialEnrollmentRunnerPort):
         if status == "created":
             return CredentialEnrollmentPoll(state=CredentialEnrollmentState.PENDING)
         if status != "running":
+            # The worker only exits on a timeout, a crash or a kill. Its stdout
+            # never carries secrets, so the tail is safe to keep in the log.
+            state = container.attrs.get("State") or {}
+            logs = await asyncio.to_thread(container.logs, tail=self._log_tail)
+            text = logs.decode("utf-8", errors="replace") if isinstance(logs, bytes) else str(logs)
+            logger.error(
+                "Login helper %s exited (status=%s exit_code=%s oom_killed=%s) "
+                "for enrollment %s:\n%s",
+                container.name,
+                status,
+                state.get("ExitCode"),
+                state.get("OOMKilled"),
+                enrollment.id,
+                text.strip()[-self._log_chars :],
+            )
             return CredentialEnrollmentPoll(
                 state=CredentialEnrollmentState.FAILED, error_code="login_worker_failed"
             )
