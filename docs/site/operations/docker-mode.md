@@ -190,21 +190,10 @@ and code, polls the token endpoint at the interval the provider asks for, and
 stores the user token (plus refresh token and expiry when the app issues
 expiring tokens) under the same credential the token form would use.
 
-Niuu ships the public client ids of its own applications
-(`SHIPPED_SIGN_IN_CLIENT_IDS` in `src/volundr/config.py`), the way the `gh`,
-Codex and Claude CLIs ship theirs, so a fresh install signs in without any
-configuration. Registering them is a one-time step for the niuulabs
-organisation:
-
-- **GitHub:** an *OAuth App* (not a GitHub App: an OAuth App's token reaches
-  every repository the user can reach, a GitHub App's only the installations)
-  under the organisation's developer settings, with *Enable Device Flow*
-  ticked. Device-flow tokens of OAuth Apps do not expire.
-- **GitLab:** an application on gitlab.com with the *Device authorization
-  grant* enabled and the `api` and `read_user` scopes. Its tokens last two
-  hours and the platform refreshes them.
-
-A self-hosted GitLab needs its own application; set its id per instance:
+An install never depends on an application someone else owns: the client id
+belongs to the operator's own GitHub OAuth App (with *Enable Device Flow*
+ticked) or GitLab application (device grant enabled, `api` and `read_user`
+scopes), set per instance:
 
 ```yaml
 docker:
