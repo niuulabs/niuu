@@ -158,8 +158,8 @@ export function IntegrationCard({
         </form>
       ) : (
         <p className="setup-note setup-note--warn">
-          <AlertIcon size={13} /> This provider signs in through a browser or device flow, which
-          this install cannot run yet. Use an API key provider for now.
+          <AlertIcon size={13} /> This provider signs in through the provider itself; use the
+          sign-in card for it.
         </p>
       )}
     </section>

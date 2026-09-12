@@ -128,18 +128,33 @@ front door over the platform's existing APIs: every value it stores lands where
 | --- | --- | --- |
 | Welcome | Host facts recorded by `niuu up` (hostname, OS, memory, GPU, Docker version). | Nothing. |
 | System check | The same facts plus live checks from inside the platform: database reachable, Docker socket present, git installed. A failed check blocks **Continue**; a warning does not. | Nothing. |
-| AI providers | Every `ai_provider` entry in the integrations catalog (Anthropic, OpenAI, ...). API-key entries get a form; entries that need a browser or device sign-in are marked as unavailable in this install. **Test connection** appears once connected. | An integration connection with an inline credential (`POST /api/v1/integrations`), stored encrypted with the key from `secrets.env`. |
+| AI providers | Every `ai_provider` entry in the integrations catalog. API-key entries (Anthropic, OpenAI) get a form. Subscription entries (Claude Code, Codex) get a **Sign in** card: the platform runs the official CLI in a sealed helper container, the card shows the link and device code it produces, polls until the provider confirms, and for Claude takes the authorization code the browser hands back. **Test connection** appears once connected. | An integration connection with an inline credential (`POST /api/v1/integrations`), or an enrollment (`POST /api/v1/integrations/enrollments`) whose credential the platform stores when the sign-in completes. Both encrypted with the key from `secrets.env`. |
 | Git | `source_control` entries (GitHub, GitLab) with token and instance fields from the catalog schema. | Same. |
 | Tickets | `issue_tracker` entries (Linear). | Same. |
-| Finish | What was connected, grouped by type, and the access note (sign-in is off on this install). **Open Niuu** marks setup complete and opens `/ready`. | `POST /api/v1/niuu/setup/complete`. |
+| Runtime & access | How sessions are isolated (one container each, credentials mounted read-only), the addresses the web app answers on, whether that is this machine only or the network, and that sign-in is off. Changing the bind address is `docker.bind_host` in `~/.niuu/config.yaml` plus `niuu up`; the step says so instead of offering a toggle it cannot honour. | The bind and external host it showed, as the step's non-secret data. |
+| Finish | What was connected, grouped by type, and the access note. **Open Niuu** marks setup complete and opens `/ready`, whose three cards each spell out the first steps in Völundr, Ting and Ravn. | `POST /api/v1/niuu/setup/complete`. |
 
 Progress is kept in `setup-state.json` under the data directory (each finished
 step, and the completion time) so a reload resumes at the first unfinished
 step. `POST /api/v1/niuu/setup/reset` clears it and the wizard shows again on
-the next visit. Steps that need a backend this bundle does not have yet (a
-local model served by vLLM, runtime and access choices, Claude and Codex device
-sign-in) are not offered rather than shown as placeholders; enable vLLM through
-`docker.vllm` in `config.yaml` for now.
+the next visit. The local-model step (a model served by vLLM, chosen from a
+curated list) is not offered yet rather than shown as a placeholder; enable
+vLLM through `docker.vllm` in `config.yaml` for now.
+
+### Subscription sign-in (Claude Code, Codex)
+
+The bundle configures `CREDENTIAL_ENROLLMENT_RUNNER` with
+`DockerLoginRunner`: each sign-in starts a `niuu-login-<id>` container from the
+skuld image on the compose network, read-only except for a memory-backed
+`/tmp`, with no platform environment and all capabilities dropped. It runs the
+same `login_worker.py` the Kubernetes runner uses (`claude setup-token` or the
+Codex app-server device flow). The platform reads the worker's status over
+`docker exec`, stores the resulting credential in the encrypted store, and
+removes the container. Cancelling, expiry (15 minutes) and a crashed helper
+all surface in the wizard with the reason; `niuu down` removes any helper
+that is still around. GitHub and Linear stay token-based in this mode: an
+OAuth app or GitHub App would need a redirect URL and client secret registered
+for every install, which a single-host bundle cannot ship.
 
 ## Updating
 

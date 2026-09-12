@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useOptionalService, useService } from '@niuulabs/plugin-sdk';
-import type { ConnectIntegrationInput } from '../domain/setup';
+import { isEnrollmentActive, type ConnectIntegrationInput } from '../domain/setup';
 import type { ISetupService } from '../ports';
 
 export const SETUP_SERVICE_KEY = 'setup';
@@ -9,7 +9,11 @@ export const setupKeys = {
   system: ['setup', 'system'] as const,
   catalog: ['setup', 'catalog'] as const,
   integrations: ['setup', 'integrations'] as const,
+  enrollment: (id: string) => ['setup', 'enrollment', id] as const,
 };
+
+/** How often the wizard asks the platform about a running sign-in. */
+export const ENROLLMENT_POLL_MS = 2000;
 
 export function useSetupService(): ISetupService {
   return useService<ISetupService>(SETUP_SERVICE_KEY);
@@ -74,5 +78,62 @@ export function useTestIntegration() {
   const service = useSetupService();
   return useMutation({
     mutationFn: (connectionId: string) => service.testIntegration(connectionId),
+  });
+}
+
+export function useStartEnrollment() {
+  const service = useSetupService();
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug, credentialName }: { slug: string; credentialName: string }) =>
+      service.startEnrollment(slug, credentialName),
+    onSuccess: (enrollment) => client.setQueryData(setupKeys.enrollment(enrollment.id), enrollment),
+  });
+}
+
+/** Polls a sign-in while it is running; refreshes connections once it completes. */
+export function useEnrollment(enrollmentId: string | null) {
+  const service = useSetupService();
+  const client = useQueryClient();
+  return useQuery({
+    queryKey: setupKeys.enrollment(enrollmentId ?? ''),
+    queryFn: async () => {
+      const enrollment = await service.getEnrollment(enrollmentId ?? '');
+      if (enrollment.state === 'complete') {
+        await client.invalidateQueries({ queryKey: setupKeys.integrations });
+      }
+      return enrollment;
+    },
+    enabled: enrollmentId !== null,
+    // The start mutation seeds the cache; poll from the first render anyway.
+    staleTime: 0,
+    refetchInterval: (query) => (isEnrollmentActive(query.state.data) ? ENROLLMENT_POLL_MS : false),
+    // The user finishes the sign-in in the provider's tab, so this tab is in
+    // the background for the whole time that matters.
+    refetchIntervalInBackground: true,
+  });
+}
+
+export function useCancelEnrollment() {
+  const service = useSetupService();
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (enrollmentId: string) => service.cancelEnrollment(enrollmentId),
+    onSuccess: (enrollment) => client.setQueryData(setupKeys.enrollment(enrollment.id), enrollment),
+  });
+}
+
+export function useSubmitEnrollmentCode() {
+  const service = useSetupService();
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ enrollmentId, code }: { enrollmentId: string; code: string }) =>
+      service.submitEnrollmentCode(enrollmentId, code),
+    onSuccess: async (enrollment) => {
+      client.setQueryData(setupKeys.enrollment(enrollment.id), enrollment);
+      if (enrollment.state === 'complete') {
+        await client.invalidateQueries({ queryKey: setupKeys.integrations });
+      }
+    },
   });
 }

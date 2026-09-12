@@ -75,6 +75,12 @@ class HostFacts:
     data_dir: str
     disk_free_bytes: int
     disk_total_bytes: int
+    # How `niuu up` published the platform: where it listens and the address
+    # the wizard's runtime step shows. Empty when not started through the CLI.
+    bind_host: str = ""
+    external_host: str = ""
+    port: int = 0
+    skuld_image: str = ""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2)
@@ -427,7 +433,14 @@ def _os_release() -> tuple[str, str]:
     return _platform.system(), _platform.mac_ver()[0] or _platform.release()
 
 
-def collect_host_facts(config: DockerPreflightConfig) -> HostFacts:
+def collect_host_facts(
+    config: DockerPreflightConfig,
+    *,
+    bind_host: str = "",
+    external_host: str = "",
+    port: int = 0,
+    skuld_image: str = "",
+) -> HostFacts:
     """Gather host facts for the wizard; never raises for missing tools."""
     info = docker_info(config)
     docker_version = ""
@@ -464,4 +477,8 @@ def collect_host_facts(config: DockerPreflightConfig) -> HostFacts:
         data_dir=str(data_dir),
         disk_free_bytes=disk_free,
         disk_total_bytes=disk_total,
+        bind_host=bind_host,
+        external_host=external_host,
+        port=port,
+        skuld_image=skuld_image,
     )

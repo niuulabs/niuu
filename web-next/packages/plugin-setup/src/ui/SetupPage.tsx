@@ -11,6 +11,7 @@ import {
 } from '../domain/setup';
 import { FinishStep } from './FinishStep';
 import { IntegrationsStep } from './IntegrationsStep';
+import { RuntimeStep } from './RuntimeStep';
 import { SetupRail } from './SetupRail';
 import { SystemStep } from './SystemStep';
 import { WelcomeStep } from './WelcomeStep';
@@ -44,6 +45,10 @@ const STEP_COPY: Record<WizardStepId, { title: string; lede: string }> = {
   tracker: {
     title: 'Where does work come from?',
     lede: 'Ting turns issues into sagas and dispatches them. Optional for now.',
+  },
+  runtime: {
+    title: 'Runtime & access',
+    lede: 'How sessions are isolated on this host, and who can reach the web app.',
   },
   finish: {
     title: 'Ready to go',
@@ -92,7 +97,11 @@ export function SetupPage({ onNavigate }: SetupPageProps = {}) {
 
   const advance = () => {
     const next = nextStep(step);
-    completeStep.mutate({ step: backendStepId(step) });
+    const data =
+      step === 'runtime' && host
+        ? { bind_host: host.bind_host ?? '', external_host: host.external_host ?? '' }
+        : undefined;
+    completeStep.mutate({ step: backendStepId(step), data });
     if (next) setCurrent(next);
   };
 
@@ -160,6 +169,7 @@ export function SetupPage({ onNavigate }: SetupPageProps = {}) {
                 }
               />
             ) : null}
+            {step === 'runtime' ? <RuntimeStep facts={host} state={stateQuery.data} /> : null}
             {step === 'finish' ? (
               <FinishStep
                 state={stateQuery.data}

@@ -1,6 +1,7 @@
 import type {
   CatalogEntry,
   ConnectIntegrationInput,
+  Enrollment,
   IntegrationConnection,
   IntegrationTestResult,
   SetupState,
@@ -39,6 +40,15 @@ export const MOCK_CATALOG: CatalogEntry[] = [
     description: 'Connect your Claude subscription for Claude Code sessions',
     integrationType: 'ai_provider',
     authType: 'browser_login',
+    credentialSchema: {},
+    configSchema: {},
+  },
+  {
+    slug: 'codex',
+    name: 'OpenAI Codex (ChatGPT)',
+    description: 'User-scoped ChatGPT subscription login for Codex runtimes',
+    integrationType: 'ai_provider',
+    authType: 'device_code',
     credentialSchema: {},
     configSchema: {},
   },
@@ -89,6 +99,10 @@ export const MOCK_SYSTEM: SystemReport = {
     data_dir: '/var/lib/niuu',
     disk_free_bytes: 3 * 1024 ** 4,
     disk_total_bytes: 4 * 1024 ** 4,
+    bind_host: '0.0.0.0',
+    external_host: '192.168.1.42',
+    port: 8080,
+    skuld_image: 'ghcr.io/niuulabs/skuld:dev',
   },
   checks: [
     {
@@ -114,6 +128,8 @@ export interface MockSetupOptions {
   initialState?: Partial<SetupState>;
   catalog?: CatalogEntry[];
   system?: SystemReport;
+  /** How many status reads an interactive sign-in stays pending before it completes. */
+  enrollmentPolls?: number;
 }
 
 export function createMockSetupService(options: MockSetupOptions = {}): ISetupService {
@@ -131,7 +147,34 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
   const catalog = options.catalog ?? MOCK_CATALOG;
   const system = options.system ?? MOCK_SYSTEM;
   const connections: IntegrationConnection[] = [];
+  const enrollments = new Map<string, Enrollment & { polls: number }>();
+  const enrollmentPolls = options.enrollmentPolls ?? 2;
   let sequence = 0;
+
+  const addConnection = (
+    entry: CatalogEntry,
+    credentialName: string,
+    config: Record<string, unknown>,
+  ): IntegrationConnection => {
+    sequence += 1;
+    const connection: IntegrationConnection = {
+      id: `mock-${sequence}`,
+      slug: entry.slug,
+      integrationType: entry.integrationType,
+      credentialName,
+      enabled: true,
+      config,
+      credentialStatus: 'valid',
+    };
+    connections.push(connection);
+    return connection;
+  };
+
+  const publicEnrollment = (row: Enrollment & { polls: number }): Enrollment => {
+    const { polls, ...rest } = row;
+    void polls;
+    return rest;
+  };
 
   return {
     async getState() {
@@ -168,18 +211,7 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
       await wait();
       const entry = catalog.find((candidate) => candidate.slug === input.slug);
       if (!entry) throw new Error(`Unknown integration ${input.slug}`);
-      sequence += 1;
-      const connection: IntegrationConnection = {
-        id: `mock-${sequence}`,
-        slug: input.slug,
-        integrationType: entry.integrationType,
-        credentialName: input.credentialName,
-        enabled: true,
-        config: input.config,
-        credentialStatus: 'valid',
-      };
-      connections.push(connection);
-      return connection;
+      return addConnection(entry, input.credentialName, input.config);
     },
     async testIntegration(connectionId): Promise<IntegrationTestResult> {
       await wait();
@@ -200,6 +232,75 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
         user: 'you',
         error: null,
       };
+    },
+    async startEnrollment(slug, credentialName) {
+      await wait();
+      const entry = catalog.find((candidate) => candidate.slug === slug);
+      if (!entry) throw new Error(`Unknown integration ${slug}`);
+      if (entry.authType !== 'browser_login' && entry.authType !== 'device_code') {
+        throw new Error('Integration does not support interactive enrollment');
+      }
+      const existing = [...enrollments.values()].find(
+        (row) =>
+          row.providerSlug === slug && (row.state === 'pending' || row.state === 'awaiting_user'),
+      );
+      if (existing) return publicEnrollment(existing);
+      sequence += 1;
+      const isBrowser = entry.authType === 'browser_login';
+      const row: Enrollment & { polls: number } = {
+        id: `enroll-${sequence}`,
+        connectionId: `pending-${sequence}`,
+        providerSlug: slug,
+        credentialName,
+        state: 'pending',
+        verificationUri: '',
+        userCode: '',
+        expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+        errorCode: '',
+        inputRequired: isBrowser,
+        polls: 0,
+      };
+      enrollments.set(row.id, row);
+      return publicEnrollment(row);
+    },
+    async getEnrollment(enrollmentId) {
+      await wait();
+      const row = enrollments.get(enrollmentId);
+      if (!row) throw new Error('Credential enrollment not found');
+      if (row.state === 'pending') {
+        row.state = 'awaiting_user';
+        row.verificationUri = row.inputRequired
+          ? 'https://claude.ai/oauth/authorize?client_id=mock'
+          : 'https://auth.openai.com/codex/device';
+        row.userCode = row.inputRequired ? '' : 'MOCK-1234';
+      } else if (row.state === 'awaiting_user' && !row.inputRequired) {
+        row.polls += 1;
+        if (row.polls >= enrollmentPolls) {
+          const entry = catalog.find((candidate) => candidate.slug === row.providerSlug)!;
+          row.connectionId = addConnection(entry, row.credentialName, {}).id;
+          row.state = 'complete';
+        }
+      }
+      return publicEnrollment(row);
+    },
+    async cancelEnrollment(enrollmentId) {
+      await wait();
+      const row = enrollments.get(enrollmentId);
+      if (!row) throw new Error('Credential enrollment not found');
+      if (row.state === 'pending' || row.state === 'awaiting_user') row.state = 'cancelled';
+      return publicEnrollment(row);
+    },
+    async submitEnrollmentCode(enrollmentId, code) {
+      await wait();
+      const row = enrollments.get(enrollmentId);
+      if (!row) throw new Error('Credential enrollment not found');
+      if (!row.inputRequired) throw new Error('This login does not accept an authorization code');
+      if (row.state !== 'awaiting_user') throw new Error('Login worker is not running');
+      if (!code.trim()) throw new Error('Authorization code is required');
+      const entry = catalog.find((candidate) => candidate.slug === row.providerSlug)!;
+      row.connectionId = addConnection(entry, row.credentialName, {}).id;
+      row.state = 'complete';
+      return publicEnrollment(row);
     },
   };
 }

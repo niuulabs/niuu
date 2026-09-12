@@ -41,6 +41,31 @@ export interface HostFacts {
   data_dir: string;
   disk_free_bytes: number;
   disk_total_bytes: number;
+  /** How `niuu up` published the platform; empty/0 when not started through the CLI. */
+  bind_host?: string;
+  external_host?: string;
+  port?: number;
+  skuld_image?: string;
+}
+
+export type AccessMode = 'local' | 'lan' | 'unknown';
+
+/** Who can reach the web app, derived from the bind address `niuu up` used. */
+export function accessMode(facts: HostFacts | null): AccessMode {
+  const bind = (facts?.bind_host ?? '').trim();
+  if (!bind) return 'unknown';
+  if (bind === '127.0.0.1' || bind === 'localhost' || bind === '::1') return 'local';
+  return 'lan';
+}
+
+/** Addresses the web app answers on, given the bind address and detected LAN host. */
+export function accessUrls(facts: HostFacts | null): string[] {
+  if (!facts || !facts.port) return [];
+  const urls = [`http://127.0.0.1:${facts.port}`];
+  if (accessMode(facts) === 'lan' && facts.external_host) {
+    urls.push(`http://${facts.external_host}:${facts.port}`);
+  }
+  return urls;
 }
 
 export interface SystemCheck {
@@ -102,8 +127,51 @@ export interface ConnectIntegrationInput {
   config: Record<string, unknown>;
 }
 
+/** Lifecycle of one interactive provider sign-in (Claude subscription, Codex device code). */
+export type EnrollmentState =
+  'pending' | 'awaiting_user' | 'complete' | 'failed' | 'expired' | 'cancelled';
+
+export interface Enrollment {
+  id: string;
+  connectionId: string;
+  providerSlug: string;
+  credentialName: string;
+  state: EnrollmentState;
+  /** Where the user signs in; empty until the CLI has produced it. */
+  verificationUri: string;
+  /** Device code to enter on the provider's page (device-code logins only). */
+  userCode: string;
+  expiresAt: string;
+  errorCode: string;
+  /** True when the provider hands the user a code to paste back (Claude). */
+  inputRequired: boolean;
+}
+
+export function isEnrollmentActive(enrollment: Enrollment | undefined): boolean {
+  return enrollment?.state === 'pending' || enrollment?.state === 'awaiting_user';
+}
+
+/** Human explanation for a failed, expired or cancelled sign-in. */
+export function enrollmentFailureMessage(enrollment: Enrollment): string {
+  if (enrollment.state === 'expired') return 'The sign-in timed out. Start it again.';
+  if (enrollment.state === 'cancelled') return 'Sign-in cancelled.';
+  const code = enrollment.errorCode;
+  if (code === 'runner_start_failed' || code === 'login_worker_missing') {
+    return 'The sign-in helper could not be started on this host. Check the platform logs.';
+  }
+  if (code === 'provider_login_rejected') return 'The provider rejected the sign-in.';
+  if (code === 'claude_token_not_found') {
+    return 'Claude finished without handing back a token. Try again.';
+  }
+  if (code === 'unexpected_login_url') {
+    return 'The sign-in helper was sent to an unexpected address and stopped for safety.';
+  }
+  return code ? `Sign-in failed (${code}).` : 'Sign-in failed.';
+}
+
 /** Wizard screens in presentation order. Only screens with a live backend appear. */
-export type WizardStepId = 'welcome' | 'system' | 'providers' | 'git' | 'tracker' | 'finish';
+export type WizardStepId =
+  'welcome' | 'system' | 'providers' | 'git' | 'tracker' | 'runtime' | 'finish';
 
 export interface WizardStep {
   id: WizardStepId;
@@ -118,6 +186,7 @@ export const WIZARD_STEPS: readonly WizardStep[] = [
   { id: 'providers', label: 'AI providers', integrationType: 'ai_provider' },
   { id: 'git', label: 'Git', integrationType: 'source_control' },
   { id: 'tracker', label: 'Tickets', integrationType: 'issue_tracker' },
+  { id: 'runtime', label: 'Runtime & access' },
   { id: 'finish', label: 'Finish' },
 ];
 
@@ -147,14 +216,27 @@ export function isStepDone(state: SetupState | undefined, step: WizardStepId): b
   return state.completedSteps.some((record) => record.step === id);
 }
 
-/** Only api-key style entries can be connected from the wizard today. */
+/** Entries connected with a pasted key or token (a form in the wizard). */
 export function isConnectableFromWizard(entry: CatalogEntry): boolean {
-  return entry.authType !== 'browser_login' && entry.authType !== 'device_code';
+  return !needsInteractiveSignIn(entry);
+}
+
+/** Entries connected by signing in through the provider (browser or device code). */
+export function needsInteractiveSignIn(entry: CatalogEntry): boolean {
+  return entry.authType === 'browser_login' || entry.authType === 'device_code';
 }
 
 export function catalogForStep(entries: CatalogEntry[], step: WizardStep): CatalogEntry[] {
   if (!step.integrationType) return [];
   return entries.filter((entry) => entry.integrationType === step.integrationType);
+}
+
+/** Credential states in which a connection exists but cannot be used yet. */
+const UNUSABLE_CREDENTIAL_STATUSES = new Set(['auth_required', 'enrolling']);
+
+/** True when the connection's credential still has to be (re)established. */
+export function connectionNeedsSignIn(connection: IntegrationConnection): boolean {
+  return UNUSABLE_CREDENTIAL_STATUSES.has(connection.credentialStatus);
 }
 
 export function connectionForSlug(

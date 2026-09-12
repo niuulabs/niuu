@@ -1,6 +1,7 @@
 import {
   catalogForStep,
   connectionForSlug,
+  needsInteractiveSignIn,
   type CatalogEntry,
   type ConnectIntegrationInput,
   type IntegrationConnection,
@@ -8,6 +9,7 @@ import {
   type WizardStep,
 } from '../domain/setup';
 import { IntegrationCard } from './IntegrationCard';
+import { SignInCard } from './SignInCard';
 
 export interface IntegrationsStepProps {
   step: WizardStep;
@@ -54,6 +56,9 @@ export function IntegrationsStep({
       ) : null}
       {entries.map((entry) => {
         const connection = connections ? connectionForSlug(connections, entry.slug) : undefined;
+        if (needsInteractiveSignIn(entry)) {
+          return <SignInCard key={entry.slug} entry={entry} connection={connection} />;
+        }
         return (
           <IntegrationCard
             key={entry.slug}

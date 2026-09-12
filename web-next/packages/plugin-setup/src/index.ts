@@ -31,6 +31,8 @@ export type { ISetupService } from './ports';
 export type {
   CatalogEntry,
   ConnectIntegrationInput,
+  Enrollment,
+  EnrollmentState,
   HostFacts,
   IntegrationConnection,
   IntegrationTestResult,

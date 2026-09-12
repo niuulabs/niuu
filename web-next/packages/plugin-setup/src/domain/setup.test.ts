@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { MOCK_CATALOG, MOCK_SYSTEM } from '../adapters/mock';
 import {
+  connectionNeedsSignIn,
+  accessMode,
+  accessUrls,
+  enrollmentFailureMessage,
+  isEnrollmentActive,
+  needsInteractiveSignIn,
   WIZARD_STEPS,
   backendStepId,
   buildConfigPayload,
@@ -66,6 +72,7 @@ describe('catalog helpers', () => {
       'anthropic',
       'openai',
       'claude-code',
+      'codex',
     ]);
     expect(catalogForStep(MOCK_CATALOG, WIZARD_STEPS[0]!)).toEqual([]);
   });
@@ -163,5 +170,101 @@ describe('host presentation', () => {
     expect(chips).toContain('Docker 27.3.1');
     const bare = hostChips({ ...MOCK_SYSTEM.host!, memory_total_bytes: 0, docker_version: '' });
     expect(bare.map((c) => c.label)).not.toContain('Docker ');
+  });
+});
+
+describe('interactive sign-in helpers', () => {
+  const enrollment = {
+    id: 'e',
+    connectionId: 'c',
+    providerSlug: 'codex',
+    credentialName: 'n',
+    state: 'failed' as const,
+    verificationUri: '',
+    userCode: '',
+    expiresAt: '',
+    errorCode: '',
+    inputRequired: false,
+  };
+
+  it('knows which catalog entries sign in interactively', () => {
+    expect(needsInteractiveSignIn({ ...MOCK_CATALOG[0]!, authType: 'browser_login' })).toBe(true);
+    expect(needsInteractiveSignIn({ ...MOCK_CATALOG[0]!, authType: 'device_code' })).toBe(true);
+    expect(needsInteractiveSignIn(MOCK_CATALOG[0]!)).toBe(false);
+  });
+
+  it('tracks active enrollments', () => {
+    expect(isEnrollmentActive(undefined)).toBe(false);
+    expect(isEnrollmentActive({ ...enrollment, state: 'pending' })).toBe(true);
+    expect(isEnrollmentActive({ ...enrollment, state: 'awaiting_user' })).toBe(true);
+    expect(isEnrollmentActive({ ...enrollment, state: 'complete' })).toBe(false);
+  });
+
+  it('explains failures in plain words', () => {
+    expect(enrollmentFailureMessage({ ...enrollment, state: 'expired' })).toMatch(/timed out/);
+    expect(enrollmentFailureMessage({ ...enrollment, state: 'cancelled' })).toBe(
+      'Sign-in cancelled.',
+    );
+    expect(enrollmentFailureMessage({ ...enrollment, errorCode: 'runner_start_failed' })).toMatch(
+      /could not be started/,
+    );
+    expect(enrollmentFailureMessage({ ...enrollment, errorCode: 'login_worker_missing' })).toMatch(
+      /could not be started/,
+    );
+    expect(
+      enrollmentFailureMessage({ ...enrollment, errorCode: 'provider_login_rejected' }),
+    ).toMatch(/rejected/);
+    expect(
+      enrollmentFailureMessage({ ...enrollment, errorCode: 'claude_token_not_found' }),
+    ).toMatch(/without handing back/);
+    expect(enrollmentFailureMessage({ ...enrollment, errorCode: 'unexpected_login_url' })).toMatch(
+      /unexpected address/,
+    );
+    expect(enrollmentFailureMessage({ ...enrollment, errorCode: 'other' })).toBe(
+      'Sign-in failed (other).',
+    );
+    expect(enrollmentFailureMessage(enrollment)).toBe('Sign-in failed.');
+  });
+});
+
+describe('access presentation', () => {
+  it('derives the access mode from the bind address', () => {
+    expect(accessMode(null)).toBe('unknown');
+    expect(accessMode({ ...MOCK_SYSTEM.host!, bind_host: '' })).toBe('unknown');
+    expect(accessMode({ ...MOCK_SYSTEM.host!, bind_host: '127.0.0.1' })).toBe('local');
+    expect(accessMode({ ...MOCK_SYSTEM.host!, bind_host: 'localhost' })).toBe('local');
+    expect(accessMode({ ...MOCK_SYSTEM.host!, bind_host: '0.0.0.0' })).toBe('lan');
+  });
+
+  it('lists the addresses the web app answers on', () => {
+    expect(accessUrls(null)).toEqual([]);
+    expect(accessUrls({ ...MOCK_SYSTEM.host!, port: 0 })).toEqual([]);
+    expect(accessUrls({ ...MOCK_SYSTEM.host!, bind_host: '127.0.0.1' })).toEqual([
+      'http://127.0.0.1:8080',
+    ]);
+    expect(accessUrls(MOCK_SYSTEM.host)).toEqual([
+      'http://127.0.0.1:8080',
+      'http://192.168.1.42:8080',
+    ]);
+    expect(accessUrls({ ...MOCK_SYSTEM.host!, external_host: '' })).toEqual([
+      'http://127.0.0.1:8080',
+    ]);
+  });
+});
+
+describe('connection credential state', () => {
+  const connection = {
+    id: 'c',
+    slug: 'claude-code',
+    integrationType: 'ai_provider',
+    credentialName: 'n',
+    enabled: true,
+    config: {},
+    credentialStatus: 'active',
+  };
+  it('knows when a connection still needs a sign-in', () => {
+    expect(connectionNeedsSignIn(connection)).toBe(false);
+    expect(connectionNeedsSignIn({ ...connection, credentialStatus: 'auth_required' })).toBe(true);
+    expect(connectionNeedsSignIn({ ...connection, credentialStatus: 'enrolling' })).toBe(true);
   });
 });

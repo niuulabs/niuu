@@ -11,7 +11,7 @@ const PLAN = [
   { title: 'Check the system', desc: 'Docker, GPU, disk, database.' },
   { title: 'Connect AI providers', desc: 'Claude, OpenAI and any other API key.' },
   { title: 'Connect your tools', desc: 'Git hosting and your issue tracker.' },
-  { title: 'Finish', desc: 'Then run your first session.' },
+  { title: 'Runtime & access', desc: 'How sessions are isolated, who can reach this.' },
 ];
 
 export function WelcomeStep({ facts, loading, onBegin }: WelcomeStepProps) {

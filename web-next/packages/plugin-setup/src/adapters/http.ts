@@ -11,6 +11,8 @@ import type {
   CatalogEntry,
   CatalogSchema,
   ConnectIntegrationInput,
+  Enrollment,
+  EnrollmentState,
   IntegrationConnection,
   IntegrationTestResult,
   SetupState,
@@ -22,6 +24,7 @@ export interface HttpClient {
   get<T>(endpoint: string): Promise<T>;
   post<T>(endpoint: string, body?: unknown): Promise<T>;
   put<T>(endpoint: string, body: unknown): Promise<T>;
+  delete<T>(endpoint: string): Promise<T>;
 }
 
 export interface SetupHttpClients {
@@ -57,6 +60,35 @@ export interface IntegrationTestWire {
   workspace?: string | null;
   user?: string | null;
   error?: string | null;
+}
+
+/** Wire shape of `/api/v1/integrations/enrollments` responses (camelCase aliases). */
+export interface EnrollmentWire {
+  id: string;
+  connectionId: string;
+  providerSlug: string;
+  credentialName: string;
+  state: string;
+  verificationUri?: string;
+  userCode?: string;
+  expiresAt: string;
+  errorCode?: string;
+  inputRequired?: boolean;
+}
+
+export function mapEnrollment(row: EnrollmentWire): Enrollment {
+  return {
+    id: row.id,
+    connectionId: row.connectionId,
+    providerSlug: row.providerSlug,
+    credentialName: row.credentialName,
+    state: row.state as EnrollmentState,
+    verificationUri: row.verificationUri ?? '',
+    userCode: row.userCode ?? '',
+    expiresAt: row.expiresAt,
+    errorCode: row.errorCode ?? '',
+    inputRequired: row.inputRequired ?? false,
+  };
 }
 
 export function mapCatalogEntry(entry: CatalogEntryWire): CatalogEntry {
@@ -128,6 +160,32 @@ export function buildSetupHttpAdapter(clients: SetupHttpClients): ISetupService 
         `/${encodeURIComponent(connectionId)}/test`,
       );
       return mapTestResult(result);
+    },
+    async startEnrollment(slug: string, credentialName: string): Promise<Enrollment> {
+      const row = await clients.integrations.post<EnrollmentWire>('/enrollments', {
+        slug,
+        credential_name: credentialName,
+      });
+      return mapEnrollment(row);
+    },
+    async getEnrollment(enrollmentId: string): Promise<Enrollment> {
+      const row = await clients.integrations.get<EnrollmentWire>(
+        `/enrollments/${encodeURIComponent(enrollmentId)}`,
+      );
+      return mapEnrollment(row);
+    },
+    async cancelEnrollment(enrollmentId: string): Promise<Enrollment> {
+      const row = await clients.integrations.delete<EnrollmentWire>(
+        `/enrollments/${encodeURIComponent(enrollmentId)}`,
+      );
+      return mapEnrollment(row);
+    },
+    async submitEnrollmentCode(enrollmentId: string, code: string): Promise<Enrollment> {
+      const row = await clients.integrations.post<EnrollmentWire>(
+        `/enrollments/${encodeURIComponent(enrollmentId)}/code`,
+        { code },
+      );
+      return mapEnrollment(row);
     },
   };
 }

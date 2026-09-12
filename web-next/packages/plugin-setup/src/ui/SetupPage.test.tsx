@@ -21,10 +21,12 @@ describe('initialStep', () => {
     expect(initialStep(undefined)).toBe('welcome');
     expect(initialStep(stateWith(['welcome']))).toBe('system');
     expect(initialStep(stateWith(['welcome', 'system', 'providers', 'git', 'tracker']))).toBe(
-      'finish',
+      'runtime',
     );
     expect(
-      initialStep(stateWith(['welcome', 'system', 'providers', 'git', 'tracker', 'launch'])),
+      initialStep(
+        stateWith(['welcome', 'system', 'providers', 'git', 'tracker', 'runtime', 'launch']),
+      ),
     ).toBe('finish');
   });
 });
@@ -65,11 +67,20 @@ describe('SetupPage', () => {
     await waitFor(() => expect(screen.getByTestId('setup-step-tracker')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('setup-continue'));
 
+    await waitFor(() => expect(screen.getByTestId('setup-runtime')).toBeInTheDocument());
+    expect(screen.getByTestId('setup-access-lan')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('setup-continue'));
+
     await waitFor(() => expect(screen.getByTestId('setup-finish')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('setup-finish-button'));
     await waitFor(() => expect(onNavigate).toHaveBeenCalledWith('/ready'));
     expect((await service.getState()).completed).toBe(true);
-    expect((await service.getState()).completedSteps.map((r) => r.step)).toContain('launch');
+    const steps = (await service.getState()).completedSteps;
+    expect(steps.map((r) => r.step)).toContain('launch');
+    expect(steps.find((r) => r.step === 'runtime')?.data).toEqual({
+      bind_host: '0.0.0.0',
+      external_host: '192.168.1.42',
+    });
   });
 
   it('blocks the system step while a check fails', async () => {
@@ -93,7 +104,7 @@ describe('SetupPage', () => {
   it('surfaces connect and finish errors', async () => {
     const base = createMockSetupService({
       latencyMs: 0,
-      initialState: stateWith(['welcome', 'system', 'providers', 'git', 'tracker']),
+      initialState: stateWith(['welcome', 'system', 'providers', 'git', 'tracker', 'runtime']),
     });
     const service = {
       ...base,
@@ -137,7 +148,7 @@ describe('SetupPage', () => {
     });
     const service = createMockSetupService({
       latencyMs: 0,
-      initialState: stateWith(['welcome', 'system', 'providers', 'git', 'tracker']),
+      initialState: stateWith(['welcome', 'system', 'providers', 'git', 'tracker', 'runtime']),
     });
     renderWithSetup(<SetupPage />, { service });
     await waitFor(() => expect(screen.getByTestId('setup-finish')).toBeInTheDocument());
@@ -163,6 +174,7 @@ describe('ReadyPage', () => {
       'href',
       '/volundr',
     );
+    expect(screen.getByText(/Forge → New session/)).toBeInTheDocument();
     expect(screen.getByTestId('ready-dashboard')).toHaveAttribute('href', '/');
   });
 });

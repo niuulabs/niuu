@@ -3,21 +3,44 @@ import { NiuuMark } from './icons';
 import { summarizeConnections } from './FinishStep';
 import './SetupPage.css';
 
-const DESTINATIONS = [
+export interface Walkthrough {
+  href: string;
+  title: string;
+  desc: string;
+  /** What the user will do once there, in order. */
+  steps: string[];
+}
+
+export const WALKTHROUGHS: readonly Walkthrough[] = [
   {
     href: '/volundr',
     title: 'Run your first session',
     desc: 'Open a repository and hand Claude or Codex a task in an isolated sandbox.',
+    steps: [
+      'Forge → New session; pick a repository or start from an empty workspace.',
+      'Choose the runtime (Claude Code or Codex) and the provider you connected.',
+      'Write the task; watch the chat, files and diff update as it works.',
+    ],
   },
   {
     href: '/ting',
     title: 'Turn an issue into a workflow',
     desc: 'Pick an issue from your tracker; Ting plans it into a saga with gates you approve.',
+    steps: [
+      'Ting → Sagas → Plan from issue; pick one from the tracker you connected.',
+      'Review the plan; gates are where you approve before it continues.',
+      'Dispatch; each step runs as a session you can open from the saga.',
+    ],
   },
   {
     href: '/ravn',
     title: 'Meet the residents',
     desc: 'Long-lived Ravns that watch your environment and ask before they act.',
+    steps: [
+      'Ravn → Personas shows what a resident can be given to steward.',
+      'Start one against this host; it observes first and asks before acting.',
+      'Talk to it in its room; every action it proposes waits for your answer.',
+    ],
   },
 ];
 
@@ -48,10 +71,15 @@ export function ReadyPage() {
           ))}
         </div>
         <div className="setup-links">
-          {DESTINATIONS.map((item) => (
+          {WALKTHROUGHS.map((item) => (
             <a key={item.href} className="setup-link" href={item.href}>
               <span className="setup-link__title">{item.title}</span>
               <span className="setup-link__desc">{item.desc}</span>
+              <ol className="setup-link__steps">
+                {item.steps.map((text) => (
+                  <li key={text}>{text}</li>
+                ))}
+              </ol>
             </a>
           ))}
         </div>

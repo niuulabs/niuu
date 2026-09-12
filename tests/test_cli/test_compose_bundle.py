@@ -105,6 +105,12 @@ class TestRender:
             "sessions_dir": f"{data}/session-secrets",
         }
         assert injection["secret_kwargs_env"] == {"encryption_key": "NIUU_CREDENTIAL_KEY"}
+        login = json.loads(env["CREDENTIAL_ENROLLMENT_RUNNER"])
+        assert login["adapter"] == sc.DOCKER_LOGIN_RUNNER_ADAPTER
+        assert login["kwargs"] == {
+            "image": "${NIUU_SKULD_IMAGE}",
+            "network": "${COMPOSE_PROJECT_NAME}_default",
+        }
         contributors = json.loads(env["SESSION_CONTRIBUTORS"])
         assert contributors == [
             {"adapter": sc.SECRET_INJECTION_CONTRIBUTOR, "kwargs": {}},

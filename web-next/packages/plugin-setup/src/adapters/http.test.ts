@@ -3,8 +3,8 @@ import { buildSetupHttpAdapter, mapCatalogEntry, mapIntegration, mapTestResult }
 
 function clients() {
   return {
-    setup: { get: vi.fn(), post: vi.fn(), put: vi.fn() },
-    integrations: { get: vi.fn(), post: vi.fn(), put: vi.fn() },
+    setup: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
+    integrations: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
   };
 }
 
@@ -143,6 +143,65 @@ describe('buildSetupHttpAdapter', () => {
       workspace: 'w',
       user: 'u',
       error: null,
+    });
+  });
+
+  it('drives interactive sign-ins through the enrollment routes', async () => {
+    const c = clients();
+    const wire = {
+      id: 'e1',
+      connectionId: 'c1',
+      providerSlug: 'codex',
+      credentialName: 'codex-setup',
+      state: 'awaiting_user',
+      verificationUri: 'https://auth.openai.com/codex/device',
+      userCode: 'AB-12',
+      expiresAt: 'later',
+      inputRequired: false,
+    };
+    c.integrations.post
+      .mockResolvedValueOnce(wire)
+      .mockResolvedValueOnce({ ...wire, state: 'complete' });
+    c.integrations.get.mockResolvedValue({
+      id: 'e1',
+      connectionId: 'c1',
+      providerSlug: 'codex',
+      credentialName: 'n',
+      state: 'pending',
+      expiresAt: 'later',
+    });
+    c.integrations.delete.mockResolvedValue({ ...wire, state: 'cancelled' });
+    const adapter = buildSetupHttpAdapter(c);
+
+    const started = await adapter.startEnrollment('codex', 'codex-setup');
+    expect(started).toEqual({
+      id: 'e1',
+      connectionId: 'c1',
+      providerSlug: 'codex',
+      credentialName: 'codex-setup',
+      state: 'awaiting_user',
+      verificationUri: 'https://auth.openai.com/codex/device',
+      userCode: 'AB-12',
+      expiresAt: 'later',
+      errorCode: '',
+      inputRequired: false,
+    });
+    expect(c.integrations.post).toHaveBeenNthCalledWith(1, '/enrollments', {
+      slug: 'codex',
+      credential_name: 'codex-setup',
+    });
+
+    const pending = await adapter.getEnrollment('e 1');
+    expect(pending.verificationUri).toBe('');
+    expect(pending.inputRequired).toBe(false);
+    expect(c.integrations.get).toHaveBeenCalledWith('/enrollments/e%201');
+
+    expect((await adapter.cancelEnrollment('e1')).state).toBe('cancelled');
+    expect(c.integrations.delete).toHaveBeenCalledWith('/enrollments/e1');
+
+    expect((await adapter.submitEnrollmentCode('e1', 'code')).state).toBe('complete');
+    expect(c.integrations.post).toHaveBeenNthCalledWith(2, '/enrollments/e1/code', {
+      code: 'code',
     });
   });
 });

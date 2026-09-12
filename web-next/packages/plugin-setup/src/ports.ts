@@ -1,6 +1,7 @@
 import type {
   CatalogEntry,
   ConnectIntegrationInput,
+  Enrollment,
   IntegrationConnection,
   IntegrationTestResult,
   SetupState,
@@ -23,4 +24,11 @@ export interface ISetupService {
   listIntegrations(): Promise<IntegrationConnection[]>;
   connectIntegration(input: ConnectIntegrationInput): Promise<IntegrationConnection>;
   testIntegration(connectionId: string): Promise<IntegrationTestResult>;
+  /** Start (or resume) an interactive provider sign-in for a catalog entry. */
+  startEnrollment(slug: string, credentialName: string): Promise<Enrollment>;
+  /** Current state of a sign-in; the backend polls the login helper on each read. */
+  getEnrollment(enrollmentId: string): Promise<Enrollment>;
+  cancelEnrollment(enrollmentId: string): Promise<Enrollment>;
+  /** Hand a browser authorization code back to a sign-in that asked for one. */
+  submitEnrollmentCode(enrollmentId: string, code: string): Promise<Enrollment>;
 }

@@ -90,8 +90,14 @@ def stack_up(settings: CLISettings, *, skip_preflight: bool = False) -> None:
             raise typer.Exit(1)
         typer.echo()
 
-    facts = collect_host_facts(config)
     external_host = settings.server.external_host.strip() or detect_lan_ip()
+    facts = collect_host_facts(
+        config,
+        bind_host=settings.docker.bind_host,
+        external_host=external_host,
+        port=settings.server.port,
+        skuld_image=settings.docker.skuld_image,
+    )
     paths = write_bundle(settings, host_facts=facts, external_host=external_host)
     typer.echo(f"Compose bundle written to {paths.compose_dir}")
 

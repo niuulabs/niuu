@@ -19,10 +19,12 @@ composes the services offered by the host; it does not install missing runtimes.
 ## First launch
 
 On a single-host Docker install the first visit opens `/setup`, a full-screen
-wizard that checks the host and connects AI providers, Git hosting, and an
-issue tracker through the integrations catalog. **Open Niuu** on its last step
-marks setup complete and opens `/ready`, which links to the first things to do
-(a session in Völundr, a workflow in Ting, the residents in Ravn). The wizard
+wizard that checks the host, connects AI providers (API keys, or a Claude /
+Codex subscription sign-in run by the platform), Git hosting and an issue
+tracker through the integrations catalog, and shows how sessions are isolated
+and who can reach the install. **Open Niuu** on its last step marks setup
+complete and opens `/ready`, which walks through the first things to do (a
+session in Völundr, a workflow in Ting, the residents in Ravn). The wizard
 stays reachable at `/setup` afterwards. It appears only when the host sets
 `NIUU_SETUP_ENABLED`; see [Single-host Docker mode](../operations/docker-mode.md#the-setup-wizard).
 

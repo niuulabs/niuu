@@ -171,7 +171,7 @@ describe('IntegrationCard', () => {
     expect(screen.getByTestId('setup-test-github')).toBeDisabled();
   });
 
-  it('explains interactive-only providers', () => {
+  it('points interactive-only providers at the sign-in card', () => {
     render(<IntegrationCard {...base} entry={claudeCode} />);
     expect(screen.getByText('Needs interactive sign-in')).toBeInTheDocument();
     expect(screen.queryByTestId('setup-form-claude-code')).not.toBeInTheDocument();

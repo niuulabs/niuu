@@ -445,6 +445,30 @@
   font-size: var(--text-lg);
   font-weight: 600;
 }
+.setup-link__steps {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.setup-code {
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  letter-spacing: 0.12em;
+  color: var(--color-text-primary);
+}
+.setup-row__detail a {
+  color: var(--brand-300);
+  word-break: break-all;
+}
+.setup-row__detail code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-primary);
+}
 .setup-link__desc {
   font-size: var(--text-xs);
   color: var(--color-text-secondary);

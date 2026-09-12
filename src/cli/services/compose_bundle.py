@@ -44,6 +44,7 @@ SECRET_INJECTION_CONTRIBUTOR = (
 WORKLOAD_IDENTITY_CONTRIBUTOR = (
     "volundr.adapters.outbound.contributors.workload_identity.WorkloadIdentityContributor"
 )
+DOCKER_LOGIN_RUNNER_ADAPTER = "volundr.adapters.outbound.docker_login_runner.DockerLoginRunner"
 SESSION_SECRET_INJECTION_ADAPTER = (
     "volundr.adapters.outbound.session_file_secret_injection.SessionFileSecretInjectionAdapter"
 )
@@ -215,6 +216,17 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         "NIUU_CREDENTIAL_KEY": "${NIUU_CREDENTIAL_KEY}",
         "CREDENTIAL_STORE": json.dumps(credential_store),
         "SECRET_INJECTION": json.dumps(secret_injection),
+        # Claude / Codex subscription sign-in runs the official CLI in a sealed
+        # sibling container built from the same skuld image sessions use.
+        "CREDENTIAL_ENROLLMENT_RUNNER": json.dumps(
+            {
+                "adapter": DOCKER_LOGIN_RUNNER_ADAPTER,
+                "kwargs": {
+                    "image": "${NIUU_SKULD_IMAGE}",
+                    "network": "${COMPOSE_PROJECT_NAME}_default",
+                },
+            }
+        ),
         # The secret-injection contributor turns a session's integration
         # connections into credential mappings for the adapter above. Workload
         # identity needs a Kubernetes service-account token issuer; on a single
