@@ -518,7 +518,7 @@ class DshRuntimeConfig(BaseModel):
         default="",
         description=(
             "Path to a Cordis composition file for the runtime. Empty uses the "
-            "default composition bundled with deepseek-harness-runtime-bin."
+            "SDK profile bundled with deepseek-harness-runtime-bin."
         ),
     )
     base_url: str = Field(

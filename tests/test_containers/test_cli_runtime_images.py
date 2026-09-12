@@ -10,14 +10,14 @@ def _load_json(path: str) -> dict:
     return json.loads((REPO_ROOT / path).read_text())
 
 
-def test_skuld_and_devrunner_pin_same_codex_version() -> None:
+def test_skuld_and_devrunner_pin_same_cli_versions() -> None:
     """Skuld broker and devrunner shell must expose the same Codex CLI."""
     package_paths = [
         "containers/skuld/npm-tools/package.json",
         "containers/devrunner/npm-tools/package.json",
     ]
 
-    versions = [_load_json(path)["dependencies"]["@openai/codex"] for path in package_paths]
+    versions = [_load_json(path)["dependencies"] for path in package_paths]
     assert versions[0] == versions[1]
 
 
@@ -57,7 +57,7 @@ def test_openshell_image_installs_locked_agent_clis() -> None:
 
     assert "COPY containers/skuld/npm-tools/package.json" in dockerfile
     assert "npm ci --omit=dev" in dockerfile
-    assert "cp -a /opt/skuld-tools/node_modules/@openai /usr/lib/node_modules/@openai" in dockerfile
+    assert "mv /opt/skuld-tools/node_modules/@openai /usr/lib/node_modules/@openai" in dockerfile
     assert "/usr/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex" in dockerfile
-    for cli in ("claude", "opencode"):
+    for cli in ("claude", "opencode", "grok"):
         assert f"node_modules/.bin/{cli} /usr/local/bin/{cli}" in dockerfile

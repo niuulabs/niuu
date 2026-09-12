@@ -2835,20 +2835,45 @@ def test_profile_comparison_accepts_only_gateway_normalization(monkeypatch, chan
     saved.resource_version = 3
     saved.source = "user"
     saved.scope = "platform"
-    saved.credentials[0].token_grant.grant_type = (
-        pb2.PROVIDER_CREDENTIAL_TOKEN_GRANT_TYPE_CLIENT_CREDENTIALS
-    )
+    saved.credentials[
+        0
+    ].token_grant.grant_type = pb2.PROVIDER_CREDENTIAL_TOKEN_GRANT_TYPE_CLIENT_CREDENTIALS
     if changed_field == "audience":
         saved.credentials[0].token_grant.audience = "another-workload"
     if changed_field == "scopes":
         saved.credentials[0].token_grant.scopes.append("admin")
     if changed_field == "grant_type":
-        saved.credentials[0].token_grant.grant_type = (
-            pb2.PROVIDER_CREDENTIAL_TOKEN_GRANT_TYPE_TOKEN_EXCHANGE
-        )
+        saved.credentials[
+            0
+        ].token_grant.grant_type = pb2.PROVIDER_CREDENTIAL_TOKEN_GRANT_TYPE_TOKEN_EXCHANGE
     if changed_field == "endpoints":
         saved.endpoints.add(host="unexpected.example", port=443)
     before = saved.SerializeToString()
     assert adapter._profiles_equivalent(saved, expected) is (changed_field is None)
     assert saved.SerializeToString() == before
     assert expected.credentials[0].token_grant.grant_type == 0
+
+
+@pytest.mark.parametrize(
+    ("env_name", "host"),
+    [("XAI_API_KEY", "api.x.ai"), ("DEEPSEEK_API_KEY", "api.deepseek.com")],
+)
+def test_additional_runtime_credentials_use_scoped_inspected_routes(monkeypatch, env_name, host):
+    adapter = _import_adapter(monkeypatch)
+    profile = adapter._provider_profile(
+        profile_id="runtime-test",
+        env_name=env_name,
+        token_endpoint="https://forge.example/credential-token",
+    )
+    assert env_name in adapter.SECRET_ENV_KEYS
+    assert profile.credentials[0].auth_style == "bearer"
+    assert profile.credentials[0].header_name == "Authorization"
+    assert len(profile.endpoints) == 1
+    endpoint = profile.endpoints[0]
+    assert (endpoint.host, endpoint.port, endpoint.tls, endpoint.enforcement) == (
+        host,
+        443,
+        "terminate",
+        "enforce",
+    )
+    assert all(binary.path != "**" for binary in profile.binaries)

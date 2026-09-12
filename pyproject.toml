@@ -45,7 +45,7 @@ switchyard = [
 openshell = [
     "openshell==0.0.116; python_version >= '3.12'",
 ]
-# DeepSeek Harness runtime for DshJsonRpcTransport (Skuld image only).
+# DeepSeek Harness runtime for DshJsonRpcTransport (Skuld and OpenShell images).
 # Exact pin: dsh is a developer preview with promised breaking changes.
 dsh = [
     "deepseek-harness-runtime-bin==0.1.2rc1",

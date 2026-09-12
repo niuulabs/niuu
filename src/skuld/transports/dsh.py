@@ -108,31 +108,17 @@ def resolve_dsh_launch_args(runtime_bin: str) -> list[str]:
     return list(resolve_bundled_launch_args())
 
 
-def resolve_dsh_cordis_config(cordis_config: str) -> str:
-    """Resolve the Cordis composition file the runtime must load.
-
-    An explicit path wins; otherwise the default composition shipped with
-    ``deepseek-harness-runtime-bin`` is used. No config is fatal — the runtime
-    has no built-in fallback composition.
-    """
-    if cordis_config:
-        path = Path(cordis_config)
-        if not path.is_file():
-            raise RuntimeError(
-                f"dsh.cordis_config points at {cordis_config}, which does not exist; "
-                "fix the path or clear the setting to use the bundled default composition"
-            )
-        return str(path)
-
-    try:
-        from deepseek_harness_runtime import bundled_default_config_path
-    except ImportError as exc:
+def resolve_dsh_cordis_config(cordis_config: str) -> str | None:
+    """Validate an explicit standalone composition; otherwise use the SDK profile."""
+    if not cordis_config:
+        return None
+    path = Path(cordis_config)
+    if not path.is_file():
         raise RuntimeError(
-            "DshJsonRpcTransport needs a Cordis composition: install the "
-            "'deepseek-harness-runtime-bin' package, or set dsh.cordis_config"
-        ) from exc
-
-    return str(bundled_default_config_path())
+            f"dsh.cordis_config points at {cordis_config}, which does not exist; "
+            "fix the path or clear the setting to use the bundled SDK profile"
+        )
+    return str(path)
 
 
 class DshJsonRpcTransport(CLITransport):
@@ -197,7 +183,13 @@ class DshJsonRpcTransport(CLITransport):
         session_root.mkdir(parents=True, exist_ok=True)
 
         env = dict(os.environ)
-        env["DSH_CORDIS_CONFIG"] = cordis_config
+        if cordis_config is not None:
+            env["DSH_CORDIS_CONFIG"] = cordis_config
+        else:
+            # Published runtime wheels expose the dsh CLI, whose sdk profile
+            # owns the JSON-RPC composition and persists state under DSH_HOME.
+            launch_args.extend(["--profile", "sdk"])
+            env["DSH_HOME"] = str(workspace / ".dsh")
         env["DSH_CWD"] = str(workspace)
         env["DSH_SESSION_ROOT"] = str(session_root)
         if self._system_prompt:

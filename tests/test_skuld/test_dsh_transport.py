@@ -100,10 +100,27 @@ class TestResolvers:
         path.write_text("- id: sdk-jsonrpc-server\n")
         assert resolve_dsh_cordis_config(str(path)) == str(path)
 
-    def test_missing_cordis_package_is_fatal_with_remedy(self):
-        with patch.dict("sys.modules", {"deepseek_harness_runtime": None}):
-            with pytest.raises(RuntimeError, match="dsh.cordis_config"):
-                resolve_dsh_cordis_config("")
+    def test_no_explicit_composition_uses_sdk_profile(self):
+        assert resolve_dsh_cordis_config("") is None
+
+
+@pytest.mark.asyncio
+async def test_start_uses_sdk_profile_and_persistent_home(transport, tmp_path):
+    process = AsyncMock()
+    with (
+        patch("skuld.transports.dsh.resolve_dsh_launch_args", return_value=["/runtime/dsh"]),
+        patch(
+            "asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=process
+        ) as spawn,
+        patch.object(transport, "_read_stdout", new_callable=AsyncMock),
+        patch("skuld.transports.dsh._drain_stream", new_callable=AsyncMock),
+        patch.object(transport, "_request", new_callable=AsyncMock, return_value={}),
+    ):
+        await transport.start()
+        assert spawn.call_args.args == ("/runtime/dsh", "--profile", "sdk")
+        assert spawn.call_args.kwargs["env"]["DSH_HOME"] == str(tmp_path / ".dsh")
+        assert "DSH_CORDIS_CONFIG" not in spawn.call_args.kwargs["env"]
+        await transport.stop()
 
 
 class TestEventMapping:

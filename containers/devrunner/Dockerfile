@@ -61,16 +61,19 @@ RUN set -eux; \
 COPY containers/node/npm-bootstrap/package.json containers/node/npm-bootstrap/package-lock.json /opt/npm-bootstrap/
 COPY containers/devrunner/npm-tools/package.json containers/devrunner/npm-tools/package-lock.json /opt/devrunner-tools/
 RUN cd /opt/npm-bootstrap \
-    && npm ci --omit=dev \
+    && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
+    && rm -rf /tmp/npm-cache /tmp/grok-install \
     && rm -rf /usr/lib/node_modules/npm \
     && ln -s /opt/npm-bootstrap/node_modules/npm /usr/lib/node_modules/npm \
     && ln -sf /usr/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -sf /usr/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && cd /opt/devrunner-tools \
-    && npm ci --omit=dev \
+    && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
+    && rm -rf /tmp/npm-cache /tmp/grok-install \
     && ln -sf /opt/devrunner-tools/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -sf /opt/devrunner-tools/node_modules/.bin/codex /usr/local/bin/codex \
-    && ln -sf /opt/devrunner-tools/node_modules/.bin/opencode /usr/local/bin/opencode
+    && ln -sf /opt/devrunner-tools/node_modules/.bin/opencode /usr/local/bin/opencode \
+    && ln -sf /opt/devrunner-tools/node_modules/.bin/grok /usr/local/bin/grok
 
 # Install PostgreSQL 16
 RUN echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
@@ -120,6 +123,9 @@ COPY containers/devrunner/terminal.py /usr/local/bin/terminal.py
 COPY containers/devrunner/restricted-shell /usr/local/bin/restricted-shell
 COPY containers/devrunner/configs/init-home.sh /usr/local/bin/init-home.sh
 RUN chmod +x /usr/local/bin/devrunner /usr/local/bin/restricted-shell /usr/local/bin/init-home.sh
+
+# Fail the image build if an advertised CLI is missing or cannot execute.
+RUN claude --version && codex --version && opencode --version && grok --version
 
 # Switch to non-root user
 USER devrunner

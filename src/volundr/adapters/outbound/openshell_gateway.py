@@ -143,6 +143,8 @@ HERMES_API_SERVER_KEY_ENV = "API_SERVER_KEY"
 HERMES_API_SERVER_DEFAULT_PORT = 8642
 HERMES_INTERNAL_SERVICE_URL = "http://hermes-api.internal"
 SECRET_ENV_KEYS = {
+    "XAI_API_KEY",
+    "DEEPSEEK_API_KEY",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
     "GIT_TOKEN",
@@ -3596,6 +3598,28 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
                 "/usr/bin/node",
                 "/usr/local/bin/node",
                 "/opt/venv/bin/python3",
+            ),
+            "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
+        }
+    if env_name == "XAI_API_KEY":
+        return {
+            "auth_style": "bearer",
+            "header_name": "Authorization",
+            "hosts": ("api.x.ai",),
+            "binaries": (
+                "/usr/local/bin/grok",
+                "/opt/skuld-tools/node_modules/@xai-official/grok/bin/grok-native",
+            ),
+            "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
+        }
+    if env_name == "DEEPSEEK_API_KEY":
+        return {
+            "auth_style": "bearer",
+            "header_name": "Authorization",
+            "hosts": ("api.deepseek.com",),
+            "binaries": (
+                "/opt/niuu/lib/python*/site-packages/deepseek_harness_runtime/runtime/*",
+                "/opt/venv/lib/python*/site-packages/deepseek_harness_runtime/runtime/*",
             ),
             "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
         }
