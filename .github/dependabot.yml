@@ -11,7 +11,7 @@ updates:
         patterns:
           - "*"
 
-  - package-ecosystem: pip
+  - package-ecosystem: uv
     directory: /
     target-branch: dev
     schedule:
@@ -42,9 +42,28 @@ updates:
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
 
+  - package-ecosystem: npm
+    directories:
+      - /containers/node/npm-bootstrap
+      - /containers/skuld/npm-tools
+      - /containers/devrunner/npm-tools
+      - /containers/openshell/npm-tools
+      - /containers/volundr/npm-tools
+    target-branch: dev
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 1
+    groups:
+      container-tools:
+        patterns:
+          - "*"
+
   - package-ecosystem: docker
     directories:
       - /containers/niuu
+      - /containers/openshell
+      - /containers/gbrain
+      - /containers/vscode-reh
       - /containers/agent
       - /containers/skuld
       - /containers/devrunner

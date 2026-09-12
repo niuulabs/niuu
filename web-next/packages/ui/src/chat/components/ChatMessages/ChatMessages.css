@@ -332,3 +332,38 @@
   height: 14px;
   flex-shrink: 0;
 }
+
+.niuu-chat-assistant-wrapper {
+  position: relative;
+}
+.niuu-chat-attachment-preview {
+  max-height: calc(var(--space-6) * 4);
+  max-width: calc(var(--space-8) * 5);
+  border-radius: var(--radius-md);
+  object-fit: contain;
+}
+.niuu-chat-copy {
+  margin-left: auto;
+}
+.niuu-chat-copy svg {
+  width: var(--space-4);
+  height: var(--space-4);
+}
+.niuu-chat-copy--hover {
+  opacity: 0;
+}
+[data-timestamp='hover'] .niuu-chat-timestamp {
+  opacity: 0;
+}
+.niuu-chat-assistant-wrapper:hover .niuu-chat-copy,
+.niuu-chat-assistant-wrapper:focus-within .niuu-chat-copy,
+[data-timestamp='hover']:hover .niuu-chat-timestamp,
+[data-timestamp='hover']:focus-within .niuu-chat-timestamp {
+  opacity: 1;
+}
+@media (hover: none) {
+  .niuu-chat-copy--hover,
+  [data-timestamp='hover'] .niuu-chat-timestamp {
+    opacity: 1;
+  }
+}

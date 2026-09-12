@@ -51,6 +51,7 @@ from volundr.domain.ports import (
 )
 
 if TYPE_CHECKING:
+    from niuu.ports.user_integration import UserIntegrationPort
     from volundr.adapters.outbound.git_registry import GitProviderRegistry
 
 logger = logging.getLogger(__name__)
@@ -124,10 +125,12 @@ class SessionService:
         runtime_backend: str = "kubernetes",
         public_origin: str = "http://localhost:8080",
         span_repository: SessionSpanRepository | None = None,
+        user_integration: UserIntegrationPort | None = None,
     ):
         self._repository = repository
         self._pod_manager = pod_manager
         self._git_registry = git_registry
+        self._user_integration = user_integration
         self._validate_repos = validate_repos
         self._broadcaster = broadcaster
         self._launch_spec_provider = launch_spec_provider
@@ -224,13 +227,8 @@ class SessionService:
             self._validate_repos,
         )
 
-        if isinstance(source, GitSource) and repo:
-            if self._git_registry and self._validate_repos:
-                await self._validate_repository(repo)
-            elif not self._git_registry:
-                logger.debug("Skipping repo validation: no git registry configured")
-            elif not self._validate_repos:
-                logger.debug("Skipping repo validation: validation disabled")
+        if isinstance(source, GitSource) and repo and self._validate_repos:
+            await self._validate_repository(repo, principal)
 
         session = Session(
             name=name,
@@ -253,58 +251,24 @@ class SessionService:
 
         return created
 
-    async def _validate_repository(self, repo: str) -> None:
-        """Validate that a repository exists and is accessible.
-
-        Args:
-            repo: Repository URL.
-
-        Raises:
-            RepoValidationError: If validation fails.
-        """
-        logger.info("Starting repository validation for: %s", _sanitize_log(repo))
-
-        if self._git_registry is None:
-            logger.warning(
-                "Git registry not configured, skipping repository validation for: %s",
-                _sanitize_log(repo),
-            )
+    async def _validate_repository(self, repo: str, principal: Principal | None = None) -> None:
+        """Validate deployments with the owner's integration, as repository browsing does."""
+        if (
+            self._runtime_backend in {"kubernetes", "openshell"}
+            and principal is not None
+            and self._user_integration is not None
+        ):
+            provider = await self._user_integration.find_git_provider_for(repo, principal.user_id)
+        elif self._git_registry is not None:
+            provider = self._git_registry.get_provider(repo)
+        else:
+            logger.debug("Skipping repo validation: no git registry configured")
             return
 
-        logger.debug(
-            "Git registry has %d provider(s) registered",
-            len(self._git_registry.providers),
-        )
-
-        provider = self._git_registry.get_provider(repo)
         if provider is None:
-            logger.error(
-                "No git provider supports repository URL: %s (registered providers: %s)",
-                _sanitize_log(repo),
-                ", ".join(
-                    f"{p.name} ({p.provider_type.value})" for p in self._git_registry.providers
-                )
-                if self._git_registry.providers
-                else "none",
-            )
             raise RepoValidationError(repo, "no git provider supports this repository URL")
-
-        logger.debug(
-            "Found provider %s (%s) for repository: %s",
-            provider.name,
-            provider.provider_type.value,
-            _sanitize_log(repo),
-        )
-
-        is_valid = await self._git_registry.validate_repo(repo)
-        if not is_valid:
-            logger.error(
-                "Repository validation failed for %s using provider %s",
-                _sanitize_log(repo),
-                provider.name,
-            )
+        if not await provider.validate_repo(repo):
             raise RepoValidationError(repo, "repository does not exist or is not accessible")
-
         logger.info(
             "Repository validation successful for %s (provider: %s)",
             _sanitize_log(repo),

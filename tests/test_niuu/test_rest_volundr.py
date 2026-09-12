@@ -1264,3 +1264,26 @@ def test_home_storage_routes_only_to_selected_visible_cluster(method):
         .status_code
         == 404
     )
+
+
+@respx.mock
+def test_feature_flags_select_requested_instance() -> None:
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha", is_default=True),
+            _instance("beta", base_url="http://beta"),
+        ]
+    )
+    route = respx.get("http://beta/api/v1/forge/feature-flags").mock(
+        return_value=Response(200, json={"mini_mode": False, "local_mounts_enabled": False})
+    )
+    response = client.get("/api/v1/forge/feature-flags?instance_id=beta", headers=_headers())
+    assert response.status_code == 200
+    assert response.json()["mini_mode"] is False
+    assert route.called
+
+
+def test_feature_flags_reject_invisible_instance() -> None:
+    client = _client([_instance("private", base_url="http://private", tenant_id="other")])
+    response = client.get("/api/v1/forge/feature-flags?instance_id=private", headers=_headers())
+    assert response.status_code == 404

@@ -384,7 +384,7 @@ class TestReadWriteOperations:
         assert [cred.name for cred in results] == ["slack", "zapier"]
 
     @pytest.mark.asyncio()
-    async def test_list_handles_not_found_and_errors(self, caplog: pytest.LogCaptureFixture):
+    async def test_list_handles_not_found(self):
         store = OpenBaoCredentialStore(token="root-token")
         mock_client = AsyncMock()
         store._client = mock_client
@@ -392,10 +392,35 @@ class TestReadWriteOperations:
         mock_client.get.return_value = _mock_response(status_code=404)
         assert await store.list("user", "alice") == []
 
-        mock_client.get.return_value = _mock_response(status_code=500, text="boom")
-        with caplog.at_level(logging.ERROR):
-            assert await store.list("user", "alice") == []
-        assert "OpenBao list failed" in caplog.text
+    @pytest.mark.parametrize("status_code", [401, 403, 429, 500, 503])
+    async def test_list_raises_on_backend_error(self, status_code):
+        store = OpenBaoCredentialStore(token="test-token")
+        store._client = AsyncMock()
+        store._client.get.return_value = _mock_response(status_code=status_code)
+
+        with pytest.raises(RuntimeError, match=f"OpenBao list failed .*{status_code}"):
+            await store.list("user", "alice")
+
+    @pytest.mark.parametrize("operation", ["get", "get_value", "list", "store"])
+    @pytest.mark.parametrize("status_code", [403, 429, 503])
+    async def test_read_error_never_becomes_missing_or_partial_result(self, operation, status_code):
+        store = OpenBaoCredentialStore(token="test-token")
+        store._client = AsyncMock()
+        responses = [_mock_response(status_code=status_code)]
+        if operation == "list":
+            responses.insert(0, _mock_response(json_data={"data": {"keys": ["github"]}}))
+        store._client.get.side_effect = responses
+
+        with pytest.raises(RuntimeError, match=f"OpenBao read failed .*{status_code}"):
+            if operation == "list":
+                await store.list("user", "alice")
+            elif operation == "store":
+                await store.store(
+                    "user", "alice", "github", SecretType.API_KEY, {"api_key": "test-only"}
+                )
+            else:
+                await getattr(store, operation)("user", "alice", "github")
+        store._client.post.assert_not_called()
 
     @pytest.mark.asyncio()
     async def test_health_check_success_and_failure(self):

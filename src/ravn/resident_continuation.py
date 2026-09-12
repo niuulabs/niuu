@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import time
@@ -202,8 +203,9 @@ class LocalResidentMemory(ResidentMemoryPort):
         retention_max_age_days: float = 0.0,
         retention_sweep_interval_seconds: float = 900.0,
     ) -> None:
-        self._root = Path(root)
+        self._root = Path(root).resolve()
         self._prefix = Path(prefix.strip("/").strip() or "resident/continuation")
+        self._safe_path(self._prefix)
         self._retention_max_cases = max(0, retention_max_cases)
         self._retention_max_age_days = max(0.0, retention_max_age_days)
         self._retention_sweep_interval_seconds = max(0.0, retention_sweep_interval_seconds)
@@ -345,14 +347,14 @@ class LocalResidentMemory(ResidentMemoryPort):
         if terms:
             matching: list[Path] = []
             for path in files:
-                content = path.read_text(encoding="utf-8").casefold()
+                content = self._safe_path(path).read_text(encoding="utf-8").casefold()
                 if any(term in content for term in terms):
                     matching.append(path)
             if matching:
                 files = matching
         entries: list[ResidentMemoryEntry] = []
         for path in files[:limit]:
-            content = path.read_text(encoding="utf-8")
+            content = self._safe_path(path).read_text(encoding="utf-8")
             entries.append(
                 ResidentMemoryEntry(
                     path=str(path.relative_to(self._root)),
@@ -363,10 +365,10 @@ class LocalResidentMemory(ResidentMemoryPort):
         return entries
 
     async def read(self, ref: str) -> ResidentMemoryEntry | None:
-        path = self._root / ref
+        path = self._safe_path(ref)
         if not path.is_file():
             return None
-        content = path.read_text(encoding="utf-8")
+        content = self._safe_path(path).read_text(encoding="utf-8")
         return ResidentMemoryEntry(
             path=ref,
             summary=_first_heading_or_line(content),
@@ -406,7 +408,7 @@ class LocalResidentMemory(ResidentMemoryPort):
 
     async def clear_decision_streak(self, resident_id: str) -> bool:
         """Forget the repeated-decision streak; return whether one existed."""
-        path = self._root / self._decision_streak_path(resident_id)
+        path = self._safe_path(self._decision_streak_path(resident_id))
         if not path.is_file():
             return False
         path.unlink()
@@ -442,7 +444,7 @@ class LocalResidentMemory(ResidentMemoryPort):
             return []
         entries: list[ResidentMemoryEntry] = []
         for path in sorted(base.glob("*.md")):
-            content = path.read_text(encoding="utf-8")
+            content = self._safe_path(path).read_text(encoding="utf-8")
             entries.append(
                 ResidentMemoryEntry(
                     path=str(path.relative_to(self._root)),
@@ -466,7 +468,7 @@ class LocalResidentMemory(ResidentMemoryPort):
             return []
         observations: list[ResidentPolicyObservation] = []
         for path in sorted(base.glob("*.md")):
-            parsed = _parse_policy_observation(path.read_text(encoding="utf-8"))
+            parsed = _parse_policy_observation(self._safe_path(path).read_text(encoding="utf-8"))
             if parsed is not None:
                 observations.append(parsed)
         return observations
@@ -501,10 +503,10 @@ class LocalResidentMemory(ResidentMemoryPort):
 
     async def read_operator_needed(self, case_id: str = "") -> ResidentMemoryEntry | None:
         rel = self._prefix / _case_path(case_id, _OPERATOR_NEEDED_PATH)
-        path = self._root / rel
+        path = self._safe_path(rel)
         if not path.exists():
             return None
-        content = path.read_text(encoding="utf-8")
+        content = self._safe_path(path).read_text(encoding="utf-8")
         if not _operator_marker_is_pending(content):
             return None
         return ResidentMemoryEntry(
@@ -517,7 +519,7 @@ class LocalResidentMemory(ResidentMemoryPort):
         now = datetime.now(UTC)
         answer_rel = self._prefix / _case_path(case_id, _OPERATOR_ANSWER_PATH)
         marker_rel = self._prefix / _case_path(case_id, _OPERATOR_NEEDED_PATH)
-        marker_path = self._root / marker_rel
+        marker_path = self._safe_path(marker_rel)
         prior = marker_path.read_text(encoding="utf-8") if marker_path.exists() else ""
         answer_ref = self._write(
             answer_rel,
@@ -549,10 +551,10 @@ class LocalResidentMemory(ResidentMemoryPort):
 
     async def read_operator_answer(self, case_id: str = "") -> ResidentMemoryEntry | None:
         rel = self._prefix / _case_path(case_id, _OPERATOR_ANSWER_PATH)
-        path = self._root / rel
+        path = self._safe_path(rel)
         if not path.exists():
             return None
-        content = path.read_text(encoding="utf-8")
+        content = self._safe_path(path).read_text(encoding="utf-8")
         if _operator_answer_is_consumed(content):
             return None
         return ResidentMemoryEntry(
@@ -563,7 +565,7 @@ class LocalResidentMemory(ResidentMemoryPort):
 
     async def consume_operator_answer(self, answer: ResidentMemoryEntry) -> str:
         rel = Path(answer.path) if answer.path else self._prefix / _OPERATOR_ANSWER_PATH
-        path = self._root / rel
+        path = self._safe_path(rel)
         prior = path.read_text(encoding="utf-8") if path.exists() else answer.content
         return self._write(
             rel,
@@ -582,7 +584,7 @@ class LocalResidentMemory(ResidentMemoryPort):
             return []
         entries: list[ResidentMemoryEntry] = []
         for path in sorted(base.glob(f"*/{leaf}")):
-            content = path.read_text(encoding="utf-8")
+            content = self._safe_path(path).read_text(encoding="utf-8")
             available = (
                 _operator_marker_is_pending(content)
                 if pending
@@ -598,13 +600,25 @@ class LocalResidentMemory(ResidentMemoryPort):
                 )
         return entries
 
+    def _safe_path(self, ref: str | Path) -> Path:
+        root_prefix = str(self._root).rstrip(os.sep) + os.sep
+        candidate = os.path.abspath(os.path.join(self._root, ref))
+        if not candidate.startswith(root_prefix):
+            raise ValueError("Resident memory path must stay inside its storage root")
+        resolved = os.path.realpath(candidate)
+        if not resolved.startswith(root_prefix):
+            raise ValueError("Resident memory path must stay inside its storage root")
+        return Path(resolved)
+
     def _write(self, rel: Path, content: str) -> str:
-        path = self._root / rel
+        path = self._safe_path(rel)
         path.parent.mkdir(parents=True, exist_ok=True)
         # Local resident pages are deliberately operator-inspectable Markdown,
         # not a credential store. Keep them private to the owning OS account.
-        path.write_text(content, encoding="utf-8")
-        path.chmod(0o600)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(content)
         return str(rel)
 
     def _working_state_path(self, resident_id: str) -> Path:

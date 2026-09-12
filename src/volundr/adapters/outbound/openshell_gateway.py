@@ -116,7 +116,7 @@ DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS = 30.0
 TCP_FORWARD_BUFFER_BYTES = 64 * 1024
 BOOTSTRAP_TIMEOUT_SECONDS = 600
 BOOTSTRAP_GIT_ATTEMPTS = 20
-MAX_SANDBOX_ROUTING_NAME_LENGTH = 28
+MAX_SANDBOX_ROUTING_NAME_LENGTH = 19
 OAUTH_CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
 GRANT_AUDIENCE_PREFIX = "niuu:credential:"
 PLATFORM_GRANT_AUDIENCE_PREFIX = "niuu:platform:"
@@ -308,7 +308,7 @@ class OpenShellGatewayClient:
         if resources:
             template.resources.CopyFrom(_protobuf_struct(resources))
         if driver_config:
-            template.driver_config.CopyFrom(_protobuf_struct(driver_config))
+            template.driver_config.CopyFrom(_protobuf_struct({"kubernetes": driver_config}))
         spec = openshell_pb2.SandboxSpec(
             environment=env,
             template=template,
@@ -351,6 +351,22 @@ class OpenShellGatewayClient:
                 return None
             offset += len(response.sandboxes)
 
+    def stop_sandbox(self, name: str) -> OpenShellSandbox:
+        response = self._stub.StopSandbox(
+            openshell_pb2.StopSandboxRequest(name=name),
+            timeout=self._timeout,
+            metadata=self._metadata(),
+        )
+        return _sandbox_from_proto(response.sandbox)
+
+    def start_sandbox(self, name: str) -> OpenShellSandbox:
+        response = self._stub.StartSandbox(
+            openshell_pb2.StartSandboxRequest(name=name),
+            timeout=self._timeout,
+            metadata=self._metadata(),
+        )
+        return _sandbox_from_proto(response.sandbox)
+
     def delete_sandbox(self, name: str) -> bool:
         try:
             response = self._stub.DeleteSandbox(
@@ -365,6 +381,9 @@ class OpenShellGatewayClient:
         return bool(response.deleted)
 
     def delete_service(self, *, sandbox_name: str, service: str) -> bool:
+        if len(sandbox_name) > MAX_SANDBOX_ROUTING_NAME_LENGTH:
+            return False
+
         try:
             response = self._stub.DeleteService(
                 openshell_pb2.DeleteServiceRequest(sandbox=sandbox_name, service=service),
@@ -1141,6 +1160,11 @@ class OpenShellGatewayPodManager(
 
     def session_proxy_target(self, session: Session) -> SessionProxyTarget | None:
         """Resolve the OpenShell service route used by Niuu's session proxy."""
+        if len(self._sandbox_name(session)) > MAX_SANDBOX_ROUTING_NAME_LENGTH:
+            sandbox = self._client.get_sandbox(self._sandbox_name(session))
+            if sandbox is None or not sandbox.ready:
+                return None
+            return self._tcp_proxy_target(str(session.id), sandbox.id, self._service_port)
         base = self._service_urls.get(str(session.id))
         if not base and session.chat_endpoint:
             parsed = urlparse(session.chat_endpoint)
@@ -1153,6 +1177,15 @@ class OpenShellGatewayPodManager(
         """Resolve the resident service using its engine-supported OpenShell transport."""
         if runtime.engine is ResidentEngine.HERMES:
             return self._hermes_proxy_target(runtime)
+        if len(self._resident_sandbox_name(runtime)) > MAX_SANDBOX_ROUTING_NAME_LENGTH:
+            sandbox_id = str(runtime.backend_ref.get("id") or "")
+            if not sandbox_id:
+                return None
+            return self._tcp_proxy_target(
+                str(runtime.id),
+                sandbox_id,
+                int(runtime.backend_ref.get("service_port") or self._service_port),
+            )
         base = self._service_urls.get(str(runtime.id)) or str(
             runtime.backend_ref.get("service_url") or ""
         )
@@ -1179,6 +1212,19 @@ class OpenShellGatewayPodManager(
             connect_port=forwarder.port,
         )
 
+    def _tcp_proxy_target(self, workload_id: str, sandbox_id: str, port: int) -> SessionProxyTarget:
+        # Existing long sandbox names predate the workspace-aware DNS limit.
+        # Reuse the authenticated native tunnel rather than renaming live pods.
+        forwarder = self._resident_forwarders.get(workload_id)
+        if forwarder is None:
+            forwarder = self._client.start_tcp_forward(sandbox_id=sandbox_id, target_port=port)
+            self._resident_forwarders[workload_id] = forwarder
+        return SessionProxyTarget(
+            service_url="http://skuld.internal",
+            connect_host=forwarder.host,
+            connect_port=forwarder.port,
+        )
+
     def _proxy_target(self, base: str | None) -> SessionProxyTarget | None:
         if not base:
             return None
@@ -1193,7 +1239,18 @@ class OpenShellGatewayPodManager(
         spec = self._with_brokered_credentials(spec)
         sandbox_name = self._sandbox_name(session)
         session_id = str(session.id)
+        legacy = None
+        if session.pod_name and not spec.values.get("persistence", {}).get("existingClaim"):
+            legacy = await asyncio.to_thread(self._client.get_sandbox, sandbox_name)
         env = self._build_env(session, spec)
+        if legacy is not None:
+            env.update(
+                {
+                    "HOME": self._sandbox_home,
+                    "CODEX_HOME": f"{self._sandbox_home}/.codex",
+                    "CLAUDE_CONFIG_DIR": f"{self._sandbox_home}/.claude",
+                }
+            )
         credential_context = OpenShellCredentialContext(
             files={}, providers=(), environment={}, process_environment={}
         )
@@ -1205,6 +1262,8 @@ class OpenShellGatewayPodManager(
             "volundr.niuu.io/session": session_id,
             "volundr.niuu.io/runtime": self._runtime_from_spec(spec),
         }
+        if spec.values.get("persistence", {}).get("existingClaim"):
+            labels["volundr.niuu.io/storage"] = "forge"
         annotations: dict[str, str] = {}
         if spec.pod_spec:
             labels.update({str(key): str(value) for key, value in spec.pod_spec.labels.items()})
@@ -1227,18 +1286,21 @@ class OpenShellGatewayPodManager(
             )
             if grants:
                 await asyncio.to_thread(self._client.ensure_providers_v2)
-            sandbox = await asyncio.to_thread(
-                self._client.create_sandbox,
-                name=sandbox_name,
-                image=self._sandbox_image,
-                env=env,
-                labels=labels,
-                annotations=annotations,
-                resources=self._resources_from_spec(spec),
-                driver_config=self._driver_config_from_spec(spec),
-                providers=provider_names,
-                policy=self._sandbox_policy,
-            )
+            if legacy is not None:
+                sandbox = await asyncio.to_thread(self._client.start_sandbox, sandbox_name)
+            else:
+                sandbox = await asyncio.to_thread(
+                    self._client.create_sandbox,
+                    name=sandbox_name,
+                    image=self._sandbox_image,
+                    env=env,
+                    labels=labels,
+                    annotations=annotations,
+                    resources=self._resources_from_spec(spec),
+                    driver_config=self._driver_config_from_spec(spec),
+                    providers=provider_names,
+                    policy=self._sandbox_policy,
+                )
             ready = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
             projected_files = dict(credential_context.files)
             for process in runtime_processes:
@@ -1279,19 +1341,25 @@ class OpenShellGatewayPodManager(
                 raise RuntimeError(
                     f"OpenShell session command bootstrap failed with exit {exit_code}"
                 )
-            service_url = await asyncio.to_thread(
-                self._client.expose_service,
-                sandbox_name=sandbox_name,
-                target_port=self._service_port,
-                service=self._service_name,
-            )
+            if len(sandbox_name) > MAX_SANDBOX_ROUTING_NAME_LENGTH:
+                service_url = "http://skuld.internal"
+            else:
+                service_url = await asyncio.to_thread(
+                    self._client.expose_service,
+                    sandbox_name=sandbox_name,
+                    target_port=self._service_port,
+                    service=self._service_name,
+                )
             if not service_url and not self._gateway_public_url:
                 raise RuntimeError(
                     "OpenShell did not return an exposed service URL for the session"
                 )
         except Exception:
             try:
-                await self._cleanup_resources(sandbox_name, grants)
+                if legacy is not None:
+                    await asyncio.to_thread(self._client.stop_sandbox, sandbox_name)
+                else:
+                    await self._cleanup_resources(sandbox_name, grants)
             except Exception:
                 logger.exception("OpenShell launch rollback failed for session %s", session.id)
             raise
@@ -1306,17 +1374,61 @@ class OpenShellGatewayPodManager(
         )
 
     async def stop(self, session: Session) -> bool:
+        forwarder = self._resident_forwarders.pop(str(session.id), None)
+        if forwarder is not None:
+            await asyncio.to_thread(forwarder.close)
+
         self._service_urls.pop(str(session.id), None)
         sandbox_name = self._sandbox_name(session)
         grants = self._provider_grants.pop(str(session.id), ())
-        if not grants:
-            sandbox = await asyncio.to_thread(self._client.get_sandbox, sandbox_name)
-            if sandbox is not None:
-                grants = tuple(
-                    OpenShellProviderGrant(provider_name=name, profile_id=name)
-                    for name in sandbox.providers
-                    if name.startswith("volundr-")
+        sandbox = await asyncio.to_thread(self._client.get_sandbox, sandbox_name)
+        if not grants and sandbox is not None:
+            grants = tuple(
+                OpenShellProviderGrant(provider_name=name, profile_id=name)
+                for name in sandbox.providers
+                if name.startswith("volundr-")
+            )
+        if sandbox is not None and (sandbox.labels or {}).get("volundr.niuu.io/storage") != "forge":
+            # Legacy volumes are owned by the Sandbox CR: deleting it also
+            # deletes history. Native stop removes compute but retains storage.
+            if sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPED:
+                return True
+            if sandbox.ready or sandbox.phase == openshell_pb2.SANDBOX_PHASE_READY:
+                # Older bootstrap scripts copied CLI homes into /tmp. Save
+                # those files onto the retained volume before removing compute.
+                exit_code, _ = await asyncio.to_thread(
+                    self._client.exec_script,
+                    sandbox_id=sandbox.id,
+                    script=(
+                        "set -eu\n"
+                        f"HOME_ROOT={shlex.quote(self._sandbox_home)}\n"
+                        "for cli in codex claude; do\n"
+                        '  source="/tmp/$cli-home"\n'
+                        '  if [ -d "$source" ]; then\n'
+                        '    mkdir -p "$HOME_ROOT/.$cli"\n'
+                        '    cp -a "$source/." "$HOME_ROOT/.$cli/"\n'
+                        "  fi\n"
+                        "done\n"
+                    ),
+                    env={},
                 )
+                if exit_code != 0:
+                    raise RuntimeError(
+                        "Could not preserve legacy OpenShell CLI state; stop aborted"
+                    )
+            await asyncio.to_thread(
+                self._client.delete_service,
+                sandbox_name=sandbox_name,
+                service=self._service_name,
+            )
+            await asyncio.to_thread(self._client.stop_sandbox, sandbox_name)
+            deadline = time.monotonic() + self._ready_timeout
+            while time.monotonic() < deadline:
+                current = await asyncio.to_thread(self._client.get_sandbox, sandbox_name)
+                if current is None or current.phase == openshell_pb2.SANDBOX_PHASE_STOPPED:
+                    return True
+                await asyncio.sleep(READY_POLL_INTERVAL)
+            raise TimeoutError(f"OpenShell sandbox {sandbox_name} did not stop")
         return await self._cleanup_resources(sandbox_name, grants)
 
     async def status(self, session: Session) -> SessionStatus:
@@ -1469,6 +1581,8 @@ class OpenShellGatewayPodManager(
             )
             if runtime.engine is ResidentEngine.HERMES:
                 service_url = HERMES_INTERNAL_SERVICE_URL
+            elif len(sandbox_name) > MAX_SANDBOX_ROUTING_NAME_LENGTH:
+                service_url = "http://skuld.internal"
             else:
                 service_url = await asyncio.to_thread(
                     self._client.expose_service,
@@ -1545,6 +1659,11 @@ class OpenShellGatewayPodManager(
         service_url = str(runtime.backend_ref.get("service_url") or "")
         if not service_url and runtime.engine is ResidentEngine.HERMES:
             service_url = HERMES_INTERNAL_SERVICE_URL
+        if (
+            not service_url
+            and len(self._resident_sandbox_name(runtime)) > MAX_SANDBOX_ROUTING_NAME_LENGTH
+        ):
+            service_url = "http://skuld.internal"
         if not service_url:
             service_url = await asyncio.to_thread(
                 self._client.expose_service,
@@ -2008,9 +2127,9 @@ class OpenShellGatewayPodManager(
 
     @staticmethod
     def _resident_sandbox_name(runtime: ResidentRuntime) -> str:
-        prefix = "resident-"
-        suffix_length = MAX_SANDBOX_ROUTING_NAME_LENGTH - len(prefix)
-        return f"{prefix}{runtime.id.hex[:suffix_length]}"
+        if runtime.backend_ref.get("name"):
+            return str(runtime.backend_ref["name"])
+        return f"r-{runtime.id.hex[:17]}"
 
     async def exchange_credential_grant(
         self,
@@ -2454,6 +2573,14 @@ class OpenShellGatewayPodManager(
                         session.id,
                     )
 
+        home = spec.values.get("homeVolume", {})
+        if isinstance(home, dict) and home.get("enabled") and home.get("existingClaim"):
+            home_path = str(home["mountPath"])
+            sandbox_env["HOME"] = home_path
+            sandbox_env["CODEX_HOME"] = f"{self._sandbox_workspace}/.codex"
+            sandbox_env["CLAUDE_CONFIG_DIR"] = f"{home_path}/.claude"
+            sandbox_env["SKULD__PERSISTENT_HOME_PATH"] = home_path
+
         return sandbox_env
 
     def _workspace_bootstrap_script(self, session: Session, spec: SessionSpec) -> str:
@@ -2590,7 +2717,7 @@ echo "Workspace ready at $WORKSPACE"
 
     @staticmethod
     def _sandbox_name(session: Session) -> str:
-        return f"forge-{session.id.hex[:22]}"
+        return session.pod_name or f"forge-{session.id.hex[:13]}"
 
     @staticmethod
     def _runtime_from_spec(spec: SessionSpec) -> str:
@@ -3047,7 +3174,32 @@ def _driver_config_from_values(values: dict[str, Any]) -> dict[str, Any]:
         pod["runtime_class_name"] = str(values["runtimeClassName"])
     if values.get("priorityClassName"):
         pod["priority_class_name"] = str(values["priorityClassName"])
-    return {"pod": pod} if pod else {}
+    config: dict[str, Any] = {"pod": pod} if pod else {}
+    volumes = []
+    mounts = []
+    for key, name in (("homeVolume", "home"), ("persistence", "workspace")):
+        storage = values.get(key, {})
+        if not isinstance(storage, dict) or not storage.get("existingClaim"):
+            continue
+        if key == "homeVolume" and not storage.get("enabled"):
+            continue
+        mount_path = str(storage.get("mountPath") or "")
+        if not mount_path.startswith("/sandbox/"):
+            raise ValueError("OpenShell storage mount paths must be under /sandbox/")
+        volumes.append(
+            {
+                "name": name,
+                "persistent_volume_claim": {
+                    "claim_name": str(storage["existingClaim"]),
+                    "read_only": False,
+                },
+            }
+        )
+        mounts.append({"name": name, "mount_path": mount_path, "read_only": False})
+    if volumes:
+        config["volumes"] = volumes
+        config["containers"] = {"agent": {"volume_mounts": mounts}}
+    return config
 
 
 def _resident_state_from_sandbox(
@@ -3403,6 +3555,7 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
                     enforcement=str(raw.get("enforcement") or "enforce"),
                     access=str(raw.get("access") or "full"),
                     allowed_ips=[str(item) for item in allowed_ips],
+                    allow_uninspected_credentials=raw.get("allow_uninspected_credentials") is True,
                 )
             )
         binaries = [
@@ -3443,6 +3596,20 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
                 "/usr/bin/node",
                 "/usr/local/bin/node",
                 "/opt/venv/bin/python3",
+            ),
+            "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
+        }
+    if env_name == "LINEAR_API_KEY":
+        return {
+            "auth_style": "header",
+            "header_name": "Authorization",
+            "hosts": ("api.linear.app",),
+            "binaries": (
+                "/usr/bin/curl",
+                "/usr/bin/node",
+                "/usr/local/bin/node",
+                "/opt/venv/bin/python3",
+                "/opt/niuu/bin/python",
             ),
             "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
         }
@@ -3613,6 +3780,10 @@ def _sandbox_from_proto(raw: Any) -> OpenShellSandbox:
 
 
 def _status_from_sandbox(sandbox: OpenShellSandbox) -> SessionStatus:
+    if sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPED:
+        return SessionStatus.STOPPED
+    if sandbox.phase == openshell_pb2.SANDBOX_PHASE_STOPPING:
+        return SessionStatus.STOPPING
     if sandbox.phase == openshell_pb2.SANDBOX_PHASE_READY or sandbox.ready:
         return SessionStatus.RUNNING
     if sandbox.phase == openshell_pb2.SANDBOX_PHASE_ERROR:

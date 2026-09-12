@@ -1,4 +1,4 @@
-FROM oven/bun:1.4.2
+FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895
 ARG GBRAIN_REF=43597b19e50a3abf56409337f248f7966860293c
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \

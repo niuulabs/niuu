@@ -2240,7 +2240,8 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByText('Tokens')).toBeInTheDocument();
     });
 
-    it('shows the forge badge with the instance name', async () => {
+    it('shows the forge badge with the instance name when debug metadata is enabled', async () => {
+      localStorage.setItem('niuu.compactUx.showDebugMeta', '1');
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(screen.getByText('Guild Alpha')).toBeInTheDocument();

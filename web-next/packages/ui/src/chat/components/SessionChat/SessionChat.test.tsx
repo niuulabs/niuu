@@ -124,6 +124,12 @@ describe('SessionChat', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    // niuu:ux made the per-message action bar opt-in and the conversation
+    // view compact-by-default. These tests assert the copy/regenerate/bookmark
+    // wiring and the inline message layout, so opt those back on for the suite;
+    // the product defaults (hidden actions, compact view) are unchanged.
+    localStorage.setItem('niuu.compactUx.showMessageActions', '1');
+    localStorage.setItem('niuu.compactUx.conversationView', 'expanded');
     window.HTMLElement.prototype.scrollIntoView = vi.fn();
   });
 
@@ -985,6 +991,77 @@ describe('SessionChat', () => {
     expect(within(dialog).getByText('/api/v1/credentials/secrets')).toBeInTheDocument();
   });
 
+  it('builds the outcome dialog from the event when no outcome block message exists', () => {
+    // Circular reference: JSON.stringify throws -> stringifyOutcomeValue catch branch.
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const events: MeshOutcomeEvent[] = [
+      {
+        id: 'me-1',
+        type: 'outcome',
+        timestamp: new Date('2026-04-26T12:00:04Z'),
+        participantId: 'peer-1',
+        participant: { color: 'amber' },
+        persona: 'Ravn-A',
+        eventType: 'code_review',
+        verdict: 'approve',
+        // No top-level summary: formatOutcomeMarkdown falls back to fields.summary.
+        fields: {
+          summary: 'Looks good',
+          count: 3, // number -> stringifyOutcomeValue String() branch
+          passed: true, // boolean -> String() branch
+          meta: { nested: 1 }, // object -> JSON.stringify branch
+          notes: 'line one\nline two', // multiline -> pushOutcomeField block branch
+          empty: null, // empty -> pushOutcomeField early-return branch
+          circular, // unserializable -> stringifyOutcomeValue catch branch
+        },
+      },
+    ];
+    // messages contains no ```outcome block, so the dialog content is produced by
+    // formatOutcomeMarkdown(event) rather than the extracted-block path.
+    render(
+      <SessionChat
+        {...defaultProps}
+        messages={[roomAssistantMessage]}
+        connected
+        participants={new Map([[participant.peerId, participant]])}
+        meshEvents={events}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('Ravn-A outcome')).toBeInTheDocument();
+  });
+
+  it('falls back to event_type when an outcome event has no verdict, summary or fields', () => {
+    const events: MeshOutcomeEvent[] = [
+      {
+        id: 'me-bare',
+        type: 'outcome',
+        timestamp: new Date('2026-04-26T12:00:04Z'),
+        participantId: 'peer-1',
+        participant: { color: 'amber' },
+        persona: 'Ravn-A',
+        eventType: 'code_review',
+        // No verdict / summary / fields: formatOutcomeMarkdown takes the
+        // lines.length === 0 branch and emits event_type instead.
+      },
+    ];
+    render(
+      <SessionChat
+        {...defaultProps}
+        messages={[roomAssistantMessage]}
+        connected
+        participants={new Map([[participant.peerId, participant]])}
+        meshEvents={events}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
   it('collapses and expands the mesh peers and mesh cascade sidebars', () => {
     const events: MeshOutcomeEvent[] = [
       {
@@ -1108,57 +1185,136 @@ describe('SessionChat', () => {
 
   /* ── Thread groups ── */
 
-  it('renders thread groups in room mode with internal messages', () => {
-    const participants = new Map([
-      [participant.peerId, participant],
-      [participant2.peerId, participant2],
-    ]);
-    const internalMsgs: ChatMessage[] = [
-      {
-        id: 'int-1',
-        role: 'assistant',
-        content: 'Internal msg 1',
-        createdAt: now,
-        status: 'done',
-        visibility: 'internal',
-        threadId: 'thread-A',
-        participant,
-      },
-      {
-        id: 'int-2',
-        role: 'assistant',
-        content: 'Internal msg 2',
-        createdAt: new Date('2026-04-26T12:00:01Z'),
-        status: 'done',
-        visibility: 'internal',
-        threadId: 'thread-A',
-        participant,
-      },
-      {
-        id: 'ext-1',
-        role: 'user',
-        content: 'External message',
-        createdAt: new Date('2026-04-26T12:00:02Z'),
-      },
-    ];
-
+  it('folds room work per speaker and thread without hiding other answers', () => {
+    localStorage.setItem('niuu.compactUx.conversationView', 'compact');
+    const message = (
+      id: string,
+      content: string,
+      author = participant,
+      threadId = 'one',
+    ): ChatMessage => ({
+      ...roomAssistantMessage,
+      id,
+      content,
+      participant: author,
+      threadId,
+    });
     render(
       <SessionChat
         {...defaultProps}
-        messages={internalMsgs}
         connected
-        participants={participants}
+        participants={
+          new Map([
+            [participant.peerId, participant],
+            [participant2.peerId, participant2],
+          ])
+        }
+        messages={[
+          userMessage,
+          message('a1', 'Reviewer work'),
+          message('a2', 'Reviewer answer'),
+          message('b1', 'Builder work', participant2),
+          message('b2', 'Builder answer', participant2),
+          message('a3', 'Reviewer returns'),
+          message('a4', 'Different thread', participant, 'two'),
+        ]}
       />,
     );
-
-    // External message should always be visible
-    expect(screen.getByText('External message')).toBeInTheDocument();
-
-    // Internal messages are hidden by default; clicking the toggle reveals them.
-    expect(screen.queryByText('Internal msg 1')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('internal-toggle'));
-    expect(screen.getByText('Internal msg 1')).toBeInTheDocument();
+    expect(screen.queryByText('Reviewer work')).not.toBeInTheDocument();
+    expect(screen.queryByText('Builder work')).not.toBeInTheDocument();
+    for (const answer of [
+      'Reviewer answer',
+      'Builder answer',
+      'Reviewer returns',
+      'Different thread',
+    ])
+      expect(screen.getByText(answer)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Reviewer: Show work (1 step)' }));
+    expect(screen.getByText('Reviewer work')).toBeInTheDocument();
+    expect(screen.queryByText('Builder work')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('conversation-view-toggle'));
+    expect(screen.getByText('Builder work')).toBeInTheDocument();
   });
+
+  it('keeps failed room work visible in compact view', () => {
+    localStorage.setItem('niuu.compactUx.conversationView', 'compact');
+    render(
+      <SessionChat
+        {...defaultProps}
+        connected
+        participants={
+          new Map([
+            [participant.peerId, participant],
+            [participant2.peerId, participant2],
+          ])
+        }
+        messages={[
+          userMessage,
+          { ...roomAssistantMessage, id: 'failed', status: 'error', content: 'Tool failed' },
+          { ...roomAssistantMessage, id: 'answer', content: 'Recovery answer' },
+        ]}
+      />,
+    );
+    expect(screen.getByText('Tool failed')).toBeInTheDocument();
+    expect(screen.getByText('Recovery answer')).toBeInTheDocument();
+    expect(screen.getByTestId('worked-toggle')).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it.each(['compact', 'expanded'])(
+    'renders thread groups in %s room mode with internal messages',
+    (view) => {
+      localStorage.setItem('niuu.compactUx.conversationView', view);
+      const participants = new Map([
+        [participant.peerId, participant],
+        [participant2.peerId, participant2],
+      ]);
+      const internalMsgs: ChatMessage[] = [
+        {
+          id: 'int-1',
+          role: 'assistant',
+          content: 'Internal msg 1',
+          createdAt: now,
+          status: 'done',
+          visibility: 'internal',
+          threadId: 'thread-A',
+          participant,
+        },
+        {
+          id: 'int-2',
+          role: 'assistant',
+          content: 'Internal msg 2',
+          createdAt: new Date('2026-04-26T12:00:01Z'),
+          status: 'done',
+          visibility: 'internal',
+          threadId: 'thread-A',
+          participant,
+        },
+        {
+          id: 'ext-1',
+          role: 'user',
+          content: 'External message',
+          createdAt: new Date('2026-04-26T12:00:02Z'),
+        },
+      ];
+
+      render(
+        <SessionChat
+          {...defaultProps}
+          messages={internalMsgs}
+          connected
+          participants={participants}
+        />,
+      );
+
+      // External message should always be visible
+      expect(screen.getByText('External message')).toBeInTheDocument();
+
+      // Internal messages are hidden by default; clicking the toggle reveals them.
+      expect(screen.queryByText('Internal msg 1')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('internal-toggle'));
+      expect(screen.getByText('Internal msg 1')).toBeInTheDocument();
+    },
+  );
 
   /* ── isRoomSession detection ── */
 
@@ -1316,5 +1472,30 @@ describe('SessionChat', () => {
   it('hides rewind files when onRewindFiles is not provided', () => {
     render(<SessionChat {...defaultProps} connected capabilities={{ rewind_files: true }} />);
     expect(screen.queryByTestId('rewind-files')).not.toBeInTheDocument();
+  });
+  it('updates shared display preferences from the display controls', () => {
+    localStorage.clear();
+    render(<SessionChat {...defaultProps} messages={[userMessage, assistantMessage]} />);
+    fireEvent.click(screen.getByLabelText('Agent avatars'));
+    expect(localStorage.getItem('niuu.compactUx.showAgentAvatar')).toBe('true');
+    fireEvent.change(screen.getByLabelText('Timestamps'), { target: { value: 'never' } });
+    expect(screen.getByTestId('assistant-message')).toHaveAttribute('data-timestamp', 'never');
+    expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Copy button'), { target: { value: 'inline' } });
+    expect(localStorage.getItem('niuu.compactUx.copyMode')).toBe('inline');
+  });
+  it('keeps display controls available when Forge supplies its own toolbar', () => {
+    localStorage.clear();
+    render(
+      <SessionChat
+        {...defaultProps}
+        showToolbar={false}
+        messages={[userMessage, assistantMessage]}
+      />,
+    );
+    expect(screen.getByTestId('conversation-view-toggle')).toBeInTheDocument();
+    expect(screen.getByText('Display')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('conversation-view-toggle'));
+    expect(localStorage.getItem('niuu.compactUx.conversationView')).toBe('expanded');
   });
 });

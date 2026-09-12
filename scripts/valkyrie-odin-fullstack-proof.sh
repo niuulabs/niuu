@@ -103,9 +103,10 @@ echo "Waiting for the held build to reach the central review queue..."
 echo "(the teacher's investigation session is authoring the tool on a live LLM)"
 ITEM_ID=""
 for _ in $(seq 1 240); do
-    ITEM_ID="$(curl -sf "${BASE_URL}/api/v1/ravn/odin/reviews?status=pending" \
-        | python3 -c 'import json,sys; rows=json.load(sys.stdin); print(rows[0]["item_id"] if rows else "")' \
-        2>/dev/null || true)"
+    curl -sf "${BASE_URL}/api/v1/ravn/odin/reviews?status=pending" \
+        -o "${OUT_DIR}/pending-reviews.json" || { sleep 2; continue; }
+    ITEM_ID="$(python3 -c 'import json,sys; rows=json.load(sys.stdin); print(rows[0]["item_id"] if rows else "")' \
+        < "${OUT_DIR}/pending-reviews.json" 2>/dev/null || true)"
     [[ -n "${ITEM_ID}" ]] && break
     sleep 2
 done
@@ -132,9 +133,10 @@ echo "Driving the web inbox with playwright..."
 echo "Waiting for the resident to apply and the queue to settle..."
 ITEM_STATUS=""
 for _ in $(seq 1 45); do
-    ITEM_STATUS="$(curl -sf "${BASE_URL}/api/v1/ravn/odin/reviews/${ITEM_ID}" \
-        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' \
-        2>/dev/null || true)"
+    curl -sf "${BASE_URL}/api/v1/ravn/odin/reviews/${ITEM_ID}" \
+        -o "${OUT_DIR}/review-status.json" || { sleep 2; continue; }
+    ITEM_STATUS="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' \
+        < "${OUT_DIR}/review-status.json" 2>/dev/null || true)"
     [[ "${ITEM_STATUS}" == "applied" ]] && break
     sleep 2
 done

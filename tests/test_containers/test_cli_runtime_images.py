@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CODEX_VERSION = "0.144.1"
 
 
 def _load_json(path: str) -> dict:
@@ -18,18 +17,20 @@ def test_skuld_and_devrunner_pin_same_codex_version() -> None:
         "containers/devrunner/npm-tools/package.json",
     ]
 
-    for package_path in package_paths:
-        package = _load_json(package_path)
-        assert package["dependencies"]["@openai/codex"] == CODEX_VERSION
+    versions = [_load_json(path)["dependencies"]["@openai/codex"] for path in package_paths]
+    assert versions[0] == versions[1]
 
 
 def test_devrunner_lockfile_resolves_codex_version() -> None:
     """The checked-in npm lockfile must match the devrunner Codex pin."""
+    codex_version = _load_json("containers/devrunner/npm-tools/package.json")["dependencies"][
+        "@openai/codex"
+    ]
     package_lock = _load_json("containers/devrunner/npm-tools/package-lock.json")
     codex_package = package_lock["packages"]["node_modules/@openai/codex"]
 
-    assert codex_package["version"] == CODEX_VERSION
-    assert f"codex-{CODEX_VERSION}.tgz" in codex_package["resolved"]
+    assert codex_package["version"] == codex_version
+    assert f"codex-{codex_version}.tgz" in codex_package["resolved"]
 
 
 def test_cli_runtime_images_install_vim() -> None:

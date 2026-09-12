@@ -92,6 +92,8 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
     openshell_pb2_mod.SANDBOX_PHASE_READY = 2
     openshell_pb2_mod.SANDBOX_PHASE_ERROR = 3
     openshell_pb2_mod.SANDBOX_PHASE_DELETING = 4
+    openshell_pb2_mod.SANDBOX_PHASE_STOPPED = 5
+    openshell_pb2_mod.SANDBOX_PHASE_STOPPING = 6
     openshell_pb2_mod.PROVIDER_PROFILE_CATEGORY_AGENT = 3
     openshell_pb2_mod.PROVIDER_PROFILE_CATEGORY_SOURCE_CONTROL = 4
 
@@ -114,6 +116,8 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
         "CreateSandboxRequest",
         "GetSandboxRequest",
         "DeleteSandboxRequest",
+        "StopSandboxRequest",
+        "StartSandboxRequest",
         "ExposeServiceRequest",
         "CreateSshSessionRequest",
         "RevokeSshSessionRequest",
@@ -210,7 +214,7 @@ class _FakeOpenShellGatewayClient:
         self.provider_environment = {}
         self.closed = False
         self.sandbox_exists = True
-        self.sandbox_labels: dict[str, str] = {}
+        self.sandbox_labels: dict[str, str] = {"volundr.niuu.io/storage": "forge"}
 
     def create_sandbox(self, **kwargs):
         self.created = kwargs
@@ -826,6 +830,123 @@ def _hermes_profile() -> ResidentDeploymentProfile:
     )
 
 
+@pytest.mark.parametrize(
+    "method,rpc", [("stop_sandbox", "StopSandbox"), ("start_sandbox", "StartSandbox")]
+)
+def test_native_lifecycle_calls_authenticated_gateway(monkeypatch, method, rpc):
+    from unittest.mock import Mock
+
+    adapter = _import_adapter(monkeypatch)
+    raw = types.SimpleNamespace(
+        metadata=types.SimpleNamespace(id="id", name="forge", labels={}),
+        status=types.SimpleNamespace(
+            phase=adapter.openshell_pb2.SANDBOX_PHASE_STOPPED, conditions=[]
+        ),
+        spec=types.SimpleNamespace(providers=[]),
+    )
+    token_provider = Mock()
+    token_provider.token.return_value = "test-token"
+    client = adapter.OpenShellGatewayClient(token_provider=token_provider)
+    client._stub = Mock()
+    call = getattr(client._stub, rpc)
+    call.return_value = types.SimpleNamespace(sandbox=raw)
+    assert getattr(client, method)("forge").id == "id"
+    assert call.call_args.args[0].name == "forge"
+    assert ("authorization", "Bearer test-token") in call.call_args.kwargs["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_stop_preserves_sandbox_volume(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    session = _session()
+    running = adapter.OpenShellSandbox(
+        id="sandbox-id",
+        name="legacy",
+        phase=adapter.openshell_pb2.SANDBOX_PHASE_READY,
+    )
+    stopped = replace(running, phase=adapter.openshell_pb2.SANDBOX_PHASE_STOPPED)
+    from unittest.mock import Mock
+
+    client.get_sandbox = Mock(side_effect=[running, stopped])
+    client.stop_sandbox = Mock(return_value=stopped)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    assert await manager.stop(session)
+    client.stop_sandbox.assert_called_once()
+    assert client.deleted == []
+    assert 'source="/tmp/$cli-home"' in client.bootstrap_execs[0]["script"]
+    assert adapter._status_from_sandbox(stopped) == SessionStatus.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_legacy_resume_reuses_sandbox_instead_of_replacing_storage(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    session = _session().with_pod_name("legacy")
+    from unittest.mock import Mock
+
+    client.start_sandbox = Mock(return_value=client.get_sandbox("legacy"))
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    client.start_sandbox.assert_called_once()
+    assert client.created is None
+    assert client.deleted == []
+    assert client.execs[-1]["env"]["CLAUDE_CONFIG_DIR"] == "/sandbox/.claude"
+
+
+@pytest.mark.asyncio
+async def test_start_mounts_forge_storage_and_persists_agent_home(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    session = _session()
+    spec = SessionSpec(
+        pod_spec=PodSpecAdditions(),
+        values={
+            "homeVolume": {
+                "enabled": True,
+                "existingClaim": "user-home",
+                "mountPath": "/sandbox/home",
+            },
+            "persistence": {
+                "existingClaim": "session-workspace",
+                "mountPath": "/sandbox/workspace",
+            },
+        },
+    )
+    await manager.start(session, spec)
+    config = client.created["driver_config"]
+    assert config["volumes"] == [
+        {
+            "name": "home",
+            "persistent_volume_claim": {"claim_name": "user-home", "read_only": False},
+        },
+        {
+            "name": "workspace",
+            "persistent_volume_claim": {"claim_name": "session-workspace", "read_only": False},
+        },
+    ]
+    assert config["containers"]["agent"]["volume_mounts"] == [
+        {"name": "home", "mount_path": "/sandbox/home", "read_only": False},
+        {"name": "workspace", "mount_path": "/sandbox/workspace", "read_only": False},
+    ]
+    env = client.created["env"]
+    assert env["HOME"] == env["SKULD__PERSISTENT_HOME_PATH"] == "/sandbox/home"
+    assert env["CODEX_HOME"] == "/sandbox/workspace/.codex"
+    assert env["CLAUDE_CONFIG_DIR"] == "/sandbox/home/.claude"
+    assert client.execs[-1]["env"]["CODEX_HOME"] == env["CODEX_HOME"]
+
+
+def test_storage_rejects_mount_outside_sandbox(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    with pytest.raises(ValueError, match="under /sandbox/"):
+        adapter._driver_config_from_values(
+            {
+                "persistence": {"existingClaim": "workspace", "mountPath": "/volundr/sessions"},
+            }
+        )
+
+
 @pytest.mark.asyncio
 async def test_start_uses_gateway_client_without_host_cli(monkeypatch: pytest.MonkeyPatch):
     adapter = _import_adapter(monkeypatch)
@@ -865,8 +986,8 @@ async def test_start_uses_gateway_client_without_host_cli(monkeypatch: pytest.Mo
 
     result = await manager.start(session, spec)
 
-    expected_sandbox_name = f"forge-{session.id.hex[:22]}"
-    assert len(expected_sandbox_name) == 28
+    expected_sandbox_name = f"forge-{session.id.hex[:13]}"
+    assert len(expected_sandbox_name) == 19
     assert result.pod_name == expected_sandbox_name
     assert result.chat_endpoint == "ws://openshell.example/proxy/session-1/session"
     assert result.code_endpoint == "http://openshell.example/proxy/session-1/"
@@ -1186,7 +1307,7 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
     assert manager.supports(profile)
     assert observation.observed_state is ResidentObservedState.ACTIVE
     assert observation.backend_ref["kind"] == "OpenShellSandbox"
-    expected_name = f"resident-{runtime.id.hex[:19]}"
+    expected_name = f"r-{runtime.id.hex[:17]}"
     assert observation.backend_ref["name"] == expected_name
     assert len(expected_name) == adapter.MAX_SANDBOX_ROUTING_NAME_LENGTH
     assert observation.endpoints[0].url == f"/s/{runtime.id}/session"
@@ -1304,7 +1425,7 @@ async def test_resident_reconcile_recovers_missing_service_endpoint(
     observation = await manager.reconcile(runtime, _resident_profile())
 
     assert client.exposed == {
-        "sandbox_name": f"resident-{runtime.id.hex[:19]}",
+        "sandbox_name": "resident-existing",
         "target_port": 9200,
         "service": "skuld",
     }
@@ -1497,9 +1618,9 @@ async def test_resident_delete_removes_service_sandbox_and_provider_grants(
     deleted = await manager.delete(runtime)
     assert deleted
     assert client.deleted_services == [
-        {"sandbox_name": f"resident-{runtime.id.hex[:19]}", "service": "skuld"}
+        {"sandbox_name": f"r-{runtime.id.hex[:17]}", "service": "skuld"}
     ]
-    assert client.deleted == [f"resident-{runtime.id.hex[:19]}"]
+    assert client.deleted == [f"r-{runtime.id.hex[:17]}"]
     assert [grant.provider_name for grant in client.deleted_grants] == ["volundr-provider"]
     assert client.cleanup_events == [
         "sandbox-present",
@@ -1584,6 +1705,44 @@ async def test_resident_logs_merge_process_files_through_gateway_exec(
     ]
 
 
+@pytest.mark.parametrize("kind", ["session", "resident"])
+def test_legacy_names_use_authenticated_native_tunnel(monkeypatch, kind):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+    if kind == "session":
+        workload = _session().with_pod_name("forge-" + "a" * 22)
+        target = manager.session_proxy_target(workload)
+    else:
+        workload = _resident_runtime().model_copy(
+            update={
+                "backend_ref": {
+                    "id": "sandbox-id",
+                    "name": "resident-" + "a" * 19,
+                    "service_port": 9200,
+                }
+            }
+        )
+        target = manager.resident_proxy_target(workload)
+    assert target.service_url == "http://skuld.internal"
+    assert target.connect_host == "127.0.0.1"
+    assert client.forwarded[0]["sandbox_id"] == "sandbox-id"
+    assert client.exposed is None
+
+
+def test_l4_credentials_require_explicit_opt_in(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    config = {
+        "endpoints": [{"host": "10.191.72.34", "port": 4222, "tls": "skip"}],
+        "binaries": ["/opt/niuu/bin/python"],
+    }
+    target = adapter._provider_target("RAVN_NATS_PASSWORD", config)
+    assert target["endpoints"][0].allow_uninspected_credentials is False
+    config["endpoints"][0]["allow_uninspected_credentials"] = True
+    target = adapter._provider_target("RAVN_NATS_PASSWORD", config)
+    assert target["endpoints"][0].allow_uninspected_credentials is True
+
+
 def test_session_proxy_target_preserves_service_route_and_uses_gateway(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1664,7 +1823,7 @@ async def test_start_fails_and_rolls_back_without_exposed_service_url(
     with pytest.raises(RuntimeError, match="did not return an exposed service URL"):
         await manager.start(session, SessionSpec(values={}, pod_spec=None))
 
-    assert client.deleted == [f"forge-{session.id.hex[:22]}"]
+    assert client.deleted == [f"forge-{session.id.hex[:13]}"]
 
 
 @pytest.mark.asyncio
@@ -1686,6 +1845,7 @@ async def test_start_creates_dynamic_openbao_providers_without_secret_environmen
     )
     spec = SessionSpec(
         values={
+            "persistence": {"existingClaim": "workspace", "mountPath": "/sandbox/workspace"},
             "env": {"GITHUB_TOKEN": "literal-should-not-launch"},
             "openshell": {
                 "credentialMappings": [
@@ -2013,7 +2173,7 @@ async def test_stop_and_status_map_sandbox_lifecycle(monkeypatch: pytest.MonkeyP
 
     assert await manager.status(session) == SessionStatus.RUNNING
     assert await manager.stop(session) is True
-    assert client.deleted == [f"forge-{session.id.hex[:22]}"]
+    assert client.deleted == [f"forge-{session.id.hex[:13]}"]
 
 
 def test_token_provider_uses_keycloak_client_credentials_shape(
@@ -2609,3 +2769,52 @@ def test_claude_subscription_uses_bearer_provider_route():
     assert subscription["header_name"] == "Authorization"
     assert api_key["auth_style"] == "header"
     assert api_key["header_name"] == "x-api-key"
+
+
+def test_linear_api_key_uses_scoped_inspected_header_route():
+    from volundr.adapters.outbound.openshell_gateway import _provider_profile
+
+    profile = _provider_profile(
+        profile_id="linear-test",
+        env_name="LINEAR_API_KEY",
+        token_endpoint="https://volundr.example.test/token",
+    )
+    credential = profile.credentials[0]
+    assert credential.auth_style == "header"
+    assert credential.header_name == "Authorization"
+    assert list(credential.env_vars) == ["LINEAR_API_KEY"]
+    assert credential.token_grant.token_endpoint == "https://volundr.example.test/token"
+    assert len(profile.endpoints) == 1
+    endpoint = profile.endpoints[0]
+    assert (endpoint.host, endpoint.port) == ("api.linear.app", 443)
+    assert endpoint.tls == "terminate"
+    assert endpoint.enforcement == "enforce"
+    assert not getattr(endpoint, "allow_uninspected_credentials", False)
+
+
+def test_create_sandbox_wraps_storage_in_public_driver_envelope(monkeypatch):
+    from unittest.mock import Mock
+
+    adapter = _import_adapter(monkeypatch)
+    monkeypatch.setattr(
+        adapter.openshell_pb2,
+        "SandboxTemplate",
+        lambda **kwargs: types.SimpleNamespace(
+            **kwargs, labels={}, environment={}, driver_config=adapter.struct_pb2.Struct()
+        ),
+    )
+    monkeypatch.setattr(adapter, "_sandbox_from_proto", lambda raw: raw)
+    client = adapter.OpenShellGatewayClient(token_provider=Mock())
+    client._stub = Mock()
+    config = adapter._driver_config_from_values(
+        {"persistence": {"existingClaim": "forge-workspace", "mountPath": "/sandbox/workspace"}}
+    )
+    client.create_sandbox(
+        name="forge-test", image="sandbox:test", env={}, labels={}, driver_config=config
+    )
+    request = client._stub.CreateSandbox.call_args.args[0]
+    envelope = request.spec.template.driver_config
+    assert set(envelope) == {"kubernetes"}
+    selected = envelope["kubernetes"]
+    assert selected["volumes"][0]["persistent_volume_claim"]["claim_name"] == "forge-workspace"
+    assert selected["containers"]["agent"]["volume_mounts"][0]["mount_path"] == "/sandbox/workspace"

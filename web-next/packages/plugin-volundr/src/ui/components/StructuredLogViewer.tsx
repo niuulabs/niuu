@@ -234,7 +234,12 @@ export function StructuredLogViewer({
         <div>Source</div>
         <div>Message</div>
       </div>
-      <div className={cn('niuu:flex-1 niuu:overflow-auto niuu:bg-bg-primary', bodyClassName)}>
+      <div
+        className={cn(
+          'niuu:min-h-0 niuu:flex-1 niuu:overflow-auto niuu:bg-bg-primary',
+          bodyClassName,
+        )}
+      >
         {loading && filteredLogs.length === 0 && (
           <div className="niuu:p-4 niuu:text-center niuu:text-sm niuu:text-text-muted">
             Loading logs…

@@ -10,13 +10,13 @@ describe('chat transport', () => {
 
   it('supports legacy api/session suffixes', () => {
     expect(wsUrlToHttpBase('ws://localhost:8080/s/abc/api/session')).toBe(
-      'http://localhost:8080/s/abc',
+      `${window.location.origin}/s/abc`,
     );
   });
 
   it('derives the terminal websocket from the chat websocket', () => {
     expect(deriveTerminalWsUrl('ws://localhost:8080/s/abc/session')).toBe(
-      'ws://localhost:8080/s/abc/terminal/ws',
+      `${window.location.origin.replace('http', 'ws')}/s/abc/terminal/ws`,
     );
   });
 
@@ -94,7 +94,7 @@ describe('chat transport', () => {
       'ftp://localhost:8443/archive',
     );
     expect(normalizeSessionUrl('ws://127.0.0.1:9000/s/abc/session')).toBe(
-      'ws://127.0.0.1:9000/s/abc/session',
+      'wss://localhost:8443/s/abc/session',
     );
     expect(normalizeSessionUrl('ws://api.example.test:8443/s/abc/session')).toBe(
       'ws://api.example.test:8443/s/abc/session',

@@ -5,6 +5,8 @@ export interface AttachmentMeta {
   type: 'image' | 'file';
   size: number;
   contentType: string;
+  /** data-URI for an inline image preview (thumbnail), when available */
+  previewUrl?: string;
 }
 
 export interface ContentBlock {

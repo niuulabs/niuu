@@ -20,7 +20,6 @@ import type { IFileSystemPort, FileTreeNode } from '../ports/IFileSystemPort';
 import type {
   VolundrSession,
   VolundrStats,
-  VolundrFeatures,
   VolundrRepo,
   VolundrMessage,
   VolundrLog,
@@ -1468,7 +1467,18 @@ export function buildVolundrHttpAdapter(
   }
 
   return {
-    getFeatures: () => sharedClient.get<VolundrFeatures>('/features'),
+    getFeatures: async (instanceId) => {
+      const flags = await forgeClient.get<{
+        local_mounts_enabled: boolean;
+        file_manager_enabled: boolean;
+        mini_mode: boolean;
+      }>(`/feature-flags${instanceId ? `?instance_id=${encodeURIComponent(instanceId)}` : ''}`);
+      return {
+        localMountsEnabled: flags.local_mounts_enabled,
+        fileManagerEnabled: flags.file_manager_enabled,
+        miniMode: flags.mini_mode,
+      };
+    },
     getSessionDefinitions: async () => {
       const payload = await catalogClient.get<SessionDefinitionPayload[]>('/session-definitions');
       return payload.map(normalizeSessionDefinition);

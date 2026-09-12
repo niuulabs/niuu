@@ -908,7 +908,7 @@ function buildSplitVolundrService(
 ): IVolundrService {
   return {
     ...catalog,
-    getFeatures: () => forge.getFeatures(),
+    getFeatures: (instanceId) => forge.getFeatures(instanceId),
     getSessions: () => forge.getSessions(),
     getSession: (id) => forge.getSession(id),
     getActiveSessions: () => forge.getActiveSessions(),

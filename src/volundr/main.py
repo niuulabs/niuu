@@ -714,6 +714,7 @@ def create_app(
                 repository,
                 pod_manager,
                 git_registry=git_registry,
+                user_integration=user_integration_service,
                 validate_repos=settings.git.validate_on_create,
                 broadcaster=broadcaster,
                 launch_spec_provider=launch_spec_provider,

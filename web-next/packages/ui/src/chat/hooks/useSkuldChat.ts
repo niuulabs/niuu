@@ -1,3 +1,4 @@
+import { extractInlineImages } from '../inlineImages';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getAuthHeaders } from '@niuulabs/query';
 import { extractOutcomeBlock } from '../components/OutcomeCard';
@@ -357,10 +358,17 @@ export function getStringArray(
 export function reviveMessages(messages: PersistedChatState['messages']): ChatMessage[] {
   return (messages ?? [])
     .filter((message) => message.status !== 'running')
-    .map((message) => ({
-      ...message,
-      createdAt: new Date(message.createdAt),
-    }));
+    .map((message) => {
+      const revived: ChatMessage = { ...message, createdAt: new Date(message.createdAt) };
+      // Defensive: an older persisted message may carry a base64 image inside
+      // its text content with no attachment meta — lift it so it renders as a
+      // small image, not a giant base64 string.
+      if (!revived.attachments?.length && revived.content) {
+        const { text, attachments } = extractInlineImages(revived.content);
+        if (attachments.length > 0) return { ...revived, content: text, attachments };
+      }
+      return revived;
+    });
 }
 
 export function reviveMeshEvents(events: PersistedChatState['meshEvents']): MeshEvent[] {
@@ -437,12 +445,14 @@ export function serializeAgentEvents(
 
 export function transformTurns(turns: ConversationTurn[]): ChatMessage[] {
   return turns.map((turn) => {
+    const imageContent = extractInlineImages(turn.content);
     const metadata = turn.metadata as ChatMessage['metadata'] | undefined;
     const metadataStatus = (turn.metadata as Record<string, unknown> | undefined)?.status;
     return {
       id: turn.id,
       role: turn.role === 'user' ? 'user' : 'assistant',
-      content: turn.content,
+      content: imageContent.text,
+      attachments: imageContent.attachments.length ? imageContent.attachments : undefined,
       createdAt: new Date(turn.created_at),
       status: metadataStatus === 'error' ? 'error' : 'done',
       parts: turn.parts as ChatMessagePart[] | undefined,
