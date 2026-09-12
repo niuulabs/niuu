@@ -95,7 +95,7 @@ const FILTER_KIND_OPTIONS: Array<{
   rune: string;
 }> = [
   { value: 'volundr', label: 'Volundr', rune: 'ᚲ' },
-  { value: 'ting', label: 'Tyr', rune: '✦' },
+  { value: 'ting', label: 'Ting', rune: '✦' },
   { value: 'mimir', label: 'Mimir', rune: 'ᛗ' },
   { value: 'bifrost', label: 'Bifrost', rune: 'ᚨ' },
   { value: 'ravn', label: 'Ravn', rune: 'ᚱ' },
@@ -132,7 +132,7 @@ const REGISTER_KIND_OPTIONS: Array<{
   },
   {
     value: 'ting',
-    label: 'Tyr',
+    label: 'Ting',
     rune: '✦',
     summary: 'saga coordinator',
     detail: 'dispatch ravens',

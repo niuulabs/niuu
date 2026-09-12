@@ -55,7 +55,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
@@ -93,7 +93,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
@@ -135,7 +135,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
@@ -170,7 +170,7 @@ jobs:
       packages: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
-      containers: '["agent","skuld","openshell","devrunner","volundr-web","niuu-web","niuu"]'
+      containers: '["agent","skuld","openshell","devrunner","volundr-web","niuu-web","niuu","gbrain"]'
       platforms: '["amd64","arm64"]'
       tag-prefix: ${{ github.sha }}
       manifest-tags: "dev dev-${{ github.sha }}"
@@ -194,7 +194,7 @@ jobs:
       security-events: write
     uses: ./.github/workflows/reusable-container-scan.yaml
     with:
-      containers: '["agent","skuld","openshell","devrunner","volundr-web","niuu-web","niuu"]'
+      containers: '["agent","skuld","openshell","devrunner","volundr-web","niuu-web","niuu","gbrain"]'
       tag: dev
 
   # ---------------------------------------------------------------------------
@@ -307,13 +307,16 @@ jobs:
         run: |
           VERSION="${{ needs.tag.outputs.version }}"
 
-          for CHART in agent bifrost ravn skuld volundr ting niuu-shared niuu skuld-planner; do
+          for CHART in agent bifrost ravn skuld volundr ting niuu-shared niuu skuld-planner mimir gbrain; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
+          sed -i 's/^  tag: ""/  tag: "dev-${{ github.sha }}"/' charts/gbrain/values.yaml
 
       - name: Package Helm charts
         run: |
+          helm package charts/mimir -d .helm-packages/
+          helm package charts/gbrain -d .helm-packages/
           helm package charts/bifrost -d .helm-packages/
           helm package charts/agent -d .helm-packages/
           helm package charts/ravn -d .helm-packages/
@@ -327,7 +330,7 @@ jobs:
           helm package charts/niuu -d .helm-packages/
 
       - name: Log in to Container Registry
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -335,6 +338,8 @@ jobs:
 
       - name: Push Helm charts to OCI registry
         run: |
+          helm push .helm-packages/mimir-*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/gbrain-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/agent-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/bifrost-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/ravn-*.tgz ${{ env.CHART_REPO }}

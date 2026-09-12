@@ -256,6 +256,10 @@ class CredentialEnrollmentRunnerPort(ABC):
     async def cancel_enrollment(self, enrollment: CredentialEnrollment) -> None:
         """Destroy any runtime resources belonging to the enrollment."""
 
+    async def submit_code(self, enrollment: CredentialEnrollment, code: str) -> None:
+        """Pass a browser authorization code to a login that requires one."""
+        raise ValueError("This login does not accept a browser authorization code")
+
 
 class ExternalSessionProvider(ABC):
     """Port for discovering CLI sessions that live outside Volundr.
@@ -1122,6 +1126,10 @@ class SecretRepository(ABC):
         """Delete ephemeral session secrets."""
 
 
+class HomeStorageBusyError(RuntimeError):
+    """A running session prevents destructive home-storage operations."""
+
+
 class StoragePort(ABC):
     """Port for persistent volume claim management."""
 
@@ -1181,6 +1189,10 @@ class StoragePort(ABC):
         user_id: str,
     ) -> None:
         """Delete a user's home PVC."""
+
+    async def manage_user_home(self, user_id: str, operation: str, path: str = "") -> dict:
+        """Browse or delete entries in this user's home without a coder session."""
+        raise NotImplementedError("Home file management is not supported on this cluster")
 
     async def list_workspaces(
         self,

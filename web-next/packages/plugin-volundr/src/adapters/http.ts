@@ -20,7 +20,6 @@ import type { IFileSystemPort, FileTreeNode } from '../ports/IFileSystemPort';
 import type {
   VolundrSession,
   VolundrStats,
-  VolundrFeatures,
   VolundrRepo,
   VolundrMessage,
   VolundrLog,
@@ -1468,7 +1467,18 @@ export function buildVolundrHttpAdapter(
   }
 
   return {
-    getFeatures: () => sharedClient.get<VolundrFeatures>('/features'),
+    getFeatures: async (instanceId) => {
+      const flags = await forgeClient.get<{
+        local_mounts_enabled: boolean;
+        file_manager_enabled: boolean;
+        mini_mode: boolean;
+      }>(`/feature-flags${instanceId ? `?instance_id=${encodeURIComponent(instanceId)}` : ''}`);
+      return {
+        localMountsEnabled: flags.local_mounts_enabled,
+        fileManagerEnabled: flags.file_manager_enabled,
+        miniMode: flags.mini_mode,
+      };
+    },
     getSessionDefinitions: async () => {
       const payload = await catalogClient.get<SessionDefinitionPayload[]>('/session-definitions');
       return payload.map(normalizeSessionDefinition);
@@ -1483,6 +1493,13 @@ export function buildVolundrHttpAdapter(
           SharedRepoResponse | SharedRepoPayload[] | VolundrRepo[]
         >('/repos'),
       ),
+    listUserHome: (instanceId, path) =>
+      client.get(`/storage/home?${new URLSearchParams({ instance_id: instanceId, path })}`),
+    deleteUserHomePath: async (instanceId, path) => {
+      await client.delete(
+        `/storage/home?${new URLSearchParams({ instance_id: instanceId, path })}`,
+      );
+    },
     getTargets: async () => {
       const targetClient = niuuClient ?? sharedClient;
       const payload = await targetClient.get<InstanceTargetPayload[]>(
@@ -1777,7 +1794,27 @@ export function buildVolundrHttpAdapter(
     deleteTenantCredential: (name) => credentialsClient.delete<void>(`/tenant/${name}`),
 
     getIntegrationCatalog: () => sharedClient.get<CatalogEntry[]>('/integrations/catalog'),
-    getIntegrations: () => sharedClient.get<IntegrationConnection[]>('/integrations'),
+    getIntegrations: async () => {
+      const connections = await sharedClient.get<
+        (Partial<IntegrationConnection> & {
+          id: string;
+          integration_type?: string;
+          credential_name?: string;
+          created_at?: string;
+          updated_at?: string;
+        })[]
+      >('/integrations');
+      return connections.map((connection) => ({
+        id: connection.id,
+        slug: connection.slug,
+        adapter: connection.adapter,
+        enabled: connection.enabled,
+        integrationType: connection.integrationType ?? connection.integration_type,
+        credentialName: connection.credentialName ?? connection.credential_name,
+        createdAt: connection.createdAt ?? connection.created_at ?? '',
+        updatedAt: connection.updatedAt ?? connection.updated_at ?? '',
+      }));
+    },
     createIntegration: (connection) =>
       sharedClient.post<IntegrationConnection>('/integrations', connection),
     deleteIntegration: (id) => sharedClient.delete<void>(`/integrations/${id}`),

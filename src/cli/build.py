@@ -90,6 +90,9 @@ NOFOLLOW_IMPORTS = [
     "respx",
 ]
 
+POSTGRES_PACKAGE_CONFIG = REPO_ROOT / "src/cli/postgres.nuitka-package.config.yml"
+POSTGRES_LAYOUT_PLUGIN = REPO_ROOT / "scripts/postgres_nuitka_plugin.py"
+
 DEFAULT_BINARY_NAME = "niuu"
 DEFAULT_ENTRY_POINT = str(REPO_ROOT / "src" / "cli" / "__main__.py")
 DEFAULT_OUTPUT_DIR = str(REPO_ROOT / "dist")
@@ -137,6 +140,9 @@ def build_command(
         f"--output-dir={output_dir}",
         f"--output-filename={binary_name}-{platform_suffix()}",
         "--enable-plugin=no-qt",
+        f"--user-package-configuration-file={POSTGRES_PACKAGE_CONFIG}",
+        f"--user-plugin={POSTGRES_LAYOUT_PLUGIN}",
+        "--noinclude-data-files=niuu/pginstall/bin/*",
     ]
     cmd.extend(nuitka_toolchain_flags())
 

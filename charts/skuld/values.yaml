@@ -180,6 +180,9 @@ persistence:
 # Credential files are mounted from a K8s Secret and symlinked into
 # $HOME/<destDir>/ so they auto-update when the secret changes (~60s).
 homeVolume:
+  # -- Store /tmp per session/container and shared caches in the user home PVC.
+  # Enable only with a suitably sized home claim (64 GiB recommended).
+  persistentTmp: false
   # -- Enable persistent home volume
   enabled: false
   # -- Name of an existing PVC to use for the home directory
@@ -205,8 +208,13 @@ git:
   branch: ""
   # -- Base branch to create feature branch from if it doesn't exist on the remote
   baseBranch: ""
+  # -- Default commit identity, used only when Git has no identity configured
+  userName: ""
+  userEmail: ""
   # Credentials for private repos (HTTPS token auth)
   credentials:
+    # -- Session-injected integration token file; takes precedence over secretName
+    tokenFile: ""
     # -- Name of a Kubernetes secret containing a git token
     secretName: ""
     # -- Key within the secret that holds the token

@@ -19,6 +19,7 @@ function makeFetch(status: number, body: unknown, ok = status >= 200 && status <
     status,
     ok,
     json: vi.fn().mockResolvedValue(body),
+    text: vi.fn().mockResolvedValue(JSON.stringify(body)),
   });
 }
 
@@ -361,4 +362,16 @@ describe('createApiClient', () => {
       expect((err as ApiClientError).detail).toBe('Unknown error');
     }
   });
+
+  it.each(['Internal Server Error', '<html>Bad gateway</html>', ''])(
+    'preserves HTTP errors for a non-JSON body: %s',
+    async (body) => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { status: 500 })));
+      await expect(createApiClient(BASE).get('/dreams')).rejects.toMatchObject({
+        name: 'ApiClientError',
+        status: 500,
+        detail: body || 'Unknown error',
+      });
+    },
+  );
 });

@@ -788,7 +788,7 @@
         bindingMode: registry
         registryEntryId: mimir-yggdrasil
         url: https://mimir.yggdrasil.niuu.world/api/v1
-        authRef: integration:volundr
+        authRef: workload:mimir
         role: shared
         categories: [delivery, tracker, review]
         position:
@@ -802,7 +802,7 @@
         stageMembers:
           - personaId: coder
             budget: 40
-            model: gpt-5.4
+            model: gpt-5.6-terra
             consumesEventTypes: [delivery.requested, review.changes_requested]
         position:
           x: 352
@@ -815,7 +815,7 @@
         stageMembers:
           - personaId: reviewer
             budget: 24
-            model: gpt-5.4
+            model: gpt-5.6-terra
             consumesEventTypes: [code.changed]
         position:
           x: 704
@@ -828,7 +828,7 @@
         stageMembers:
           - personaId: closer
             budget: 20
-            model: gpt-5.4
+            model: gpt-5.6-terra
             consumesEventTypes: [review.passed]
         position:
           x: 1056
@@ -841,7 +841,7 @@
         stageMembers:
           - personaId: publisher
             budget: 16
-            model: gpt-5.4
+            model: gpt-5.6-terra
             consumesEventTypes: [delivery.merged]
         position:
           x: 1408

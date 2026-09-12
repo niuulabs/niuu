@@ -156,3 +156,22 @@ class TestBuildCliMain:
         result = runner.invoke(build_cli, ["--dry-run"])
         assert result.exit_code == 0
         assert "nuitka" in result.output
+
+
+def test_postgres_native_files_are_explicitly_packaged():
+    import yaml
+
+    cmd = build_command()
+    flag = next(arg for arg in cmd if arg.startswith("--user-package-configuration-file="))
+    plugin = next(arg for arg in cmd if arg.startswith("--user-plugin="))
+    assert Path(plugin.split("=", 1)[1]).is_file()
+    config = yaml.safe_load(Path(flag.split("=", 1)[1]).read_text())
+    entries = config[0]["dlls"]
+    assert config[0]["module-name"] == "niuu"
+    assert {item["dest_path"] for item in entries} == {
+        "niuu/pginstall/bin",
+        "niuu/pginstall/lib",
+        "niuu/pginstall/lib/postgresql",
+    }
+    assert entries[0]["from_filenames"]["executable"] == "yes"
+    assert "--noinclude-data-files=niuu/pginstall/bin/*" in cmd

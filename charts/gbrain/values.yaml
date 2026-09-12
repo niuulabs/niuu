@@ -1,0 +1,54 @@
+# Observatory discovery identity; supplied by the deployment target in Niuu.
+niuu:
+  cluster: unknown
+  instanceId: ""
+  tenantId: ""
+# Published by the Niuu container release pipeline.
+image:
+  repository: ghcr.io/niuulabs/gbrain
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+persistence:
+  existingClaim: ""
+  storageClass: ""
+  size: 5Gi
+service:
+  port: 3131
+# Secret containing GBRAIN_ADMIN_BOOTSTRAP_TOKEN (32+ URL-safe characters).
+# May also contain model provider keys and GBRAIN_DATABASE_URL for PostgreSQL.
+existingSecret: ""
+# pglite uses the PVC; postgres uses the managed database or existingSecret.
+engine: pglite
+embedding:
+  enabled: false
+  model: ""
+  dimensions: 1024
+# Additional native gbrain config, excluding credentials and storage settings.
+config: {}
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+dream:
+  enabled: false
+  schedule: "0 2 * * *"
+  # PostgreSQL only: a separate job must not open the live PGLite store.
+  phases: [lint, backlinks, orphans]
+  activeDeadlineSeconds: 1800
+
+replicaCount: 1
+
+# Provision a database per release through the installed CloudNativePG operator.
+postgres:
+  enabled: false
+  image: ghcr.io/cloudnative-pg/postgresql:17
+  instances: 2
+  storageClass: ""
+  size: 5Gi
+
+# Publish a scoped native MCP credential for the tenant-owned deployment.
+connection:
+  enabled: false

@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import json
 import sys
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -23,16 +24,32 @@ def _settings() -> Settings:
     return Settings()
 
 
-def _client() -> httpx.AsyncClient:
-    settings = _settings()
-    platform = settings.gateway.platform
-    headers: dict[str, str] = {}
-    if platform.pat_token:
-        headers["Authorization"] = f"Bearer {platform.pat_token}"
-    return httpx.AsyncClient(
-        base_url=platform.base_url.rstrip("/"),
+async def _client() -> httpx.AsyncClient:
+    from ravn.adapters.tools.platform_tools import _client as platform_client
+    from skuld.config import SkuldSettings
+
+    platform = _settings().gateway.platform
+    runtime = SkuldSettings()
+    identity = runtime.workload_identity
+    base_url = platform.base_url
+    if "base_url" not in platform.model_fields_set:
+        parts = urlsplit(identity.exchange_url)
+        base_url = runtime.volundr_api_url or (
+            urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+            if parts.scheme and parts.netloc
+            else base_url
+        )
+    return await platform_client(
+        base_url=base_url,
         timeout=platform.timeout,
-        headers=headers,
+        pat_token=platform.pat_token,
+        workload_token_file=(
+            platform.workload_token_file
+            if "workload_token_file" in platform.model_fields_set
+            else identity.token_file
+        ),
+        exchange_url=platform.workload_exchange_url or identity.exchange_url,
+        audiences=platform.workload_audiences,
     )
 
 
@@ -44,21 +61,21 @@ def _write_payload(payload: object, *, is_error: bool = False) -> int:
 
 
 async def _run_search(args: argparse.Namespace) -> int:
-    async with _client() as client:
+    async with await _client() as client:
         response = await client.get(_TRACKER_ISSUES_PATH, params={"q": args.query})
         response.raise_for_status()
         return _write_payload(response.json())
 
 
 async def _run_get(args: argparse.Namespace) -> int:
-    async with _client() as client:
+    async with await _client() as client:
         response = await client.get(f"{_TRACKER_ISSUES_PATH}/{args.issue_id}")
         response.raise_for_status()
         return _write_payload(response.json())
 
 
 async def _run_update_status(args: argparse.Namespace) -> int:
-    async with _client() as client:
+    async with await _client() as client:
         response = await client.patch(
             f"{_TRACKER_ISSUES_PATH}/{args.issue_id}",
             json={"status": args.status},

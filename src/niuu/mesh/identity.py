@@ -32,4 +32,6 @@ class MeshIdentity:
     rep_address: str | None = None
     pub_address: str | None = None
     spiffe_id: str | None = None
+    display_name: str = ""
+    participant_type: str = "ravn"
     sleipnir_routing_key: str | None = None

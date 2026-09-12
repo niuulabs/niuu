@@ -36,7 +36,7 @@ niuu:
       summary: LLM gateway
       detail: routes inference
     - kind: ting
-      label: Tyr
+      label: Ting
       rune: "✦"
       summary: saga coordinator
       detail: dispatch ravens

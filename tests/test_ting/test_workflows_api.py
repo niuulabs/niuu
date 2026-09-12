@@ -116,7 +116,8 @@ class RecordingVolundrPort(VolundrPort):
         raise NotImplementedError
 
     async def list_integration_ids(self, *, auth_token=None, principal=None):
-        return []
+        self.integration_principal = principal
+        return ["integration-github", "integration-memory"]
 
     async def list_repos(self, *, auth_token=None, principal=None):
         return []
@@ -609,6 +610,8 @@ class TestWorkflowCatalogAPI:
         assert spawn.tracker_issue_id == "workflow:grief-companions"
         assert spawn.workload_config["workflow"]["name"] == "Research Campaign"
         assert spawn.credential_names == []
+        assert spawn.integration_ids == ["integration-github", "integration-memory"]
+        assert adapter.integration_principal is not None
         assert spawn.workload_config["provenance"] == {
             "signal_id": "sig-1",
             "valkyrie_id": "valkyrie-ymir",
@@ -728,3 +731,16 @@ class TestWorkflowCatalogAPI:
 
         assert response.status_code == 201
         assert len(adapter.requests) == 1
+
+
+def test_workload_memory_ref_is_not_a_credential_name():
+    from ting.api.workflows import _mimir_auth_credential_names
+
+    assert _mimir_auth_credential_names(
+        {
+            "registry_refs": [
+                {"auth_ref": "workload:mimir"},
+                {"auth_ref": "brain-token"},
+            ]
+        }
+    ) == ["brain-token"]

@@ -483,8 +483,8 @@ describe('LiveSessionDetailPage helpers', () => {
       otherTool,
     ]);
 
-    const { root: builtRoot, nodeById } = buildTelemetrySpanTree(trace);
-    expect(builtRoot?.span.id).toBe('root');
+    const { roots, nodeById } = buildTelemetrySpanTree(trace);
+    expect(roots.map((node) => node.span.id)).toEqual(['root']);
     expect(nodeById.get('workflow')?.children.map((child) => child.span.id)).toEqual([
       'tool-early',
       'tool-late',
@@ -647,7 +647,7 @@ describe('LiveSessionDetailPage helpers', () => {
     expect(rows[0]?.childSegments).toHaveLength(4);
 
     expect(nearestTurnAncestorLabel(nodeById.get('nested-tool')!, nodeById)).toBe('analyst');
-    expect(turnRows).toHaveLength(1);
+    expect(turnRows.map((row) => row.id)).toEqual(['turn-nested', 'turn-assistant']);
     expect(turnRows[0]).toMatchObject({
       id: 'turn-nested',
       label: 'turn #1',
@@ -662,6 +662,75 @@ describe('LiveSessionDetailPage helpers', () => {
 
     const directOnlyTrace = makeTrace([root, workflow, assistantTurn]);
     expect(buildTelemetryTurnRows(directOnlyTrace)).toHaveLength(1);
+  });
+
+  it('keeps stages, nested tasks, and turns from every restart attempt', () => {
+    const emptyAttempt = makeSpan({ id: 'empty-attempt' });
+    const firstAttempt = makeSpan({ id: 'first-attempt' });
+    const resumedAttempt = makeSpan({
+      id: 'resumed-attempt',
+      startedAt: '2026-05-23T09:35:01Z',
+    });
+    const directTurn = makeSpan({
+      id: 'direct-turn',
+      parentSpanId: firstAttempt.id,
+      kind: 'turn.peer',
+      durationMs: 60_000,
+    });
+    const resumedStage = makeSpan({
+      id: 'resumed-stage',
+      parentSpanId: resumedAttempt.id,
+      kind: 'turn.peer',
+      startedAt: resumedAttempt.startedAt,
+      durationMs: 120_000,
+    });
+    const nestedTurn = makeSpan({
+      id: 'nested-turn',
+      parentSpanId: resumedStage.id,
+      kind: 'turn.assistant',
+      startedAt: resumedAttempt.startedAt,
+      durationMs: 30_000,
+    });
+    const tool = makeSpan({
+      id: 'tool',
+      parentSpanId: nestedTurn.id,
+      kind: 'tool.call',
+      startedAt: resumedAttempt.startedAt,
+      durationMs: 5_000,
+    });
+    const orphanStage = makeSpan({
+      id: 'orphan-stage',
+      parentSpanId: 'missing-attempt',
+      kind: 'session.setup',
+      startedAt: '2026-05-23T09:26:01Z',
+      durationMs: 10_000,
+    });
+    const spans = [
+      emptyAttempt,
+      firstAttempt,
+      directTurn,
+      resumedAttempt,
+      resumedStage,
+      nestedTurn,
+      tool,
+      orphanStage,
+    ];
+    const trace = { ...makeTrace(spans), durationMs: 720_000 };
+
+    for (const orderedSpans of [spans, [...spans].reverse()]) {
+      const reordered = { ...trace, spans: orderedSpans };
+      const rows = buildTelemetryTimelineRows(reordered);
+      expect(rows.map((row) => row.id)).toEqual(['direct-turn', 'orphan-stage', 'resumed-stage']);
+      expect(rows[2]).toMatchObject({ startOffsetMs: 600_000, percentOfTotal: 17 });
+      const { nodeById } = buildTelemetrySpanTree(reordered);
+      expect(countTelemetryDescendants(nodeById.get('resumed-stage')!)).toBe(2);
+      expect(
+        collectTelemetryDetailSpans(nodeById.get('nested-turn')!).map((span) => span.id),
+      ).toEqual(['tool']);
+      const turns = buildTelemetryTurnRows(reordered);
+      expect(turns.map((turn) => turn.id)).toEqual(['direct-turn', 'nested-turn']);
+      expect(turns[1]).toMatchObject({ toolCallCount: 1, toolMs: 5_000, modelWaitMs: 25_000 });
+    }
   });
 
   it('bounds serial task display duration at the next sibling start', () => {
@@ -755,7 +824,7 @@ describe('LiveSessionDetailPage helpers', () => {
       directWait,
     ]);
 
-    const { root, nodeById } = buildTelemetrySpanTree(
+    const { roots, nodeById } = buildTelemetrySpanTree(
       makeTrace([
         alternateRoot,
         lifecycleRoot,
@@ -766,7 +835,7 @@ describe('LiveSessionDetailPage helpers', () => {
         directWait,
       ]),
     );
-    expect(root?.span.id).toBe('lifecycle-root');
+    expect(roots.map((node) => node.span.id)).toEqual(['alternate-root', 'lifecycle-root']);
     expect(nearestTurnAncestorLabel(nodeById.get('blocked-stage')!, nodeById)).toBeNull();
     expect(
       nearestTurnAncestorLabel(

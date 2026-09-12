@@ -10,6 +10,13 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from niuu.adapters.flux import (
+    HELMRELEASE_GROUP,
+    HELMRELEASE_PLURAL,
+    HELMRELEASE_VERSION,
+    FluxHelmReleases,
+    create_flux_api_client,
+)
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
 from volundr.adapters.outbound.resident_container_spec import (
     resident_flock_labels,
@@ -40,13 +47,13 @@ from volundr.domain.ports import (
 
 logger = logging.getLogger(__name__)
 
-# Flux HelmRelease API coordinates
-HELMRELEASE_GROUP = "helm.toolkit.fluxcd.io"
-HELMRELEASE_VERSION = "v2"
-HELMRELEASE_PLURAL = "helmreleases"
 
-
-class FluxPodManager(BrokeredCredentialPodManager, PodManager, ResidentRuntimeController):
+class FluxPodManager(
+    FluxHelmReleases,
+    BrokeredCredentialPodManager,
+    PodManager,
+    ResidentRuntimeController,
+):
     """Flux-native implementation of PodManager.
 
     Creates / deletes HelmRelease CRs via the Kubernetes API.
@@ -101,13 +108,7 @@ class FluxPodManager(BrokeredCredentialPodManager, PodManager, ResidentRuntimeCo
     async def _get_api(self):
         """Lazy-load kubernetes_asyncio custom objects API."""
         if self._api_client is None:
-            from kubernetes_asyncio import client, config
-
-            try:
-                config.load_incluster_config()
-            except config.ConfigException:
-                await config.load_kube_config()
-            self._api_client = client.ApiClient()
+            self._api_client = await create_flux_api_client()
         from kubernetes_asyncio import client
 
         return client.CustomObjectsApi(self._api_client)
@@ -133,133 +134,6 @@ class FluxPodManager(BrokeredCredentialPodManager, PodManager, ResidentRuntimeCo
 
     def initial_code_endpoint(self, session: Session) -> str | None:
         return self._code_endpoint(session.name, str(session.id))
-
-    def _build_helmrelease(
-        self,
-        name: str,
-        values: dict,
-        *,
-        labels: dict[str, str] | None = None,
-        annotations: dict[str, str] | None = None,
-    ) -> dict:
-        """Build a HelmRelease CR manifest."""
-        source_ref: dict = {
-            "kind": self._source_ref_kind,
-            "name": self._source_ref_name,
-        }
-        if self._source_ref_namespace:
-            source_ref["namespace"] = self._source_ref_namespace
-
-        metadata: dict[str, Any] = {
-            "name": name,
-            "namespace": self._namespace,
-            "labels": {
-                "app.kubernetes.io/managed-by": "volundr",
-                **(labels or {}),
-            },
-        }
-        if annotations:
-            metadata["annotations"] = annotations
-
-        return {
-            "apiVersion": f"{HELMRELEASE_GROUP}/{HELMRELEASE_VERSION}",
-            "kind": "HelmRelease",
-            "metadata": metadata,
-            "spec": {
-                "interval": self._interval,
-                "timeout": self._timeout,
-                "chart": {
-                    "spec": {
-                        "chart": self._chart_name,
-                        "version": self._chart_version,
-                        "sourceRef": source_ref,
-                    },
-                },
-                "values": values,
-            },
-        }
-
-    async def _apply_helmrelease(
-        self,
-        name: str,
-        values: dict,
-        *,
-        labels: dict[str, str] | None = None,
-        annotations: dict[str, str] | None = None,
-    ) -> None:
-        api = await self._get_api()
-        manifest = self._build_helmrelease(
-            name,
-            values,
-            labels=labels,
-            annotations=annotations,
-        )
-        try:
-            await api.create_namespaced_custom_object(
-                group=HELMRELEASE_GROUP,
-                version=HELMRELEASE_VERSION,
-                namespace=self._namespace,
-                plural=HELMRELEASE_PLURAL,
-                body=manifest,
-            )
-        except Exception as exc:
-            if "409" not in str(exc) and "AlreadyExists" not in str(exc):
-                raise
-            logger.info("HelmRelease %s already exists, patching", name)
-            await api.patch_namespaced_custom_object(
-                group=HELMRELEASE_GROUP,
-                version=HELMRELEASE_VERSION,
-                namespace=self._namespace,
-                plural=HELMRELEASE_PLURAL,
-                name=name,
-                body=manifest,
-                _content_type="application/merge-patch+json",
-            )
-
-    async def _get_helmrelease(self, name: str) -> dict[str, Any] | None:
-        api = await self._get_api()
-        try:
-            return await api.get_namespaced_custom_object(
-                group=HELMRELEASE_GROUP,
-                version=HELMRELEASE_VERSION,
-                namespace=self._namespace,
-                plural=HELMRELEASE_PLURAL,
-                name=name,
-            )
-        except Exception as exc:
-            if "404" in str(exc) or "NotFound" in str(exc):
-                return None
-            raise
-
-    async def _patch_helmrelease(self, name: str, body: dict[str, Any]) -> None:
-        api = await self._get_api()
-        await api.patch_namespaced_custom_object(
-            group=HELMRELEASE_GROUP,
-            version=HELMRELEASE_VERSION,
-            namespace=self._namespace,
-            plural=HELMRELEASE_PLURAL,
-            name=name,
-            body=body,
-            _content_type="application/merge-patch+json",
-        )
-
-    async def _delete_helmrelease(self, name: str) -> bool:
-        api = await self._get_api()
-        try:
-            await api.delete_namespaced_custom_object(
-                group=HELMRELEASE_GROUP,
-                version=HELMRELEASE_VERSION,
-                namespace=self._namespace,
-                plural=HELMRELEASE_PLURAL,
-                name=name,
-            )
-            logger.info("Deleted HelmRelease %s", name)
-            return True
-        except Exception as exc:
-            if "404" in str(exc) or "NotFound" in str(exc):
-                logger.debug("HelmRelease %s is already absent", name)
-                return False
-            raise
 
     async def start(
         self,

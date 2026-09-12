@@ -63,6 +63,10 @@ class TestIngressTemplate:
         assert "$root.Values.guild.enabled" in helpers_tpl
         assert "$root.Values.volundr.enabled" in helpers_tpl
 
+    def test_knowledge_deployments_route_to_guild(self) -> None:
+        rendered = _render_niuu_chart()
+        assert _service_for_path(rendered, "/api/v1/niuu/knowledge") == "niuu-test-guild"
+
     def test_renders_forge_route_to_guild_when_guild_enabled(self) -> None:
         """Render proof for the default aggregate deployment."""
         rendered = _render_niuu_chart()
@@ -166,3 +170,17 @@ def _deployment_image(rendered_yaml: str, name: str) -> str:
         ):
             return document["spec"]["template"]["spec"]["containers"][0]["image"]
     raise AssertionError(f"deployment not found: {name}")
+
+
+@pytest.mark.parametrize("component", ["niuu-shared", "guild"])
+@pytest.mark.parametrize("local_tag,expected", [("shared-tag", "shared-tag"), ("", "global-tag")])
+def test_shared_image_tag_can_be_deployed_independently(component, local_tag, expected):
+    rendered = _render_niuu_chart(
+        "--set",
+        "global.image.tag=global-tag",
+        "--set",
+        f"{component}.image.tag={local_tag}",
+    )
+    assert (
+        _deployment_image(rendered, f"niuu-test-{component}") == f"ghcr.io/niuulabs/niuu:{expected}"
+    )

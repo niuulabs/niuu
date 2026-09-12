@@ -1,3 +1,9 @@
+import type {
+  DeploymentInspectionResult,
+  InstanceInspection,
+  KnowledgeDeployment,
+  DeploymentStatus,
+} from '../domain/instances';
 import type { Mount } from '@niuulabs/domain';
 import type { WriteRoutingRule } from '../domain/routing';
 import type { RavnBinding } from '../domain/ravn-binding';
@@ -29,6 +35,16 @@ export interface RecentWrite {
  * including write-routing rules and ravn mount bindings.
  */
 export interface IMountAdapter {
+  inspectInstances?(mount?: string): Promise<InstanceInspection[]>;
+  inspectDeployment?(name: string, target?: string): Promise<DeploymentInspectionResult>;
+  controlDeployment?(
+    name: string,
+    action: 'start' | 'stop' | 'delete' | 'update',
+    target?: string,
+  ): Promise<unknown>;
+  getDeployments?(): Promise<DeploymentStatus>;
+  deployInstance?(request: KnowledgeDeployment): Promise<unknown>;
+
   /** List all registered mounts and their current status. */
   listMounts(): Promise<Mount[]>;
 
@@ -81,11 +97,11 @@ export interface IMountAdapter {
    * Run the instance health checklist.
    * Returns null when the backend has no doctor subsystem.
    */
-  getDoctor(): Promise<DoctorReport | null>;
+  getDoctor(mountName?: string): Promise<DoctorReport | null>;
 
   /**
    * Apply automatic remediations for all fixable doctor checks.
    * Returns the refreshed report, or null when the backend cannot fix.
    */
-  runDoctorFixes(): Promise<DoctorReport | null>;
+  runDoctorFixes(mountName?: string): Promise<DoctorReport | null>;
 }

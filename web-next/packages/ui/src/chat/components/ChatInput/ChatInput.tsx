@@ -53,11 +53,19 @@ function resolveInlineAgentMentions(
   input: string,
   participants: ReadonlyMap<string, RoomParticipant>,
 ): RoomParticipant[] {
-  const byPersona = new Map(
-    Array.from(participants.values())
-      .filter((participant) => participant.participantType === 'ravn')
-      .map((participant) => [participant.persona.toLowerCase(), participant] as const),
-  );
+  const byPersona = new Map<string, RoomParticipant | null>();
+  for (const participant of participants.values()) {
+    if (participant.participantType !== 'ravn') continue;
+    for (const label of [participant.persona, participant.displayName, participant.peerId]) {
+      if (!label) continue;
+      const key = label.toLowerCase();
+      const existing = byPersona.get(key);
+      byPersona.set(
+        key,
+        existing !== undefined && existing?.peerId !== participant.peerId ? null : participant,
+      );
+    }
+  }
   const seen = new Set<string>();
   const matches = input.matchAll(/(^|\s)@([^\s@]+)/g);
   const resolved: RoomParticipant[] = [];
@@ -141,7 +149,7 @@ export function ChatInput({
     (mention): mention is Extract<SelectedMention, { kind: 'agent' }> & { eventType: string } =>
       mention.kind === 'agent' && Boolean(mention.eventType),
   );
-  const canSend = hasContent && (!eventRouting || Boolean(selectedEventMention));
+  const canSend = hasContent;
 
   const resetTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
@@ -163,8 +171,8 @@ export function ChatInput({
     const trimmed = input.trim();
     if (!trimmed || disabled) return;
 
-    if (eventRouting) {
-      if (!selectedEventMention || !onPublishEvent) return;
+    if (eventRouting && selectedEventMention) {
+      if (!onPublishEvent) return;
       const eventPrefix = `@${selectedEventMention.eventType}`;
       const fullMessage = trimmed.startsWith(eventPrefix) ? trimmed : `${eventPrefix} ${trimmed}`;
       onPublishEvent(
@@ -395,7 +403,7 @@ export function ChatInput({
             disabled
               ? 'Start session to chat...'
               : eventRouting
-                ? 'Select a participant event with @...'
+                ? 'Message the room, or select a participant with @...'
                 : 'Message...'
           }
           disabled={disabled}

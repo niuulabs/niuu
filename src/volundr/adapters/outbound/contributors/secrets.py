@@ -5,7 +5,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from volundr.domain.models import CredentialMapping, MountType, Session, StoredCredential
+from volundr.domain.models import (
+    CredentialMapping,
+    IntegrationType,
+    MountType,
+    Session,
+    StoredCredential,
+)
 from volundr.domain.ports import (
     CredentialStorePort,
     SecretInjectionPort,
@@ -14,6 +20,7 @@ from volundr.domain.ports import (
     SessionContribution,
     SessionContributor,
 )
+from volundr.domain.services.user_integration import git_token_path
 
 if TYPE_CHECKING:
     from volundr.domain.services.integration_registry import IntegrationRegistry
@@ -129,6 +136,12 @@ class SecretInjectionContributor(SessionContributor):
                             f"{_MIMIR_SECRET_VOLUME_PATH}/{_secret_file_name(auth_ref)}/token"
                         ] = "token"
 
+            if (
+                conn.integration_type == IntegrationType.SOURCE_CONTROL
+                and context.runtime_backend != "openshell"
+            ):
+                file_mappings[git_token_path(conn.id)] = "token"
+
             mappings.append(
                 CredentialMapping(
                     credential_name=conn.credential_name,
@@ -138,7 +151,30 @@ class SecretInjectionContributor(SessionContributor):
             )
 
         # Direct credential names — mapping comes from SecretMountStrategy
-        for cred_name in context.credential_names:
+        refs = self._mimir_auth_refs(context)
+        integration_refs = {
+            _integration_auth_ref(conn.slug) for conn in context.integration_connections
+        }
+        missing_integrations = {
+            ref for ref in refs if ref.startswith("integration:")
+        } - integration_refs
+        if missing_integrations:
+            raise ValueError(
+                f"Memory well requires attached integration(s): {sorted(missing_integrations)}"
+            )
+        names = dict.fromkeys([*context.credential_names, *sorted(refs - integration_refs)])
+        for cred_name in names:
+            # This reference uses the projected session identity, not a stored secret.
+            if cred_name == "workload:mimir":
+                continue
+            if cred_name in refs:
+                if self._credential_store is None:
+                    raise ValueError(
+                        "Memory well credentials require a configured credential store"
+                    )
+                stored = await self._credential_store.get("user", owner_id, cred_name)
+                if stored is None or "token" not in stored.keys:
+                    raise ValueError(f"Memory well credential {cred_name!r} requires a token field")
             mapping = await self._resolve_credential_mapping(owner_id, cred_name)
             if cred_name in self._mimir_auth_refs(context):
                 mapping.file_mappings[
@@ -245,23 +281,14 @@ class SecretInjectionContributor(SessionContributor):
             return SessionContribution(values=values)
 
         if not self._secret_injection:
-            return SessionContribution(values=values)
+            raise ValueError("Attached credentials require configured secret injection")
 
-        # Ensure injection config exists (ConfigMap, SPC, etc.)
-        try:
-            await self._secret_injection.ensure_secret_provider_class(
-                session.owner_id,
-                mappings,
-                session_id=str(session.id),
-                tenant_id=session.tenant_id,
-            )
-        except Exception:
-            logger.warning(
-                "Failed to ensure injection config for user %s — skipping secret volume injection",
-                session.owner_id,
-                exc_info=True,
-            )
-            return SessionContribution(values=values)
+        await self._secret_injection.ensure_secret_provider_class(
+            session.owner_id,
+            mappings,
+            session_id=str(session.id),
+            tenant_id=session.tenant_id,
+        )
 
         # Get pod spec additions (annotations, volumes, mounts)
         pod_spec = await self._secret_injection.pod_spec_additions(

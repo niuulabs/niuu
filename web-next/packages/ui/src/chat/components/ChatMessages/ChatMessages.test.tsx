@@ -1,7 +1,17 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { UserMessage, AssistantMessage, StreamingMessage, SystemMessage } from './ChatMessages';
 import type { ChatMessage } from '../../types';
+
+// The per-message action bar (copy/regenerate/bookmark) is opt-in and hidden by
+// default (compactUxPrefs.showMessageActions). These tests assert that wiring,
+// so enable it for the suite; clear after so other suites see the real default.
+beforeEach(() => {
+  localStorage.setItem('niuu.compactUx.showMessageActions', '1');
+});
+afterEach(() => {
+  localStorage.clear();
+});
 
 const now = new Date('2024-01-01T12:00:00Z');
 
@@ -202,5 +212,30 @@ describe('SystemMessage', () => {
     render(<SystemMessage message={systemMsg} />);
     expect(screen.getByTestId('system-message')).toBeInTheDocument();
     expect(screen.getByText('Session started')).toBeInTheDocument();
+  });
+  it('renders restored assistant image attachments', () => {
+    render(
+      <AssistantMessage
+        message={{
+          id: 'image-answer',
+          role: 'assistant',
+          content: 'Screenshot',
+          createdAt: new Date(),
+          attachments: [
+            {
+              name: 'screenshot',
+              type: 'image',
+              size: 8,
+              contentType: 'image/png',
+              previewUrl: 'data:image/png;base64,aGVsbG8=',
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByRole('img', { name: 'screenshot' })).toHaveAttribute(
+      'src',
+      'data:image/png;base64,aGVsbG8=',
+    );
   });
 });

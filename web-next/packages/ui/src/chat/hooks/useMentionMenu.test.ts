@@ -265,20 +265,21 @@ describe('useMentionMenu — selectItem', () => {
     act(() => result.current.handleChange('@', 1));
 
     expect(result.current.items).toEqual([
+      { kind: 'agent', participant: hermes },
       { kind: 'agent', participant: hermes, eventType: 'code.changed' },
       { kind: 'agent', participant: hermes, eventType: 'review.requested' },
     ]);
 
     let selectedLabel = '';
     act(() => {
-      selectedLabel = result.current.selectItem(result.current.items[0]!);
+      selectedLabel = result.current.selectItem(result.current.items[1]!);
     });
     expect(selectedLabel).toBe('code.changed');
     expect(result.current.mentions).toEqual([
       { kind: 'agent', participant: hermes, eventType: 'code.changed' },
     ]);
 
-    act(() => result.current.selectItem(result.current.items[1]!));
+    act(() => result.current.selectItem(result.current.items[2]!));
     expect(result.current.mentions).toEqual([
       { kind: 'agent', participant: hermes, eventType: 'review.requested' },
     ]);

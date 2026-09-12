@@ -1,0 +1,17 @@
+# PostgreSQL's executables and dynamically loaded modules are native code.
+# --include-data-dir intentionally excludes shared libraries.
+- module-name: 'niuu'
+  dlls:
+    - from_filenames:
+        relative_path: '../../build/pginstall/bin'
+        prefixes: ['']
+        executable: 'yes'
+      dest_path: 'niuu/pginstall/bin'
+    - from_filenames:
+        relative_path: '../../build/pginstall/lib'
+        prefixes: ['lib']
+      dest_path: 'niuu/pginstall/lib'
+    - from_filenames:
+        relative_path: '../../build/pginstall/lib/postgresql'
+        prefixes: ['']
+      dest_path: 'niuu/pginstall/lib/postgresql'

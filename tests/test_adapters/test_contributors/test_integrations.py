@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from volundr.adapters.outbound.contributors.integrations import IntegrationContributor
+from volundr.config import Settings
 from volundr.domain.models import (
     GitSource,
     IntegrationConnection,
@@ -14,7 +15,10 @@ from volundr.domain.models import (
     Session,
 )
 from volundr.domain.ports import SessionContext
-from volundr.domain.services.integration_registry import IntegrationRegistry
+from volundr.domain.services.integration_registry import (
+    IntegrationRegistry,
+    definitions_from_config,
+)
 
 
 @pytest.fixture
@@ -65,6 +69,25 @@ def _linear_connection(*, conn_id="conn-linear", enabled=True):
 
 
 class TestIntegrationContributor:
+    async def test_claude_connection_uses_existing_secret_delivery(self, session, principal):
+        from dataclasses import replace
+
+        registry = IntegrationRegistry(
+            definitions_from_config(
+                [definition.model_dump() for definition in Settings().integrations.definitions]
+            )
+        )
+        connection = replace(
+            _linear_connection(), slug="claude-code", credential_name="claude-code-credentials"
+        )
+        contribution = await IntegrationContributor(integration_registry=registry).contribute(
+            session, SessionContext(principal=principal, integration_connections=(connection,))
+        )
+        assert contribution.values["secretManifest"]["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == {
+            "file": "claude-code-credentials",
+            "key": "token",
+        }
+
     async def test_name(self):
         c = IntegrationContributor()
         assert c.name == "integrations"
@@ -243,3 +266,22 @@ class TestIntegrationContributor:
         assert result.values["mcpServers"][0]["env"] == {}
         # Manifest still produced
         assert "secretManifest" in result.values
+
+
+async def test_claude_subscription_selects_subscription_auth(session, principal):
+    from dataclasses import replace
+
+    registry = IntegrationRegistry(
+        definitions_from_config([d.model_dump() for d in Settings().integrations.definitions])
+    )
+    connection = replace(
+        _linear_connection(), slug="claude-code", credential_name="claude-code-credentials"
+    )
+    result = await IntegrationContributor(integration_registry=registry).contribute(
+        session, SessionContext(principal=principal, integration_connections=(connection,))
+    )
+    assert result.values["envVars"] == [{"name": "SKULD__CLAUDE_AUTH", "value": "subscription"}]
+    assert result.values["secretManifest"]["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == {
+        "file": "claude-code-credentials",
+        "key": "token",
+    }

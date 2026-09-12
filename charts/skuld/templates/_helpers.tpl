@@ -137,6 +137,38 @@ Return the proper image name (global overrides local)
 {{- printf "%s:%s" $repository $tag -}}
 {{- end }}
 
+{{/* Git and GitHub CLI credentials for session runtimes. */}}
+{{- define "skuld.gitCredentialEnv" -}}
+{{- if .Values.git.credentials.tokenFile -}}
+- name: GIT_USERNAME
+  value: {{ .Values.git.credentials.username | default "x-access-token" | quote }}
+- name: GIT_TOKEN_FILE
+  value: {{ .Values.git.credentials.tokenFile | quote }}
+- name: GIT_CONFIG_COUNT
+  value: "1"
+- name: GIT_CONFIG_KEY_0
+  value: {{ printf "credential.%s.helper" .Values.git.repoUrl | quote }}
+- name: GIT_CONFIG_VALUE_0
+  value: '!f() { [ "$1" = get ] || return 0; token=$(cat "$GIT_TOKEN_FILE") || return 1; [ -n "$token" ] || return 1; printf "username=%s\npassword=%s\n" "$GIT_USERNAME" "$token"; }; f'
+{{- else if .Values.git.credentials.secretName -}}
+- name: GIT_USERNAME
+  value: {{ .Values.git.credentials.username | default "x-access-token" | quote }}
+- name: GIT_CONFIG_COUNT
+  value: "1"
+- name: GIT_CONFIG_KEY_0
+  value: credential.https://github.com.helper
+- name: GIT_CONFIG_VALUE_0
+  value: '!f() { [ "$1" = get ] || return 0; printf "username=%s\npassword=%s\n" "$GIT_USERNAME" "$GIT_TOKEN"; }; f'
+{{- range list "GIT_TOKEN" "GITHUB_TOKEN" "GH_TOKEN" }}
+- name: {{ . }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ $.Values.git.credentials.secretName }}
+      key: {{ $.Values.git.credentials.tokenKey | default "token" }}
+{{- end }}
+{{- end }}
+{{- end }}
+
 {{/*
 Return image pull secrets (global overrides top-level, converts strings to objects)
 */}}
@@ -153,4 +185,35 @@ imagePullSecrets:
   - name: {{ . }}
   {{- end }}
 {{- end -}}
+{{- end }}
+
+{{/* User-owned scratch: temporary files are isolated; caches survive new sessions. */}}
+{{- define "skuld.scratchMounts" -}}
+{{- if and .root.Values.homeVolume.enabled .root.Values.homeVolume.persistentTmp }}
+- name: home
+  mountPath: /tmp
+  subPath: {{ printf "tmp/sessions/%s/%s" (include "skuld.sessionId" .root) .container | quote }}
+- name: home
+  mountPath: /var/cache/niuu
+  subPath: tmp/cache
+{{- end }}
+{{- end }}
+
+{{- define "skuld.scratchEnv" -}}
+{{- if and .Values.homeVolume.enabled .Values.homeVolume.persistentTmp }}
+- name: TMPDIR
+  value: /tmp
+- name: XDG_CACHE_HOME
+  value: /var/cache/niuu
+- name: GOCACHE
+  value: /var/cache/niuu/go-build
+- name: GOMODCACHE
+  value: /var/cache/niuu/go-mod
+- name: npm_config_cache
+  value: /var/cache/niuu/npm
+- name: PIP_CACHE_DIR
+  value: /var/cache/niuu/pip
+- name: UV_CACHE_DIR
+  value: /var/cache/niuu/uv
+{{- end }}
 {{- end }}

@@ -851,9 +851,10 @@ def create_platform_commands(
         """Run the first-time setup wizard."""
         typer.echo("Running first-time setup...\n")
 
-        config_dir = Path.home() / ".niuu"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_path = config_dir / "config.yaml"
+        config_path = Path(
+            os.environ.get("NIUU_CONFIG", str(Path.home() / ".niuu" / "config.yaml"))
+        ).expanduser()
+        config_path.parent.mkdir(parents=True, exist_ok=True)
 
         if config_path.exists():
             overwrite = typer.confirm(

@@ -42,6 +42,7 @@ describe('mimir http helpers', () => {
       toMount({
         name: 'local',
         role: 'local',
+        access_scope: 'tenant',
         host: 'localhost',
         url: 'http://localhost',
         priority: 1,
@@ -55,7 +56,7 @@ describe('mimir http helpers', () => {
         size_kb: 12,
         desc: 'Local',
       }),
-    ).toMatchObject({ lintIssues: 3, sizeKb: 12 });
+    ).toMatchObject({ lintIssues: 3, sizeKb: 12, accessScope: 'tenant' });
 
     expect(
       toRegistryMount({
@@ -64,6 +65,7 @@ describe('mimir http helpers', () => {
         kind: 'remote',
         lifecycle: 'registered',
         role: 'shared',
+        access_scope: 'global',
         url: 'https://mimir.example',
         path: '/mnt',
         categories: ['entity'],
@@ -74,7 +76,7 @@ describe('mimir http helpers', () => {
         health_message: 'ok',
         desc: 'Shared',
       }),
-    ).toMatchObject({ authRef: 'secret', defaultReadPriority: 5 });
+    ).toMatchObject({ authRef: 'secret', defaultReadPriority: 5, accessScope: 'global' });
 
     const rawPage = {
       path: '/entities/alice',

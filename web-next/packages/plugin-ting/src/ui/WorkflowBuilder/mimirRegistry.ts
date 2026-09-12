@@ -1,3 +1,5 @@
+import { workflowResourceNodeSchema } from '../../domain/workflow';
+
 export interface WorkflowRegistryMount {
   id: string;
   name: string;
@@ -7,6 +9,9 @@ export interface WorkflowRegistryMount {
   url: string;
   path: string;
   categories: string[] | null;
+  adapter?: string;
+  kwargs?: Record<string, unknown>;
+  secretKwargsEnv?: Record<string, string>;
   authRef?: string | null;
   defaultReadPriority: number;
   enabled: boolean;
@@ -46,7 +51,11 @@ export function parseWorkflowRegistryMount(raw: string): WorkflowRegistryMount |
     if (typeof parsed.id !== 'string' || typeof parsed.name !== 'string') {
       return null;
     }
+    const backend = workflowResourceNodeSchema
+      .pick({ adapter: true, kwargs: true, secretKwargsEnv: true })
+      .parse(parsed);
     return {
+      ...backend,
       id: parsed.id,
       name: parsed.name,
       kind: parsed.kind === 'remote' ? 'remote' : 'local',

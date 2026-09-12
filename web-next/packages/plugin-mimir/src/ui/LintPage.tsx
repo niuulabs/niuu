@@ -9,6 +9,8 @@
  */
 
 import { useState } from 'react';
+import { useNavigate } from '@tanstack/react-router';
+import { usePluginCtx } from '@niuulabs/plugin-sdk';
 import { StateDot } from '@niuulabs/ui';
 import { useActiveMount } from '../application/useActiveMount';
 import { useLint } from '../application/useLint';
@@ -38,6 +40,8 @@ const CHECK_ROW_BASE =
   'niuu:cursor-pointer niuu:text-left niuu:w-full niuu:transition-colors';
 
 export function LintPage() {
+  const navigate = useNavigate();
+  const ctx = usePluginCtx();
   const { activeMount, mountName } = useActiveMount();
   const { issues, summary, isLoading, isError, error, runAutoFix, isFixing } = useLint(mountName);
   const [selectedRule, setSelectedRule] = useState<LintRule | null>(null);
@@ -266,7 +270,16 @@ export function LintPage() {
                       {isFixing ? '…' : 'Fix'}
                     </button>
                   )}
-                  <button type="button" className={ACTION_BTN} aria-label={`Open ${issue.page}`}>
+                  <button
+                    type="button"
+                    className={ACTION_BTN}
+                    aria-label={`Open ${issue.page}`}
+                    onClick={() => {
+                      ctx.setTweak('mimir.selectedPagePath', issue.page);
+                      if (issue.mount) ctx.setTweak('activeMount', issue.mount);
+                      navigate({ to: '/mimir/pages' });
+                    }}
+                  >
                     Open
                   </button>
                 </div>

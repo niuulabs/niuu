@@ -15,7 +15,14 @@ import httpx
 import pytest
 import respx
 
-from niuu.domain.mimir import MimirPageMeta, MimirSource, PageConfidence, PageType
+from niuu.domain.mimir import (
+    MimirPageMeta,
+    MimirSource,
+    PageConfidence,
+    PageType,
+    compute_content_hash,
+    compute_source_id,
+)
 from niuu.ports.mimir import MimirPort
 from ravn.adapters.mimir.gbrain import GBrainMimirAdapter
 
@@ -66,7 +73,7 @@ class TestRetrieval:
 
         pages = await adapter.search("retrieval fusion")
 
-        assert [p.meta.path for p in pages] == ["concepts/rrf", "ops/pods"]
+        assert [p.meta.path for p in pages] == ["concepts/rrf.md", "ops/pods.md"]
         assert pages[0].content == "body of concepts/rrf"
         await adapter.close()
 
@@ -131,7 +138,7 @@ class TestRetrieval:
         result = await adapter.query("why were pods failing?")
 
         assert result.answer == "Pods were failing readiness after the 1.32 upgrade."
-        assert [p.meta.path for p in result.sources] == ["ops/pods"]
+        assert [p.meta.path for p in result.sources] == ["ops/pods.md"]
         await adapter.close()
 
     @respx.mock
@@ -232,8 +239,8 @@ class TestRetrieval:
         result = await adapter.query("who caused the delay?")
 
         assert [p.meta.path for p in result.sources] == [
-            "entities/nordvolt",
-            "projects/helios",
+            "entities/nordvolt.md",
+            "projects/helios.md",
         ]
         await adapter.close()
 
@@ -248,7 +255,7 @@ class TestRetrieval:
         await adapter.close()
 
     @respx.mock
-    async def test_list_pages_passes_a_slugified_prefix(self) -> None:
+    async def test_list_pages_filters_prefix_locally(self) -> None:
         route = respx.post(_MCP).mock(
             return_value=httpx.Response(200, json=_tool_result(structured=[_page("wiki/x")]))
         )
@@ -256,10 +263,12 @@ class TestRetrieval:
 
         metas = await adapter.list_pages(prefix="wiki/entities/")
 
-        assert json.loads(route.calls[0].request.content)["params"]["arguments"]["prefix"] == (
-            "wiki/entities"
-        )
-        assert [m.path for m in metas] == ["wiki/x"]
+        assert json.loads(route.calls[0].request.content)["params"]["arguments"] == {
+            "limit": 100,
+            "offset": 0,
+            "sort": "slug",
+        }
+        assert metas == []
         await adapter.close()
 
 
@@ -345,6 +354,27 @@ class TestWrites:
 
 
 class TestFailuresAreLoud:
+    @pytest.mark.parametrize("method", ["read_page", "get_page"])
+    @pytest.mark.parametrize(
+        "error,expected",
+        [
+            ({"error": "page_not_found", "message": "Page not found: log"}, FileNotFoundError),
+            ({"error": "db_access", "message": "database unavailable"}, RuntimeError),
+            (["page_not_found"], RuntimeError),
+            ("rate limited", RuntimeError),
+        ],
+    )
+    @respx.mock
+    async def test_page_error_contract(self, method, error, expected) -> None:
+        text = error if isinstance(error, str) else json.dumps(error)
+        respx.post(_MCP).mock(
+            return_value=httpx.Response(200, json=_tool_result(text=text, is_error=True))
+        )
+        adapter = _adapter()
+        with pytest.raises(expected):
+            await getattr(adapter, method)("log.md")
+        await adapter.close()
+
     @respx.mock
     async def test_a_tool_error_raises(self) -> None:
         respx.post(_MCP).mock(
@@ -369,7 +399,7 @@ class TestFailuresAreLoud:
             await adapter.search("anything")
         await adapter.close()
 
-    @pytest.mark.parametrize("op", ["lint", "list_sources", "summarize"])
+    @pytest.mark.parametrize("op", ["lint"])
     async def test_unsupported_operations_raise_rather_than_look_empty(self, op: str) -> None:
         """gbrain cannot lint or enumerate raw sources.
 
@@ -383,13 +413,6 @@ class TestFailuresAreLoud:
             await getattr(adapter, op)()
         await adapter.close()
 
-    async def test_read_source_raises_too(self) -> None:
-        adapter = _adapter()
-
-        with pytest.raises(NotImplementedError, match="no equivalent"):
-            await adapter.read_source("src_abc")
-        await adapter.close()
-
 
 class TestTransportQuirks:
     @respx.mock
@@ -401,7 +424,7 @@ class TestTransportQuirks:
 
         pages = await adapter.search("x")
 
-        assert [p.meta.path for p in pages] == ["a/b"]
+        assert [p.meta.path for p in pages] == ["a/b.md"]
         await adapter.close()
 
     @respx.mock
@@ -416,7 +439,7 @@ class TestTransportQuirks:
 
         pages = await adapter.search("x")
 
-        assert [p.meta.path for p in pages] == ["c/d"]
+        assert [p.meta.path for p in pages] == ["c/d.md"]
         await adapter.close()
 
     @respx.mock
@@ -478,3 +501,245 @@ class TestConfigWiring:
 
         with pytest.raises(ValueError, match="no adapter, path or url"):
             _build_mimir(settings)
+
+
+@respx.mock
+async def test_graph_uses_stored_links_and_frontmatter():
+    records = {
+        "research/experiment": _page(
+            "research/experiment",
+            content=(
+                "---\ncategory: research\ntype: observation\nsummary: Retrieval comparison\n"
+                "source_ids: [paper]\n---\n[[concepts/retrieval]]"
+            ),
+        ),
+        "concepts/retrieval": _page(
+            "concepts/retrieval",
+            content=(
+                "---\ncategory: concepts\ntype: entity\nentity_type: concept\n"
+                "source_ids: [paper]\n---\n# Retrieval"
+            ),
+        ),
+    }
+
+    def reply(request):
+        params = json.loads(request.content)["params"]
+        if params["name"] == "list_pages":
+            return httpx.Response(200, json=_tool_result(structured=list(records.values())))
+        assert params["name"] == "get_page"
+        return httpx.Response(
+            200, json=_tool_result(structured=records[params["arguments"]["slug"]])
+        )
+
+    respx.post(_MCP).mock(side_effect=reply)
+    adapter = _adapter()
+    try:
+        graph = await adapter.get_graph()
+        assert graph.nodes[0].category == "research"
+        assert graph.nodes[0].kind == "observation"
+        assert graph.nodes[0].summary == "Retrieval comparison"
+        assert graph.nodes[1].kind == "concept"
+        assert {edge.type for edge in graph.edges} == {"wikilink", "shared_source"}
+    finally:
+        await adapter.close()
+
+
+@respx.mock
+async def test_summary_paginates_all_pages():
+    route = respx.post(_MCP).mock(
+        side_effect=[
+            httpx.Response(
+                200, json=_tool_result(structured=[_page(f"notes/{i}") for i in range(100)])
+            ),
+            httpx.Response(200, json=_tool_result(structured=[_page("research/last")])),
+        ]
+    )
+    adapter = _adapter()
+    summary = await adapter.summarize()
+    assert summary.page_count == 101
+    assert summary.categories == ["notes", "research"]
+    assert json.loads(route.calls[1].request.content)["params"]["arguments"]["offset"] == 100
+    await adapter.close()
+
+
+def test_sse_preserves_unicode_line_separators():
+    from ravn.adapters.mimir.gbrain import _parse_mcp_response
+
+    message = {"result": {"content": [{"text": "first\u2028second"}]}}
+    assert (
+        _parse_mcp_response("data: " + json.dumps(message, ensure_ascii=False) + "\n\n") == message
+    )
+
+
+class TestRawSources:
+    @pytest.mark.parametrize("webhook", [False, True])
+    @respx.mock
+    async def test_lossless_source_roundtrip(self, webhook):
+        source = MimirSource(
+            source_id="src_raw",
+            title="Title: with YAML",
+            content=" \n---\ncontent\n<!-- timeline -->\n\n",
+            source_type="web",
+            ingested_at=datetime.now(UTC),
+            content_hash=compute_content_hash(" \n---\ncontent\n<!-- timeline -->\n\n"),
+            origin_url="https://example.test/source",
+        )
+        stored = {}
+
+        def transport(request):
+            if str(request.url) == _INGEST:
+                stored["content"] = request.content.decode()
+                return httpx.Response(202, json={"job_id": "ingestion"})
+            params = json.loads(request.content)["params"]
+            if params["name"] == "put_page":
+                stored["content"] = params["arguments"]["content"]
+                return httpx.Response(200, json=_tool_result())
+            return httpx.Response(
+                200,
+                json=_tool_result(
+                    structured=_page("sources/src_raw", content=stored["content"] + "\n")
+                ),
+            )
+
+        respx.post(_MCP).mock(side_effect=transport)
+        if webhook:
+            respx.post(_INGEST).mock(side_effect=transport)
+        adapter = _adapter(ingest_url=_INGEST if webhook else None)
+        await adapter.ingest(source)
+        assert await adapter.read_source(source.source_id) == source
+        excerpt = await adapter.read_source_excerpt(source.source_id, 4)
+        assert excerpt.content == source.content[:4]
+        assert excerpt.content_hash == source.content_hash
+        await adapter.close()
+
+    @respx.mock
+    async def test_missing_source_is_absent(self):
+        respx.post(_MCP).mock(
+            return_value=httpx.Response(
+                200, json=_tool_result(text=json.dumps({"error": "page_not_found"}), is_error=True)
+            )
+        )
+        adapter = _adapter()
+        assert await adapter.read_source("src_absent") is None
+        await adapter.close()
+
+    @pytest.mark.parametrize("tampered", [False, True])
+    @respx.mock
+    async def test_legacy_source_checks_original_content_id(self, tampered):
+        body = "Original evidence"
+        source_id = compute_source_id(body)
+        record = _page(
+            "sources/" + source_id,
+            title="Evidence",
+            content="# Evidence\n\n" + ("modified" if tampered else body) + "\n",
+            created_at="2026-09-10T00:00:00+00:00",
+            source_uri="https://example.test",
+        )
+        respx.post(_MCP).mock(
+            return_value=httpx.Response(200, json=_tool_result(structured=record))
+        )
+        adapter = _adapter()
+        if tampered:
+            with pytest.raises(ValueError, match="integrity check failed"):
+                await adapter.read_source(source_id)
+        else:
+            source = await adapter.read_source(source_id)
+            assert source.content == body
+            assert source.origin_url == "https://example.test"
+            assert source.source_type == "web"
+        await adapter.close()
+
+    @respx.mock
+    async def test_list_sources_filters_compiled_sources(self):
+        body = "evidence"
+        source_id = compute_source_id(body)
+
+        def transport(request):
+            params = json.loads(request.content)["params"]
+            if params["name"] == "list_pages":
+                return httpx.Response(
+                    200,
+                    json=_tool_result(
+                        structured=[
+                            _page("sources/" + source_id),
+                            _page("research/report", source_ids=[source_id]),
+                        ]
+                    ),
+                )
+            return httpx.Response(
+                200,
+                json=_tool_result(
+                    structured=_page(
+                        "sources/" + source_id,
+                        title="Evidence",
+                        content="# Evidence\n\n" + body,
+                        created_at="2026-09-10T00:00:00+00:00",
+                    )
+                ),
+            )
+
+        respx.post(_MCP).mock(side_effect=transport)
+        adapter = _adapter()
+        sources = await adapter.list_sources()
+        assert [s.source_id for s in sources] == [source_id]
+        assert await adapter.list_sources(unprocessed_only=True) == []
+        assert (await adapter.summarize()).source_count == 1
+        await adapter.close()
+
+    @pytest.mark.parametrize("payload", ["broken", "mismatch"])
+    @respx.mock
+    async def test_corrupt_source_is_not_accepted_as_evidence(self, payload):
+        content = "broken"
+        if payload == "mismatch":
+            content = (
+                "```json\n"
+                + json.dumps(
+                    {
+                        "source_id": "src_raw",
+                        "title": "Evidence",
+                        "content": "tampered",
+                        "source_type": "web",
+                        "ingested_at": "2026-09-10T00:00:00+00:00",
+                        "content_hash": compute_content_hash("original"),
+                    }
+                )
+                + "\n```"
+            )
+        respx.post(_MCP).mock(
+            return_value=httpx.Response(
+                200,
+                json=_tool_result(
+                    structured=_page(
+                        "sources/src_raw",
+                        content=content,
+                        frontmatter={"mimir_source_format": "json-v1"},
+                    )
+                ),
+            )
+        )
+        adapter = _adapter()
+        with pytest.raises(ValueError, match="Malformed|integrity"):
+            await adapter.read_source("src_raw")
+        await adapter.close()
+
+    @respx.mock
+    async def test_empty_response_is_not_source_absence(self):
+        respx.post(_MCP).mock(return_value=httpx.Response(200, json=_tool_result()))
+        adapter = _adapter()
+        with pytest.raises(RuntimeError, match="no source record"):
+            await adapter.read_source("src_raw")
+        await adapter.close()
+
+
+@respx.mock
+async def test_canonical_paths_and_directory_prefixes_are_consistent():
+    records = [_page("research/campaigns/run/final"), _page("research/campaigns/run-other/final")]
+    respx.post(_MCP).mock(return_value=httpx.Response(200, json=_tool_result(structured=records)))
+    adapter = _adapter()
+    try:
+        pages = await adapter.list_pages(prefix="research/campaigns/run/")
+        assert [page.path for page in pages] == ["research/campaigns/run/final.md"]
+        page = await adapter.get_page(pages[0].path)
+        assert page.meta.path == pages[0].path
+    finally:
+        await adapter.close()

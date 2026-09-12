@@ -480,6 +480,18 @@ class TestCreatePlatformCommands:
         assert result.exit_code == 0
         assert "setup complete" in result.output.lower()
 
+    def test_platform_init_respects_selected_config(self, tmp_path, monkeypatch) -> None:
+        config = tmp_path / "isolated" / "config.yaml"
+        monkeypatch.setenv("NIUU_CONFIG", str(config))
+        platform, *_ = self._make_platform()
+        result = runner.invoke(platform, ["init"], input="1\n")
+        assert result.exit_code == 0, result.output
+        assert "mode: mini" in config.read_text()
+        original = config.read_text()
+        result = runner.invoke(platform, ["init"], input="n\n")
+        assert result.exit_code == 0, result.output
+        assert config.read_text() == original
+
     def test_platform_status_no_services(self) -> None:
         platform, *_ = self._make_platform()
         result = runner.invoke(platform, ["status"])
@@ -666,6 +678,10 @@ class TestRouteInventoryPayload:
 
 
 class TestInitOverwriteProtection:
+    @pytest.fixture(autouse=True)
+    def use_default_config_path(self, monkeypatch) -> None:
+        monkeypatch.delenv("NIUU_CONFIG", raising=False)
+
     def test_aborts_when_config_exists_and_user_declines(self) -> None:
         import tempfile
         from pathlib import Path

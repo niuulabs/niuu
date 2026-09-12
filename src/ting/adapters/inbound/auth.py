@@ -7,32 +7,15 @@ falls back to allow-all with a default identity only when
 
 from __future__ import annotations
 
-from contextvars import ContextVar
-
 from fastapi import HTTPException, Request, status
 
-from niuu.domain.models import Principal
-
-_current_bearer_token: ContextVar[str | None] = ContextVar(
-    "ting_current_bearer_token",
-    default=None,
+from niuu.adapters.inbound.auth_context import (
+    current_bearer_token as current_bearer_token,
 )
-
-
-def current_bearer_token() -> str | None:
-    """Return the bearer token for the current request context, if available."""
-    return _current_bearer_token.get()
-
-
-def extract_bearer_token(request: Request) -> str | None:
-    """Extract Bearer token from the Authorization header, or None."""
-    auth = request.headers.get("authorization", "")
-    if not auth.startswith("Bearer "):
-        _current_bearer_token.set(None)
-        return None
-    token = auth[7:]
-    _current_bearer_token.set(token)
-    return token
+from niuu.adapters.inbound.auth_context import (
+    extract_bearer_token as extract_bearer_token,
+)
+from niuu.domain.models import Principal
 
 
 async def extract_principal(request: Request) -> Principal:

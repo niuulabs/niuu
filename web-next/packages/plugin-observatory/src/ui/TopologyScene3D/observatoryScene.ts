@@ -719,6 +719,7 @@ export function createObservatoryScene(
   const moteMaterial = track(
     new PointsMaterial({
       size: EDGE3D.FLOW_SIZE,
+      sizeAttenuation: false,
       map: moteTexture ?? undefined,
       vertexColors: true,
       transparent: true,

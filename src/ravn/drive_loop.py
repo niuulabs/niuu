@@ -742,7 +742,8 @@ def _build_resident_valkyrie_schema_repair_prompt(
         f"{json.dumps(validation_errors, indent=2)}\n\n"
         "Fields parsed from the invalid attempt, if any:\n"
         f"{json.dumps(_json_safe(outcome_fields), indent=2)}\n\n"
-        "Use the original autonomous task context already present in this conversation.\n\n"
+        "Use only the supplied response and parsed fields. Preserve decisions, evidence, "
+        "references and working-state entries; do not invent observations or actions.\n\n"
         "Previous response:\n"
         "<previous_response>\n"
         f"{original_response[:4000]}\n"
@@ -2146,6 +2147,8 @@ class DriveLoop:
         self,
         content: str,
         metadata: dict[str, Any] | None = None,
+        *,
+        output_mode: OutputMode = OutputMode.SURFACE,
     ) -> bool:
         """Enqueue a directed message from the browser as an agent task."""
         for handler in list(self._directed_message_interceptors):
@@ -2156,7 +2159,7 @@ class DriveLoop:
             except Exception:
                 logger.exception("drive_loop: directed message interceptor failed")
 
-        if await self._try_steer_active_agent(content):
+        if output_mode == OutputMode.SURFACE and await self._try_steer_active_agent(content):
             return True
 
         import time
@@ -2178,7 +2181,7 @@ class DriveLoop:
             title="Directed message from user",
             initiative_context=self._directed_message_context(content, metadata),
             triggered_by="skuld:directed_message",
-            output_mode=OutputMode.SURFACE,
+            output_mode=output_mode,
             persona=persona,
             priority=0,  # user input precedes autonomous continuation work
             human_initiated=True,
@@ -3085,7 +3088,7 @@ class DriveLoop:
         task: AgentTask,
         response_text: str,
     ) -> object | None:
-        """Ask the same agent for one strict contract repair when a resident output is invalid."""
+        """Repair an invalid resident contract without replaying the agent's history."""
         if task.triggered_by == _RESIDENT_VALKYRIE_SCHEMA_REPAIR_TRIGGER:
             return None
         persona_config = getattr(agent, "persona_config", None) or self._persona_config
@@ -3098,8 +3101,8 @@ class DriveLoop:
         )
         if not canonical_event_type or not validation_errors:
             return None
-        run_turn = getattr(agent, "run_turn", None)
-        if run_turn is None or not asyncio.iscoroutinefunction(run_turn):
+        repair_outcome = getattr(agent, "repair_outcome", None)
+        if repair_outcome is None or not asyncio.iscoroutinefunction(repair_outcome):
             return None
 
         logger.warning(
@@ -3115,7 +3118,7 @@ class DriveLoop:
             outcome_fields=outcome_fields,
         )
         try:
-            repair_result = await run_turn(repair_prompt)
+            repair_result = await repair_outcome(repair_prompt)
         except Exception:
             logger.warning(
                 "drive_loop: resident Valkyrie schema repair failed; "

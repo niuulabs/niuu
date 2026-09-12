@@ -128,8 +128,8 @@ async def test_user_providers_added_from_connections(
 
     # 1 shared + 1 user
     assert len(providers) == 2
-    assert providers[1].name == "My GitHub"
-    assert list(providers[1].orgs) == ["personal"]
+    assert providers[0].name == "My GitHub"
+    assert list(providers[0].orgs) == ["personal"]
 
 
 async def test_disabled_connections_skipped(
@@ -354,3 +354,72 @@ async def test_add_shared_issue_provider(
 
     providers = await service.get_issue_providers("user-1")
     assert any(p.name == "NewIssue" for p in providers)
+
+
+async def test_user_git_provider_takes_precedence(service, integration_repo):
+    integration_repo.list_connections.return_value = [_make_connection()]
+    provider = await service.find_git_provider_for("https://github.com/org/repo", "user-1")
+    assert provider.name == "My GitHub"
+
+
+async def test_session_git_uses_only_selected_connections(
+    service, integration_repo, credential_store
+):
+    selected = _make_connection(conn_id="selected", credential_name="selected-token")
+    integration_repo.list_connections.return_value = [
+        _make_connection(credential_name="unselected")
+    ]
+    connection, provider = await service.find_session_git_provider(
+        "https://github.com/org/repo",
+        "user-1",
+        (selected,),
+    )
+    assert connection.id == "selected"
+    assert provider.name == "My GitHub"
+    credential_store.get_value.assert_awaited_once_with("user", "user-1", "selected-token")
+    integration_repo.list_connections.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["missing_token", "other_owner", "disabled", "bad_adapter"])
+async def test_session_git_fails_closed(service, credential_store, failure):
+    kwargs = {}
+    if failure == "missing_token":
+        credential_store.get_value.return_value = {}
+    elif failure == "other_owner":
+        kwargs["user_id"] = "someone-else"
+    elif failure == "disabled":
+        kwargs["enabled"] = False
+    else:
+        kwargs["adapter"] = "missing.Adapter"
+    with pytest.raises(ValueError):
+        await service.find_session_git_provider(
+            "https://github.com/org/repo",
+            "user-1",
+            (_make_connection(**kwargs),),
+        )
+    if failure in {"other_owner", "disabled"}:
+        credential_store.get_value.assert_not_called()
+
+
+async def test_session_git_nonmatching_host(service):
+    result = await service.find_session_git_provider(
+        "https://gitlab.com/org/repo",
+        "user-1",
+        (_make_connection(),),
+    )
+    assert result is None
+
+
+async def test_session_git_supports_gitlab(service):
+    conn = _make_connection(
+        adapter="volundr.adapters.outbound.gitlab.GitLabProvider",
+        slug="gitlab",
+        config={"name": "GitLab", "base_url": "https://gitlab.com"},
+    )
+    connection, provider = await service.find_session_git_provider(
+        "https://gitlab.com/org/repo",
+        "user-1",
+        (conn,),
+    )
+    assert connection is conn
+    assert provider.get_clone_url("https://gitlab.com/org/repo").startswith("https://oauth2:")

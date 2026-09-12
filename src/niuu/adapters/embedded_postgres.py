@@ -127,8 +127,20 @@ class EmbeddedPostgresDatabase(EmbeddedDatabasePort):
         self,
         *,
         startup_timeout_s: int = _DEFAULT_STARTUP_TIMEOUT_S,
+        listen_host: str = "",
+        listen_port: int = 5432,
+        listen_password: str = "",
         cleanup_timeout_s: int = _DEFAULT_CLEANUP_TIMEOUT_S,
     ) -> None:
+        if listen_host not in {"", "127.0.0.1", "::1"}:
+            raise ValueError("Embedded PostgreSQL may only listen on loopback")
+        if not 1 <= listen_port <= 65535:
+            raise ValueError("Invalid PostgreSQL port")
+        if listen_host and not listen_password:
+            raise ValueError("Loopback TCP requires a PostgreSQL password")
+        self._listen_password = listen_password
+        self._listen_host = listen_host
+        self._listen_port = listen_port
         self._startup_timeout_s = startup_timeout_s
         self._cleanup_timeout_s = cleanup_timeout_s
         self._conn: object | None = None
@@ -159,6 +171,13 @@ class EmbeddedPostgresDatabase(EmbeddedDatabasePort):
         # Start server
         self._socket_dir = _choose_socket_dir(self._data_dir)
         uri = f"postgresql://postgres:@/postgres?host={self._socket_dir}"
+        if self._listen_host:
+            from urllib.parse import quote
+
+            uri = (
+                f"postgresql://postgres:{quote(self._listen_password, safe='')}@"
+                f"{self._listen_host}:{self._listen_port}/postgres"
+            )
         existing_conn = await self._try_connect_existing(uri)
         if existing_conn is None:
             await loop.run_in_executor(None, self._start_server)
@@ -168,7 +187,7 @@ class EmbeddedPostgresDatabase(EmbeddedDatabasePort):
         info = self._parse_uri(uri)
         self._connection_info = info
         self._conn = existing_conn
-        logger.info("Embedded PG started — %s", uri)
+        logger.info("Embedded PG started at %s:%s", info.host, info.port)
         return info
 
     async def execute(self, sql: str, *args: object) -> list[dict]:
@@ -240,7 +259,14 @@ class EmbeddedPostgresDatabase(EmbeddedDatabasePort):
             "postgres",
         ]
         logger.info("Running initdb: %s", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if self._listen_host:
+            with tempfile.NamedTemporaryFile(mode="w") as password_file:
+                password_file.write(self._listen_password)
+                password_file.flush()
+                cmd.extend(["--auth-host=scram-sha-256", f"--pwfile={password_file.name}"])
+                result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        else:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if result.returncode != 0:
             raise RuntimeError(f"initdb failed (exit {result.returncode}): {result.stderr}")
 
@@ -254,7 +280,7 @@ class EmbeddedPostgresDatabase(EmbeddedDatabasePort):
             str(self._data_dir),
             "-w",
             "-o",
-            f'-h "" -k "{self._socket_dir}"',
+            f'-h "{self._listen_host}" -k "{self._socket_dir}" -p {self._listen_port}',
             "-l",
             str(log_file),
             "start",
@@ -333,7 +359,7 @@ class EmbeddedPostgresDatabase(EmbeddedDatabasePort):
         and TCP-style:
             ``postgresql://postgres:@localhost:5432/postgres``
         """
-        from urllib.parse import parse_qs, urlparse
+        from urllib.parse import parse_qs, unquote, urlparse
 
         parsed = urlparse(uri)
         qs = parse_qs(parsed.query)
@@ -344,7 +370,9 @@ class EmbeddedPostgresDatabase(EmbeddedDatabasePort):
         dbname = (parsed.path or "/postgres").lstrip("/") or "postgres"
         user = parsed.username or "postgres"
 
-        return ConnectionInfo(host=host, port=port, dbname=dbname, user=user)
+        return ConnectionInfo(
+            host=host, port=port, dbname=dbname, user=user, password=unquote(parsed.password or "")
+        )
 
     async def _connect(self, uri: str):
         """Open an asyncpg connection using the configured startup timeout."""
@@ -370,5 +398,5 @@ class EmbeddedPostgresDatabase(EmbeddedDatabasePort):
         except Exception:
             return None
 
-        logger.info("Reusing existing embedded PostgreSQL instance — %s", uri)
+        logger.info("Reusing existing embedded PostgreSQL instance")
         return conn

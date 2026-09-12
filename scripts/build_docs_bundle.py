@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SITE_URL = "https://niuulabs.github.io/volundr/"
+DEFAULT_SITE_URL = "https://docs.niuu.cloud/"
 MKDOCS_MATERIAL_SPEC = "mkdocs-material==9.7.5"
 
 

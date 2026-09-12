@@ -211,7 +211,7 @@ class RecordingVolundrPort(VolundrPort):
         self.stopped.append(session_id)
 
     async def list_integration_ids(self, *, auth_token=None, principal=None):
-        return []
+        return ["integration-github", "integration-memory"]
 
     async def list_repos(self, *, auth_token=None, principal=None):
         return []
@@ -465,6 +465,7 @@ class TestSendMessage:
 
         assert len(port.spawned) == 1
         assert port.spawned[0].workload_type == "ravn_flock"
+        assert port.spawned[0].integration_ids == ["integration-github", "integration-memory"]
         assert port.spawned[0].workload_config["provenance"]["trace_context"] == {
             "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
             "tracestate": "niuu=resident",

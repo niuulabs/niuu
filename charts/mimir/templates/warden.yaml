@@ -1,0 +1,10 @@
+{{- if .Values.warden.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mimir.fullname" . }}-warden
+data:
+  spec.yaml: |
+    spec: {{ .Values.warden.spec | toYaml | nindent 6 }}
+    config: {{ .Values.warden.config | toYaml | nindent 6 }}
+{{- end }}

@@ -138,18 +138,15 @@ def _sum_durations(spans: Iterable[SessionSpan], predicate) -> int:
 def _trace_bounds(spans: list[SessionSpan]) -> tuple[datetime | None, datetime | None, int | None]:
     if not spans:
         return None, None, None
-    root = next((span for span in spans if span.kind == "session.lifecycle"), None)
-    started_at = root.started_at if root is not None else min(span.started_at for span in spans)
+    # A session retains one lifecycle span per broker start. Its bounds must
+    # include every attempt, including work recorded after an unclean shutdown.
+    started_at = min(span.started_at for span in spans)
     ended_candidates = [span.ended_at for span in spans if span.ended_at is not None]
     ended_at = (
-        root.ended_at
-        if root is not None and root.ended_at is not None
-        else (max(ended_candidates) if ended_candidates else None)
+        max(*ended_candidates, *(span.started_at for span in spans)) if ended_candidates else None
     )
     duration_ms = None
-    if root is not None and root.duration_ms is not None:
-        duration_ms = root.duration_ms
-    elif started_at is not None and ended_at is not None:
+    if ended_at is not None:
         duration_ms = max(0, int((ended_at - started_at).total_seconds() * 1000))
     return started_at, ended_at, duration_ms
 

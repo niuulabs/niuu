@@ -87,7 +87,7 @@ class TestSecretInjectionContributor:
         assert result.values == {}
         assert result.pod_spec is None
 
-    async def test_no_adapter_returns_openshell_mapping_values(self, session):
+    async def test_openshell_uses_its_native_credential_mapping(self, session):
         defn = _definition(
             slug="openai",
             env_from_credentials={"OPENAI_API_KEY": "api_key"},
@@ -95,6 +95,7 @@ class TestSecretInjectionContributor:
         registry = _registry([defn])
 
         ctx = SessionContext(
+            runtime_backend="openshell",
             integration_connections=(_connection("openai-cred", "openai"),),
         )
         c = SecretInjectionContributor(integration_registry=registry)
@@ -491,15 +492,15 @@ class TestSecretInjectionContributor:
         adapter.pod_spec_additions.assert_not_called()
         assert result.pod_spec is None
 
-    async def test_ensure_failure_skips_volume(self, session):
+    async def test_ensure_failure_stops_credential_launch(self, session):
         adapter = AsyncMock()
         adapter.ensure_secret_provider_class.side_effect = RuntimeError("403")
         ctx = SessionContext(
             integration_connections=(_connection("some-cred"),),
         )
         c = SecretInjectionContributor(secret_injection=adapter)
-        result = await c.contribute(session, ctx)
-        assert result.pod_spec is None
+        with pytest.raises(RuntimeError, match="403"):
+            await c.contribute(session, ctx)
         adapter.pod_spec_additions.assert_not_called()
 
     async def test_cleanup_calls_adapter(self, session):
@@ -532,3 +533,79 @@ class TestSecretsContributor:
     async def test_cleanup_noop_without_repo(self, session):
         c = SecretsContributor()
         await c.cleanup(session, SessionContext())
+
+
+async def test_memory_well_auth_ref_injects_owner_credential_without_manual_selection(session):
+    store = AsyncMock()
+    store.get.return_value = MagicMock(keys=("token",))
+    injection = AsyncMock()
+    injection.pod_spec_additions.return_value = PodSpecAdditions()
+    contributor = SecretInjectionContributor(credential_store=store, secret_injection=injection)
+    context = SessionContext(
+        workload_config={
+            "mimir": {"registry_refs": [{"mount_name": "brain", "auth_ref": "brain-token"}]}
+        }
+    )
+    await contributor.contribute(session, context)
+    store.get.assert_awaited_with("user", session.owner_id, "brain-token")
+    mappings = injection.ensure_secret_provider_class.call_args.args[1]
+    assert mappings[0].file_mappings == {"/run/secrets/mimir/brain-token/token": "token"}
+    injection.ensure_secret_provider_class.side_effect = RuntimeError("credential service down")
+    with pytest.raises(RuntimeError, match="credential service down"):
+        await contributor.contribute(session, context)
+    store.get.return_value = None
+    with pytest.raises(ValueError, match="token field"):
+        await contributor.contribute(session, context)
+
+
+@pytest.mark.asyncio
+async def test_workload_memory_identity_does_not_request_a_stored_token():
+    store = AsyncMock()
+    contributor = SecretInjectionContributor(credential_store=store)
+    context = SessionContext(
+        credential_names=("workload:mimir",),
+        workload_config={
+            "mimir": {"registry_refs": [{"mount_name": "gbrain-ui", "auth_ref": "workload:mimir"}]}
+        },
+    )
+    assert await contributor._build_mappings(context, "user-1") == []
+    store.get.assert_not_called()
+
+
+async def test_source_control_token_is_projected_for_git(session):
+    from dataclasses import replace
+
+    from volundr.domain.services.user_integration import git_token_path
+
+    connection = replace(_connection(), integration_type=IntegrationType.SOURCE_CONTROL)
+    injection = AsyncMock()
+    contributor = SecretInjectionContributor(secret_injection=injection)
+    await contributor.contribute(session, SessionContext(integration_connections=(connection,)))
+    mappings = injection.ensure_secret_provider_class.call_args.args[1]
+    assert mappings[0].file_mappings == {git_token_path(connection.id): "token"}
+
+
+async def test_openshell_source_control_uses_dynamic_provider_without_token_file(session):
+    from dataclasses import replace
+
+    connection = replace(
+        _connection(slug="github"), integration_type=IntegrationType.SOURCE_CONTROL
+    )
+    registry = _registry(
+        [_definition(slug="github", env_from_credentials={"GITHUB_TOKEN": "token"})]
+    )
+    contributor = SecretInjectionContributor(integration_registry=registry)
+    result = await contributor.contribute(
+        session,
+        SessionContext(
+            runtime_backend="openshell",
+            integration_connections=(connection,),
+        ),
+    )
+    assert result.values["openshell"]["credentialMappings"] == [
+        {
+            "credentialName": connection.credential_name,
+            "envMappings": {"GITHUB_TOKEN": "token"},
+            "fileMappings": {},
+        }
+    ]

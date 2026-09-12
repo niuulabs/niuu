@@ -240,3 +240,18 @@ class ClientCredentialsBearerTokenAuthAdapter(HttpAuthPort):
         self._token = token
         self._expires_at = now + max(0.0, expires_in - self._refresh_skew_seconds)
         return token
+
+
+class RequestBearerTokenAuthAdapter(HttpAuthPort):
+    """Forward the authenticated caller's bearer credential without impersonation."""
+
+    def headers(self) -> dict[str, str]:
+        from niuu.adapters.inbound.auth_context import current_bearer_token
+
+        token = current_bearer_token()
+        if not token:
+            raise RuntimeError("Shared integrations require an authenticated caller bearer token")
+        return {"Authorization": f"Bearer {token}"}
+
+    def invalidate(self) -> bool:
+        return False

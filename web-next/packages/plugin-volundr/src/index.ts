@@ -176,3 +176,5 @@ export type {
   ExternalSession,
   ExternalSessionHarness,
 } from './models/volundr.model';
+
+export { UserStorageSettings } from './ui/UserStorageSettings';

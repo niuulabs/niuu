@@ -80,6 +80,29 @@ def test_credential_enrollment_runner_renders_unsupported_by_default() -> None:
     assert runner["secret_kwargs_env"] == {}
 
 
+def test_native_login_runner_has_dedicated_namespace_and_scoped_rbac():
+    documents = _rendered_documents(
+        "--set",
+        "credentialEnrollmentRunner.adapter="
+        "volundr.adapters.outbound.k8s_login_runner.KubernetesLoginRunner",
+        "--set",
+        "credentialEnrollmentRunner.kwargs.image=test-only/skuld:pinned",
+        "--set",
+        "credentialEnrollmentRunner.kwargs.namespace=test-logins",
+    )
+    namespace = next(doc for doc in documents if doc["kind"] == "Namespace")
+    assert namespace["metadata"]["name"] == "test-logins"
+    role = next(doc for doc in documents if doc["kind"] == "Role")
+    assert role["metadata"]["namespace"] == "test-logins"
+    assert {resource for rule in role["rules"] for resource in rule["resources"]} == {
+        "jobs",
+        "pods",
+        "pods/exec",
+    }
+    binding = next(doc for doc in documents if doc["kind"] == "RoleBinding")
+    assert binding["subjects"][0]["namespace"] == "default"
+
+
 def test_credential_enrollment_runner_secret_kwargs_reach_the_deployment() -> None:
     documents = _rendered_documents(
         "--set",

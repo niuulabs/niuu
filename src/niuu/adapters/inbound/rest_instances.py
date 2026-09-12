@@ -11,7 +11,13 @@ from pydantic import BaseModel, Field
 from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.auth import extract_principal
-from niuu.adapters.inbound.remote_urls import build_remote_url
+from niuu.adapters.inbound.remote_urls import (
+    build_remote_url,
+)
+from niuu.adapters.inbound.remote_urls import (
+    forward_identity_headers as _forward_headers,
+)
+from niuu.adapters.inbound.rest_knowledge_deployments import create_knowledge_deployments_router
 from niuu.domain.agent_directory import (
     AgentDirectoryEntry,
     AgentDirectoryFilters,
@@ -207,21 +213,6 @@ async def _probe_instance(
         )
     except Exception as exc:
         return InstanceTestResponse(ok=False, message=str(exc))
-
-
-def _forward_headers(request: Request) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    for name in (
-        "authorization",
-        "x-auth-user-id",
-        "x-auth-email",
-        "x-auth-tenant",
-        "x-auth-roles",
-    ):
-        value = request.headers.get(name)
-        if value:
-            headers[name] = value
-    return headers
 
 
 def _slug(value: str) -> str:
@@ -670,4 +661,5 @@ def create_instances_router(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
         return entry
 
+    router.include_router(create_knowledge_deployments_router(service))
     return router

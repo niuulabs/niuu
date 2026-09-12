@@ -16,24 +16,14 @@ from fastapi.responses import StreamingResponse
 from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.auth import extract_principal
-from niuu.adapters.inbound.remote_urls import build_remote_url
+from niuu.adapters.inbound.remote_urls import (
+    build_remote_url,
+)
+from niuu.adapters.inbound.remote_urls import (
+    forward_identity_headers as _forward_headers,
+)
 from niuu.domain.models import InstanceKind, Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
-
-
-def _forward_headers(request: Request) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    for name in (
-        "authorization",
-        "x-auth-user-id",
-        "x-auth-email",
-        "x-auth-tenant",
-        "x-auth-roles",
-    ):
-        value = request.headers.get(name)
-        if value:
-            headers[name] = value
-    return headers
 
 
 async def _visible_instances(
@@ -456,6 +446,29 @@ def create_volundr_router(
 ) -> APIRouter:
     """Create a registry-aware Forge runtime router."""
     router = APIRouter(prefix="/api/v1/forge", tags=["Forge"])
+
+    @router.get("/storage/home")
+    @router.delete("/storage/home")
+    async def manage_user_home(
+        request: Request,
+        instance_id: str = Query(...),
+        path: str = Query(default=""),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        instance = await _resolve_target_instance(service, principal, instance_id)
+        response = await _request_remote(
+            instance,
+            request,
+            method=request.method,
+            path="/storage/home",
+            params=[("path", path)],
+            embedded_app=embedded_forge_app,
+        )
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            media_type="application/json",
+        )
 
     @router.get("/resident-profiles")
     async def list_resident_profiles(
@@ -1088,9 +1101,10 @@ def create_volundr_router(
     @router.get("/feature-flags")
     async def get_feature_flags(
         request: Request,
+        instance_id: str | None = Query(default=None),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
-        instance = await _resolve_target_instance(service, principal, None)
+        instance = await _resolve_target_instance(service, principal, instance_id)
         response = await _request_remote(
             instance,
             request,

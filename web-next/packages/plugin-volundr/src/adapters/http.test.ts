@@ -1020,11 +1020,19 @@ describe('buildVolundrHttpAdapter', () => {
     expect(client.get).toHaveBeenCalledWith('/stats');
   });
 
-  it('getFeatures calls GET /features', async () => {
+  it('getFeatures maps Forge flags and scopes requests to a target', async () => {
     const client = makeClient();
-    await buildVolundrHttpAdapter(client).getFeatures();
-    const sharedClient = getDerivedClient('http://localhost:8080/api/v1');
-    expect(sharedClient.get).toHaveBeenCalledWith('/features');
+    vi.mocked(client.get).mockResolvedValue({
+      local_mounts_enabled: true,
+      file_manager_enabled: false,
+      mini_mode: true,
+    });
+    expect(await buildVolundrHttpAdapter(client).getFeatures('host/a')).toEqual({
+      localMountsEnabled: true,
+      fileManagerEnabled: false,
+      miniMode: true,
+    });
+    expect(client.get).toHaveBeenCalledWith('/feature-flags?instance_id=host%2Fa');
   });
 
   it('getCredentials forwards the optional secret type and applies the fallback type', async () => {
@@ -1205,13 +1213,14 @@ describe('buildVolundrHttpAdapter', () => {
 
     const forgeClient = getDerivedClient('http://localhost:8080/api/v1/forge');
     const catalogClient = getDerivedClient('http://localhost:8080/api/v1/volundr');
-    const sharedClient = getDerivedClient('http://localhost:8080/api/v1');
     const niuuClient = getDerivedClient('http://localhost:8080/api/v1/niuu');
     const credentialsClient = getDerivedClient('http://localhost:8080/api/v1/credentials');
 
     expect(catalogClient.get).toHaveBeenCalledWith('/session-definitions');
     expect(forgeClient.get).not.toHaveBeenCalledWith('/session-definitions');
-    expect(sharedClient.get).toHaveBeenCalledWith('/features');
+    expect(
+      (getDerivedClient('http://localhost:8080/api/v1/forge') ?? client).get,
+    ).toHaveBeenCalledWith('/feature-flags');
     expect(niuuClient.get).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
     expect(credentialsClient.get).toHaveBeenCalledWith('/user');
   });
@@ -1227,11 +1236,12 @@ describe('buildVolundrHttpAdapter', () => {
     expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1');
     expect(queryMocks.createApiClient).toHaveBeenCalledWith('http://localhost:8080/api/v1/niuu');
 
-    const sharedClient = getDerivedClient('http://localhost:8080/api/v1');
     const niuuClient = getDerivedClient('http://localhost:8080/api/v1/niuu');
 
     expect(client.get).toHaveBeenCalledWith('/sessions/sess-1');
-    expect(sharedClient.get).toHaveBeenCalledWith('/features');
+    expect(
+      (getDerivedClient('http://localhost:8080/api/v1/forge') ?? client).get,
+    ).toHaveBeenCalledWith('/feature-flags');
     expect(niuuClient.get).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
   });
 
@@ -1256,7 +1266,7 @@ describe('buildVolundrHttpAdapter', () => {
     await service.getTargets();
 
     expect(queryMocks.createApiClient).not.toHaveBeenCalled();
-    expect(client.get).toHaveBeenCalledWith('/features');
+    expect(client.get).toHaveBeenCalledWith('/feature-flags');
     expect(client.get).toHaveBeenCalledWith('/repos');
     expect(client.get).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
   });
@@ -2407,4 +2417,40 @@ describe('buildVolundrHttpAdapter — full method sweep', () => {
     expect(client.post).toHaveBeenCalled();
     expect(client.delete).toHaveBeenCalled();
   });
+});
+
+it('normalizes Settings integration fields for session defaults', async () => {
+  const service = buildVolundrHttpAdapter(makeClient());
+  const sharedClient = getDerivedClient('http://localhost:8080/api/v1');
+  sharedClient.get.mockResolvedValueOnce([
+    {
+      id: 'github',
+      slug: 'github',
+      enabled: true,
+      integration_type: 'source_control',
+      credential_name: 'github-credential',
+      created_at: 'created',
+      updated_at: 'updated',
+    },
+  ]);
+  expect(await service.getIntegrations()).toEqual([
+    {
+      id: 'github',
+      slug: 'github',
+      enabled: true,
+      integrationType: 'source_control',
+      credentialName: 'github-credential',
+      createdAt: 'created',
+      updatedAt: 'updated',
+    },
+  ]);
+});
+
+it('routes personal home operations with encoded cluster and relative path', async () => {
+  const client = makeClient();
+  const service = buildVolundrHttpAdapter(client);
+  await service.listUserHome('cluster-a', 'tmp/cache');
+  expect(client.get).toHaveBeenCalledWith('/storage/home?instance_id=cluster-a&path=tmp%2Fcache');
+  await service.deleteUserHomePath('cluster-b', 'tmp/a b');
+  expect(client.delete).toHaveBeenCalledWith('/storage/home?instance_id=cluster-b&path=tmp%2Fa+b');
 });

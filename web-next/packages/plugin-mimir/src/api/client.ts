@@ -74,11 +74,16 @@ interface RawGraphNode {
   id: string;
   title: string;
   category: string;
+  path?: string;
+  kind?: string;
+  summary?: string;
+  mount?: string;
 }
 
 interface RawGraphEdge {
   source: string;
   target: string;
+  type?: string;
 }
 
 interface RawGraph {
@@ -157,6 +162,10 @@ function toGraphNode(raw: RawGraphNode): GraphNode {
     id: raw.id,
     title: raw.title,
     category: raw.category,
+    path: raw.path,
+    kind: raw.kind,
+    summary: raw.summary,
+    mount: raw.mount,
   };
 }
 
@@ -164,6 +173,7 @@ function toGraphEdge(raw: RawGraphEdge): GraphEdge {
   return {
     source: raw.source,
     target: raw.target,
+    type: raw.type,
   };
 }
 

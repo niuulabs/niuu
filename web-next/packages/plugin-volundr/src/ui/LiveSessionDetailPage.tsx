@@ -1,3 +1,4 @@
+import { useShowDebugMeta } from './uxPrefs';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
@@ -87,7 +88,7 @@ const FIXED_TAB_ORDER: Partial<Record<SessionTab, number>> = {
 };
 
 export function isSessionBooting(status: string | null | undefined): boolean {
-  return status === 'starting' || status === 'provisioning';
+  return status === 'created' || status === 'starting' || status === 'provisioning';
 }
 
 export function formatCount(value: number): string {
@@ -464,24 +465,22 @@ type TelemetryToolFilter = {
 };
 
 export function buildTelemetrySpanTree(trace: VolundrSessionTrace): {
-  root: TelemetrySpanNode | null;
+  roots: TelemetrySpanNode[];
   nodeById: Map<string, TelemetrySpanNode>;
 } {
   const nodeById = new Map<string, TelemetrySpanNode>();
   for (const span of trace.spans) {
     nodeById.set(span.id, { span, children: [] });
   }
-  let root: TelemetrySpanNode | null = null;
+  const roots: TelemetrySpanNode[] = [];
   for (const span of trace.spans) {
     const node = nodeById.get(span.id);
     if (!node) continue;
-    if (!span.parentSpanId) {
-      if (!root || span.kind === 'session.lifecycle') root = node;
-      continue;
-    }
-    const parentNode = nodeById.get(span.parentSpanId);
+    const parentNode = span.parentSpanId ? nodeById.get(span.parentSpanId) : undefined;
     if (parentNode) {
       parentNode.children.push(node);
+    } else {
+      roots.push(node);
     }
   }
   for (const node of nodeById.values()) {
@@ -490,7 +489,7 @@ export function buildTelemetrySpanTree(trace: VolundrSessionTrace): {
         new Date(left.span.startedAt).getTime() - new Date(right.span.startedAt).getTime(),
     );
   }
-  return { root, nodeById };
+  return { roots, nodeById };
 }
 
 export function spanAttributes(span: VolundrSessionTraceSpan): Record<string, unknown> {
@@ -727,26 +726,23 @@ export function telemetryTaskDurationMs(
 }
 
 export function buildTelemetryTimelineRows(trace: VolundrSessionTrace): TelemetryTimelineRow[] {
-  const rootSpan = trace.spans.find((span) => span.parentSpanId == null);
-  if (!rootSpan) return [];
-  const rootStart = new Date(rootSpan.startedAt).getTime();
-  const totalDuration = trace.durationMs || rootSpan.durationMs || 0;
-  const childrenByParent = new Map<string, VolundrSessionTraceSpan[]>();
-  for (const span of trace.spans) {
-    if (!span.parentSpanId) continue;
-    const siblings = childrenByParent.get(span.parentSpanId) ?? [];
-    siblings.push(span);
-    childrenByParent.set(span.parentSpanId, siblings);
-  }
-  return trace.spans
-    .filter((span) => span.parentSpanId === rootSpan.id)
-    .sort((left, right) => new Date(left.startedAt).getTime() - new Date(right.startedAt).getTime())
-    .map((span) => {
+  const { roots } = buildTelemetrySpanTree(trace);
+  if (roots.length === 0) return [];
+  const rootStart = trace.startedAt
+    ? new Date(trace.startedAt).getTime()
+    : Math.min(...trace.spans.map(spanStartedAtMs));
+  const totalDuration = trace.durationMs ?? 0;
+  // Lifecycle spans describe individual broker attempts, not the whole session.
+  // Keep their stages together, plus spans whose parent was never persisted.
+  return roots
+    .flatMap((node) => (node.span.kind === 'session.lifecycle' ? node.children : [node]))
+    .sort((left, right) => spanStartedAtMs(left.span) - spanStartedAtMs(right.span))
+    .map(({ span, children }) => {
       const startOffsetMs = Math.max(0, new Date(span.startedAt).getTime() - rootStart);
       const durationMs = span.durationMs ?? 0;
       const percentOfTotal = totalDuration > 0 ? Math.round((durationMs / totalDuration) * 100) : 0;
       const tone = timelineRowTone(span);
-      const childSpans = childrenByParent.get(span.id) ?? [];
+      const childSpans = children.map((child) => child.span);
       const childToneDurations: Record<'active' | 'wait' | 'blocked' | 'system', number> = {
         active: 0,
         wait: 0,
@@ -815,24 +811,15 @@ export function buildTelemetryTimelineRows(trace: VolundrSessionTrace): Telemetr
 }
 
 export function buildTelemetryTurnRows(trace: VolundrSessionTrace): TelemetryTurnRow[] {
-  const { root, nodeById } = buildTelemetrySpanTree(trace);
+  const { nodeById } = buildTelemetrySpanTree(trace);
   const turnNodes = [...nodeById.values()].filter((node) => node.span.kind.startsWith('turn.'));
   if (turnNodes.length === 0) return [];
 
-  const nestedTurnNodes = turnNodes.filter((node) => {
-    const parentId = node.span.parentSpanId;
-    if (!parentId) return false;
-    const parentNode = nodeById.get(parentId);
-    return Boolean(parentNode?.span.kind.startsWith('turn.'));
-  });
-
-  const directTurnNodes = turnNodes.filter((node) => node.span.parentSpanId === root?.span.id);
-  const candidateNodes =
-    nestedTurnNodes.length > 0
-      ? nestedTurnNodes
-      : directTurnNodes.length > 0
-        ? directTurnNodes
-        : turnNodes;
+  // Exclude aggregate turns individually; another attempt can have direct turns
+  // even when this attempt nests its turns under a coordinator.
+  const candidateNodes = turnNodes.filter(
+    (node) => !node.children.some((child) => child.span.kind.startsWith('turn.')),
+  );
 
   return candidateNodes
     .sort(
@@ -3605,6 +3592,7 @@ function LiveSessionDetailPageInner({
     if (looksLikeRunLabel(domainRunId)) return domainRunId;
     return sessionName;
   }, [sessionHandle, sessionName, sessionQuery.data?.ravnId]);
+  const showDebugMeta = useShowDebugMeta();
   const forgeBadgeLabel = useMemo(() => {
     const clusterName = sessionQuery.data?.clusterName?.trim();
     if (clusterName) return clusterName;
@@ -3982,7 +3970,7 @@ function LiveSessionDetailPageInner({
                 <SourceMeta session={liveSession} />
               </>
             ) : null}
-            {forgeBadgeLabel ? (
+            {showDebugMeta && forgeBadgeLabel ? (
               <>
                 <HeaderDivider />
                 <SessionForgeBadge label={forgeBadgeLabel} />
@@ -4002,7 +3990,7 @@ function LiveSessionDetailPageInner({
             <HeaderMetric label="Msgs" value={formatCount(headerMessageCount)} />
             <HeaderDivider />
             <HeaderMetric label="Tokens" value={formatCount(liveSession?.tokensUsed ?? 0)} />
-            {trailingMetric ? (
+            {trailingMetric && (showDebugMeta || trailingMetric.label !== 'Forge') ? (
               <>
                 <HeaderDivider />
                 <HeaderMetric label={trailingMetric.label} value={trailingMetric.value} />

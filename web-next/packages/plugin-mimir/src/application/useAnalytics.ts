@@ -16,6 +16,7 @@ export function useQueryStats() {
   const service = useService<IMimirService>('mimir');
   return useQuery({
     queryKey: ['mimir', 'eval', 'queries'],
+    refetchInterval: 10000,
     queryFn: () => service.mounts.getQueryStats(),
   });
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import { AnalyticsPage } from './AnalyticsPage';
 import { createMimirMockAdapter } from '../adapters/mock';
@@ -120,4 +120,27 @@ describe('AnalyticsPage', () => {
     await waitFor(() => expect(screen.getByText('eval service down')).toBeInTheDocument());
     expect(screen.getByText('query stats down')).toBeInTheDocument();
   });
+});
+
+it('inspects a deployed runtime without querying it as an attached mount', async () => {
+  const service = createMimirMockAdapter();
+  service.mounts.inspectInstances = vi.fn().mockRejectedValue(new Error('unknown mount'));
+  service.mounts.getDeployments = async () => ({
+    cluster: 'ymir',
+    namespace: 'knowledge',
+    backends: ['mimir'],
+    releases: [
+      { name: 'mimir-ui', backend: 'mimir', ready: true, message: 'Ready', target: 'cluster' },
+    ],
+  });
+  service.mounts.inspectDeployment = vi
+    .fn()
+    .mockResolvedValue({ name: 'mimir-ui', ready: true, message: 'Ready', logs: {} });
+  wrap(<AnalyticsPage />, service, {
+    tweaks: { 'mimir.deployment': { name: 'mimir-ui', target: 'cluster' } },
+  });
+  await waitFor(() =>
+    expect(service.mounts.inspectDeployment).toHaveBeenCalledWith('mimir-ui', 'cluster'),
+  );
+  expect(service.mounts.inspectInstances).not.toHaveBeenCalled();
 });

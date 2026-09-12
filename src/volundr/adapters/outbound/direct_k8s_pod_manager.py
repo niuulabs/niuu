@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import re
+import shlex
 from typing import Any
 
 from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
@@ -477,7 +478,7 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
         # git push / gh CLI work with the same token used for cloning.
         git_secret = git_config.get("secretName", "github-token")
         git_secret_key = git_config.get("secretKey", "token")
-        if git_config.get("cloneUrl"):
+        if git_config.get("cloneUrl") and not git_config.get("credentials", {}).get("tokenFile"):
             for var_name in ("GITHUB_TOKEN", "GH_TOKEN"):
                 env.append(
                     {
@@ -590,30 +591,62 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
         base_branch = git_config.get("baseBranch", "")
         workspace = f"/volundr/sessions/{session.id}/workspace"
 
-        # cloneUrl from GitContributor is already authenticated.
-        # Use it directly for fetch, then set the clean repoUrl as origin.
-        # After clone, configure a credential helper so git push works
-        # in the skuld container using $GITHUB_TOKEN injected at runtime.
+        credentials = git_config.get("credentials", {})
+        token_file = credentials.get("tokenFile")
+        if token_file:
+            setup = f"""\
+test -s {shlex.quote(token_file)} || {{
+  echo "Selected Git integration token was not injected" >&2; exit 1;
+}}
+git -C "$WORKSPACE" config niuu.gitTokenFile {shlex.quote(token_file)}
+git -C "$WORKSPACE" config niuu.gitUsername {shlex.quote(credentials["username"])}
+git -C "$WORKSPACE" config credential.helper ''
+git -C "$WORKSPACE" config credential.useHttpPath true
+git -C "$WORKSPACE" config "credential.$REPO_URL.helper" '!f() {{
+  [ "$1" = get ] || return 0
+  token=$(cat "$(git config niuu.gitTokenFile)") || return 1
+  [ -n "$token" ] || return 1
+  printf "username=%s\\npassword=%s\\n" "$(git config niuu.gitUsername)" "$token"
+}}; f'
+"""
+        else:
+            setup = """\
+git -C "$WORKSPACE" config credential.helper \
+  '!f() { echo "username=x-access-token"; echo "password=$GITHUB_TOKEN"; }; f'
+"""
+        for key, value_key in (("name", "userName"), ("email", "userEmail")):
+            if git_config.get(value_key):
+                setup += (
+                    f'if ! git -C "$WORKSPACE" config user.{key} >/dev/null; then\n'
+                    f'  git -C "$WORKSPACE" config user.{key} '
+                    f"{shlex.quote(git_config[value_key])}\nfi\n"
+                )
+
         clone_script = f"""\
 set -e
 export GIT_TERMINAL_PROMPT=0
-WORKSPACE="{workspace}"
-CLONE_URL="{clone_url}"
-REPO_URL="{repo_url}"
-BRANCH="{branch}"
-BASE_BRANCH="{base_branch}"
-if [ -d "$WORKSPACE/.git" ]; then
-  echo "Workspace already contains a git repository, skipping clone"
-else
-  mkdir -p "$WORKSPACE"
+WORKSPACE={shlex.quote(workspace)}
+CLONE_URL={shlex.quote(clone_url)}
+REPO_URL={shlex.quote(repo_url)}
+BRANCH={shlex.quote(branch)}
+BASE_BRANCH={shlex.quote(base_branch)}
+mkdir -p "$WORKSPACE"
+if ! git -C "$WORKSPACE" rev-parse --git-dir >/dev/null 2>&1; then
   git init "$WORKSPACE"
+fi
+if git -C "$WORKSPACE" remote get-url origin >/dev/null 2>&1; then
+  git -C "$WORKSPACE" remote set-url origin "$CLONE_URL"
+else
   git -C "$WORKSPACE" remote add origin "$CLONE_URL"
+fi
+{setup}
+if git -C "$WORKSPACE" rev-parse HEAD >/dev/null 2>&1; then
+  echo "Workspace already contains a valid git repository, skipping clone"
+else
   git -C "$WORKSPACE" fetch origin
   if git -C "$WORKSPACE" rev-parse --verify "origin/$BRANCH" >/dev/null 2>&1; then
     git -C "$WORKSPACE" checkout -B "$BRANCH" "origin/$BRANCH"
-    echo "Checked out existing branch $BRANCH"
   else
-    # Use explicit base branch, or fall back to remote HEAD
     if [ -n "$BASE_BRANCH" ] && \
       git -C "$WORKSPACE" rev-parse --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
       FALLBACK="$BASE_BRANCH"
@@ -621,18 +654,12 @@ else
       FALLBACK=$(git -C "$WORKSPACE" remote show origin | sed -n 's/.*HEAD branch: //p')
       FALLBACK=${{FALLBACK:-main}}
     fi
-    echo "Branch $BRANCH not found on remote, creating from $FALLBACK"
     git -C "$WORKSPACE" checkout -B "$FALLBACK" "origin/$FALLBACK"
     git -C "$WORKSPACE" checkout -b "$BRANCH"
   fi
-  git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
   echo "Repository cloned successfully"
 fi
-# Configure credential helper so git push uses GITHUB_TOKEN env var.
-# This persists in .gitconfig and is picked up by the skuld container.
-git -C "$WORKSPACE" config credential.helper \
-  '!f() {{ echo "username=x-access-token"; echo "password=$GITHUB_TOKEN"; }}; f'
-echo "Git credential helper configured"
+git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
 """
         containers.append(
             {
@@ -658,6 +685,18 @@ echo "Git credential helper configured"
                 ],
             }
         )
+
+        if token_file:
+            containers[-1]["env"] = []
+        home = spec.values.get("homeVolume", {})
+        if home.get("enabled"):
+            home_path = home.get("mountPath", self._home_mount_path)
+            containers[-1]["env"].append({"name": "HOME", "value": home_path})
+            containers[-1]["volumeMounts"].append(
+                {"name": "home", "mountPath": home_path, "readOnly": True}
+            )
+        if spec.pod_spec:
+            containers[-1]["volumeMounts"].extend(spec.pod_spec.volume_mounts)
 
         # Append contributor-provided init containers (e.g. ravn config writers).
         if spec.pod_spec:
@@ -751,7 +790,10 @@ echo "Git credential helper configured"
         # HOME env var — set when home volume is mounted
         home_env: list[dict[str, str]] = []
         if home_enabled:
-            home_env = [{"name": "HOME", "value": home_mount}]
+            home_env = [
+                {"name": "HOME", "value": home_mount},
+                {"name": "SKULD__PERSISTENT_HOME_PATH", "value": home_mount},
+            ]
 
         safe_hostname = re.sub(r"[^a-z0-9-]", "-", session.name.lower())
         safe_hostname = safe_hostname.strip("-")[:63] or "session"
@@ -839,12 +881,26 @@ echo "Git credential helper configured"
             ],
         }
 
+        if home_enabled and home_vol.get("persistentTmp"):
+            self._add_persistent_scratch(pod_spec, session)
+
         if node_selector:
             pod_spec["nodeSelector"] = node_selector
         if tolerations:
             pod_spec["tolerations"] = tolerations
         if runtime_class_name:
             pod_spec["runtimeClassName"] = runtime_class_name
+
+        annotations = dict(spec.pod_spec.annotations) if spec.pod_spec else {}
+        inject_key = "vault.hashicorp.com/agent-inject-containers"
+        if (
+            spec.values.get("git", {}).get("credentials", {}).get("tokenFile")
+            and inject_key in annotations
+        ):
+            names = annotations[inject_key].split(",")
+            names.extend(c["name"] for c in pod_spec["containers"])
+            names.append("git-clone")
+            annotations[inject_key] = ",".join(dict.fromkeys(names))
 
         return {
             "apiVersion": "apps/v1",
@@ -862,11 +918,79 @@ echo "Git credential helper configured"
                     },
                 },
                 "template": {
-                    "metadata": {"labels": labels},
+                    "metadata": {
+                        "labels": labels,
+                        "annotations": annotations,
+                    },
                     "spec": pod_spec,
                 },
             },
         }
+
+    @staticmethod
+    def _add_persistent_scratch(pod_spec: dict[str, Any], session: Session) -> None:
+        """Keep temporary files and reusable caches on the owner's home volume."""
+        cache_env = {
+            "TMPDIR": "/tmp",
+            "XDG_CACHE_HOME": "/var/cache/niuu",
+            "GOCACHE": "/var/cache/niuu/go-build",
+            "GOMODCACHE": "/var/cache/niuu/go-mod",
+            "npm_config_cache": "/var/cache/niuu/npm",
+            "PIP_CACHE_DIR": "/var/cache/niuu/pip",
+            "UV_CACHE_DIR": "/var/cache/niuu/uv",
+        }
+        session_tmp = shlex.quote(f"/home/tmp/sessions/{session.id}")
+        setup = [
+            "umask 007",
+            f"mkdir -p /home/tmp/cache {session_tmp}",
+            f"chown -h 1000:1000 /home/tmp /home/tmp/cache /home/tmp/sessions {session_tmp}",
+        ]
+        for container in pod_spec["containers"]:
+            if container["name"] == "nginx":
+                continue
+            subpath = f"tmp/sessions/{session.id}/{container['name']}"
+            mounts = list(container.get("volumeMounts", []))
+            container["volumeMounts"] = mounts
+            if any(m["mountPath"] in ("/tmp", "/var/cache/niuu") for m in mounts):
+                raise ValueError("persistentTmp conflicts with an existing scratch mount")
+            mounts.extend(
+                [
+                    {"name": "home", "mountPath": "/tmp", "subPath": subpath},
+                    {"name": "home", "mountPath": "/var/cache/niuu", "subPath": "tmp/cache"},
+                ]
+            )
+            env = container.setdefault("env", [])
+            existing = {e["name"] for e in env}
+            env.extend({"name": k, "value": v} for k, v in cache_env.items() if k not in existing)
+            target = shlex.quote(f"/home/{subpath}")
+            setup.extend(
+                [f"mkdir -p {target}", f"chown -h 1000:1000 {target}", f"chmod 1777 {target}"]
+            )
+        # HostPath does not apply fsGroup. Only change ownership of the mount root.
+        pod_spec["initContainers"].insert(
+            0,
+            {
+                "name": "home-permissions",
+                "image": "busybox:latest",
+                "command": ["sh", "-ec", "chown 1000:1000 /home"],
+                "securityContext": {"runAsUser": 0, "allowPrivilegeEscalation": False},
+                "volumeMounts": [{"name": "home", "mountPath": "/home"}],
+            },
+        )
+        pod_spec["initContainers"].insert(
+            1,
+            {
+                "name": "scratch-setup",
+                "image": "busybox:latest",
+                "command": ["sh", "-ec", "\n".join(setup)],
+                "securityContext": {
+                    "runAsUser": 0,
+                    "runAsNonRoot": False,
+                    "allowPrivilegeEscalation": False,
+                },
+                "volumeMounts": [{"name": "home", "mountPath": "/home"}],
+            },
+        )
 
     def _build_service_manifest(self, session: Session) -> dict[str, Any]:
         """Build a Kubernetes Service manifest dict for the session."""

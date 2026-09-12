@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
@@ -39,7 +39,7 @@ jobs:
       - name: Lint leaf charts
         if: inputs.run_lint
         run: |
-          for chart in agent ravn skuld volundr ting skuld-planner niuu-shared bifrost; do
+          for chart in agent ravn skuld volundr ting skuld-planner niuu-shared bifrost mimir; do
             echo "::group::helm lint $chart"
             helm lint "charts/${chart}/"
             echo "::endgroup::"
@@ -48,6 +48,10 @@ jobs:
       - name: Lint Bifrost Switchyard values
         if: inputs.run_lint
         run: helm lint charts/bifrost -f charts/bifrost/values-switchyard-nemotron.yaml
+
+      - name: Lint gbrain chart
+        if: inputs.run_lint
+        run: helm lint charts/gbrain --set image.repository=ghcr.io/niuulabs/gbrain --set existingSecret=gbrain-runtime
 
       - name: Lint niuu umbrella chart
         if: inputs.run_lint

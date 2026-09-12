@@ -424,3 +424,15 @@ class TestApiErrors:
             await client.ensure_jwt_auth_backend("jwt")
 
         assert exc_info.value.status_code == 500
+
+
+@respx.mock
+@pytest.mark.parametrize("status", [204, 404, 403])
+async def test_delete_session_policy(client, status):
+    route = respx.delete(f"{BAO_URL}/v1/sys/policy/volundr-session-test").respond(status)
+    if status == 403:
+        with pytest.raises(OpenBaoApiError):
+            await client.delete_policy("volundr-session-test")
+    else:
+        await client.delete_policy("volundr-session-test")
+    assert route.called

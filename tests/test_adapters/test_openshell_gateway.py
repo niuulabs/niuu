@@ -1376,6 +1376,25 @@ async def test_resident_materializes_raw_protocol_credential_from_openbao(
         for grant in client.provider_grants
     )
 
+    await manager.restart(runtime, profile)
+
+    assert client.execs[-1]["env"]["RAVN_NATS_PASSWORD"] == "nats-from-openbao"
+
+
+@pytest.mark.parametrize(
+    "token_path",
+    [
+        "/api/v1/internal/credentials/codex/tokens",
+        "https://target.example.test/api/v1/internal/credentials/codex/tokens",
+    ],
+)
+def test_resident_api_urls_include_absolute_codex_broker(monkeypatch, token_path):
+    adapter = _import_adapter(monkeypatch)
+    urls = adapter._resident_api_urls(
+        {"broker": {"codexAuth": {"kwargs": {"token_path": token_path}}}}
+    )
+    assert urls == ((token_path,) if token_path.startswith("https://") else ())
+
 
 @pytest.mark.asyncio
 async def test_resident_restart_reuses_sandbox_and_dynamic_provider_environment(
@@ -1707,6 +1726,12 @@ async def test_start_creates_dynamic_openbao_providers_without_secret_environmen
         "OPENAI_API_KEY",
         "GITHUB_PERSONAL_ACCESS_TOKEN",
     }
+    github_grant = next(
+        g for g in client.provider_grants if g["config"]["volundr_credential_name"] == "github-cred"
+    )
+    assert github_grant["profile"].credentials[0].auth_style == "header"
+    assert github_grant["profile"].credentials[0].header_name == "Authorization"
+    assert github_grant["config"]["volundr_basic_auth_username"] == "x-access-token"
     assert all(not grant["profile"].credentials[0].required for grant in client.provider_grants)
     assert all(
         grant["config"]["volundr_session_id"] == str(session.id) for grant in client.provider_grants
@@ -2247,8 +2272,10 @@ def test_credential_file_path_rejects_escape(monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("basic_username", ["", "x-access-token"])
 async def test_credential_grant_binds_svid_sandbox_provider_session_and_openbao(
     monkeypatch: pytest.MonkeyPatch,
+    basic_username: str,
 ) -> None:
     adapter = _import_adapter(monkeypatch)
     session = _session()
@@ -2269,6 +2296,7 @@ async def test_credential_grant_binds_svid_sandbox_provider_session_and_openbao(
             "volundr_session_id": str(session.id),
             "volundr_credential_name": "openai-cred",
             "volundr_credential_field": "api_key",
+            "volundr_basic_auth_username": basic_username,
         },
     )
 
@@ -2299,7 +2327,10 @@ async def test_credential_grant_binds_svid_sandbox_provider_session_and_openbao(
         scope="",
     )
 
-    assert token.access_token == "sk-from-openbao"
+    expected = "sk-from-openbao"
+    if basic_username:
+        expected = "Basic " + base64.b64encode(f"{basic_username}:{expected}".encode()).decode()
+    assert token.access_token == expected
     assert token.expires_in == 300
 
 
@@ -2565,3 +2596,16 @@ def test_two_connection_providers_do_not_collide(
     assert set(adapter._provider_credential_slots(first)) != set(
         adapter._provider_credential_slots(second)
     )
+
+
+def test_claude_subscription_uses_bearer_provider_route():
+    from volundr.adapters.outbound.openshell_gateway import _provider_target
+
+    subscription = _provider_target("CLAUDE_CODE_OAUTH_TOKEN")
+    api_key = _provider_target("ANTHROPIC_API_KEY")
+    assert subscription["hosts"] == ("api.anthropic.com",)
+    assert subscription["binaries"] == api_key["binaries"]
+    assert subscription["auth_style"] == "bearer"
+    assert subscription["header_name"] == "Authorization"
+    assert api_key["auth_style"] == "header"
+    assert api_key["header_name"] == "x-api-key"

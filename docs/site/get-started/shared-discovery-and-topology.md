@@ -1,88 +1,45 @@
-# Shared Discovery And Topology
+# Find service instances and inspect topology
 
-Add shared discovery when one local platform is no longer the whole world.
+Use Guild when more than one instance of a service is available. Use Observatory
+to understand relationships and activity across those instances.
 
-This is where Guild and Observatory become useful.
+## Inspect the registered instances
 
-![Guild instances](../images/ui-guild-instances.png)
+With a local platform running:
 
-## What changes at this step
+```bash
+curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/niuu/instances
+curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/niuu/targets/volundr
+```
 
-With one local platform, the UI can assume most things are nearby.
+Open **Guild** in the UI and match the service instance, endpoint, and location to
+the workload you intend to use. Guild groups instances of the same service; it is
+not the agent's tool or capability registry.
 
-With several platforms, clusters, hosts, or resident assistants, the UI needs to
-know:
+An instance record is not proof that its endpoint can be reached by every caller.
+Check reachability from the host that will route the request, and check the
+identity expected by the destination.
 
-- which instances exist
-- what capabilities they expose
-- where sessions are running
-- which cluster or namespace owns a workload
-- how services relate to each other
+## Follow one session
 
-Guild is the runtime registry. Observatory is the topology and operations view.
+Launch a session on a known target, then inspect **Observatory**. Follow the
+session to its owning Forge instance and the relationships the deployment reports.
+Compare those with the instance and target records. Missing relationships need
+registration or telemetry investigation; they should not be inferred from names.
 
-## Register capabilities, not random processes
+Cluster and namespace metadata should come from deployment configuration. The
+umbrella chart exposes `global.niuu.cluster` for the cluster label. Use names that
+reflect your deployment, not the infrastructure names from another installation.
 
-The registry should describe useful platform capabilities:
+## Diagnose the distinction
 
-- a Volundr/Forge instance that owns sessions
-- a Mímir instance that owns memory mounts
-- a Ravn or warden runtime
-- a Ting workflow service
-- a Bifröst model gateway
+| Symptom | Likely layer to inspect |
+| --- | --- |
+| No instance is listed | Registration and service enablement |
+| Instance exists but cannot be called | Endpoint, network, TLS, and authentication |
+| Service works but target is unavailable | Advertised runtime profiles and target eligibility |
+| Work succeeds but graph is incomplete | Relationship publication and observability ingestion |
 
-Avoid registering low-level implementation details unless operators need to act
-on them.
-
-## Use labels for location
-
-For Kubernetes deployments, cluster and namespace labels should come from
-deployment configuration. That lets the UI group services by where they run
-without hardcoding environment names.
-
-Good topology answers questions such as:
-
-- What runs in this cluster?
-- Which namespace owns it?
-- Which service or assistant reads from this memory?
-- Which sessions belong to this remote Forge?
-
-## Inspect topology
-
-Use Observatory to check the platform shape.
-
-![Observatory topology](../images/landing/landing-observatory.png)
-
-The graph should show meaningful entities and relationships, not just a flat
-list of deployments.
-
-Look for:
-
-- services
-- agents
-- sessions
-- memory instances
-- workflow runs
-- cross-cluster relationships
-- read/write/manage relationships where they are known
-
-## What good looks like
-
-You should be able to answer:
-
-- Which instance owns this session?
-- Which cluster is it in?
-- Which memory instance does it use?
-- Which agents are alive?
-- Which services are connected by real relationships?
-
-## Common mistake
-
-Do not make every workload look like the same kind of thing. Services,
-assistants, sessions, and deployments are different operator concepts.
-
-## Next
-
-When the stack needs durable infrastructure, move to Kubernetes:
-
-[Kubernetes and GitOps](kubernetes-and-gitops-step.md)
+[Observability](../operations/observability.md) continues from the graph to logs
+and traces. [Architecture](../concepts/platform-model.md) distinguishes service
+discovery from mesh membership and A2A discovery.

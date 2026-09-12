@@ -41,6 +41,9 @@ data:
     host: "0.0.0.0"
     port: 8081
     persistence_mount_path: {{ .Values.persistence.mountPath | default "/volundr/sessions" | quote }}
+    {{- if .Values.homeVolume.enabled }}
+    persistent_home_path: {{ .Values.homeVolume.mountPath | quote }}
+    {{- end }}
     max_presented_file_bytes: {{ .Values.broker.maxPresentedFileBytes | default 52428800 }}
 
     {{- if and .Values.volundr.apiUrl (not (include "skuld.residentEnabled" .)) }}

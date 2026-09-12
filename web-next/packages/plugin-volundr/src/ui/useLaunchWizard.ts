@@ -37,6 +37,7 @@ import {
   normalizeDefinitionKey,
   pickDefaultModelForDefinition,
   validateSessionName,
+  withDefaultSourceControlIntegrations,
   type RuntimeModelDescriptor,
   type WizardForm,
   type WizardStep,
@@ -54,7 +55,7 @@ type RepoCatalogService = {
 // ---------------------------------------------------------------------------
 
 /** 4-step modal wizard for launching new Volundr sessions. */
-export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProps) {
+export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: LaunchWizardProps) {
   const volundr = useService<IVolundrService>('volundr');
   const bifrost = useService<IBifrostService>('bifrost');
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
@@ -108,6 +109,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
     targetMatch: 'all',
     yamlMode: false,
     yamlContent: '',
+    ...initialForm,
   }));
   const [bootStep, setBootStep] = useState(0);
   const [bootProgress, setBootProgress] = useState(0);
@@ -155,6 +157,13 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
         setWorkspaces(nextWorkspaces);
         setCredentials(nextCredentials);
         setIntegrations(nextIntegrations);
+        setForm((current) => ({
+          ...current,
+          selectedIntegrations:
+            current.sourcetype === 'git'
+              ? withDefaultSourceControlIntegrations(current.selectedIntegrations, nextIntegrations)
+              : current.selectedIntegrations,
+        }));
         setClusterResources(nextClusterResources);
         setPresets(nextPresets);
         setTargets(nextTargets);
@@ -210,12 +219,12 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
 
         if (repos.length > 0 && current.sourcetype === 'git') {
           const matchingRepo = repos.find((repo) => repo.cloneUrl === current.repo);
-          if (!matchingRepo) {
+          if (!current.repo.trim()) {
             next.repo = repos[0]!.cloneUrl;
             next.branch = repos[0]!.defaultBranch;
             next.workspaceId = '';
             changed = true;
-          } else if (!current.branch.trim()) {
+          } else if (matchingRepo && !current.branch.trim()) {
             next.branch = matchingRepo.defaultBranch;
             changed = true;
           }
@@ -306,7 +315,10 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
           typeof preset.workloadConfig.persona === 'string' ? preset.workloadConfig.persona : '',
         workloadConfig: { ...preset.workloadConfig },
         selectedCredentials: [...preset.envSecretRefs],
-        selectedIntegrations: [...preset.integrationIds],
+        selectedIntegrations:
+          preset.source?.type === 'git' || (!preset.source && current.sourcetype === 'git')
+            ? withDefaultSourceControlIntegrations(preset.integrationIds, integrations)
+            : [...preset.integrationIds],
         mcpServers: [...preset.mcpServers],
         envVars: Object.entries(preset.envVars).map(([key, value]) => ({ key, value })),
         setupScripts: [...preset.setupScripts],
@@ -329,7 +341,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
         yamlContent: '',
       }));
     },
-    [presets],
+    [presets, integrations],
   );
 
   useEffect(() => {

@@ -4,9 +4,13 @@ export interface RegistryMount {
   kind: 'local' | 'remote';
   lifecycle: 'registered' | 'ephemeral';
   role: 'local' | 'shared' | 'domain';
+  accessScope?: 'tenant' | 'global' | 'local' | 'unknown';
   url: string;
   path: string;
   categories: string[] | null;
+  adapter?: string;
+  kwargs?: Record<string, unknown>;
+  secretKwargsEnv?: Record<string, string>;
   authRef?: string | null;
   defaultReadPriority: number;
   enabled: boolean;

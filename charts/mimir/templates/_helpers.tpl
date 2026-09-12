@@ -33,13 +33,16 @@ Niuu deployment discovery labels.
 */}}
 {{- define "mimir.niuuLabels" -}}
 {{- $cluster := "unknown" -}}
-{{- if and .Values.global .Values.global.niuu .Values.global.niuu.cluster -}}
-{{- $cluster = .Values.global.niuu.cluster -}}
-{{- else if and .Values.niuu .Values.niuu.cluster -}}
+{{- if and .Values.niuu .Values.niuu.cluster -}}
 {{- $cluster = .Values.niuu.cluster -}}
+{{- else if and .Values.global .Values.global.niuu .Values.global.niuu.cluster -}}
+{{- $cluster = .Values.global.niuu.cluster -}}
 {{- end -}}
 niuu.world/cluster: {{ $cluster | quote }}
 niuu.world/namespace: {{ .Release.Namespace | quote }}
+{{- if and .Values.niuu .Values.niuu.instanceId }}
+niuu.world/entity-id: {{ .Values.niuu.instanceId | quote }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -92,9 +95,17 @@ Return the proper image name (global overrides local)
   {{- end -}}
 {{- end -}}
 {{- if $registryName }}
+{{- if .Values.image.digest }}
+{{- printf "%s/%s@%s" $registryName $repositoryName .Values.image.digest -}}
+{{- else }}
 {{- printf "%s/%s:%s" $registryName $repositoryName $tag -}}
+{{- end }}
+{{- else }}
+{{- if .Values.image.digest }}
+{{- printf "%s@%s" $repositoryName .Values.image.digest -}}
 {{- else }}
 {{- printf "%s:%s" $repositoryName $tag -}}
+{{- end }}
 {{- end }}
 {{- end }}
 

@@ -24,7 +24,9 @@ NPROC="${NPROC:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}
 # -------------------------------------------------------------------------
 if [ -x "$INSTALL_PREFIX/bin/postgres" ]; then
     installed=$("$INSTALL_PREFIX/bin/postgres" --version | grep -oE '[0-9]+\.[0-9]+' | head -1)
-    if [ "$installed" = "$POSTGRES_VERSION" ]; then
+    if [ "$installed" = "$POSTGRES_VERSION" ] &&
+       [ -f "$INSTALL_PREFIX/share/postgresql/extension/pg_trgm.control" ] &&
+       [ -f "$INSTALL_PREFIX/share/postgresql/extension/pgcrypto.control" ]; then
         echo "PostgreSQL $POSTGRES_VERSION already installed at $INSTALL_PREFIX — skipping build."
         exit 0
     fi
@@ -65,6 +67,15 @@ make -j"$NPROC"
 
 echo "Installing PostgreSQL..."
 make install
+
+# gbrain requires trigram search and cryptographic functions alongside pgvector.
+make -C contrib/pg_trgm -j"$NPROC" install
+# Link libcrypto statically so the distributed extension needs no Homebrew paths.
+OPENSSL_LIBDIR="$(pkg-config --variable=libdir openssl)"
+make -C contrib/pgcrypto -j"$NPROC" \
+    PG_CPPFLAGS="$(pkg-config --cflags openssl)" \
+    SHLIB_LINK='$(BE_DLLLIBS) '"$OPENSSL_LIBDIR/libcrypto.a -lz $(pkg-config --static --libs-only-other openssl)" \
+    install
 
 cd ..
 

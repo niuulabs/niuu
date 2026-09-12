@@ -129,6 +129,7 @@ async def run_doctor(
     registry_store: MimirRegistryStore | None = None,
     search_db: Path | None = None,
     *,
+    tenant_id: str | None = None,
     embedding_model: str | None = None,
     health_timeout_seconds: float = _DEFAULT_HEALTH_TIMEOUT_SECONDS,
 ) -> DoctorReport:
@@ -144,7 +145,7 @@ async def run_doctor(
         _check_index_sync(lint_report, lint_error),
         _check_search_db(resolved_search_db, page_count),
         _check_embedding_stack(embedding_model),
-        await _check_registry_mounts(registry_store, health_timeout_seconds),
+        await _check_registry_mounts(registry_store, health_timeout_seconds, tenant_id),
         _check_lint_summary(lint_report, lint_error),
         _check_orphaned_raw_sources(root),
         await _check_smoke_search(adapter),
@@ -333,10 +334,11 @@ def _check_embedding_stack(embedding_model: str | None) -> DoctorCheck:
 async def _check_registry_mounts(
     registry_store: MimirRegistryStore | None,
     health_timeout_seconds: float,
+    tenant_id: str | None = None,
 ) -> DoctorCheck:
     """D05 — every enabled registry mount is reachable (remote) or present (local)."""
     check_id, title = "D05", "registry mounts"
-    entries = registry_store.list_entries() if registry_store is not None else []
+    entries = registry_store.list_entries(tenant_id=tenant_id) if registry_store is not None else []
     enabled = [entry for entry in entries if entry.enabled]
     if not enabled:
         return DoctorCheck(

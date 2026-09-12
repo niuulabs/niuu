@@ -694,6 +694,7 @@ class Broker(
                 content=prompt,
             )
         )
+        self._enqueue_human_turn_event(prompt, turn_id)
         await self._complete_trace_span(
             kind="turn.user",
             name=prompt[:120] or "workflow prompt",
@@ -796,6 +797,8 @@ class Broker(
             peer_id=mesh_cfg.peer_id or self.session_id or "skuld",
             realm_id=mesh_cfg.realm_id,
             persona=mesh_cfg.persona,
+            display_name="Skuld",
+            participant_type="skuld",
             capabilities=list(mesh_cfg.capabilities),
             permission_mode="full_access",
             version="0.1.0",
@@ -813,7 +816,8 @@ class Broker(
                 await self._room_bridge.register_mesh_peer(
                     peer_id=peer.peer_id,
                     persona=peer.persona,
-                    display_name=peer.persona,
+                    display_name=getattr(peer, "display_name", "") or peer.persona,
+                    participant_type=getattr(peer, "participant_type", "ravn"),
                     subscribes_to=list(getattr(peer, "consumes_event_types", [])),
                     emits=list(getattr(peer, "emits_event_types", [])),
                     tools=list(getattr(peer, "capabilities", [])),

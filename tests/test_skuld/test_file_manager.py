@@ -325,3 +325,30 @@ class TestFileListingWithRoot:
         assert "size" in entry
         assert "modified" in entry
         assert entry["size"] == 7  # len("content")
+
+
+def test_manage_retained_scratch_in_real_configured_home(tmp_path, monkeypatch):
+    """The Home UI must address the mounted user PVC, not a session-local directory."""
+    from skuld.config import SkuldSettings
+
+    owner_home = tmp_path / "owner-home"
+    scratch = owner_home / "tmp/sessions/stopped-session/coder"
+    scratch.mkdir(parents=True)
+    (scratch / "build-output").write_text("retained")
+    other_home = tmp_path / "other-user"
+    other_home.mkdir()
+    (other_home / "private").write_text("keep")
+    (owner_home / "escape").symlink_to(other_home, target_is_directory=True)
+    monkeypatch.setattr(broker, "_settings", SkuldSettings(persistent_home_path=str(owner_home)))
+    client = TestClient(app, raise_server_exceptions=False)
+    listing = client.get("/api/files", params={"root": "home", "path": "tmp/sessions"})
+    assert listing.status_code == 200
+    assert "stopped-session" in listing.text
+    removed = client.delete(
+        "/api/files", params={"root": "home", "path": "tmp/sessions/stopped-session"}
+    )
+    assert removed.status_code == 200
+    assert not scratch.exists()
+    escaped = client.delete("/api/files", params={"root": "home", "path": "escape/private"})
+    assert escaped.status_code == 400
+    assert (other_home / "private").read_text() == "keep"

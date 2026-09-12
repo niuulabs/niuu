@@ -1,75 +1,93 @@
-# Workflows And Teams
+# Inspect workflows and runs
 
-Add workflows when one assistant in one workspace is no longer enough.
+A workflow defines a process; a run records an execution of it. Start by inspecting
+these separately before enabling automatic dispatch. You need Ting enabled in the
+platform, and a configured executor before you can run real agent work.
 
-This is where Ting becomes useful. Treat it as the coordination layer for
-stages, gates, reusable processes, and multi-role work.
+## Find the definition and its executions
 
-![Ting workflow builder](../images/ui-ting-workflows.png)
+Open **Ting** in the platform UI. Inspect a workflow's stages and transitions,
+then inspect a run using that workflow. On an empty installation there may be no
+runs yet; an empty list is not a failed connection.
 
-## When to use a workflow
+For each stage, identify the input, the responsible executor or role, the output,
+and the condition that permits the next stage. If a stage launches a session,
+follow its session reference and inspect the workspace output there.
 
-Use a workflow when:
+You can inspect the workflow catalog directly on the default local host:
 
-- the task has repeatable stages
-- a human should approve a stage
-- different roles should handle different parts
-- work should retry or escalate in a consistent way
-- several sessions need to be coordinated
+```bash
+curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/ting/workflows
+```
 
-Do not start here for simple tasks. A normal workspace session is easier to
-review and easier to debug.
+Ting requires authentication for this endpoint, including on the local host.
+Without an authenticated caller the command returns HTTP 401; use your configured
+identity flow or the logged-in UI. This is not a public health check.
 
-## A simple first workflow
+An authenticated response records each definition's nodes, edges, resource bindings, and
+version. Inspect those alongside the UI; a saved graph is not proof of a
+successful execution.
 
-Start with a small shape:
+## Prepare a workflow in the editor
 
-1. Plan
-2. Implement
-3. Review
-4. Summarize
+Open **Ting → Workflows**. The **Templates** sidebar lists saved definitions;
+**+ new** creates a new user definition. A saved empty definition is not yet a
+runnable workflow.
 
-Keep the first workflow boring. The point is to learn how state moves through
-the system.
+Use the **Library** to drag structural blocks and personas into the graph. For a
+first process, use implementation and review stages connected in that order.
+Inspect each stage's **config**, **flock**, and **validate** tabs: assign a persona
+that exists in this deployment, choose an available model, set its budget, and
+check the transition and fan-in behavior. Add the trigger and completion path
+required by the graph's validation results.
 
-## Gates
+If you start from a saved template, inspect its resource bindings before reuse.
+A template can reference a Mímir registry entry or provider model from another
+deployment. Replace those with real resources available to yours. Resolve the
+editor's validation errors before choosing **Save as…**; verify the saved catalog
+entry contains the graph you intended.
 
-Use gates where human judgment matters:
+The current toolbar also displays **Test**, **Dispatch**, **Diff**, and **History**
+buttons without action handlers in the editor. Do not use their presence as proof
+that a workflow was tested, dispatched, or version-reviewed. **Save as…** and
+**Launch…** are wired to actual operations.
 
-- before writing to a protected repo
-- before spending a larger model budget
-- before opening external tickets or messages
-- before merging or deploying
+## Launch and verify one execution
 
-Gates should be meaningful. Too many gates make the workflow harder to operate
-than a normal session.
+Select the saved definition, choose **Launch…**, and complete:
 
-## Relationship to sessions
+| Field | Enter |
+| --- | --- |
+| Prompt | A bounded task with an observable result, such as adding and testing one small repository function |
+| Session name | An optional name to recognize this execution |
+| Repo | The repository the workflow should change |
+| Branch | The branch to use for that repository |
 
-Workflows can launch, coordinate, or observe sessions. Sessions still contain
-the actual workspace activity.
+Choose **Launch**. Successful launch opens the returned Völundr session. This is
+a workflow-backed flock session, so verify the participating runtime and provider
+configuration first; it is not the same setup as the single Claude quick start.
+Inspect the session's actual output and repository diff, then confirm that the
+workflow reaches its completion condition.
 
-If a workflow produces a code change, review the session diff before promoting
-that change.
+The launch dialog does not expose every API field. The API accepts a prompt,
+repository, branch, model/runtime overrides, and context; consult Ting's schema
+when driving launches programmatically. Do not infer these fields from Völundr's
+OpenAPI download.
 
-## What good looks like
+## Read a blocked run
 
-You should be able to answer:
+| Observation | Check |
+| --- | --- |
+| No execution started | Dispatch state and configured executor |
+| Session never becomes running | Target, runtime startup, and session logs |
+| Session starts but produces no answer | Provider authentication and runtime stream |
+| Output exists but the stage does not advance | Required output and transition condition |
+| Waiting for review | The pending gate and the artifact it asks you to judge |
 
-- What stage is active?
-- What is waiting on a human?
-- Which session did the work?
-- What happens if a stage fails?
-- Where is the final review surface?
+Before retrying, inspect what the previous attempt already changed. A repeated
+stage can repeat external side effects. Record the failure reason and verify the
+next attempt addresses it.
 
-## Common mistake
-
-Do not turn every task into a workflow. Use workflows for structure you expect
-to reuse.
-
-## Next
-
-When something should stay alive outside one workflow or session, add a resident
-assistant:
-
-[Direct and resident assistants](direct-and-resident-assistants.md)
+This page explains the inspection process. A complete workflow creation tutorial
+still requires validation against a configured executor; the local quick-start
+verification does not certify Ting execution.

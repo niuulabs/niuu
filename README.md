@@ -1,4 +1,4 @@
-# niuu
+# Niuu
 
 [![CI](https://github.com/niuulabs/volundr/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/niuulabs/volundr/actions/workflows/ci.yaml)
 [![Release](https://github.com/niuulabs/volundr/actions/workflows/release.yaml/badge.svg)](https://github.com/niuulabs/volundr/actions/workflows/release.yaml)
@@ -7,7 +7,20 @@
 [![Coverage](https://codecov.io/gh/niuulabs/volundr/branch/main/graph/badge.svg)](https://codecov.io/gh/niuulabs/volundr)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
-The self-hosted platform for AI workspaces, custom AI teams, always-on assistants, shared knowledge, and local or cloud AI.
+## Build agent systems that collaborate, learn, and evolve.
+
+Niuu is a composable platform for agent work: coding, research, operations, and
+the processes that connect them. Bring together agent runtimes, coordinated
+workflows, shared knowledge, and autonomous residents to build the system your
+work needs.
+
+People and agents can both operate that system. They can initiate work, use
+services, participate in conversations, inspect results, and guide what happens
+next through the platform's APIs and channels.
+
+[Documentation](https://docs.niuu.cloud/) ·
+[Explore the architecture](https://docs.niuu.cloud/concepts/platform-model/) ·
+[Try your first session](https://docs.niuu.cloud/get-started/first-local-stack/)
 
 <p align="center">
   <img src="docs/site/images/ui-ting-workflows.png" alt="Ting workflow builder in Niuu" width="960">
@@ -18,90 +31,59 @@ The self-hosted platform for AI workspaces, custom AI teams, always-on assistant
   <img src="docs/site/images/ui-niuu-home.png" alt="Volundr forge dashboard" width="49%">
 </p>
 
-## What Niuu Is
+## Compose the way work happens
 
-Niuu brings four operating modes into one platform you can run on your own machine, on Kubernetes, or inside your own infrastructure:
+A coding task might need one agent and a workspace. Research might need several
+specialists sharing evidence. An operational responsibility might need a resident
+that keeps observing, follows through on decisions, and learns from the outcome.
+Niuu provides the services and shared infrastructure to connect these forms of work.
 
-- **AI workspaces** for hands-on work with one assistant or several assistants working together in a live coding environment
-- **Custom AI teams** you can design, launch, and steer for coding, research, operations, approvals, and your own multi-step flows
-- **Always-on assistants** that monitor sources, revisit knowledge, refresh documents, and stay available for live operator guidance
-- **Local and cloud AI** managed in one place, including what models are available, where they run, and when they are used
+- **Coordinate specialists.** Give agents distinct roles, connect their work through
+  workflows, and bring people into the decisions that need them. Use collaboration
+  rooms for shared conversations and mesh for direct communication within a flock.
+- **Carry knowledge forward.** Keep sources, evidence, and evolving understanding
+  available beyond a single conversation. Give subsequent agents knowledge they
+  can retrieve, examine, and revise through Mímir.
+- **Give an environment a resident.** Configure a Ravn to steward an environment
+  over time: observe what changes, decide when to act or ask for help, and maintain
+  the context needed to continue.
+- **Choose and connect the parts.** Combine runtime execution, model routing,
+  workspaces, discovery, and observability. Use services independently or together,
+  with local processes, OpenShell, and Kubernetes as deployment and execution options.
 
-The result is a self-hosted system where you can move smoothly between direct operator work, autonomous execution, durable memory, and local or third-party models without handing control to an external vendor platform.
+## Ravn brings judgment. Niuu connects the system.
 
-## Platform Map
+Ravn is Niuu's agent runtime for reasoning, learning from outcomes, and evolving
+capabilities. It can work directly with you, participate in a team, or run as an
+autonomous resident. It owns the decisions about what to investigate, do, learn,
+and revisit.
 
-```
-                         Users
-                    ┌───────────┐
-                    │ Niuu Web  │  React/Vite, OIDC auth
-                    │ (browser) │
-                    └─────┬─────┘
-                          │
-              ┌───────────┴───────────┐
-              │                       │
-         REST/SSE                 WebSocket
-         (sessions,               (chat)
-          chronicles,
-          git, etc.)
-              │                       │
-    ┌─────────▼──────────┐            │
-    │ Volundr / Shared   │            │
-    │ platform APIs      │            │
-    └────────┬───────────┘            │
-             │                        │
-    ┌────────┴──────────────────────┐ │
-    │ Kubernetes                    │ │
-    │  ┌──────────────────────────┐ │ │
-    │  │      Session Pod         │ │ │
-    │  │  ┌────────┐ ┌─────────┐  │◄┘ │
-    │  │  │ Skuld  │ │VS Code  │  │   │
-    │  │  │(broker)│ │ Server  │  │   │
-    │  │  └───┬────┘ └─────────┘  │   │
-    │  │      │  Claude Code CLI  │   │
-    │  │      │  / Codex CLI      │   │
-    │  │  ┌───▼──────────────┐    │   │
-    │  │  │  Workspace PVC   │    │   │
-    │  └──┴──────────────────┴────┘   │
-    └───────────────────────────────┘ │
-                                       │
-    ┌──────────────────────────────────┘
-    │  Coordination & Runtime
-    │  ┌──────┐  ┌──────┐  ┌──────┐
-    │  │ Ting │  │ Ravn │  │Guild │
-    │  │flows │  │agents│  │regis.│
-    │  └──────┘  └──────┘  └──────┘
-    │
-    │  Supporting Services
-    │  ┌──────────┐ ┌────────┐ ┌────────────┐ ┌─────────────┐
-    │  │ Bifröst  │ │ Mimir  │ │ Observatory│ │  Sleipnir   │
-    │  │(LLM gw)  │ │(memory)│ │ (ops view) │ │ (transport) │
-    └──┴──────────┴─┴────────┴─┴────────────┴─┴─────────────┘
-```
+Niuu supplies the services those agents can use and the infrastructure that lets
+them work together. Skuld connects runtime sessions to services and channels,
+including sessions powered by Claude Code, Codex, and OpenCode. Shared Niuu
+libraries provide collaboration rooms, mesh mechanics, and resident infrastructure.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/site/images/niuu-architecture-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/site/images/niuu-architecture-light.png">
+  <img src="docs/site/images/niuu-architecture-light.png" alt="Niuu architecture: composable microservices, session runtimes, and shared infrastructure">
+</picture>
 
 | Component | Role |
 |-----------|------|
 | **Niuu Web** | Operator interface for sessions, workflows, registered instances, memory, assistants, and platform settings |
 | **Volundr** | Live AI workspaces, session lifecycle, workspace provisioning, chronicles, git workflows, and direct operator pairing |
-| **Skuld** | Live broker inside session pods connecting the browser to coding agents, tools, terminals, and workflow runtime events |
+| **Skuld** | Communication gateway between sessions and external services, including channels, tools, terminals, and runtime events |
 | **Ting** | Workflow and coordination layer for teams, review loops, staged execution, and launchable flows |
-| **Ravn** | Assistant runtime and persona harness for one assistant or a connected team, with tools, wakefulness, and long-lived behaviors |
-| **Guild** | Shared registry for platform instances and targets, so Niuu can discover and use Volundr, Ting, Mimir, and other services across environments |
+| **Ravn** | Agent runtime for judgment, learning, capability evolution, and A2A; can run directly, in a team, or as an autonomous resident |
+| **Guild** | Groups instances of the same service and exposes targets for discovery and routing across environments |
 | **Mimir** | Shared knowledge and memory system for durable documentation, ingest, research artifacts, curation, and assistant recall |
 | **Bifröst** | Local and cloud model gateway that decides what models are available, where they run, and how callers route between them |
-| **Observatory** | Platform topology and operations view for health, discovery, and event visibility across the running system |
+| **Observatory** | Topology and observability across the running system |
 | **Sleipnir** | Transport abstraction for events and messaging across NATS, NNG, RabbitMQ, subprocesses, and other backbones |
 | **niuu CLI** | Unified CLI and TUI for managing local and remote services |
 
 Chat traffic flows directly from the browser to Skuld inside the session pod — Volundr is never in the chat data path.
-
-## What Niuu Lets You Build
-
-- **Live AI workspaces** with repos, terminals, diffs, and direct conversation with one assistant or several assistants working together
-- **Custom AI teams** for coding, review, security, research, approvals, retries, and your own staged workflows
-- **Shared knowledge systems** where research, chronicles, postmortems, curated memory, and Warden-maintained docs accumulate
-- **Long-lived assistants** that continue working after the interactive session ends by watching sources, refreshing documents, and staying reachable for operator guidance
-- **Local and cloud model operations** where you decide what models are available, whether work stays local or uses third-party providers, and how the rest of the platform can use them
 
 ## Features
 
@@ -149,6 +131,11 @@ Chat traffic flows directly from the browser to Skuld inside the session pod —
 - **SSE streaming** — real-time session state and stats updates
 
 ## Quick Start
+
+For the operator walkthrough, see [Install](https://docs.niuu.cloud/get-started/install/) and
+[Quick start: first local stack](https://docs.niuu.cloud/get-started/first-local-stack/).
+The commands below are for a source checkout. Install `curl`, `make`, a C compiler
+(`gcc`), and `pkg-config` first; the development script builds PostgreSQL and web assets.
 
 ```bash
 # Install Python 3.12 dependencies
@@ -208,7 +195,7 @@ GIT__GITHUB__TOKEN=ghp_xxxx
 EVENT_PIPELINE__OTEL__ENABLED=true
 ```
 
-See the [configuration reference](https://niuulabs.github.io/volundr/reference/configuration/) for all options.
+See the [configuration reference](https://docs.niuu.cloud/reference/configuration/) for all options.
 
 ## Testing
 
@@ -245,7 +232,7 @@ helm upgrade niuu ./charts/niuu -n niuu
 
 You can still deploy individual component charts when you need to, but the default platform deployment path should be the `niuu` chart.
 
-See the [deployment guide](https://niuulabs.github.io/volundr/operations/kubernetes-deployment/) for Helm values, migrations, and production setup.
+See the [deployment guide](https://docs.niuu.cloud/operations/kubernetes-deployment/) for Helm values, migrations, and production setup.
 
 ## Tech Stack
 
@@ -276,7 +263,7 @@ uv sync --extra tui        # Terminal UI (niuu CLI)
 
 ## Documentation
 
-Full documentation at [niuulabs.github.io/volundr](https://niuulabs.github.io/volundr/).
+Full documentation at [docs.niuu.cloud](https://docs.niuu.cloud/).
 
 ## License
 

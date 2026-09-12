@@ -22,10 +22,17 @@ class HTTPIntegrationRepository(IntegrationRepository):
         base_url: str,
         *,
         timeout: float = 30.0,
+        api_prefix: str = "/internal/api/v1/integrations",
+        auth_adapter: str = "",
+        auth_kwargs: dict | None = None,
         default_email: str = "",
         default_tenant_id: str = "default",
         default_roles: tuple[str, ...] = ("volundr:admin",),
     ) -> None:
+        from niuu.utils import import_class
+
+        self._api_prefix = api_prefix.rstrip("/")
+        self._auth = import_class(auth_adapter)(**(auth_kwargs or {})) if auth_adapter else None
         self._base_url = base_url.rstrip("/")
         self._default_email = default_email
         self._default_tenant_id = default_tenant_id
@@ -41,11 +48,14 @@ class HTTPIntegrationRepository(IntegrationRepository):
         integration_type: IntegrationType | None = None,
     ) -> list[IntegrationConnection]:
         response = await self._client.get(
-            "/internal/api/v1/integrations",
+            self._api_prefix,
             headers=self._headers(owner_id),
         )
         response.raise_for_status()
-        connections = [self._to_connection(item, owner_id=owner_id) for item in response.json()]
+        records = response.json()
+        if self._auth is not None and any(item.get("owner_id") != owner_id for item in records):
+            raise PermissionError("Shared connection owner does not match the launching user")
+        connections = [self._to_connection(item, owner_id=owner_id) for item in records]
         if integration_type is None:
             return connections
         return [item for item in connections if item.integration_type == integration_type]
@@ -64,7 +74,7 @@ class HTTPIntegrationRepository(IntegrationRepository):
 
     async def get_connection(self, connection_id: str) -> IntegrationConnection | None:
         response = await self._client.get(
-            f"/internal/api/v1/integrations/{connection_id}",
+            f"{self._api_prefix}/{connection_id}",
             headers=self._headers(""),
         )
         if response.status_code == 404:
@@ -88,13 +98,13 @@ class HTTPIntegrationRepository(IntegrationRepository):
         }
         if existing is None:
             response = await self._client.post(
-                "/internal/api/v1/integrations",
+                self._api_prefix,
                 headers=self._headers(connection.owner_id),
                 json=payload,
             )
         else:
             response = await self._client.put(
-                f"/internal/api/v1/integrations/{connection.id}",
+                f"{self._api_prefix}/{connection.id}",
                 headers=self._headers(connection.owner_id),
                 json={
                     "credential_name": connection.credential_name,
@@ -110,13 +120,15 @@ class HTTPIntegrationRepository(IntegrationRepository):
         if existing is None:
             return
         response = await self._client.delete(
-            f"/internal/api/v1/integrations/{connection_id}",
+            f"{self._api_prefix}/{connection_id}",
             headers=self._headers(existing.owner_id),
         )
         if response.status_code not in (204, 404):
             response.raise_for_status()
 
     def _headers(self, owner_id: str) -> dict[str, str]:
+        if self._auth is not None:
+            return self._auth.headers()
         return {
             "x-auth-user-id": owner_id or "service-integrations",
             "x-auth-email": self._default_email,

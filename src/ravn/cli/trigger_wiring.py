@@ -361,7 +361,9 @@ def _wire_cascade(
                 return {"status": "rejected", "error": "empty content"}
             if not isinstance(metadata, dict):
                 metadata = {}
-            accepted = await drive_loop.handle_directed_message(content, metadata)
+            accepted = await drive_loop.handle_directed_message(
+                content, metadata, output_mode=OutputMode.AMBIENT
+            )
             return {"status": "accepted" if accepted else "rejected"}
 
         if msg_type == "task_result":
@@ -518,7 +520,12 @@ def _wire_cascade(
             if event.type != RavnEventType.OUTCOME:
                 return
 
-            payload = event.payload
+            from ravn.cli.runtime_builders import _resolve_workspace
+
+            payload = dict(event.payload)
+            # Sender paths belong to its container; this task uses our mount.
+            if payload.get("workspace_path"):
+                payload["workspace_path"] = str(_resolve_workspace(settings))
             event_type = payload.get("event_type", "")
             source_persona = payload.get("persona", "")
             source_task_id = event.task_id or event.correlation_id

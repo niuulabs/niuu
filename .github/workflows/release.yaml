@@ -19,7 +19,7 @@ jobs:
       version: ${{ steps.extract.outputs.version }}
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
@@ -27,7 +27,7 @@ jobs:
         id: extract
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Releasing version: $VERSION"
 
   # ---------------------------------------------------------------------------
@@ -43,20 +43,20 @@ jobs:
     strategy:
       matrix:
         platform: [amd64, arm64]
-        container: [agent, skuld, openshell, devrunner, volundr-web, niuu-web, niuu]
+        container: [agent, skuld, openshell, devrunner, volundr-web, niuu-web, niuu, gbrain]
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -82,7 +82,7 @@ jobs:
           labels: |
             org.opencontainers.image.title=${{ matrix.container }}
             org.opencontainers.image.description=${{ steps.meta.outputs.description }}
-            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.licenses=${{ matrix.container == 'gbrain' && 'MIT' || 'Apache-2.0' }}
             org.opencontainers.image.vendor=Niuu Labs
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.documentation=https://github.com/${{ github.repository }}
@@ -102,10 +102,10 @@ jobs:
       id-token: write
     strategy:
       matrix:
-        container: [agent, skuld, openshell, devrunner, volundr-web, niuu-web, niuu]
+        container: [agent, skuld, openshell, devrunner, volundr-web, niuu-web, niuu, gbrain]
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
@@ -123,10 +123,10 @@ jobs:
           echo "description=${DESC}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Log in to Container Registry
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -140,7 +140,7 @@ jobs:
           ANNOTATIONS=(
             --annotation "index:org.opencontainers.image.title=${{ matrix.container }}"
             --annotation "index:org.opencontainers.image.description=${{ steps.meta.outputs.description }}"
-            --annotation "index:org.opencontainers.image.licenses=Apache-2.0"
+            --annotation "index:org.opencontainers.image.licenses=${{ matrix.container == 'gbrain' && 'MIT' || 'Apache-2.0' }}"
             --annotation "index:org.opencontainers.image.vendor=Niuu Labs"
             --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}"
             --annotation "index:org.opencontainers.image.documentation=https://github.com/${{ github.repository }}"
@@ -183,17 +183,17 @@ jobs:
       packages: read
     strategy:
       matrix:
-        container: [agent, skuld, openshell, devrunner, volundr-web, niuu-web, niuu]
+        container: [agent, skuld, openshell, devrunner, volundr-web, niuu-web, niuu, gbrain]
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Log in to Container Registry
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -261,7 +261,7 @@ jobs:
           fi
 
       - name: Upload Grype results
-        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
         if: always() && steps.sarif.outputs.present == 'true'
         with:
           sarif_file: grype-${{ matrix.container }}.sarif
@@ -278,14 +278,14 @@ jobs:
       contents: read
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 9
 
@@ -340,7 +340,7 @@ jobs:
     steps:
       - name: Harden runner
         if: runner.os == 'Linux'
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
@@ -373,6 +373,17 @@ jobs:
           print(f"pgvector_version={namespace['PGVECTOR_VERSION']}")
           PY
 
+      - name: Install PostgreSQL extension build dependencies
+        if: steps.pg-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            brew install openssl@3 pkg-config
+          else
+            sudo apt-get update
+            sudo apt-get install -y libssl-dev pkg-config
+          fi
+
       - name: Build embedded PostgreSQL bundle
         if: steps.pg-cache.outputs.cache-hit != 'true'
         env:
@@ -393,7 +404,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v6
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v6
         with:
           version: "latest"
 
@@ -405,6 +416,32 @@ jobs:
 
       - name: Build
         run: make copy-migrations build-cli-bin
+
+      - name: Set up Node.js for the real agent runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: 22
+
+      - name: Install the quick-start Claude CLI
+        run: |
+          npm ci --prefix containers/volundr/npm-tools
+          echo "$GITHUB_WORKSPACE/containers/volundr/npm-tools/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Verify quick start against the release binary
+        run: uv run python scripts/check_quickstart.py --niuu dist/niuu-${{ matrix.os }}-${{ matrix.arch }}
+
+      - name: Verify live quick-start inference when credentials are configured
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.NIUU_QUICKSTART_CLAUDE_TOKEN }}
+        shell: bash
+        run: |
+          if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            uv run python scripts/check_quickstart.py \
+              --niuu dist/niuu-${{ matrix.os }}-${{ matrix.arch }} --live
+            echo "Live quick-start inference passed." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Live inference NOT TESTED: configure NIUU_QUICKSTART_CLAUDE_TOKEN to enable it. Runtime startup and shutdown were tested separately." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -438,7 +475,7 @@ jobs:
     steps:
       - name: Harden runner
         if: runner.os == 'Linux'
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
@@ -456,7 +493,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v6
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v6
         with:
           version: "latest"
 
@@ -487,7 +524,7 @@ jobs:
       packages: write
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
@@ -506,7 +543,7 @@ jobs:
         run: |
           VERSION="${{ needs.version.outputs.version }}"
 
-          for CHART in agent bifrost ravn skuld volundr ting skuld-planner niuu-shared niuu; do
+          for CHART in agent bifrost ravn skuld volundr ting skuld-planner niuu-shared niuu mimir gbrain; do
             sed -i "s/^version:.*/version: $VERSION/" "charts/${CHART}/Chart.yaml"
             sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" "charts/${CHART}/Chart.yaml"
           done
@@ -516,6 +553,8 @@ jobs:
 
       - name: Package Helm charts
         run: |
+          helm package charts/mimir -d .helm-packages/
+          helm package charts/gbrain -d .helm-packages/
           helm package charts/bifrost -d .helm-packages/
           helm package charts/agent -d .helm-packages/
           helm package charts/ravn -d .helm-packages/
@@ -529,7 +568,7 @@ jobs:
           helm package charts/niuu -d .helm-packages/
 
       - name: Log in to Container Registry
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -537,6 +576,8 @@ jobs:
 
       - name: Push Helm charts to OCI registry
         run: |
+          helm push .helm-packages/mimir-*.tgz ${{ env.CHART_REPO }}
+          helm push .helm-packages/gbrain-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/agent-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/bifrost-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/ravn-*.tgz ${{ env.CHART_REPO }}
@@ -546,6 +587,18 @@ jobs:
           helm push .helm-packages/ting-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/niuu-shared-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/niuu-[0-9]*.tgz ${{ env.CHART_REPO }}
+
+  docs-check:
+    name: Validate published documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v6
+      - name: Build documentation strictly
+        run: |
+          uv run --extra dev python scripts/extract_openapi.py -o docs/site/openapi.json
+          uv run --extra dev pytest tests/test_scripts/test_check_quickstart.py --no-cov -q
+          uvx --from mkdocs-material==9.7.5 mkdocs build --strict
 
   # ---------------------------------------------------------------------------
   # GitHub Release
@@ -560,6 +613,7 @@ jobs:
         build-charts,
         build-cli,
         build-ravn,
+        docs-check,
       ]
     runs-on: ubuntu-latest
     permissions:
@@ -568,7 +622,7 @@ jobs:
       attestations: write
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
@@ -606,7 +660,7 @@ jobs:
           ls -lh
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: |
             release-assets/niuu-*

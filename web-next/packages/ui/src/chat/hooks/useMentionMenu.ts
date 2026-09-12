@@ -145,11 +145,14 @@ export function useMentionMenu(
         .filter((participant) => participant.participantType === 'ravn')
         .flatMap((participant): MentionMenuItem[] => {
           if (!eventRouting) return [{ kind: 'agent', participant }];
-          return (participant.subscribesTo ?? []).map((eventType) => ({
-            kind: 'agent',
-            participant,
-            eventType,
-          }));
+          return [
+            { kind: 'agent', participant },
+            ...(participant.subscribesTo ?? []).map((eventType): MentionMenuItem => ({
+              kind: 'agent',
+              participant,
+              eventType,
+            })),
+          ];
         })
         .filter((item) => {
           if (item.kind !== 'agent' || !queryLower) return true;

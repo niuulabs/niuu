@@ -234,10 +234,14 @@ export function createApiClient(basePath: string): ApiClient {
       return undefined as T;
     }
 
-    const data = await response.json();
-
     if (!response.ok) {
-      const errorDetail = (data as ApiError)?.detail ?? 'Unknown error';
+      const body = await response.text();
+      let errorDetail = body.trim() || response.statusText || 'Unknown error';
+      try {
+        errorDetail = (JSON.parse(body) as ApiError)?.detail ?? 'Unknown error';
+      } catch {
+        // Proxies and servers can return plain text or HTML errors instead of JSON.
+      }
       throw new ApiClientError(
         `API request failed: ${response.status}`,
         response.status,
@@ -245,7 +249,7 @@ export function createApiClient(basePath: string): ApiClient {
       );
     }
 
-    return data as T;
+    return response.json() as Promise<T>;
   }
 
   return {

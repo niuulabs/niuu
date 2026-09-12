@@ -270,14 +270,14 @@ NIUU_TASKS: list[tuple[str, str, list[str]]] = [
     (
         "Run the local stack",
         "The scripts are the short path for day-to-day work. Use the CLI "
-        "directly when you are debugging the platform host itself.",
+        "directly for a foreground run; stop that run with Ctrl+C. "
+        "The status/down commands only see services in their own process, "
+        "so they do not control another terminal's foreground platform.",
         [
             "./start-dev                 # full local stack on :8080, mini mode",
             "./stop-dev",
             "",
-            "niuu platform up            # same thing, driven directly",
-            "niuu platform status        # health of every registered service",
-            "niuu platform down",
+            "niuu platform up            # foreground; Ctrl+C to stop",
         ],
     ),
     (
@@ -309,7 +309,9 @@ NIUU_TASKS: list[tuple[str, str, list[str]]] = [
             "niuu whoami",
             "",
             "niuu context list",
-            "niuu context add staging https://niuu.example.com",
+            "printf 'Server URL: '",
+            "read -r NIUU_CONTEXT_URL",
+            'niuu context add staging "$NIUU_CONTEXT_URL"',
             "niuu context use staging",
         ],
     ),
@@ -319,7 +321,9 @@ NIUU_TASKS: list[tuple[str, str, list[str]]] = [
         [
             "niuu sessions list",
             "niuu sessions create my-feature",
-            "niuu sessions stop <session-id>",
+            "printf 'ID of the session to stop: '",
+            "read -r NIUU_SESSION_ID",
+            'niuu sessions stop "$NIUU_SESSION_ID"',
             "niuu sessions list --json          # machine-readable",
         ],
     ),
@@ -328,12 +332,15 @@ NIUU_TASKS: list[tuple[str, str, list[str]]] = [
         "Runs are individual executions; sagas are the longer campaigns that dispatch them.",
         [
             "niuu runs active",
-            "niuu runs approve <run-id>",
-            "niuu runs reject <run-id>",
+            "# Inspect the pending review before choosing approve or reject.",
+            "niuu runs approve --help",
+            "niuu runs reject --help",
             "",
             "niuu sagas list",
             "niuu sagas create nightly-cleanup",
-            "niuu sagas dispatch <saga-id>",
+            "printf 'ID of the saga to dispatch: '",
+            "read -r NIUU_SAGA_ID",
+            'niuu sagas dispatch "$NIUU_SAGA_ID"',
         ],
     ),
     (
@@ -435,7 +442,7 @@ RAVN_TASKS: list[tuple[str, str, list[str]]] = [
             "ravn gateway --telegram --http           # human-facing chat channels",
             "",
             "ravn warden list                           # persisted long-lived agents",
-            "ravn warden create <name>",
+            "ravn warden create notes-warden",
         ],
     ),
     (
@@ -447,7 +454,9 @@ RAVN_TASKS: list[tuple[str, str, list[str]]] = [
             "ravn peers                                 # verified mesh peers",
             "",
             "ravn approvals list                        # command approval patterns",
-            "ravn approvals revoke '<pattern>'",
+            "printf 'Exact pattern to revoke from the list above: '",
+            "read -r RAVN_APPROVAL_PATTERN",
+            'ravn approvals revoke "$RAVN_APPROVAL_PATTERN"',
         ],
     ),
 ]

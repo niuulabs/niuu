@@ -107,7 +107,11 @@ git:
   repoUrl: ""
   branch: ""
   baseBranch: ""
+  userName: ""
+  userEmail: ""
   credentials:
+    # -- Session-injected integration token file; takes precedence over secretName
+    tokenFile: ""
     secretName: ""
     tokenKey: "token"
     username: "x-access-token"

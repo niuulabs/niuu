@@ -1,3 +1,6 @@
+import { usePluginCtx } from '@niuulabs/plugin-sdk';
+import { DeploymentInspection } from './DeploymentInspection';
+import { InstanceInspection } from './InstanceInspection';
 /**
  * AnalyticsPage — retrieval quality and query-traffic analytics.
  *
@@ -199,89 +202,118 @@ function QueryTraffic({ stats }: QueryTrafficProps) {
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export function AnalyticsPage() {
+  const ctx = usePluginCtx();
+  const deployment = ctx.tweaks['mimir.deployment'] as { name: string; target?: string } | null;
   const evalReport = useEvalReport();
   const queryStats = useQueryStats();
 
   return (
-    <div className="niuu:p-6 niuu:max-w-[960px] niuu:flex niuu:flex-col niuu:gap-6">
+    <div className="niuu:p-6 niuu:max-w-[1280px] niuu:flex niuu:flex-col niuu:gap-6">
       <div>
         <h2 className="niuu:text-xl niuu:font-semibold niuu:m-0 niuu:mb-2">Analytics</h2>
         <p className="niuu:text-sm niuu:text-text-secondary niuu:m-0">
-          Retrieval quality benchmarks and live query traffic for this Mímir deployment.
+          Explore your knowledge instances, their connections, and the results they produce.
         </p>
       </div>
 
-      {/* ── Eval report ────────────────────────────────────────── */}
-      {evalReport.isLoading && (
-        <div className={STATUS_ROW}>
-          <StateDot state="processing" pulse />
-          <span>loading eval report…</span>
-        </div>
-      )}
+      <>
+        {deployment ? (
+          <DeploymentInspection instanceName={deployment.name} target={deployment.target} />
+        ) : (
+          <InstanceInspection />
+        )}
+      </>
 
-      {evalReport.isError && (
-        <div className={STATUS_ROW}>
-          <StateDot state="failed" />
-          <span>
-            {evalReport.error instanceof Error
-              ? evalReport.error.message
-              : 'eval report load failed'}
+      <details className="mimir-service-diagnostics">
+        <summary>
+          <span>Service diagnostics</span>
+          <span className="niuu:text-sm niuu:text-text-muted">
+            Search quality, query traffic, and activity
           </span>
-        </div>
-      )}
-
-      {!evalReport.isLoading && !evalReport.isError && evalReport.data === null && (
-        <p className="niuu:text-sm niuu:text-text-muted niuu:m-0" data-testid="eval-empty">
-          No eval report yet — run a retrieval benchmark to populate this view.
+        </summary>
+        <p className="niuu:text-sm niuu:text-text-secondary">
+          These reports belong to the connected Mimir service and do not change with the selected
+          instance. They help assess whether searches find useful pages and identify unanswered
+          queries.
         </p>
-      )}
-
-      {evalReport.data && (
-        <>
-          <MetricTiles report={evalReport.data} />
-          <section aria-label="Per-category metrics">
-            <h3 className="niuu:text-xs niuu:uppercase niuu:tracking-[0.07em] niuu:text-text-muted niuu:m-0 niuu:mb-2">
-              By category
-            </h3>
-            <CategoryTable byCategory={evalReport.data.byCategory} />
-          </section>
-        </>
-      )}
-
-      {/* ── Query stats ────────────────────────────────────────── */}
-      <div className="niuu:border-t niuu:border-solid niuu:border-0 niuu:border-t-border niuu:pt-6">
-        {queryStats.isLoading && (
+        <p className="niuu:text-sm niuu:text-text-muted">
+          Benchmarks compare search results with expected answers. Precision measures relevant
+          results; recall measures expected pages found; MRR measures how early the first useful
+          result appears.
+        </p>
+        {/* ── Eval report ────────────────────────────────────────── */}
+        {evalReport.isLoading && (
           <div className={STATUS_ROW}>
             <StateDot state="processing" pulse />
-            <span>loading query stats…</span>
+            <span>loading eval report…</span>
           </div>
         )}
 
-        {queryStats.isError && (
+        {evalReport.isError && (
           <div className={STATUS_ROW}>
             <StateDot state="failed" />
             <span>
-              {queryStats.error instanceof Error
-                ? queryStats.error.message
-                : 'query stats load failed'}
+              {evalReport.error instanceof Error
+                ? evalReport.error.message
+                : 'eval report load failed'}
             </span>
           </div>
         )}
 
-        {!queryStats.isLoading && !queryStats.isError && queryStats.data === null && (
-          <p className="niuu:text-sm niuu:text-text-muted niuu:m-0" data-testid="queries-empty">
-            No query statistics — this backend does not track search traffic.
+        {!evalReport.isLoading && !evalReport.isError && evalReport.data === null && (
+          <p className="niuu:text-sm niuu:text-text-muted niuu:m-0" data-testid="eval-empty">
+            No eval report yet — run a retrieval benchmark to populate this view.
           </p>
         )}
 
-        {queryStats.data && <QueryTraffic stats={queryStats.data} />}
-      </div>
+        {evalReport.data && (
+          <>
+            <MetricTiles report={evalReport.data} />
+            <section aria-label="Per-category metrics">
+              <h3 className="niuu:text-xs niuu:uppercase niuu:tracking-[0.07em] niuu:text-text-muted niuu:m-0 niuu:mb-2">
+                By category
+              </h3>
+              <CategoryTable byCategory={evalReport.data.byCategory} />
+            </section>
+          </>
+        )}
 
-      {/* Dream-cycle history — enrichment telemetry belongs with the rest of
+        {/* ── Query stats ────────────────────────────────────────── */}
+        <div className="niuu:border-t niuu:border-solid niuu:border-0 niuu:border-t-border niuu:pt-6">
+          {queryStats.isLoading && (
+            <div className={STATUS_ROW}>
+              <StateDot state="processing" pulse />
+              <span>loading query stats…</span>
+            </div>
+          )}
+
+          {queryStats.isError && (
+            <div className={STATUS_ROW}>
+              <StateDot state="failed" />
+              <span>
+                {queryStats.error instanceof Error
+                  ? queryStats.error.message
+                  : 'query stats load failed'}
+              </span>
+            </div>
+          )}
+
+          {!queryStats.isLoading && !queryStats.isError && queryStats.data === null && (
+            <p className="niuu:text-sm niuu:text-text-muted niuu:m-0" data-testid="queries-empty">
+              No captured queries yet. Search through this service with query capture enabled to
+              populate this view.
+            </p>
+          )}
+
+          {queryStats.data && <QueryTraffic stats={queryStats.data} />}
+        </div>
+
+        {/* Dream-cycle history — enrichment telemetry belongs with the rest of
           the quality/traffic analytics rather than its own tab. */}
-      <div className="niuu:border-t niuu:border-solid niuu:border-0 niuu:border-t-border niuu:mt-6">
-        <DreamsPage />
-      </div>
+        <div className="niuu:border-t niuu:border-solid niuu:border-0 niuu:border-t-border niuu:mt-6">
+          <DreamsPage />
+        </div>
+      </details>
     </div>
   );
 }

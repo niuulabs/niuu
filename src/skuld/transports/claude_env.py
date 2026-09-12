@@ -34,7 +34,11 @@ def claude_spawn_env() -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE" and k not in _API_KEY_VARS}
     # On macOS the CLI stores its OAuth login in the Keychain, so the
     # credentials file only signals a missing login on other platforms.
-    if sys.platform != "darwin" and not (Path.home() / ".claude" / ".credentials.json").exists():
+    if (
+        sys.platform != "darwin"
+        and not env.get("CLAUDE_CODE_OAUTH_TOKEN")
+        and not (Path.home() / ".claude" / ".credentials.json").exists()
+    ):
         logger.warning(
             "SKULD__CLAUDE_AUTH=subscription but ~/.claude/.credentials.json is "
             "missing on this host — run `claude login`, or set "

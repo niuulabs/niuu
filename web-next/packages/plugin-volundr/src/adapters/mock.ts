@@ -1058,7 +1058,7 @@ const SYSTEM_LAUNCH_SPECS: VolundrLaunchSpec[] = [
     isDefault: false,
     sessionDefinition: 'skuldCodex',
     workloadType: 'skuld-codex',
-    model: 'gpt-5.4',
+    model: 'gpt-5.6-terra',
     systemPrompt: null,
     resourceConfig: { cpu: '1', memory: '2Gi', gpu: '0' },
     mcpServers: [],
@@ -1150,6 +1150,12 @@ export function createMockVolundrService(): IVolundrService {
     getStats: async () => ({ ...SEED_STATS }),
 
     getRepos: async () => [...SEED_REPOS],
+    listUserHome: async () => {
+      throw new Error('Home storage requires a live cluster');
+    },
+    deleteUserHomePath: async () => {
+      throw new Error('Home storage requires a live cluster');
+    },
     getTargets: async () => [
       {
         id: 'mock-volundr-default',

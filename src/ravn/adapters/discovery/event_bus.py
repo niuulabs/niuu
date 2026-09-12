@@ -114,6 +114,8 @@ class EventBusDiscoveryAdapter:
                 "peer_id",
                 "realm_id",
                 "persona",
+                "display_name",
+                "participant_type",
                 "capabilities",
                 "permission_mode",
                 "version",
@@ -158,6 +160,8 @@ class EventBusDiscoveryAdapter:
         peer = self._peers.get(peer_id)
         if peer is not None:
             peer.persona = str(identity.get("persona") or "")
+            peer.display_name = str(identity.get("display_name") or "")
+            peer.participant_type = str(identity.get("participant_type") or "ravn")
             peer.capabilities = list(identity.get("capabilities") or [])
             peer.permission_mode = str(identity.get("permission_mode") or "")
             peer.version = str(identity.get("version") or "")
@@ -174,6 +178,8 @@ class EventBusDiscoveryAdapter:
             peer_id=peer_id,
             realm_id=self._identity.realm_id,
             persona=str(identity.get("persona") or ""),
+            display_name=str(identity.get("display_name") or ""),
+            participant_type=str(identity.get("participant_type") or "ravn"),
             capabilities=list(identity.get("capabilities") or []),
             permission_mode=str(identity.get("permission_mode") or ""),
             version=str(identity.get("version") or ""),

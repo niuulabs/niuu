@@ -7,7 +7,7 @@ import { useVolundrStats } from './useVolundrSessions';
 import { useVolundrClusters } from './hooks/useVolundrClusters';
 import { useSessionList } from './hooks/useSessionStore';
 import { useLaunchSpecs } from './useLaunchSpecs';
-import { LaunchWizard } from './LaunchWizard';
+import { QuickLaunch } from './QuickLaunch';
 import { money, tokens } from './utils/formatters';
 import type { Cluster, ClusterKind } from '../domain/cluster';
 import type { Session, SessionState } from '../domain/session';
@@ -792,7 +792,7 @@ export function ForgePage() {
         </div>
       </div>
 
-      <LaunchWizard
+      <QuickLaunch
         key={launchSpecRef ?? 'forge-custom'}
         open={launchOpen}
         onOpenChange={setLaunchOpen}

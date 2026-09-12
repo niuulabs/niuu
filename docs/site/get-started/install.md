@@ -1,78 +1,108 @@
-# Install
+# Install Niuu
 
-Install the small set of tools you actually run.
+Use the source path below for the currently verified macOS setup. Both installation
+paths lead to the same [first-session quick start](first-local-stack.md).
 
-Most operators start with `niuu`. Install `ravn` when you want to run an
-assistant directly or keep a resident assistant running outside the web UI.
+!!! warning "macOS v1.3.0 cannot start its embedded database"
 
-## Download `niuu`
+    The published Apple Silicon binary passes its checksum but fails at startup:
+    `initdb` cannot load `libpq.5.dylib`. Use [From source](#from-source) until a
+    corrected release passes the bootstrap check. Linux binaries have not been
+    verified in this documentation pass. See the [verification record](../operations/quickstart-verification.md).
 
-Get the latest release from GitHub and replace `VERSION` with the release you
-want to install:
+## Release binary: macOS and Linux
+
+The release contains the Niuu executable, web UI, and embedded PostgreSQL.
+You do not need to install Python, Node.js, or a separate database to use it.
+You still need Git and the agent runtime used by your sessions; the quick start
+uses Claude Code.
+
+Run the following in Bash or Zsh. It downloads v1.3.0 to a temporary directory,
+checks the published SHA-256 digest, and installs into your user's bin directory.
+Choose a different published version from [Releases](https://github.com/niuulabs/niuu/releases)
+by changing `VERSION` first.
 
 ```bash
-VERSION=v1.0.0
-ARCH=darwin-arm64
+VERSION=v1.3.0
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) ARCH=darwin-arm64 ;;
+  Linux-x86_64) ARCH=linux-amd64 ;;
+  Linux-aarch64|Linux-arm64) ARCH=linux-arm64 ;;
+  *) printf 'No release binary for this OS/architecture.\n' >&2; return 1 2>/dev/null || exit 1 ;;
+esac
 
-curl -L "https://github.com/niuulabs/niuu/releases/download/${VERSION}/niuu-${ARCH}" -o niuu
-chmod +x niuu
-sudo mv niuu /usr/local/bin/niuu
+NIUU_DOWNLOAD_DIR=$(mktemp -d)
+NIUU_RELEASE_URL="https://github.com/niuulabs/niuu/releases/download/$VERSION"
+curl --fail --location "$NIUU_RELEASE_URL/niuu-$ARCH" -o "$NIUU_DOWNLOAD_DIR/niuu-$ARCH"
+curl --fail --location "$NIUU_RELEASE_URL/checksums.txt" -o "$NIUU_DOWNLOAD_DIR/checksums.txt"
+(
+  cd "$NIUU_DOWNLOAD_DIR" || exit 1
+  awk -v asset="niuu-$ARCH" '$2 == asset { print }' checksums.txt > selected-checksum.txt
+  test -s selected-checksum.txt || exit 1
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -c selected-checksum.txt
+  else
+    shasum -a 256 -c selected-checksum.txt
+  fi
+) && install -d "$HOME/.local/bin" &&
+  install -m 0755 "$NIUU_DOWNLOAD_DIR/niuu-$ARCH" "$HOME/.local/bin/niuu"
 ```
 
-Choose the asset that matches your machine:
+Expect a checksum result ending in `OK`. If verification fails, stop; do not
+install an unverified download. The version, filename, and checksum must come
+from the same release.
 
-| Machine | Asset |
-| --- | --- |
-| macOS Apple Silicon | `niuu-darwin-arm64` |
-| Linux x86_64 | `niuu-linux-amd64` |
-| Linux ARM64 | `niuu-linux-arm64` |
-
-Verify it:
+Add the installation directory to this terminal's path:
 
 ```bash
-niuu --help
+export PATH="$HOME/.local/bin:$PATH"
 niuu --version
 ```
 
-The release also includes `checksums.txt` if you want to verify the downloaded
-binary before moving it onto your `PATH`.
+Add that `export` line to your shell startup file (`~/.zshrc` for Zsh or
+`~/.bashrc` for Bash) if the directory is not already on your persistent `PATH`.
 
-## Initialize the local platform
-
-```bash
-niuu platform init
-```
-
-The init command writes local platform configuration under `~/.niuu`.
-
-## Optional: install `ravn`
-
-Install `ravn` when you want a direct assistant runtime:
-
-```bash
-VERSION=v1.0.0
-ARCH=darwin-arm64
-
-curl -L "https://github.com/niuulabs/niuu/releases/download/${VERSION}/ravn-${ARCH}" -o ravn
-chmod +x ravn
-sudo mv ravn /usr/local/bin/ravn
-```
-
-Verify it:
-
-```bash
-ravn --help
-```
+Now follow [Quick start: your first working session](first-local-stack.md).
+It covers Claude authentication, local initialization, launch, and shutdown.
 
 ## From source
 
-If you are developing Niuu itself, use the repository scripts instead:
+The contributor path builds the database and web assets, so its first start is
+slower than using a release. Install Git, curl, make, a C compiler, pkg-config,
+OpenSSL development headers, uv, Node.js, and the pnpm version declared by
+`web-next/package.json`. On macOS, use Xcode Command Line Tools and Homebrew;
+on Linux, use your distribution's build-tool packages.
 
 ```bash
-uv sync --all-extras --dev
-pnpm --dir web-next install
+git clone https://github.com/niuulabs/niuu.git
+cd niuu
+uv sync --python 3.12 --extra dev
 ./start-dev
 ```
 
-For normal local operation, prefer the release binary and continue with the
-[first local stack](first-local-stack.md).
+`start-dev` installs workspace dependencies, builds PostgreSQL and web assets,
+and starts a background platform. Use the exact URL it prints. Logs are in
+`build/dev-run/logs/platform.log`. Stop this background stack with:
+
+```bash
+./stop-dev
+```
+
+After stopping the dev stack, expose the source executable in this terminal:
+
+```bash
+export PATH="$PWD/.venv/bin:$PATH"
+niuu --version
+```
+
+Now follow the [quick start](first-local-stack.md) in this terminal, including
+authentication, initialization, and foreground startup. The built web and database
+assets are reused. Do not run a second platform while `start-dev` still owns the
+same port/database.
+
+## Optional: standalone Ravn
+
+The first workspace does not require a separate Ravn installation. To run Ravn
+directly, download the matching `ravn-$ARCH` asset from the same release and
+verify its entry in `checksums.txt` using the same procedure. Then follow
+[Direct and resident assistants](direct-and-resident-assistants.md).

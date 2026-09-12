@@ -80,6 +80,9 @@ async def extract_principal(request: Request) -> Principal:
     - Envoy header mode: reads trusted headers injected by the Envoy sidecar
     - Token mode (allow-all / dev): validates the Authorization header
     """
+    from niuu.adapters.inbound.auth_context import extract_bearer_token
+
+    extract_bearer_token(request)
     identity: IdentityPort = request.app.state.identity
     from volundr.adapters.outbound.identity import (
         AllowAllIdentityAdapter,
@@ -200,6 +203,9 @@ async def get_current_user(
         async def get_me(user: User = Depends(get_current_user)):
             ...
     """
+    from niuu.adapters.inbound.auth_context import extract_bearer_token
+
+    extract_bearer_token(request)
     identity: IdentityPort = request.app.state.identity
 
     try:

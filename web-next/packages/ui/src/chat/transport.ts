@@ -27,7 +27,11 @@ export function normalizeSessionUrl(url: string | null | undefined): string | nu
       return parsed.toString();
     }
     const samePort = parsed.port === current.port;
-    if (isLoopbackHostname(parsed.hostname) && isLoopbackHostname(current.hostname) && samePort) {
+    const proxiedSession = parsed.pathname.startsWith('/s/') && isLoopbackHostname(parsed.hostname);
+    if (
+      proxiedSession ||
+      (isLoopbackHostname(parsed.hostname) && isLoopbackHostname(current.hostname) && samePort)
+    ) {
       parsed.protocol = publicProtocolFor(parsed.protocol, current.protocol);
       parsed.hostname = current.hostname;
       parsed.port = current.port;

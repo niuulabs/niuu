@@ -27,7 +27,14 @@ rules:
   # NOTE: If PVCs are in a different namespace, enable rbac.clusterWide
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
-    verbs: ["create", "delete", "get", "list", "watch"]
+    verbs: ["create", "delete", "get", "list", "watch", "patch"]
+  # Owner-scoped, short-lived file browser pods and direct exec output (no file logs).
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["get", "create"]
   {{- end }}
   # Access to pods for session management
   - apiGroups: [""]
@@ -90,7 +97,14 @@ rules:
   # Cluster-wide access to PVCs (cross-namespace provisioning)
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
-    verbs: ["create", "delete", "get", "list", "watch"]
+    verbs: ["create", "delete", "get", "list", "watch", "patch"]
+  # Owner-scoped, short-lived file browser pods and direct exec output (no file logs).
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["get", "create"]
   {{- end }}
   {{- if or (contains "InfisicalAgent" .Values.secretInjection.adapter) (contains "OpenBaoAgentInjectionAdapter" .Values.secretInjection.adapter) }}
   # Cluster-wide access to injector coordination resources in the session namespace

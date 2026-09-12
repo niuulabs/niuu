@@ -4,7 +4,7 @@ import { z } from 'zod';
  * Roles a Mímir mount may serve in a deployment.
  *
  * - `local`  — operator's own private mount.
- * - `shared` — realm-wide shared knowledge base.
+ * - `shared` — shared knowledge role; access is governed separately by accessScope.
  * - `domain` — prefix-scoped domain knowledge.
  *
  * Owner: **Mimir** (`plugin-mimir`).
@@ -41,6 +41,8 @@ export const mountSchema = z.object({
   name: z.string().min(1),
   /** Role this mount plays in the deployment. */
   role: mountRoleSchema,
+  /** Access boundary reported by the service, independent of the memory role. */
+  accessScope: z.enum(['tenant', 'global', 'local', 'unknown']).optional(),
   /** Hostname or IP of the host running this mount. */
   host: z.string().min(1),
   /** Base URL of the mount's HTTP API. */

@@ -892,7 +892,7 @@ def test_detail_survives_mimir_timeout_without_regressing_stage_state(
         raise httpx.ReadTimeout("mimir took too long")
 
     monkeypatch.setattr(
-        "ting.api.research.MarkdownMimirAdapter.list_pages",
+        "mimir.adapters.markdown.MarkdownMimirAdapter.list_pages",
         _timeout,
         raising=False,
     )
@@ -1190,7 +1190,7 @@ async def test_artifact_summaries_read_each_mount_once(tmp_path: Path, monkeypat
     manifest.write_text("# Manifest\nresearch/campaigns/first/final.md", encoding="utf-8")
 
     monkeypatch.setattr(
-        research_api, "_resolve_campaign_mimir_port", lambda campaign, settings: adapter
+        research_api, "_campaign_knowledge", lambda campaign, settings, **kwargs: adapter
     )
     campaigns = [
         _a2a_campaign(snapshot=None, slug=f"{slug}-abc123", workflow_slug=slug)
@@ -1240,7 +1240,7 @@ async def test_artifact_summaries_do_not_leak_between_campaigns(
         path.write_text("# Page\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        research_api, "_resolve_campaign_mimir_port", lambda campaign, settings: adapter
+        research_api, "_campaign_knowledge", lambda campaign, settings, **kwargs: adapter
     )
     campaigns = [_a2a_campaign(snapshot=None, slug="alpha-abc123", workflow_slug="alpha")]
 
@@ -1255,7 +1255,7 @@ async def test_artifact_summaries_report_unknown_without_a_mount(monkeypatch) ->
     from ting.api import research as research_api
 
     monkeypatch.setattr(
-        research_api, "_resolve_campaign_mimir_port", lambda campaign, settings: None
+        research_api, "_campaign_knowledge", lambda campaign, settings, **kwargs: None
     )
 
     (summary,) = await research_api._campaign_artifact_summaries(
@@ -1278,7 +1278,7 @@ async def test_artifact_summaries_report_unknown_when_mimir_raises(monkeypatch) 
             return None
 
     monkeypatch.setattr(
-        research_api, "_resolve_campaign_mimir_port", lambda campaign, settings: _Broken()
+        research_api, "_campaign_knowledge", lambda campaign, settings, **kwargs: _Broken()
     )
 
     (summary,) = await research_api._campaign_artifact_summaries(

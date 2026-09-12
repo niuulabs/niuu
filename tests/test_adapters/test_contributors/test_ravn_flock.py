@@ -238,7 +238,10 @@ class TestContributorOutput:
         assert "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE" not in processes[0]["env"]
         config_path = "/sandbox/.volundr/flock/coordinator.yaml"
         assert config_path in processes[0]["files"]
-        assert yaml.safe_load(processes[0]["files"][config_path])["persona"] == "coordinator"
+        config = yaml.safe_load(processes[0]["files"][config_path])
+        assert config["persona"] == "coordinator"
+        assert config["permission"]["workspace_root"] == "/sandbox/workspace"
+        assert config["initiative"]["queue_journal_path"].startswith("/sandbox/workspace/")
 
     async def test_two_ravn_containers_produced(self, session, flock_template):
         provider = MagicMock()

@@ -1579,6 +1579,9 @@ class OpenShellGatewayPodManager(
         )
         if sandbox is None or not sandbox.ready:
             raise RuntimeError("OpenShell resident sandbox is not ready")
+        credential_context = await self._resolve_credential_context(
+            self._resident_subject(runtime), values
+        )
         processes = self._resident_processes(runtime, values)
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
@@ -1588,7 +1591,7 @@ class OpenShellGatewayPodManager(
         )
         if exit_code != 0:
             raise RuntimeError(f"OpenShell resident process stop failed: {output.strip()}")
-        files = self._resident_config_files(runtime, values)
+        files = {**credential_context.files, **self._resident_config_files(runtime, values)}
         for process in processes:
             files.update(_shared_resident_process_files(runtime, process.files))
         await asyncio.to_thread(
@@ -1597,6 +1600,9 @@ class OpenShellGatewayPodManager(
             files=files,
         )
         env = self._resident_environment(runtime, values)
+        env.update(resident_flock_environment(runtime))
+        env.update(credential_context.environment)
+        env.update(credential_context.process_environment)
         if runtime.engine is ResidentEngine.OPENCLAW:
             if self._credential_store is None:
                 raise RuntimeError("OpenClaw residents require the configured credential store")
@@ -2069,6 +2075,9 @@ class OpenShellGatewayPodManager(
         value = values.get(credential_field) if values else None
         if not value or "\x00" in value or "\r" in value or "\n" in value:
             raise ValueError("credential field is unavailable for this session")
+        basic_username = str(config.get("volundr_basic_auth_username") or "")
+        if basic_username:
+            value = "Basic " + base64.b64encode(f"{basic_username}:{value}".encode()).decode()
         return OpenShellCredentialGrantToken(access_token=value)
 
     def _issue_platform_token(
@@ -2313,15 +2322,19 @@ class OpenShellGatewayPodManager(
             if provider_name in providers:
                 continue
             providers.append(provider_name)
+            binding = self._grant_binding(
+                subject,
+                volundr_credential_name=credential_name,
+                volundr_credential_field=field_name,
+            )
+            target = _provider_target(env_name, mapping.get("provider"))
+            if target.get("basic_username"):
+                binding["volundr_basic_auth_username"] = target["basic_username"]
             await asyncio.to_thread(
                 self._client.create_provider_grant,
                 profile=profile,
                 provider_name=provider_name,
-                config=self._grant_binding(
-                    subject,
-                    volundr_credential_name=credential_name,
-                    volundr_credential_field=field_name,
-                ),
+                config=binding,
             )
 
         if file_mappings:
@@ -2472,13 +2485,7 @@ mkdir -p "$WORKSPACE"
 git config --global --add safe.directory "$WORKSPACE" >/dev/null 2>&1 || true
 git config --system --add safe.directory "$WORKSPACE" >/dev/null 2>&1 || true
 HOME=/root git config --global --add safe.directory "$WORKSPACE" >/dev/null 2>&1 || true
-if [ -d "$WORKSPACE/.git" ]; then
-  if git -C "$WORKSPACE" rev-parse --verify HEAD >/dev/null 2>&1; then
-    echo "Workspace already contains a git repository, skipping clone"
-    exit 0
-  fi
-  echo "Workspace contains an incomplete git repository, resuming clone"
-else
+if ! git -C "$WORKSPACE" rev-parse --git-dir >/dev/null 2>&1; then
   git init "$WORKSPACE"
 fi
 if git -C "$WORKSPACE" remote get-url origin >/dev/null 2>&1; then
@@ -2486,10 +2493,16 @@ if git -C "$WORKSPACE" remote get-url origin >/dev/null 2>&1; then
 else
   git -C "$WORKSPACE" remote add origin "$CLONE_URL"
 fi
-export GIT_AUTH_TOKEN="${{GITHUB_TOKEN:-${{GITHUB_PERSONAL_ACCESS_TOKEN:-}}}}"
-if [ -n "$GIT_AUTH_TOKEN" ]; then
-  git -C "$WORKSPACE" config credential.helper \\
-    '!f() {{ echo "username=x-access-token"; echo "password=$GIT_AUTH_TOKEN"; }}; f'
+# OpenShell's attached dynamic provider authenticates every Git request.
+# Clear bootstrap helpers left by older sessions that relied on a temporary env var.
+git -C "$WORKSPACE" config credential.helper ''
+git -C "$WORKSPACE" config user.name >/dev/null 2>&1 || \
+  git -C "$WORKSPACE" config user.name {shlex.quote(str(git_cfg.get("userName") or ""))}
+git -C "$WORKSPACE" config user.email >/dev/null 2>&1 || \
+  git -C "$WORKSPACE" config user.email {shlex.quote(str(git_cfg.get("userEmail") or ""))}
+if git -C "$WORKSPACE" rev-parse --verify HEAD >/dev/null 2>&1; then
+  echo "Workspace already contains a git repository, skipping clone"
+  exit 0
 fi
 attempt=1
 until git -C "$WORKSPACE" fetch origin; do
@@ -2917,6 +2930,11 @@ def _resident_api_urls(values: dict[str, Any]) -> tuple[str, ...]:
     kwargs = provider.get("kwargs") if isinstance(provider.get("kwargs"), dict) else {}
     if kwargs.get("base_url") or kwargs.get("baseUrl"):
         urls.append(str(kwargs.get("base_url") or kwargs.get("baseUrl")))
+    broker = values.get("broker") or {}
+    codex_auth = broker.get("codexAuth") or {}
+    token_path = (codex_auth.get("kwargs") or {}).get("token_path", "")
+    if urlparse(token_path).scheme:
+        urls.append(token_path)
     return tuple(urls)
 
 
@@ -3414,10 +3432,11 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
             ),
             "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
         }
-    if env_name in {"ANTHROPIC_API_KEY", "CLAUDE_API_KEY"}:
+    if env_name in {"ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}:
+        subscription = env_name == "CLAUDE_CODE_OAUTH_TOKEN"
         return {
-            "auth_style": "header",
-            "header_name": "x-api-key",
+            "auth_style": "bearer" if subscription else "header",
+            "header_name": "Authorization" if subscription else "x-api-key",
             "hosts": ("api.anthropic.com",),
             "binaries": (
                 "/usr/local/bin/claude",
@@ -3434,7 +3453,10 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
         "GITHUB_PERSONAL_ACCESS_TOKEN",
     }:
         return {
-            "auth_style": "bearer",
+            # GitHub Git endpoints reject Bearer PATs. The token exchange returns
+            # the complete Basic header for OpenShell's raw-header injection.
+            "auth_style": "header",
+            "basic_username": "x-access-token",
             "header_name": "Authorization",
             "hosts": (
                 "github.com",

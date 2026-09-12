@@ -1,0 +1,40 @@
+{{- if eq .Values.credentialEnrollmentRunner.adapter "volundr.adapters.outbound.k8s_login_runner.KubernetesLoginRunner" }}
+{{- $namespace := .Values.credentialEnrollmentRunner.kwargs.namespace | default "niuu-logins" }}
+{{- if eq $namespace .Release.Namespace }}
+{{- fail "Login workers require a dedicated namespace, separate from control-plane secrets" }}
+{{- end }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "volundr.fullname" . }}-logins
+  namespace: {{ $namespace }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "volundr.fullname" . }}-logins
+  namespace: {{ $namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "volundr.fullname" . }}-logins
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "volundr.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

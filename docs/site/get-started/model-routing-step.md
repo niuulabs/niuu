@@ -1,79 +1,50 @@
-# Model Routing
+# Inspect models and provider routing
 
-Add model routing when you want Niuu to choose between local and cloud models in
-a predictable way.
+Use this guide when the model catalog and the runtime's actual provider are hard
+to distinguish. You need a running local Niuu host with Bifröst enabled. The reads
+below use the default local port; use your deployment's authenticated origin for
+a shared host.
 
-This is where Bifröst becomes useful. Treat it as the model control plane, not
-as another thing to learn on day one.
+## 1. Inspect the configured catalog
 
-![Bifröst model control plane](../images/landing/landing-models.png)
+```bash
+curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/bifrost/models
+curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/bifrost/aliases
+curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/bifrost/providers/health
+```
 
-## Why add this step
+These answer different questions: which models are advertised, which names map
+to models, and what the provider health checks report. Empty provider or alias
+results can be valid on a fresh setup. They are not proof that inference is ready.
 
-Without routing, every session or assistant can drift into its own model
-configuration. That becomes hard to reason about once you have several
-workspaces, providers, or cost policies.
+## 2. Configure an actual provider
 
-Model routing gives you:
+For the local host, the `bifrost` section uses `BifrostConfig` from
+`src/bifrost/config.py`. Provider entries contain `base_url`, `models`, and an
+explicit credential source such as `api_key_env` or `api_key_file`; aliases map a
+name to a model. Use endpoint and model IDs supplied by your actual provider.
+Keep credential values outside the configuration you commit.
 
-- provider health checks
-- aliases such as `fast`, `balanced`, or `best`
-- local and cloud provider choices
-- usage visibility
-- one place to change model policy
+For a local Ollama setup, the repository includes
+`scripts/setups/configs/bifrost-ollama.bifrost.yaml`. Its listed model names are
+configuration choices, not an instruction to assume those models are installed.
+Check your local server's catalog and replace the list with the models it serves.
+Choose `direct` routing when a request must stay on its configured provider.
 
-## Start with intent
+## 3. Verify from the consuming runtime
 
-Decide what you want before changing config:
+Point the intended client at Bifröst using that client's supported gateway
+configuration. Send a small request, then inspect Bifröst usage and the provider
+that served it. Verify the requested alias resolves to the intended model.
 
-| Intent | Typical choice |
-| --- | --- |
-| Keep work local | Ollama or another local OpenAI-compatible provider |
-| Use strongest hosted models | Cloud provider with explicit credentials |
-| Mix local and cloud | Local fallback or cloud fallback strategy |
-| Control cost | Aliases with cheaper defaults |
-| Improve reliability | Failover routing |
+A normal Claude Code subscription session follows its own authentication path
+unless you explicitly configured otherwise. Do not assume that selecting a model
+in Forge makes Bifröst an intermediary.
 
-## Configure providers
+## Diagnose failures
 
-Use the platform settings or service configuration to define providers and
-aliases. Keep secrets in the configured credential system, not in docs, shell
-history, or committed config.
-
-For local source development, the setup examples under
-`scripts/setups/configs/` show useful Bifröst shapes:
-
-- `bifrost-ollama`
-- `bifrost-cloud`
-- `bifrost-hybrid`
-
-Treat those as examples, then adapt them to your environment.
-
-## Use aliases from sessions
-
-Once aliases exist, launch sessions by selecting the alias instead of hardcoding
-provider-specific model names everywhere.
-
-That lets you change the alias later without rewriting every preset, workflow,
-or assistant config.
-
-## What good looks like
-
-You should be able to answer:
-
-- Which providers are configured?
-- Which alias should a normal workspace use?
-- Which alias should a cheap/background task use?
-- Which provider receives data for each class of work?
-- Where can I see provider health and usage?
-
-## Common mistake
-
-Do not solve model routing separately in every assistant config. Use routing
-when model choice becomes shared policy.
-
-## Next
-
-Once model choice is controlled, add durable memory:
-
-[Durable memory](durable-memory.md)
+A catalog response followed by a failed inference request usually needs a closer
+look at provider credentials, the actual model ID, API compatibility, or network
+reachability. Fix that path before saving a reusable launch or putting a workflow
+on it. See [model concepts](../concepts/model-routing.md) and
+[credentials](../reference/credentials-and-secrets.md).

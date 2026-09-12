@@ -1238,3 +1238,50 @@ def test_event_log_replay_passes_list_through_verbatim() -> None:
 
     assert isinstance(payload, list)
     assert [entry["seq"] for entry in payload] == [1, 2]
+
+
+@pytest.mark.parametrize("method", ["GET", "DELETE"])
+@respx.mock
+def test_home_storage_routes_only_to_selected_visible_cluster(method):
+    instances = [
+        _instance("a", base_url="https://a.test"),
+        _instance("b", base_url="https://b.test"),
+    ]
+    route = respx.route(
+        method=method, url="https://b.test/api/v1/forge/storage/home?path=tmp%2Fcache"
+    ).mock(return_value=Response(200, json={"status": "ready"}))
+    response = _client(instances).request(
+        method, "/api/v1/forge/storage/home?instance_id=b&path=tmp%2Fcache", headers=_headers()
+    )
+    assert response.status_code == 200
+    assert route.called
+    assert route.calls[0].request.headers["authorization"] == "Bearer test-token"
+    assert (
+        _client(instances)
+        .request(method, "/api/v1/forge/storage/home?instance_id=hidden", headers=_headers())
+        .status_code
+        == 404
+    )
+
+
+@respx.mock
+def test_feature_flags_select_requested_instance() -> None:
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha", is_default=True),
+            _instance("beta", base_url="http://beta"),
+        ]
+    )
+    route = respx.get("http://beta/api/v1/forge/feature-flags").mock(
+        return_value=Response(200, json={"mini_mode": False, "local_mounts_enabled": False})
+    )
+    response = client.get("/api/v1/forge/feature-flags?instance_id=beta", headers=_headers())
+    assert response.status_code == 200
+    assert response.json()["mini_mode"] is False
+    assert route.called
+
+
+def test_feature_flags_reject_invisible_instance() -> None:
+    client = _client([_instance("private", base_url="http://private", tenant_id="other")])
+    response = client.get("/api/v1/forge/feature-flags?instance_id=private", headers=_headers())
+    assert response.status_code == 404

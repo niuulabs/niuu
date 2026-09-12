@@ -1952,3 +1952,20 @@ describe('buildServices', () => {
     );
   });
 });
+
+it('uses Guild for knowledge deployment discovery and actions', async () => {
+  const { buildMimirHttpAdapter } = await import('@niuulabs/plugin-mimir');
+  buildServices({
+    demoMode: true,
+    theme: 'ice',
+    plugins: {},
+    services: {
+      niuu: { mode: 'http', baseUrl: 'https://guild.test/api/v1/niuu' },
+      mimir: { mode: 'http', baseUrl: 'https://memory.test/api/v1/mimir' },
+    },
+  } as any);
+  expect(buildMimirHttpAdapter).toHaveBeenCalledWith(
+    { basePath: 'https://memory.test/api/v1/mimir' },
+    { basePath: 'https://guild.test/api/v1/niuu/knowledge' },
+  );
+});

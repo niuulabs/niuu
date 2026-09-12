@@ -13,6 +13,16 @@ from skuld.transports.claude_env import claude_spawn_env
 
 
 class TestClaudeSpawnEnv:
+    def test_enrolled_token_reaches_claude_without_host_credentials(self, caplog):
+        with (
+            patch.dict("os.environ", {"CLAUDE_CODE_OAUTH_TOKEN": "test-only-token"}, clear=True),
+            patch("sys.platform", "linux"),
+            patch("pathlib.Path.exists", return_value=False),
+        ):
+            env = claude_spawn_env()
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "test-only-token"
+        assert "missing" not in caplog.text
+
     def test_subscription_default_strips_api_key_vars(self):
         fake = {
             "PATH": "/usr/bin",

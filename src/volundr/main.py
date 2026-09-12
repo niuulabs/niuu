@@ -59,6 +59,7 @@ from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_route
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
 from volundr.adapters.inbound.rest_trace import create_trace_router
 from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
+from volundr.adapters.inbound.rest_user_storage import create_user_storage_router
 from volundr.adapters.outbound.bifrost_catalog_http import HttpBifrostCatalogAdapter
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
 from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
@@ -115,6 +116,7 @@ from volundr.composition_builders import (  # noqa: F401
     _create_resource_provider,
     _create_secret_injection_adapter,
     _runtime_backend,
+    integration_database_pool,
 )
 from volundr.config import Settings
 from volundr.domain.models import SessionStatus
@@ -416,7 +418,10 @@ def create_app(
 
         await _bootstrap_startup_schema(settings)
 
-        async with database_pool(settings.database) as pool:
+        async with (
+            database_pool(settings.database) as pool,
+            integration_database_pool(settings, pool) as integration_pool,
+        ):
             # Identity & authorization adapters (dynamic adapter pattern)
             tenant_repository = PostgresTenantRepository(pool)
             user_repository = PostgresUserRepository(pool)
@@ -641,11 +646,19 @@ def create_app(
                 [d.model_dump() for d in settings.integrations.definitions],
             )
             integration_registry = IntegrationRegistry(integration_definitions)
-            integration_repo = PostgresIntegrationRepository(pool)
+            if settings.integrations.repository is not None:
+                repository_config = settings.integrations.repository
+                integration_repo = import_class(repository_config.adapter)(
+                    **resolve_secret_kwargs(
+                        repository_config.kwargs, repository_config.secret_kwargs_env
+                    )
+                )
+            else:
+                integration_repo = PostgresIntegrationRepository(integration_pool)
             mapping_repository = PostgresMappingRepository(pool)
             tracker_factory = TrackerFactory(credential_store)
             credential_enrollment_service = CredentialEnrollmentService(
-                repository=PostgresCredentialEnrollmentRepository(pool),
+                repository=PostgresCredentialEnrollmentRepository(integration_pool),
                 runner=credential_enrollment_runner,
                 integration_repository=integration_repo,
                 integration_registry=integration_registry,
@@ -1011,6 +1024,7 @@ def create_app(
             # Admin settings (config-driven, runtime-toggleable)
             admin_settings_router = create_admin_settings_router()
             app.include_router(admin_settings_router)
+            app.include_router(create_user_storage_router(storage_adapter))
 
             # Workspace management — PVCs are the source of truth
             workspace_service = WorkspaceService(storage_adapter)
@@ -1299,6 +1313,8 @@ def create_app(
                 if hasattr(gateway_adapter, "close"):
                     await gateway_adapter.close()
                 await git_registry.close()
+                if hasattr(integration_repo, "close"):
+                    await integration_repo.close()
                 if audit_subscriber is not None:
                     await audit_subscriber.stop()
                 if sleipnir_bus is not None and hasattr(sleipnir_bus, "stop"):

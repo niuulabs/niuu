@@ -244,7 +244,7 @@ class TestDriveLoopOutcomeContract:
             def __init__(self) -> None:
                 self.prompts: list[str] = []
 
-            async def run_turn(self, prompt: str) -> TurnResult:
+            async def repair_outcome(self, prompt: str) -> TurnResult:
                 self.prompts.append(prompt)
                 return TurnResult(
                     response=_valid_valkyrie_judgment_text(),
@@ -400,7 +400,7 @@ class TestDriveLoopOutcomeContract:
         assert "working_state` must be a mapping" in prompt
         assert "empty list as `field: []`" in prompt
         assert "at most five entries per list" in prompt
-        assert "already present in this conversation" in prompt
+        assert "Use only the supplied response and parsed fields" in prompt
         assert "<initiative_context>" not in prompt
 
         working_state_prompt = _build_resident_valkyrie_schema_repair_prompt(
@@ -1629,6 +1629,24 @@ summary: post-mortem source captured
         assert enqueued.trace_context == {"traceparent": "00-room-parent-01"}
         assert "The human replied to this prior room message:" in enqueued.initiative_context
         assert "transport check only" in enqueued.initiative_context
+
+    @pytest.mark.asyncio
+    async def test_mesh_directed_message_keeps_its_reply_channel_and_session(self) -> None:
+        from ravn.domain.models import OutputMode
+
+        dl = _make_drive_loop()
+        dl.enqueue = AsyncMock(return_value=True)
+        dl._try_steer_active_agent = AsyncMock(return_value=True)
+        await dl.handle_directed_message(
+            "Reply to the originating room",
+            {"session_id": "remote-room", "root_correlation_id": "remote-room"},
+            output_mode=OutputMode.AMBIENT,
+        )
+        dl._try_steer_active_agent.assert_not_awaited()
+        task = dl.enqueue.await_args.args[0]
+        assert task.output_mode == OutputMode.AMBIENT
+        assert task.session_id == "remote-room"
+        assert task.root_correlation_id == "remote-room"
 
     @pytest.mark.asyncio
     async def test_handle_directed_message_attaches_durable_inbox_ref(self) -> None:

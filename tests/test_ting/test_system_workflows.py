@@ -213,6 +213,12 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     assert delivery_stage_personas["Review implementation"] == ["reviewer"]
     assert delivery_stage_personas["Merge and close ticket"] == ["closer"]
     assert delivery_stage_personas["Publish delivery record"] == ["publisher"]
+    assert [
+        member["model"]
+        for node in delivery_flow.graph["nodes"]
+        if node.get("kind") == "stage"
+        for member in node["stageMembers"]
+    ] == ["gpt-5.6-terra"] * 4
     delivery_edge_labels = {edge["label"] for edge in delivery_flow.graph["edges"]}
     assert "review.changes_requested -> review.changes_requested" in delivery_edge_labels
     assert "review.passed -> review.passed" in delivery_edge_labels
@@ -224,7 +230,7 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     assert delivery_resources["Delivery Memory"]["url"] == (
         "https://mimir.yggdrasil.niuu.world/api/v1"
     )
-    assert delivery_resources["Delivery Memory"]["authRef"] == "integration:volundr"
+    assert delivery_resources["Delivery Memory"]["authRef"] == "workload:mimir"
 
     code_review_flow = next(
         workflow for workflow in workflows if workflow.name == "Code & Review Flow"

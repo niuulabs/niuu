@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { WizardStep } from './launchWizardModel';
+import type { WizardForm, WizardStep } from './launchWizardModel';
 
 export const STEPS: WizardStep[] = ['source', 'runtime', 'confirm'];
 const STEP_LABELS: Record<string, string> = {
@@ -58,6 +58,7 @@ export interface LaunchWizardProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   initialLaunchSpecRef?: string;
+  initialForm?: Partial<WizardForm>;
 }
 
 export function StepIndicator({ current, steps }: { current: WizardStep; steps: WizardStep[] }) {

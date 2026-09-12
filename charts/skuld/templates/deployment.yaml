@@ -1,3 +1,14 @@
+{{- if and .Values.homeVolume.enabled .Values.homeVolume.persistentTmp }}
+{{- $id := include "skuld.sessionId" . }}
+{{- if not (regexMatch "^[a-zA-Z0-9][a-zA-Z0-9._-]*$" $id) }}
+{{- fail "persistentTmp requires a non-empty, path-safe session id" }}
+{{- end }}
+{{- range .Values.extraContainers }}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9-]*$" .name) }}
+{{- fail "persistentTmp requires valid Kubernetes container names" }}
+{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,10 +17,8 @@ metadata:
     {{- include "skuld.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
-  {{- if include "skuld.residentEnabled" . }}
   strategy:
     type: Recreate
-  {{- end }}
   selector:
     matchLabels:
       {{- include "skuld.selectorLabels" . | nindent 6 }}
@@ -29,7 +38,16 @@ spec:
         {{- if and (include "skuld.residentEnabled" .) (not (hasKey .Values.podAnnotations "niuu.world/resident-name")) }}
         niuu.world/resident-name: {{ include "skuld.residentName" . | quote }}
         {{- end }}
-        {{- with .Values.podAnnotations }}
+        {{- $annotations := deepCopy (.Values.podAnnotations | default dict) }}
+        {{- if and .Values.git.credentials.tokenFile (hasKey $annotations "vault.hashicorp.com/agent-inject") }}
+        {{- $names := list "git-clone" "skuld" "devrunner" }}
+        {{- range .Values.extraContainers }}
+        {{- $names = append $names .name }}
+        {{- end }}
+        {{- $existing := splitList "," (index $annotations "vault.hashicorp.com/agent-inject-containers" | default "") }}
+        {{- $_ := set $annotations "vault.hashicorp.com/agent-inject-containers" (join "," (uniq (compact (concat $existing $names)))) }}
+        {{- end }}
+        {{- with $annotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
       {{- end }}
@@ -153,6 +171,35 @@ spec:
               readOnly: true
             {{- end }}
         {{- end }}
+        {{- if and .Values.homeVolume.enabled .Values.homeVolume.persistentTmp }}
+        - name: scratch-setup
+          image: "{{ .Values.git.image.repository }}:{{ .Values.git.image.tag }}"
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              umask 007
+              # Kubelet may create subPath directories as root before init runs.
+              # Hand back only these directories, never traverse retained files.
+              TARGET_OWNER="{{ .Values.securityContext.runAsUser }}:{{ .Values.securityContext.fsGroup }}"
+              mkdir -p /home/tmp/cache "/home/tmp/sessions/{{ include "skuld.sessionId" . }}"
+              chown -h "$TARGET_OWNER" /home/tmp /home/tmp/cache /home/tmp/sessions "/home/tmp/sessions/{{ include "skuld.sessionId" . }}"
+              {{- $names := list "skuld" "devrunner" "ravn" }}
+              {{- range .Values.extraContainers }}
+              {{- $names = append $names .name }}
+              {{- end }}
+              {{- range $names }}
+              mkdir -p "/home/tmp/sessions/{{ include "skuld.sessionId" $ }}/{{ . }}"
+              chown -h "$TARGET_OWNER" "/home/tmp/sessions/{{ include "skuld.sessionId" $ }}/{{ . }}"
+              chmod 1777 "/home/tmp/sessions/{{ include "skuld.sessionId" $ }}/{{ . }}"
+              {{- end }}
+          volumeMounts:
+            - name: home
+              mountPath: /home
+        {{- end }}
         {{- if .Values.git.repoUrl }}
         - name: git-clone
           image: "{{ .Values.git.image.repository }}:{{ .Values.git.image.tag }}"
@@ -166,31 +213,51 @@ spec:
               set -e
               export GIT_TERMINAL_PROMPT=0
               WORKSPACE="{{ include "skuld.workspacePath" . }}"
-              REPO_URL="{{ .Values.git.repoUrl }}"
-              BRANCH="{{ .Values.git.branch | default "main" }}"
-              BASE_BRANCH="{{ .Values.git.baseBranch | default "" }}"
-              {{- if .Values.git.credentials.secretName }}
-              # Inject credentials into HTTPS URL for fetch
-              PROTO="${REPO_URL%%://*}"
-              HOST_AND_PATH="${REPO_URL#*://}"
-              AUTH_URL="${PROTO}://${GIT_USERNAME}:${GIT_TOKEN}@${HOST_AND_PATH}"
-              {{- else }}
-              AUTH_URL="$REPO_URL"
-              {{- end }}
-              if [ -d "$WORKSPACE/.git" ] && git -C "$WORKSPACE" rev-parse HEAD >/dev/null 2>&1; then
-                echo "Workspace already contains a valid git repository, skipping clone"
-              else
-                # Clean up any broken .git state
-                rm -rf "$WORKSPACE/.git"
+              REPO_URL={{ .Values.git.repoUrl | replace "'" "'\\''" | squote }}
+              BRANCH={{ .Values.git.branch | default "main" | replace "'" "'\\''" | squote }}
+              BASE_BRANCH={{ .Values.git.baseBranch | default "" | replace "'" "'\\''" | squote }}
+              if ! git -C "$WORKSPACE" rev-parse --git-dir >/dev/null 2>&1; then
                 mkdir -p "$WORKSPACE"
                 git init "$WORKSPACE"
-                git -C "$WORKSPACE" remote add origin "$AUTH_URL"
+              fi
+              if git -C "$WORKSPACE" remote get-url origin >/dev/null 2>&1; then
+                git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
+              else
+                git -C "$WORKSPACE" remote add origin "$REPO_URL"
+              fi
+              {{- if .Values.git.credentials.tokenFile }}
+              # Persist references, never tokens. Every Git process reads the mounted secret.
+              test -s {{ .Values.git.credentials.tokenFile | replace "'" "'\\''" | squote }} || {
+                echo "Selected Git integration token was not injected" >&2; exit 1;
+              }
+              git -C "$WORKSPACE" config niuu.gitTokenFile {{ .Values.git.credentials.tokenFile | replace "'" "'\\''" | squote }}
+              git -C "$WORKSPACE" config niuu.gitUsername {{ .Values.git.credentials.username | replace "'" "'\\''" | squote }}
+              git -C "$WORKSPACE" config credential.helper ''
+              git -C "$WORKSPACE" config credential.useHttpPath true
+              git -C "$WORKSPACE" config "credential.$REPO_URL.helper" \
+                '!f() { [ "$1" = get ] || return 0; token=$(cat "$(git config niuu.gitTokenFile)") || return 1; [ -n "$token" ] || return 1; printf "username=%s\npassword=%s\n" "$(git config niuu.gitUsername)" "$token"; }; f'
+              {{- else if .Values.git.credentials.secretName }}
+              git -C "$WORKSPACE" config credential.helper \
+                '!f() { [ "$1" = get ] || return 0; printf "username=%s\npassword=%s\n" "${GIT_USERNAME:-x-access-token}" "$GIT_TOKEN"; }; f'
+              {{- end }}
+              {{- if .Values.git.userName }}
+              if ! git -C "$WORKSPACE" config user.name >/dev/null; then
+                git -C "$WORKSPACE" config user.name {{ .Values.git.userName | replace "'" "'\\''" | squote }}
+              fi
+              {{- end }}
+              {{- if .Values.git.userEmail }}
+              if ! git -C "$WORKSPACE" config user.email >/dev/null; then
+                git -C "$WORKSPACE" config user.email {{ .Values.git.userEmail | replace "'" "'\\''" | squote }}
+              fi
+              {{- end }}
+              if git -C "$WORKSPACE" rev-parse HEAD >/dev/null 2>&1; then
+                echo "Workspace already contains a valid git repository, skipping clone"
+              else
                 git -C "$WORKSPACE" fetch origin
                 if git -C "$WORKSPACE" rev-parse --verify "origin/$BRANCH" >/dev/null 2>&1; then
                   git -C "$WORKSPACE" checkout -B "$BRANCH" "origin/$BRANCH"
                   echo "Checked out existing branch $BRANCH"
                 else
-                  # Use explicit base branch, or fall back to remote HEAD
                   if [ -n "$BASE_BRANCH" ] && git -C "$WORKSPACE" rev-parse --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
                     FALLBACK="$BASE_BRANCH"
                   else
@@ -201,21 +268,18 @@ spec:
                   git -C "$WORKSPACE" checkout -B "$FALLBACK" "origin/$FALLBACK"
                   git -C "$WORKSPACE" checkout -b "$BRANCH"
                 fi
-                # Store clean URL without embedded credentials
-                git -C "$WORKSPACE" remote set-url origin "$REPO_URL"
                 echo "Repository cloned successfully"
               fi
               mkdir -p "$WORKSPACE/.services"
               touch "$WORKSPACE/.services/nginx.conf"
               echo "Ensured dynamic service nginx config exists"
-              {{- if .Values.git.credentials.secretName }}
-              # Configure credential helper so git push uses GIT_TOKEN env var
-              git -C "$WORKSPACE" config credential.helper \
-                '!f() { echo "username=${GIT_USERNAME:-x-access-token}"; echo "password=$GIT_TOKEN"; }; f'
-              echo "Git credential helper configured"
-              {{- end }}
-          {{- if .Values.git.credentials.secretName }}
+          {{- if or .Values.homeVolume.enabled (and .Values.git.credentials.secretName (not .Values.git.credentials.tokenFile)) }}
           env:
+            {{- if .Values.homeVolume.enabled }}
+            - name: HOME
+              value: {{ .Values.homeVolume.mountPath | quote }}
+            {{- end }}
+            {{- if and .Values.git.credentials.secretName (not .Values.git.credentials.tokenFile) }}
             - name: GIT_USERNAME
               value: {{ .Values.git.credentials.username | default "x-access-token" | quote }}
             - name: GIT_TOKEN
@@ -223,10 +287,19 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.git.credentials.secretName }}
                   key: {{ .Values.git.credentials.tokenKey | default "token" }}
+            {{- end }}
           {{- end }}
           volumeMounts:
             - name: sessions
               mountPath: {{ .Values.persistence.mountPath }}
+            {{- if .Values.homeVolume.enabled }}
+            - name: home
+              mountPath: {{ .Values.homeVolume.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- range .Values.extraVolumeMounts }}
+            - {{- toYaml . | nindent 14 }}
+            {{- end }}
         {{- end }}
         {{- range .Values.extraInitContainers }}
         - {{- toYaml . | nindent 10 }}
@@ -302,6 +375,7 @@ spec:
               protocol: TCP
             {{- end }}
           env:
+            {{- include "skuld.scratchEnv" . | nindent 12 }}
             - name: SKULD__SESSION__WORKSPACE_DIR
               value: {{ include "skuld.workspacePath" . | quote }}
             {{- if and .Values.volundr.apiUrl (not (include "skuld.residentEnabled" .)) }}
@@ -338,18 +412,7 @@ spec:
             - name: {{ .name }}
               value: {{ .value | quote }}
             {{- end }}
-            {{- if .Values.git.credentials.secretName }}
-            - name: GITHUB_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.git.credentials.secretName }}
-                  key: {{ .Values.git.credentials.tokenKey | default "token" }}
-            - name: GH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.git.credentials.secretName }}
-                  key: {{ .Values.git.credentials.tokenKey | default "token" }}
-            {{- end }}
+            {{- include "skuld.gitCredentialEnv" . | nindent 12 }}
             {{- if .Values.session.systemPrompt }}
             - name: SKULD__SESSION__SYSTEM_PROMPT
               value: {{ .Values.session.systemPrompt | quote }}
@@ -361,6 +424,7 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            {{- include "skuld.scratchMounts" (dict "root" . "container" "skuld") | nindent 12 }}
             - name: skuld-config
               mountPath: /etc/skuld/config.yaml
               subPath: config.yaml
@@ -411,6 +475,7 @@ spec:
             - --persona
             - {{ include "skuld.residentPersona" . | quote }}
           env:
+            {{- include "skuld.scratchEnv" . | nindent 12 }}
             - name: RAVN_PERSONA
               value: {{ include "skuld.residentPersona" . | quote }}
             - name: RAVN_PEER_ID
@@ -440,6 +505,7 @@ spec:
               containerPort: 7781
               protocol: TCP
           volumeMounts:
+            {{- include "skuld.scratchMounts" (dict "root" . "container" "ravn") | nindent 12 }}
             {{- if .Values.persistence.enabled }}
             - name: sessions
               mountPath: /workspace
@@ -463,7 +529,52 @@ spec:
             {{- end }}
         {{- end }}
         {{- range .Values.extraContainers }}
-        - {{- toYaml . | nindent 10 }}
+        {{- $container := deepCopy . }}
+        {{- if hasPrefix "ravn-" $container.name }}
+        {{- if and $.Values.git.credentials.tokenFile $container.command }}
+        {{- $loader := list "/bin/sh" "-c" "set -e; if [ -f /run/secrets/env.sh ]; then . /run/secrets/env.sh; fi; exec \"$@\"" "--" }}
+        {{- $_ := set $container "command" (concat $loader $container.command) }}
+        {{- end }}
+        {{- $env := $container.env | default list }}
+        {{- $names := dict }}
+        {{- range $env }}{{- $_ := set $names .name true }}{{- end }}
+        {{- range (include "skuld.gitCredentialEnv" $ | fromYamlArray) }}
+        {{- if not (hasKey $names .name) }}{{- $env = append $env . }}{{- end }}
+        {{- end }}
+        {{- $_ := set $container "env" $env }}
+        {{- end }}
+        {{- if and $.Values.homeVolume.enabled $.Values.homeVolume.persistentTmp }}
+        {{- $scratchMounts := include "skuld.scratchMounts" (dict "root" $ "container" $container.name) | fromYamlArray }}
+        {{- $mounts := $container.volumeMounts | default list }}
+        {{- range $mounts }}
+        {{- if or (eq .mountPath "/tmp") (eq .mountPath "/var/cache/niuu") }}
+        {{- fail "persistentTmp conflicts with an extra container scratch mount" }}
+        {{- end }}
+        {{- end }}
+        {{- $_ := set $container "volumeMounts" (concat $mounts $scratchMounts) }}
+        {{- $env := $container.env | default list }}
+        {{- $names := dict }}
+        {{- range $env }}{{- $_ := set $names .name true }}{{- end }}
+        {{- range (include "skuld.scratchEnv" $ | fromYamlArray) }}
+        {{- if not (hasKey $names .name) }}{{- $env = append $env . }}{{- end }}
+        {{- end }}
+        {{- $_ := set $container "env" $env }}
+        {{- end }}
+        {{- if $.Values.git.credentials.tokenFile }}
+        {{- $mounts := $container.volumeMounts | default list }}
+        {{- $paths := dict }}
+        {{- range $mounts }}
+        {{- $_ := set $paths .mountPath true }}
+        {{- end }}
+        {{- range $.Values.extraVolumeMounts }}
+        {{- if not (hasKey $paths .mountPath) }}
+        {{- $mounts = append $mounts . }}
+        {{- $_ := set $paths .mountPath true }}
+        {{- end }}
+        {{- end }}
+        {{- $_ := set $container "volumeMounts" $mounts }}
+        {{- end }}
+        - {{- toYaml $container | nindent 10 }}
         {{- end }}
         {{- if .Values.localServices.enabled }}
         # Devrunner - minimal runtime for local service testing
@@ -475,6 +586,7 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false
           env:
+            {{- include "skuld.scratchEnv" . | nindent 12 }}
             - name: SESSION_ID
               value: {{ include "skuld.sessionId" . | quote }}
             - name: SESSION_NAME
@@ -498,6 +610,7 @@ spec:
           resources:
             {{- toYaml .Values.localServices.devrunner.resources | nindent 12 }}
           volumeMounts:
+            {{- include "skuld.scratchMounts" (dict "root" . "container" "devrunner") | nindent 12 }}
             {{- if .Values.persistence.enabled }}
             - name: sessions
               mountPath: {{ .Values.persistence.mountPath }}

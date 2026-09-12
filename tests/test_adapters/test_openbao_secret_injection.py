@@ -151,11 +151,8 @@ class TestOpenBaoAgentInjectionAdapter:
         with (
             patch.object(adapter, "_ensure_service_account", new=AsyncMock()) as mock_sa,
             patch.object(adapter, "_create_or_update_configmap", new=AsyncMock()) as mock_cm,
-            patch.object(
-                adapter._admin,
-                "ensure_service_account_access",
-                new=AsyncMock(),
-            ) as mock_access,
+            patch.object(adapter._admin, "ensure_policy", new=AsyncMock()) as mock_policy,
+            patch.object(adapter._admin, "ensure_jwt_role", new=AsyncMock()) as mock_role,
         ):
             await adapter.ensure_secret_provider_class(
                 "alice",
@@ -165,18 +162,14 @@ class TestOpenBaoAgentInjectionAdapter:
             )
 
         mock_sa.assert_awaited_once_with("openbao-session-session-123", "session-123", "alice")
-        mock_access.assert_awaited_once_with(
-            mount_path="volundr",
-            user_id="alice",
-            tenant_id="acme",
-            auth_path="jwt-valhalla",
-            audience="https://k8s-issuer.valhalla.asgard.niuu.world",
-            service_account_namespace="skuld",
-            service_account_name="openbao-session-session-123",
-            policy_name="volundr-user-alice",
-            role_name="volundr-session-session-123",
-            ttl="1h",
+        mock_policy.assert_awaited_once_with(
+            "volundr-session-session-123",
+            'path "volundr/data/users/alice/github" {\n  capabilities = ["read"]\n}',
         )
+        role = mock_role.await_args.args[0]
+        assert role.policies == ("volundr-session-session-123",)
+        assert role.bound_subject == "system:serviceaccount:skuld:openbao-session-session-123"
+        assert role.auth_path == "jwt-valhalla"
         mock_cm.assert_awaited_once()
         cm_kwargs = mock_cm.await_args.kwargs
         assert cm_kwargs["name"] == "openbao-agent-session-123"
@@ -204,6 +197,24 @@ class TestOpenBaoAgentInjectionAdapter:
     async def test_provision_and_deprovision_user_are_noops(self, adapter):
         await adapter.provision_user("alice")
         await adapter.deprovision_user("alice")
+
+    def test_session_policy_only_reads_mapped_paths(self, adapter):
+        policy = adapter._session_policy(
+            "alice",
+            [
+                CredentialMapping(credential_name="claude", env_mappings={"TOKEN": "token"}),
+                CredentialMapping(credential_name="claude", file_mappings={"/token": "token"}),
+                CredentialMapping(credential_name="unmapped"),
+            ],
+        )
+        assert policy == 'path "volundr/data/users/alice/claude" {\n  capabilities = ["read"]\n}'
+
+    @pytest.mark.parametrize("name", ["*", "+", "${user}"])
+    def test_session_policy_rejects_nonliteral_paths(self, adapter, name):
+        with pytest.raises(ValueError, match="literal"):
+            adapter._session_policy(
+                "alice", [CredentialMapping(credential_name=name, env_mappings={"TOKEN": "token"})]
+            )
 
     def test_build_configmap_data_uses_jwt_auto_auth_and_templates(self, adapter):
         data = adapter._build_configmap_data(
@@ -277,6 +288,7 @@ class TestOpenBaoAgentInjectionAdapter:
     @pytest.mark.asyncio()
     async def test_cleanup_session_deletes_role_and_kubernetes_resources(self, adapter):
         with (
+            patch.object(adapter._admin, "delete_policy", new=AsyncMock()) as mock_policy,
             patch.object(adapter._admin, "delete_jwt_role", new=AsyncMock()) as mock_role,
             patch.object(adapter, "_delete_configmap", new=AsyncMock()) as mock_cm,
             patch.object(adapter, "_delete_service_account", new=AsyncMock()) as mock_sa,
@@ -284,12 +296,14 @@ class TestOpenBaoAgentInjectionAdapter:
             await adapter.cleanup_session("session-123")
 
         mock_role.assert_awaited_once_with("volundr-session-session-123", auth_path="jwt-valhalla")
+        mock_policy.assert_awaited_once_with("volundr-session-session-123")
         mock_cm.assert_awaited_once_with("openbao-agent-session-123")
         mock_sa.assert_awaited_once_with("openbao-session-session-123")
 
     @pytest.mark.asyncio()
     async def test_cleanup_session_logs_role_delete_error(self, adapter):
         with (
+            patch.object(adapter._admin, "delete_policy", new=AsyncMock()),
             patch.object(
                 adapter._admin,
                 "delete_jwt_role",

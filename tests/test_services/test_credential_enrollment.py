@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -210,6 +211,53 @@ async def test_start_is_idempotent_while_login_is_active() -> None:
     second = await service.start(principal=principal, slug="codex")
 
     assert second.id == first.id
+
+
+async def test_pending_worker_publishes_challenge_after_start():
+    service, repository, _, _, runner = _service()
+    principal = _principal("user-1")
+    enrollment = await service.start(principal=principal, slug="codex")
+    await repository.save(
+        replace(
+            enrollment, state=CredentialEnrollmentState.PENDING, verification_uri="", user_code=""
+        )
+    )
+    runner.poll_result = CredentialEnrollmentPoll(
+        state=CredentialEnrollmentState.AWAITING_USER,
+        verification_uri="https://auth.openai.com/codex/device",
+        user_code="NEW-CODE",
+    )
+    result = await service.get(enrollment.id, principal)
+    assert result.state == CredentialEnrollmentState.AWAITING_USER
+    assert result.user_code == "NEW-CODE"
+    assert result.verification_uri == runner.poll_result.verification_uri
+
+
+async def test_browser_code_is_owner_scoped_and_cannot_inject_terminal_controls():
+    service, repository, _, _, runner = _service()
+    principal = _principal("user-1")
+    attempt = await service.start(principal=principal, slug="codex")
+    await repository.save(replace(attempt, method="claude_setup"))
+    runner.submit_code = AsyncMock()
+    with pytest.raises(CredentialEnrollmentError, match="not found"):
+        await service.submit_code(attempt.id, _principal("other-user"), "test-code")
+    with pytest.raises(CredentialEnrollmentError, match="Invalid authorization code"):
+        await service.submit_code(attempt.id, principal, "test-code\ncommand")
+    runner.submit_code.assert_not_called()
+    result = await service.submit_code(attempt.id, principal, "test-code#test-state")
+    runner.submit_code.assert_awaited_once_with(result, "test-code#test-state")
+
+
+async def test_code_after_cancellation_is_rejected():
+    service, repository, _, _, runner = _service()
+    principal = _principal("user-1")
+    attempt = await service.start(principal=principal, slug="codex")
+    await repository.save(replace(attempt, method="claude_setup"))
+    await service.cancel(attempt.id, principal)
+    runner.submit_code = AsyncMock()
+    with pytest.raises(CredentialEnrollmentError, match="not waiting"):
+        await service.submit_code(attempt.id, principal, "test-code")
+    runner.submit_code.assert_not_called()
 
 
 async def test_expired_login_is_reaped_without_a_ui_poll() -> None:

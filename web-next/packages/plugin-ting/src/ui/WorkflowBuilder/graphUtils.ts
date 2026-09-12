@@ -263,6 +263,11 @@ export function workflowToYaml(
         if (node.role) {
           lines.push(`    role: ${JSON.stringify(node.role)}`);
         }
+        if (node.adapter) {
+          lines.push(`    adapter: ${JSON.stringify(node.adapter)}`);
+          lines.push(`    kwargs: ${JSON.stringify(node.kwargs ?? {})}`);
+          lines.push(`    secretKwargsEnv: ${JSON.stringify(node.secretKwargsEnv ?? {})}`);
+        }
         if (node.authRef) {
           lines.push(`    authRef: ${JSON.stringify(node.authRef)}`);
         }

@@ -19,6 +19,7 @@ import { useLint } from '../application/useLint';
 import { useRavns } from '../application/useRavns';
 import { RAVN_DOT_STATE, MOUNT_DOT_STATE } from './mimir.constants';
 import './MimirSubnav.css';
+import { accessScopeLabel } from '../domain/access-scope';
 
 interface MimirSubnavProps {
   ctx: PluginCtx;
@@ -28,7 +29,10 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
   const navigate = useNavigate();
 
   const { activeMount, mountName } = useActiveMount();
-  const setActiveMount = (m: string) => ctx.setTweak('activeMount', m);
+  const setActiveMount = (m: string) => {
+    ctx.setTweak('mimir.deployment', null);
+    ctx.setTweak('activeMount', m);
+  };
   const subnavCollapsed = Boolean(ctx.tweaks['mimir.subnavCollapsed']);
   const setSubnavCollapsed = (value: boolean) => ctx.setTweak('mimir.subnavCollapsed', value);
 
@@ -81,7 +85,7 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
           <button
             type="button"
             className="mm-subnav-collapsed-item"
-            onClick={() => navigate({ to: '/mimir/lint' })}
+            onClick={() => navigate({ to: '/mimir/registry/health' })}
             aria-label={`Lint errors ${errorCount}`}
             title={`Errors ${errorCount}`}
           >
@@ -115,7 +119,9 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
                   className="mm-subnav-collapsed-item"
                   onClick={() => {
                     ctx.setTweak('mimir.selectedWardenId', ravn.ravnId);
-                    navigate({ to: '/mimir/ravns' });
+                    setActiveMount(ravn.writeMount || ravn.mountNames[0] || 'all');
+                    ctx.setTweak('mimir.registryView', 'Analytics');
+                    navigate({ to: '/mimir/registry/analytics' });
                   }}
                   aria-label={`Warden ${ravn.ravnId}`}
                   title={ravn.ravnId}
@@ -178,7 +184,7 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
             >
               <StateDot state={MOUNT_DOT_STATE[m.status]} size={6} />
               <span className="mm-mount-row__name">{m.name}</span>
-              <span className="mm-mount-row__role">{m.role}</span>
+              <span className="mm-mount-row__role">{accessScopeLabel(m.accessScope)}</span>
             </button>
           ))}
         </div>
@@ -190,7 +196,7 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
         <button
           type="button"
           className="mm-subnav-btn"
-          onClick={() => navigate({ to: '/mimir/lint' })}
+          onClick={() => navigate({ to: '/mimir/registry/health' })}
           aria-label={`${errorCount} lint errors`}
         >
           <span className="mm-subnav-btn__glyph mm-subnav-btn__glyph--err" aria-hidden>
@@ -228,7 +234,7 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
       {/* ── Wardens roster ────────────────────────────────────────── */}
       {ravns.length > 0 && (
         <div className="mm-subnav-block">
-          <div className="mm-subnav-label">Wardens</div>
+          <div className="mm-subnav-label">Instance activity</div>
           {ravns.slice(0, 6).map((ravn) => (
             <button
               key={ravn.ravnId}
@@ -236,7 +242,9 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
               className="mm-subnav-btn"
               onClick={() => {
                 ctx.setTweak('mimir.selectedWardenId', ravn.ravnId);
-                navigate({ to: '/mimir/ravns' });
+                setActiveMount(ravn.writeMount || ravn.mountNames[0] || 'all');
+                ctx.setTweak('mimir.registryView', 'Analytics');
+                navigate({ to: '/mimir/registry/analytics' });
               }}
               aria-label={`Warden ${ravn.ravnId}`}
             >

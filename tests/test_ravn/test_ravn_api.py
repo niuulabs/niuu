@@ -1687,7 +1687,7 @@ def test_valkyrie_dashboard_accepts_typed_catalog_config(monkeypatch):
 
     dashboard = ValkyrieDashboardProjection(config).dashboard()
 
-    assert [environment["id"] for environment in dashboard["environments"]] == ["env-midgard"]
+    assert [environment["id"] for environment in dashboard["environments"]] == ["env-k8s-midgard"]
 
 
 def test_valkyrie_dashboard_rejects_malformed_typed_catalog():
@@ -3015,3 +3015,67 @@ def test_undirected_huddle_message_without_room_bridge_still_records(monkeypatch
     assert projection.dashboard()["huddles"][0]["messages"][0]["body"] == (
         "Room note for whoever reads the transcript."
     )
+
+
+@pytest.mark.parametrize("resident_id, environment_id", [("regin", "niuu"), ("ivaldi", "workshop")])
+def test_observed_residents_use_the_same_autonomy_roster(monkeypatch, resident_id, environment_id):
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", _valkyrie_catalog())
+    projection = ValkyrieDashboardProjection()
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.presence.announced",
+            source=resident_id,
+            summary="resident present",
+            urgency=0,
+            domain="infrastructure",
+            timestamp=datetime.now(UTC),
+            payload={"environment_id": environment_id, "valkyrie_id": resident_id},
+        )
+    )
+    app = FastAPI()
+    app.include_router(create_valkyrie_router(projection))
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/ravn/valkyrie/autonomy",
+            json={
+                "valkyrieId": resident_id,
+                "mode": "autonomous",
+                "reason": "operator change",
+            },
+        )
+        assert response.status_code == 200
+        for dashboard in (response.json(), projection.dashboard(), projection.dashboard()):
+            residents = [r for r in dashboard["valkyries"] if r["id"] == resident_id]
+            assert len(residents) == 1
+            assert residents[0]["autonomyMode"] == "autonomous"
+
+
+def test_workshop_inventory_and_telemetry_share_environment_id(monkeypatch):
+    monkeypatch.setenv(
+        "RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON",
+        json.dumps(
+            {
+                "environments": [
+                    {"id": "workshop", "kind": "workshop", "valkyrie": {"valkyrieId": "ivaldi"}}
+                ],
+            }
+        ),
+    )
+    projection = ValkyrieDashboardProjection()
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.runtime.started",
+            source="ivaldi",
+            summary="resident present",
+            urgency=0,
+            domain="infrastructure",
+            timestamp=datetime.now(UTC),
+            payload={"environment_id": "workshop", "valkyrie_id": "ivaldi", "source_count": 1},
+        )
+    )
+    dashboard = projection.dashboard()
+    env_id = dashboard["environments"][0]["id"]
+    assert dashboard["environments"][0]["kind"] == "workshop"
+    assert dashboard["environments"][0]["identitySource"] == "observed"
+    assert dashboard["valkyries"][0]["environmentId"] == env_id
+    assert dashboard["telemetry"]["runtime"][0]["environmentId"] == env_id

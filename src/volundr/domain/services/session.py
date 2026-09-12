@@ -21,6 +21,7 @@ from volundr.domain.models import (
     EventType,
     GitSource,
     IntegrationConnection,
+    IntegrationType,
     Principal,
     RealtimeEvent,
     Session,
@@ -809,6 +810,13 @@ class SessionService:
             workload_type = session.workload_type
         if not workload_config and session.workload_config:
             workload_config = dict(session.workload_config)
+        if workload_type == "ravn_flock" and not initial_prompt:
+            initial_prompt = str((workload_config or {}).get("initiative_context") or "")
+
+        if not integration_ids:
+            integration_ids = list((workload_config or {}).get("integration_ids") or [])
+        if integration_ids:
+            workload_config = {**(workload_config or {}), "integration_ids": integration_ids}
 
         # Set chat_endpoint eagerly — Flux/Gateway sessions know their public
         # route before the pod is ready; local mode falls back to the root proxy.
@@ -894,6 +902,11 @@ class SessionService:
                 workload_config=workload_config,
             )
 
+            # Contributors may have persisted launch configuration. Keep it
+            # when transitioning from starting to provisioning.
+            session = await self._repository.get(session.id)
+            if session is None:
+                return
             provisioning = (
                 session.with_status(SessionStatus.PROVISIONING)
                 .with_endpoints(
@@ -914,6 +927,9 @@ class SessionService:
 
         except Exception as e:
             logger.error("Provisioning failed for session %s: %s", session.id, e)
+            session = await self._repository.get(session.id)
+            if session is None:
+                return
             failed = session.with_status(SessionStatus.FAILED).with_error(str(e))
             await self._repository.update(failed)
 
@@ -945,12 +961,45 @@ class SessionService:
                 fetched = await asyncio.gather(
                     *(self._integration_repo.get_connection(cid) for cid in integration_ids),
                 )
-                resolved_connections = [c for c in fetched if c is not None and c.enabled]
+                if any(c is None or not c.enabled for c in fetched):
+                    raise ValueError("Selected integration connection is missing or disabled")
+                resolved_connections = list(fetched)
+                if principal and any(
+                    connection.owner_id != principal.user_id for connection in resolved_connections
+                ):
+                    raise ValueError("Integration connection not found")
         elif principal and self._integration_repo:
             all_connections = await self._integration_repo.list_connections(
                 principal.user_id,
             )
             resolved_connections = [c for c in all_connections if c.enabled]
+
+        if integration_ids and self._integration_repo is None:
+            raise ValueError("Selected integrations require a configured integration repository")
+        # A saved selection can predate the owner's Git integration. Preserve
+        # explicit source-control choices; otherwise attach enabled sources.
+        if (
+            session.repo
+            and principal
+            and self._integration_repo
+            and integration_ids
+            and not any(
+                c.integration_type == IntegrationType.SOURCE_CONTROL for c in resolved_connections
+            )
+        ):
+            source_connections = await self._integration_repo.list_connections(
+                principal.user_id,
+                integration_type=IntegrationType.SOURCE_CONTROL,
+            )
+            resolved_connections.extend(c for c in source_connections if c.enabled)
+
+        if resolved_connections:
+            workload_config = {
+                **(workload_config or {}),
+                "integration_ids": [c.id for c in resolved_connections],
+            }
+            session = session.model_copy(update={"workload_config": workload_config})
+            await self._repository.update(session)
 
         context = SessionContext(
             principal=principal,

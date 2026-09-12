@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 
 from niuu.adapters.inbound.rest_instances import create_instances_router
+from niuu.config import InstanceRegistryConfig
 from niuu.domain.agent_directory import AgentDirectoryEntry, AgentDirectoryPage
 from niuu.domain.models import (
     InstanceKind,
@@ -279,6 +280,18 @@ def test_aggregate_agent_detail_returns_generic_404() -> None:
     assert found.json()["sourceInstanceId"] == "observatory-a"
     assert missing.status_code == 404
     assert missing.json() == {"detail": "Agent not found"}
+
+
+def test_default_instance_catalog_labels_ting() -> None:
+    client = _client(StubInstanceService(), catalog=InstanceRegistryConfig().catalog)
+
+    response = client.get("/api/v1/niuu/instances/catalog")
+
+    assert response.status_code == 200
+    entry = next(item for item in response.json() if item["kind"] == "ting")
+    assert entry["label"] == "Ting"
+    assert entry["registerable"] is True
+    assert entry["filterable"] is True
 
 
 def test_get_instance_catalog_reads_catalog_from_settings() -> None:

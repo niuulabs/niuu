@@ -12,17 +12,14 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, Field
 
+from mimir.connections import normalize_mimir_workload_config, resolve_mimir_registry_refs
 from niuu.domain.models import Principal
 from niuu.domain.services.token_scope import require_scope
 from niuu.domain.session_endpoint import public_session_endpoint
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.dispatch import resolve_volundr_factory
 from ting.domain.models import WorkflowDefinition, WorkflowScope
-from ting.domain.services.dispatch_service import (
-    _normalize_mimir_workload_config,
-    _resolve_mimir_registry_refs,
-    _resolve_workflow_execution,
-)
+from ting.domain.services.dispatch_service import _resolve_workflow_execution
 from ting.domain.utils import _session_name, _slugify
 from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_mimir_from_snapshot
 from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrPort, VolundrSession
@@ -395,8 +392,8 @@ async def launch_workflow_execution(
         launch=launch,
         slug=launch_slug,
     )
-    workflow_mimir = _resolve_mimir_registry_refs(
-        _normalize_mimir_workload_config(
+    workflow_mimir = resolve_mimir_registry_refs(
+        normalize_mimir_workload_config(
             workflow_mimir_from_snapshot(workflow_snapshot),
             hosted_url=settings.dispatch.flock.mimir_hosted_url,
         ),
@@ -413,6 +410,10 @@ async def launch_workflow_execution(
             detail="No Volundr connection is available for this user",
         )
 
+    integration_ids = await target_adapter.list_integration_ids(
+        auth_token=bearer_token,
+        principal=principal,
+    )
     session = await target_adapter.spawn_session(
         SpawnRequest(
             name=session_name,
@@ -458,6 +459,7 @@ async def launch_workflow_execution(
                 ),
             },
             credential_names=_mimir_auth_credential_names(workflow_mimir),
+            integration_ids=integration_ids,
             definition=resolved_definition,
         ),
         auth_token=bearer_token,
@@ -566,7 +568,12 @@ def _mimir_auth_credential_names(mimir_config: dict[str, Any]) -> list[str]:
         if not isinstance(raw_ref, dict):
             continue
         auth_ref = str(raw_ref.get("auth_ref") or raw_ref.get("authRef") or "").strip()
-        if not auth_ref or auth_ref.startswith("integration:") or auth_ref in seen:
+        if (
+            not auth_ref
+            or auth_ref == "workload:mimir"
+            or auth_ref.startswith("integration:")
+            or auth_ref in seen
+        ):
             continue
         seen.add(auth_ref)
         names.append(auth_ref)

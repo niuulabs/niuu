@@ -1,0 +1,51 @@
+{{- if .Values.postgres.enabled }}
+{{- if ne .Values.engine "postgres" }}
+{{- fail "postgres.enabled requires engine=postgres" }}
+{{- end }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "gbrain.name" . }}-db
+spec:
+  # Only the one-shot database-init Job consumes this generated credential.
+  enableSuperuserAccess: true
+  inheritedMetadata:
+    labels:
+      niuu.world/cluster: {{ .Values.niuu.cluster | quote }}
+      niuu.world/namespace: {{ .Release.Namespace | quote }}
+      niuu.world/entity-id: {{ printf "%s-db" (.Values.niuu.instanceId | default .Release.Name) | quote }}
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/component: database
+  instances: {{ .Values.postgres.instances }}
+  imageName: {{ .Values.postgres.image | quote }}
+  primaryUpdateMethod: switchover
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: required
+  managed:
+    roles:
+      - name: gbrain
+        login: true
+        # gbrain migrations require its database owner to bypass its RLS policies.
+        bypassrls: true
+  bootstrap:
+    initdb:
+      database: gbrain
+      owner: gbrain
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS vector
+        - CREATE EXTENSION IF NOT EXISTS pg_trgm
+        - CREATE EXTENSION IF NOT EXISTS pgcrypto
+  storage:
+    {{- if .Values.postgres.storageClass }}
+    storageClass: {{ .Values.postgres.storageClass | quote }}
+    {{- end }}
+    size: {{ .Values.postgres.size | quote }}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+{{- end }}

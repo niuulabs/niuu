@@ -195,11 +195,13 @@ class ForgeService:
         *,
         launch_spec: str | None = None,
         principal: Principal | None = None,
+        integration_ids: list[str] | None = None,
     ) -> Session:
         return await self._session_service.start_session(
             session_id,
             launch_spec=launch_spec,
             principal=principal,
+            integration_ids=integration_ids,
         )
 
     async def stop_session(

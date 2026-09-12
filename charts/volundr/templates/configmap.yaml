@@ -430,8 +430,14 @@ data:
       secret_kwargs_env: {}
       {{- end }}
 
-    {{- if and .Values.integrations .Values.integrations.definitions }}
+    {{- if .Values.integrations }}
     integrations:
+      {{- with .Values.integrations.repository }}
+      repository:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      database_name: {{ .Values.integrations.databaseName | default "" | quote }}
+      {{- if .Values.integrations.definitions }}
       definitions:
         {{- range .Values.integrations.definitions }}
         - slug: {{ .slug | quote }}
@@ -460,6 +466,7 @@ data:
           file_mounts: {{ .file_mounts | toJson }}
           {{- end }}
         {{- end }}
+      {{- end }}
     {{- end }}
 
     {{- if .Values.oauth }}

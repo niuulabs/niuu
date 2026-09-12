@@ -134,6 +134,8 @@ interface IntegrationConnectionRecord {
   updatedAt?: string;
   updated_at?: string;
   config?: Record<string, unknown>;
+  credentialExpiresAt?: string;
+  credential_expires_at?: string;
   credentialStatus?: string;
   credential_status?: string;
   credentialErrorCode?: string | null;
@@ -152,6 +154,7 @@ interface CredentialEnrollmentRecord {
   userCode: string;
   expiresAt: string;
   errorCode: string;
+  inputRequired?: boolean;
 }
 
 interface NormalizedSettingsSection {
@@ -270,7 +273,7 @@ function isOauthIntegration(entry: IntegrationCatalogEntry | null): boolean {
 
 function isDeviceCodeIntegration(entry: IntegrationCatalogEntry | null): boolean {
   if (!entry) return false;
-  return (entry.authType ?? entry.auth_type) === 'device_code';
+  return Boolean(enrollmentSpec(entry));
 }
 
 function enrollmentSpec(
@@ -315,6 +318,7 @@ function normalizeIntegrationRecord(integration: IntegrationConnectionRecord) {
     enabled: integration.enabled !== false,
     createdAt: integration.createdAt ?? integration.created_at ?? '',
     updatedAt: integration.updatedAt ?? integration.updated_at ?? '',
+    credentialExpiresAt: integration.credentialExpiresAt ?? integration.credential_expires_at,
     credentialStatus: integration.credentialStatus ?? integration.credential_status ?? 'unknown',
     credentialErrorCode:
       integration.credentialErrorCode ?? integration.credential_error_code ?? null,
@@ -1021,6 +1025,8 @@ function IntegrationsResourceCard({
   const [oauthPendingSlug, setOauthPendingSlug] = useState<string | null>(null);
   const [credentialEnrollment, setCredentialEnrollment] =
     useState<CredentialEnrollmentRecord | null>(null);
+  const [authorizationCode, setAuthorizationCode] = useState('');
+  const [codeSubmitted, setCodeSubmitted] = useState(false);
   const [lastTestStatus, setLastTestStatus] = useState<Record<string, string>>({});
 
   const catalogQuery = useQuery({
@@ -1055,15 +1061,13 @@ function IntegrationsResourceCard({
     integrationsQuery.data?.find((integration) => (integration.slug ?? '') === selectedCatalogId) ??
     null;
   const selectedEnrollmentSpec = enrollmentSpec(selectedEntry);
+  const loginLabel = selectedEnrollmentSpec?.method === 'claude_setup' ? 'Claude Code' : 'Codex';
 
-  const credentialSchema = useMemo(
-    () =>
-      normalizeCatalogSchema(selectedEntry?.credentialSchema ?? selectedEntry?.credential_schema),
-    [selectedEntry],
+  const credentialSchema = normalizeCatalogSchema(
+    selectedEntry?.credentialSchema ?? selectedEntry?.credential_schema,
   );
-  const configSchema = useMemo(
-    () => normalizeCatalogSchema(selectedEntry?.configSchema ?? selectedEntry?.config_schema),
-    [selectedEntry],
+  const configSchema = normalizeCatalogSchema(
+    selectedEntry?.configSchema ?? selectedEntry?.config_schema,
   );
   const effectiveCredentialName =
     credentialName ||
@@ -1216,6 +1220,10 @@ function IntegrationsResourceCard({
     },
     onSuccess: (enrollment) => {
       setCredentialEnrollment(enrollment);
+      queryClient.setQueryData(
+        ['settings-resource', providerId, resource.id, 'credential-enrollment', enrollment.id],
+        enrollment,
+      );
     },
   });
 
@@ -1244,7 +1252,9 @@ function IntegrationsResourceCard({
     },
   });
 
-  const currentEnrollment = enrollmentQuery.data ?? credentialEnrollment;
+  const enrollmentResult = enrollmentQuery.data ?? credentialEnrollment;
+  const currentEnrollment =
+    enrollmentResult?.providerSlug === selectedCatalogId ? enrollmentResult : null;
 
   useEffect(() => {
     if (currentEnrollment?.state !== 'complete') return;
@@ -1264,6 +1274,24 @@ function IntegrationsResourceCard({
     },
     onSuccess: (enrollment) => {
       setCredentialEnrollment(enrollment);
+      queryClient.setQueryData(
+        ['settings-resource', providerId, resource.id, 'credential-enrollment', enrollment.id],
+        enrollment,
+      );
+    },
+  });
+
+  const codeMutation = useMutation({
+    mutationFn: async () => {
+      if (!currentEnrollment || !resource.enrollmentCodePath)
+        throw new Error('Code submission is unavailable');
+      return client.post(resource.enrollmentCodePath.replace('{id}', currentEnrollment.id), {
+        code: authorizationCode.trim(),
+      });
+    },
+    onSuccess: () => {
+      setAuthorizationCode('');
+      setCodeSubmitted(true);
     },
   });
 
@@ -1306,6 +1334,8 @@ function IntegrationsResourceCard({
                     `${key}-credential`,
                 );
                 setCredentialEnrollment(null);
+                setAuthorizationCode('');
+                setCodeSubmitted(false);
                 setSelectedExistingCredential('');
                 setCredentialValues(
                   buildInitialResourceValues(
@@ -1355,7 +1385,7 @@ function IntegrationsResourceCard({
           </div>
 
           {selectedIsDeviceCode ? (
-            <div className="settings-resource__actions">
+            <div className="settings-resource__actions settings-resource__actions--login">
               {selectedConnection ? (
                 <span
                   className={cn(
@@ -1371,17 +1401,74 @@ function IntegrationsResourceCard({
                 </span>
               ) : null}
               {currentEnrollment?.state === 'awaiting_user' ? (
-                <div className="settings-resource__row-note">
+                <div className="settings-resource__callout settings-login">
                   Open{' '}
-                  <a href={currentEnrollment.verificationUri} target="_blank" rel="noreferrer">
+                  <a
+                    className="settings-login__link"
+                    href={currentEnrollment.verificationUri}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     the provider login page
                   </a>{' '}
-                  and enter code <strong>{currentEnrollment.userCode}</strong>.
+                  {currentEnrollment.inputRequired ? (
+                    'and approve access, then paste the authorization code below.'
+                  ) : (
+                    <>
+                      and enter code <strong>{currentEnrollment.userCode}</strong>.
+                    </>
+                  )}
+                  {currentEnrollment.inputRequired && !codeSubmitted ? (
+                    <div className="settings-login__code">
+                      <label
+                        className="settings-field__label"
+                        htmlFor="provider-authorization-code"
+                      >
+                        Authorization code
+                      </label>
+                      <input
+                        id="provider-authorization-code"
+                        className="settings-field__control"
+                        placeholder="Paste the code from Claude here"
+                        type="password"
+                        autoComplete="off"
+                        value={authorizationCode}
+                        onChange={(event) => setAuthorizationCode(event.target.value)}
+                      />
+                      <button
+                        type="button"
+                        className="settings-shell__save-button"
+                        disabled={!authorizationCode.trim() || codeMutation.isPending}
+                        onClick={() => codeMutation.mutate()}
+                      >
+                        Complete sign-in
+                      </button>
+                      {codeMutation.isError ? (
+                        <span role="alert">Could not submit the code. Retry.</span>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {codeSubmitted ? <span role="status">Completing sign-in…</span> : null}
                 </div>
+              ) : null}
+              {selectedConnection?.credentialExpiresAt ? (
+                <span className="settings-resource__copy">
+                  Access expires{' '}
+                  {new Date(selectedConnection.credentialExpiresAt).toLocaleDateString()}. Reconnect
+                  to renew.
+                </span>
+              ) : null}
+              {currentEnrollment?.state === 'pending' ? (
+                <span role="status">Preparing sign-in…</span>
+              ) : null}
+              {selectedEnrollmentSpec?.method === 'claude_setup' ? (
+                <p className="settings-resource__copy">
+                  Connects Claude Code using your subscription.
+                </p>
               ) : null}
               {currentEnrollment?.state === 'complete' ? (
                 <span className="settings-shell__status settings-shell__status--success">
-                  Codex account connected.
+                  {loginLabel} account connected.
                 </span>
               ) : null}
               {currentEnrollment &&
@@ -1393,17 +1480,19 @@ function IntegrationsResourceCard({
               ) : null}
               {enrollmentMutation.isError ? (
                 <span className="settings-shell__status settings-shell__status--error">
-                  Could not start the Codex login. Retry or contact an administrator.
+                  {enrollmentMutation.error instanceof Error
+                    ? enrollmentMutation.error.message
+                    : 'Could not start sign-in.'}
                 </span>
               ) : null}
               {enrollmentQuery.isError ? (
                 <span className="settings-shell__status settings-shell__status--error">
-                  Could not read the Codex login status. The login remains safe to retry.
+                  Could not read the login status. Please retry.
                 </span>
               ) : null}
               {cancelEnrollmentMutation.isError ? (
                 <span className="settings-shell__status settings-shell__status--error">
-                  Could not cancel the Codex login. It will be removed automatically after expiry.
+                  Could not cancel the login. It will be removed automatically after expiry.
                 </span>
               ) : null}
               <button
@@ -1416,16 +1505,19 @@ function IntegrationsResourceCard({
                   !resource.enrollmentStartPath
                 }
                 onClick={() => {
+                  setCodeSubmitted(false);
+                  setAuthorizationCode('');
                   enrollmentMutation.mutate();
                 }}
               >
                 {enrollmentMutation.isPending
                   ? 'Starting…'
                   : selectedConnection
-                    ? 'Reconnect Codex'
-                    : 'Connect Codex'}
+                    ? `Reconnect ${loginLabel}`
+                    : `Connect ${loginLabel}`}
               </button>
-              {currentEnrollment?.state === 'awaiting_user' ? (
+              {currentEnrollment &&
+              ['pending', 'awaiting_user'].includes(currentEnrollment.state) ? (
                 <button
                   type="button"
                   className="settings-resource__row-action"
@@ -1721,8 +1813,12 @@ function SettingsSectionPanel({
     );
   }
 
+  const localSection =
+    snapshot.provider.source === 'local'
+      ? snapshot.provider.sections.find((item) => item.id === section.id)
+      : null;
   const hasWritableFields = Boolean(client && section.fields.some((field) => !field.readOnly));
-  const isWritable = Boolean(client && section.writable);
+  const isWritable = Boolean(localSection || (client && section.writable));
 
   return (
     <div className="settings-shell__panel">
@@ -1753,6 +1849,8 @@ function SettingsSectionPanel({
           {isWritable ? 'Editable' : 'Read only'}
         </div>
       </div>
+
+      {localSection?.render()}
 
       {section.fields.length > 0 ? (
         <form

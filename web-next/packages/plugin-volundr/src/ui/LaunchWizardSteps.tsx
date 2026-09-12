@@ -65,7 +65,7 @@ export function SourceStep({
         {form.sourcetype === 'git' ? (
           <div className="niuu:grid niuu:grid-cols-2 niuu:gap-4">
             <Field label="Repository">
-              {repos.length > 0 ? (
+              {repos.length > 0 && (!form.repo || currentRepo) ? (
                 <RepoSelect
                   repos={repos}
                   value={form.repo}
@@ -82,6 +82,7 @@ export function SourceStep({
                 />
               ) : (
                 <Input
+                  aria-label="Repository"
                   value={form.repo}
                   onChange={(e) => update({ repo: e.target.value, workspaceId: '' })}
                   placeholder="github.com/niuulabs/volundr"
@@ -89,7 +90,7 @@ export function SourceStep({
               )}
             </Field>
             <Field label="Branch">
-              {branchOptions.length ? (
+              {branchOptions.length && (!form.branch || branchOptions.includes(form.branch)) ? (
                 currentRepo?.branches.length ? (
                   <BranchSelect
                     repos={repos}

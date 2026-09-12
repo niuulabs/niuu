@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field, model_validator
 class WardenMimirBinding(BaseModel):
     """Mimir mount attachments for a warden."""
 
+    instance_configs: dict[str, dict] = Field(default_factory=dict)
+
     mount_names: list[str] = Field(default_factory=list)
     write_mount: str = ""
     read_mount_names: list[str] = Field(default_factory=list)

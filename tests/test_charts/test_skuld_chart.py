@@ -1,5 +1,6 @@
 """Tests for Skuld Helm chart templates."""
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -253,6 +254,7 @@ class TestDeploymentTemplate:
         rendered = _render_skuld_chart(
             tmp_path,
             {
+                "git": {"credentials": {"secretName": "github-token"}},
                 "envVars": [{"name": "SKULD__MESH__ENABLED", "value": "true"}],
                 "mesh": {
                     "enabled": True,
@@ -303,6 +305,14 @@ class TestDeploymentTemplate:
         containers = {container["name"]: container for container in pod_spec["containers"]}
         assert "skuld" in containers
         assert "ravn-coder" in containers
+        for name in ("skuld", "ravn-coder"):
+            env = {entry["name"]: entry for entry in containers[name]["env"]}
+            for variable in ("GIT_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
+                assert env[variable]["valueFrom"]["secretKeyRef"] == {
+                    "name": "github-token",
+                    "key": "token",
+                }
+        assert not any(entry["name"] == "GIT_TOKEN" for entry in containers["nginx"].get("env", []))
         assert {"name": "SKULD__MESH__ENABLED", "value": "true"} in containers["skuld"]["env"]
         assert {"name": "mesh-pub", "containerPort": 7480, "protocol": "TCP"} in containers[
             "skuld"
@@ -414,6 +424,11 @@ class TestHelpersTemplate:
     def test_has_labels_helper(self, helpers_tpl):
         """Test helpers has labels function."""
         assert 'define "skuld.labels"' in helpers_tpl
+
+
+def test_session_restart_never_overlaps_workers(tmp_path):
+    rendered = _render_skuld_chart(tmp_path, {"session": {"id": "research"}})
+    assert _deployment_from_rendered(rendered)["spec"]["strategy"] == {"type": "Recreate"}
 
 
 class TestResidentWorkloadIdentityConfigFirst:
@@ -910,3 +925,49 @@ def _deployment_from_rendered(rendered_yaml: str) -> dict:
             return document
     pytest.fail("Deployment was not rendered")
     raise AssertionError("Deployment was not rendered")
+
+
+def test_user_git_integration_authenticates_nested_checkout(tmp_path):
+    token = tmp_path / "integration-token"
+    token.write_text("test-user-integration-token")
+    rendered = _render_skuld_chart(
+        tmp_path,
+        {
+            "git": {
+                "repoUrl": "https://github.com/niuulabs/niuu.git",
+                "credentials": {
+                    "tokenFile": str(token),
+                    "secretName": "unused-cluster-secret",
+                    "username": "x-access-token",
+                },
+            },
+            "extraContainers": [
+                {"name": "ravn-coder", "image": "test", "command": ["python", "-m", "ravn"]}
+            ],
+        },
+    )
+    containers = _deployment_from_rendered(rendered)["spec"]["template"]["spec"]["containers"]
+    coder = next(c for c in containers if c["name"] == "ravn-coder")
+    assert coder["command"][:2] == ["/bin/sh", "-c"]
+    assert ". /run/secrets/env.sh" in coder["command"][2]
+    assert coder["command"][4:] == ["python", "-m", "ravn"]
+    for name in ("skuld", "ravn-coder"):
+        env = next(c["env"] for c in containers if c["name"] == name)
+        assert not any(
+            e.get("valueFrom", {}).get("secretKeyRef", {}).get("name") == "unused-cluster-secret"
+            for e in env
+        )
+        process_env = {**os.environ, **{e["name"]: e["value"] for e in env if "value" in e}}
+        process_env.update(
+            GIT_TERMINAL_PROMPT="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull
+        )
+        result = subprocess.run(
+            ["git", "credential", "fill"],
+            input="url=https://github.com/niuulabs/niuu.git\n\n",
+            text=True,
+            capture_output=True,
+            env=process_env,
+            cwd=tmp_path,
+            check=True,
+        )
+        assert "password=test-user-integration-token" in result.stdout

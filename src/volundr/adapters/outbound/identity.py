@@ -6,11 +6,10 @@ The ``user_repository`` kwarg is injected at runtime by main.py.
 
 from __future__ import annotations
 
-import base64
-import json
 import logging
 from typing import Any
 
+from niuu.adapters.identity_headers import parse_roles_header as _parse_roles_header
 from volundr.domain.models import Principal, StorageQuota, TenantRole, User, UserStatus
 from volundr.domain.ports import (
     IdentityPort,
@@ -20,29 +19,6 @@ from volundr.domain.ports import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_roles_header(raw: str) -> list[str]:
-    """Parse roles from an Envoy header value.
-
-    Envoy base64-encodes non-string JWT claims (e.g. arrays).
-    This handles both plain comma-separated strings and base64-encoded
-    JSON arrays.
-    """
-    if not raw:
-        return []
-
-    # Try base64 decode → JSON array (Envoy encodes array claims this way)
-    try:
-        decoded = base64.b64decode(raw).decode("utf-8")
-        parsed = json.loads(decoded)
-        if isinstance(parsed, list):
-            return [str(r) for r in parsed]
-    except Exception:
-        pass  # Expected: not base64/JSON, fall back to comma-separated parsing
-
-    # Fall back to comma-separated plain text
-    return [r.strip() for r in raw.split(",") if r.strip()]
 
 
 class AllowAllIdentityAdapter(IdentityPort):

@@ -908,13 +908,15 @@ function buildSplitVolundrService(
 ): IVolundrService {
   return {
     ...catalog,
-    getFeatures: () => forge.getFeatures(),
+    getFeatures: (instanceId) => forge.getFeatures(instanceId),
     getSessions: () => forge.getSessions(),
     getSession: (id) => forge.getSession(id),
     getActiveSessions: () => forge.getActiveSessions(),
     getStats: () => forge.getStats(),
     getRepos: () => forge.getRepos(),
     getTargets: () => Promise.resolve(forge.getTargets?.() ?? []),
+    listUserHome: (instanceId, path) => forge.listUserHome(instanceId, path),
+    deleteUserHomePath: (instanceId, path) => forge.deleteUserHomePath(instanceId, path),
     subscribe: (callback) => forge.subscribe(callback),
     subscribeStats: (callback) => forge.subscribeStats(callback),
     getAvailableMcpServers: () => forge.getAvailableMcpServers(),
@@ -1381,8 +1383,12 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     : demoService(config, 'ravn.wardens', createMockWardenStore);
 
   // ── Mímir ──
+  const knowledgeRegistryBase = resolveNiuuRegistryBase(config);
   const mimir = hasHttpBackend(mimirSvc)
-    ? buildMimirHttpAdapter(createApiClient(mimirSvc.baseUrl))
+    ? buildMimirHttpAdapter(
+        createApiClient(mimirSvc.baseUrl),
+        knowledgeRegistryBase ? createApiClient(`${knowledgeRegistryBase}/knowledge`) : undefined,
+      )
     : demoService(config, 'mimir', createMimirMockAdapter);
   const bifrostBase = resolveBifrostServiceBase(config);
   const bifrost: IBifrostService = bifrostBase

@@ -69,7 +69,9 @@ class HttpMimirAdapter(MimirPort):
         auth: MimirAuth | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
         environment_id: str = "",
+        mount: str | None = None,
     ) -> None:
+        self._mount = mount
         self._base_url = base_url.rstrip("/")
         self._environment_id = environment_id
         self._auth = auth
@@ -148,6 +150,10 @@ class HttpMimirAdapter(MimirPort):
         is the single place that can report whether the shared knowledge base
         is reachable at all.
         """
+        if self._mount is not None:
+            kwargs["params"] = {**(kwargs.get("params") or {}), "mount": self._mount}
+            if isinstance(kwargs.get("json"), dict):
+                kwargs["json"] = {**kwargs["json"], "mount": self._mount}
         started = monotonic()
         operation = f"{method} {path}"
         client = await self._get_client()
@@ -287,6 +293,27 @@ class HttpMimirAdapter(MimirPort):
         response = await self._request("GET", "/mimir/pages", params=params)
         response.raise_for_status()
         return [_parse_page_meta(m) for m in response.json()]
+
+    async def inspect_instance(self) -> dict:
+        response = await self._request("GET", "/mimir/instances/inspect")
+        if response.status_code == 404:
+            return {
+                "backend": "Mimir HTTP",
+                "metrics": {},
+                "unavailable": [
+                    "This server does not expose instance inspection. Upgrade the remote Mimir "
+                    "service for backend metrics and maintenance details."
+                ],
+            }
+        response.raise_for_status()
+        instances = response.json()
+        if len(instances) == 1:
+            return {key: value for key, value in instances[0].items() if key != "mount"}
+        return {
+            "backend": "Mimir federation",
+            "metrics": {"Instances": len(instances)},
+            "unavailable": ["Select an individual backend to inspect its native metrics"],
+        }
 
     async def summarize(self) -> MimirMountSummary:
         """GET /mimir/summary — counts and last-write time in one cheap call.

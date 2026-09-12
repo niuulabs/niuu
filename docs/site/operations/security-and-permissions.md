@@ -1,18 +1,37 @@
-# Security And Permissions
+# Execution boundaries and permissions
 
-Treat Niuu as a powerful automation platform.
+A Niuu session can run code, read files, and call services using the authority
+available to its runtime. The execution backend determines the isolation boundary.
 
-Agents can read files, run commands, call tools, and use credentials according to the runtime and infrastructure you configure.
+## Local processes
 
-## Operator guidance
+Mini mode starts processes as the host OS user. A workspace directory is not an
+access-control boundary around that account. Local mounts can expose an existing
+checkout, and the runtime may inherit host credentials or environment settings.
+Use the local path for work whose code and tools you trust with that account.
 
-- Use throwaway repos for demos.
-- Scope credentials tightly.
-- Keep secrets out of prompts and knowledge pages.
-- Review diffs before promoting work.
-- Use OIDC and authorization in shared environments.
-- Prefer dedicated machines, namespaces, or clusters for untrusted automation.
+## Remote runtimes
 
-## Production baseline
+A Kubernetes pod or OpenShell sandbox has its own configured network, filesystem,
+identity, and credential paths. Verify the actual mounts and runtime policy.
+Do not assume that moving a process to a cluster automatically limits the
+credentials attached to it.
 
-Production deployments should use identity, authorization, secret management, TLS, backups, resource limits, and audit-friendly logs.
+OpenShell's provider-grant path is distinct from mounting a home directory with
+agent login files. Use the supported [OpenShell credential flow](openshell-runtime.md)
+for that backend.
+
+## People, workloads, and providers
+
+Operator login controls access to Niuu. Workload identity identifies a running
+session or sandbox. Provider authentication allows inference or another external
+operation. Test each independently and scope grants to the intended caller and
+operation. See [identity](../reference/identity.md) and
+[credentials](../reference/credentials-and-secrets.md).
+
+## Before promoting output
+
+Inspect the diff and run the project's checks. A generated instruction or tool
+result can be untrusted input, including content retrieved from a repository or
+knowledge source. Preserve human or agent approval policies at the point where
+work is published, deployed, or sent to another system.

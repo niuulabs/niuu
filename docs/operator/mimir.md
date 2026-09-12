@@ -296,3 +296,216 @@ state; the markdown + `raw/` JSON are the only things that matter.
 | Index corruption suspected | delete `search.db`; it rebuilds on startup |
 | Want reflex off for a session | `SKULD__REFLEX__ENABLED=false` (broker) / `mimir.reflex.enabled: false` (ravn) |
 | Measuring reflex usefulness | grep logs for `mimir.reflex.injected`, correlate with subsequent `mimir_read` calls |
+
+### Exploring the knowledge graph
+
+The Graph view projects stored pages into a shared contract via `MimirPort.get_graph()`.
+Nodes carry an opaque ID, original page path, mount, title, summary, category, and kind.
+Kind uses the stored entity subtype or page type (otherwise `thread` or `page`);
+category retains organizational labels such as `research`, `concepts`, or `notes`.
+The all-mounts view keeps pages with identical paths in separate mounts distinct.
+
+Use the category legend to toggle categories; its counts describe the loaded corpus.
+The kind selector and search intersect those filters. Search matches titles, paths,
+summaries, categories, kinds, and mount names, not the full page body. Select a node
+or search result to center it, inspect its metadata, open its original page, or narrow
+to its immediate neighbors. Fit frames the visible nodes. Drag or use arrow keys to
+orbit, Shift-drag to pan, and scroll or use +/- to zoom. Idle rotation pauses during
+interaction and selection, respects reduced-motion preferences, and can be disabled.
+
+Edges represent explicit wikilinks, internal Markdown links, `related_entities`,
+typed `rel:` relationships, and shared `source_ids`. External URLs, unresolved links,
+and ambiguous bare names do not become page connections. No semantic-similarity or
+inferred relationships are manufactured by the renderer.
+
+The default graph projection reads listed page bodies. Gbrain uses its existing
+`list_pages` and `get_page` MCP calls, including metadata preserved in Markdown
+frontmatter. This exposes stored links rather than a native gbrain vector/graph
+index. Indexed adapters can override `get_graph()` with the same contract. Large
+remote corpora incur one page read per listed page; the current browser layout uses
+quadratic pairwise repulsion. Bulk extraction and an indexed worker layout are the
+upgrade paths when corpus size makes those costs material. WikiLLM has no adapter
+in this checkout; a future adapter can implement the same port.
+
+### Instance inspection and Flux deployment
+
+Analytics includes a mount-scoped inspection section. Markdown Mimir reports
+page/source counts and its recorded write/lint timestamps. gbrain reports its
+HTTP health, version, storage engine, and page/category counts. Unreported fields
+are displayed as unavailable; the MCP adapter does not currently retrieve native
+dream history, embedding coverage, or synthesis history. This does not imply
+those activities have never happened. WikiLLM adapters without an inspection
+implementation report the capability as unsupported.
+
+Registry can request new `mimir` and `gbrain` Helm releases through
+`mimir.adapters.flux.FluxKnowledgeDeploymentAdapter`. Configure the dynamic
+`deployment` map in Mimir service configuration (or `knowledgeDeployment` in the
+Mimir chart) with these constructor arguments:
+
+- `adapter`: `mimir.adapters.flux.FluxKnowledgeDeploymentAdapter`
+- `namespace`: the pre-existing namespace receiving HelmRelease objects
+- `source_name` and optional `source_namespace`: the existing Flux HelmRepository
+- `chart_versions`: mapping from enabled backend names to published chart versions
+- `images`: mapping from enabled backend names to full image references with tags
+- `cluster`: display name for the configured cluster
+- `in_cluster`: defaults to true; local operators can explicitly set false and
+  supply `kube_context` to select a configured kubeconfig context
+
+The target and image/chart catalog are operator-controlled, not arbitrary values
+supplied by the browser. The chart grants get/list/create on HelmRelease objects
+only in the configured namespace. Flux and its source must already exist.
+The control-plane endpoints require `volundr:admin` through the existing trusted
+identity headers. Put this service behind the authenticated Niuu/Envoy gateway,
+which must strip client-supplied identity headers. Do not expose the service's
+port directly to untrusted clients when deployment is enabled.
+
+The form creates a release and polls its actual Flux conditions. It does not
+claim readiness while the observed generation is stale. gbrain is always created
+with external PostgreSQL; the operator-provisioned Secret must contain
+`GBRAIN_DATABASE_URL` and `GBRAIN_ADMIN_BOOTSTRAP_TOKEN`. PostgreSQL itself is not
+provisioned by this flow. Mimir keeps its existing Markdown/PVC storage model.
+
+Deployment and attachment are separate: after readiness, connect the new backend
+as a mount using its appropriate adapter and scoped credentials. The flow does
+not automatically create gbrain API tokens or attach a native MCP URL as a Mimir
+HTTP endpoint. It currently creates and inspects releases; upgrades and deletion
+remain under the existing Flux operational workflow.
+
+### Deployments and instance maintenance
+
+Registry owns deployment; Analytics owns inspection. Wardens are an optional part
+of an instance deployment. Select the instance in Analytics to find its runtime,
+service logs, native gbrain dream output, and attached warden's overview, console,
+and logs. Existing `/mimir/ravns` links open Analytics.
+
+A local host can configure the existing dynamic deployment port:
+
+```yaml
+deployment:
+  adapter: mimir.adapters.local.LocalKnowledgeDeploymentAdapter
+  root: ~/.local/share/niuu/knowledge
+  gbrain_command: [gbrain]
+  database:
+    adapter: niuu.adapters.embedded_postgres.EmbeddedPostgresDatabase
+  warden_defaults: {}
+```
+
+The host needs the installed gbrain executable, the Niuu Python runtime, and the
+bundled PostgreSQL build (`make build-postgres`). That build includes pgvector,
+pg_trgm, and pgcrypto; its build dependencies include OpenSSL development files
+and pkg-config. Local instances use launchd on macOS or systemd user services on
+Linux, survive the management API exiting, and keep their data in separate named
+directories. PostgreSQL listens on a loopback port with a generated SCRAM password. gbrain receives its
+own scoped read/write token; credentials stay in owner-only files. Deployment
+registers its mount automatically. Start/stop also controls the attached warden.
+
+Omit `database` only to explicitly choose PGLite; separate-process native dream
+scheduling is unavailable in that mode. Native dreams reuse Ravn's persisted cron
+scheduler, in UTC. Results preserve phase statuses, including skipped phases:
+`lint` and `backlinks` need an on-disk checkout; a database-only instance can run
+`orphans` but cannot manufacture filesystem results. gbrain uses native dream cycles;
+only Mimir deployments can attach a warden.
+
+The local management API uses the host's configured authentication. Production
+requests still require an authenticated administrator through the trusted gateway;
+this adapter does not grant or simulate administrator identity.
+
+For multiple targets, configure
+`mimir.adapters.deployment_targets.KnowledgeDeploymentTargets` with a `targets`
+mapping. Each key is a target ID, and each value is an ordinary `adapter` plus
+kwargs configuration. Local and Flux adapters share this deployment port. An
+unreachable target reports its error without hiding available targets.
+
+Flux targets accept operator-owned `secrets` (backend to Secret name, optionally
+using `{name}` for separately provisioned instances) and `warden` chart values.
+The UI asks for the engine, name, target, and maintenance options; images and
+credentials belong to the target configuration. The Mimir chart supports
+`warden.enabled`, `warden.image`, `warden.config` (existing Ravn Settings),
+`warden.envFrom`, and `warden.resources`. Warden data shares the instance PVC;
+its model/provider configuration uses the existing Ravn runtime. Attached workloads carry the existing Kubernetes warden discovery labels.
+Flux inspection reads actual pod/container logs,
+including labeled dream jobs. The deployment role needs HelmRelease get/list/create/
+patch and pod/log get/list. Cluster consoles still require the existing authenticated
+Ravn gateway/console connection; pod logs alone are not an interactive console.
+
+
+The Registry displays one list of instances, joining configured mounts, saved
+connections, and managed deployments by mount name (the routing identity).
+Deploying an instance adds management metadata to that entry; connecting an
+existing service does not transfer ownership of its deployment. The two actions
+are available above the same list.
+
+Remote registry connections use the existing HTTP Mimir adapter and become
+available to Pages, Graph, and Analytics immediately. The URL is the service base
+URL (before `/mimir`); native gbrain MCP endpoints still use their configured
+gbrain adapter. Connections requiring authentication must use an operator-configured
+mount adapter: registry `auth_ref` resolution is not available. An older remote
+Mimir service without `/mimir/instances/inspect` reports that capability as
+unavailable; its pages and graph remain accessible through their existing APIs.
+
+Registry deployment and connection forms open in the shared modal component.
+Locally managed instances expose a Delete action with confirmation: the local
+service and attached warden are uninstalled before the instance's owned data
+folder is removed. A failed shutdown preserves data and reports an error.
+External connections expose Remove (tooltip: Remove connection), which only
+removes the saved connection. Remote deployment deletion is not exposed.
+
+
+### Embedded Mimir warden profiles
+
+Set `warden.enabled: true` on the Mimir chart to run its warden in the same pod
+and release. `warden.spec` accepts the same model, persona, profile, features,
+schedules, console, and broker fields used by manually created wardens. The
+container uses the existing warden artifact renderer, including MCP tool bindings,
+write routing, source/staleness triggers, and persistent queue/dream state under
+`config.dataPath/.warden`. It automatically binds to `config.name` and shares the
+instance volume. The console defaults to loopback port 8764; external access still
+uses the existing authenticated gateway.
+
+```yaml
+warden:
+  enabled: true
+  # Set image to your published Ravn image containing the embedded runner.
+  spec:
+    persona: mimir-warden
+    model: claude-sonnet-4-6
+    schedules:
+      dream_cycle_cron_expression: "0 3 * * *"
+      staleness_trigger_schedule_hours: 6
+```
+
+Provide the actual image through `warden.image`, and reference existing provider
+Secrets through `warden.envFrom`. Advanced Ravn Settings remain available through
+`warden.config`. Flux passes the same warden values to the chart. Existing separate
+warden releases are not automatically removed: migrate their settings and disable
+the old workload when rolling out the embedded replacement, avoiding two stewards
+writing to the same instance.
+
+
+When attaching a warden in the deployment modal, optional model, persona, dream
+cron, source polling seconds, and staleness interval hours override only those
+fields. Blank fields retain the target profile. Credentials and provider Secrets
+are never accepted through these instance overrides. Local deployment applies them
+to the WardenSpec; Flux writes the same choices to the chart's `warden.spec`.
+For direct Helm deployment:
+
+```yaml
+warden:
+  enabled: true
+  spec:
+    model: claude-sonnet-4-6
+    persona: mimir-warden
+    schedules:
+      dream_cycle_cron_expression: "0 4 * * *"
+      source_trigger_poll_interval_seconds: 120
+      staleness_trigger_schedule_hours: 12
+config:
+  evalCapture: true
+```
+
+Searches made through `/search` are captured when evaluation capture is enabled.
+`/eval/queries` exposes real captured traffic; `/eval/latest` reads the latest
+benchmark report. Aggregate hosts use their configured evaluation capture directory
+for both endpoints, without requiring a filesystem-backed aggregate adapter.
+A benchmark must actually be run and its report saved as `eval-latest.json` there;
+missing reports are reported as unavailable, never generated scores.

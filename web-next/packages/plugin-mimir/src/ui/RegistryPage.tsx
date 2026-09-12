@@ -1,4 +1,10 @@
-import { useMemo, useState } from 'react';
+import { Field, Select, Modal, Tooltip, TooltipProvider } from '@niuulabs/ui';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { IMimirService } from '../ports';
+import { usePluginCtx, useService } from '@niuulabs/plugin-sdk';
+import './RegistryPage.css';
+import { InstanceDeployments } from './InstanceDeployments';
+import { useState } from 'react';
 import {
   useCreateRegistryMount,
   useDeleteRegistryMount,
@@ -6,6 +12,7 @@ import {
   useUpdateRegistryMount,
 } from '../application/useRegistryMounts';
 import type { RegistryMount } from '../domain/registry';
+import { accessScopeLabel } from '../domain/access-scope';
 
 const INPUT_CLS =
   'niuu:w-full niuu:py-2 niuu:px-3 niuu:bg-bg-secondary niuu:border niuu:border-solid niuu:border-border ' +
@@ -66,7 +73,7 @@ function RegistryMountEditor({
       <div className="niuu:flex niuu:items-baseline niuu:justify-between niuu:mb-4">
         <h3 className="niuu:m-0 niuu:text-base niuu:text-text-primary">{heading}</h3>
         <span className="niuu:text-xs niuu:font-mono niuu:text-text-muted">
-          registry-backed mount metadata
+          Connection settings
         </span>
       </div>
       <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3">
@@ -78,57 +85,31 @@ function RegistryMountEditor({
             onChange={(event) => onChange({ ...mount, name: event.currentTarget.value })}
           />
         </label>
-        <label>
-          <span className={LABEL_CLS}>Role</span>
-          <select
-            className={INPUT_CLS}
+        <Field label="Role">
+          <Select
             value={mount.role}
-            onChange={(event) =>
-              onChange({
-                ...mount,
-                role: event.currentTarget.value as RegistryMount['role'],
-              })
-            }
-          >
-            <option value="local">local</option>
-            <option value="shared">shared</option>
-            <option value="domain">domain</option>
-          </select>
-        </label>
-        <label>
-          <span className={LABEL_CLS}>Kind</span>
-          <select
-            className={INPUT_CLS}
+            onValueChange={(value) => onChange({ ...mount, role: value as RegistryMount['role'] })}
+            options={['local', 'shared', 'domain'].map((value) => ({ value, label: value }))}
+          />
+        </Field>
+        <Field label="Kind">
+          <Select
             value={mount.kind}
-            onChange={(event) =>
-              onChange({
-                ...mount,
-                kind: event.currentTarget.value as RegistryMount['kind'],
-              })
-            }
-          >
-            <option value="remote">remote</option>
-            <option value="local">local</option>
-          </select>
-        </label>
-        <label>
-          <span className={LABEL_CLS}>Lifecycle</span>
-          <select
-            className={INPUT_CLS}
+            onValueChange={(value) => onChange({ ...mount, kind: value as RegistryMount['kind'] })}
+            options={['remote', 'local'].map((value) => ({ value, label: value }))}
+          />
+        </Field>
+        <Field label="Lifecycle">
+          <Select
             value={mount.lifecycle}
-            onChange={(event) =>
-              onChange({
-                ...mount,
-                lifecycle: event.currentTarget.value as RegistryMount['lifecycle'],
-              })
+            onValueChange={(value) =>
+              onChange({ ...mount, lifecycle: value as RegistryMount['lifecycle'] })
             }
-          >
-            <option value="registered">registered</option>
-            <option value="ephemeral">ephemeral</option>
-          </select>
-        </label>
+            options={['registered', 'ephemeral'].map((value) => ({ value, label: value }))}
+          />
+        </Field>
         <label>
-          <span className={LABEL_CLS}>URL</span>
+          <span className={LABEL_CLS}>Knowledge API URL</span>
           <input
             className={INPUT_CLS}
             value={mount.url}
@@ -175,24 +156,18 @@ function RegistryMountEditor({
             }
           />
         </label>
-        <label>
-          <span className={LABEL_CLS}>Health status</span>
-          <select
-            className={INPUT_CLS}
+        <Field label="Health status">
+          <Select
             value={mount.healthStatus}
-            onChange={(event) =>
-              onChange({
-                ...mount,
-                healthStatus: event.currentTarget.value as RegistryMount['healthStatus'],
-              })
+            onValueChange={(value) =>
+              onChange({ ...mount, healthStatus: value as RegistryMount['healthStatus'] })
             }
-          >
-            <option value="unknown">unknown</option>
-            <option value="healthy">healthy</option>
-            <option value="degraded">degraded</option>
-            <option value="down">down</option>
-          </select>
-        </label>
+            options={['unknown', 'healthy', 'degraded', 'down'].map((value) => ({
+              value,
+              label: value,
+            }))}
+          />
+        </Field>
         <label className="niuu:flex niuu:items-end">
           <span className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-secondary">
             <input
@@ -236,7 +211,7 @@ function RegistryMountEditor({
             onClick={onReset}
             disabled={isPending}
           >
-            Reset
+            Cancel
           </button>
         )}
       </div>
@@ -245,18 +220,88 @@ function RegistryMountEditor({
 }
 
 export function RegistryPage() {
+  const ctx = usePluginCtx();
+  const client = useQueryClient();
+  const [deleting, setDeleting] = useState<{
+    name: string;
+    target?: string;
+    connectionId?: string;
+  } | null>(null);
+  const removeInstance = useMutation({
+    mutationFn: async () => {
+      if (!deleting) return;
+      await mounts.controlDeployment!(deleting.name, 'delete', deleting.target);
+      if (deleting.connectionId) await mounts.deleteRegistryMount!(deleting.connectionId);
+    },
+    onSuccess: () => {
+      if (ctx.tweaks['activeMount'] === deleting?.name) ctx.setTweak('activeMount', '');
+      setDeleting(null);
+      void client.invalidateQueries({ queryKey: ['mimir'] });
+    },
+  });
+  const { mounts } = useService<IMimirService>('mimir');
+  const live = useQuery({ queryKey: ['mimir', 'mounts'], queryFn: () => mounts.listMounts() });
+  const deployments = useQuery({
+    queryKey: ['mimir', 'deployments'],
+    queryFn: () => mounts.getDeployments!(),
+    enabled: !!mounts.getDeployments,
+    refetchInterval: 10000,
+  });
+  const [deploying, setDeploying] = useState(false);
   const { data: registryMounts = [], isLoading, error } = useRegistryMounts();
   const createMount = useCreateRegistryMount();
   const updateMount = useUpdateRegistryMount();
   const deleteMount = useDeleteRegistryMount();
+  const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState<Omit<RegistryMount, 'id'>>(EMPTY_REGISTRY_MOUNT);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingDraft, setEditingDraft] = useState<Omit<RegistryMount, 'id'>>(EMPTY_REGISTRY_MOUNT);
 
-  const activeCount = useMemo(
-    () => registryMounts.filter((mount: RegistryMount) => mount.enabled).length,
-    [registryMounts],
-  );
+  // Mount names are the routing identity shared by connections and deployments.
+  const names = [
+    ...new Set([
+      ...registryMounts.map((m) => m.name),
+      ...(live.data ?? []).map((m) => m.name),
+      ...(deployments.data?.releases ?? []).map((r) => r.name),
+    ]),
+  ];
+  const instances = names.flatMap((name) => {
+    const connection = registryMounts.find(
+      (m) => m.name === name && !m.id.startsWith('deployment:'),
+    );
+    const runtime = live.data?.find((m) => m.name === name);
+    const releases = deployments.data?.releases.filter((r) => r.name === name) ?? [];
+    // Names can repeat across Guild targets; never merge those deployments together.
+    const choices: ((typeof releases)[number] | undefined)[] = releases.length
+      ? [...releases]
+      : [undefined];
+    if (releases.length > 1 && (connection || runtime)) choices.unshift(undefined);
+    return choices.map((release) => {
+      const attached = releases.length > 1 && release ? undefined : connection;
+      const mounted = releases.length > 1 && release ? undefined : runtime;
+      const target = deployments.data?.targets?.find((t) => t.id === release?.target);
+      return {
+        ...EMPTY_REGISTRY_MOUNT,
+        ...attached,
+        name,
+        id: attached?.id ?? (release ? `${release.target ?? ''}/${name}` : name),
+        healthStatus:
+          mounted?.status ?? attached?.healthStatus ?? (release?.ready ? 'healthy' : 'unknown'),
+        url: attached?.url || mounted?.url || '',
+        desc: attached?.desc || mounted?.desc || '',
+        defaultReadPriority: attached?.defaultReadPriority ?? mounted?.priority ?? 10,
+        pages: mounted?.pages,
+        accessScope: mounted?.accessScope ?? attached?.accessScope ?? release?.access_scope,
+        connection: attached,
+        hasMount: !!mounted || !!attached,
+        release,
+        targetLabel: target?.source_name
+          ? `${target.source_name} · ${target.cluster}`
+          : release?.target,
+      };
+    });
+  });
+  const activeCount = instances.filter((m) => m.enabled).length;
 
   if (isLoading) {
     return <div className="niuu:p-6 niuu:text-sm niuu:text-text-muted">loading registry…</div>;
@@ -273,140 +318,290 @@ export function RegistryPage() {
   }
 
   return (
-    <div className="niuu:p-6 niuu:overflow-y-auto niuu:h-full" data-testid="registry-page">
-      <div className="niuu:flex niuu:items-baseline niuu:justify-between niuu:mb-6">
-        <div>
-          <h2 className="niuu:m-0 niuu:text-xl niuu:text-text-primary">Registry</h2>
-          <p className="niuu:m-0 niuu:mt-1 niuu:text-sm niuu:text-text-secondary">
-            Known Mimir backends, separate from the mounts currently attached to a live runtime.
+    <TooltipProvider>
+      <div className="knowledge-registry" data-testid="registry-page">
+        <div className="niuu:flex niuu:items-baseline niuu:justify-between niuu:mb-6">
+          <div>
+            <h2 className="niuu:m-0 niuu:text-xl niuu:text-text-primary">Knowledge registry</h2>
+            <p className="niuu:m-0 niuu:mt-1 niuu:text-sm niuu:text-text-secondary">
+              A home for your knowledge. Create an instance or connect one you already use.
+            </p>
+          </div>
+          <div className="niuu:font-mono niuu:text-xs niuu:text-text-muted">
+            {instances.length} instances · {activeCount} enabled
+          </div>
+        </div>
+
+        <div className="registry-section-heading">
+          <div>
+            <span className="registry-eyebrow">Your library</span>
+            <h3>Instances</h3>
+          </div>
+          <div className="niuu:flex niuu:gap-3">
+            <button
+              className="registry-primary"
+              type="button"
+              aria-expanded={deploying}
+              onClick={() => {
+                setDeploying(!deploying);
+                setAdding(false);
+              }}
+            >
+              + Deploy instance
+            </button>
+            <button
+              className="registry-primary"
+              type="button"
+              aria-expanded={adding}
+              onClick={() => {
+                setAdding(!adding);
+                setDeploying(false);
+              }}
+            >
+              + Add connection
+            </button>
+          </div>
+        </div>
+        <Modal
+          open={deploying}
+          onOpenChange={setDeploying}
+          title="Deploy instance"
+          className="registry-modal registry-deploy-modal"
+        >
+          {deploying && <InstanceDeployments />}
+        </Modal>
+        <Modal
+          open={adding}
+          onOpenChange={setAdding}
+          title="Add connection"
+          className="registry-modal"
+        >
+          <div className="registry-connection-form">
+            <p>Connect an existing knowledge API. Native gbrain endpoints require its adapter.</p>
+            <RegistryMountEditor
+              heading="Register an existing connection"
+              mount={draft}
+              submitLabel="Create"
+              isPending={createMount.isPending}
+              onChange={setDraft}
+              onSubmit={() =>
+                createMount.mutate(draft, {
+                  onSuccess: () => {
+                    setDraft(EMPTY_REGISTRY_MOUNT);
+                    setAdding(false);
+                  },
+                })
+              }
+              onReset={() => setAdding(false)}
+            />
+            {createMount.error && <p role="alert">{createMount.error.message}</p>}
+          </div>
+        </Modal>
+        <Modal
+          open={!!deleting}
+          onOpenChange={(open) => {
+            if (!open && !removeInstance.isPending) setDeleting(null);
+          }}
+          title="Delete local instance"
+          className="registry-modal"
+          actions={[
+            { label: 'Cancel', disabled: removeInstance.isPending },
+            {
+              label: removeInstance.isPending ? 'Deleting…' : 'Delete instance',
+              variant: 'destructive',
+              closes: false,
+              disabled: removeInstance.isPending,
+              onClick: () => removeInstance.mutate(),
+            },
+          ]}
+        >
+          <p>
+            Permanently delete <strong>{deleting?.name}</strong> and its local data? Its service and
+            attached maintenance will also be removed.
           </p>
-        </div>
-        <div className="niuu:font-mono niuu:text-xs niuu:text-text-muted">
-          {registryMounts.length} registered · {activeCount} enabled
-        </div>
-      </div>
-
-      <div className="niuu:grid niuu:grid-cols-[1.3fr_1fr] niuu:gap-6">
-        <section className="niuu:flex niuu:flex-col niuu:gap-3">
-          {registryMounts.map((mount: RegistryMount) => {
-            const isEditing = editingId === mount.id;
-            return (
-              <article
-                key={mount.id}
-                className="niuu:p-4 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg"
-              >
-                <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-4">
-                  <div>
-                    <div className="niuu:flex niuu:items-center niuu:gap-2">
-                      <span className="niuu:text-base niuu:text-text-primary niuu:font-semibold">
-                        {mount.name}
-                      </span>
-                      <span className="niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
-                        {mount.kind} · {mount.role}
-                      </span>
+          {removeInstance.error && <p role="alert">{removeInstance.error.message}</p>}
+        </Modal>
+        {(live.error ||
+          deployments.error ||
+          createMount.error ||
+          updateMount.error ||
+          deleteMount.error) && (
+          <p role="alert">
+            {
+              (
+                live.error ||
+                deployments.error ||
+                createMount.error ||
+                updateMount.error ||
+                deleteMount.error
+              )?.message
+            }
+          </p>
+        )}
+        <div className="registry-connections">
+          <section className="niuu:flex niuu:flex-col niuu:gap-3">
+            {instances.map((mount) => {
+              const isEditing = editingId === mount.id;
+              return (
+                <article
+                  key={mount.id}
+                  className="niuu:p-4 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg"
+                >
+                  <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-4">
+                    <div>
+                      <div className="niuu:flex niuu:items-center niuu:gap-2">
+                        <span className="niuu:text-base niuu:text-text-primary niuu:font-semibold">
+                          {mount.name}
+                        </span>
+                        <span className="niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
+                          {accessScopeLabel(mount.accessScope)} ·{' '}
+                          {mount.release
+                            ? `${mount.release.backend} · Managed · ${mount.targetLabel ?? 'cluster'}`
+                            : 'Connected'}
+                        </span>
+                      </div>
+                      <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-muted niuu:mt-1">
+                        {mount.url || mount.path || 'Configured by host'}
+                      </div>
+                      <p className="niuu:m-0 niuu:mt-2 niuu:text-sm niuu:text-text-secondary">
+                        {mount.desc || 'No description provided.'}
+                      </p>
                     </div>
-                    <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-muted niuu:mt-1">
-                      {mount.url || mount.path || 'no endpoint configured'}
+                    <div className="niuu:flex niuu:gap-2">
+                      <button
+                        type="button"
+                        className="registry-primary"
+                        onClick={() => {
+                          ctx.setTweak(
+                            'mimir.deployment',
+                            mount.release && !mount.hasMount
+                              ? { name: mount.name, target: mount.release.target }
+                              : null,
+                          );
+                          ctx.setTweak('activeMount', mount.hasMount ? mount.name : 'all');
+                          ctx.setTweak('mimir.registryView', 'Analytics');
+                        }}
+                      >
+                        Inspect
+                      </button>
+                      {(!mount.connection || mount.release?.can_delete) && (
+                        <button
+                          className="registry-destructive"
+                          type="button"
+                          disabled={!mount.release?.can_delete || !mounts.controlDeployment}
+                          onClick={() => {
+                            removeInstance.reset();
+                            setDeleting({
+                              name: mount.name,
+                              target: mount.release?.target,
+                              connectionId: mount.connection?.id,
+                            });
+                          }}
+                        >
+                          Delete
+                        </button>
+                      )}
+                      {mount.connection && (
+                        <>
+                          <button
+                            type="button"
+                            className="niuu:py-1.5 niuu:px-3 niuu:bg-bg-secondary niuu:border niuu:border-solid niuu:border-border niuu:rounded-md niuu:text-text-primary niuu:font-sans niuu:text-xs niuu:cursor-pointer"
+                            onClick={() => {
+                              setEditingId(mount.id);
+                              setEditingDraft({
+                                name: mount.name,
+                                kind: mount.kind,
+                                lifecycle: mount.lifecycle,
+                                role: mount.role,
+                                url: mount.url,
+                                path: mount.path,
+                                categories: mount.categories ?? [],
+                                adapter: mount.adapter,
+                                kwargs: mount.kwargs,
+                                secretKwargsEnv: mount.secretKwargsEnv,
+                                authRef: mount.authRef ?? null,
+                                defaultReadPriority: mount.defaultReadPriority,
+                                enabled: mount.enabled,
+                                healthStatus: mount.healthStatus,
+                                healthMessage: mount.healthMessage,
+                                desc: mount.desc,
+                              });
+                            }}
+                          >
+                            Edit
+                          </button>
+                          {!mount.release?.can_delete && (
+                            <Tooltip content="Remove connection">
+                              <button
+                                aria-label="Remove connection"
+                                type="button"
+                                className="registry-destructive"
+                                onClick={() => deleteMount.mutate(mount.id)}
+                                disabled={deleteMount.isPending}
+                              >
+                                Remove
+                              </button>
+                            </Tooltip>
+                          )}
+                        </>
+                      )}
                     </div>
-                    <p className="niuu:m-0 niuu:mt-2 niuu:text-sm niuu:text-text-secondary">
-                      {mount.desc || 'No description provided.'}
-                    </p>
                   </div>
-                  <div className="niuu:flex niuu:gap-2">
-                    <button
-                      type="button"
-                      className="niuu:py-1.5 niuu:px-3 niuu:bg-bg-secondary niuu:border niuu:border-solid niuu:border-border niuu:rounded-md niuu:text-text-primary niuu:font-sans niuu:text-xs niuu:cursor-pointer"
-                      onClick={() => {
-                        setEditingId(mount.id);
-                        setEditingDraft({
-                          name: mount.name,
-                          kind: mount.kind,
-                          lifecycle: mount.lifecycle,
-                          role: mount.role,
-                          url: mount.url,
-                          path: mount.path,
-                          categories: mount.categories ?? [],
-                          authRef: mount.authRef ?? null,
-                          defaultReadPriority: mount.defaultReadPriority,
-                          enabled: mount.enabled,
-                          healthStatus: mount.healthStatus,
-                          healthMessage: mount.healthMessage,
-                          desc: mount.desc,
-                        });
-                      }}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      className="niuu:py-1.5 niuu:px-3 niuu:bg-transparent niuu:border niuu:border-solid niuu:border-border-subtle niuu:rounded-md niuu:text-critical niuu:font-sans niuu:text-xs niuu:cursor-pointer"
-                      onClick={() => deleteMount.mutate(mount.id)}
-                      disabled={deleteMount.isPending}
-                    >
-                      Delete
-                    </button>
+                  <div className="niuu:flex niuu:flex-wrap niuu:gap-2 niuu:mt-3 niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
+                    <span>health: {mount.healthStatus}</span>
+                    {mount.pages !== undefined && <span>{mount.pages} pages</span>}
+                    {mount.release && (
+                      <span>{mount.release.ready ? 'Ready' : mount.release.message}</span>
+                    )}
+                    <span>priority: {mount.defaultReadPriority}</span>
+                    <span>{mount.enabled ? 'enabled' : 'disabled'}</span>
+                    {(mount.categories ?? []).length > 0 && (
+                      <span>categories: {mount.categories?.join(', ')}</span>
+                    )}
                   </div>
-                </div>
-                <div className="niuu:flex niuu:flex-wrap niuu:gap-2 niuu:mt-3 niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
-                  <span>health: {mount.healthStatus}</span>
-                  <span>priority: {mount.defaultReadPriority}</span>
-                  <span>{mount.enabled ? 'enabled' : 'disabled'}</span>
-                  {(mount.categories ?? []).length > 0 && (
-                    <span>categories: {mount.categories?.join(', ')}</span>
-                  )}
-                </div>
 
-                {isEditing && (
-                  <div className="niuu:mt-4">
-                    <RegistryMountEditor
-                      heading={`Edit ${mount.name}`}
-                      mount={editingDraft}
-                      submitLabel="Save"
-                      isPending={updateMount.isPending}
-                      onChange={setEditingDraft}
-                      onSubmit={() =>
-                        updateMount.mutate(
-                          { id: mount.id, mount: editingDraft },
-                          {
-                            onSuccess: () => {
-                              setEditingId(null);
-                              setEditingDraft(EMPTY_REGISTRY_MOUNT);
+                  {isEditing && (
+                    <div className="niuu:mt-4">
+                      <RegistryMountEditor
+                        heading={`Edit ${mount.name}`}
+                        mount={editingDraft}
+                        submitLabel="Save"
+                        isPending={updateMount.isPending}
+                        onChange={setEditingDraft}
+                        onSubmit={() =>
+                          updateMount.mutate(
+                            { id: mount.id, mount: editingDraft },
+                            {
+                              onSuccess: () => {
+                                setEditingId(null);
+                                setEditingDraft(EMPTY_REGISTRY_MOUNT);
+                              },
                             },
-                          },
-                        )
-                      }
-                      onReset={() => {
-                        setEditingId(null);
-                        setEditingDraft(EMPTY_REGISTRY_MOUNT);
-                      }}
-                    />
-                  </div>
-                )}
-              </article>
-            );
-          })}
+                          )
+                        }
+                        onReset={() => {
+                          setEditingId(null);
+                          setEditingDraft(EMPTY_REGISTRY_MOUNT);
+                        }}
+                      />
+                    </div>
+                  )}
+                </article>
+              );
+            })}
 
-          {registryMounts.length === 0 && (
-            <div className="niuu:p-6 niuu:border niuu:border-dashed niuu:border-border-subtle niuu:rounded-lg niuu:text-sm niuu:text-text-muted">
-              No registered Mimir instances yet.
-            </div>
-          )}
-        </section>
-
-        <RegistryMountEditor
-          heading="Add registry mount"
-          mount={draft}
-          submitLabel="Create"
-          isPending={createMount.isPending}
-          onChange={setDraft}
-          onSubmit={() =>
-            createMount.mutate(draft, {
-              onSuccess: () => setDraft(EMPTY_REGISTRY_MOUNT),
-            })
-          }
-          onReset={() => setDraft(EMPTY_REGISTRY_MOUNT)}
-        />
+            {instances.length === 0 && (
+              <div className="niuu:p-6 niuu:border niuu:border-dashed niuu:border-border-subtle niuu:rounded-lg niuu:text-sm niuu:text-text-muted">
+                <span className="registry-empty-icon" aria-hidden="true">
+                  ◇
+                </span>
+                <h4>Your library is ready for its first connection.</h4>
+                <p>Add an existing knowledge instance to make it available to your runtimes.</p>
+              </div>
+            )}
+          </section>
+        </div>
       </div>
-    </div>
+    </TooltipProvider>
   );
 }

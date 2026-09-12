@@ -1106,3 +1106,25 @@ curl http://localhost:8080/health
 ---
 
 <!-- This README was generated from values.yaml comments using charts/volundr/README-generate.sh -->
+
+### Shared subscription connections
+
+For a Forge in another cluster, resolve the user's saved connections through the
+central Connections API. Credentials still come from the configured credential
+store and secret injector; the HTTP lookup forwards the authenticated caller's
+bearer token and returns connection metadata only.
+
+```yaml
+integrations:
+  repository:
+    adapter: niuu.adapters.http_integrations.HTTPIntegrationRepository
+    kwargs:
+      base_url: https://yggdrasil.niuu.world
+      api_prefix: /api/v1/integrations
+      auth_adapter: niuu.adapters.outbound.http_auth.RequestBearerTokenAuthAdapter
+```
+
+Use the central Connections service's actual URL. A selected connection must
+exist, belong to the launching user, and be enabled. Launches retain their
+resolved connection IDs for restarts. Claude subscription connections select
+subscription authentication; credential injection errors fail provisioning.
