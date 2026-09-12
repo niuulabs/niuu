@@ -227,13 +227,15 @@ for (const mini of [true, false]) {
     await page.getByTestId('quick-launch-prompt').fill('Validate the handoff');
     if (!mini) await page.getByLabel('Branch').fill('dev');
     await page.getByRole('button', { name: 'Advanced launch' }).click();
-    await expect(page.getByTestId('launch-wizard').locator('input').first()).toHaveValue(source);
+    await expect(
+      page.getByRole('dialog', { name: 'Launch pod' }).locator('input').first(),
+    ).toHaveValue(source);
     await page.getByTestId('wizard-next').click();
     await page.getByTestId('wizard-next').click();
     await expect(page.getByTestId('step-confirm-content')).toContainText(source);
     await expect(page.getByTestId('step-confirm-content')).toContainText('handoff-check');
     await expect(page.getByTestId('step-confirm-content')).toContainText('Validate the handoff');
     await page.keyboard.press('Escape');
-    await expect(page.getByTestId('launch-wizard')).toHaveCount(0);
+    await expect(page.getByRole('dialog', { name: 'Launch pod' })).toHaveCount(0);
   });
 }
