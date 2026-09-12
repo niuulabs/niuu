@@ -571,7 +571,51 @@ export function SessionChat({
     leading: ChatMsg[];
   };
 
-  const compactRenderable = renderedGroups.every((group) => group.type === 'single');
+  // Never fold across speakers, threads, visibility changes, or system notices.
+  // Consecutive contributions remain in transcript order, including when a
+  // participant returns after another participant has spoken.
+  const compactRoomGroups = useMemo(() => {
+    const groups: (MessageGroup | { type: 'compact'; turn: CompactTurn })[] = [];
+    let run: ChatMsg[] = [];
+    const flush = () => {
+      const final = run.at(-1);
+      if (!final) return;
+      groups.push({
+        type: 'compact',
+        turn: {
+          id: `room-turn-${run[0]!.id}`,
+          user: null,
+          leading: [],
+          intermediaries: run.slice(0, -1),
+          final,
+        },
+      });
+      run = [];
+    };
+    for (const group of renderedGroups) {
+      if (
+        group.type === 'thread' ||
+        group.message.role !== 'assistant' ||
+        group.message.metadata?.messageType
+      ) {
+        flush();
+        groups.push(group);
+        continue;
+      }
+      const message = group.message;
+      const previous = run.at(-1);
+      if (
+        previous &&
+        (previous.participant?.peerId !== message.participant?.peerId ||
+          previous.threadId !== message.threadId ||
+          previous.visibility !== message.visibility)
+      )
+        flush();
+      run.push(message);
+    }
+    flush();
+    return groups;
+  }, [renderedGroups]);
 
   const compactTurns = useMemo((): CompactTurn[] => {
     const turns: CompactTurn[] = [];
@@ -634,7 +678,7 @@ export function SessionChat({
     return turns;
   }, [visibleMessages]);
 
-  const useCompact = conversationView === 'compact' && compactRenderable && !isRoomMode;
+  const useCompact = conversationView === 'compact';
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     messagesEndRef.current?.scrollIntoView?.({ behavior });
@@ -919,7 +963,11 @@ export function SessionChat({
               ) : (
                 <ChevronRight className="niuu-chat-control-icon" aria-hidden />
               )}
-              <span>{workedLabel}</span>
+              <span>
+                {(isRoomMode || isRoomSession) && turn.final?.participant
+                  ? `${turn.final.participant.displayName || turn.final.participant.persona}: ${workedLabel}`
+                  : workedLabel}
+              </span>
             </button>
             {expanded && (
               <div className="niuu-chat-worked-steps" data-testid="worked-steps">
@@ -1173,9 +1221,10 @@ export function SessionChat({
         {hasConversation || isStreaming ? (
           <div className="niuu-chat-messages-container" ref={scrollContainerRef}>
             <div className="niuu-chat-messages-inner">
-              {useCompact
+              {useCompact && !isRoomMode && !isRoomSession
                 ? compactTurns.map((turn) => renderCompactTurn(turn))
-                : renderedGroups.map((group) => {
+                : (useCompact ? compactRoomGroups : renderedGroups).map((group) => {
+                    if (group.type === 'compact') return renderCompactTurn(group.turn);
                     if (group.type === 'thread') {
                       return (
                         <ThreadGroup

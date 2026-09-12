@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { QuickLaunch } from './QuickLaunch';
 import { FALLBACK_SESSION_DEFINITIONS } from './launchWizardModel';
 import { createMockVolundrService } from '../adapters/mock';
@@ -16,7 +17,13 @@ function renderQuickLaunch(volundr: IVolundrService, onOpenChange = () => {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <ServicesProvider services={{ volundr }}>
+      <ServicesProvider
+        services={{
+          volundr,
+          bifrost: createMockBifrostService(),
+          'niuu.repos': { getRepos: volundr.getRepos.bind(volundr), getBranches: async () => [] },
+        }}
+      >
         <QuickLaunch open onOpenChange={onOpenChange} />
       </ServicesProvider>
     </QueryClientProvider>,
@@ -39,6 +46,65 @@ function mockVolundr(): IVolundrService {
 }
 
 describe('QuickLaunch', () => {
+  it.each([true, false])(
+    'preserves launch choices in the advanced wizard (mini=%s)',
+    async (mini) => {
+      const volundr = mockVolundr();
+      volundr.getFeatures = async () => ({
+        miniMode: mini,
+        localMountsEnabled: mini,
+        fileManagerEnabled: true,
+      });
+      volundr.getTargets = async () => [
+        {
+          id: 'first',
+          slug: 'first',
+          name: 'First Forge',
+          baseUrl: 'https://first.example',
+          enabled: true,
+          isDefault: true,
+          tags: [],
+        },
+        {
+          id: 'second',
+          slug: 'second',
+          name: 'Second Forge',
+          baseUrl: 'https://second.example',
+          enabled: true,
+          isDefault: false,
+          tags: [],
+        },
+      ];
+      renderQuickLaunch(volundr);
+      await screen.findByTestId('quick-launch-engine-codex');
+      fireEvent.change(screen.getByLabelText('Forge target'), { target: { value: 'second' } });
+      await waitFor(() =>
+        expect(screen.queryByText('Loading launch options…')).not.toBeInTheDocument(),
+      );
+      const source = mini ? '/home/test/project' : 'https://github.com/custom/uncatalogued.git';
+      fireEvent.change(screen.getByTestId('quick-launch-folder'), { target: { value: source } });
+      fireEvent.change(screen.getByTestId('quick-launch-name'), {
+        target: { value: 'keep-my-name' },
+      });
+      fireEvent.change(screen.getByTestId('quick-launch-prompt'), {
+        target: { value: 'Keep my instructions' },
+      });
+      fireEvent.click(screen.getByTestId('quick-launch-engine-codex'));
+      if (!mini)
+        fireEvent.change(screen.getByLabelText('Branch'), { target: { value: 'feature/custom' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Advanced launch' }));
+      expect(await screen.findByDisplayValue(source)).toBeInTheDocument();
+      expect(screen.getByDisplayValue('keep-my-name')).toBeInTheDocument();
+      if (!mini) expect(screen.getByDisplayValue('feature/custom')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      await waitFor(() => expect(screen.getByTestId('forge-target-select')).toHaveValue('second'));
+      expect(screen.getByDisplayValue('Keep my instructions')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('step-confirm-content')).toHaveTextContent(source);
+      expect(screen.getByTestId('step-confirm-content')).toHaveTextContent('Second Forge');
+      expect(screen.getByTestId('step-confirm-content')).toHaveTextContent('Codex');
+    },
+  );
   beforeEach(() => {
     navigate.mockClear();
   });

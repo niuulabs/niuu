@@ -21,8 +21,6 @@ export interface QuickLaunchProps {
   initialLaunchSpecRef?: string;
 }
 
-// Mini mode runs in place against a local checkout — only these two engines.
-
 const PRIMARY_BTN =
   'niuu:rounded-md niuu:border niuu:border-brand niuu:bg-brand niuu:px-4 niuu:py-2 niuu:text-xs niuu:font-mono niuu:text-bg-primary niuu:cursor-pointer niuu:disabled:opacity-50 niuu:disabled:cursor-not-allowed';
 const CANCEL_BTN =
@@ -141,6 +139,21 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
       <LaunchWizard
         open={open}
         initialLaunchSpecRef={initialLaunchSpecRef}
+        initialForm={
+          advanced
+            ? {
+                sourcetype: local ? 'local_mount' : 'git',
+                repo: local ? '' : folder.trim(),
+                mountPath: local ? folder.trim() : '',
+                branch: branch.trim(),
+                sessionName: effectiveName,
+                instanceId: selectedTarget ?? '',
+                initialPrompt: prompt,
+                definition: selectedDef?.key ?? '',
+                model: selectedDef?.defaultModel ?? '',
+              }
+            : undefined
+        }
         onOpenChange={(next) => {
           if (!next) setAdvanced(false);
           onOpenChange(next);

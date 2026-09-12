@@ -1185,57 +1185,136 @@ describe('SessionChat', () => {
 
   /* ── Thread groups ── */
 
-  it('renders thread groups in room mode with internal messages', () => {
-    const participants = new Map([
-      [participant.peerId, participant],
-      [participant2.peerId, participant2],
-    ]);
-    const internalMsgs: ChatMessage[] = [
-      {
-        id: 'int-1',
-        role: 'assistant',
-        content: 'Internal msg 1',
-        createdAt: now,
-        status: 'done',
-        visibility: 'internal',
-        threadId: 'thread-A',
-        participant,
-      },
-      {
-        id: 'int-2',
-        role: 'assistant',
-        content: 'Internal msg 2',
-        createdAt: new Date('2026-04-26T12:00:01Z'),
-        status: 'done',
-        visibility: 'internal',
-        threadId: 'thread-A',
-        participant,
-      },
-      {
-        id: 'ext-1',
-        role: 'user',
-        content: 'External message',
-        createdAt: new Date('2026-04-26T12:00:02Z'),
-      },
-    ];
-
+  it('folds room work per speaker and thread without hiding other answers', () => {
+    localStorage.setItem('niuu.compactUx.conversationView', 'compact');
+    const message = (
+      id: string,
+      content: string,
+      author = participant,
+      threadId = 'one',
+    ): ChatMessage => ({
+      ...roomAssistantMessage,
+      id,
+      content,
+      participant: author,
+      threadId,
+    });
     render(
       <SessionChat
         {...defaultProps}
-        messages={internalMsgs}
         connected
-        participants={participants}
+        participants={
+          new Map([
+            [participant.peerId, participant],
+            [participant2.peerId, participant2],
+          ])
+        }
+        messages={[
+          userMessage,
+          message('a1', 'Reviewer work'),
+          message('a2', 'Reviewer answer'),
+          message('b1', 'Builder work', participant2),
+          message('b2', 'Builder answer', participant2),
+          message('a3', 'Reviewer returns'),
+          message('a4', 'Different thread', participant, 'two'),
+        ]}
       />,
     );
-
-    // External message should always be visible
-    expect(screen.getByText('External message')).toBeInTheDocument();
-
-    // Internal messages are hidden by default; clicking the toggle reveals them.
-    expect(screen.queryByText('Internal msg 1')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('internal-toggle'));
-    expect(screen.getByText('Internal msg 1')).toBeInTheDocument();
+    expect(screen.queryByText('Reviewer work')).not.toBeInTheDocument();
+    expect(screen.queryByText('Builder work')).not.toBeInTheDocument();
+    for (const answer of [
+      'Reviewer answer',
+      'Builder answer',
+      'Reviewer returns',
+      'Different thread',
+    ])
+      expect(screen.getByText(answer)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Reviewer: Show work (1 step)' }));
+    expect(screen.getByText('Reviewer work')).toBeInTheDocument();
+    expect(screen.queryByText('Builder work')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('conversation-view-toggle'));
+    expect(screen.getByText('Builder work')).toBeInTheDocument();
   });
+
+  it('keeps failed room work visible in compact view', () => {
+    localStorage.setItem('niuu.compactUx.conversationView', 'compact');
+    render(
+      <SessionChat
+        {...defaultProps}
+        connected
+        participants={
+          new Map([
+            [participant.peerId, participant],
+            [participant2.peerId, participant2],
+          ])
+        }
+        messages={[
+          userMessage,
+          { ...roomAssistantMessage, id: 'failed', status: 'error', content: 'Tool failed' },
+          { ...roomAssistantMessage, id: 'answer', content: 'Recovery answer' },
+        ]}
+      />,
+    );
+    expect(screen.getByText('Tool failed')).toBeInTheDocument();
+    expect(screen.getByText('Recovery answer')).toBeInTheDocument();
+    expect(screen.getByTestId('worked-toggle')).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it.each(['compact', 'expanded'])(
+    'renders thread groups in %s room mode with internal messages',
+    (view) => {
+      localStorage.setItem('niuu.compactUx.conversationView', view);
+      const participants = new Map([
+        [participant.peerId, participant],
+        [participant2.peerId, participant2],
+      ]);
+      const internalMsgs: ChatMessage[] = [
+        {
+          id: 'int-1',
+          role: 'assistant',
+          content: 'Internal msg 1',
+          createdAt: now,
+          status: 'done',
+          visibility: 'internal',
+          threadId: 'thread-A',
+          participant,
+        },
+        {
+          id: 'int-2',
+          role: 'assistant',
+          content: 'Internal msg 2',
+          createdAt: new Date('2026-04-26T12:00:01Z'),
+          status: 'done',
+          visibility: 'internal',
+          threadId: 'thread-A',
+          participant,
+        },
+        {
+          id: 'ext-1',
+          role: 'user',
+          content: 'External message',
+          createdAt: new Date('2026-04-26T12:00:02Z'),
+        },
+      ];
+
+      render(
+        <SessionChat
+          {...defaultProps}
+          messages={internalMsgs}
+          connected
+          participants={participants}
+        />,
+      );
+
+      // External message should always be visible
+      expect(screen.getByText('External message')).toBeInTheDocument();
+
+      // Internal messages are hidden by default; clicking the toggle reveals them.
+      expect(screen.queryByText('Internal msg 1')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('internal-toggle'));
+      expect(screen.getByText('Internal msg 1')).toBeInTheDocument();
+    },
+  );
 
   /* ── isRoomSession detection ── */
 
