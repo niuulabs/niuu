@@ -1,0 +1,143 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+  <style>
+  body { margin: 0; background: #09090b; color: #fafafa; font-family: 'Inter', system-ui, -apple-system, sans-serif; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  a { color: #bae6fd; text-decoration: none; } a:hover { color: #38bdf8; }
+  .mono { font-family: 'JetBrains Mono', 'JetBrainsMono NF', ui-monospace, monospace; }
+  .kicker { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; letter-spacing: 0.42em; text-transform: uppercase; color: #bae6fd; }
+  .label { font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.07em; color: #71717a; }
+  .h1 { font-size: 30px; font-weight: 700; line-height: 1.2; letter-spacing: -0.025em; color: #fafafa; margin: 0; }
+  .h2 { font-size: 20px; font-weight: 600; line-height: 1.3; color: #fafafa; margin: 0; }
+  .h3 { font-size: 14px; font-weight: 500; color: #fafafa; margin: 0; }
+  .lede { font-size: 16px; line-height: 1.6; color: #a1a1aa; margin: 0; }
+  .muted { color: #71717a; } .faint { color: #52525b; } .sec { color: #a1a1aa; }
+  .xs { font-size: 12px; line-height: 1.4; }
+
+  .card { border: 1px solid #27272a; background: #18181b; border-radius: 12px; padding: 16px; }
+  .card-head { border-bottom: 1px solid #27272a; padding-bottom: 12px; margin-bottom: 16px; }
+  .panel { border: 1px solid #27272a; background: #09090b; border-radius: 8px; padding: 16px; }
+
+  .input { display: flex; align-items: center; box-sizing: border-box; width: 100%; padding: 8px 12px; background: #18181b; border: 1px solid #3f3f46; border-radius: 8px; font-size: 14px; line-height: 1.5; color: #fafafa; }
+  .input.ph { color: #71717a; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field-label { font-size: 14px; font-weight: 500; line-height: 1.4; color: #fafafa; }
+  .hint { font-size: 12px; line-height: 1.4; color: #71717a; }
+
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; padding: 8px 12px; border-radius: 8px; border: 1px solid #27272a; background: #09090b; color: #fafafa; font-size: 12px; font-weight: 500; line-height: 1.5; white-space: nowrap; }
+  .btn.muted { background: #18181b; }
+  .btn.ghost { border-color: transparent; color: #a1a1aa; }
+  .cta { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 46px; padding: 12px 24px; border-radius: 9999px; background: #38bdf8; color: #09090b; font-size: 14px; font-weight: 600; box-shadow: 0 0 36px rgba(56,189,248,0.5); white-space: nowrap; }
+  .cta.disabled { opacity: 0.45; box-shadow: none; }
+
+  .chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 9999px; border: 1px solid #27272a; background: #18181b; font-size: 12px; color: #a1a1aa; white-space: nowrap; }
+  .chip.ok { color: #10b981; border-color: rgba(16,185,129,0.35); background: rgba(16,185,129,0.12); }
+  .chip.warn { color: #f59e0b; border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.12); }
+  .chip.brand { color: #bae6fd; border-color: rgba(56,189,248,0.35); background: rgba(56,189,248,0.10); }
+  .chip.spring { color: #76b900; border-color: rgba(118,185,0,0.35); background: rgba(118,185,0,0.10); }
+  .chip.violet { color: #8b7cf0; border-color: rgba(139,124,240,0.35); background: rgba(139,124,240,0.12); }
+
+  .dot { width: 8px; height: 8px; border-radius: 9999px; flex-shrink: 0; }
+
+  .option { position: relative; display: flex; gap: 12px; align-items: flex-start; min-height: 44px; border: 1px solid #27272a; border-radius: 8px; background: #09090b; padding: 12px 14px; }
+  .option.checked { border-color: rgba(56,189,248,0.6); background: rgba(56,189,248,0.10); box-shadow: inset 0 1px 0 rgba(255,255,255,0.06); }
+  .radio { width: 18px; height: 18px; flex-shrink: 0; margin-top: 1px; border-radius: 9999px; border: 1px solid rgba(56,189,248,0.38); background: rgba(24,24,27,0.78); box-sizing: border-box; }
+  .option.checked .radio { border: 5px solid #38bdf8; background: #09090b; }
+  .checkbox { width: 18px; height: 18px; flex-shrink: 0; margin-top: 1px; border-radius: 5px; border: 1px solid rgba(56,189,248,0.38); background: rgba(24,24,27,0.78); box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; color: #09090b; }
+  .checkbox.on { background: #38bdf8; border-color: #38bdf8; }
+
+  .row { display: flex; align-items: center; gap: 12px; }
+  .stack { display: flex; flex-direction: column; }
+  .code { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; background: #09090b; border: 1px solid #27272a; border-radius: 6px; padding: 8px 10px; color: #a1a1aa; }
+  .meter { height: 8px; border-radius: 9999px; background: #27272a; overflow: hidden; display: flex; }
+
+  /* wizard chrome */
+  .rail { width: 300px; flex-shrink: 0; box-sizing: border-box; background: #18181b; border-right: 1px solid #27272a; display: flex; flex-direction: column; padding: 28px 24px; }
+  .step { display: flex; align-items: center; gap: 12px; height: 40px; }
+  .step-n { width: 24px; height: 24px; border-radius: 9999px; display: inline-flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; box-sizing: border-box; flex-shrink: 0; }
+  .step-n.done { background: #38bdf8; color: #09090b; }
+  .step-n.now { border: 2px solid #38bdf8; color: #38bdf8; }
+  .step-n.todo { border: 1px solid #27272a; color: #52525b; }
+  .step-l { font-size: 13px; color: #52525b; }
+  .step-l.now { color: #fafafa; font-weight: 500; } .step-l.done { color: #a1a1aa; }
+  .step-line { width: 1px; height: 12px; background: #27272a; margin-left: 11.5px; }
+  .step-line.done { background: #38bdf8; }
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .content { flex: 1; overflow: hidden; padding: 36px 64px 20px; }
+  .col { width: 100%; max-width: 820px; display: flex; flex-direction: column; gap: 20px; }
+  .footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 64px 28px; border-top: 1px solid #27272a; }
+  table { border-collapse: collapse; width: 100%; } td { padding: 0; }
+</style>
+</helmet>
+<div style="width: 1440px; height: 960px; display: flex; background: #09090b; overflow: hidden;">
+<aside class="rail">
+  <div class="row" style="gap: 10px; margin-bottom: 6px;"><svg width="28" height="28" viewBox="0 0 56 56" fill="none" aria-hidden="true"><g stroke="#38bdf8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M10 44V12L28 38V14"></path><path d="M46 44V16L28 42V14" opacity="0.85"></path><circle cx="28" cy="28" r="2.1" fill="#38bdf8" stroke="none"></circle></g></svg><span style="font-weight: 600; font-size: 15px; letter-spacing: -0.01em;">Niuu</span></div>
+  <div class="kicker" style="font-size: 10px; margin-bottom: 36px;">first launch</div>
+  <div class="stack"><div class="step"><span class="step-n done"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg></span><span class="step-l done">Welcome</span></div><div class="step-line done"></div><div class="step"><span class="step-n now">2</span><span class="step-l now">System check</span></div><div class="step-line "></div><div class="step"><span class="step-n todo">3</span><span class="step-l todo">Local model</span></div><div class="step-line "></div><div class="step"><span class="step-n todo">4</span><span class="step-l todo">AI providers</span></div><div class="step-line "></div><div class="step"><span class="step-n todo">5</span><span class="step-l todo">Git</span></div><div class="step-line "></div><div class="step"><span class="step-n todo">6</span><span class="step-l todo">Tickets</span></div><div class="step-line "></div><div class="step"><span class="step-n todo">7</span><span class="step-l todo">Runtime & access</span></div><div class="step-line "></div><div class="step"><span class="step-n todo">8</span><span class="step-l todo">Launch</span></div></div>
+  <div style="flex: 1;"></div>
+  <div class="stack" style="gap: 10px;">
+    <div class="row" style="gap: 8px;"><span class="chip spring"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"></path></svg> DGX Spark · GB10</span></div>
+    <div class="xs muted mono">spark.local:8080 · niuu 1.4.0</div>
+    <a href="#" class="xs">Setup guide <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M14 4h6v6M20 4l-9 9"></path><path d="M19 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V6a1 1 0 011-1h5"></path></svg></a>
+  </div>
+</aside>
+<main class="main">
+  <div class="content">
+    <div class="col">
+      <div class="stack" style="gap: 8px;">
+        <div class="label">Step 2 of 8</div>
+        <h1 class="h1">System check</h1>
+        <p class="lede">Niuu verified this Spark can run the whole stack. One thing needs a fix before sessions can start containers.</p>
+      </div>
+      
+  <div class="card">
+    <div class="card-head row" style="justify-content: space-between;">
+      <div class="stack"><span class="h3">8 checks · 7 passed · 1 warning</span><span class="xs faint">Ran 2 s ago · re-runs automatically when fixed</span></div>
+      <span class="btn muted">Re-run checks</span>
+    </div>
+    <div class="stack">
+      <div class="row" style="gap: 14px; padding: 10px 0; border-bottom: 1px solid #27272a;">
+    <span style="width: 22px; height: 22px; border-radius: 9999px; display: inline-flex; align-items: center; justify-content: center; color: #09090b; background: #10b981; border: 1px solid #10b981; flex-shrink: 0; box-sizing: border-box;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg></span>
+    <div class="stack" style="flex: 1; gap: 1px;"><span class="h3">Docker Engine 27.3</span><span class="xs sec">containerd 1.7 · overlay2 on /var/lib/docker</span></div></div>
+      <div class="row" style="gap: 14px; padding: 10px 0; border-bottom: 1px solid #27272a;">
+    <span style="width: 22px; height: 22px; border-radius: 9999px; display: inline-flex; align-items: center; justify-content: center; color: #09090b; background: #f59e0b; border: 1px solid #f59e0b; flex-shrink: 0; box-sizing: border-box;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M12 9v4M12 17h.01"></path><path d="M10.3 3.9L2.5 17.5A2 2 0 004.2 20.5h15.6a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"></path></svg></span>
+    <div class="stack" style="flex: 1; gap: 1px;"><span class="h3">Docker socket needs sudo</span><span class="xs sec">Your user is not in the <span class="mono">docker</span> group, so sessions could not start sandboxes.</span></div><div class="row" style="gap: 8px;"><span class="code">sudo usermod -aG docker $USER</span><span class="btn muted"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V5a2 2 0 012-2h10"></path></svg> Copy</span><span class="btn" style="border-color: rgba(56,189,248,0.5); color: #bae6fd;">Fix for me</span></div></div>
+      <div class="row" style="gap: 14px; padding: 10px 0; border-bottom: 1px solid #27272a;">
+    <span style="width: 22px; height: 22px; border-radius: 9999px; display: inline-flex; align-items: center; justify-content: center; color: #09090b; background: #10b981; border: 1px solid #10b981; flex-shrink: 0; box-sizing: border-box;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg></span>
+    <div class="stack" style="flex: 1; gap: 1px;"><span class="h3">NVIDIA Container Toolkit 1.17</span><span class="xs sec">GPU is visible inside containers · driver 570.86 · CUDA 12.8</span></div></div>
+      <div class="row" style="gap: 14px; padding: 10px 0; border-bottom: 1px solid #27272a;">
+    <span style="width: 22px; height: 22px; border-radius: 9999px; display: inline-flex; align-items: center; justify-content: center; color: #09090b; background: #10b981; border: 1px solid #10b981; flex-shrink: 0; box-sizing: border-box;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg></span>
+    <div class="stack" style="flex: 1; gap: 1px;"><span class="h3">GPU: GB10 Grace Blackwell</span><span class="xs sec">128 GB unified memory · 0.6 GB in use</span></div></div>
+      <div class="row" style="gap: 14px; padding: 10px 0; border-bottom: 1px solid #27272a;">
+    <span style="width: 22px; height: 22px; border-radius: 9999px; display: inline-flex; align-items: center; justify-content: center; color: #09090b; background: #10b981; border: 1px solid #10b981; flex-shrink: 0; box-sizing: border-box;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg></span>
+    <div class="stack" style="flex: 1; gap: 1px;"><span class="h3">Disk</span><span class="xs sec">3.2 TB free of 3.8 TB on /var/lib/niuu · models and workspaces live here</span></div></div>
+      <div class="row" style="gap: 14px; padding: 10px 0; border-bottom: 1px solid #27272a;">
+    <span style="width: 22px; height: 22px; border-radius: 9999px; display: inline-flex; align-items: center; justify-content: center; color: #09090b; background: #10b981; border: 1px solid #10b981; flex-shrink: 0; box-sizing: border-box;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg></span>
+    <div class="stack" style="flex: 1; gap: 1px;"><span class="h3">Ports</span><span class="xs sec">8080 (web + API), 8088 (model gateway), 9100–9199 (session channels) are free</span></div></div>
+      <div class="row" style="gap: 14px; padding: 10px 0; border-bottom: 1px solid #27272a;">
+    <span style="width: 22px; height: 22px; border-radius: 9999px; display: inline-flex; align-items: center; justify-content: center; color: #09090b; background: #10b981; border: 1px solid #10b981; flex-shrink: 0; box-sizing: border-box;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg></span>
+    <div class="stack" style="flex: 1; gap: 1px;"><span class="h3">Outbound network</span><span class="xs sec">ghcr.io, huggingface.co, api.anthropic.com reachable · 940 Mbit/s</span></div></div>
+      <div class="row" style="gap: 14px; padding: 10px 0; border-bottom: 1px solid #27272a;">
+    <span style="width: 22px; height: 22px; border-radius: 9999px; display: inline-flex; align-items: center; justify-content: center; color: #09090b; background: #10b981; border: 1px solid #10b981; flex-shrink: 0; box-sizing: border-box;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg></span>
+    <div class="stack" style="flex: 1; gap: 1px;"><span class="h3">Git 2.43</span><span class="xs sec">user.name and user.email are set</span></div></div>
+    </div>
+  </div>
+  <div class="row" style="gap: 10px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z"></path><path d="M9 12l2 2 4-4"></path></svg><span class="xs sec">Warnings do not block setup. Anything still failing is listed again on the Launch step.</span></div>
+    </div>
+  </div>
+  <div class="footer">
+    <span class="btn ghost"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M19 12H5M11 18l-6-6 6-6"></path></svg> Back</span>
+    <div class="row" style="gap: 12px;"><span class="cta ">Continue <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ><path d="M5 12h14M13 6l6 6-6 6"></path></svg></span></div>
+  </div>
+</main>
+</div>
+</x-dc>
+</body>
+</html>
