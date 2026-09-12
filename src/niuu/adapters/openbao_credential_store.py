@@ -174,8 +174,7 @@ class OpenBaoCredentialStore(CredentialStorePort):
         if response.status_code == 404:
             return None
         if response.status_code >= 400:
-            logger.error("OpenBao read failed: %s %s", response.status_code, response.text)
-            return None
+            raise RuntimeError(f"OpenBao read failed (HTTP {response.status_code})")
 
         body = response.json()
         return body.get("data", {}).get("data")
@@ -289,8 +288,7 @@ class OpenBaoCredentialStore(CredentialStorePort):
         if response.status_code == 404:
             return []
         if response.status_code >= 400:
-            logger.error("OpenBao list failed: %s %s", response.status_code, response.text)
-            return []
+            raise RuntimeError(f"OpenBao list failed (HTTP {response.status_code})")
 
         body = response.json()
         keys = body.get("data", {}).get("keys", [])

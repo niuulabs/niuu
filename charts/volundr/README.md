@@ -575,7 +575,7 @@ The shared `Gateway` resource that all session `HTTPRoute`s attach to. Requires 
 | `config.logLevel` | string | `"info"` | Log level (`debug`, `info`, `warning`, `error`) |
 | `config.logFormat` | string | `"json"` | Log format (`json`, `text`) |
 | `config.host` | string | `"0.0.0.0"` | Host to bind to |
-| `config.workers` | int | `4` | Number of uvicorn workers |
+| `config.workers` | int | `1` | Number of uvicorn workers. Keep at 1 with the development in-memory credential store |
 | `config.sessionTimeout` | string | `"3600"` | Session timeout in seconds |
 | `config.maxSessionsPerUser` | string | `"5"` | Maximum sessions per user |
 | `config.corsOrigins` | string | `"*"` | CORS allowed origins |
@@ -902,8 +902,15 @@ stringData:
 
 ### Development (minimal)
 
+The default in-memory credential store requires one worker and one replica.
+Its credentials are lost on restart. Configure a shared OpenBao credential store
+before increasing either count (see [OpenBao setup](../../docs/openbao-ymir-bootstrap.md)).
+
 ```yaml
 replicaCount: 1
+
+config:
+  workers: 1
 
 resources:
   requests:

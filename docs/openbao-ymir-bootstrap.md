@@ -57,7 +57,7 @@ Example bootstrap spec:
 
 ```yaml
 openbao:
-  url: "https://openbao.ymir.niuu.world"
+  url: "https://openbao.niuu.world"
   namespace: ""
   auth:
     method: token
@@ -107,16 +107,36 @@ Use the shared OpenBao credential store:
 credentialStore:
   adapter: "niuu.adapters.openbao_credential_store.OpenBaoCredentialStore"
   kwargs:
-    url: "https://openbao.ymir.niuu.world"
+    url: "https://openbao.niuu.world"
     mount_path: "volundr"
-    auth_method: "token"
-  secretKwargs:
-    - kwarg: token
-      secretName: openbao-app-auth
-      secretKey: token
+    auth_method: "jwt"
+    jwt_mount_path: "auth/jwt-ymir"
+    jwt_role: "volundr-app"
+    jwt_token_file: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+  secretKwargs: []
 ```
 
-For Ting, keep the same adapter but set `mount_path: "ting"`.
+For shared user credentials, Volundr, Niuu shared services, and Ting must use
+the same URL, namespace, and KV mount. The umbrella chart overlay
+[`charts/niuu/values-openbao.yaml`](../charts/niuu/values-openbao.yaml) configures
+all three with the Ymir URL and `volundr` mount above. Apply it after your base
+values. Each service authenticates with its projected Kubernetes ServiceAccount
+JWT and its own role (`volundr-app`, `niuu-shared-app`, or `ting-app`). For other
+clusters, set each service's `jwt_mount_path` to that cluster's auth backend.
+Provision the roles bound to their ServiceAccounts before deploying the values,
+with an OpenBao policy allowing reads,
+writes, and deletes under `volundr/data/users/*` and `volundr/data/tenants/*`,
+plus listing under the matching `volundr/metadata/` paths.
+
+Use a separate `ting` mount only for intentionally isolated Ting credentials;
+credentials created in Volundr settings will not appear there. Existing
+credentials in a different mount are not migrated by changing configuration.
+
+Development defaults use one worker and one replica with the in-memory store;
+credentials are lost on restart. Configure OpenBao before scaling workers or
+replicas. OpenBao read/list failures surface as errors rather than successful
+empty or partial credential lists; a missing path (HTTP 404) remains an expected
+empty result.
 
 For runtime pod injection, use the dynamic OpenBao injector adapter:
 
@@ -124,15 +144,16 @@ For runtime pod injection, use the dynamic OpenBao injector adapter:
 secretInjection:
   adapter: "volundr.adapters.outbound.openbao_secret_injection.OpenBaoAgentInjectionAdapter"
   kwargs:
-    openbao_url: "https://openbao.ymir.niuu.world"
+    openbao_url: "https://openbao.niuu.world"
     namespace: "skuld"
     mount_path: "volundr"
     auth_path: "jwt-valhalla"
     audience: "https://kubernetes.default.svc.cluster.local"
-  secretKwargs:
-    - kwarg: token
-      secretName: openbao-app-auth
-      secretKey: token
+    auth_method: "jwt"
+    jwt_mount_path: "auth/jwt-valhalla"
+    jwt_role: "volundr-app"
+    jwt_token_file: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+  secretKwargs: []
 ```
 
 This adapter creates the session ServiceAccount, JWT role, and agent ConfigMap
@@ -158,4 +179,5 @@ The adapter also uses matching metadata paths for lists:
 - Workload clusters need the OpenBao injector installed in external mode and
   pointed at the Ymir OpenBao address.
 - `niuu.adapters.openbao_credential_store.OpenBaoCredentialStore` supports
-  both `token` and `approle` auth.
+  `jwt`, `token`, and `approle` auth. Kubernetes workloads use `jwt`; no static
+  application token is needed.

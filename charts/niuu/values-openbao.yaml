@@ -1,0 +1,39 @@
+# Shared credential storage for Ymir, using projected ServiceAccount JWTs.
+# For another cluster, override jwt_mount_path on all three services to its
+# auth/jwt-<cluster> backend. Provision each service's JWT role before rollout.
+# All consumers use the same KV v2 mount to resolve user credentials.
+volundr:
+  credentialStore:
+    adapter: "niuu.adapters.openbao_credential_store.OpenBaoCredentialStore"
+    kwargs:
+      url: "https://openbao.niuu.world"
+      mount_path: "volundr"
+      auth_method: "jwt"
+      jwt_mount_path: "auth/jwt-ymir"
+      jwt_role: "volundr-app"
+      jwt_token_file: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    secretKwargs: []
+
+niuu-shared:
+  credentialStore:
+    adapter: "niuu.adapters.openbao_credential_store.OpenBaoCredentialStore"
+    kwargs:
+      url: "https://openbao.niuu.world"
+      mount_path: "volundr"
+      auth_method: "jwt"
+      jwt_mount_path: "auth/jwt-ymir"
+      jwt_role: "niuu-shared-app"
+      jwt_token_file: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    secretKwargs: []
+
+ting:
+  credentialStore:
+    adapter: "niuu.adapters.openbao_credential_store.OpenBaoCredentialStore"
+    kwargs:
+      url: "https://openbao.niuu.world"
+      mount_path: "volundr"
+      auth_method: "jwt"
+      jwt_mount_path: "auth/jwt-ymir"
+      jwt_role: "ting-app"
+      jwt_token_file: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    secretKwargs: []
