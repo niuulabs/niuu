@@ -615,8 +615,10 @@ class LocalResidentMemory(ResidentMemoryPort):
         path.parent.mkdir(parents=True, exist_ok=True)
         # Local resident pages are deliberately operator-inspectable Markdown,
         # not a credential store. Keep them private to the owning OS account.
-        path.write_text(content, encoding="utf-8")
-        path.chmod(0o600)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(content)
         return str(rel)
 
     def _working_state_path(self, resident_id: str) -> Path:
