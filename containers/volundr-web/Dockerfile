@@ -24,9 +24,8 @@ RUN pnpm build
 # Stage 2: Serve with nginx
 FROM nginx:1.31.3-alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752
 
-# Patch base image vulnerabilities (CVE-2026-22184: zlib).
-# Fix CVE-2026-22184: zlib critical vulnerability.
-RUN apk upgrade --no-cache zlib
+# Apply security updates to all packages inherited from the pinned base.
+RUN apk upgrade --no-cache
 
 LABEL org.opencontainers.image.title="volundr-web"
 LABEL org.opencontainers.image.description="Volundr Web — AI-native development platform UI"
