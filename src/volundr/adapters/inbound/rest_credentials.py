@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Res
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from credentials.service import CredentialService, CredentialValidationError
+from identity.adapters.http_auth import authorization_http_errors
 from niuu.domain.models import Principal, SecretType
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from volundr.adapters.inbound.auth import extract_principal, require_role
@@ -268,7 +269,8 @@ def _build_credentials_router(
                 ),
             )
         st = SecretType(secret_type) if secret_type else None
-        creds = await credential_service.list("user", principal.user_id, st)
+        with authorization_http_errors():
+            creds = await credential_service.list(principal, "user", principal.user_id, st)
         if compatibility_summary_lists:
             return [_cred_to_legacy_summary_response(c) for c in creds]
         return CredentialListResponse(
@@ -304,7 +306,8 @@ def _build_credentials_router(
                 ),
             )
         st = SecretType(type) if type else None
-        creds = await credential_service.list("user", principal.user_id, st)
+        with authorization_http_errors():
+            creds = await credential_service.list(principal, "user", principal.user_id, st)
         return [_cred_to_legacy_store_response(c) for c in creds]
 
     @router.get("/user/{name}", response_model=CredentialResponse)
@@ -324,7 +327,8 @@ def _build_credentials_router(
                     canonical_path=f"{canonical_prefix}/user/{name}",
                 ),
             )
-        cred = await credential_service.get("user", principal.user_id, name)
+        with authorization_http_errors():
+            cred = await credential_service.get(principal, "user", principal.user_id, name)
         if cred is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -357,7 +361,8 @@ def _build_credentials_router(
                     canonical_path=f"{canonical_prefix}/user/{name}",
                 ),
             )
-        cred = await credential_service.get("user", principal.user_id, name)
+        with authorization_http_errors():
+            cred = await credential_service.get(principal, "user", principal.user_id, name)
         if cred is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -391,14 +396,16 @@ def _build_credentials_router(
             )
 
         try:
-            cred = await credential_service.create(
-                owner_type="user",
-                owner_id=principal.user_id,
-                name=body.name,
-                secret_type=st,
-                data=body.data,
-                metadata=body.metadata,
-            )
+            with authorization_http_errors():
+                cred = await credential_service.create(
+                    principal,
+                    owner_type="user",
+                    owner_id=principal.user_id,
+                    name=body.name,
+                    secret_type=st,
+                    data=body.data,
+                    metadata=body.metadata,
+                )
         except CredentialValidationError as e:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -446,14 +453,16 @@ def _build_credentials_router(
             )
 
         try:
-            cred = await credential_service.create(
-                owner_type="user",
-                owner_id=principal.user_id,
-                name=body.name,
-                secret_type=st,
-                data=body.data,
-                metadata=body.metadata,
-            )
+            with authorization_http_errors():
+                cred = await credential_service.create(
+                    principal,
+                    owner_type="user",
+                    owner_id=principal.user_id,
+                    name=body.name,
+                    secret_type=st,
+                    data=body.data,
+                    metadata=body.metadata,
+                )
         except CredentialValidationError as e:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -479,13 +488,15 @@ def _build_credentials_router(
                     canonical_path=f"{canonical_prefix}/user/{name}",
                 ),
             )
-        cred = await credential_service.get("user", principal.user_id, name)
+        with authorization_http_errors():
+            cred = await credential_service.get(principal, "user", principal.user_id, name)
         if cred is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Credential not found",
             )
-        await credential_service.delete("user", principal.user_id, name)
+        with authorization_http_errors():
+            await credential_service.delete(principal, "user", principal.user_id, name)
 
     if compatibility_summary_lists:
         router.add_api_route(
@@ -512,13 +523,15 @@ def _build_credentials_router(
                     canonical_path=f"{canonical_prefix}/user/{name}",
                 ),
             )
-        cred = await credential_service.get("user", principal.user_id, name)
+        with authorization_http_errors():
+            cred = await credential_service.get(principal, "user", principal.user_id, name)
         if cred is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Credential not found",
             )
-        await credential_service.delete("user", principal.user_id, name)
+        with authorization_http_errors():
+            await credential_service.delete(principal, "user", principal.user_id, name)
 
     # ------------------------------------------------------------------
     # Tenant credential endpoints (admin only)
@@ -554,7 +567,8 @@ def _build_credentials_router(
                 ),
             )
         st = SecretType(secret_type) if secret_type else None
-        creds = await credential_service.list("tenant", principal.tenant_id, st)
+        with authorization_http_errors():
+            creds = await credential_service.list(principal, "tenant", principal.tenant_id, st)
         if compatibility_summary_lists:
             return [_cred_to_legacy_summary_response(c) for c in creds]
         return CredentialListResponse(
@@ -593,14 +607,16 @@ def _build_credentials_router(
             )
 
         try:
-            cred = await credential_service.create(
-                owner_type="tenant",
-                owner_id=principal.tenant_id,
-                name=body.name,
-                secret_type=st,
-                data=body.data,
-                metadata=body.metadata,
-            )
+            with authorization_http_errors():
+                cred = await credential_service.create(
+                    principal,
+                    owner_type="tenant",
+                    owner_id=principal.tenant_id,
+                    name=body.name,
+                    secret_type=st,
+                    data=body.data,
+                    metadata=body.metadata,
+                )
         except CredentialValidationError as e:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -631,13 +647,15 @@ def _build_credentials_router(
                     canonical_path=f"{canonical_prefix}/tenant/{name}",
                 ),
             )
-        cred = await credential_service.get("tenant", principal.tenant_id, name)
+        with authorization_http_errors():
+            cred = await credential_service.get(principal, "tenant", principal.tenant_id, name)
         if cred is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Credential not found",
             )
-        await credential_service.delete("tenant", principal.tenant_id, name)
+        with authorization_http_errors():
+            await credential_service.delete(principal, "tenant", principal.tenant_id, name)
 
     return router
 

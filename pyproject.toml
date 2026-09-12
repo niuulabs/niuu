@@ -7,6 +7,7 @@ license = {text = "Apache-2.0"}
 keywords = ["development-platform", "remote-coding", "ai", "kubernetes", "self-hosted"]
 requires-python = ">=3.12"
 dependencies = [
+    "cedarpy==4.8.7",
     "a2a-sdk>=1.1.2,<2",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
@@ -33,6 +34,8 @@ dependencies = [
     "python-telegram-bot>=22.8",
     "sqlite-vec>=0.1.9",
     "docker>=7.2.0",
+    "xds-protos>=1.78.0,<2",
+    "grpcio>=1.78.0,<2",
 ]
 
 [project.optional-dependencies]

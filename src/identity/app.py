@@ -13,11 +13,11 @@ from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.cors import apply_cors_middleware
-from niuu.domain.services.pat import PATService
 from niuu.service_database import database_pool
 from niuu.service_databases import apply_service_database_settings
 from niuu.service_runtime import (
     configure_logging,
+    create_authorization_adapter,
     create_identity_adapter,
     create_pat_validator,
     create_storage_adapter,
@@ -63,15 +63,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 tenant_service=tenant_service,
             )
             await tenant_service.ensure_default_tenant()
+            app.state.authorization = create_authorization_adapter(settings)
             pat_repository = PostgresPATRepository(pool)
             pat_validator = create_pat_validator(settings, pat_repository)
             token_issuer_cls = import_class(settings.pat.token_issuer_adapter)
             token_issuer = token_issuer_cls(**settings.pat.token_issuer_kwargs)
-            pat_service = PATService(
+            pat_service = import_class(settings.pat.service_adapter)(
+                **settings.pat.service_kwargs,
                 repo=pat_repository,
                 token_issuer=token_issuer,
                 ttl_days=settings.pat.ttl_days,
                 validator=pat_validator,
+                authorization=create_authorization_adapter(settings),
             )
 
             app.state.identity = identity_adapter
@@ -87,7 +90,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.router.lifespan_context = lifespan
     apply_cors_middleware(app, settings.cors)
-    app.add_middleware(PATRevocationMiddleware)
+    app.add_middleware(
+        PATRevocationMiddleware, websocket_check_interval=settings.pat.websocket_check_interval
+    )
 
     @app.get("/health")
     async def health() -> dict[str, str]:

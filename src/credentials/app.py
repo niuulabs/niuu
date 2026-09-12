@@ -17,6 +17,7 @@ from niuu.service_database import database_pool
 from niuu.service_databases import apply_service_database_settings
 from niuu.service_runtime import (
     configure_logging,
+    create_authorization_adapter,
     create_credential_store,
     create_identity_adapter,
     create_pat_validator,
@@ -60,6 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             credential_service = CredentialService(
                 store=credential_store,
                 strategies=SecretMountStrategyRegistry(),
+                authorization=create_authorization_adapter(settings),
             )
             mcp_provider = ConfigMCPServerProvider(settings.mcp_servers)
             secret_manager = InMemorySecretManager()
@@ -91,7 +93,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.router.lifespan_context = lifespan
     apply_cors_middleware(app, settings.cors)
-    app.add_middleware(PATRevocationMiddleware)
+    app.add_middleware(
+        PATRevocationMiddleware, websocket_check_interval=settings.pat.websocket_check_interval
+    )
 
     @app.get("/health")
     async def health() -> dict[str, str]:

@@ -1,0 +1,5 @@
+# Set identityAuthority.url to the actual HTTPS shared identity service.
+identityAuthority:
+  enabled: true
+authorization:
+  adapter: identity.adapters.cedar.CedarAuthorizationAdapter

@@ -84,7 +84,7 @@ async def test_list_volundr_targets_forwards_principal_and_bearer_token() -> Non
 @pytest.mark.asyncio
 @respx.mock
 async def test_list_volundr_targets_uses_configured_auth_without_request_bearer() -> None:
-    request = Request({"type": "http", "headers": []})
+    request = Request({"type": "http", "headers": [], "query_string": b""})
     assert extract_bearer_token(request) is None
 
     route = respx.get("https://guild.test/api/v1/niuu/instances").mock(

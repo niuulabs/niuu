@@ -70,6 +70,14 @@ class UserRepository(ABC):
     async def remove_membership(self, user_id: str, tenant_id: str) -> bool: ...
 
 
+class AuthorizationDeniedError(PermissionError):
+    """A resource policy denied the requested operation."""
+
+
+class AuthorizationEvaluationError(RuntimeError):
+    """Authorization failed operationally; the protected operation must not proceed."""
+
+
 class AuthorizationPort(ABC):
     """Port for authorization decisions."""
 

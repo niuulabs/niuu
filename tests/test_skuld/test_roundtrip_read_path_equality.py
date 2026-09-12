@@ -61,7 +61,7 @@ from skuld.config import SkuldSettings
 
 # Reuse the SINGLE in-memory durable-log fake the REST/replay endpoint tests use
 # (mirrors the pg_session_event_log append/read_after/latest_seq contract).
-from tests.test_adapters.test_rest_session_log import InMemoryLog
+from tests.test_adapters.test_rest_session_log import InMemoryLog, allow_log_access
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
 from volundr.adapters.inbound.ws_session_replay import create_session_replay_router
 from volundr.config import ReplayConfig
@@ -280,7 +280,7 @@ def _buffer_to_log_entries(broker: Broker, session_id: UUID) -> list[SessionLogE
 def _cold_read(repo: InMemoryLog, session_id: UUID) -> list[dict]:
     """Default-gated cold read via GET /log (Epic D)."""
     app = FastAPI()
-    app.include_router(create_session_log_router(repo, session_service=None))
+    app.include_router(create_session_log_router(repo, session_service=allow_log_access(app)))
     client = TestClient(app)
     resp = client.get(f"/api/v1/forge/sessions/{session_id}/log")
     assert resp.status_code == 200
@@ -296,7 +296,9 @@ def _replay_after_zero(repo: InMemoryLog, session_id: UUID) -> list[dict]:
         default_show_internal=False,  # gated by default, like live + cold-read
     )
     app = FastAPI()
-    app.include_router(create_session_replay_router(repo, session_service=None, config=cfg))
+    app.include_router(
+        create_session_replay_router(repo, session_service=allow_log_access(app), config=cfg)
+    )
     client = TestClient(app)
     out: list[dict] = []
     # preamble=false so the stream is ONLY the gated frame tail (no system /
@@ -789,7 +791,9 @@ class TestConfiguredVisibilityDefaultParityINV10:
         # (2) COLD-READ default — create_session_log_router(default_show_internal=flag).
         app = FastAPI()
         app.include_router(
-            create_session_log_router(repo, session_service=None, default_show_internal=flag)
+            create_session_log_router(
+                repo, session_service=allow_log_access(app), default_show_internal=flag
+            )
         )
         cold = TestClient(app).get(f"/api/v1/forge/sessions/{session_id}/log").json()
         cold_block_types = [
@@ -804,7 +808,9 @@ class TestConfiguredVisibilityDefaultParityINV10:
             enabled=True, fixtures_enabled=False, max_gap_seconds=0.0, default_show_internal=flag
         )
         rapp = FastAPI()
-        rapp.include_router(create_session_replay_router(repo, session_service=None, config=cfg))
+        rapp.include_router(
+            create_session_replay_router(repo, session_service=allow_log_access(rapp), config=cfg)
+        )
         with TestClient(rapp).websocket_connect(
             f"/api/v1/forge/sessions/{session_id}/replay?preamble=false"
         ) as ws:
@@ -840,7 +846,7 @@ class TestVisibilityParityINV10:
 
         # Cold-read with internals shown.
         app = FastAPI()
-        app.include_router(create_session_log_router(repo, session_service=None))
+        app.include_router(create_session_log_router(repo, session_service=allow_log_access(app)))
         client = TestClient(app)
         cold_full = client.get(
             f"/api/v1/forge/sessions/{session_id}/log",
@@ -855,7 +861,9 @@ class TestVisibilityParityINV10:
             default_show_internal=True,
         )
         rapp = FastAPI()
-        rapp.include_router(create_session_replay_router(repo, session_service=None, config=cfg))
+        rapp.include_router(
+            create_session_replay_router(repo, session_service=allow_log_access(rapp), config=cfg)
+        )
         rclient = TestClient(rapp)
         replay_full: list[dict] = []
         with rclient.websocket_connect(

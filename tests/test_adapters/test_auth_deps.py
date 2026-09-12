@@ -47,6 +47,69 @@ def _viewer_principal():
 class TestExtractPrincipal:
     """Tests for extract_principal dependency."""
 
+    @pytest.mark.parametrize(
+        "headers,query",
+        [
+            ({"x-auth-user-id": "attacker", "x-auth-roles": "volundr:admin"}, ""),
+            ({}, "?devUserId=attacker&devRoles=volundr:admin&devTenantId=other"),
+        ],
+    )
+    def test_untrusted_identity_cannot_bypass_token_validation(self, headers, query):
+        identity = AsyncMock()
+        identity.validate_token.side_effect = InvalidTokenError("bad token")
+        app = _make_app(identity=identity)
+
+        @app.get("/effect")
+        async def effect(principal: Principal = Depends(extract_principal)):
+            pytest.fail("Unauthenticated request reached the protected effect")
+
+        response = TestClient(app).get("/effect" + query, headers=headers)
+        assert response.status_code == 401
+
+    def test_dev_query_cannot_bypass_envoy_identity(self):
+        app = _make_app(identity=EnvoyHeaderIdentityAdapter(user_repository=AsyncMock()))
+
+        @app.get("/effect")
+        async def effect(principal: Principal = Depends(extract_principal)):
+            pytest.fail("Development identity bypassed Envoy authentication")
+
+        assert (
+            TestClient(app).get("/effect?devUserId=admin&devRoles=volundr:admin").status_code == 401
+        )
+
+    def test_shared_auth_denies_when_identity_is_not_configured(self):
+        from niuu.adapters.inbound.auth import extract_principal as shared_auth
+
+        app = FastAPI()
+
+        @app.get("/effect")
+        async def effect(principal: Principal = Depends(shared_auth)):
+            pytest.fail("Unconfigured authentication admitted a request")
+
+        response = TestClient(app).get("/effect?devUserId=admin")
+        assert response.status_code == 401
+
+    @pytest.mark.parametrize(
+        "headers,query,expected",
+        [
+            ({}, "", "dev-user"),
+            ({"x-auth-user-id": "local-user"}, "", "local-user"),
+            ({}, "?devUserId=local-query&devRoles=volundr:viewer", "local-query"),
+        ],
+    )
+    def test_explicit_dev_adapter_keeps_local_development_working(self, headers, query, expected):
+        from identity.adapters.identity import AllowAllIdentityAdapter
+
+        app = _make_app(identity=AllowAllIdentityAdapter(user_repository=AsyncMock()))
+
+        @app.get("/identity")
+        async def who(principal: Principal = Depends(extract_principal)):
+            return principal.user_id
+
+        response = TestClient(app).get("/identity" + query, headers=headers)
+        assert response.status_code == 200
+        assert response.json() == expected
+
     def test_missing_auth_header_returns_401(self):
         identity = AsyncMock()
         app = _make_app(identity=identity)
@@ -216,7 +279,7 @@ class TestEnvoyHeaderMode:
         assert data["user_id"] == "envoy-user"
         assert data["roles"] == ["volundr:admin"]
 
-    def test_envoy_headers_blank_tenant_defaults_to_default(self):
+    def test_envoy_headers_blank_tenant_does_not_grant_default_membership(self):
         user_repo = AsyncMock()
         identity = EnvoyHeaderIdentityAdapter(user_repository=user_repo)
         app = _make_app(identity=identity)
@@ -241,7 +304,7 @@ class TestEnvoyHeaderMode:
         assert resp.status_code == 200
         data = resp.json()
         assert data["user_id"] == "envoy-user"
-        assert data["tenant_id"] == "default"
+        assert data["tenant_id"] == ""
 
     def test_envoy_missing_user_id_returns_401(self):
         user_repo = AsyncMock()

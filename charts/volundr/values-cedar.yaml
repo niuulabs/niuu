@@ -1,0 +1,31 @@
+# Apply AFTER deployment-specific values containing the real issuer, audience,
+# JWKS configuration, and role mapping. This profile intentionally cannot run
+# against the development defaults: missing identity configuration is fatal.
+identity:
+  adapter: "volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter"
+  kwargs:
+    default_tenant_id: ""
+    membership_authority: local
+authorization:
+  adapter: "identity.adapters.cedar.CedarAuthorizationAdapter"
+  kwargs: {}
+envoy:
+  enabled: true
+  image:
+    tag: "v1.39.1"
+  jwt:
+    enabled: true
+    # Replace deployment-specific bypass lists when enabling enforcement.
+    bypassPrefixes:
+      - /api/v1/identity/auth/config
+      - /api/v1/tokens/workload/exchange
+      - /api/v1/tokens/workload/jwks
+      - /health
+  authorization:
+    enabled: true
+
+pat:
+  service_kwargs:
+    require_scopes: true
+  revocation_cache_ttl: 0
+  websocket_check_interval: 5

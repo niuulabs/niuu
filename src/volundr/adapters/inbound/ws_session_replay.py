@@ -116,22 +116,10 @@ async def _authorize_replay(
     websocket: WebSocket,
     session_id: UUID,
 ) -> bool:
-    """Authorize a DB-replay connection; close 1008 on denial. Return True to proceed.
-
-    Mirrors the REST ``GET .../log`` access contract
-    (``rest_session_log._check_access``) with early returns:
-
-    * auth unconfigured (``session_service is None``) -> open;
-    * unauthenticated principal (``extract_principal`` raises ``HTTPException``)
-      or forbidden principal (``_check_access`` raises ``SessionAccessDeniedError``)
-      -> close 1008;
-    * session row absent -> open. PARITY with REST /log: a deleted session whose
-      durable log survives (no FK) has no per-session ACL to check. If that
-      deleted-session exposure is ever tightened, change it HERE and in
-      ``rest_session_log._check_access`` together.
-    """
+    """Authorize replay before accepting; missing ownership records deny access."""
     if session_service is None:
-        return True
+        await websocket.close(code=1011)
+        return False
 
     from fastapi import HTTPException
 
@@ -145,7 +133,8 @@ async def _authorize_replay(
 
     session = await session_service.get_session(session_id)
     if session is None:
-        return True
+        await websocket.close(code=1008)
+        return False
 
     try:
         await session_service._check_access(session, principal, "read")

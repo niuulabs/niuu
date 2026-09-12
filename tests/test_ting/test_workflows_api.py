@@ -9,6 +9,7 @@ import jwt
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from niuu.domain.models import Principal
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.workflows import create_workflows_router, resolve_workflow_repo
@@ -254,6 +255,7 @@ def _make_client(
     volundr_factory: RecordingVolundrFactory | None = None,
 ) -> TestClient:
     app = FastAPI()
+    app.state.authorization = AllowAllAuthorizationAdapter()
     app.include_router(create_workflows_router())
     app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
     app.dependency_overrides[resolve_workflow_repo] = lambda: repo

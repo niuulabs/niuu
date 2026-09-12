@@ -5,34 +5,11 @@ All adapters accept **kwargs (dynamic adapter pattern).
 
 from __future__ import annotations
 
+from identity.adapters.authorization import (
+    AllowAllAuthorizationAdapter as AllowAllAuthorizationAdapter,
+)
 from volundr.domain.models import Principal
 from volundr.domain.ports import AuthorizationPort, Resource
-
-
-class AllowAllAuthorizationAdapter(AuthorizationPort):
-    """Development adapter that permits all actions.
-
-    For local dev only — no authorization checks.
-    """
-
-    def __init__(self, **_extra: object) -> None:
-        pass
-
-    async def is_allowed(
-        self,
-        principal: Principal,
-        action: str,
-        resource: Resource,
-    ) -> bool:
-        return True
-
-    async def filter_allowed(
-        self,
-        principal: Principal,
-        action: str,
-        resources: list[Resource],
-    ) -> list[Resource]:
-        return resources
 
 
 class SimpleRoleAuthorizationAdapter(AuthorizationPort):

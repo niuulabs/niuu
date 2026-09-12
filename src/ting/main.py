@@ -9,15 +9,16 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request, Response
+from starlette.responses import JSONResponse
 
+from identity.ports import AuthorizationDeniedError, AuthorizationEvaluationError
 from niuu.adapters.http_integrations import HTTPIntegrationRepository
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
-from niuu.domain.services.pat_validator import PATValidator
 from niuu.ports.integrations import IntegrationRepository
-from niuu.service_runtime import create_workload_identity_service
+from niuu.service_runtime import create_authorization_adapter, create_workload_identity_service
 from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ravn.ports.persona import PersonaPort
@@ -87,6 +88,11 @@ from ting.domain.services.dispatch_service import (
     DispatchService,
 )
 from ting.domain.services.notification import NotificationService
+from ting.domain.services.resource_authorization import (
+    AuthorizedCampaignRepository,
+    AuthorizedSagaRepository,
+    AuthorizedWorkflowRepository,
+)
 from ting.domain.services.review_engine import ReviewEngine
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.infrastructure.database import database_pool
@@ -351,8 +357,18 @@ def create_app(
         description="Decomposes specs into sagas, phases, and runs.",
         version="0.1.0",
     )
+    app.state.authorization = create_authorization_adapter(settings)
+
+    @app.exception_handler(AuthorizationDeniedError)
+    async def authorization_denied(request: Request, exc: AuthorizationDeniedError):
+        return JSONResponse(status_code=403, content={"detail": "Resource operation denied"})
+
+    @app.exception_handler(AuthorizationEvaluationError)
+    async def authorization_unavailable(request: Request, exc: AuthorizationEvaluationError):
+        return JSONResponse(status_code=503, content={"detail": "Authorization unavailable"})
 
     app.state.settings = settings
+    app.state.identity = import_class(settings.auth.adapter)(**settings.auth.kwargs)
     app.state.workload_identity_service = create_workload_identity_service(
         settings.workload_identity
     )
@@ -499,8 +515,15 @@ def create_app(
             saga_repo = PostgresSagaRepository(pool)
             app.state.saga_repo = saga_repo
 
-            async def _resolve_saga_repo() -> SagaRepository:
-                return saga_repo
+            async def _resolve_saga_repo(
+                request: Request, principal: Principal = Depends(extract_principal)
+            ) -> SagaRepository:
+                return AuthorizedSagaRepository(
+                    saga_repo,
+                    app.state.authorization,
+                    principal,
+                    read_action="read" if request.method in ("GET", "HEAD") else "update",
+                )
 
             app.dependency_overrides[resolve_saga_repo] = _resolve_saga_repo
             app.dependency_overrides[dispatch_resolve_saga_repo] = _resolve_saga_repo
@@ -558,8 +581,12 @@ def create_app(
                     len(seeded_system_workflows),
                 )
 
-            async def _resolve_workflow_repo() -> WorkflowRepository:
-                return workflow_repo
+            async def _resolve_workflow_repo(
+                principal: Principal = Depends(extract_principal),
+            ) -> WorkflowRepository:
+                return AuthorizedWorkflowRepository(
+                    workflow_repo, app.state.authorization, principal
+                )
 
             app.dependency_overrides[resolve_workflow_repo] = _resolve_workflow_repo
 
@@ -591,8 +618,15 @@ def create_app(
                 logger.info("A2A push dispatcher started")
             app.state.a2a_push_dispatcher = a2a_push_dispatcher
 
-            async def _resolve_workflow_campaign_repo() -> WorkflowCampaignRepository:
-                return workflow_campaign_repo
+            async def _resolve_workflow_campaign_repo(
+                request: Request, principal: Principal = Depends(extract_principal)
+            ) -> WorkflowCampaignRepository:
+                return AuthorizedCampaignRepository(
+                    workflow_campaign_repo,
+                    app.state.authorization,
+                    principal,
+                    read_action="read" if request.method in ("GET", "HEAD") else "update",
+                )
 
             app.dependency_overrides[resolve_workflow_campaign_repo] = (
                 _resolve_workflow_campaign_repo
@@ -674,12 +708,12 @@ def create_app(
 
             # Wire personal access token service
             from ting.adapters.postgres_pats import PostgresPATRepository
-            from ting.domain.services.pat import PATService
 
             pat_repo = PostgresPATRepository(pool)
 
             # Wire PAT revocation validator
-            pat_validator = PATValidator(
+            pat_validator = import_class(settings.pat.validator_adapter)(
+                **settings.pat.validator_kwargs,
                 repo=pat_repo,
                 cache_ttl=settings.pat.revocation_cache_ttl,
                 revoked_cache_ttl=settings.pat.revoked_cache_ttl,
@@ -690,11 +724,13 @@ def create_app(
             token_issuer_cls = import_class(settings.pat.token_issuer_adapter)
             token_issuer = token_issuer_cls(**settings.pat.token_issuer_kwargs)
 
-            pat_service = PATService(
+            pat_service = import_class(settings.pat.service_adapter)(
+                **settings.pat.service_kwargs,
                 repo=pat_repo,
                 token_issuer=token_issuer,
                 ttl_days=settings.pat.ttl_days,
                 validator=pat_validator,
+                authorization=create_authorization_adapter(settings),
             )
             app.state.pat_service = pat_service
 
@@ -978,7 +1014,11 @@ def create_app(
 
     app.router.lifespan_context = lifespan
     apply_cors_middleware(app, settings.cors)
-    app.add_middleware(PATRevocationMiddleware)
+    app.add_middleware(
+        PATRevocationMiddleware,
+        websocket_check_interval=settings.pat.websocket_check_interval,
+        enabled=not settings.auth.allow_anonymous_dev,
+    )
 
     @app.middleware("http")
     async def correlation_id_middleware(request: Request, call_next):  # noqa: ANN001

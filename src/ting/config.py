@@ -25,6 +25,7 @@ from pydantic_settings import (
 )
 
 from bifrost.config import BifrostConfig
+from identity.authz_config import AuthorizationAdapterConfig
 from niuu.config import CorsConfig, HttpAuthAdapterConfig, InstanceRegistryConfig
 from niuu.config_models import (
     SessionDefinitionConfig,
@@ -468,6 +469,10 @@ class CerbosConfig(BaseModel):
 class PATConfig(BaseModel):
     """Personal access token configuration (matches Volundr's PATConfig)."""
 
+    service_adapter: str = "niuu.domain.services.pat.PATService"
+    service_kwargs: dict = Field(default_factory=dict)
+    validator_adapter: str = "niuu.domain.services.pat_validator.PATValidator"
+    validator_kwargs: dict = Field(default_factory=dict)
     token_issuer_adapter: str = Field(
         default="niuu.adapters.memory_token_issuer.MemoryTokenIssuer",
         description="Fully-qualified class path for the token issuer adapter.",
@@ -484,6 +489,12 @@ class PATConfig(BaseModel):
         default=300.0,
         description="Seconds to cache valid-token lookups before re-checking the DB.",
     )
+    websocket_check_interval: float = Field(
+        default=30.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="Seconds between revocation checks on open WebSockets; expiry is immediate.",
+    )
     revoked_cache_ttl: float = Field(
         default=60.0,
         description="Seconds to cache revoked-token lookups (shorter for fast propagation).",
@@ -493,6 +504,8 @@ class PATConfig(BaseModel):
 class AuthConfig(BaseModel):
     """Authentication configuration."""
 
+    adapter: str = "identity.adapters.identity.EnvoyHeaderAuthenticationAdapter"
+    kwargs: dict = Field(default_factory=dict)
     allow_anonymous_dev: bool = Field(
         default=False,
         description=(
@@ -1018,6 +1031,7 @@ class Settings(BaseSettings):
     credential_store: CredentialStoreConfig = Field(default_factory=CredentialStoreConfig)
     shared_integrations: SharedIntegrationsConfig = Field(default_factory=SharedIntegrationsConfig)
     guild_registry: GuildRegistryConfig = Field(default_factory=GuildRegistryConfig)
+    authorization: AuthorizationAdapterConfig = Field(default_factory=AuthorizationAdapterConfig)
     pat: PATConfig = Field(default_factory=PATConfig)
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)

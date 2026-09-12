@@ -243,6 +243,7 @@ envoy:
     keycloakPort: 8080
     # -- Enable TLS for Keycloak upstream
     keycloakTls: false
+    keycloakCaFile: /etc/ssl/certs/ca-certificates.crt
     # -- Additional JWT claim-to-header mappings
     extraClaimHeaders: []
     # -- Path prefixes that bypass JWT validation
@@ -265,7 +266,54 @@ envoy:
       jwksHost: ""
       jwksPort: 443
       jwksTls: true
+      jwksCaFile: /etc/ssl/certs/ca-certificates.crt
   # -- Extra HTTP filters (inserted before the router filter)
+  extraVolumeMounts: []
+  authorization:
+    # Optional central identity/PAT revocation check before gateway admission.
+    # Use identity.adapters.remote.RemoteHeaderAuthenticationAdapter with HTTPS authority_url.
+    identity: null
+    enabled: false
+    port: 9002
+    timeout: 1s
+    shutdownGraceSeconds: 5
+    extraVolumeMounts: []
+    readinessProbe:
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 3
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    routes:
+    - path: /api/v1/ting/workflows/{workflow_id}/launch
+      path_template: true
+      methods:
+      - POST
+      required_scope: ting:workflow:launch
+    - path: /api/v1/ting
+      prefix: true
+      methods:
+      - GET
+      - HEAD
+      - POST
+      - PUT
+      - PATCH
+      - DELETE
+    - path: /api/v1/tokens
+      prefix: true
+      methods:
+      - GET
+      - POST
+      - DELETE
+    roleMapping:
+      admin: volundr:admin
+      developer: volundr:developer
+      viewer: volundr:viewer
   extraHttpFilters: []
   # -- Extra upstream clusters
   extraClusters: []
@@ -324,6 +372,11 @@ cerbos:
   url: "http://localhost:3592"
 
 auth:
+  adapter: identity.adapters.identity.EnvoyHeaderAuthenticationAdapter
+  kwargs: {}
+  # -- Allow requests without identity only in explicitly trusted deployments
+  allowAnonymousDev: false
+  defaultUserId: dev-user
   # -- Symmetric signing key for PAT JWTs (same key Envoy uses for validation)
   patSigningKey: ""
   # -- Default PAT lifetime in days
@@ -409,3 +462,27 @@ global:
   niuu:
     # -- Deployment cluster label used by Guild/Observatory discovery.
     cluster: unknown
+
+authorization:
+  adapter: "identity.adapters.cedar.CedarAuthorizationAdapter"
+  kwargs: {}
+  secret_kwargs_env: {}
+
+pat:
+  token_issuer_adapter: niuu.adapters.memory_token_issuer.MemoryTokenIssuer
+  token_issuer_kwargs: {}
+  ttl_days: 365
+  issuerSecretName: ""
+  issuerSecretKey: client-secret
+  service_adapter: niuu.domain.services.pat.PATService
+  service_kwargs: {}
+  validator_adapter: niuu.domain.services.pat_validator.PATValidator
+  validator_kwargs: {}
+
+# Shared identity service: fresh membership, role and credential checks.
+# Point at the canonical identity service, never back at this client service.
+identityAuthority:
+  enabled: false
+  url: ""
+  timeout: 5
+  caFile: ""

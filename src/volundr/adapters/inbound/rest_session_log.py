@@ -202,13 +202,13 @@ def create_session_log_router(
 
     async def _check_access(request: Request, session_id: UUID, action: str) -> None:
         if session_service is None:
-            return
+            raise HTTPException(status_code=503, detail="Session authorization unavailable")
         from volundr.adapters.inbound.auth import extract_principal
 
         principal = await extract_principal(request)
         session = await session_service.get_session(session_id)
         if session is None:
-            return
+            raise HTTPException(status_code=404, detail="Session not found")
         try:
             await session_service._check_access(session, principal, action)
         except SessionAccessDeniedError:

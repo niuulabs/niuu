@@ -9,6 +9,7 @@ Exercises the auth check paths added to:
 """
 
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -38,6 +39,40 @@ from volundr.domain.services.chronicle import ChronicleService
 from volundr.domain.services.event_ingestion import EventIngestionService
 from volundr.domain.services.session import SessionService
 from volundr.domain.services.token import TokenService
+
+
+@pytest.mark.parametrize("method", ["GET", "DELETE"])
+@pytest.mark.parametrize(
+    "headers,query",
+    [
+        ({}, ""),
+        ({"x-auth-user-id": "owner", "x-auth-roles": "volundr:admin"}, ""),
+        ({}, "?devUserId=owner&devRoles=volundr:admin"),
+        ({"Authorization": "Bearer invalid"}, ""),
+    ],
+)
+def test_forge_route_cannot_downgrade_failed_auth_to_no_principal(method, headers, query):
+    from identity.adapters.cedar import CedarAuthorizationAdapter
+    from niuu.ports.identity import InvalidTokenError
+
+    repository = InMemorySessionRepository()
+    session = Session(name="protected", model="model", owner_id="owner", tenant_id="acme")
+    repository._sessions[session.id] = session
+    service = SessionService(
+        repository, MockPodManager(), authorization=CedarAuthorizationAdapter()
+    )
+    identity = AsyncMock()
+    identity.validate_token.side_effect = InvalidTokenError("invalid")
+    app = FastAPI()
+    app.state.identity = identity
+    app.include_router(create_router(service))
+    result = TestClient(app).request(
+        method, f"/api/v1/forge/sessions/{session.id}" + query, headers=headers
+    )
+    assert result.status_code == 401
+    assert session.id in repository._sessions
+    identity.get_or_provision_user.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Test doubles
@@ -427,8 +462,10 @@ class TestEventsEndpointAuth:
             )
         assert resp.status_code == 403
 
-    def test_event_for_nonexistent_session_passes(self, session_repo, owner_identity, allow_authz):
-        """When session doesn't exist, auth check is skipped (session lookup returns None)."""
+    def test_event_for_nonexistent_session_is_denied(
+        self, session_repo, owner_identity, allow_authz
+    ):
+        """Missing ownership records cannot authorize event ingestion."""
         app, _ = _build_events_app(owner_identity, allow_authz, session_repo)
         with TestClient(app) as client:
             resp = client.post(
@@ -441,7 +478,7 @@ class TestEventsEndpointAuth:
                     "sequence": 0,
                 },
             )
-        assert resp.status_code == 201
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -472,7 +509,7 @@ class TestNoIdentityDevMode:
         assert resp.status_code == 201
 
     def test_events_no_session_service(self):
-        """When session_service is None, auth check is skipped."""
+        """An unavailable authorization service must not admit telemetry."""
         sink = InMemoryEventSink()
         ingestion = EventIngestionService(sinks=[sink])
         router = create_events_router(ingestion, sink, session_service=None)
@@ -490,4 +527,4 @@ class TestNoIdentityDevMode:
                     "sequence": 0,
                 },
             )
-        assert resp.status_code == 201
+        assert resp.status_code == 503

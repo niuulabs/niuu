@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from identity.ports import AuthorizationDeniedError
 from niuu.domain.observatory import ObservatoryFragment, StoredFragment
 from niuu.ports.observatory_fragments import ObservatoryFragmentRepository
 
@@ -26,8 +27,18 @@ class InMemoryObservatoryFragmentRepository(ObservatoryFragmentRepository):
         fragment: ObservatoryFragment,
         *,
         received_at: datetime,
+        owner_id: str = "",
+        tenant_id: str = "",
     ) -> StoredFragment:
+        existing = self._fragments.get(source_id)
+        if existing is not None and (existing.owner_id, existing.tenant_id) != (
+            owner_id,
+            tenant_id,
+        ):
+            raise AuthorizationDeniedError("Topology source ownership conflict")
         stored = StoredFragment(
+            owner_id=owner_id,
+            tenant_id=tenant_id,
             source_id=source_id,
             fragment=fragment,
             received_at=received_at,
@@ -38,5 +49,14 @@ class InMemoryObservatoryFragmentRepository(ObservatoryFragmentRepository):
     async def list_fragments(self) -> list[StoredFragment]:
         return [self._fragments[key] for key in sorted(self._fragments)]
 
-    async def delete(self, source_id: str) -> bool:
+    async def delete(
+        self, source_id: str, *, owner_id: str | None = None, tenant_id: str | None = None
+    ) -> bool:
+        existing = self._fragments.get(source_id)
+        if (
+            existing is None
+            or (owner_id is not None and existing.owner_id != owner_id)
+            or (tenant_id is not None and existing.tenant_id != tenant_id)
+        ):
+            return False
         return self._fragments.pop(source_id, None) is not None

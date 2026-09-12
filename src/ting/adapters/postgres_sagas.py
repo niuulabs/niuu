@@ -11,6 +11,7 @@ from uuid import UUID
 
 import asyncpg
 
+from identity.ports import AuthorizationDeniedError
 from ting.domain.models import Phase, PhaseStatus, Run, RunStatus, Saga, SagaStatus
 from ting.ports.saga_repository import SagaRepository
 
@@ -111,16 +112,16 @@ class PostgresSagaRepository(SagaRepository):
 
     async def save_saga(self, saga: Saga, *, conn: Any | None = None) -> None:
         executor = conn or self._pool
-        await executor.execute(
+        result = await executor.execute(
             """
             INSERT INTO sagas
                 (id, tracker_id, tracker_type, slug, name,
                  repos, feature_branch, base_branch, status, confidence, created_at, owner_id,
                  workflow_id, workflow_version, workflow_snapshot, instance_id,
-                 repo_branches, target_tags, target_match)
+                 repo_branches, target_tags, target_match, tenant_id)
             VALUES
                 ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16::uuid,
-                 $17::jsonb, $18, $19)
+                 $17::jsonb, $18, $19, $20)
             ON CONFLICT (id) DO UPDATE SET
                 tracker_id = EXCLUDED.tracker_id,
                 tracker_type = EXCLUDED.tracker_type,
@@ -139,6 +140,8 @@ class PostgresSagaRepository(SagaRepository):
                 repo_branches = EXCLUDED.repo_branches,
                 target_tags = EXCLUDED.target_tags,
                 target_match = EXCLUDED.target_match
+                WHERE sagas.tenant_id = EXCLUDED.tenant_id
+                  AND sagas.owner_id IS NOT DISTINCT FROM EXCLUDED.owner_id
             """,
             saga.id,
             saga.tracker_id,
@@ -159,7 +162,10 @@ class PostgresSagaRepository(SagaRepository):
             json.dumps(saga.repo_branches),
             saga.target_tags,
             saga.target_match,
+            saga.tenant_id,
         )
+        if result == "INSERT 0 0":
+            raise AuthorizationDeniedError("Resource ownership is immutable")
 
     async def list_sagas(self, *, owner_id: str | None = None) -> list[Saga]:
         if owner_id is not None:
@@ -173,15 +179,17 @@ class PostgresSagaRepository(SagaRepository):
             )
         return [self._row_to_saga(r) for r in rows]
 
-    async def get_saga(self, saga_id: UUID, *, owner_id: str | None = None) -> Saga | None:
+    async def get_saga(
+        self, saga_id: UUID, *, owner_id: str | None = None, conn: Any | None = None
+    ) -> Saga | None:
         if owner_id is not None:
-            row = await self._pool.fetchrow(
+            row = await (conn or self._pool).fetchrow(
                 "SELECT * FROM sagas WHERE id = $1 AND owner_id = $2",
                 saga_id,
                 owner_id,
             )
         else:
-            row = await self._pool.fetchrow(
+            row = await (conn or self._pool).fetchrow(
                 "SELECT * FROM sagas WHERE id = $1",
                 saga_id,
             )
@@ -356,8 +364,8 @@ class PostgresSagaRepository(SagaRepository):
             saga_id,
         )
 
-    async def get_phase(self, phase_id: UUID) -> Phase | None:
-        row = await self._pool.fetchrow(
+    async def get_phase(self, phase_id: UUID, *, conn: Any | None = None) -> Phase | None:
+        row = await (conn or self._pool).fetchrow(
             "SELECT * FROM phases WHERE id = $1",
             phase_id,
         )
@@ -365,8 +373,8 @@ class PostgresSagaRepository(SagaRepository):
             return None
         return self._row_to_phase(row)
 
-    async def get_run(self, run_id: UUID) -> Run | None:
-        row = await self._pool.fetchrow(
+    async def get_run(self, run_id: UUID, *, conn: Any | None = None) -> Run | None:
+        row = await (conn or self._pool).fetchrow(
             "SELECT * FROM runs WHERE id = $1",
             run_id,
         )
@@ -479,6 +487,7 @@ class PostgresSagaRepository(SagaRepository):
             confidence=row["confidence"] or 0.0,
             created_at=row["created_at"] or datetime.now(UTC),
             owner_id=row.get("owner_id") or "",
+            tenant_id=row["tenant_id"],
             workflow_id=row.get("workflow_id"),
             workflow_version=row.get("workflow_version"),
             workflow_snapshot=workflow_snapshot,

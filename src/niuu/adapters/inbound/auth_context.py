@@ -18,7 +18,11 @@ def current_bearer_token() -> str | None:
 def extract_bearer_token(request: Request) -> str | None:
     """Extract Bearer token from the Authorization header, or None."""
     auth = request.headers.get("authorization", "")
-    if not auth.startswith("Bearer "):
+    if not auth.lower().startswith("bearer "):
+        query_token = request.query_params.get("token") or request.query_params.get("access_token")
+        if query_token:
+            _current_bearer_token.set(query_token)
+            return query_token
         _current_bearer_token.set(None)
         return None
     token = auth[7:]

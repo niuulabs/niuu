@@ -148,10 +148,11 @@ data:
       secret_kwargs_env: {}
       {{- end }}
 
+    authorization:
+      {{- toYaml .Values.authorization | nindent 6 }}
+
     pat:
-      token_issuer_adapter: {{ .Values.pat.token_issuer_adapter | quote }}
-      token_issuer_kwargs: {{ .Values.pat.token_issuer_kwargs | toJson }}
-      ttl_days: {{ .Values.pat.ttl_days | default 365 }}
+      {{- toYaml .Values.pat | nindent 6 }}
 
     workload_identity:
       enabled: {{ .Values.workloadIdentity.enabled | default false }}

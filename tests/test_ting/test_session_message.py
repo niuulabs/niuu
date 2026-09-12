@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from ting.adapters.memory_event_bus import InMemoryEventBus
 from ting.api.runs import (
     create_runs_router,
@@ -120,6 +121,7 @@ def client(
     event_bus: InMemoryEventBus,
 ) -> TestClient:
     app = FastAPI()
+    app.state.authorization = AllowAllAuthorizationAdapter()
     app.include_router(create_runs_router())
     app.dependency_overrides[resolve_tracker] = lambda: tracker
     app.dependency_overrides[resolve_volundr] = lambda: volundr
@@ -525,6 +527,7 @@ class TestListMessagesEndpoint:
         tracker.runs[run.id] = run
 
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_runs_router())
         app.dependency_overrides[resolve_tracker] = lambda: tracker
         app.dependency_overrides[resolve_volundr] = lambda: volundr

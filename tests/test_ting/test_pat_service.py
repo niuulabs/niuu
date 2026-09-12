@@ -10,13 +10,22 @@ from uuid import uuid4
 import jwt
 import pytest
 
+from identity.adapters.cedar import CedarAuthorizationAdapter
 from niuu.adapters.memory_token_issuer import MemoryTokenIssuer
-from niuu.domain.models import PersonalAccessToken
+from niuu.domain.models import PersonalAccessToken, Principal
 from niuu.domain.services.pat import PATService
 from niuu.domain.services.pat_validator import PATValidator
 from niuu.ports.pat_repository import PATRepository
 
 SIGNING_KEY = "test-secret-key-for-pats-minimum-32-bytes!"
+
+
+def _principal(user_id):
+    return Principal(user_id, "", "acme", ["volundr:developer"])
+
+
+def _subject_token(user_id):
+    return jwt.encode({"sub": user_id}, SIGNING_KEY, algorithm="HS256")
 
 
 class FakePATRepository(PATRepository):
@@ -27,12 +36,15 @@ class FakePATRepository(PATRepository):
         self.hashes: dict[str, str] = {}
         self.last_used_touches: list[str] = []
 
-    async def create(self, owner_id: str, name: str, token_hash: str) -> PersonalAccessToken:
+    async def create(
+        self, owner_id: str, name: str, token_hash: str, **metadata
+    ) -> PersonalAccessToken:
         pat = PersonalAccessToken(
             id=uuid4(),
             owner_id=owner_id,
             name=name,
             created_at=datetime.now(UTC),
+            **metadata,
         )
         self.store[str(pat.id)] = pat
         self.hashes[str(pat.id)] = token_hash
@@ -75,13 +87,17 @@ def issuer() -> MemoryTokenIssuer:
 
 @pytest.fixture
 def service(fake_repo: FakePATRepository, issuer: MemoryTokenIssuer) -> PATService:
-    return PATService(repo=fake_repo, token_issuer=issuer, ttl_days=30)
+    return PATService(
+        authorization=CedarAuthorizationAdapter(), repo=fake_repo, token_issuer=issuer, ttl_days=30
+    )
 
 
 class TestCreate:
     @pytest.mark.asyncio
     async def test_returns_pat_and_raw_jwt(self, service: PATService):
-        pat, raw_jwt = await service.create("user-1", "my-token", subject_token="fake")
+        pat, raw_jwt = await service.create(
+            _principal("user-1"), "my-token", subject_token=_subject_token("user-1")
+        )
 
         assert isinstance(pat, PersonalAccessToken)
         assert pat.owner_id == "user-1"
@@ -91,7 +107,9 @@ class TestCreate:
 
     @pytest.mark.asyncio
     async def test_jwt_payload_contains_required_fields(self, service: PATService):
-        _, raw_jwt = await service.create("user-1", "ci-token", subject_token="fake")
+        _, raw_jwt = await service.create(
+            _principal("user-1"), "ci-token", subject_token=_subject_token("user-1")
+        )
 
         payload = jwt.decode(raw_jwt, SIGNING_KEY, algorithms=["HS256"])
 
@@ -103,7 +121,9 @@ class TestCreate:
 
     @pytest.mark.asyncio
     async def test_jwt_expiry_uses_ttl_days(self, service: PATService):
-        _, raw_jwt = await service.create("user-1", "tok", subject_token="fake")
+        _, raw_jwt = await service.create(
+            _principal("user-1"), "tok", subject_token=_subject_token("user-1")
+        )
 
         payload = jwt.decode(raw_jwt, SIGNING_KEY, algorithms=["HS256"])
         ttl_seconds = payload["exp"] - payload["iat"]
@@ -112,15 +132,21 @@ class TestCreate:
 
     @pytest.mark.asyncio
     async def test_stores_sha256_hash(self, service: PATService, fake_repo: FakePATRepository):
-        pat, raw_jwt = await service.create("user-1", "tok", subject_token="fake")
+        pat, raw_jwt = await service.create(
+            _principal("user-1"), "tok", subject_token=_subject_token("user-1")
+        )
         expected_hash = hashlib.sha256(raw_jwt.encode()).hexdigest()
 
         assert fake_repo.hashes[str(pat.id)] == expected_hash
 
     @pytest.mark.asyncio
     async def test_each_token_has_unique_jti(self, service: PATService):
-        _, jwt1 = await service.create("user-1", "tok-1", subject_token="fake")
-        _, jwt2 = await service.create("user-1", "tok-2", subject_token="fake")
+        _, jwt1 = await service.create(
+            _principal("user-1"), "tok-1", subject_token=_subject_token("user-1")
+        )
+        _, jwt2 = await service.create(
+            _principal("user-1"), "tok-2", subject_token=_subject_token("user-1")
+        )
 
         payload1 = jwt.decode(jwt1, SIGNING_KEY, algorithms=["HS256"])
         payload2 = jwt.decode(jwt2, SIGNING_KEY, algorithms=["HS256"])
@@ -129,7 +155,7 @@ class TestCreate:
 
     @pytest.mark.asyncio
     async def test_persists_to_repo(self, service: PATService, fake_repo: FakePATRepository):
-        await service.create("user-1", "tok", subject_token="fake")
+        await service.create(_principal("user-1"), "tok", subject_token=_subject_token("user-1"))
 
         assert len(fake_repo.store) == 1
 
@@ -137,16 +163,16 @@ class TestCreate:
 class TestList:
     @pytest.mark.asyncio
     async def test_returns_empty_list(self, service: PATService):
-        result = await service.list("user-1")
+        result = await service.list(_principal("user-1"))
         assert result == []
 
     @pytest.mark.asyncio
     async def test_returns_pats_for_owner(self, service: PATService):
-        await service.create("user-1", "tok-a", subject_token="fake")
-        await service.create("user-1", "tok-b", subject_token="fake")
-        await service.create("user-2", "tok-c", subject_token="fake")
+        await service.create(_principal("user-1"), "tok-a", subject_token=_subject_token("user-1"))
+        await service.create(_principal("user-1"), "tok-b", subject_token=_subject_token("user-1"))
+        await service.create(_principal("user-2"), "tok-c", subject_token=_subject_token("user-2"))
 
-        result = await service.list("user-1")
+        result = await service.list(_principal("user-1"))
 
         assert len(result) == 2
         names = {p.name for p in result}
@@ -154,9 +180,9 @@ class TestList:
 
     @pytest.mark.asyncio
     async def test_isolates_by_owner(self, service: PATService):
-        await service.create("user-1", "tok", subject_token="fake")
+        await service.create(_principal("user-1"), "tok", subject_token=_subject_token("user-1"))
 
-        result = await service.list("user-2")
+        result = await service.list(_principal("user-2"))
 
         assert result == []
 
@@ -164,39 +190,47 @@ class TestList:
 class TestRevoke:
     @pytest.mark.asyncio
     async def test_returns_true_when_deleted(self, service: PATService):
-        pat, _ = await service.create("user-1", "tok", subject_token="fake")
+        pat, _ = await service.create(
+            _principal("user-1"), "tok", subject_token=_subject_token("user-1")
+        )
 
-        result = await service.revoke(pat.id, "user-1")
+        result = await service.revoke(pat.id, _principal("user-1"))
 
         assert result is True
 
     @pytest.mark.asyncio
     async def test_returns_false_when_not_found(self, service: PATService):
-        result = await service.revoke(uuid4(), "user-1")
+        result = await service.revoke(uuid4(), _principal("user-1"))
 
         assert result is False
 
     @pytest.mark.asyncio
     async def test_removes_from_repo(self, service: PATService, fake_repo: FakePATRepository):
-        pat, _ = await service.create("user-1", "tok", subject_token="fake")
-        await service.revoke(pat.id, "user-1")
+        pat, _ = await service.create(
+            _principal("user-1"), "tok", subject_token=_subject_token("user-1")
+        )
+        await service.revoke(pat.id, _principal("user-1"))
 
         assert len(fake_repo.store) == 0
 
     @pytest.mark.asyncio
     async def test_cannot_revoke_other_owners_token(self, service: PATService):
-        pat, _ = await service.create("user-1", "tok", subject_token="fake")
+        pat, _ = await service.create(
+            _principal("user-1"), "tok", subject_token=_subject_token("user-1")
+        )
 
-        result = await service.revoke(pat.id, "user-2")
+        result = await service.revoke(pat.id, _principal("user-2"))
 
         assert result is False
 
     @pytest.mark.asyncio
     async def test_logs_on_successful_revoke(self, service: PATService):
-        pat, _ = await service.create("user-1", "tok", subject_token="fake")
+        pat, _ = await service.create(
+            _principal("user-1"), "tok", subject_token=_subject_token("user-1")
+        )
 
         with patch("niuu.domain.services.pat.logger") as mock_logger:
-            await service.revoke(pat.id, "user-1")
+            await service.revoke(pat.id, _principal("user-1"))
             mock_logger.info.assert_called_once()
             assert "revoked" in mock_logger.info.call_args[0][0].lower()
 
@@ -208,8 +242,12 @@ class TestDefaultTtl:
         fake_repo: FakePATRepository,
         issuer: MemoryTokenIssuer,
     ):
-        service = PATService(repo=fake_repo, token_issuer=issuer)
-        _, raw_jwt_str = await service.create("user-1", "tok", subject_token="fake")
+        service = PATService(
+            authorization=CedarAuthorizationAdapter(), repo=fake_repo, token_issuer=issuer
+        )
+        _, raw_jwt_str = await service.create(
+            _principal("user-1"), "tok", subject_token=_subject_token("user-1")
+        )
 
         payload = jwt.decode(raw_jwt_str, SIGNING_KEY, algorithms=["HS256"])
         ttl_seconds = payload["exp"] - payload["iat"]
@@ -226,15 +264,18 @@ class TestValidatorIntegration:
     ):
         mock_validator = MagicMock(spec=PATValidator)
         service = PATService(
+            authorization=CedarAuthorizationAdapter(),
             repo=fake_repo,
             token_issuer=issuer,
             validator=mock_validator,
         )
 
-        pat, _ = await service.create("user-1", "tok", subject_token="fake")
+        pat, _ = await service.create(
+            _principal("user-1"), "tok", subject_token=_subject_token("user-1")
+        )
         token_hash = fake_repo.hashes[str(pat.id)]
 
-        await service.revoke(pat.id, "user-1")
+        await service.revoke(pat.id, _principal("user-1"))
 
         mock_validator.invalidate_by_hash.assert_called_once_with(token_hash)
 
@@ -244,9 +285,24 @@ class TestValidatorIntegration:
         fake_repo: FakePATRepository,
         issuer: MemoryTokenIssuer,
     ):
-        service = PATService(repo=fake_repo, token_issuer=issuer, validator=None)
-        pat, _ = await service.create("user-1", "tok", subject_token="fake")
+        service = PATService(
+            authorization=CedarAuthorizationAdapter(),
+            repo=fake_repo,
+            token_issuer=issuer,
+            validator=None,
+        )
+        pat, _ = await service.create(
+            _principal("user-1"), "tok", subject_token=_subject_token("user-1")
+        )
 
-        result = await service.revoke(pat.id, "user-1")
+        result = await service.revoke(pat.id, _principal("user-1"))
 
         assert result is True
+
+
+async def test_exchanged_subject_must_match_owner(service, fake_repo):
+    with pytest.raises(ValueError, match="different subject"):
+        await service.create(
+            _principal("user-1"), "unauthorized", subject_token=_subject_token("user-2")
+        )
+    assert not fake_repo.store

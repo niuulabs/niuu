@@ -49,7 +49,7 @@ spec:
               protocol: TCP
           env:
             - name: HOST
-              value: {{ .Values.config.host | default "0.0.0.0" | quote }}
+              value: {{ ternary "127.0.0.1" (.Values.config.host | default "0.0.0.0") .Values.envoy.authorization.enabled | quote }}
             - name: PORT
               value: {{ .Values.service.targetPort | default 8081 | quote }}
             - name: WORKERS
@@ -114,7 +114,7 @@ spec:
           livenessProbe:
             httpGet:
               path: {{ .Values.livenessProbe.path | default "/health" }}
-              port: http
+              port: {{ ternary (.Values.envoy.port | int) "http" .Values.envoy.authorization.enabled }}
             initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds | default 10 }}
             periodSeconds: {{ .Values.livenessProbe.periodSeconds | default 30 }}
             timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds | default 10 }}
@@ -124,7 +124,7 @@ spec:
           readinessProbe:
             httpGet:
               path: {{ .Values.readinessProbe.path | default "/health" }}
-              port: http
+              port: {{ ternary (.Values.envoy.port | int) "http" .Values.envoy.authorization.enabled }}
             initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds | default 5 }}
             periodSeconds: {{ .Values.readinessProbe.periodSeconds | default 10 }}
             timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds | default 5 }}
@@ -134,7 +134,7 @@ spec:
           startupProbe:
             httpGet:
               path: {{ .Values.startupProbe.path | default "/health" }}
-              port: http
+              port: {{ ternary (.Values.envoy.port | int) "http" .Values.envoy.authorization.enabled }}
             initialDelaySeconds: {{ .Values.startupProbe.initialDelaySeconds | default 5 }}
             periodSeconds: {{ .Values.startupProbe.periodSeconds | default 5 }}
             timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds | default 5 }}
@@ -151,6 +151,35 @@ spec:
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- if .Values.envoy.authorization.enabled }}
+        - name: cedar-authz
+          image: {{ include "ting.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "identity.authz_main"]
+          args: ["--config", "/etc/authorization/authz.yaml"]
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import grpc; from envoy.service.auth.v3 import external_auth_pb2 as pb, external_auth_pb2_grpc as rpc; channel = grpc.insecure_channel('127.0.0.1:{{ .Values.envoy.authorization.port }}'); assert rpc.AuthorizationStub(channel).Check(pb.CheckRequest(), timeout={{ .Values.envoy.authorization.readinessProbe.timeoutSeconds }}).denied_response.status.code == 401"
+            periodSeconds: {{ .Values.envoy.authorization.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.envoy.authorization.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.envoy.authorization.readinessProbe.failureThreshold }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.envoy.authorization.resources | nindent 12 }}
+          volumeMounts:
+            - name: authz-config
+              mountPath: /etc/authorization
+              readOnly: true
+            {{- with .Values.envoy.authorization.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- end }}
         {{- if .Values.envoy.enabled }}
         - name: envoy
           image: "{{ .Values.envoy.image.repository }}:{{ .Values.envoy.image.tag }}"
@@ -175,6 +204,9 @@ spec:
             - name: envoy-config
               mountPath: /etc/envoy
               readOnly: true
+            {{- with .Values.envoy.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           readinessProbe:
             tcpSocket:
               port: {{ .Values.envoy.port }}
@@ -222,6 +254,11 @@ spec:
               readOnly: true
       {{- end }}
       volumes:
+        {{- if .Values.envoy.authorization.enabled }}
+        - name: authz-config
+          configMap:
+            name: {{ include "ting.fullname" . }}-authz
+        {{- end }}
         - name: config
           configMap:
             name: {{ include "ting.fullname" . }}

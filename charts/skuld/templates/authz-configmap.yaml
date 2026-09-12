@@ -1,0 +1,50 @@
+{{- if and .Values.wsAuth.enforce_ownership .Values.envoy.enabled }}
+{{- if has .Values.wsAuth.authorization.adapter (list "volundr.adapters.outbound.authorization.AllowAllAuthorizationAdapter" "identity.adapters.authorization.AllowAllAuthorizationAdapter") }}
+{{- fail "Enforced Skuld requires a resource authorization adapter" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "skuld.fullname" . }}-authz
+  labels:
+    {{- include "skuld.labels" . | nindent 4 }}
+data:
+  authz.yaml: |
+    port: {{ .Values.envoy.authorization.port }}
+    shutdown_grace_seconds: {{ .Values.envoy.authorization.shutdownGraceSeconds }}
+    adapter: {{ .Values.wsAuth.authorization.adapter | quote }}
+    kwargs:
+      {{- toYaml .Values.wsAuth.authorization.kwargs | nindent 6 }}
+    {{- if .Values.identityAuthority.enabled }}
+    identity:
+      adapter: identity.adapters.remote.RemoteHeaderAuthenticationAdapter
+      kwargs:
+        {{- include "skuld.identityAuthorityKwargs" . | nindent 8 }}
+    {{- else }}
+    {{- with .Values.envoy.authorization.identity }}
+    identity:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- end }}
+    role_mapping:
+      {{- toYaml .Values.envoy.authorization.roleMapping | nindent 6 }}
+    providers:
+      - issuer: {{ .Values.envoy.jwt.issuer | quote }}
+        audiences: {{ .Values.envoy.jwt.audiences | toJson }}
+        tenant_claim: {{ .Values.envoy.jwt.tenantClaim | quote }}
+        roles_claim: {{ .Values.envoy.jwt.rolesClaim | quote }}
+      {{- if .Values.envoy.jwt.workload.enabled }}
+      - issuer: {{ .Values.envoy.jwt.workload.issuer | quote }}
+        audiences: {{ .Values.envoy.jwt.workload.audiences | toJson }}
+        tenant_claim: {{ .Values.envoy.jwt.workload.tenantClaim | quote }}
+        roles_claim: {{ .Values.envoy.jwt.workload.rolesClaim | quote }}
+      {{- end }}
+    session:
+      id: {{ required "Enforced Skuld requires session.id" (include "skuld.sessionId" .) | quote }}
+      owner_id: {{ .Values.session.ownerId | quote }}
+      tenant_id: {{ .Values.session.tenantId | quote }}
+    routes:
+      - path: /
+        prefix: true
+        methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]
+{{- end }}

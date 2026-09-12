@@ -32,10 +32,22 @@ class InMemoryLog(SessionEventLogRepository):
         return max(seqs) if seqs else 0
 
 
+def allow_log_access(app):
+    """Explicit permissive identity and service for log protocol tests."""
+    from unittest.mock import AsyncMock
+
+    from identity.adapters.identity import AllowAllIdentityAdapter
+
+    app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
+    service = AsyncMock()
+    service.get_session.return_value = object()
+    return service
+
+
 def _client() -> tuple[TestClient, InMemoryLog]:
     repo = InMemoryLog()
     app = FastAPI()
-    app.include_router(create_session_log_router(repo, session_service=None))
+    app.include_router(create_session_log_router(repo, session_service=allow_log_access(app)))
     return TestClient(app), repo
 
 
@@ -380,3 +392,36 @@ class TestDetectConflictsDefaultImpl:
         )
 
         assert conflicts == [1]
+
+
+def test_orphaned_log_cannot_be_read_or_modified():
+    from unittest.mock import AsyncMock
+
+    from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
+
+    repo = AsyncMock(spec=SessionEventLogRepository)
+    service = AsyncMock()
+    service.get_session.return_value = None
+    app = FastAPI()
+    app.state.identity = EnvoyHeaderAuthenticationAdapter()
+    app.include_router(create_session_log_router(repo, session_service=service))
+    headers = {"x-auth-user-id": "alice", "x-auth-tenant": "acme"}
+    with TestClient(app) as client:
+        path = f"/api/v1/forge/sessions/{uuid4()}/log"
+        assert client.get(path, headers=headers).status_code == 404
+        assert client.get(path + "/head", headers=headers).status_code == 404
+        assert client.post(path, headers=headers, json={"entries": [_frame(1)]}).status_code == 404
+    repo.read_after.assert_not_called()
+    repo.latest_seq.assert_not_called()
+    repo.append.assert_not_called()
+
+
+def test_log_authorization_unconfigured_denies_access():
+    from unittest.mock import AsyncMock
+
+    repo = AsyncMock(spec=SessionEventLogRepository)
+    app = FastAPI()
+    app.include_router(create_session_log_router(repo))
+    with TestClient(app) as client:
+        assert client.get(f"/api/v1/forge/sessions/{uuid4()}/log").status_code == 503
+    repo.read_after.assert_not_called()

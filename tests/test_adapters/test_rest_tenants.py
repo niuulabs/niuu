@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from volundr.adapters.inbound.rest_tenants import create_identity_router
 from volundr.domain.models import (
     Principal,
@@ -38,6 +39,7 @@ def _mock_identity(principal=None):
 
 def _make_app(tenant_service, identity=None):
     app = FastAPI()
+    app.state.authorization = AllowAllAuthorizationAdapter()
     app.state.identity = identity or _mock_identity()
     app.include_router(create_identity_router(tenant_service))
     return app
@@ -470,3 +472,58 @@ class TestMembers:
 
         resp = client.delete("/api/v1/identity/tenants/t1/members/u1", headers=AUTH)
         assert resp.status_code == 404
+
+
+class TestTenantIsolation:
+    def test_admin_cannot_access_another_tenant(self):
+        from identity.adapters.cedar import CedarAuthorizationAdapter
+
+        service = AsyncMock(spec=TenantService)
+        app = _make_app(service)
+        app.state.authorization = CedarAuthorizationAdapter()
+        client = TestClient(app)
+        for method, path, body in [
+            ("GET", "/tenants/other", None),
+            ("GET", "/tenants/other/members", None),
+            ("PATCH", "/tenants/other", {"max_sessions": 20}),
+            ("DELETE", "/tenants/other", None),
+            ("POST", "/tenants/other/members", {"user_id": "u2", "role": "admin"}),
+            ("DELETE", "/tenants/other/members/u2", None),
+            ("POST", "/tenants/other/reprovision", None),
+            ("POST", "/tenants", {"name": "New tenant"}),
+        ]:
+            response = client.request(method, "/api/v1/identity" + path, json=body, headers=AUTH)
+            assert response.status_code == 403, response.text
+        assert not service.mock_calls
+
+    def test_lists_only_own_tenant_and_users(self):
+        from identity.adapters.cedar import CedarAuthorizationAdapter
+        from identity.models import User
+
+        service = AsyncMock(spec=TenantService)
+        service.list_tenants.return_value = [_sample_tenant(), _sample_tenant(id="other")]
+        service.get_members.return_value = [TenantMembership(user_id="u1", tenant_id="t1")]
+        service.list_users.return_value = [
+            User(id="u1", email="me@test"),
+            User(id="u2", email="x@test"),
+        ]
+        app = _make_app(service)
+        app.state.authorization = CedarAuthorizationAdapter()
+        client = TestClient(app)
+        tenants = client.get("/api/v1/identity/tenants", headers=AUTH)
+        assert tenants.status_code == 200
+        assert [tenant["id"] for tenant in tenants.json()] == ["t1"]
+        users = client.get("/api/v1/identity/users", headers=AUTH)
+        assert users.status_code == 200
+        assert [user["id"] for user in users.json()] == ["u1"]
+        response = client.post("/api/v1/identity/users/u2/reprovision", headers=AUTH)
+        assert response.status_code == 403
+        service.reprovision_user.assert_not_awaited()
+
+    def test_authorization_unavailable_fails_closed(self):
+        service = AsyncMock(spec=TenantService)
+        app = _make_app(service)
+        del app.state.authorization
+        response = TestClient(app).delete("/api/v1/identity/tenants/t1", headers=AUTH)
+        assert response.status_code == 503
+        service.delete_tenant.assert_not_awaited()

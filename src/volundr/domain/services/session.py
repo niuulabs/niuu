@@ -243,6 +243,7 @@ class SessionService:
             origin=origin,
             external_session_id=external_session_id,
         )
+        await self._check_access(session, principal, "create")
         created = await self._repository.create(session)
 
         if self._broadcaster is not None:
@@ -282,18 +283,16 @@ class SessionService:
     ) -> None:
         """Verify principal has access to the session via AuthorizationPort.
 
-        Delegates to the configured authorization adapter. No-op when
-        principal is None (backward compat / dev mode) or when no
-        authorization adapter is configured.
+        Configured authorization requires a principal. Internal lifecycle
+        operations use private methods after establishing their own preconditions.
 
         Raises:
             SessionAccessDeniedError: If the principal lacks permission.
         """
-        if principal is None:
-            return
-
         if self._authorization is None:
             return
+        if principal is None:
+            raise SessionAccessDeniedError(session.id, "unauthenticated")
 
         resource = Resource(
             kind="session",
@@ -532,7 +531,10 @@ class SessionService:
     async def _auto_stop_completed_flock_session(self, session_id: UUID) -> None:
         """Stop a flock session that has reported an authoritative terminal outcome."""
         try:
-            await self.stop_session(session_id)
+            session = await self._repository.get(session_id)
+            if session is None:
+                raise SessionNotFoundError(session_id)
+            await self._stop_session(session, None)
         except SessionNotFoundError:
             logger.debug(
                 "Skipping auto-stop for completed flock session %s because it no longer exists",
@@ -562,25 +564,36 @@ class SessionService:
                 to the principal's tenant. Non-admin users see only their own
                 sessions.
         """
+        if self._authorization is not None and principal is None:
+            raise PermissionError("An authenticated principal is required to list sessions")
         tenant_id = principal.tenant_id if principal else None
         owner_id = None
         if principal and TenantRole.ADMIN not in principal.roles:
             owner_id = principal.user_id
 
-        if status is not None:
-            return await self._repository.list(
-                status=status,
-                tenant_id=tenant_id,
-                owner_id=owner_id,
-            )
-
         sessions = await self._repository.list(
+            status=status,
             tenant_id=tenant_id,
             owner_id=owner_id,
         )
-        if include_archived:
-            return sessions
-        return [s for s in sessions if s.status != SessionStatus.ARCHIVED]
+        if status is None and not include_archived:
+            sessions = [s for s in sessions if s.status != SessionStatus.ARCHIVED]
+        if principal is not None and self._authorization is not None:
+            allowed = await self._authorization.filter_allowed(
+                principal,
+                "list",
+                [
+                    Resource(
+                        kind="session",
+                        id=str(s.id),
+                        attr={"owner_id": s.owner_id, "tenant_id": s.tenant_id},
+                    )
+                    for s in sessions
+                ],
+            )
+            allowed_ids = {r.id for r in allowed if r.kind == "session"}
+            sessions = [s for s in sessions if str(s.id) in allowed_ids]
+        return sessions
 
     async def update_session(
         self,
@@ -1197,7 +1210,11 @@ class SessionService:
             raise SessionNotFoundError(session_id)
 
         await self._check_access(session, principal, "stop")
+        return await self._stop_session(session, principal)
 
+    async def _stop_session(self, session: Session, principal: Principal | None) -> Session:
+        """Stop an authorized session or complete an internal lifecycle transition."""
+        session_id = session.id
         if not session.can_stop():
             raise SessionStateError(session_id, "stop", session.status)
 
@@ -1265,7 +1282,7 @@ class SessionService:
             SessionStatus.STARTING,
             SessionStatus.PROVISIONING,
         ):
-            await self.stop_session(session_id)
+            await self.stop_session(session_id, principal=principal)
             session = await self._repository.get(session_id)
 
         # Only stopped/failed/created sessions can be archived

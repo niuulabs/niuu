@@ -1411,6 +1411,10 @@ def _default_feature_modules() -> list[FeatureModuleConfig]:
 class PATConfig(BaseModel):
     """Personal access token configuration."""
 
+    service_adapter: str = "niuu.domain.services.pat.PATService"
+    service_kwargs: dict = Field(default_factory=dict)
+    validator_adapter: str = "niuu.domain.services.pat_validator.PATValidator"
+    validator_kwargs: dict = Field(default_factory=dict)
     token_issuer_adapter: str = Field(
         default="niuu.adapters.memory_token_issuer.MemoryTokenIssuer",
         description="Fully-qualified class path for the token issuer adapter.",
@@ -1426,6 +1430,12 @@ class PATConfig(BaseModel):
     revocation_cache_ttl: float = Field(
         default=300.0,
         description="Seconds to cache valid-token lookups before re-checking the DB.",
+    )
+    websocket_check_interval: float = Field(
+        default=30.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="Seconds between revocation checks on open WebSockets; expiry is immediate.",
     )
     revoked_cache_ttl: float = Field(
         default=60.0,

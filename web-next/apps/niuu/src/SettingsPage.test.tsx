@@ -252,6 +252,20 @@ describe('SettingsPage', () => {
     );
     expect(screen.getByText('Create token')).toBeTruthy();
     expect(await screen.findByText('local-tools')).toBeTruthy();
+    const createButton = screen.getByRole('button', { name: 'Create token' }) as HTMLButtonElement;
+    fireEvent.change(screen.getByLabelText('Token name'), { target: { value: 'ci-runner' } });
+    expect(createButton.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Permission'), {
+      target: { value: 'forge:session:create' },
+    });
+    fireEvent.click(createButton);
+    await waitFor(() =>
+      expect(apiMocks.post).toHaveBeenCalledWith('/api/v1/tokens', {
+        name: 'ci-runner',
+        scopes: ['forge:session:create'],
+      }),
+    );
+
     expect(screen.getByText('Editable')).toBeTruthy();
   });
 

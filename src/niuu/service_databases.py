@@ -92,6 +92,9 @@ NIUU_SHARED_BOOTSTRAP_SQL: tuple[str, ...] = (
         last_used_at TIMESTAMPTZ
     );
     """,
+    "ALTER TABLE personal_access_tokens "
+    "ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS scopes TEXT[];",
     "CREATE INDEX IF NOT EXISTS idx_pats_owner_id ON personal_access_tokens(owner_id);",
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pats_owner_name
@@ -176,6 +179,9 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
         last_used_at TIMESTAMPTZ
     );
     """,
+    "ALTER TABLE personal_access_tokens "
+    "ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS scopes TEXT[];",
     "CREATE INDEX IF NOT EXISTS idx_pats_owner_id ON personal_access_tokens(owner_id);",
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pats_owner_name
@@ -204,7 +210,7 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
         CONSTRAINT niuu_instances_scope_check CHECK (
             (visibility = 'system' AND owner_id IS NULL)
             OR (visibility = 'tenant' AND owner_id IS NULL AND tenant_id IS NOT NULL)
-            OR (visibility = 'user' AND owner_id IS NOT NULL AND tenant_id IS NULL)
+            OR (visibility = 'user' AND owner_id IS NOT NULL)
         )
     );
     """,
@@ -228,6 +234,44 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS idx_niuu_instances_tags
         ON niuu_instances USING GIN(tags);
+    """,
+    """
+    -- Push inbox for topology fragments.
+    --
+    -- A source that cannot be reached — a resident on a bare-metal Spark, a Docker
+    -- container behind NAT — publishes its own partial view here on a heartbeat.
+    -- Keyed on the source, so a heartbeat is an idempotent "this is my current
+    -- state" and aggregation never needs dedupe logic.
+    CREATE TABLE IF NOT EXISTS observatory_fragments (
+        source_id TEXT PRIMARY KEY,
+        source_kind TEXT NOT NULL DEFAULT '',
+        source_name TEXT NOT NULL DEFAULT '',
+        realm_id TEXT NOT NULL DEFAULT '',
+        cluster_id TEXT NOT NULL DEFAULT '',
+        host_id TEXT NOT NULL DEFAULT '',
+        revision TEXT NOT NULL DEFAULT '',
+        payload JSONB NOT NULL,
+        received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    -- Staleness is read on every aggregation: a source past its TTL is reported
+    -- as stale with a last-seen time rather than vanishing from the graph.
+    CREATE INDEX IF NOT EXISTS observatory_fragments_received_at_idx
+        ON observatory_fragments (received_at DESC);
+    """,
+    """
+    -- Legacy fragments remain quarantined until ownership is audited.
+    ALTER TABLE observatory_fragments ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE observatory_fragments ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
+    CREATE INDEX IF NOT EXISTS idx_observatory_fragments_tenant ON observatory_fragments(tenant_id);
+    """,
+    """
+    ALTER TABLE niuu_instances DROP CONSTRAINT IF EXISTS niuu_instances_scope_check;
+    ALTER TABLE niuu_instances ADD CONSTRAINT niuu_instances_scope_check CHECK (
+        (visibility = 'system' AND owner_id IS NULL)
+        OR (visibility = 'tenant' AND owner_id IS NULL AND tenant_id IS NOT NULL)
+        OR (visibility = 'user' AND owner_id IS NOT NULL)
+    );
     """,
 )
 

@@ -15,7 +15,6 @@ from niuu.adapters.inbound.rest_realms import create_realms_router
 from niuu.adapters.postgres_credential_refresh_lock import PostgresCredentialRefreshLock
 from niuu.adapters.postgres_realms import PostgresRealmRepository
 from niuu.cors import apply_cors_middleware
-from niuu.domain.services.pat import PATService
 from niuu.domain.services.realm import RealmService
 from niuu.service_integrations import (
     has_seeded_linear_integration as _has_seeded_linear_integration,
@@ -600,6 +599,7 @@ def create_app(
             credential_service = CredentialService(
                 store=credential_store,
                 strategies=SecretMountStrategyRegistry(),
+                authorization=authorization_adapter,
             )
             mcp_provider = ConfigMCPServerProvider(settings.mcp_servers)
             secret_manager = InMemorySecretManager()
@@ -802,33 +802,36 @@ def create_app(
                         resource_id = UUID(session_id)
                     except ValueError:
                         return False
+                    from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
+
+                    principal = Principal(
+                        user_id=user_id or "",
+                        email="",
+                        tenant_id=tenant_id or "",
+                        roles=list(roles),
+                    )
+                    if isinstance(identity_adapter, HeaderAuthenticationPort):
+                        keys = settings.identity.kwargs
+                        headers = {
+                            keys.get("user_id_header", "x-auth-user-id"): principal.user_id,
+                            keys.get("tenant_header", "x-auth-tenant"): principal.tenant_id,
+                            keys.get("roles_header", "x-auth-roles"): ",".join(principal.roles),
+                        }
+                        try:
+                            principal = await identity_adapter.validate_headers(headers)
+                        except InvalidTokenError:
+                            return False
                     session = await repository.get(resource_id)
                     if session is None:
-                        principal = Principal(
-                            user_id=user_id or "",
-                            email="",
-                            tenant_id=tenant_id or "default",
-                            roles=list(roles),
-                        )
                         try:
                             await resident_runtime_service.get(principal, resource_id)
                         except ResidentRuntimeNotFoundError:
                             return False
                         return True
-                    if not session.owner_id:
-                        # Unknown or unowned (legacy/dev) session: not the
-                        # proxy's job to invent a policy — stay permissive.
-                        return True
                     # Delegate to the ONE authorization policy (the same adapter
                     # the REST API uses) so the WS attach check can never drift
                     # from it. "start" is the mutating action-class the ladder
                     # gates on owner match.
-                    principal = Principal(
-                        user_id=user_id or "",
-                        email="",
-                        tenant_id=tenant_id or "default",
-                        roles=list(roles),
-                    )
                     resource = Resource(
                         kind="session",
                         id=session_id,
@@ -984,11 +987,13 @@ def create_app(
             pat_validator = _create_pat_validator(settings, pat_repository)
             token_issuer_cls = import_class(settings.pat.token_issuer_adapter)
             token_issuer = token_issuer_cls(**settings.pat.token_issuer_kwargs)
-            pat_service = PATService(
+            pat_service = import_class(settings.pat.service_adapter)(
+                **settings.pat.service_kwargs,
                 repo=pat_repository,
                 token_issuer=token_issuer,
                 ttl_days=settings.pat.ttl_days,
                 validator=pat_validator,
+                authorization=authorization_adapter,
             )
             app.state.pat_validator = pat_validator
             app.state.pat_service = pat_service
@@ -1329,7 +1334,9 @@ def create_app(
     # PAT revocation enforcement
     from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 
-    app.add_middleware(PATRevocationMiddleware)
+    app.add_middleware(
+        PATRevocationMiddleware, websocket_check_interval=settings.pat.websocket_check_interval
+    )
 
     @app.get("/health", tags=["Health"])
     @app.get("/api/v1/forge/health", include_in_schema=False)

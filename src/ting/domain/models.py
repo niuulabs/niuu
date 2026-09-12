@@ -115,6 +115,7 @@ class Saga:
     base_branch: str
     repo_branches: dict[str, str] = field(default_factory=dict)
     owner_id: str = ""
+    tenant_id: str = ""
     workflow_id: UUID | None = None
     workflow_version: str | None = None
     workflow_snapshot: dict[str, Any] | None = None
@@ -247,6 +248,8 @@ class WorkflowDefinition:
     created_at: datetime
     updated_at: datetime
 
+    tenant_id: str = ""
+
 
 @dataclass(frozen=True)
 class CampaignStageState:
@@ -282,6 +285,8 @@ class WorkflowCampaign:
     # this connection, not the owner's primary — a session launched on a
     # non-default cluster is invisible to the default one.
     connection_id: str | None = None
+
+    tenant_id: str = ""
 
 
 @dataclass(frozen=True)

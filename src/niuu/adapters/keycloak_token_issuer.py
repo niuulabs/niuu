@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 import jwt as pyjwt
 
+from niuu.domain.services.token_scope import KNOWN_WORKLOAD_SCOPES, validate_pat_scopes
 from niuu.ports.token_issuer import IssuedToken, TokenIssuer
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,8 @@ class KeycloakTokenIssuer(TokenIssuer):
         audience: str = "",
         **_extra: object,
     ) -> None:
+        if not token_url.startswith("https://"):
+            raise ValueError("PAT token exchange requires HTTPS to protect credentials")
         self._token_url = token_url
         self._client_id = client_id
         self._client_secret = client_secret
@@ -65,12 +68,15 @@ class KeycloakTokenIssuer(TokenIssuer):
         subject_token: str,
         name: str,
         ttl_days: int = 365,
+        scopes: list[str] | None = None,
     ) -> IssuedToken:
         """Exchange the user's access token for a long-lived PAT.
 
-        The returned JWT is signed by Keycloak and includes a custom
-        ``pat_name`` claim so we can identify it as a PAT.
+        The dedicated exchange client must map ``type: pat`` into the signed
+        access token. Without that marker, the revocation validator cannot
+        distinguish the credential from an ordinary interactive token.
         """
+        requested = validate_pat_scopes(scopes)
         client = await self._get_client()
 
         data: dict[str, Any] = {
@@ -81,6 +87,8 @@ class KeycloakTokenIssuer(TokenIssuer):
             "subject_token_type": _ACCESS_TOKEN_TYPE,
             "requested_token_type": _ACCESS_TOKEN_TYPE,
         }
+        if requested is not None:
+            data["scope"] = " ".join(requested)
         if self._audience:
             data["audience"] = self._audience
 
@@ -93,13 +101,8 @@ class KeycloakTokenIssuer(TokenIssuer):
         resp = await client.post(self._token_url, data=data)
 
         if resp.status_code != 200:
-            detail = resp.text[:200]
-            logger.error(
-                "Token exchange failed: status=%d, body=%s",
-                resp.status_code,
-                detail,
-            )
-            raise RuntimeError(f"Token exchange failed (HTTP {resp.status_code}): {detail}")
+            logger.error("Token exchange failed: status=%d", resp.status_code)
+            raise RuntimeError(f"Token exchange failed (HTTP {resp.status_code})")
 
         body = resp.json()
         raw_token = body["access_token"]
@@ -107,11 +110,32 @@ class KeycloakTokenIssuer(TokenIssuer):
         # Decode without verification — we trust Keycloak signed it
         claims = pyjwt.decode(raw_token, options={"verify_signature": False})
 
+        if claims.get("type") != "pat":
+            raise RuntimeError(
+                "Exchanged token is not revocable: configure the dedicated PAT "
+                "exchange client's signed type=pat claim"
+            )
+        subject = claims.get("sub")
+        token_id = claims.get("jti")
+        expiry = claims.get("exp")
+        if not isinstance(subject, str) or not subject.strip():
+            raise RuntimeError("Exchanged PAT has no subject")
+        if not isinstance(token_id, str) or not token_id.strip():
+            raise RuntimeError("Exchanged PAT has no token identifier")
+        if type(expiry) is not int or expiry <= time.time():
+            raise RuntimeError("Exchanged PAT has no valid expiry")
+        oauth_scope = claims.get("scope", "")
+        if not isinstance(oauth_scope, str):
+            raise RuntimeError("Exchanged PAT has an invalid OAuth scope claim")
+        granted = tuple(sorted(set(oauth_scope.split()) & KNOWN_WORKLOAD_SCOPES))
+        if requested is not None and granted != requested:
+            raise RuntimeError("IDP did not sign exactly the requested PAT scopes")
         return IssuedToken(
             raw_token=raw_token,
-            token_id=claims.get("jti", ""),
-            subject=claims.get("sub", ""),
-            expires_at=claims.get("exp", int(time.time()) + ttl_days * 86400),
+            token_id=token_id,
+            subject=subject,
+            expires_at=expiry,
+            scopes=granted if requested is not None or granted else None,
         )
 
     async def close(self) -> None:

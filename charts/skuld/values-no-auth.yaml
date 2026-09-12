@@ -1,0 +1,12 @@
+# Explicitly disable external authentication in a trusted deployment.
+wsAuth:
+  enforce_ownership: false
+envoy:
+  jwt:
+    enabled: false
+gateway:
+  jwt:
+    enabled: false
+
+identityAuthority:
+  enabled: false

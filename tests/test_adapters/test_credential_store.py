@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from identity.adapters.cedar import CedarAuthorizationAdapter
 from volundr.adapters.outbound.memory_credential_store import MemoryCredentialStore
-from volundr.domain.models import SecretType
+from volundr.domain.models import Principal, SecretType
 from volundr.domain.services.credential import (
     CredentialService,
     CredentialValidationError,
@@ -223,52 +224,117 @@ class TestCredentialService:
     def service(self):
         store = MemoryCredentialStore()
         strategies = SecretMountStrategyRegistry()
-        return CredentialService(store, strategies)
+        return CredentialService(store, strategies, authorization=CedarAuthorizationAdapter())
 
     @pytest.mark.asyncio()
     async def test_create_valid(self, service):
-        cred = await service.create("user", "u1", "my-key", SecretType.API_KEY, {"api_key": "val"})
+        cred = await service.create(
+            Principal("u1", "", "t1", ["volundr:developer"]),
+            "user",
+            "u1",
+            "my-key",
+            SecretType.API_KEY,
+            {"api_key": "val"},
+        )
         assert cred.name == "my-key"
         assert cred.secret_type == SecretType.API_KEY
 
     @pytest.mark.asyncio()
     async def test_create_invalid_raises(self, service):
         with pytest.raises(CredentialValidationError) as exc_info:
-            await service.create("user", "u1", "my-key", SecretType.API_KEY, {})
+            await service.create(
+                Principal("u1", "", "t1", ["volundr:developer"]),
+                "user",
+                "u1",
+                "my-key",
+                SecretType.API_KEY,
+                {},
+            )
         assert len(exc_info.value.errors) > 0
 
     @pytest.mark.asyncio()
     async def test_list(self, service):
-        await service.create("user", "u1", "a", SecretType.GENERIC, {"k": "v"})
-        await service.create("user", "u1", "b", SecretType.GENERIC, {"k": "v"})
-        results = await service.list("user", "u1")
+        await service.create(
+            Principal("u1", "", "t1", ["volundr:developer"]),
+            "user",
+            "u1",
+            "a",
+            SecretType.GENERIC,
+            {"k": "v"},
+        )
+        await service.create(
+            Principal("u1", "", "t1", ["volundr:developer"]),
+            "user",
+            "u1",
+            "b",
+            SecretType.GENERIC,
+            {"k": "v"},
+        )
+        results = await service.list(Principal("u1", "", "t1", ["volundr:developer"]), "user", "u1")
         assert len(results) == 2
 
     @pytest.mark.asyncio()
     async def test_list_with_type_filter(self, service):
-        await service.create("user", "u1", "a", SecretType.GENERIC, {"k": "v"})
-        await service.create("user", "u1", "b", SecretType.API_KEY, {"api_key": "v"})
-        results = await service.list("user", "u1", SecretType.API_KEY)
+        await service.create(
+            Principal("u1", "", "t1", ["volundr:developer"]),
+            "user",
+            "u1",
+            "a",
+            SecretType.GENERIC,
+            {"k": "v"},
+        )
+        await service.create(
+            Principal("u1", "", "t1", ["volundr:developer"]),
+            "user",
+            "u1",
+            "b",
+            SecretType.API_KEY,
+            {"api_key": "v"},
+        )
+        results = await service.list(
+            Principal("u1", "", "t1", ["volundr:developer"]), "user", "u1", SecretType.API_KEY
+        )
         assert len(results) == 1
         assert results[0].name == "b"
 
     @pytest.mark.asyncio()
     async def test_get(self, service):
-        await service.create("user", "u1", "key", SecretType.GENERIC, {"k": "v"})
-        cred = await service.get("user", "u1", "key")
+        await service.create(
+            Principal("u1", "", "t1", ["volundr:developer"]),
+            "user",
+            "u1",
+            "key",
+            SecretType.GENERIC,
+            {"k": "v"},
+        )
+        cred = await service.get(
+            Principal("u1", "", "t1", ["volundr:developer"]), "user", "u1", "key"
+        )
         assert cred is not None
         assert cred.name == "key"
 
     @pytest.mark.asyncio()
     async def test_get_missing(self, service):
-        result = await service.get("user", "u1", "nope")
+        result = await service.get(
+            Principal("u1", "", "t1", ["volundr:developer"]), "user", "u1", "nope"
+        )
         assert result is None
 
     @pytest.mark.asyncio()
     async def test_delete(self, service):
-        await service.create("user", "u1", "key", SecretType.GENERIC, {"k": "v"})
-        await service.delete("user", "u1", "key")
-        assert await service.get("user", "u1", "key") is None
+        await service.create(
+            Principal("u1", "", "t1", ["volundr:developer"]),
+            "user",
+            "u1",
+            "key",
+            SecretType.GENERIC,
+            {"k": "v"},
+        )
+        await service.delete(Principal("u1", "", "t1", ["volundr:developer"]), "user", "u1", "key")
+        assert (
+            await service.get(Principal("u1", "", "t1", ["volundr:developer"]), "user", "u1", "key")
+            is None
+        )
 
     def test_get_types(self, service):
         types = service.get_types()
@@ -281,6 +347,7 @@ class TestCredentialService:
     async def test_oauth_validation(self, service):
         with pytest.raises(CredentialValidationError):
             await service.create(
+                Principal("u1", "", "t1", ["volundr:developer"]),
                 "user",
                 "u1",
                 "oauth",
@@ -291,9 +358,23 @@ class TestCredentialService:
     @pytest.mark.asyncio()
     async def test_ssh_validation(self, service):
         with pytest.raises(CredentialValidationError):
-            await service.create("user", "u1", "ssh", SecretType.SSH_KEY, {})
+            await service.create(
+                Principal("u1", "", "t1", ["volundr:developer"]),
+                "user",
+                "u1",
+                "ssh",
+                SecretType.SSH_KEY,
+                {},
+            )
 
     @pytest.mark.asyncio()
     async def test_tls_validation(self, service):
         with pytest.raises(CredentialValidationError):
-            await service.create("user", "u1", "tls", SecretType.TLS_CERT, {"certificate": "c"})
+            await service.create(
+                Principal("u1", "", "t1", ["volundr:developer"]),
+                "user",
+                "u1",
+                "tls",
+                SecretType.TLS_CERT,
+                {"certificate": "c"},
+            )

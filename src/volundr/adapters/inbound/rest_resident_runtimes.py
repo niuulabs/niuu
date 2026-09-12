@@ -272,7 +272,7 @@ def create_resident_runtimes_router(service: ResidentRuntimeService) -> APIRoute
     ) -> None:
         from niuu.app import _proxy_ws_identity
 
-        user_id, tenant_id, roles = _proxy_ws_identity(websocket)
+        user_id, tenant_id, roles = await _proxy_ws_identity(websocket)
         if not user_id:
             await websocket.close(code=1008, reason="Not authorized for this resident")
             return

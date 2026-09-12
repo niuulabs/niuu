@@ -1,0 +1,5 @@
+# Apply after values-cedar.yaml (Skuld: values-auth.yaml) and deployment values.
+# Set identityAuthority.url to the real HTTPS shared identity service URL.
+# The authority itself uses local membership and PAT repositories, not this profile.
+identityAuthority:
+  enabled: true

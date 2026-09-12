@@ -25,6 +25,8 @@ class ObservatoryFragmentRepository(ABC):
         fragment: ObservatoryFragment,
         *,
         received_at: datetime,
+        owner_id: str = "",
+        tenant_id: str = "",
     ) -> StoredFragment:
         """Replace *source_id*'s fragment and return what was stored."""
 
@@ -38,5 +40,11 @@ class ObservatoryFragmentRepository(ABC):
         """
 
     @abstractmethod
-    async def delete(self, source_id: str) -> bool:
+    async def delete(
+        self, source_id: str, *, owner_id: str | None = None, tenant_id: str | None = None
+    ) -> bool:
         """Forget *source_id*. Returns False when it was not present."""
+
+    async def get(self, source_id: str) -> StoredFragment | None:
+        """Return one source; adapters may implement an indexed lookup."""
+        return next((f for f in await self.list_fragments() if f.source_id == source_id), None)

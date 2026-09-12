@@ -64,6 +64,8 @@ def _row(payload: str | dict) -> dict:
         "source_id": "spark-1",
         "payload": payload,
         "received_at": RECEIVED_AT,
+        "owner_id": "",
+        "tenant_id": "",
     }
 
 

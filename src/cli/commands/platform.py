@@ -469,6 +469,14 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
     }
     for key, value in kwargs.items():
         env[f"POD_MANAGER__KWARGS__{key.upper()}"] = str(value)
+    if settings.mode == "mini":
+        env["RAVN_API_AUTH__ADAPTER"] = (
+            "identity.adapters.identity.AllowAllHeaderAuthenticationAdapter"
+        )
+        env["AUTH__ALLOW_ANONYMOUS_DEV"] = "true"
+        env["AUTHORIZATION__ADAPTER"] = (
+            "identity.adapters.authorization.AllowAllAuthorizationAdapter"
+        )
     return env
 
 

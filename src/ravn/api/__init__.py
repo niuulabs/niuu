@@ -30,6 +30,7 @@ from niuu.settings_schema import (
     SettingsProviderSchema,
     SettingsSectionSchema,
 )
+from niuu.utils import import_class
 from ravn.adapters.platform_runtime import HttpPlatformRuntimeAdapter
 from ravn.api.residents import ResidentDirectory, forward_auth
 from ravn.api.valkyries import (
@@ -156,6 +157,9 @@ def create_app(
     """
     app = FastAPI(title="Ravn API", docs_url=None, redoc_url=None)
     loaded_settings = settings or Settings()
+    app.state.identity = import_class(loaded_settings.api_auth.adapter)(
+        **loaded_settings.api_auth.kwargs
+    )
     # gateway.platform.base_url is the canonical "where is the platform API"
     # setting (config file, or RAVN_GATEWAY__PLATFORM__BASE_URL env override).
     if resident_discovery is None:

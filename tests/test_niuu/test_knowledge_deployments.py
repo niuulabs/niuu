@@ -10,6 +10,7 @@ import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.identity import AllowAllIdentityAdapter
 from niuu.adapters.inbound.rest_knowledge_deployments import create_knowledge_deployments_router
 from niuu.domain.models import InstanceKind
 
@@ -31,6 +32,7 @@ def setup(instances):
         (i for i in instances if i.id == key), None
     )
     app = FastAPI()
+    app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
     app.include_router(create_knowledge_deployments_router(service))
     return TestClient(app), service
 

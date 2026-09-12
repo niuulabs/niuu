@@ -6,6 +6,8 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from identity.models import Resource
+from identity.ports import AuthorizationPort
 from niuu.domain.models import (
     InstanceKind,
     InstanceVisibility,
@@ -31,8 +33,25 @@ class InstanceValidationError(ValueError):
 class InstanceService:
     """Tenant-aware registry service for runtime instances."""
 
-    def __init__(self, repository: InstanceRepository) -> None:
+    def __init__(self, repository: InstanceRepository, *, authorization: AuthorizationPort) -> None:
         self._repository = repository
+        self._authorization = authorization
+
+    @staticmethod
+    def _resource(instance):
+        return Resource(
+            "instance",
+            instance.id,
+            {
+                "owner_id": instance.owner_id or "",
+                "tenant_id": instance.tenant_id or "",
+                "visibility": instance.visibility.value,
+            },
+        )
+
+    async def _check(self, principal, action, instance):
+        if not await self._authorization.is_allowed(principal, action, self._resource(instance)):
+            raise InstanceAccessError("Instance operation denied")
 
     async def list_visible(
         self,
@@ -51,8 +70,12 @@ class InstanceService:
             and (instance.enabled or not enabled_only)
             and matches_tags(instance.tags, tags, match)
         ]
+        allowed = await self._authorization.filter_allowed(
+            principal, "list", [self._resource(i) for i in visible]
+        )
+        allowed_ids = {r.id for r in allowed}
         return sorted(
-            visible,
+            [i for i in visible if i.id in allowed_ids],
             key=lambda instance: (
                 0 if instance.is_default else 1,
                 instance.name.lower(),
@@ -67,6 +90,8 @@ class InstanceService:
     ) -> RegisteredInstance | None:
         instance = await self._repository.get_instance(instance_id)
         if instance is None or not self._is_visible_to(instance, principal):
+            return None
+        if not await self._authorization.is_allowed(principal, "read", self._resource(instance)):
             return None
         return instance
 
@@ -93,24 +118,25 @@ class InstanceService:
             tenant_id=tenant_id,
         )
         now = datetime.now(UTC)
-        return await self._repository.save_instance(
-            RegisteredInstance(
-                id=str(uuid4()),
-                kind=kind,
-                slug=slug.strip(),
-                name=name.strip(),
-                base_url=base_url.strip().rstrip("/"),
-                visibility=visibility,
-                owner_id=owner_id,
-                tenant_id=tenant_id,
-                enabled=enabled,
-                is_default=is_default,
-                config=dict(config or {}),
-                created_at=now,
-                updated_at=now,
-                tags=list(tags or []),
-            )
+        instance = RegisteredInstance(
+            id=str(uuid4()),
+            kind=kind,
+            slug=slug.strip(),
+            name=name.strip(),
+            base_url=base_url.strip().rstrip("/"),
+            visibility=visibility,
+            owner_id=owner_id,
+            tenant_id=tenant_id,
+            enabled=enabled,
+            is_default=is_default,
+            config=dict(config or {}),
+            created_at=now,
+            updated_at=now,
+            tags=list(tags or []),
         )
+
+        await self._check(principal, "create", instance)
+        return await self._repository.save_instance(instance)
 
     async def update_instance(
         self,
@@ -132,6 +158,7 @@ class InstanceService:
         if existing is None:
             raise LookupError(instance_id)
         self._require_manage_access(existing, principal)
+        await self._check(principal, "update", existing)
         resolved_visibility = visibility or existing.visibility
         resolved_owner_id, resolved_tenant_id = self._normalize_scope(
             principal,
@@ -153,6 +180,7 @@ class InstanceService:
             tags=list(tags) if tags is not None else existing.tags,
             updated_at=datetime.now(UTC),
         )
+        await self._check(principal, "update", updated)
         return await self._repository.save_instance(updated)
 
     async def delete_instance(self, principal: Principal, instance_id: str) -> None:
@@ -160,6 +188,7 @@ class InstanceService:
         if existing is None:
             return
         self._require_manage_access(existing, principal)
+        await self._check(principal, "delete", existing)
         await self._repository.delete_instance(instance_id)
 
     async def upsert_seed_instance(
@@ -276,4 +305,4 @@ class InstanceService:
             raise InstanceValidationError("user visibility requires an owner_id")
         if resolved_owner != principal.user_id and not _is_admin(principal):
             raise InstanceAccessError("Cannot register instances for another user")
-        return resolved_owner, None
+        return resolved_owner, principal.tenant_id

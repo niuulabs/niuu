@@ -96,7 +96,7 @@ class TestExtractPrincipalWithHeaders:
         assert data["user_id"] == "user-99"
         assert data["email"] == ""
         assert data["tenant_id"] == ""
-        assert data["roles"] == ["volundr:developer"]
+        assert data["roles"] == []
 
 
 class TestExtractPrincipalProduction:
@@ -134,3 +134,12 @@ class TestExtractPrincipalDevFallback:
         assert resp.status_code == 200
         data = resp.json()
         assert data["user_id"] == "dev-user"
+
+
+def test_envoy_base64_roles_are_decoded(client):
+    import base64
+    import json
+
+    roles = base64.b64encode(json.dumps(["volundr:viewer"]).encode()).decode()
+    response = client.get("/whoami", headers={"x-auth-user-id": "alice", "x-auth-roles": roles})
+    assert response.json()["roles"] == ["volundr:viewer"]

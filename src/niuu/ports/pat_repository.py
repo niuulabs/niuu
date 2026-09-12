@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from uuid import UUID
 
 from niuu.domain.models import PersonalAccessToken
@@ -12,7 +13,16 @@ class PATRepository(ABC):
     """Port for personal access token persistence operations."""
 
     @abstractmethod
-    async def create(self, owner_id: str, name: str, token_hash: str) -> PersonalAccessToken:
+    async def create(
+        self,
+        owner_id: str,
+        name: str,
+        token_hash: str,
+        *,
+        tenant_id: str = "",
+        scopes: tuple[str, ...] | None = None,
+        expires_at: datetime | None = None,
+    ) -> PersonalAccessToken:
         """Persist a new PAT record."""
 
     @abstractmethod

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.identity import EnvoyHeaderIdentityAdapter
 from volundr.adapters.inbound.rest_trace import create_trace_router
 from volundr.domain.models import SessionSpan, SessionSpanStatus
 from volundr.domain.services.resident_runtime import ResidentRuntimeNotFoundError
@@ -80,7 +82,7 @@ def _client(
     residents = _ResidentRuntimeService(runtime_id)
     sessions = _SessionService(session_id)
     app = FastAPI()
-    app.state.identity = object()
+    app.state.identity = EnvoyHeaderIdentityAdapter(user_repository=AsyncMock())
     app.include_router(
         create_trace_router(
             repository,

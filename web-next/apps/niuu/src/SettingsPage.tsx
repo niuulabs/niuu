@@ -42,6 +42,8 @@ const TERMINAL_CREDENTIAL_ENROLLMENT_STATES = new Set([
 ]);
 
 interface PersonalAccessTokenRecord {
+  scopes?: string[] | null;
+  expires_at?: string | null;
   id: string;
   name: string;
   createdAt: string;
@@ -229,6 +231,8 @@ function resolveRootBase(baseUrl: string): string {
 
 function normalizeTokenRow(token: PersonalAccessTokenRecord | CreatePersonalAccessTokenResult) {
   return {
+    scopes: token.scopes,
+    expires_at: token.expires_at,
     id: token.id,
     name: token.name,
     createdAt:
@@ -559,6 +563,7 @@ function TokensResourceCard({
   const client = useMemo(() => createApiClient(rootBase), [rootBase]);
   const queryClient = useQueryClient();
   const [name, setName] = useState('');
+  const [scope, setScope] = useState('');
   const [createdToken, setCreatedToken] = useState<CreatePersonalAccessTokenResult | null>(null);
 
   const tokensQuery = useQuery({
@@ -573,7 +578,10 @@ function TokensResourceCard({
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      return client.post<CreatePersonalAccessTokenResult>(resource.createPath, { name });
+      return client.post<CreatePersonalAccessTokenResult>(resource.createPath, {
+        name,
+        scopes: [scope],
+      });
     },
     onSuccess: async (payload) => {
       setCreatedToken(normalizeTokenRow(payload) as CreatePersonalAccessTokenResult);
@@ -610,7 +618,7 @@ function TokensResourceCard({
         className="settings-resource__composer"
         onSubmit={(event) => {
           event.preventDefault();
-          if (!name.trim()) return;
+          if (!name.trim() || !scope) return;
           void createMutation.mutateAsync();
         }}
       >
@@ -623,14 +631,31 @@ function TokensResourceCard({
             className="settings-field__control"
           />
         </label>
+        <label className="settings-resource__composer-field">
+          <span className="settings-resource__composer-label">Permission</span>
+          <select
+            className="settings-field__control"
+            value={scope}
+            onChange={(event) => setScope(event.target.value)}
+          >
+            <option value="">Choose a permission</option>
+            <option value="forge:session:create">Create Forge sessions</option>
+            <option value="ting:workflow:launch">Launch Ting workflows</option>
+            <option value="observatory:topology:push">Publish Observatory topology</option>
+          </select>
+        </label>
         <button
           type="submit"
           className="settings-shell__save-button settings-shell__save-button--secondary"
-          disabled={createMutation.isPending || !name.trim()}
+          disabled={createMutation.isPending || !name.trim() || !scope}
         >
           {createMutation.isPending ? 'Creating…' : 'Create token'}
         </button>
       </form>
+
+      {createMutation.isError ? (
+        <p role="alert">Token creation failed. {createMutation.error.message}</p>
+      ) : null}
 
       {createdToken ? (
         <div className="settings-resource__callout">
@@ -653,7 +678,9 @@ function TokensResourceCard({
               <div className="settings-resource__row-main">
                 <div className="settings-resource__row-title">{token.name}</div>
                 <div className="settings-resource__row-meta">
-                  created {formatTimestamp(token.createdAt)} · last used{' '}
+                  {token.scopes?.join(', ') || 'Unrestricted legacy token'} · expires{' '}
+                  {token.expires_at ? formatTimestamp(token.expires_at) : 'unknown'} · created{' '}
+                  {formatTimestamp(token.createdAt)} · last used{' '}
                   {token.lastUsedAt ? formatTimestamp(token.lastUsedAt) : 'never'}
                 </div>
               </div>

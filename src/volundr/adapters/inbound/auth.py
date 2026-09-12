@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-import inspect
 import logging
 from typing import Any
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
 
+from identity.adapters.http_auth import extract_principal as extract_principal
 from volundr.domain.models import Principal, User
 from volundr.domain.ports import (
     AuthorizationPort,
     IdentityPort,
-    InvalidTokenError,
     Resource,
     UserProvisioningError,
 )
@@ -32,7 +31,7 @@ async def check_session_or_resident_access(
 ) -> None:
     """Authorize an existing Forge session or resident runtime subject."""
     if session_service is None and resident_runtime_service is None:
-        return
+        raise HTTPException(status_code=503, detail="Resource authorization unavailable")
 
     from volundr.domain.services.resident_runtime import ResidentRuntimeNotFoundError
     from volundr.domain.services.session import SessionAccessDeniedError
@@ -49,12 +48,6 @@ async def check_session_or_resident_access(
             )
         return
 
-    # Session telemetry historically accepts late events after the session row
-    # has gone away. Only resident-aware routers can validate the alternate
-    # subject type and therefore reject an unknown identifier safely.
-    if resident_runtime_service is None:
-        return
-
     if resident_runtime_service is not None:
         try:
             await resident_runtime_service.get(principal, subject_id)
@@ -67,129 +60,6 @@ async def check_session_or_resident_access(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"Session or resident runtime not found: {subject_id}",
     )
-
-
-def _split_roles(raw: str) -> list[str]:
-    return [role.strip() for role in raw.split(",") if role.strip()]
-
-
-async def extract_principal(request: Request) -> Principal:
-    """FastAPI dependency: validate identity and extract Principal.
-
-    Supports two modes:
-    - Envoy header mode: reads trusted headers injected by the Envoy sidecar
-    - Token mode (allow-all / dev): validates the Authorization header
-    """
-    from niuu.adapters.inbound.auth_context import extract_bearer_token
-
-    extract_bearer_token(request)
-    identity: IdentityPort = request.app.state.identity
-    from volundr.adapters.outbound.identity import (
-        AllowAllIdentityAdapter,
-        EnvoyHeaderIdentityAdapter,
-    )
-
-    # Shared local shells forward explicit developer identity through
-    # x-auth-* headers. Honor those first so proxied browser flows preserve
-    # tenant/user ownership even when the worker is running in allow-all mode.
-    #
-    # When the configured identity adapter understands trusted headers, route
-    # the forwarded payload through that adapter so claim role mappings stay
-    # consistent with the normal Envoy-backed path.
-    forwarded_user_id = request.headers.get("x-auth-user-id", "").strip()
-    if forwarded_user_id:
-        if isinstance(identity, EnvoyHeaderIdentityAdapter):
-            header_items = request.headers.items()
-            if inspect.iscoroutine(header_items):
-                header_items.close()
-                header_items = ()
-            elif inspect.isawaitable(header_items):
-                header_items = ()
-            headers = {k.lower(): v for k, v in header_items}
-            try:
-                return await identity.validate_headers(headers)
-            except InvalidTokenError as e:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=str(e),
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-        return Principal(
-            user_id=forwarded_user_id,
-            email=request.headers.get("x-auth-email", "").strip(),
-            tenant_id=request.headers.get("x-auth-tenant", "").strip() or "default",
-            roles=_split_roles(request.headers.get("x-auth-roles", "volundr:developer")),
-        )
-
-    dev_user_id = request.query_params.get("devUserId", "").strip()
-    if dev_user_id:
-        return Principal(
-            user_id=dev_user_id,
-            email=request.query_params.get("devEmail", "").strip(),
-            tenant_id=request.query_params.get("devTenantId", "").strip(),
-            roles=_split_roles(request.query_params.get("devRoles", "volundr:developer")),
-        )
-
-    # Shared local shells forward explicit developer identity through
-    # x-auth-* headers. Honor those first so proxied browser flows preserve
-    # tenant/user ownership even when the worker is running in allow-all mode.
-    forwarded_user_id = request.headers.get("x-auth-user-id", "").strip()
-    if forwarded_user_id:
-        return Principal(
-            user_id=forwarded_user_id,
-            email=request.headers.get("x-auth-email", "").strip(),
-            tenant_id=request.headers.get("x-auth-tenant", "").strip(),
-            roles=_split_roles(request.headers.get("x-auth-roles", "volundr:developer")),
-        )
-
-    dev_user_id = request.query_params.get("devUserId", "").strip()
-    if dev_user_id:
-        return Principal(
-            user_id=dev_user_id,
-            email=request.query_params.get("devEmail", "").strip(),
-            tenant_id=request.query_params.get("devTenantId", "").strip(),
-            roles=_split_roles(request.query_params.get("devRoles", "volundr:developer")),
-        )
-
-    # If the adapter supports header-based auth (Envoy mode), use it
-    if isinstance(identity, EnvoyHeaderIdentityAdapter):
-        header_items = request.headers.items()
-        if inspect.iscoroutine(header_items):
-            header_items.close()
-            header_items = ()
-        elif inspect.isawaitable(header_items):
-            header_items = ()
-        headers = {k.lower(): v for k, v in header_items}
-        try:
-            return await identity.validate_headers(headers)
-        except InvalidTokenError as e:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=str(e),
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-
-    # Allow-all mode: skip token validation entirely
-    if isinstance(identity, AllowAllIdentityAdapter):
-        return await identity.validate_token("allow-all")
-
-    # Token-based mode
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Authorization header",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    try:
-        return await identity.validate_token(auth_header)
-    except InvalidTokenError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(e),
-            headers={"WWW-Authenticate": "Bearer"},
-        )
 
 
 async def get_current_user(

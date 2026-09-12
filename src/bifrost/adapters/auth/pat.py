@@ -42,6 +42,11 @@ class PATAuthAdapter(AuthPort):
         except jwt.InvalidTokenError as exc:
             raise HTTPException(status_code=401, detail=f"Invalid token: {exc}") from exc
 
+        from niuu.domain.services.token_scope import token_requires_scope_check
+
+        if token_requires_scope_check(payload):
+            raise HTTPException(status_code=403, detail="Credential does not grant model access")
+
         session_id, saga_id = _read_attribution_headers(request)
         return AgentIdentity(
             agent_id=payload.get("sub", "anonymous"),

@@ -21,7 +21,6 @@ from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.config import GitConfig
 from niuu.cors import apply_cors_middleware
-from niuu.domain.services.pat import PATService
 from niuu.domain.services.repo import RepoService
 from niuu.service_database import database_pool
 from niuu.service_databases import apply_service_database_settings
@@ -31,6 +30,7 @@ from niuu.service_integrations import (
     seed_linear_integration,
 )
 from niuu.service_runtime import (
+    create_authorization_adapter,
     create_credential_store,
     create_identity_adapter,
     create_pat_validator,
@@ -125,21 +125,25 @@ def create_app(
                 tenant_service=tenant_service,
             )
             await tenant_service.ensure_default_tenant()
+            app.state.authorization = create_authorization_adapter(loaded_settings)
 
             pat_repository = PostgresPATRepository(pool)
             pat_validator = create_pat_validator(loaded_settings, pat_repository)
             token_issuer_cls = import_class(loaded_settings.pat.token_issuer_adapter)
             token_issuer = token_issuer_cls(**loaded_settings.pat.token_issuer_kwargs)
-            pat_service = PATService(
+            pat_service = import_class(loaded_settings.pat.service_adapter)(
+                **loaded_settings.pat.service_kwargs,
                 repo=pat_repository,
                 token_issuer=token_issuer,
                 ttl_days=loaded_settings.pat.ttl_days,
                 validator=pat_validator,
+                authorization=create_authorization_adapter(loaded_settings),
             )
             credential_store = create_credential_store(loaded_settings)
             credential_service = CredentialService(
                 store=credential_store,
                 strategies=SecretMountStrategyRegistry(),
+                authorization=create_authorization_adapter(loaded_settings),
             )
             mcp_provider = ConfigMCPServerProvider(loaded_settings.mcp_servers)
             secret_manager = InMemorySecretManager()
@@ -283,7 +287,10 @@ def create_app(
     app.router.lifespan_context = lifespan
 
     apply_cors_middleware(app, loaded_settings.cors)
-    app.add_middleware(PATRevocationMiddleware)
+    app.add_middleware(
+        PATRevocationMiddleware,
+        websocket_check_interval=loaded_settings.pat.websocket_check_interval,
+    )
 
     @app.get("/health", tags=["Health"])
     async def health_check() -> dict[str, str]:

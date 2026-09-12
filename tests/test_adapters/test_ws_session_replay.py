@@ -20,7 +20,7 @@ from fastapi import FastAPI, WebSocketDisconnect
 from fastapi.testclient import TestClient
 
 # Reuse the in-memory log used by the REST endpoint tests.
-from tests.test_adapters.test_rest_session_log import InMemoryLog
+from tests.test_adapters.test_rest_session_log import InMemoryLog, allow_log_access
 from volundr.adapters.inbound.ws_session_replay import _run, create_session_replay_router
 from volundr.config import ReplayConfig
 from volundr.domain.models import SessionLogEntry
@@ -43,7 +43,9 @@ def _app(repo: InMemoryLog | None = None, **cfg_kwargs) -> tuple[FastAPI, InMemo
         **cfg_kwargs,
     )
     app = FastAPI()
-    app.include_router(create_session_replay_router(repo, session_service=None, config=cfg))
+    app.include_router(
+        create_session_replay_router(repo, session_service=allow_log_access(app), config=cfg)
+    )
     return app, repo
 
 
@@ -298,7 +300,9 @@ def test_visibility_dropped_set_parity_replay_coldread_live():
 
     # Cold-read (hidden default) over the same data — share the repo.
     log_app = FastAPI()
-    log_app.include_router(create_session_log_router(repo, session_service=None))
+    log_app.include_router(
+        create_session_log_router(repo, session_service=allow_log_access(log_app))
+    )
     with TestClient(log_app) as log_client:
         cold = log_client.get(f"/api/v1/forge/sessions/{sid}/log").json()
     cold_kept = [_block_types(e["payload"]) or [e["payload"].get("type")] for e in cold]
@@ -701,3 +705,23 @@ async def test_visibility_toggle_during_stream_is_honored_deterministically():
     # The tool-only frame (seq2) was hidden at start; the toggle, applied during
     # the pre-seq2 sleep, unhides it.
     assert any("tool_use" in _block_types(f) for f in ws.sent)
+
+
+def test_orphaned_log_replay_closes_before_any_frames():
+    from unittest.mock import AsyncMock
+
+    service = AsyncMock()
+    service.get_session.return_value = None
+    app, repo = _app_with_session_service(service)
+    sid = uuid4()
+    with TestClient(app) as client:
+        client.portal.call(_seed, repo, sid, _MIXED_ROWS)
+        _expect_close(client, f"/api/v1/forge/sessions/{sid}/replay", code=1008)
+    service._check_access.assert_not_called()
+
+
+def test_replay_authorization_unconfigured_denies_access():
+    app = FastAPI()
+    app.include_router(create_session_replay_router(InMemoryLog(), config=ReplayConfig()))
+    with TestClient(app) as client:
+        _expect_close(client, f"/api/v1/forge/sessions/{uuid4()}/replay", code=1011)

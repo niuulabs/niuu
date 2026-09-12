@@ -50,6 +50,7 @@ def _campaign() -> WorkflowCampaign:
 def _row(campaign: WorkflowCampaign) -> dict:
     stage = campaign.stage_state[0]
     return {
+        "tenant_id": campaign.tenant_id,
         "id": campaign.id,
         "slug": campaign.slug,
         "name": campaign.name,

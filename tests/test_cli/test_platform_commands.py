@@ -952,3 +952,20 @@ class TestPlatformInventoryCommand:
         assert result.exit_code == 0
         assert out_path.exists()
         assert '"name": "niuu-api"' in out_path.read_text()
+
+
+@pytest.mark.parametrize("mode", ["mini", "cluster"])
+def test_only_mini_selects_no_auth(mode, monkeypatch):
+    from ravn.config import Settings as RavnSettings
+    from ting.config import Settings as TingSettings
+
+    env = _resolve_local_pod_manager_env(CLISettings(mode=mode))
+    auth_keys = {"RAVN_API_AUTH__ADAPTER", "AUTH__ALLOW_ANONYMOUS_DEV", "AUTHORIZATION__ADAPTER"}
+    if mode != "mini":
+        assert auth_keys.isdisjoint(env)
+        return
+    for key in auth_keys:
+        monkeypatch.setenv(key, env[key])
+    assert RavnSettings().api_auth.adapter.endswith("AllowAllHeaderAuthenticationAdapter")
+    assert TingSettings().auth.allow_anonymous_dev is True
+    assert TingSettings().authorization.adapter.endswith("AllowAllAuthorizationAdapter")

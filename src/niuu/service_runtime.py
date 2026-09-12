@@ -31,6 +31,19 @@ _SHARED_CREDENTIAL_STORES: dict[str, object] = {}
 _SHARED_CREDENTIAL_STORE_REFS: dict[str, int] = {}
 
 
+def create_authorization_adapter(settings):
+    """Compose the shared authorization port from the configured dynamic adapter."""
+    from identity.ports import AuthorizationPort
+
+    config = settings.authorization
+    adapter = import_class(config.adapter)(
+        **resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
+    )
+    if not isinstance(adapter, AuthorizationPort):
+        raise TypeError("Configured authorization adapter must implement AuthorizationPort")
+    return adapter
+
+
 def configure_logging(config: LoggingConfig | None = None) -> None:
     """Configure logging from shared settings."""
     if config is None:
@@ -163,7 +176,8 @@ def release_credential_store(settings: ServiceSettings) -> None:
 
 def create_pat_validator(settings: ServiceSettings, pat_repository) -> PATValidator:
     """Create the shared PAT validator."""
-    return PATValidator(
+    return import_class(settings.pat.validator_adapter)(
+        **settings.pat.validator_kwargs,
         repo=pat_repository,
         cache_ttl=settings.pat.revocation_cache_ttl,
         revoked_cache_ttl=settings.pat.revoked_cache_ttl,

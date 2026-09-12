@@ -43,7 +43,11 @@ spec:
             - token
         claimToHeaders:
           - claim: sub
-            header: x-auth-user-id
+            header: {{ .Values.envoy.headerNames.userId | quote }}
+          - claim: {{ .Values.gateway.jwt.tenantClaim }}
+            header: {{ .Values.envoy.headerNames.tenant | quote }}
+          - claim: {{ .Values.gateway.jwt.rolesClaim }}
+            header: {{ .Values.envoy.headerNames.roles | quote }}
       {{- if .Values.gateway.jwt.workload.enabled }}
       - name: workload
         issuer: {{ .Values.gateway.jwt.workload.issuer | quote }}
@@ -61,7 +65,11 @@ spec:
             - token
         claimToHeaders:
           - claim: sub
-            header: x-auth-user-id
+            header: {{ .Values.envoy.headerNames.userId | quote }}
+          - claim: {{ .Values.gateway.jwt.workload.tenantClaim }}
+            header: {{ .Values.envoy.headerNames.tenant | quote }}
+          - claim: {{ .Values.gateway.jwt.workload.rolesClaim }}
+            header: {{ .Values.envoy.headerNames.roles | quote }}
       {{- end }}
   {{- end }}
 {{- end }}

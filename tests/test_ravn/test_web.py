@@ -35,7 +35,15 @@ def app() -> FastAPI:
 
 @pytest.fixture()
 def client(app: FastAPI) -> TestClient:
-    return TestClient(app, raise_server_exceptions=True)
+    return TestClient(
+        app,
+        raise_server_exceptions=True,
+        headers={
+            "x-auth-user-id": "dev-user",
+            "x-auth-tenant": "default",
+            "x-auth-roles": "volundr:developer",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

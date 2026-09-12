@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import jwt
 
+from niuu.domain.services.token_scope import validate_pat_scopes
 from niuu.ports.token_issuer import IssuedToken, TokenIssuer
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,9 @@ class MemoryTokenIssuer(TokenIssuer):
         subject_token: str,
         name: str,
         ttl_days: int = 365,
+        scopes: list[str] | None = None,
     ) -> IssuedToken:
+        requested = validate_pat_scopes(scopes)
         # Extract sub from the subject_token if it's a JWT, else hash it
         sub = ""
         try:
@@ -59,12 +62,15 @@ class MemoryTokenIssuer(TokenIssuer):
             "iat": now,
             "exp": now + ttl_days * 86400,
         }
+        if requested is not None:
+            payload["scope"] = " ".join(requested)
         raw_token = jwt.encode(payload, self._signing_key, algorithm="HS256")
         return IssuedToken(
             raw_token=raw_token,
             token_id=jti,
             subject=sub,
             expires_at=payload["exp"],
+            scopes=requested,
         )
 
     async def close(self) -> None:

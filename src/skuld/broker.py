@@ -49,7 +49,7 @@ from niuu.mesh.discovery_builder import build_discovery_adapters
 from niuu.mesh.identity import MeshIdentity
 from niuu.observability import get_observability
 from niuu.ports.cli import CLITransport
-from niuu.utils import import_class
+from niuu.utils import import_class, resolve_secret_kwargs
 from skuld.activity_reporting import ActivityReportingMixin
 from skuld.channels import (
     ChannelRegistry,
@@ -99,14 +99,11 @@ from skuld.session_artifacts import (  # noqa: F401
 from skuld.transport_lifecycle import TransportLifecycleMixin
 from skuld.websocket_auth import (  # noqa: F401
     WsPrincipal,
-    _claims_to_ws_principal,
     _decode_jwt_claims,
     _extract_bearer_token,
     _extract_token_from_websocket,
     _is_loopback_ws_client,
     _resolve_ws_principal,
-    _split_roles,
-    _ws_query_param,
 )
 from skuld.websocket_lifecycle import WebSocketLifecycleMixin
 from skuld.workflow_runtime import (
@@ -383,6 +380,24 @@ class Broker(
         sleipnir_publisher: SleipnirPublisher | None = None,
     ):
         self._settings = settings or SkuldSettings()
+        self._ws_identity = None
+        self._ws_authorization = None
+        if self._settings.ws_auth.enforce_ownership:
+            from identity.ports import AuthorizationPort
+
+            identity = self._settings.ws_auth.identity
+            if identity is not None:
+                from niuu.ports.identity import HeaderAuthenticationPort
+
+                self._ws_identity = import_class(identity.adapter)(**identity.kwargs)
+                if not isinstance(self._ws_identity, HeaderAuthenticationPort):
+                    raise TypeError("WebSocket identity must implement HeaderAuthenticationPort")
+            auth = self._settings.ws_auth.authorization
+            self._ws_authorization = import_class(auth.adapter)(
+                **resolve_secret_kwargs(auth.kwargs, auth.secret_kwargs_env)
+            )
+            if not isinstance(self._ws_authorization, AuthorizationPort):
+                raise TypeError("WebSocket authorization must implement AuthorizationPort")
         self.session_id = self._settings.session.id
         self.model = self._settings.session.model
         self.workspace_dir = self._settings.workspace_path

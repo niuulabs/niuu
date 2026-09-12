@@ -76,7 +76,7 @@ class TestValidateHeaders:
         principal = await adapter.validate_headers(headers)
         assert principal.tenant_id == "default"
 
-    async def test_default_role_when_no_roles(self):
+    async def test_no_roles_does_not_grant_developer(self):
         adapter = _make_adapter()
         headers = {
             "x-auth-user-id": "u1",
@@ -84,9 +84,9 @@ class TestValidateHeaders:
         }
 
         principal = await adapter.validate_headers(headers)
-        assert principal.roles == ["volundr:developer"]
+        assert principal.roles == []
 
-    async def test_empty_roles_header_defaults(self):
+    async def test_empty_roles_header_grants_no_roles(self):
         adapter = _make_adapter()
         headers = {
             "x-auth-user-id": "u1",
@@ -95,7 +95,7 @@ class TestValidateHeaders:
         }
 
         principal = await adapter.validate_headers(headers)
-        assert principal.roles == ["volundr:developer"]
+        assert principal.roles == []
 
     async def test_single_role(self):
         adapter = _make_adapter()
@@ -186,3 +186,19 @@ class TestGetOrProvisionUser:
             await adapter.get_or_provision_user(principal)
 
         assert user_repo.update.call_count == 2
+
+
+@pytest.mark.parametrize("status", [UserStatus.SUSPENDED, UserStatus.FAILED])
+async def test_disabled_user_is_denied_before_authority_or_membership_sync(status):
+    user_repo = AsyncMock()
+    user_repo.get.return_value = User(id="alice", email="alice@test", status=status)
+    tenant_service = AsyncMock()
+    adapter = EnvoyHeaderIdentityAdapter(user_repository=user_repo, tenant_service=tenant_service)
+    with pytest.raises(InvalidTokenError, match="not active"):
+        await adapter.validate_headers({"x-auth-user-id": "alice", "x-auth-tenant": "acme"})
+    with pytest.raises(InvalidTokenError, match="not active"):
+        await adapter.get_or_provision_user(
+            Principal("alice", "alice@test", "acme", ["volundr:admin"])
+        )
+    tenant_service.add_member.assert_not_called()
+    user_repo.update.assert_not_called()

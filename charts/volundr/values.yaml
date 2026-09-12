@@ -561,6 +561,8 @@ envoy:
     keycloakPort: 8080
     # -- Enable TLS for Keycloak upstream
     keycloakTls: false
+    # -- CA bundle used to verify the JWKS server when TLS is enabled
+    keycloakCaFile: "/etc/ssl/certs/ca-certificates.crt"
     # -- Additional JWT claim-to-header mappings
     # extraClaimHeaders:
     #   - headerName: x-auth-display-name
@@ -581,6 +583,11 @@ envoy:
       audiences: []
       # Defaults to the app-local workload JWKS endpoint when empty.
       jwksUri: ""
+      # Empty host uses the pod-local exchange; remote JWKS require verified TLS.
+      jwksHost: ""
+      jwksPort: 443
+      jwksTls: true
+      jwksCaFile: /etc/ssl/certs/ca-certificates.crt
       jwksTimeout: "5s"
       jwksCacheDurationSeconds: 300
       tenantClaim: "tenant_id"
@@ -590,6 +597,46 @@ envoy:
   extraHttpFilters: []
   # -- Extra upstream clusters
   extraClusters: []
+  # -- Additional volumes mounted into Envoy, for example a private JWKS CA
+  extraVolumeMounts: []
+  # Cedar admission runs after JWT verification, on a pod-local gRPC listener.
+  # Also configure authorization.adapter and identity.adapter for production.
+  authorization:
+    # Optional central identity/PAT revocation check before gateway admission.
+    # Use identity.adapters.remote.RemoteHeaderAuthenticationAdapter with HTTPS authority_url.
+    identity: null
+    enabled: false
+    port: 9002
+    timeout: "1s"
+    shutdownGraceSeconds: 5
+    # -- Mount deployment-managed custom policy/schema volumes, when configured
+    extraVolumeMounts: []
+    readinessProbe:
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 3
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    # First matching route wins. Scoped credentials cannot use routes without
+    # a required_scope, even when their owner would otherwise have access.
+    routes:
+      - path: /api/v1/identity/me
+        methods: [GET]
+        required_scope: identity:self
+      - path: /api/v1/forge/sessions
+        methods: [POST]
+        required_scope: "forge:session:create"
+      - path: /api/v1/forge
+        prefix: true
+        methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+      - path: /s
+        prefix: true
+        methods: [GET]
 
 workloadIdentity:
   enabled: false
@@ -1929,3 +1976,22 @@ personaSource:
   mountPath: /etc/ravn/personas
   # -- Volundr base URL that sidecars call to fetch personas (http mode)
   httpBaseUrl: http://volundr:8080
+
+pat:
+  token_issuer_adapter: niuu.adapters.memory_token_issuer.MemoryTokenIssuer
+  token_issuer_kwargs: {}
+  ttl_days: 365
+  issuerSecretName: ""
+  issuerSecretKey: client-secret
+  service_adapter: niuu.domain.services.pat.PATService
+  service_kwargs: {}
+  validator_adapter: niuu.domain.services.pat_validator.PATValidator
+  validator_kwargs: {}
+
+# Shared identity service: fresh membership, role and credential checks.
+# Point at the canonical identity service, never back at this client service.
+identityAuthority:
+  enabled: false
+  url: ""
+  timeout: 5
+  caFile: ""

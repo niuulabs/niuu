@@ -6,12 +6,15 @@ import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
 
+from identity.adapters.authorization import AllowAllAuthorizationAdapter
+from identity.adapters.identity import AllowAllIdentityAdapter
 from niuu.adapters.inbound.rest_instances import create_instances_router
 from niuu.config import InstanceRegistryConfig
 from niuu.domain.agent_directory import AgentDirectoryEntry, AgentDirectoryPage
@@ -187,6 +190,7 @@ def _client(
     agent_directory: StubAgentDirectoryAggregation | None = None,
 ) -> TestClient:
     app = FastAPI()
+    app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
     if catalog is not None:
         app.state.settings = SimpleNamespace(
             niuu=SimpleNamespace(catalog=catalog),
@@ -538,6 +542,7 @@ _TEST_SIGNING_KEY = "test-signing-key-of-sufficient-length-for-hs256"
 
 def _inbox_client(inbox: Any) -> TestClient:
     app = FastAPI()
+    app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
     app.include_router(
         create_instances_router(  # type: ignore[arg-type]
             StubInstanceService(),
@@ -556,6 +561,7 @@ def _push_inbox(ttl_seconds: float = 180.0) -> Any:
     return ObservatoryFragmentInboxService(
         InMemoryObservatoryFragmentRepository(),
         ttl_seconds=ttl_seconds,
+        authorization=AllowAllAuthorizationAdapter(),
     )
 
 
@@ -602,7 +608,14 @@ def test_republishing_replaces_rather_than_accumulating() -> None:
             headers=_headers(),
         )
 
-    assert len(asyncio.run(inbox.current())) == 1
+    assert (
+        len(
+            asyncio.run(
+                inbox.current(principal=Principal("publisher", "", "tenant", ["volundr:developer"]))
+            )
+        )
+        == 1
+    )
 
 
 def test_a_fragment_cannot_claim_a_different_source_than_its_path() -> None:
@@ -621,6 +634,7 @@ def test_a_fragment_cannot_claim_a_different_source_than_its_path() -> None:
 
 def test_publishing_without_a_configured_inbox_says_so() -> None:
     app = FastAPI()
+    app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
     app.include_router(create_instances_router(StubInstanceService()))  # type: ignore[arg-type]
     client = TestClient(app)
 
@@ -689,7 +703,12 @@ def test_forgetting_a_source_removes_it() -> None:
     )
 
     assert response.status_code == 204
-    assert asyncio.run(inbox.current()) == []
+    assert (
+        asyncio.run(
+            inbox.current(principal=Principal("publisher", "", "tenant", ["volundr:developer"]))
+        )
+        == []
+    )
 
 
 def test_forgetting_an_unknown_source_is_a_404() -> None:

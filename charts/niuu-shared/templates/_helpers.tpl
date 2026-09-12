@@ -154,6 +154,9 @@ Return the database port.
 Annotations for checksum/config - forces restart on config changes
 */}}
 {{- define "niuu-shared.checksumAnnotations" -}}
+{{- if .Values.envoy.authorization.enabled }}
+checksum/authz: {{ include (print $.Template.BasePath "/authz-configmap.yaml") . | sha256sum }}
+{{- end }}
 checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
 {{- if .Values.migrations.enabled }}
 checksum/migrations: {{ include (print $.Template.BasePath "/migrations-configmap.yaml") . | sha256sum }}

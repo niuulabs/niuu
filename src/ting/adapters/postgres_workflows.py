@@ -8,6 +8,7 @@ from uuid import UUID
 
 import asyncpg
 
+from identity.ports import AuthorizationDeniedError
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.ports.workflow_repository import WorkflowRepository
 
@@ -70,7 +71,7 @@ class PostgresWorkflowRepository(WorkflowRepository):
         return self._row_to_workflow(row)
 
     async def save_workflow(self, workflow: WorkflowDefinition) -> WorkflowDefinition:
-        await self._pool.execute(
+        result = await self._pool.execute(
             """
             INSERT INTO workflows
                 (
@@ -82,9 +83,10 @@ class PostgresWorkflowRepository(WorkflowRepository):
                     owner_id,
                     graph_json,
                     created_at,
-                    updated_at
+                    updated_at,
+                    tenant_id
                 )
-            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
+            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 description = EXCLUDED.description,
@@ -93,6 +95,8 @@ class PostgresWorkflowRepository(WorkflowRepository):
                 owner_id = EXCLUDED.owner_id,
                 graph_json = EXCLUDED.graph_json,
                 updated_at = EXCLUDED.updated_at
+                WHERE workflows.tenant_id = EXCLUDED.tenant_id
+                  AND workflows.owner_id IS NOT DISTINCT FROM EXCLUDED.owner_id
             """,
             workflow.id,
             workflow.name,
@@ -103,7 +107,10 @@ class PostgresWorkflowRepository(WorkflowRepository):
             json.dumps(workflow.graph),
             workflow.created_at,
             workflow.updated_at,
+            workflow.tenant_id,
         )
+        if result == "INSERT 0 0":
+            raise AuthorizationDeniedError("Resource ownership is immutable")
         return workflow
 
     async def delete_workflow(self, workflow_id: UUID) -> bool:
@@ -123,6 +130,7 @@ class PostgresWorkflowRepository(WorkflowRepository):
 
         return WorkflowDefinition(
             id=row["id"],
+            tenant_id=row["tenant_id"],
             name=row["name"],
             description=row.get("description") or "",
             version=row.get("version") or "draft",

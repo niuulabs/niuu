@@ -174,6 +174,7 @@ envoy:
     keycloakHost: ""
     keycloakPort: 8080
     keycloakTls: false
+    keycloakCaFile: /etc/ssl/certs/ca-certificates.crt
     extraClaimHeaders: []
     bypassPrefixes:
       - /api/v1/identity/auth/config
@@ -185,11 +186,74 @@ envoy:
       issuer: ""
       audiences: []
       jwksUri: ""
+      # Empty host uses the pod-local exchange; remote JWKS require verified TLS.
+      jwksHost: ""
+      jwksPort: 443
+      jwksTls: true
+      jwksCaFile: /etc/ssl/certs/ca-certificates.crt
       jwksTimeout: "5s"
       jwksCacheDurationSeconds: 300
       tenantClaim: "tenant_id"
       rolesClaim: "resource_access.volundr-api.roles"
       extraClaimHeaders: []
+  extraVolumeMounts: []
+  authorization:
+    # Optional central identity/PAT revocation check before gateway admission.
+    # Use identity.adapters.remote.RemoteHeaderAuthenticationAdapter with HTTPS authority_url.
+    identity: null
+    enabled: false
+    port: 9002
+    timeout: 1s
+    shutdownGraceSeconds: 5
+    extraVolumeMounts: []
+    readinessProbe:
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 3
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    routes:
+    - path: /api/v1/identity/me
+      methods: [GET]
+      required_scope: identity:self
+    - path: /api/v1/tokens
+      prefix: true
+      methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+    - path: /api/v1/identity
+      prefix: true
+      methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+    - path: /api/v1/credentials
+      prefix: true
+      methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+    - path: /api/v1/niuu/credentials
+      prefix: true
+      methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+    - path: /api/v1/niuu/repos
+      prefix: true
+      methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+    - path: /api/v1/integrations
+      prefix: true
+      methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+    - path: /internal/api/v1/integrations
+      prefix: true
+      methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+    - path: /api/v1/tracker
+      prefix: true
+      methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+    - path: /api/v1/features
+      prefix: true
+      methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+    - path: /api/v1/personas
+      prefix: true
+      methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+    - path: /api/v1/ravn/personas
+      prefix: true
+      methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
   extraHttpFilters: []
   extraClusters: []
 
@@ -207,6 +271,10 @@ workloadIdentity:
   mappings: []
 
 pat:
+  service_adapter: niuu.domain.services.pat.PATService
+  service_kwargs: {}
+  validator_adapter: niuu.domain.services.pat_validator.PATValidator
+  validator_kwargs: {}
   token_issuer_adapter: "niuu.adapters.memory_token_issuer.MemoryTokenIssuer"
   token_issuer_kwargs: {}
   ttl_days: 365
@@ -271,3 +339,8 @@ global:
   niuu:
     # -- Deployment cluster label used by Guild/Observatory discovery.
     cluster: unknown
+
+authorization:
+  adapter: "identity.adapters.cedar.CedarAuthorizationAdapter"
+  kwargs: {}
+  secret_kwargs_env: {}

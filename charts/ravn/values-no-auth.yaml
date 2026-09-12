@@ -1,0 +1,9 @@
+# Explicitly disable HTTP authentication for a trusted development deployment.
+config:
+  settings:
+    api_auth:
+      adapter: identity.adapters.identity.AllowAllHeaderAuthenticationAdapter
+      kwargs: {}
+envoy:
+  jwt:
+    enabled: false

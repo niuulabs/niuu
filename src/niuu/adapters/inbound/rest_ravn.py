@@ -89,7 +89,7 @@ def create_ravn_session_proxy_router(
 
     @router.websocket("/s/{session_id}/session")
     async def proxy_ravn_session(websocket: WebSocket, session_id: str) -> None:
-        user_id, tenant_id, roles = _proxy_ws_identity(websocket)
+        user_id, tenant_id, roles = await _proxy_ws_identity(websocket)
         if not user_id:
             await websocket.close(code=1008, reason="Not authorized for this session")
             return
@@ -182,7 +182,7 @@ def create_ravn_session_proxy_router(
         ravn_id: str,
         session_id: str,
     ) -> None:
-        user_id, tenant_id, roles = _proxy_ws_identity(websocket)
+        user_id, tenant_id, roles = await _proxy_ws_identity(websocket)
         if not user_id:
             await websocket.close(code=1008, reason="Not authorized for this resident")
             return

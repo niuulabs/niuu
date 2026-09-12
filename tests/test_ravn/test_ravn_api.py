@@ -11,7 +11,7 @@ import httpx
 import pytest
 import respx
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient as _TestClient
 
 from ravn.api import create_app
 from ravn.api.valkyrie_config import (
@@ -42,6 +42,19 @@ from ravn.warden import WardenSpec, WardenStore
 from ravn.warden.artifacts import service_label, start_command, write_runtime_config
 from ravn.warden.models import WardenObservation, WardenSupervisor
 from sleipnir.domain.events import SleipnirEvent
+
+
+def TestClient(app, **kwargs):  # noqa: N802 — test client factory
+    """Simulate identity headers supplied by the trusted Envoy proxy."""
+    return _TestClient(
+        app,
+        headers={
+            "x-auth-user-id": "dev-user",
+            "x-auth-tenant": "default",
+            "x-auth-roles": "volundr:developer",
+        },
+        **kwargs,
+    )
 
 
 class FakeWardenDeployer:

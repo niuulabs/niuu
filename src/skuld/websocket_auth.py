@@ -10,7 +10,8 @@ from dataclasses import dataclass
 
 from fastapi import WebSocket
 
-from niuu.ws_identity import claims_to_identity, decode_jwt_claims
+from niuu.adapters.identity_headers import parse_roles_header
+from niuu.ws_identity import decode_jwt_claims
 
 _AUTH_HEADER = "authorization"
 _BEARER_PREFIX = "bearer "
@@ -76,55 +77,23 @@ class WsPrincipal:
     roles: tuple[str, ...] = ()
 
 
-def _split_roles(raw: str) -> tuple[str, ...]:
-    return tuple(role.strip() for role in raw.split(",") if role.strip())
-
-
-def _ws_query_param(websocket: WebSocket, name: str) -> str:
-    """Read one query parameter defensively."""
-    query_get = getattr(websocket.query_params, "get", None)
-    if not callable(query_get):
-        return ""
-    value = query_get(name)
-    if inspect.iscoroutine(value):
-        value.close()
-        return ""
-    if inspect.isawaitable(value):
-        return ""
-    return str(value or "").strip()
-
-
-def _claims_to_ws_principal(claims: dict) -> WsPrincipal | None:
-    """Build a principal from decoded JWT claims."""
-    user_id, tenant, roles = claims_to_identity(claims)
+def _resolve_ws_principal(
+    websocket: WebSocket,
+    *,
+    user_id_header: str = "x-auth-user-id",
+    tenant_header: str = "x-auth-tenant",
+    roles_header: str = "x-auth-roles",
+) -> WsPrincipal | None:
+    """Resolve only identity projected by a trusted authentication proxy."""
+    headers = _header_mapping(websocket)
+    user_id = headers.get(user_id_header.lower(), "").strip()
     if not user_id:
         return None
-    return WsPrincipal(user_id=user_id, tenant_id=tenant, roles=roles)
-
-
-def _resolve_ws_principal(websocket: WebSocket) -> WsPrincipal | None:
-    """Resolve forwarded, development, or bearer-token identity."""
-    headers = _header_mapping(websocket)
-    forwarded_user_id = headers.get("x-auth-user-id", "").strip()
-    if forwarded_user_id:
-        return WsPrincipal(
-            user_id=forwarded_user_id,
-            tenant_id=headers.get("x-auth-tenant", "").strip(),
-            roles=_split_roles(headers.get("x-auth-roles", "volundr:developer")),
-        )
-
-    dev_user_id = _ws_query_param(websocket, "devUserId")
-    if dev_user_id:
-        return WsPrincipal(
-            user_id=dev_user_id,
-            tenant_id=_ws_query_param(websocket, "devTenantId"),
-            roles=_split_roles(_ws_query_param(websocket, "devRoles") or "volundr:developer"),
-        )
-
-    token = _extract_token_from_websocket(websocket)
-    if token:
-        return _claims_to_ws_principal(_decode_jwt_claims(token))
-    return None
+    return WsPrincipal(
+        user_id=user_id,
+        tenant_id=headers.get(tenant_header.lower(), "").strip(),
+        roles=tuple(parse_roles_header(headers.get(roles_header.lower(), ""))),
+    )
 
 
 def _is_loopback_ws_client(websocket: WebSocket) -> bool:

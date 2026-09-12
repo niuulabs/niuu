@@ -8,6 +8,14 @@ from typing import Any
 from niuu.domain.models import Principal
 
 
+class HeaderAuthenticationPort(ABC):
+    """Authenticate trusted proxy headers without requiring user provisioning."""
+
+    @abstractmethod
+    async def validate_headers(self, headers: dict[str, str]) -> Principal:
+        """Return the principal asserted by the trusted proxy."""
+
+
 class IdentityPort(ABC):
     """Port for identity and authentication operations."""
 

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from niuu.domain.models import (
     InstanceKind,
     InstanceVisibility,
@@ -121,7 +122,7 @@ async def test_list_visible_filters_and_sorts_instances() -> None:
             _instance("ting", kind=InstanceKind.TING),
         ]
     )
-    service = InstanceService(repo)
+    service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
 
     visible = await service.list_visible(_principal(), enabled_only=True)
 
@@ -156,7 +157,7 @@ async def test_get_visible_hides_instances_outside_scope() -> None:
             _instance("other-tenant", tenant_id="tenant-b"),
         ]
     )
-    service = InstanceService(repo)
+    service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
 
     assert (await service.get_visible(_principal(), "mine")) is not None
     assert await service.get_visible(_principal(), "other-user") is None
@@ -166,7 +167,7 @@ async def test_get_visible_hides_instances_outside_scope() -> None:
 @pytest.mark.asyncio
 async def test_create_instance_normalizes_scope_and_trims_values() -> None:
     repo = InMemoryInstanceRepository()
-    service = InstanceService(repo)
+    service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
 
     tenant_instance = await service.create_instance(
         _principal(),
@@ -200,14 +201,16 @@ async def test_create_instance_normalizes_scope_and_trims_values() -> None:
     assert tenant_instance.owner_id is None
     assert tenant_instance.tenant_id == "tenant-a"
     assert user_instance.owner_id == "user-a"
-    assert user_instance.tenant_id is None
+    assert user_instance.tenant_id == "tenant-a"
     assert system_instance.owner_id is None
     assert system_instance.tenant_id is None
 
 
 @pytest.mark.asyncio
 async def test_create_instance_rejects_invalid_cross_scope_requests() -> None:
-    service = InstanceService(InMemoryInstanceRepository())
+    service = InstanceService(
+        InMemoryInstanceRepository(), authorization=AllowAllAuthorizationAdapter()
+    )
 
     with pytest.raises(InstanceAccessError):
         await service.create_instance(
@@ -274,7 +277,7 @@ async def test_update_instance_recomputes_scope_and_preserves_existing_values() 
         is_default=False,
     )
     repo = InMemoryInstanceRepository([existing])
-    service = InstanceService(repo)
+    service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
 
     updated = await service.update_instance(
         _principal(admin=True),
@@ -294,7 +297,7 @@ async def test_update_instance_recomputes_scope_and_preserves_existing_values() 
     assert updated.base_url == "https://renamed.example.com"
     assert updated.visibility == InstanceVisibility.USER
     assert updated.owner_id == "owner-2"
-    assert updated.tenant_id is None
+    assert updated.tenant_id == "tenant-a"
     assert updated.enabled is True
     assert updated.is_default is True
     assert updated.config == {"region": "us-east-1"}
@@ -314,7 +317,7 @@ async def test_update_and_delete_require_manage_access() -> None:
         tenant_id="tenant-b",
     )
     repo = InMemoryInstanceRepository([managed, foreign])
-    service = InstanceService(repo)
+    service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
 
     with pytest.raises(LookupError):
         await service.update_instance(_principal(), "missing", name="missing")
@@ -340,7 +343,7 @@ async def test_upsert_seed_instance_updates_existing_match_and_creates_new_seed(
         tenant_id=None,
     )
     repo = InMemoryInstanceRepository([existing])
-    service = InstanceService(repo)
+    service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
 
     updated = await service.upsert_seed_instance(
         kind=InstanceKind.VOLUNDR,
@@ -377,7 +380,7 @@ async def test_seed_configured_instances_skips_incomplete_items(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     repo = InMemoryInstanceRepository()
-    service = InstanceService(repo)
+    service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
     seeded_items = [
         SimpleNamespace(
             id="seed-1",
@@ -418,7 +421,7 @@ async def test_list_visible_filters_by_tags() -> None:
             _instance("untagged"),
         ]
     )
-    service = InstanceService(repo)
+    service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
     principal = _principal()
 
     # Default match=all: every selector tag must be present.
@@ -441,7 +444,7 @@ async def test_list_visible_filters_by_tags() -> None:
 @pytest.mark.asyncio
 async def test_create_and_update_round_trip_tags() -> None:
     repo = InMemoryInstanceRepository()
-    service = InstanceService(repo)
+    service = InstanceService(repo, authorization=AllowAllAuthorizationAdapter())
     admin = _principal(admin=True)
 
     created = await service.create_instance(
@@ -461,3 +464,26 @@ async def test_create_and_update_round_trip_tags() -> None:
     # Omitting tags on update leaves them unchanged.
     unchanged = await service.update_instance(admin, created.id, name="Renamed")
     assert unchanged.tags == ["cpu"]
+
+
+async def test_cedar_prevents_cross_tenant_admin_registry_changes():
+    from identity.adapters.cedar import CedarAuthorizationAdapter
+
+    repo = InMemoryInstanceRepository()
+    service = InstanceService(repo, authorization=CedarAuthorizationAdapter())
+    alice = Principal("alice", "", "acme", ["volundr:developer"])
+    foreign_admin = Principal("bob", "", "other", ["volundr:admin"])
+    instance = await service.create_instance(
+        alice,
+        kind=InstanceKind.TING,
+        slug="personal",
+        name="Personal",
+        base_url="https://ting.test",
+        visibility=InstanceVisibility.USER,
+    )
+    assert instance.tenant_id == "acme"
+    assert await service.get_visible(foreign_admin, instance.id) is None
+    with pytest.raises(InstanceAccessError):
+        await service.update_instance(foreign_admin, instance.id, name="hijacked")
+    with pytest.raises(InstanceAccessError):
+        await service.delete_instance(foreign_admin, instance.id)

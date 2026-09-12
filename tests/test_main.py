@@ -232,7 +232,8 @@ class TestLifespan:
         assert "/api/v1/audit/events" in paths
         assert hasattr(app.state, "pat_service")
 
-    def test_lifespan_mounts_session_proxy_routes_standalone(self):
+    @pytest.mark.parametrize("enforce", [False, True])
+    def test_lifespan_mounts_session_proxy_routes_standalone(self, enforce):
         """Standalone (no CLI root app): the /s/{id} session proxy must exist.
 
         The K8s deployment runs ``uvicorn volundr.main:create_app`` directly.
@@ -271,7 +272,12 @@ class TestLifespan:
             # left the module-global registry set.
             patch("cli.server.get_skuld_registry", return_value=None),
         ):
-            app = create_app()
+            settings = Settings()
+            if enforce:
+                settings.identity.adapter = "identity.adapters.identity.EnvoyHeaderIdentityAdapter"
+                settings.identity.kwargs = {"membership_authority": "local"}
+                settings.authorization.adapter = "identity.adapters.cedar.CedarAuthorizationAdapter"
+            app = create_app(settings)
             with TestClient(app) as client:
                 resp = client.get("/s/00000000-0000-0000-0000-000000000000/health")
                 assert resp.status_code == 404
@@ -280,6 +286,39 @@ class TestLifespan:
                 # Lifespan re-entry must not register the routes twice; the
                 # registry is pinned on app.state and reused.
                 registry = app.state.session_proxy_registry
+                if enforce:
+                    from types import SimpleNamespace
+
+                    from identity.models import Principal
+                    from niuu.ports.identity import InvalidTokenError
+
+                    validate = AsyncMock(
+                        side_effect=[
+                            Principal("alice", "", "acme", ["volundr:viewer"]),
+                            Principal("alice", "", "acme", ["volundr:developer"]),
+                            InvalidTokenError("Membership removed"),
+                        ]
+                    )
+                    with (
+                        patch.object(app.state.identity, "validate_headers", validate),
+                        patch(
+                            "volundr.main.PostgresSessionRepository.get",
+                            new=AsyncMock(
+                                return_value=SimpleNamespace(owner_id="alice", tenant_id="acme")
+                            ),
+                        ),
+                    ):
+                        for allowed in [False, True, False]:
+                            assert (
+                                client.portal.call(
+                                    registry.may_attach,
+                                    "00000000-0000-0000-0000-000000000000",
+                                    "alice",
+                                    "acme",
+                                    ("volundr:admin",),
+                                )
+                                is allowed
+                            )
             with TestClient(app):
                 assert app.state.session_proxy_registry is registry
                 proxy_routes = [

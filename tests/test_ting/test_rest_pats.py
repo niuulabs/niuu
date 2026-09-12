@@ -14,7 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from niuu.adapters.inbound.rest_pats import create_pats_router
-from niuu.domain.models import PersonalAccessToken
+from niuu.domain.models import PersonalAccessToken, Principal
 
 # -------------------------------------------------------------------
 # Fixtures
@@ -101,7 +101,9 @@ class TestCreateToken:
             headers=_auth_headers("user-42"),
         )
 
-        mock_service.create.assert_called_once_with("user-42", "test", subject_token="")
+        mock_service.create.assert_called_once_with(
+            Principal("user-42", "", "", []), "test", subject_token=""
+        )
 
     def test_rejects_empty_name(self, client: TestClient):
         resp = client.post(
@@ -170,7 +172,7 @@ class TestListTokens:
     ):
         client.get("/api/v1/tokens", headers=_auth_headers("user-99"))
 
-        mock_service.list.assert_called_once_with("user-99")
+        mock_service.list.assert_called_once_with(Principal("user-99", "", "", []))
 
 
 # -------------------------------------------------------------------
@@ -219,7 +221,7 @@ class TestRevokeToken:
             headers=_auth_headers("user-7"),
         )
 
-        mock_service.revoke.assert_called_once_with(pat_id, "user-7")
+        mock_service.revoke.assert_called_once_with(pat_id, Principal("user-7", "", "", []))
 
 
 # -------------------------------------------------------------------
