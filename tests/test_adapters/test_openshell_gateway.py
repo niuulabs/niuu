@@ -918,17 +918,17 @@ async def test_start_mounts_forge_storage_and_persists_agent_home(monkeypatch):
     config = client.created["driver_config"]
     assert config["volumes"] == [
         {
-            "name": "home",
+            "name": "forge-home",
             "persistent_volume_claim": {"claim_name": "user-home", "read_only": False},
         },
         {
-            "name": "workspace",
+            "name": "forge-workspace",
             "persistent_volume_claim": {"claim_name": "session-workspace", "read_only": False},
         },
     ]
     assert config["containers"]["agent"]["volume_mounts"] == [
-        {"name": "home", "mount_path": "/sandbox/home", "read_only": False},
-        {"name": "workspace", "mount_path": "/sandbox/workspace", "read_only": False},
+        {"name": "forge-home", "mount_path": "/sandbox/home", "read_only": False},
+        {"name": "forge-workspace", "mount_path": "/sandbox/workspace", "read_only": False},
     ]
     env = client.created["env"]
     assert env["HOME"] == env["SKULD__PERSISTENT_HOME_PATH"] == "/sandbox/home"
@@ -2816,5 +2816,6 @@ def test_create_sandbox_wraps_storage_in_public_driver_envelope(monkeypatch):
     envelope = request.spec.template.driver_config
     assert set(envelope) == {"kubernetes"}
     selected = envelope["kubernetes"]
+    assert selected["volumes"][0]["name"] == "forge-workspace"
     assert selected["volumes"][0]["persistent_volume_claim"]["claim_name"] == "forge-workspace"
     assert selected["containers"]["agent"]["volume_mounts"][0]["mount_path"] == "/sandbox/workspace"

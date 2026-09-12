@@ -3177,7 +3177,7 @@ def _driver_config_from_values(values: dict[str, Any]) -> dict[str, Any]:
     config: dict[str, Any] = {"pod": pod} if pod else {}
     volumes = []
     mounts = []
-    for key, name in (("homeVolume", "home"), ("persistence", "workspace")):
+    for key, name in (("homeVolume", "forge-home"), ("persistence", "forge-workspace")):
         storage = values.get(key, {})
         if not isinstance(storage, dict) or not storage.get("existingClaim"):
             continue
