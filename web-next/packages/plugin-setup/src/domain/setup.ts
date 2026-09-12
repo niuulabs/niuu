@@ -1,0 +1,246 @@
+/**
+ * Domain types and pure helpers for the first-launch wizard.
+ *
+ * Mirrors the backend contract of `/api/v1/niuu/setup` (progress + host facts)
+ * and the integrations catalog the wizard connects providers, git and
+ * trackers through. No framework imports here.
+ */
+
+export interface SetupStepRecord {
+  step: string;
+  completedAt: string;
+  data: Record<string, unknown>;
+}
+
+export interface SetupState {
+  enabled: boolean;
+  mode: string;
+  completed: boolean;
+  completedAt: string | null;
+  steps: string[];
+  completedSteps: SetupStepRecord[];
+}
+
+export interface GpuFacts {
+  name: string;
+  memory_total_mib: number;
+  driver_version: string;
+}
+
+export interface HostFacts {
+  hostname: string;
+  os_name: string;
+  os_version: string;
+  arch: string;
+  cpu_count: number;
+  memory_total_bytes: number;
+  docker_version: string;
+  compose_version: string;
+  nvidia_runtime: boolean;
+  gpus: GpuFacts[];
+  data_dir: string;
+  disk_free_bytes: number;
+  disk_total_bytes: number;
+}
+
+export interface SystemCheck {
+  name: string;
+  passed: boolean;
+  warnOnly: boolean;
+  message: string;
+}
+
+export interface SystemReport {
+  host: HostFacts | null;
+  checks: SystemCheck[];
+  healthy: boolean;
+}
+
+export interface CatalogFieldSchema {
+  label: string;
+  type: string;
+  default?: string;
+}
+
+export interface CatalogSchema {
+  required?: string[];
+  properties?: Record<string, CatalogFieldSchema>;
+}
+
+export interface CatalogEntry {
+  slug: string;
+  name: string;
+  description: string;
+  integrationType: string;
+  authType: string;
+  credentialSchema: CatalogSchema;
+  configSchema: CatalogSchema;
+}
+
+export interface IntegrationConnection {
+  id: string;
+  slug: string;
+  integrationType: string;
+  credentialName: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  credentialStatus: string;
+}
+
+export interface IntegrationTestResult {
+  success: boolean;
+  provider: string;
+  workspace: string | null;
+  user: string | null;
+  error: string | null;
+}
+
+export interface ConnectIntegrationInput {
+  slug: string;
+  credentialName: string;
+  credential: Record<string, string>;
+  config: Record<string, unknown>;
+}
+
+/** Wizard screens in presentation order. Only screens with a live backend appear. */
+export type WizardStepId = 'welcome' | 'system' | 'providers' | 'git' | 'tracker' | 'finish';
+
+export interface WizardStep {
+  id: WizardStepId;
+  label: string;
+  /** Integration category this step connects, when it is an integrations step. */
+  integrationType?: 'ai_provider' | 'source_control' | 'issue_tracker';
+}
+
+export const WIZARD_STEPS: readonly WizardStep[] = [
+  { id: 'welcome', label: 'Welcome' },
+  { id: 'system', label: 'System check' },
+  { id: 'providers', label: 'AI providers', integrationType: 'ai_provider' },
+  { id: 'git', label: 'Git', integrationType: 'source_control' },
+  { id: 'tracker', label: 'Tickets', integrationType: 'issue_tracker' },
+  { id: 'finish', label: 'Finish' },
+];
+
+/** Backend step id recorded for a wizard screen (the backend uses `launch` for finish). */
+export function backendStepId(step: WizardStepId): string {
+  return step === 'finish' ? 'launch' : step;
+}
+
+export function stepIndex(step: WizardStepId): number {
+  return WIZARD_STEPS.findIndex((candidate) => candidate.id === step);
+}
+
+export function nextStep(step: WizardStepId): WizardStepId | null {
+  const next = WIZARD_STEPS[stepIndex(step) + 1];
+  return next ? next.id : null;
+}
+
+export function previousStep(step: WizardStepId): WizardStepId | null {
+  const index = stepIndex(step);
+  const previous = index > 0 ? WIZARD_STEPS[index - 1] : undefined;
+  return previous ? previous.id : null;
+}
+
+export function isStepDone(state: SetupState | undefined, step: WizardStepId): boolean {
+  if (!state) return false;
+  const id = backendStepId(step);
+  return state.completedSteps.some((record) => record.step === id);
+}
+
+/** Only api-key style entries can be connected from the wizard today. */
+export function isConnectableFromWizard(entry: CatalogEntry): boolean {
+  return entry.authType !== 'browser_login' && entry.authType !== 'device_code';
+}
+
+export function catalogForStep(entries: CatalogEntry[], step: WizardStep): CatalogEntry[] {
+  if (!step.integrationType) return [];
+  return entries.filter((entry) => entry.integrationType === step.integrationType);
+}
+
+export function connectionForSlug(
+  connections: IntegrationConnection[],
+  slug: string,
+): IntegrationConnection | undefined {
+  return connections.find((connection) => connection.slug === slug && connection.enabled);
+}
+
+const GIB = 1024 ** 3;
+
+export function formatGib(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 GiB';
+  return `${Math.round(bytes / GIB)} GiB`;
+}
+
+export function formatGpu(gpu: GpuFacts): string {
+  const gib = Math.round(gpu.memory_total_mib / 1024);
+  return gib > 0 ? `${gpu.name} · ${gib} GiB` : gpu.name;
+}
+
+/** Presentation only: the reference target gets its name on the welcome screen. */
+export function hostFlavor(facts: HostFacts | null): string {
+  if (!facts) return 'this machine';
+  const gpuNames = facts.gpus.map((gpu) => gpu.name.toLowerCase()).join(' ');
+  if (gpuNames.includes('gb10') || gpuNames.includes('dgx')) return 'this DGX Spark';
+  if (facts.gpus.length > 0) return 'this GPU host';
+  return 'this machine';
+}
+
+export interface HostChip {
+  label: string;
+  tone: 'brand' | 'neutral' | 'ok';
+}
+
+export function hostChips(facts: HostFacts | null): HostChip[] {
+  if (!facts) return [];
+  const chips: HostChip[] = [{ label: facts.hostname, tone: 'brand' }];
+  chips.push({ label: `${facts.os_name} ${facts.os_version} · ${facts.arch}`, tone: 'neutral' });
+  if (facts.memory_total_bytes > 0) {
+    chips.push({ label: `${formatGib(facts.memory_total_bytes)} memory`, tone: 'neutral' });
+  }
+  for (const gpu of facts.gpus) {
+    chips.push({ label: formatGpu(gpu), tone: 'ok' });
+  }
+  if (facts.docker_version) {
+    chips.push({ label: `Docker ${facts.docker_version}`, tone: 'neutral' });
+  }
+  return chips;
+}
+
+/** Default credential name for a connection made by the wizard. */
+export function credentialNameFor(slug: string): string {
+  return `${slug}-setup`.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+}
+
+export function requiredCredentialKeys(entry: CatalogEntry): string[] {
+  const required = entry.credentialSchema.required ?? [];
+  if (required.length > 0) return required;
+  return Object.keys(entry.credentialSchema.properties ?? {});
+}
+
+export function missingCredentialKeys(
+  entry: CatalogEntry,
+  values: Record<string, string>,
+): string[] {
+  return requiredCredentialKeys(entry).filter((key) => !(values[key] ?? '').trim());
+}
+
+/** Config values to send: typed inputs, with schema defaults filled in when blank. */
+export function buildConfigPayload(
+  entry: CatalogEntry,
+  values: Record<string, string>,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  for (const [key, schema] of Object.entries(entry.configSchema.properties ?? {})) {
+    const raw = (values[key] ?? '').trim() || schema.default?.trim() || '';
+    if (!raw) continue;
+    if (schema.type === 'string[]') {
+      payload[key] = raw
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+      continue;
+    }
+    payload[key] = raw;
+  }
+  return payload;
+}
