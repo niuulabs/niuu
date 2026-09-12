@@ -28,6 +28,7 @@ may require authentication for these reads; use its normal identity flow.
 | Bifröst | `/api/v1/bifrost` | Catalog and inference gateway |
 | Guild | `/api/v1/niuu/instances`, `/api/v1/niuu/targets/volundr` | Instance discovery and target selection |
 | Ravn | `/api/v1/ravn` | Agent runtime services |
+| Setup | `/api/v1/niuu/setup` | First-launch wizard: progress (`GET`, `PUT /steps/{step}`, `POST /complete`, `POST /reset`) and host report (`GET /system`). Writes need `volundr:admin`; `enabled` is `false` unless the host set `NIUU_SETUP_ENABLED`. |
 
 The host mounts the domains declared by enabled plugins. A disabled service can
 produce a missing route; an unreachable remote service can produce a gateway

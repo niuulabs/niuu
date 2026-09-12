@@ -82,6 +82,31 @@ processes, and the browser reaches them through the platform's session proxy.
 The setup wizard is enabled with `NIUU_SETUP_ENABLED=true`, which only this
 bundle sets; cluster deployments never show it.
 
+## The setup wizard
+
+`niuu up` ends by printing `http://<host>:8080/setup`. Until setup is marked
+complete, the web app sends every visit to `/setup`; afterwards it opens the
+normal dashboard and `/setup` stays reachable for changes. The wizard is a
+front door over the platform's existing APIs: every value it stores lands where
+**Settings → Integrations** already reads, so nothing is configured twice.
+
+| Step | What it shows | What it writes |
+| --- | --- | --- |
+| Welcome | Host facts recorded by `niuu up` (hostname, OS, memory, GPU, Docker version). | Nothing. |
+| System check | The same facts plus live checks from inside the platform: database reachable, Docker socket present, git installed. A failed check blocks **Continue**; a warning does not. | Nothing. |
+| AI providers | Every `ai_provider` entry in the integrations catalog (Anthropic, OpenAI, ...). API-key entries get a form; entries that need a browser or device sign-in are marked as unavailable in this install. **Test connection** appears once connected. | An integration connection with an inline credential (`POST /api/v1/integrations`), stored encrypted with the key from `secrets.env`. |
+| Git | `source_control` entries (GitHub, GitLab) with token and instance fields from the catalog schema. | Same. |
+| Tickets | `issue_tracker` entries (Linear). | Same. |
+| Finish | What was connected, grouped by type, and the access note (sign-in is off on this install). **Open Niuu** marks setup complete and opens `/ready`. | `POST /api/v1/niuu/setup/complete`. |
+
+Progress is kept in `setup-state.json` under the data directory (each finished
+step, and the completion time) so a reload resumes at the first unfinished
+step. `POST /api/v1/niuu/setup/reset` clears it and the wizard shows again on
+the next visit. Steps that need a backend this bundle does not have yet (a
+local model served by vLLM, runtime and access choices, Claude and Codex device
+sign-in) are not offered rather than shown as placeholders; enable vLLM through
+`docker.vllm` in `config.yaml` for now.
+
 ## Updating
 
 Change the image tags in `config.yaml` and run `niuu up` again. The bundle is

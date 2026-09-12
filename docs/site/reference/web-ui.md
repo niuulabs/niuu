@@ -16,6 +16,16 @@ composes the services offered by the host; it does not install missing runtimes.
 | Observatory | Topology | Relationships, ownership, telemetry |
 | Settings | Connections and access | Credential scope and integration configuration |
 
+## First launch
+
+On a single-host Docker install the first visit opens `/setup`, a full-screen
+wizard that checks the host and connects AI providers, Git hosting, and an
+issue tracker through the integrations catalog. **Open Niuu** on its last step
+marks setup complete and opens `/ready`, which links to the first things to do
+(a session in Völundr, a workflow in Ting, the residents in Ravn). The wizard
+stays reachable at `/setup` afterwards. It appears only when the host sets
+`NIUU_SETUP_ENABLED`; see [Single-host Docker mode](../operations/docker-mode.md#the-setup-wizard).
+
 ## Launching work
 
 In Völundr, open **Forge → custom launch…**. The wizard separates **Source**,
