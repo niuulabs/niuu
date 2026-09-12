@@ -17,7 +17,7 @@ from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
 from niuu.domain.services.pat_validator import PATValidator
 from niuu.ports.integrations import IntegrationRepository
-from niuu.service_runtime import create_workload_identity_service
+from niuu.service_runtime import create_authorization_adapter, create_workload_identity_service
 from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ravn.ports.persona import PersonaPort
@@ -695,6 +695,7 @@ def create_app(
                 token_issuer=token_issuer,
                 ttl_days=settings.pat.ttl_days,
                 validator=pat_validator,
+                authorization=create_authorization_adapter(settings),
             )
             app.state.pat_service = pat_service
 

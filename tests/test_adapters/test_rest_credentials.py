@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.cedar import CedarAuthorizationAdapter
 from volundr.adapters.inbound.rest_credentials import create_credentials_router
 from volundr.adapters.outbound.memory_credential_store import MemoryCredentialStore
 from volundr.domain.models import Principal
@@ -30,7 +31,7 @@ def _mock_identity(principal: Principal | None = None):
 def _make_app(identity=None) -> tuple[FastAPI, CredentialService]:
     store = MemoryCredentialStore()
     strategies = SecretMountStrategyRegistry()
-    service = CredentialService(store, strategies)
+    service = CredentialService(store, strategies, authorization=CedarAuthorizationAdapter())
     app = FastAPI()
     app.state.identity = identity or _mock_identity()
     app.include_router(create_credentials_router(service))

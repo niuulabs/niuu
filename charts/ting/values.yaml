@@ -409,3 +409,8 @@ global:
   niuu:
     # -- Deployment cluster label used by Guild/Observatory discovery.
     cluster: unknown
+
+authorization:
+  adapter: "identity.adapters.cedar.CedarAuthorizationAdapter"
+  kwargs: {}
+  secret_kwargs_env: {}

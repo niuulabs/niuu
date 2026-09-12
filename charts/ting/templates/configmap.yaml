@@ -72,6 +72,9 @@ data:
         secret_kwargs_env: {}
         {{- end }}
 
+    authorization:
+      {{- toYaml .Values.authorization | nindent 6 }}
+
     {{- if .Values.pat }}
     pat:
       {{- toYaml .Values.pat | nindent 6 }}

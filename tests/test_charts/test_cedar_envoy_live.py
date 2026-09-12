@@ -14,6 +14,7 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import grpc
 import httpx
@@ -36,9 +37,28 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.mark.parametrize("tls_case", ["trusted", "wrong-host", "untrusted-ca"])
-async def test_real_envoy_enforces_jwt_and_cedar_before_upstream(tmp_path, tls_case):
-    documents = render_cedar()
+@pytest.mark.parametrize(
+    ("chart_name", "tls_case"),
+    [
+        ("volundr", "trusted"),
+        ("volundr", "wrong-host"),
+        ("volundr", "untrusted-ca"),
+        ("niuu-shared", "trusted"),
+    ],
+)
+async def test_real_envoy_enforces_jwt_and_cedar_before_upstream(tmp_path, chart_name, tls_case):
+    documents = render_cedar(
+        chart=Path(__file__).parents[2] / "charts" / chart_name,
+        **{
+            "envoy.jwt.rolesClaim": "resource_access.volundr.roles",
+            "envoy.jwt.workload.enabled": "true",
+            "envoy.jwt.workload.issuer": "https://workload.test",
+            "envoy.jwt.workload.audiences[0]": "forge",
+            "envoy.jwt.workload.rolesClaim": "resource_access.volundr.roles",
+            "envoy.jwt.workload.jwksUri": "https://issuer.test/workload/jwks",
+            "envoy.jwt.workload.jwksHost": "issuer.test",
+        },
+    )
     config = envoy_config(documents)
     settings = AuthorizationGatewayConfig.model_validate(
         next(
@@ -132,9 +152,10 @@ async def test_real_envoy_enforces_jwt_and_cedar_before_upstream(tmp_path, tls_c
                 "cedar_authz": port,
                 "local_service": upstream.server_port,
                 "keycloak": jwks_server.server_port,
+                "workload_jwks": jwks_server.server_port,
             }[cluster["name"]],
         )
-        if cluster["name"] == "keycloak" and tls_case != "untrusted-ca":
+        if cluster["name"] in ("keycloak", "workload_jwks") and tls_case != "untrusted-ca":
             cluster["transport_socket"]["typed_config"]["common_tls_context"]["validation_context"][
                 "trusted_ca"
             ]["filename"] = "/etc/test-ca.pem"
@@ -197,10 +218,14 @@ async def test_real_envoy_enforces_jwt_and_cedar_before_upstream(tmp_path, tls_c
                     headers={"kid": "test"},
                 )
 
-            route = "/api/v1/forge/sessions"
+            route = "/api/v1/forge/sessions" if chart_name == "volundr" else "/api/v1/credentials"
             calls.clear()
             if tls_case != "trusted":
                 response = await client.get(route, headers={"Authorization": f"Bearer {token()}"})
+                assert response.status_code in (401, 403, 503)
+                response = await client.get(
+                    route, headers={"Authorization": f"Bearer {token(iss='https://workload.test')}"}
+                )
                 assert response.status_code in (401, 403, 503)
                 assert not calls
                 return
@@ -226,6 +251,11 @@ async def test_real_envoy_enforces_jwt_and_cedar_before_upstream(tmp_path, tls_c
             assert calls[-1]["x-auth-user-id"] == "alice"
             assert (
                 await client.post(route, headers={"Authorization": f"Bearer {scoped}"})
+            ).status_code == (200 if chart_name == "volundr" else 403)
+            assert (
+                await client.get(
+                    route, headers={"Authorization": f"Bearer {token(iss='https://workload.test')}"}
+                )
             ).status_code == 200
             count = len(calls)
             assert (await client.get("/unknown", headers=headers)).status_code == 403

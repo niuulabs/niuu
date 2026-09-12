@@ -3,6 +3,14 @@
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class AuthorizationAdapterConfig(BaseModel):
+    """Dynamic resource authorization configuration."""
+
+    adapter: str = "identity.adapters.cedar.CedarAuthorizationAdapter"
+    kwargs: dict = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+
 class JWTMetadataProvider(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

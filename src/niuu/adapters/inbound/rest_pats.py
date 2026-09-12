@@ -14,6 +14,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
+from identity.adapters.http_auth import authorization_http_errors
 from niuu.domain.models import Principal
 from niuu.domain.services.pat import PATService
 from niuu.domain.services.workload_identity import (
@@ -251,9 +252,8 @@ def create_pats_router(
         # Extract the user's current access token for IDP token exchange
         auth_header = request.headers.get("authorization", "")
         subject_token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
-        pat, raw_token = await service.create(
-            principal.user_id, body.name, subject_token=subject_token
-        )
+        with authorization_http_errors():
+            pat, raw_token = await service.create(principal, body.name, subject_token=subject_token)
         return CreatePATResponse(
             id=str(pat.id),
             name=pat.name,
@@ -282,7 +282,8 @@ def create_pats_router(
             )
         await ensure_user(request, principal)
         service: PATService = request.app.state.pat_service
-        pats = await service.list(principal.user_id)
+        with authorization_http_errors():
+            pats = await service.list(principal)
         return [
             PATResponse(
                 id=str(pat.id),
@@ -322,7 +323,8 @@ def create_pats_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"PAT not found: {pat_id}",
             )
-        deleted = await service.revoke(parsed_id, principal.user_id)
+        with authorization_http_errors():
+            deleted = await service.revoke(parsed_id, principal)
         if not deleted:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

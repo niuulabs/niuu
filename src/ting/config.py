@@ -25,6 +25,7 @@ from pydantic_settings import (
 )
 
 from bifrost.config import BifrostConfig
+from identity.authz_config import AuthorizationAdapterConfig
 from niuu.config import CorsConfig, HttpAuthAdapterConfig, InstanceRegistryConfig
 from niuu.config_models import (
     SessionDefinitionConfig,
@@ -1024,6 +1025,7 @@ class Settings(BaseSettings):
     credential_store: CredentialStoreConfig = Field(default_factory=CredentialStoreConfig)
     shared_integrations: SharedIntegrationsConfig = Field(default_factory=SharedIntegrationsConfig)
     guild_registry: GuildRegistryConfig = Field(default_factory=GuildRegistryConfig)
+    authorization: AuthorizationAdapterConfig = Field(default_factory=AuthorizationAdapterConfig)
     pat: PATConfig = Field(default_factory=PATConfig)
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)

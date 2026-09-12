@@ -31,19 +31,26 @@ when { principal.roles.contains("volundr:viewer") };
 permit(principal, action == Niuu::Action::"create", resource is Niuu::session)
 when { principal.roles.containsAny(["volundr:developer", "volundr:admin"]) };
 
-@id("secret-admin")
+@id("secret-tenant-admin")
 permit(principal, action, resource is Niuu::secret)
-when { principal.roles.contains("volundr:admin") };
+when {
+    resource has owner_type && resource.owner_type == "tenant" &&
+    resource.owner_id == principal.tenant_id && principal.roles.contains("volundr:admin")
+};
 
-@id("secret-read")
-permit(principal, action in [Niuu::Action::"read", Niuu::Action::"list"],
-       resource is Niuu::secret)
-when { principal.roles.containsAny(["volundr:developer", "volundr:viewer", "volundr:admin"]) };
+@id("secret-owner-read")
+permit(principal, action in [Niuu::Action::"read", Niuu::Action::"list"], resource is Niuu::secret)
+when {
+    (!(resource has owner_type) || (resource has owner_type && resource.owner_type == "user")) &&
+    resource.owner_id == principal.user_id &&
+    principal.roles.containsAny(["volundr:developer", "volundr:viewer", "volundr:admin"])
+};
 
-@id("secret-owner")
+@id("secret-owner-write")
 permit(principal, action in [Niuu::Action::"create", Niuu::Action::"update", Niuu::Action::"delete"],
        resource is Niuu::secret)
 when {
+    (!(resource has owner_type) || (resource has owner_type && resource.owner_type == "user")) &&
     resource.owner_id == principal.user_id &&
     principal.roles.containsAny(["volundr:developer", "volundr:admin"])
 };

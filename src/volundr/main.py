@@ -600,6 +600,7 @@ def create_app(
             credential_service = CredentialService(
                 store=credential_store,
                 strategies=SecretMountStrategyRegistry(),
+                authorization=authorization_adapter,
             )
             mcp_provider = ConfigMCPServerProvider(settings.mcp_servers)
             secret_manager = InMemorySecretManager()
@@ -988,6 +989,7 @@ def create_app(
                 token_issuer=token_issuer,
                 ttl_days=settings.pat.ttl_days,
                 validator=pat_validator,
+                authorization=authorization_adapter,
             )
             app.state.pat_validator = pat_validator
             app.state.pat_service = pat_service

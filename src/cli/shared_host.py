@@ -31,6 +31,7 @@ from niuu.service_integrations import (
     seed_linear_integration,
 )
 from niuu.service_runtime import (
+    create_authorization_adapter,
     create_credential_store,
     create_identity_adapter,
     create_pat_validator,
@@ -135,11 +136,13 @@ def create_app(
                 token_issuer=token_issuer,
                 ttl_days=loaded_settings.pat.ttl_days,
                 validator=pat_validator,
+                authorization=create_authorization_adapter(loaded_settings),
             )
             credential_store = create_credential_store(loaded_settings)
             credential_service = CredentialService(
                 store=credential_store,
                 strategies=SecretMountStrategyRegistry(),
+                authorization=create_authorization_adapter(loaded_settings),
             )
             mcp_provider = ConfigMCPServerProvider(loaded_settings.mcp_servers)
             secret_manager = InMemorySecretManager()

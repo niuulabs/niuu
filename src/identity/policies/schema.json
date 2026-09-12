@@ -58,6 +58,10 @@
             },
             "tenant_id": {
               "type": "String"
+            },
+            "owner_type": {
+              "type": "String",
+              "required": false
             }
           }
         }

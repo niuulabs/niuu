@@ -153,7 +153,7 @@ data:
                               remote_jwks:
                                 http_uri:
                                   uri: {{ .Values.envoy.jwt.workload.jwksUri | default (printf "http://127.0.0.1:%v/api/v1/tokens/workload/jwks" (.Values.service.targetPort | default 8080)) | quote }}
-                                  cluster: local_service
+                                  cluster: {{ ternary "workload_jwks" "local_service" (not (empty .Values.envoy.jwt.workload.jwksHost)) }}
                                   timeout: {{ .Values.envoy.jwt.workload.jwksTimeout | default "5s" }}
                                 cache_duration:
                                   seconds: {{ .Values.envoy.jwt.workload.jwksCacheDurationSeconds | default 300 }}
@@ -278,6 +278,36 @@ data:
                     - san_type: DNS
                       matcher:
                         exact: {{ .Values.envoy.jwt.keycloakHost | quote }}
+          {{- end }}
+        {{- end }}
+        {{- if and .Values.envoy.jwt.enabled .Values.envoy.jwt.workload.enabled .Values.envoy.jwt.workload.jwksHost }}
+        - name: workload_jwks
+          connect_timeout: {{ .Values.envoy.connectTimeout }}
+          type: STRICT_DNS
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: workload_jwks
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: {{ .Values.envoy.jwt.workload.jwksHost | quote }}
+                          port_value: {{ .Values.envoy.jwt.workload.jwksPort }}
+          {{- if .Values.envoy.jwt.workload.jwksTls }}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              sni: {{ .Values.envoy.jwt.workload.jwksHost | quote }}
+              common_tls_context:
+                validation_context:
+                  trusted_ca:
+                    filename: {{ .Values.envoy.jwt.workload.jwksCaFile | quote }}
+                  match_typed_subject_alt_names:
+                    - san_type: DNS
+                      matcher:
+                        exact: {{ .Values.envoy.jwt.workload.jwksHost | quote }}
           {{- end }}
         {{- end }}
         {{- with .Values.envoy.extraClusters }}

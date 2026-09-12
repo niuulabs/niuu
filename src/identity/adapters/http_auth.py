@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import inspect
+from contextlib import contextmanager
 
 from fastapi import HTTPException, Request, status
 
 from identity.models import Principal
+from identity.ports import AuthorizationDeniedError, AuthorizationEvaluationError
 from niuu.ports.identity import HeaderAuthenticationPort, IdentityPort, InvalidTokenError
 
 
@@ -87,3 +89,14 @@ async def extract_principal(request: Request) -> Principal:
             detail=str(e),
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+@contextmanager
+def authorization_http_errors():
+    """Translate policy denial and evaluation failure at HTTP boundaries."""
+    try:
+        yield
+    except AuthorizationDeniedError as exc:
+        raise HTTPException(status_code=403, detail="Not authorized") from exc
+    except AuthorizationEvaluationError as exc:
+        raise HTTPException(status_code=503, detail="Authorization unavailable") from exc

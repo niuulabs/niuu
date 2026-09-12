@@ -420,23 +420,6 @@ spec:
           configMap:
             name: {{ include "volundr.fullname" . }}
         {{- if .Values.envoy.authorization.enabled }}
-        - name: cedar-authz
-          image: {{ include "volundr.image" . | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["python", "-m", "identity.authz_main"]
-          args: ["--config", "/etc/authorization/authz.yaml"]
-          {{- with .Values.securityContext }}
-          securityContext:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          resources:
-            {{- toYaml .Values.envoy.authorization.resources | nindent 12 }}
-          volumeMounts:
-            - name: authz-config
-              mountPath: /etc/authorization
-              readOnly: true
-        {{- end }}
-        {{- if .Values.envoy.authorization.enabled }}
         - name: authz-config
           configMap:
             name: {{ include "volundr.fullname" . }}-authz
