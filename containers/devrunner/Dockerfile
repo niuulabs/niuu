@@ -13,7 +13,7 @@ LABEL org.opencontainers.image.source="https://github.com/niuulabs/volundr"
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies: Node.js, PostgreSQL server, shells, inotify-tools
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     gnupg \
