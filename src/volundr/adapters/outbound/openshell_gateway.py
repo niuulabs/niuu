@@ -116,7 +116,7 @@ DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS = 30.0
 TCP_FORWARD_BUFFER_BYTES = 64 * 1024
 BOOTSTRAP_TIMEOUT_SECONDS = 600
 BOOTSTRAP_GIT_ATTEMPTS = 20
-MAX_SANDBOX_ROUTING_NAME_LENGTH = 28
+MAX_SANDBOX_ROUTING_NAME_LENGTH = 19
 OAUTH_CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
 GRANT_AUDIENCE_PREFIX = "niuu:credential:"
 PLATFORM_GRANT_AUDIENCE_PREFIX = "niuu:platform:"
@@ -381,6 +381,9 @@ class OpenShellGatewayClient:
         return bool(response.deleted)
 
     def delete_service(self, *, sandbox_name: str, service: str) -> bool:
+        if len(sandbox_name) > MAX_SANDBOX_ROUTING_NAME_LENGTH:
+            return False
+
         try:
             response = self._stub.DeleteService(
                 openshell_pb2.DeleteServiceRequest(sandbox=sandbox_name, service=service),
@@ -1157,6 +1160,11 @@ class OpenShellGatewayPodManager(
 
     def session_proxy_target(self, session: Session) -> SessionProxyTarget | None:
         """Resolve the OpenShell service route used by Niuu's session proxy."""
+        if len(self._sandbox_name(session)) > MAX_SANDBOX_ROUTING_NAME_LENGTH:
+            sandbox = self._client.get_sandbox(self._sandbox_name(session))
+            if sandbox is None or not sandbox.ready:
+                return None
+            return self._tcp_proxy_target(str(session.id), sandbox.id, self._service_port)
         base = self._service_urls.get(str(session.id))
         if not base and session.chat_endpoint:
             parsed = urlparse(session.chat_endpoint)
@@ -1169,6 +1177,15 @@ class OpenShellGatewayPodManager(
         """Resolve the resident service using its engine-supported OpenShell transport."""
         if runtime.engine is ResidentEngine.HERMES:
             return self._hermes_proxy_target(runtime)
+        if len(self._resident_sandbox_name(runtime)) > MAX_SANDBOX_ROUTING_NAME_LENGTH:
+            sandbox_id = str(runtime.backend_ref.get("id") or "")
+            if not sandbox_id:
+                return None
+            return self._tcp_proxy_target(
+                str(runtime.id),
+                sandbox_id,
+                int(runtime.backend_ref.get("service_port") or self._service_port),
+            )
         base = self._service_urls.get(str(runtime.id)) or str(
             runtime.backend_ref.get("service_url") or ""
         )
@@ -1191,6 +1208,19 @@ class OpenShellGatewayPodManager(
             self._resident_forwarders[runtime_id] = forwarder
         return SessionProxyTarget(
             service_url=HERMES_INTERNAL_SERVICE_URL,
+            connect_host=forwarder.host,
+            connect_port=forwarder.port,
+        )
+
+    def _tcp_proxy_target(self, workload_id: str, sandbox_id: str, port: int) -> SessionProxyTarget:
+        # Existing long sandbox names predate the workspace-aware DNS limit.
+        # Reuse the authenticated native tunnel rather than renaming live pods.
+        forwarder = self._resident_forwarders.get(workload_id)
+        if forwarder is None:
+            forwarder = self._client.start_tcp_forward(sandbox_id=sandbox_id, target_port=port)
+            self._resident_forwarders[workload_id] = forwarder
+        return SessionProxyTarget(
+            service_url="http://skuld.internal",
             connect_host=forwarder.host,
             connect_port=forwarder.port,
         )
@@ -1311,12 +1341,15 @@ class OpenShellGatewayPodManager(
                 raise RuntimeError(
                     f"OpenShell session command bootstrap failed with exit {exit_code}"
                 )
-            service_url = await asyncio.to_thread(
-                self._client.expose_service,
-                sandbox_name=sandbox_name,
-                target_port=self._service_port,
-                service=self._service_name,
-            )
+            if len(sandbox_name) > MAX_SANDBOX_ROUTING_NAME_LENGTH:
+                service_url = "http://skuld.internal"
+            else:
+                service_url = await asyncio.to_thread(
+                    self._client.expose_service,
+                    sandbox_name=sandbox_name,
+                    target_port=self._service_port,
+                    service=self._service_name,
+                )
             if not service_url and not self._gateway_public_url:
                 raise RuntimeError(
                     "OpenShell did not return an exposed service URL for the session"
@@ -1341,6 +1374,10 @@ class OpenShellGatewayPodManager(
         )
 
     async def stop(self, session: Session) -> bool:
+        forwarder = self._resident_forwarders.pop(str(session.id), None)
+        if forwarder is not None:
+            await asyncio.to_thread(forwarder.close)
+
         self._service_urls.pop(str(session.id), None)
         sandbox_name = self._sandbox_name(session)
         grants = self._provider_grants.pop(str(session.id), ())
@@ -1544,6 +1581,8 @@ class OpenShellGatewayPodManager(
             )
             if runtime.engine is ResidentEngine.HERMES:
                 service_url = HERMES_INTERNAL_SERVICE_URL
+            elif len(sandbox_name) > MAX_SANDBOX_ROUTING_NAME_LENGTH:
+                service_url = "http://skuld.internal"
             else:
                 service_url = await asyncio.to_thread(
                     self._client.expose_service,
@@ -1620,6 +1659,11 @@ class OpenShellGatewayPodManager(
         service_url = str(runtime.backend_ref.get("service_url") or "")
         if not service_url and runtime.engine is ResidentEngine.HERMES:
             service_url = HERMES_INTERNAL_SERVICE_URL
+        if (
+            not service_url
+            and len(self._resident_sandbox_name(runtime)) > MAX_SANDBOX_ROUTING_NAME_LENGTH
+        ):
+            service_url = "http://skuld.internal"
         if not service_url:
             service_url = await asyncio.to_thread(
                 self._client.expose_service,
@@ -2083,9 +2127,9 @@ class OpenShellGatewayPodManager(
 
     @staticmethod
     def _resident_sandbox_name(runtime: ResidentRuntime) -> str:
-        prefix = "resident-"
-        suffix_length = MAX_SANDBOX_ROUTING_NAME_LENGTH - len(prefix)
-        return f"{prefix}{runtime.id.hex[:suffix_length]}"
+        if runtime.backend_ref.get("name"):
+            return str(runtime.backend_ref["name"])
+        return f"r-{runtime.id.hex[:17]}"
 
     async def exchange_credential_grant(
         self,
@@ -2673,7 +2717,7 @@ echo "Workspace ready at $WORKSPACE"
 
     @staticmethod
     def _sandbox_name(session: Session) -> str:
-        return f"forge-{session.id.hex[:22]}"
+        return session.pod_name or f"forge-{session.id.hex[:13]}"
 
     @staticmethod
     def _runtime_from_spec(spec: SessionSpec) -> str:
@@ -3511,6 +3555,7 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
                     enforcement=str(raw.get("enforcement") or "enforce"),
                     access=str(raw.get("access") or "full"),
                     allowed_ips=[str(item) for item in allowed_ips],
+                    allow_uninspected_credentials=raw.get("allow_uninspected_credentials") is True,
                 )
             )
         binaries = [

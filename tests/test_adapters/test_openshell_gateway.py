@@ -986,8 +986,8 @@ async def test_start_uses_gateway_client_without_host_cli(monkeypatch: pytest.Mo
 
     result = await manager.start(session, spec)
 
-    expected_sandbox_name = f"forge-{session.id.hex[:22]}"
-    assert len(expected_sandbox_name) == 28
+    expected_sandbox_name = f"forge-{session.id.hex[:13]}"
+    assert len(expected_sandbox_name) == 19
     assert result.pod_name == expected_sandbox_name
     assert result.chat_endpoint == "ws://openshell.example/proxy/session-1/session"
     assert result.code_endpoint == "http://openshell.example/proxy/session-1/"
@@ -1307,7 +1307,7 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
     assert manager.supports(profile)
     assert observation.observed_state is ResidentObservedState.ACTIVE
     assert observation.backend_ref["kind"] == "OpenShellSandbox"
-    expected_name = f"resident-{runtime.id.hex[:19]}"
+    expected_name = f"r-{runtime.id.hex[:17]}"
     assert observation.backend_ref["name"] == expected_name
     assert len(expected_name) == adapter.MAX_SANDBOX_ROUTING_NAME_LENGTH
     assert observation.endpoints[0].url == f"/s/{runtime.id}/session"
@@ -1425,7 +1425,7 @@ async def test_resident_reconcile_recovers_missing_service_endpoint(
     observation = await manager.reconcile(runtime, _resident_profile())
 
     assert client.exposed == {
-        "sandbox_name": f"resident-{runtime.id.hex[:19]}",
+        "sandbox_name": "resident-existing",
         "target_port": 9200,
         "service": "skuld",
     }
@@ -1618,9 +1618,9 @@ async def test_resident_delete_removes_service_sandbox_and_provider_grants(
     deleted = await manager.delete(runtime)
     assert deleted
     assert client.deleted_services == [
-        {"sandbox_name": f"resident-{runtime.id.hex[:19]}", "service": "skuld"}
+        {"sandbox_name": f"r-{runtime.id.hex[:17]}", "service": "skuld"}
     ]
-    assert client.deleted == [f"resident-{runtime.id.hex[:19]}"]
+    assert client.deleted == [f"r-{runtime.id.hex[:17]}"]
     assert [grant.provider_name for grant in client.deleted_grants] == ["volundr-provider"]
     assert client.cleanup_events == [
         "sandbox-present",
@@ -1705,6 +1705,44 @@ async def test_resident_logs_merge_process_files_through_gateway_exec(
     ]
 
 
+@pytest.mark.parametrize("kind", ["session", "resident"])
+def test_legacy_names_use_authenticated_native_tunnel(monkeypatch, kind):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+    if kind == "session":
+        workload = _session().with_pod_name("forge-" + "a" * 22)
+        target = manager.session_proxy_target(workload)
+    else:
+        workload = _resident_runtime().model_copy(
+            update={
+                "backend_ref": {
+                    "id": "sandbox-id",
+                    "name": "resident-" + "a" * 19,
+                    "service_port": 9200,
+                }
+            }
+        )
+        target = manager.resident_proxy_target(workload)
+    assert target.service_url == "http://skuld.internal"
+    assert target.connect_host == "127.0.0.1"
+    assert client.forwarded[0]["sandbox_id"] == "sandbox-id"
+    assert client.exposed is None
+
+
+def test_l4_credentials_require_explicit_opt_in(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    config = {
+        "endpoints": [{"host": "10.191.72.34", "port": 4222, "tls": "skip"}],
+        "binaries": ["/opt/niuu/bin/python"],
+    }
+    target = adapter._provider_target("RAVN_NATS_PASSWORD", config)
+    assert target["endpoints"][0].allow_uninspected_credentials is False
+    config["endpoints"][0]["allow_uninspected_credentials"] = True
+    target = adapter._provider_target("RAVN_NATS_PASSWORD", config)
+    assert target["endpoints"][0].allow_uninspected_credentials is True
+
+
 def test_session_proxy_target_preserves_service_route_and_uses_gateway(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1785,7 +1823,7 @@ async def test_start_fails_and_rolls_back_without_exposed_service_url(
     with pytest.raises(RuntimeError, match="did not return an exposed service URL"):
         await manager.start(session, SessionSpec(values={}, pod_spec=None))
 
-    assert client.deleted == [f"forge-{session.id.hex[:22]}"]
+    assert client.deleted == [f"forge-{session.id.hex[:13]}"]
 
 
 @pytest.mark.asyncio
@@ -2135,7 +2173,7 @@ async def test_stop_and_status_map_sandbox_lifecycle(monkeypatch: pytest.MonkeyP
 
     assert await manager.status(session) == SessionStatus.RUNNING
     assert await manager.stop(session) is True
-    assert client.deleted == [f"forge-{session.id.hex[:22]}"]
+    assert client.deleted == [f"forge-{session.id.hex[:13]}"]
 
 
 def test_token_provider_uses_keycloak_client_credentials_shape(
