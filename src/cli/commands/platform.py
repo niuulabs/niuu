@@ -255,6 +255,12 @@ def _build_up_callback(
         except ValueError as exc:
             raise typer.BadParameter(str(exc), param_hint="mounts") from exc
 
+        if effective_settings.mode == "docker":
+            from cli.commands.stack import stack_up
+
+            stack_up(effective_settings, skip_preflight=skip_preflight)
+            return
+
         enabled = _resolve_enabled_services(service_defs, settings, start_all, svc_flags)
         environment_before: dict[str, str | None] = {}
 
@@ -690,21 +696,30 @@ def _mini_resident_runtimes_config(settings: CLISettings) -> dict[str, Any]:
 
 
 def _prompt_mode_selection() -> str:
-    """Prompt the user for mini, OpenShell, or cluster mode."""
+    """Prompt the user for mini, OpenShell, cluster, or docker mode."""
     typer.echo("Select operating mode:")
     typer.echo("  [1] mini   — local processes, no cluster needed (default)")
     typer.echo("  [2] openshell — OpenShell gateway sandboxes")
     typer.echo("  [3] cluster — session pods run in k3d/k3s cluster")
+    typer.echo(
+        "  [4] docker — whole stack as containers on this host (any Docker host, e.g. DGX Spark)"
+    )
     choice = typer.prompt("Choice", default="1", show_default=False)
     if choice.strip() in ("2", "openshell"):
         return "openshell"
     if choice.strip() in ("3", "cluster"):
         return "cluster"
+    if choice.strip() in ("4", "docker"):
+        return "docker"
     return "mini"
 
 
 def _build_init_config(mode: str) -> dict[str, Any]:
     """Build the initial config dict for the selected mode."""
+    if mode == "docker":
+        from cli.config import DockerConfig
+
+        return {"mode": "docker", "docker": DockerConfig().model_dump(exclude={"vllm"})}
     if mode == "cluster":
         return {
             "mode": "cluster",
@@ -757,12 +772,22 @@ def create_platform_commands(
     @platform_app.command()
     def down() -> None:
         """Stop all running services."""
+        if settings.mode == "docker":
+            from cli.commands.stack import stack_down
+
+            stack_down(settings)
+            return
         asyncio.run(_shutdown(manager))
         typer.echo("Services stopped.")
 
     @platform_app.command()
     def status() -> None:
         """Show health of all registered services."""
+        if settings.mode == "docker":
+            from cli.commands.stack import stack_status
+
+            stack_status(settings)
+            return
         typer.echo(f"Mode: {settings.mode}")
         typer.echo(f"Pod manager: {settings.pod_manager.adapter.rsplit('.', 1)[-1]}")
         typer.echo()

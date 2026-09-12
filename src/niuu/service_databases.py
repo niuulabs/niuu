@@ -371,6 +371,43 @@ async def database_pool(config: DatabaseConfig):
         await pool.close()
 
 
+async def ensure_databases(
+    *,
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+    names: Iterable[str],
+    maintenance_database: str = "postgres",
+) -> tuple[str, ...]:
+    """Create every database in *names* on an external server if it is missing.
+
+    Connects to the maintenance database with a role allowed to CREATE
+    DATABASE and returns the names that were created. Raises when the server
+    is unreachable or the role lacks the privilege; a platform configured for
+    an external database must not start against a half-provisioned server.
+    """
+    conn = await asyncpg.connect(
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database=maintenance_database,
+    )
+    created: list[str] = []
+    try:
+        for raw_name in names:
+            name = validate_database_name(raw_name)
+            exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", name)
+            if exists:
+                continue
+            await conn.execute(f'CREATE DATABASE "{name}"')
+            created.append(name)
+    finally:
+        await conn.close()
+    return tuple(created)
+
+
 async def bootstrap_database(
     *,
     host: str,

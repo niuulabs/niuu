@@ -46,6 +46,75 @@ class _SortedGroup(typer.core.TyperGroup):
 logger = logging.getLogger(__name__)
 
 
+def _register_lifecycle_aliases(
+    app: typer.Typer,
+    platform_app: typer.Typer,
+    settings: CLISettings,
+) -> None:
+    """Top-level ``up``/``down``/``status``/``doctor`` shortcuts.
+
+    ``niuu up`` is what the installer runs; in docker mode it drives the compose
+    bundle, otherwise it forwards to ``niuu platform up`` with default flags.
+    """
+    platform_click = typer.main.get_command(platform_app)
+
+    def _effective(mode: str) -> CLISettings:
+        if not mode or mode == settings.mode:
+            return settings
+        return settings.model_copy(update={"mode": mode})
+
+    def _forward(name: str, args: list[str]) -> None:
+        # Re-enter the platform subcommand with its own argument parsing so the
+        # dynamic per-service flags keep their defaults.
+        platform_click.commands[name].main(
+            args=args,
+            prog_name=f"niuu platform {name}",
+            standalone_mode=False,
+        )
+
+    @app.command()
+    def up(
+        mode: str = typer.Option(
+            "",
+            "--mode",
+            help="Override the configured mode for this run (mini, openshell, cluster, docker).",
+        ),
+        skip_preflight: bool = typer.Option(False, help="Skip the host preflight checks."),
+    ) -> None:
+        """Start the platform (shortcut for `niuu platform up`)."""
+        effective = _effective(mode)
+        if effective.mode == "docker":
+            from cli.commands.stack import stack_up
+
+            stack_up(effective, skip_preflight=skip_preflight)
+            return
+        _forward("up", ["--skip-preflight"] if skip_preflight else [])
+
+    @app.command()
+    def down() -> None:
+        """Stop the platform (shortcut for `niuu platform down`)."""
+        _forward("down", [])
+
+    @app.command()
+    def status() -> None:
+        """Show platform status (shortcut for `niuu platform status`)."""
+        _forward("status", [])
+
+    @app.command()
+    def doctor(
+        mode: str = typer.Option(
+            "",
+            "--mode",
+            help="Check the host for this mode instead of the configured one.",
+        ),
+    ) -> None:
+        """Check this host can run the platform in the configured mode."""
+        from cli.commands.stack import run_doctor
+
+        if not run_doctor(_effective(mode)):
+            raise typer.Exit(1)
+
+
 def build_app(
     settings: CLISettings | None = None,
     registry: PluginRegistry | None = None,
@@ -179,7 +248,9 @@ def build_app(
         CredentialStore().clear()
         typer.echo("Logged out.")
 
-    app.add_typer(create_platform_commands(registry, settings, manager), name="platform")
+    platform_app = create_platform_commands(registry, settings, manager)
+    app.add_typer(platform_app, name="platform")
+    _register_lifecycle_aliases(app, platform_app, settings)
 
     # Plugin workflow commands (top-level, registered by each plugin)
     for name, plugin in sorted(registry.plugins.items()):

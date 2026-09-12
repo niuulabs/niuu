@@ -115,6 +115,87 @@ class PodManagerConfig(BaseModel):
         return data
 
 
+class DockerVllmConfig(BaseModel):
+    """Optional local model served by vLLM inside the compose bundle."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Start a vLLM container serving `model` on the host GPU.",
+    )
+    model: str = Field(
+        default="",
+        description="Hugging Face model id to serve (e.g. nvidia/Nemotron-3-Nano-30B-A3B).",
+    )
+    image: str = Field(
+        default="nvcr.io/nvidia/vllm:25.09-py3",
+        description="vLLM container image (must match the host architecture).",
+    )
+    port: int = Field(default=8000, description="Port vLLM listens on inside the compose network.")
+    max_model_len: int = Field(default=65536, description="Context length passed to vLLM.")
+    gpu_memory_utilization: float = Field(
+        default=0.6,
+        description="Fraction of GPU memory vLLM may reserve; leave room for sandboxes.",
+    )
+    hf_token: str = Field(
+        default="",
+        description="Hugging Face token for gated repositories (empty = anonymous).",
+    )
+
+
+class DockerConfig(BaseModel):
+    """Docker mode: the whole platform as containers on one Docker host."""
+
+    data_dir: str = Field(
+        default="/var/lib/niuu",
+        description="Host directory for postgres data, workspaces, credentials and models.",
+    )
+    compose_dir: str = Field(
+        default="~/.niuu/docker",
+        description="Where the rendered compose bundle and env file are written.",
+    )
+    project_name: str = Field(default="niuu", description="Docker Compose project name.")
+    image: str = Field(
+        default="ghcr.io/niuulabs/niuu:dev",
+        description="All-in-one platform image (CI publishes multi-arch `dev` and version tags).",
+    )
+    postgres_image: str = Field(
+        default="pgvector/pgvector:pg17",
+        description="PostgreSQL image with pgvector.",
+    )
+    skuld_image: str = Field(
+        default="ghcr.io/niuulabs/skuld:dev",
+        description="Session broker image started once per Forge session.",
+    )
+    bind_host: str = Field(
+        default="0.0.0.0",
+        description="Host interface the platform port is published on "
+        "(0.0.0.0 = whole LAN, 127.0.0.1 = this machine only).",
+    )
+    postgres_password: str = Field(
+        default="",
+        description="Password for the postgres superuser; generated on first `niuu up` when empty.",
+    )
+    require_gpu: bool = Field(
+        default=False,
+        description="Fail preflight when no NVIDIA GPU or container runtime is present "
+        "(off by default: a GPU is detected and used when present, never required).",
+    )
+    min_disk_space_gib: int = Field(
+        default=50,
+        description="Warn when the data directory has less free space than this.",
+    )
+    startup_timeout_seconds: float = Field(
+        default=180.0,
+        description="How long `niuu up` waits for the platform health endpoint.",
+    )
+    host_facts_file: str = Field(
+        default="",
+        description="Host facts JSON written by `niuu up`; read by the setup wizard "
+        "inside the platform container.",
+    )
+    vllm: DockerVllmConfig = Field(default_factory=DockerVllmConfig)
+
+
 class ServerConfig(BaseModel):
     """Server configuration — single port for all services."""
 
@@ -186,11 +267,12 @@ class CLISettings(BaseSettings):
 
     mode: str = Field(
         default="mini",
-        description="Operating mode: 'mini', 'openshell', or 'cluster'.",
+        description="Operating mode: 'mini', 'openshell', 'cluster', or 'docker'.",
     )
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+    docker: DockerConfig = Field(default_factory=DockerConfig)
     plugins: PluginConfig = Field(default_factory=PluginConfig)
     services: ServiceConfig = Field(default_factory=ServiceConfig)
     bifrost: BifrostConfig = Field(default_factory=BifrostConfig)

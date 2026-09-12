@@ -349,6 +349,18 @@ class NiuuHostConfig(BaseSettings):
         default="",
         validation_alias=AliasChoices("external_database_host", "DATABASE__HOST"),
     )
+    external_database_port: int = Field(
+        default=5432,
+        validation_alias=AliasChoices("external_database_port", "DATABASE__PORT"),
+    )
+    external_database_user: str = Field(
+        default="postgres",
+        validation_alias=AliasChoices("external_database_user", "DATABASE__USER"),
+    )
+    external_database_password: str = Field(
+        default="",
+        validation_alias=AliasChoices("external_database_password", "DATABASE__PASSWORD"),
+    )
 
     @field_validator("cors_origins", mode="before")
     @classmethod
