@@ -1,0 +1,15 @@
+# Apply after real Envoy issuer, audiences, HTTPS JWKS, and session ownership values.
+# Loopback CLI/Ravn peers are permitted; proxied/browser peers cannot use this bypass.
+wsAuth:
+  enforce_ownership: true
+  allow_loopback: true
+envoy:
+  enabled: true
+  image:
+    tag: v1.39.1
+  jwt:
+    enabled: true
+# Requires a CNI that enforces Kubernetes NetworkPolicy. Direct mesh peers need
+# explicit networkPolicy.extraIngress selectors and ports in deployment values.
+networkPolicy:
+  enabled: true

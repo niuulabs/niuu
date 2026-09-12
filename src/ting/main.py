@@ -980,7 +980,9 @@ def create_app(
     app.router.lifespan_context = lifespan
     apply_cors_middleware(app, settings.cors)
     app.add_middleware(
-        PATRevocationMiddleware, websocket_check_interval=settings.pat.websocket_check_interval
+        PATRevocationMiddleware,
+        websocket_check_interval=settings.pat.websocket_check_interval,
+        enabled=not settings.auth.allow_anonymous_dev,
     )
 
     @app.middleware("http")

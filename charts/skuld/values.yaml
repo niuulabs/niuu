@@ -296,6 +296,27 @@ envVars:
 
 # Envoy sidecar proxy (JWT validation, header extraction)
 envoy:
+  authorization:
+    # Keep outside localServices.portRange (9001-9020).
+    port: 9000
+    timeout: 1s
+    shutdownGraceSeconds: 5
+    extraVolumeMounts: []
+    readinessProbe:
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 3
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    roleMapping:
+      admin: volundr:admin
+      developer: volundr:developer
+      viewer: volundr:viewer
   # -- Enable Envoy sidecar proxy
   enabled: false
   image:
@@ -356,6 +377,7 @@ envoy:
     keycloakPort: 8080
     # -- Enable TLS for Keycloak upstream
     keycloakTls: false
+    keycloakCaFile: /etc/ssl/certs/ca-certificates.crt
     # -- Additional JWT claim-to-header mappings
     extraClaimHeaders: []
     workload:
@@ -373,6 +395,7 @@ envoy:
       jwksPort: 443
       # -- Enable TLS for the workload JWKS cluster
       jwksTls: true
+      jwksCaFile: /etc/ssl/certs/ca-certificates.crt
       # -- JWKS fetch timeout
       jwksTimeout: "5s"
       # -- JWKS cache duration in seconds
@@ -384,6 +407,7 @@ envoy:
       # -- Additional workload JWT claim-to-header mappings
       extraClaimHeaders: []
   # -- Extra HTTP filters (inserted before the router filter)
+  extraVolumeMounts: []
   extraHttpFilters: []
   # -- Extra upstream clusters
   extraClusters: []
@@ -429,6 +453,8 @@ gateway:
     audiences: []
     # -- JWKS URI for key retrieval
     jwksUri: ""
+    tenantClaim: tenant_id
+    rolesClaim: resource_access.volundr-api.roles
     workload:
       # -- Enable workload JWT validation as an additional session-route provider
       enabled: false
@@ -438,6 +464,8 @@ gateway:
       audiences: []
       # -- JWKS URI for workload JWT key retrieval
       jwksUri: ""
+      tenantClaim: tenant_id
+      rolesClaim: resource_access.volundr-api.roles
 
 # Pod configuration
 # -- Extra labels applied to session pods (e.g. volundr/owner for PVC isolation)
@@ -595,3 +623,22 @@ securityContext:
   runAsUser: 1000
   # -- Filesystem group ID
   fsGroup: 1000
+
+# Authentication is optional for mini-mode and explicitly trusted deployments.
+# Enable only behind a JWT-verifying proxy that strips caller identity headers.
+wsAuth:
+  authorization:
+    adapter: identity.adapters.cedar.CedarAuthorizationAdapter
+    kwargs: {}
+    secret_kwargs_env: {}
+  enforce_ownership: false
+  websocket_check_interval: 5
+  admin_roles: ["volundr:admin"]
+  allow_loopback: false
+
+# Limit pod ingress to the authenticated gateway, including direct pod-IP traffic.
+# Add explicit peer selectors/ports for direct Flokk mesh deployments.
+networkPolicy:
+  enabled: false
+  ingressFrom: []
+  extraIngress: []

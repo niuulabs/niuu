@@ -1,0 +1,10 @@
+# Explicitly disable authentication/authorization in a trusted deployment.
+auth:
+  allowAnonymousDev: true
+authorization:
+  adapter: identity.adapters.authorization.AllowAllAuthorizationAdapter
+envoy:
+  authorization:
+    enabled: false
+  jwt:
+    enabled: false

@@ -971,3 +971,40 @@ def test_user_git_integration_authenticates_nested_checkout(tmp_path):
             check=True,
         )
         assert "password=test-user-integration-token" in result.stdout
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_websocket_auth_configuration_reaches_broker(enabled):
+    command = [
+        "helm",
+        "template",
+        "test",
+        str(CHART_DIR),
+        "--set",
+        f"wsAuth.enforce_ownership={str(enabled).lower()}",
+        "--set",
+        "session.ownerId=alice",
+        "--set",
+        "session.tenantId=acme",
+        "--set",
+        "gateway.enabled=true",
+        "--set",
+        "gateway.jwt.enabled=true",
+        "--set",
+        "gateway.jwt.issuer=https://issuer.test",
+        "--set",
+        "gateway.jwt.audiences[0]=skuld",
+        "--set",
+        "gateway.jwt.jwksUri=https://issuer.test/jwks",
+    ]
+    docs = list(yaml.safe_load_all(subprocess.check_output(command)))
+    config = next(
+        yaml.safe_load(d["data"]["config.yaml"])
+        for d in docs
+        if d and d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
+    )
+    assert config["ws_auth"]["enforce_ownership"] is enabled
+    assert config["ws_auth"]["allow_loopback"] is False
+    policy = next(d for d in docs if d and d["kind"] == "SecurityPolicy")
+    headers = {c["header"] for c in policy["spec"]["jwt"]["providers"][0]["claimToHeaders"]}
+    assert {"x-auth-user-id", "x-auth-tenant", "x-auth-roles"} <= headers

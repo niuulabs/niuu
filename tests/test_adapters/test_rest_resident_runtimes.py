@@ -44,6 +44,9 @@ _PRINCIPAL = Principal(
 
 def _client(service: Mock) -> TestClient:
     app = FastAPI()
+    from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
+
+    app.state.identity = EnvoyHeaderAuthenticationAdapter()
     app.include_router(create_resident_runtimes_router(service))
     app.dependency_overrides[extract_principal] = lambda: _PRINCIPAL
     return TestClient(app)

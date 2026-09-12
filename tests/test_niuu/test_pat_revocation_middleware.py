@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import jwt
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
@@ -28,7 +28,7 @@ def _make_pat_jwt(sub: str = "user-1", jti: str = "jti-abc") -> str:
     return jwt.encode(payload, SIGNING_KEY, algorithm="HS256")
 
 
-def _create_app(*, exists_by_hash: bool = True) -> FastAPI:
+def _create_app(*, exists_by_hash: bool = True, middleware_enabled: bool = True) -> FastAPI:
     """Create a test app with the revocation middleware."""
     app = FastAPI()
 
@@ -43,7 +43,7 @@ def _create_app(*, exists_by_hash: bool = True) -> FastAPI:
     )
     app.state.pat_validator = validator
 
-    app.add_middleware(PATRevocationMiddleware)
+    app.add_middleware(PATRevocationMiddleware, enabled=middleware_enabled)
 
     @app.get("/protected")
     async def protected():
@@ -217,3 +217,49 @@ async def test_websocket_revalidates_account_status_and_closes_on_suspension():
     messages, stopped = await _websocket_run(_make_pat_jwt(), identity=identity)
     assert messages == [{"type": "websocket.accept"}, {"type": "websocket.close", "code": 1008}]
     assert stopped
+
+
+async def test_websocket_closes_when_authoritative_role_changes():
+    from niuu.domain.models import Principal
+    from niuu.ports.identity import HeaderAuthenticationPort
+
+    identity = AsyncMock(spec=HeaderAuthenticationPort)
+    developer = Principal("alice", "", "acme", ["volundr:developer"])
+    viewer = Principal("alice", "", "acme", ["volundr:viewer"])
+    identity.validate_headers.side_effect = [developer, developer, viewer]
+    messages, stopped = await _websocket_run(_make_pat_jwt(), identity=identity)
+    assert any(m["type"] == "websocket.close" and m["code"] == 1008 for m in messages)
+    assert stopped
+
+
+def test_explicit_no_auth_ignores_stale_browser_credentials():
+    from identity.adapters.identity import AllowAllIdentityAdapter
+
+    app = _create_app(exists_by_hash=False)
+    app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
+
+    @app.websocket("/socket")
+    async def echo(websocket: WebSocket):
+        await websocket.accept()
+        await websocket.send_text("connected")
+        await websocket.close()
+
+    with TestClient(app) as client:
+        assert (
+            client.get(
+                "/protected", headers={"Authorization": f"Bearer {_make_pat_jwt()}"}
+            ).status_code
+            == 200
+        )
+        with client.websocket_connect("/socket?token=expired-development-token") as socket:
+            assert socket.receive_text() == "connected"
+
+
+def test_explicit_middleware_disable_for_anonymous_ting():
+    with TestClient(_create_app(exists_by_hash=False, middleware_enabled=False)) as client:
+        assert (
+            client.get(
+                "/protected", headers={"Authorization": f"Bearer {_make_pat_jwt()}"}
+            ).status_code
+            == 200
+        )

@@ -119,3 +119,30 @@ class TestEnvoyHeaderIdentityAdapter:
         assert principal.email == "svc@example.com"
         assert principal.tenant_id == "default"
         assert principal.roles == []
+
+
+async def test_explicit_header_no_auth_accepts_anonymous_requests():
+    from fastapi import Depends, FastAPI
+    from fastapi.testclient import TestClient
+
+    from identity.adapters.http_auth import extract_principal
+    from identity.adapters.identity import AllowAllHeaderAuthenticationAdapter
+
+    app = FastAPI()
+    app.state.identity = AllowAllHeaderAuthenticationAdapter(
+        user_id_header="x-existing-verified-user", role_mapping={"admin": "volundr:admin"}
+    )
+
+    @app.get("/identity")
+    async def who(principal: Principal = Depends(extract_principal)):
+        return principal
+
+    with TestClient(app) as client:
+        response = client.get("/identity")
+        assert response.status_code == 200
+        assert response.json()["user_id"] == "dev-user"
+        assert response.json()["roles"] == ["volundr:admin"]
+        assert (
+            client.get("/identity", headers={"x-auth-user-id": "attacker"}).json()
+            == response.json()
+        )

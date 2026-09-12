@@ -44,12 +44,19 @@ pytestmark = pytest.mark.skipif(
         ("volundr", "wrong-host"),
         ("volundr", "untrusted-ca"),
         ("niuu-shared", "trusted"),
+        ("ting", "trusted"),
+        ("skuld", "trusted"),
     ],
 )
 async def test_real_envoy_enforces_jwt_and_cedar_before_upstream(tmp_path, chart_name, tls_case):
     documents = render_cedar(
         chart=Path(__file__).parents[2] / "charts" / chart_name,
         **{
+            "session.id": "one",
+            "session.ownerId": "alice",
+            "session.tenantId": "acme",
+            "envoy.port": "8443",
+            "envoy.jwt.workload.jwksTls": "true",
             "envoy.jwt.rolesClaim": "resource_access.volundr.roles",
             "envoy.jwt.workload.enabled": "true",
             "envoy.jwt.workload.issuer": "https://workload.test",
@@ -76,6 +83,7 @@ async def test_real_envoy_enforces_jwt_and_cedar_before_upstream(tmp_path, chart
             self.end_headers()
             self.wfile.write(b"ok")
 
+        do_OPTIONS = do_GET  # noqa: N815
         do_POST = do_GET  # noqa: N815 — standard HTTP handler name
 
         def log_message(self, *args):
@@ -151,6 +159,7 @@ async def test_real_envoy_enforces_jwt_and_cedar_before_upstream(tmp_path, chart
             port_value={
                 "cedar_authz": port,
                 "local_service": upstream.server_port,
+                "local_nginx": upstream.server_port,
                 "keycloak": jwks_server.server_port,
                 "workload_jwks": jwks_server.server_port,
             }[cluster["name"]],
@@ -218,7 +227,12 @@ async def test_real_envoy_enforces_jwt_and_cedar_before_upstream(tmp_path, chart
                     headers={"kid": "test"},
                 )
 
-            route = "/api/v1/forge/sessions" if chart_name == "volundr" else "/api/v1/credentials"
+            route = {
+                "skuld": "/api/message",
+                "volundr": "/api/v1/forge/sessions",
+                "niuu-shared": "/api/v1/credentials",
+                "ting": "/api/v1/ting/workflows/00000000-0000-0000-0000-000000000000/launch",
+            }[chart_name]
             calls.clear()
             if tls_case != "trusted":
                 response = await client.get(route, headers={"Authorization": f"Bearer {token()}"})
@@ -241,7 +255,10 @@ async def test_real_envoy_enforces_jwt_and_cedar_before_upstream(tmp_path, chart
                 await client.post(route, headers={"Authorization": f"Bearer {viewer}"})
             ).status_code == 403
             assert not calls
-            scoped = token(token_use="valkyrie_build", scopes=["forge:session:create"])
+            scoped = token(
+                token_use="valkyrie_build",
+                scopes=["ting:workflow:launch" if chart_name == "ting" else "forge:session:create"],
+            )
             assert (
                 await client.get(route, headers={"Authorization": f"Bearer {scoped}"})
             ).status_code == 403
@@ -249,16 +266,31 @@ async def test_real_envoy_enforces_jwt_and_cedar_before_upstream(tmp_path, chart
             headers = {"Authorization": f"Bearer {token()}", "x-auth-user-id": "forged"}
             assert (await client.get(route, headers=headers)).status_code == 200
             assert calls[-1]["x-auth-user-id"] == "alice"
+            if chart_name == "skuld":
+                assert (await client.get(route, params={"token": token()})).status_code == 200
+                assert (await client.options(route)).status_code == 200
             assert (
                 await client.post(route, headers={"Authorization": f"Bearer {scoped}"})
-            ).status_code == (200 if chart_name == "volundr" else 403)
+            ).status_code == (200 if chart_name in ("volundr", "ting") else 403)
             assert (
                 await client.get(
                     route, headers={"Authorization": f"Bearer {token(iss='https://workload.test')}"}
                 )
             ).status_code == 200
             count = len(calls)
-            assert (await client.get("/unknown", headers=headers)).status_code == 403
+            if chart_name == "skuld":
+                for denied in [token(sub="bob"), token(tenant_id="other"), viewer]:
+                    for target in [
+                        "/api/message",
+                        "/terminal",
+                        "/session",
+                        "/api/files/presented/one",
+                    ]:
+                        assert (
+                            await client.get(target, headers={"Authorization": f"Bearer {denied}"})
+                        ).status_code == 403
+            else:
+                assert (await client.get("/unknown", headers=headers)).status_code == 403
             assert len(calls) == count
             await server.stop(0)
             assert (await client.get(route, headers=headers)).status_code == 503

@@ -5,6 +5,7 @@ identity:
   adapter: "volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter"
   kwargs:
     default_tenant_id: ""
+    membership_authority: local
 authorization:
   adapter: "identity.adapters.cedar.CedarAuthorizationAdapter"
   kwargs: {}

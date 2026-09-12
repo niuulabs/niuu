@@ -26,6 +26,7 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from identity.authz_config import AuthorizationAdapterConfig
 from niuu.domain.observability import ObservabilityConfig
 from niuu.mesh.config import MeshNatsConfig
 
@@ -355,36 +356,37 @@ class ObservationRelayConfig(BaseModel):
 
 
 class WsAuthConfig(BaseModel):
-    """Ownership enforcement for inbound WebSocket connections.
+    """Optional ownership enforcement behind a trusted authentication proxy.
 
-    The broker does not validate token signatures — that is Envoy's / the API
-    gateway's job (see ``.claude/rules/architecture.md``: delegate to standard
-    OIDC flows). What the broker enforces is AUTHORIZATION: the connecting
-    identity must own this session. Identity is resolved the same way
-    Volundr's ``extract_principal`` does — Envoy ``x-auth-*`` headers first,
-    developer query parameters second, decoded bearer claims last — and the
-    verdict mirrors ``SimpleRoleAuthorizationAdapter``: tenant scoping, admin
-    bypass, then owner match. Sessions with no ``session.owner_id`` (legacy
-    and unauthenticated dev sessions) are not restricted.
+    Disabled mode supports local mini-mode without authentication. Enabled mode
+    requires verified identity headers and explicit session owner/tenant metadata.
+    The application listener must only be reachable through the trusted proxy.
     """
 
     enforce_ownership: bool = Field(
-        default=True,
-        description=(
-            "Reject WebSocket connections whose identity does not match the "
-            "session owner. Only applies when session.owner_id is set."
-        ),
+        default=False,
+        description="Require authenticated session ownership for WebSocket connections.",
     )
+    authorization: AuthorizationAdapterConfig = Field(default_factory=AuthorizationAdapterConfig)
+    websocket_check_interval: float = Field(
+        default=5.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="Maximum interval between active WebSocket credential lifetime checks.",
+    )
+    user_id_header: str = "x-auth-user-id"
+    tenant_header: str = "x-auth-tenant"
+    roles_header: str = "x-auth-roles"
+    role_mapping: dict[str, str] = Field(default_factory=dict)
     admin_roles: list[str] = Field(
         default_factory=lambda: ["volundr:admin"],
-        description="Roles that may attach to any session within the tenant.",
+        description="Verified roles mapped to the Cedar administrator role.",
     )
     allow_loopback: bool = Field(
-        default=True,
+        default=False,
         description=(
-            "Accept unauthenticated connections from loopback addresses. "
-            "In-pod peers (the CLI attaching via --sdk-url, flock ravn "
-            "daemons) share the pod trust boundary and carry no user token."
+            "Trust unauthenticated loopback CLI/Ravn peers. Enable only when "
+            "those endpoints cannot be reached through a reverse proxy."
         ),
     )
 

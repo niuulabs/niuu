@@ -141,6 +141,8 @@ data:
       url: {{ .Values.cerbos.url | default "http://localhost:3592" | quote }}
 
     auth:
+      allow_anonymous_dev: {{ .Values.auth.allowAnonymousDev }}
+      default_user_id: {{ .Values.auth.defaultUserId | quote }}
       pat_ttl_days: {{ .Values.auth.patTtlDays | default 365 }}
 
     workload_identity:

@@ -6,11 +6,15 @@ import base64
 import json
 from types import SimpleNamespace
 
+import pytest
+
+from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from niuu.app import SkuldPortRegistry, _proxy_ws_identity
 
 
 def _ws(headers: dict | None = None, query: dict | None = None):
     return SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(identity=EnvoyHeaderAuthenticationAdapter())),
         headers=(headers or {}),
         query_params=(query or {}),
     )
@@ -22,8 +26,8 @@ def _jwt(claims: dict) -> str:
 
 
 class TestProxyWsIdentity:
-    def test_envoy_headers(self):
-        user, tenant, roles = _proxy_ws_identity(
+    async def test_envoy_headers(self):
+        user, tenant, roles = await _proxy_ws_identity(
             _ws(
                 headers={
                     "x-auth-user-id": "alice",
@@ -36,65 +40,29 @@ class TestProxyWsIdentity:
         assert tenant == "t1"
         assert "volundr:admin" in roles
 
-    def test_dev_query_params(self):
-        user, tenant, roles = _proxy_ws_identity(
-            _ws(query={"devUserId": "bob", "devTenantId": "t2", "devRoles": "volundr:viewer"})
+    @pytest.mark.parametrize(
+        "carrier", ["authorization", "token", "access_token", "protocol", "dev"]
+    )
+    async def test_unsigned_credentials_cannot_establish_identity(self, carrier):
+        token = _jwt({"sub": "alice", "tenant": "t1", "roles": ["volundr:admin"]})
+        ws = {
+            "authorization": _ws(headers={"authorization": f"Bearer {token}"}),
+            "token": _ws(query={"token": token}),
+            "access_token": _ws(query={"access_token": token}),
+            "protocol": _ws(headers={"sec-websocket-protocol": f"volundr.bearer.{token}"}),
+            "dev": _ws(query={"devUserId": "alice", "devRoles": "volundr:admin"}),
+        }[carrier]
+        assert await _proxy_ws_identity(ws) == (None, None, ())
+
+    async def test_missing_claims_are_not_invented(self):
+        assert await _proxy_ws_identity(_ws(headers={"x-auth-user-id": "alice"})) == (
+            "alice",
+            "",
+            (),
         )
-        assert user == "bob"
-        assert tenant == "t2"
-        assert roles == ("volundr:viewer",)
 
-    def test_headers_win_over_query(self):
-        user, tenant, _roles = _proxy_ws_identity(
-            _ws(headers={"x-auth-user-id": "alice"}, query={"devUserId": "bob"})
-        )
-        assert user == "alice"
-        assert tenant == "default"
-
-    def test_no_identity(self):
-        user, tenant, roles = _proxy_ws_identity(_ws())
-        assert user is None
-        assert tenant is None
-        assert roles == ()
-
-    def test_bearer_envoy_token_query_param(self):
-        # web-next uses Envoy's configured ?token=<jwt> extraction on browser
-        # WebSocket upgrades; the app accepts the same token for direct mode.
-        token = _jwt({"sub": "carol", "tenant": "t3", "roles": ["volundr:developer"]})
-        user, tenant, roles = _proxy_ws_identity(_ws(query={"token": token}))
-        assert user == "carol"
-        assert tenant == "t3"
-        assert roles == ("volundr:developer",)
-
-    def test_bearer_access_token_query_param_remains_compatible(self):
-        token = _jwt({"sub": "carol"})
-        user, tenant, _roles = _proxy_ws_identity(_ws(query={"access_token": token}))
-        assert user == "carol"
-        assert tenant == "default"
-
-    def test_bearer_authorization_header(self):
-        token = _jwt({"sub": "dave"})
-        user, _tenant, _roles = _proxy_ws_identity(
-            _ws(headers={"authorization": f"Bearer {token}"})
-        )
-        assert user == "dave"
-
-    def test_bearer_subprotocol(self):
-        token = _jwt({"sub": "erin"})
-        user, _tenant, _roles = _proxy_ws_identity(
-            _ws(headers={"sec-websocket-protocol": f"volundr.bearer.{token}"})
-        )
-        assert user == "erin"
-
-    def test_bearer_keycloak_realm_roles(self):
-        token = _jwt({"sub": "frank", "realm_access": {"roles": ["volundr:admin"]}})
-        _user, _tenant, roles = _proxy_ws_identity(_ws(query={"access_token": token}))
-        assert roles == ("volundr:admin",)
-
-    def test_bearer_without_sub_is_no_identity(self):
-        token = _jwt({"name": "nobody"})
-        user, _tenant, _roles = _proxy_ws_identity(_ws(query={"access_token": token}))
-        assert user is None
+    async def test_no_identity(self):
+        assert await _proxy_ws_identity(_ws()) == (None, None, ())
 
 
 class TestMayAttach:

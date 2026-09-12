@@ -7,7 +7,8 @@ The ``user_repository`` kwarg is injected at runtime by main.py.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from dataclasses import replace
+from typing import Any, Literal
 
 from identity.models import Principal, StorageQuota, TenantRole, User, UserStatus
 from identity.ports import (
@@ -136,8 +137,12 @@ class EnvoyHeaderIdentityAdapter(EnvoyHeaderAuthenticationAdapter, IdentityPort)
         roles_header: str = "x-auth-roles",
         default_tenant_id: str = "",
         role_mapping: dict[str, str] | None = None,
+        membership_authority: Literal["idp", "local"] = "idp",
         **_extra: object,
     ) -> None:
+        if membership_authority not in ("idp", "local"):
+            raise ValueError("membership_authority must be idp or local")
+        self._membership_authority = membership_authority
         self._user_repository = user_repository
         self._storage = storage
         self._tenant_service = tenant_service
@@ -153,6 +158,14 @@ class EnvoyHeaderIdentityAdapter(EnvoyHeaderAuthenticationAdapter, IdentityPort)
         user = await self._user_repository.get(principal.user_id)
         if user is not None and user.status in (UserStatus.SUSPENDED, UserStatus.FAILED):
             raise InvalidTokenError("User account is not active")
+        if self._membership_authority == "local":
+            if user is None or user.status != UserStatus.ACTIVE or not principal.tenant_id:
+                raise InvalidTokenError("Local tenant membership is required")
+            memberships = await self._user_repository.get_memberships(principal.user_id)
+            membership = next((m for m in memberships if m.tenant_id == principal.tenant_id), None)
+            if membership is None:
+                raise InvalidTokenError("Local tenant membership is required")
+            principal = replace(principal, roles=[membership.role.value])
         return principal
 
     async def validate_token(self, raw_token: str) -> Principal:
@@ -182,11 +195,13 @@ class EnvoyHeaderIdentityAdapter(EnvoyHeaderAuthenticationAdapter, IdentityPort)
                 raise InvalidTokenError("User account is not active")
 
             # Sync tenant membership from IDP on every login
-            if self._tenant_service is not None:
+            if self._tenant_service is not None and self._membership_authority == "idp":
                 await self._sync_tenant(principal)
 
             return user
 
+        if self._membership_authority == "local":
+            raise InvalidTokenError("Local identity must be provisioned by an administrator")
         logger.info("JIT provisioning user: sub=%s email=%s", principal.user_id, principal.email)
 
         # Create user in PROVISIONING state
@@ -220,7 +235,7 @@ class EnvoyHeaderIdentityAdapter(EnvoyHeaderAuthenticationAdapter, IdentityPort)
             logger.info("JIT provisioning complete: sub=%s", principal.user_id)
 
             # Sync tenant membership from IDP on every login
-            if self._tenant_service is not None:
+            if self._tenant_service is not None and self._membership_authority == "idp":
                 await self._sync_tenant(principal)
 
             return user
@@ -252,3 +267,21 @@ class EnvoyHeaderIdentityAdapter(EnvoyHeaderAuthenticationAdapter, IdentityPort)
         if "volundr:developer" in roles:
             return TenantRole.DEVELOPER
         raise InvalidTokenError("No recognized tenant role in verified identity")
+
+
+class AllowAllHeaderAuthenticationAdapter(HeaderAuthenticationPort):
+    """Explicit no-auth identity for services without a provisioning database."""
+
+    def __init__(
+        self,
+        user_id: str = "dev-user",
+        tenant_id: str = "default",
+        roles: list[str] | None = None,
+        **_extra: object,
+    ) -> None:
+        self._principal = Principal(
+            user_id, "dev@localhost", tenant_id, roles if roles is not None else ["volundr:admin"]
+        )
+
+    async def validate_headers(self, headers: dict[str, str]) -> Principal:
+        return self._principal

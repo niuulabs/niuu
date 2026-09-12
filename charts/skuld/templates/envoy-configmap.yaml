@@ -1,3 +1,11 @@
+{{- if and .Values.wsAuth.enforce_ownership .Values.envoy.enabled }}
+{{- if not (and .Values.envoy.jwt.enabled .Values.envoy.jwt.issuer .Values.envoy.jwt.audiences .Values.envoy.jwt.keycloakTls (hasPrefix "https://" .Values.envoy.jwt.jwksUri)) }}
+{{- fail "Enforced Skuld sidecar requires a JWT issuer, audiences and verified HTTPS JWKS" }}
+{{- end }}
+{{- if and .Values.envoy.jwt.workload.enabled (not (and .Values.envoy.jwt.workload.issuer .Values.envoy.jwt.workload.audiences .Values.envoy.jwt.workload.jwksTls (hasPrefix "https://" .Values.envoy.jwt.workload.jwksUri))) }}
+{{- fail "Enforced Skuld workload JWTs require issuer, audiences and verified HTTPS JWKS" }}
+{{- end }}
+{{- end }}
 {{- if .Values.envoy.enabled }}
 apiVersion: v1
 kind: ConfigMap
@@ -29,12 +37,54 @@ data:
                         - name: backend
                           domains: ["*"]
                           routes:
+                            {{- if .Values.wsAuth.enforce_ownership }}
+                            {{- range list "/health" "/ready" }}
+                            - match:
+                                path: {{ . | quote }}
+                              route:
+                                cluster: local_nginx
+                              typed_per_filter_config:
+                                envoy.filters.http.ext_authz:
+                                  "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                                  disabled: true
+                            {{- end }}
+                            - match:
+                                prefix: "/"
+                                headers:
+                                  - name: ":method"
+                                    string_match:
+                                      exact: OPTIONS
+                              route:
+                                cluster: local_nginx
+                              typed_per_filter_config:
+                                envoy.filters.http.ext_authz:
+                                  "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                                  disabled: true
+                            {{- end }}
                             - match:
                                 prefix: "/"
                               route:
                                 cluster: local_nginx
                                 timeout: {{ .Values.envoy.upstreamTimeout }}
                     http_filters:
+                      {{- if .Values.envoy.jwt.enabled }}
+                      - name: envoy.filters.http.lua
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+                          default_source_code:
+                            inline_string: |
+                              function envoy_on_request(handle)
+                                {{- range .Values.envoy.headerNames }}
+                                handle:headers():remove({{ . | quote }})
+                                {{- end }}
+                                {{- range .Values.envoy.jwt.extraClaimHeaders }}
+                                handle:headers():remove({{ .headerName | quote }})
+                                {{- end }}
+                                {{- range .Values.envoy.jwt.workload.extraClaimHeaders }}
+                                handle:headers():remove({{ .headerName | quote }})
+                                {{- end }}
+                              end
+                      {{- end }}
                       {{- if .Values.envoy.jwt.enabled }}
                       # JWT Authentication filter
                       - name: envoy.filters.http.jwt_authn
@@ -49,6 +99,12 @@ data:
                                 - {{ . | quote }}
                                 {{- end }}
                               {{- end }}
+                              from_headers:
+                                - name: Authorization
+                                  value_prefix: "Bearer "
+                              from_params:
+                                - token
+                                - access_token
                               remote_jwks:
                                 http_uri:
                                   uri: {{ .Values.envoy.jwt.jwksUri | quote }}
@@ -110,6 +166,10 @@ data:
                             {{- end }}
                           rules:
                             - match:
+                                path: /health
+                            - match:
+                                path: /ready
+                            - match:
                                 prefix: "/"
                                 headers:
                                   - name: ":method"
@@ -129,11 +189,45 @@ data:
                       {{- with .Values.envoy.extraHttpFilters }}
                       {{- toYaml . | nindent 22 }}
                       {{- end }}
+                      {{- if (and .Values.wsAuth.enforce_ownership .Values.envoy.enabled) }}
+                      - name: envoy.filters.http.ext_authz
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                          transport_api_version: V3
+                          grpc_service:
+                            envoy_grpc:
+                              cluster_name: cedar_authz
+                            timeout: {{ .Values.envoy.authorization.timeout }}
+                          failure_mode_allow: false
+                          status_on_error:
+                            code: ServiceUnavailable
+                          metadata_context_namespaces:
+                            - envoy.filters.http.jwt_authn
+                      {{- end }}
                       - name: envoy.filters.http.router
                         typed_config:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
 
       clusters:
+        {{- if (and .Values.wsAuth.enforce_ownership .Values.envoy.enabled) }}
+        - name: cedar_authz
+          connect_timeout: {{ .Values.envoy.connectTimeout }}
+          type: STATIC
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+          load_assignment:
+            cluster_name: cedar_authz
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: 127.0.0.1
+                          port_value: {{ .Values.envoy.authorization.port }}
+        {{- end }}
         - name: local_nginx
           connect_timeout: {{ .Values.envoy.connectTimeout }}
           type: STATIC
@@ -167,6 +261,14 @@ data:
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
               sni: {{ .Values.envoy.jwt.keycloakHost | quote }}
+              common_tls_context:
+                validation_context:
+                  trusted_ca:
+                    filename: {{ .Values.envoy.jwt.keycloakCaFile | quote }}
+                  match_typed_subject_alt_names:
+                    - san_type: DNS
+                      matcher:
+                        exact: {{ .Values.envoy.jwt.keycloakHost | quote }}
           {{- end }}
         {{- if .Values.envoy.jwt.workload.enabled }}
         - name: workload_jwks
@@ -188,6 +290,14 @@ data:
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
               sni: {{ .Values.envoy.jwt.workload.jwksHost | quote }}
+              common_tls_context:
+                validation_context:
+                  trusted_ca:
+                    filename: {{ .Values.envoy.jwt.workload.jwksCaFile | quote }}
+                  match_typed_subject_alt_names:
+                    - san_type: DNS
+                      matcher:
+                        exact: {{ .Values.envoy.jwt.workload.jwksHost | quote }}
           {{- end }}
         {{- end }}
         {{- end }}

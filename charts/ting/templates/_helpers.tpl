@@ -151,6 +151,9 @@ Return the database port
 Annotations for checksum/config - forces restart on config changes
 */}}
 {{- define "ting.checksumAnnotations" -}}
+{{- if .Values.envoy.authorization.enabled }}
+checksum/authz: {{ include (print $.Template.BasePath "/authz-configmap.yaml") . | sha256sum }}
+{{- end }}
 checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
 {{- if .Values.envoy.enabled }}
 checksum/envoy: {{ include (print $.Template.BasePath "/envoy-configmap.yaml") . | sha256sum }}

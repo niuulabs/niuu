@@ -12,12 +12,12 @@ from contextlib import suppress
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from starlette.responses import JSONResponse, Response
 
+from identity.adapters.http_auth import extract_principal
 from niuu.config import NiuuSettings
 from niuu.ports.session_proxy import SessionProxyTarget
-from niuu.ws_identity import claims_to_identity, decode_jwt_claims
 
 logger = logging.getLogger(__name__)
 
@@ -189,46 +189,15 @@ def _bearer_token_from_ws(websocket: WebSocket) -> str:
     ).strip()
 
 
-def _proxy_ws_identity(websocket: WebSocket) -> tuple[str | None, str | None, tuple[str, ...]]:
-    """Resolve caller identity from a browser WebSocket for the proxy guard.
-
-    Mirrors Volundr's ``extract_principal`` / the broker's WS identity
-    resolution: Envoy ``x-auth-*`` headers first, then developer query
-    parameters, then a bearer token (``Authorization``, the
-    ``volundr.bearer.<jwt>`` subprotocol, or query token) decoded for
-    its ``sub``/tenant/roles claims. Returns ``(user_id, tenant_id, roles)``;
-    user_id is None when no identity is present (the guard decides whether
-    that is allowed).
-    """
-    headers = {k.lower(): v for k, v in websocket.headers.items()}
-
-    def _roles(raw: str) -> tuple[str, ...]:
-        return tuple(r.strip() for r in raw.split(",") if r.strip())
-
-    forwarded = headers.get("x-auth-user-id", "").strip()
-    if forwarded:
-        return (
-            forwarded,
-            headers.get("x-auth-tenant", "").strip() or "default",
-            _roles(headers.get("x-auth-roles", "volundr:developer")),
-        )
-
-    params = websocket.query_params
-    dev_user = str(params.get("devUserId") or "").strip()
-    if dev_user:
-        return (
-            dev_user,
-            str(params.get("devTenantId") or "").strip() or "default",
-            _roles(str(params.get("devRoles") or "volundr:developer")),
-        )
-
-    token = _bearer_token_from_ws(websocket)
-    if token:
-        user_id, tenant, roles = claims_to_identity(decode_jwt_claims(token))
-        if user_id:
-            return (user_id, tenant or "default", roles)
-
-    return (None, None, ())
+async def _proxy_ws_identity(
+    websocket: WebSocket,
+) -> tuple[str | None, str | None, tuple[str, ...]]:
+    """Use the configured identity adapter, including explicit no-auth mode."""
+    try:
+        principal = await extract_principal(websocket)
+    except HTTPException:
+        return (None, None, ())
+    return (principal.user_id, principal.tenant_id, tuple(principal.roles))
 
 
 # Auth headers forwarded verbatim from the browser leg to the broker leg.
@@ -341,7 +310,7 @@ async def _proxy_ws(
     path, whether the browser cookie / dev query params are forwarded, and the
     log label.
     """
-    user_id, tenant_id, roles = _proxy_ws_identity(websocket)
+    user_id, tenant_id, roles = await _proxy_ws_identity(websocket)
     if not await skuld_reg.may_attach(session_id, user_id, tenant_id, roles):
         await websocket.close(code=1008, reason="Not authorized for this session")
         return

@@ -22,19 +22,30 @@ from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 class PATRevocationMiddleware:
     """Check HTTP revocation and continuously bound WebSocket credential lifetime."""
 
-    def __init__(self, app: ASGIApp, websocket_check_interval: float = 30.0):
+    def __init__(self, app: ASGIApp, websocket_check_interval: float = 30.0, enabled: bool = True):
         if not math.isfinite(websocket_check_interval) or websocket_check_interval <= 0:
             raise ValueError("websocket_check_interval must be positive and finite")
         self.app = app
+        self._enabled = enabled
         self._interval = websocket_check_interval
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
+        from identity.adapters.identity import (
+            AllowAllHeaderAuthenticationAdapter,
+            AllowAllIdentityAdapter,
+        )
+
+        identity = getattr(scope["app"].state, "identity", None)
+        if not self._enabled or isinstance(
+            identity, (AllowAllIdentityAdapter, AllowAllHeaderAuthenticationAdapter)
+        ):
+            await self.app(scope, receive, send)
+            return
         validator = getattr(scope["app"].state, "pat_validator", None)
         headers = Headers(scope=scope)
-        identity = getattr(scope["app"].state, "identity", None)
         auth = headers.get("authorization", "")
         token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
         # Envoy accepts query credentials for browser clients too. Check the
@@ -72,12 +83,21 @@ class PATRevocationMiddleware:
             await send({"type": "websocket.close", "code": 1008})
             return
 
+        initial_principal = None
+
         async def valid() -> bool:
+            nonlocal initial_principal
             if time.time() >= expiry:
                 return False
             if isinstance(identity, HeaderAuthenticationPort):
                 try:
-                    await identity.validate_headers(dict(headers))
+                    principal = await identity.validate_headers(dict(headers))
+                    if initial_principal is None:
+                        initial_principal = principal
+                    elif principal != initial_principal:
+                        # Reconnect under the new authority instead of retaining
+                        # subscriptions/actions granted to the previous role.
+                        return False
                 except InvalidTokenError:
                     return False
             return validator is None or await validator.is_valid(token)

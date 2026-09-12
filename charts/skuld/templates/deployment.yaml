@@ -33,8 +33,11 @@ spec:
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- if or .Values.podAnnotations (include "skuld.residentEnabled" .) }}
+      {{- if or .Values.podAnnotations (include "skuld.residentEnabled" .) (and .Values.wsAuth.enforce_ownership .Values.envoy.enabled) }}
       annotations:
+        {{- if and .Values.wsAuth.enforce_ownership .Values.envoy.enabled }}
+        checksum/authz: {{ include (print $.Template.BasePath "/authz-configmap.yaml") . | sha256sum }}
+        {{- end }}
         {{- if and (include "skuld.residentEnabled" .) (not (hasKey .Values.podAnnotations "niuu.world/resident-name")) }}
         niuu.world/resident-name: {{ include "skuld.residentName" . | quote }}
         {{- end }}
@@ -321,14 +324,14 @@ spec:
           livenessProbe:
             httpGet:
               path: /health
-              port: http
+              port: {{ ternary (.Values.envoy.port | int) "http" (and .Values.wsAuth.enforce_ownership .Values.envoy.enabled) }}
             initialDelaySeconds: 10
             periodSeconds: 30
             timeoutSeconds: 10
           readinessProbe:
             httpGet:
               path: /ready
-              port: http
+              port: {{ ternary (.Values.envoy.port | int) "http" (and .Values.wsAuth.enforce_ownership .Values.envoy.enabled) }}
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 5
@@ -629,6 +632,38 @@ spec:
             - {{- toYaml . | nindent 14 }}
             {{- end }}
         {{- end }}
+        {{- if (and .Values.wsAuth.enforce_ownership .Values.envoy.enabled) }}
+        - name: cedar-authz
+          image: {{ include "skuld.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "identity.authz_main"]
+          args: ["--config", "/etc/authorization/authz.yaml"]
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import grpc; from envoy.service.auth.v3 import external_auth_pb2 as pb, external_auth_pb2_grpc as rpc; channel = grpc.insecure_channel('127.0.0.1:{{ .Values.envoy.authorization.port }}'); assert rpc.AuthorizationStub(channel).Check(pb.CheckRequest(), timeout={{ .Values.envoy.authorization.readinessProbe.timeoutSeconds }}).denied_response.status.code == 401"
+            periodSeconds: {{ .Values.envoy.authorization.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.envoy.authorization.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.envoy.authorization.readinessProbe.failureThreshold }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: {{ .Values.securityContext.runAsUser }}
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.envoy.authorization.resources | nindent 12 }}
+          volumeMounts:
+            - name: authz-config
+              mountPath: /etc/authorization
+              readOnly: true
+            {{- with .Values.envoy.authorization.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- end }}
         {{- if .Values.envoy.enabled }}
         # Envoy sidecar - JWT validation and header extraction
         - name: envoy
@@ -650,20 +685,26 @@ spec:
             - name: envoy-config
               mountPath: /etc/envoy
               readOnly: true
+            {{- with .Values.envoy.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           readinessProbe:
-            httpGet:
-              path: /ready
-              port: {{ .Values.envoy.adminPort }}
+            tcpSocket:
+              port: {{ .Values.envoy.port }}
             initialDelaySeconds: 2
             periodSeconds: 5
           livenessProbe:
-            httpGet:
-              path: /ready
-              port: {{ .Values.envoy.adminPort }}
+            tcpSocket:
+              port: {{ .Values.envoy.port }}
             initialDelaySeconds: 5
             periodSeconds: 15
         {{- end }}
       volumes:
+        {{- if and .Values.wsAuth.enforce_ownership .Values.envoy.enabled }}
+        - name: authz-config
+          configMap:
+            name: {{ include "skuld.fullname" . }}-authz
+        {{- end }}
         - name: skuld-config
           configMap:
             name: {{ include "skuld.fullname" . }}-config

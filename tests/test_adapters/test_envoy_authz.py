@@ -167,3 +167,27 @@ async def test_metadata_with_no_payload_is_not_authenticated(gateway):
     req = request()
     req.attributes.metadata_context.filter_metadata["envoy.filters.http.jwt_authn"].Clear()
     assert (await gateway.Check(req, timeout=2)).denied_response.status.code == 401
+
+
+@pytest.mark.parametrize(
+    "role,user,tenant,allowed",
+    [
+        ("developer", "alice", "acme", True),
+        ("developer", "bob", "acme", False),
+        ("admin", "bob", "acme", True),
+        ("admin", "alice", "other", False),
+        ("viewer", "alice", "acme", False),
+    ],
+)
+async def test_session_bound_gateway_checks_deployment_owner(config, role, user, tenant, allowed):
+    from identity.authz_config import SessionGatewayResource
+
+    config.session = SessionGatewayResource(id="session-one", owner_id="alice", tenant_id="acme")
+    service = EnvoyAuthorizationService(CedarAuthorizationAdapter(), config)
+    response = await service.Check(
+        request(
+            sub=user, tenant_id=tenant, resource_access={"volundr": {"roles": [f"volundr:{role}"]}}
+        ),
+        None,
+    )
+    assert response.HasField("ok_response") is allowed

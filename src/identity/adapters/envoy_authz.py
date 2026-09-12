@@ -86,12 +86,7 @@ class EnvoyAuthorizationService(external_auth_pb2_grpc.AuthorizationServicer):
         if any(part in (".", "..") for part in path.split("/")):
             return _deny(403)
         route = next(
-            (
-                r
-                for r in self._config.routes
-                if http.method in r.methods
-                and (path == r.path or (r.prefix and path.startswith(r.path.rstrip("/") + "/")))
-            ),
+            (r for r in self._config.routes if http.method in r.methods and r.matches(path)),
             None,
         )
         if route is None:
@@ -116,6 +111,20 @@ class EnvoyAuthorizationService(external_auth_pb2_grpc.AuthorizationServicer):
         )
         try:
             allowed = await self._authorization.is_allowed(principal, "enter", resource)
+            if allowed and self._config.session is not None:
+                session = self._config.session
+                allowed = await self._authorization.is_allowed(
+                    principal,
+                    "start",
+                    Resource(
+                        "session",
+                        session.id,
+                        {
+                            "owner_id": session.owner_id,
+                            "tenant_id": session.tenant_id,
+                        },
+                    ),
+                )
         except AuthorizationEvaluationError:
             logger.error("Gateway authorization evaluation failed")
             return _deny(503)

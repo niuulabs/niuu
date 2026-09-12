@@ -87,3 +87,21 @@ def test_list_authorizes_persisted_owner_not_requested_owner():
     client, repo, _, _ = app_for(Principal("alice", "", "acme", ["volundr:admin"]))
     repo.list.return_value = [PersonalAccessToken(uuid4(), "bob", "private", datetime.now(UTC))]
     assert client.get("/api/v1/tokens").json() == []
+
+
+def test_explicit_disabled_auth_accepts_http_without_credentials():
+    from identity.adapters.authorization import AllowAllAuthorizationAdapter
+    from identity.adapters.http_auth import extract_principal
+    from identity.adapters.identity import AllowAllIdentityAdapter
+
+    repo = AsyncMock()
+    repo.list.return_value = []
+    app = FastAPI()
+    app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
+    app.state.pat_service = PATService(
+        repo, AsyncMock(), authorization=AllowAllAuthorizationAdapter()
+    )
+    app.include_router(create_pats_router(extract_principal))
+    with TestClient(app) as client:
+        assert client.get("/api/v1/tokens").status_code == 200
+    repo.list.assert_awaited_once_with("dev-user")

@@ -11,7 +11,7 @@
 {{- if and .Values.envoy.jwt.workload.enabled (not .Values.envoy.jwt.workload.audiences) }}
 {{- fail "Cedar gateway authorization requires explicit workload JWT audiences" }}
 {{- end }}
-{{- if eq .Values.authorization.adapter "volundr.adapters.outbound.authorization.AllowAllAuthorizationAdapter" }}
+{{- if has .Values.authorization.adapter (list "volundr.adapters.outbound.authorization.AllowAllAuthorizationAdapter" "identity.adapters.authorization.AllowAllAuthorizationAdapter") }}
 {{- fail "Cedar gateway authorization requires a resource authorization adapter; allow-all is unsafe" }}
 {{- end }}
 {{- if ne .Values.identity.adapter "volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter" }}

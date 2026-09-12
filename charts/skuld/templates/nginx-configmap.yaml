@@ -15,7 +15,8 @@ data:
     }
 
     http {
-        access_log /dev/stdout;
+        log_format safe '$remote_addr "$request_method $uri $server_protocol" $status $body_bytes_sent';
+        access_log /dev/stdout safe;
 
         # Temp paths writable by non-root
         client_body_temp_path /tmp/client_temp;
@@ -38,7 +39,7 @@ data:
         }
 
         server {
-            listen 8080;
+            listen {{ if and .Values.wsAuth.enforce_ownership .Values.envoy.enabled }}127.0.0.1:{{ end }}8080;
             server_name _;
 
             # Broker: WebSocket session endpoint

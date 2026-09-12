@@ -243,6 +243,7 @@ envoy:
     keycloakPort: 8080
     # -- Enable TLS for Keycloak upstream
     keycloakTls: false
+    keycloakCaFile: /etc/ssl/certs/ca-certificates.crt
     # -- Additional JWT claim-to-header mappings
     extraClaimHeaders: []
     # -- Path prefixes that bypass JWT validation
@@ -265,7 +266,51 @@ envoy:
       jwksHost: ""
       jwksPort: 443
       jwksTls: true
+      jwksCaFile: /etc/ssl/certs/ca-certificates.crt
   # -- Extra HTTP filters (inserted before the router filter)
+  extraVolumeMounts: []
+  authorization:
+    enabled: false
+    port: 9002
+    timeout: 1s
+    shutdownGraceSeconds: 5
+    extraVolumeMounts: []
+    readinessProbe:
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 3
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    routes:
+    - path: /api/v1/ting/workflows/{workflow_id}/launch
+      path_template: true
+      methods:
+      - POST
+      required_scope: ting:workflow:launch
+    - path: /api/v1/ting
+      prefix: true
+      methods:
+      - GET
+      - HEAD
+      - POST
+      - PUT
+      - PATCH
+      - DELETE
+    - path: /api/v1/tokens
+      prefix: true
+      methods:
+      - GET
+      - POST
+      - DELETE
+    roleMapping:
+      admin: volundr:admin
+      developer: volundr:developer
+      viewer: volundr:viewer
   extraHttpFilters: []
   # -- Extra upstream clusters
   extraClusters: []
@@ -324,6 +369,9 @@ cerbos:
   url: "http://localhost:3592"
 
 auth:
+  # -- Allow requests without identity only in explicitly trusted deployments
+  allowAnonymousDev: false
+  defaultUserId: dev-user
   # -- Symmetric signing key for PAT JWTs (same key Envoy uses for validation)
   patSigningKey: ""
   # -- Default PAT lifetime in days

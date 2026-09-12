@@ -1,0 +1,17 @@
+# Apply after deployment-specific issuer, audiences, and verified JWKS settings.
+authorization:
+  adapter: identity.adapters.cedar.CedarAuthorizationAdapter
+auth:
+  allowAnonymousDev: false
+envoy:
+  enabled: true
+  image:
+    tag: v1.39.1
+  jwt:
+    enabled: true
+    bypassPrefixes:
+      - /api/v1/tokens/workload/exchange
+      - /api/v1/tokens/workload/jwks
+      - /health
+  authorization:
+    enabled: true

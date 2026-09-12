@@ -27,7 +27,14 @@ def render_cedar(chart=CHART, **overrides):
         "networkPolicy.enabled": "true",
         **overrides,
     }
-    command = ["helm", "template", "test", str(chart), "-f", str(chart / "values-cedar.yaml")]
+    command = [
+        "helm",
+        "template",
+        "test",
+        str(chart),
+        "-f",
+        str(chart / ("values-auth.yaml" if chart.name == "skuld" else "values-cedar.yaml")),
+    ]
     for key, value in values.items():
         command.extend(["--set", f"{key}={value}"])
     return [d for d in yaml.safe_load_all(subprocess.check_output(command)) if d]
@@ -178,3 +185,165 @@ def test_remote_workload_keys_require_verified_tls(chart_name, bad):
     }
     with pytest.raises(subprocess.CalledProcessError):
         render_cedar(chart=CHART.parent / chart_name, **values)
+
+
+@pytest.mark.parametrize("chart_name", ["volundr", "niuu-shared", "ting", "skuld"])
+def test_explicit_no_auth_profile(chart_name):
+    chart = CHART.parent / chart_name
+    docs = list(
+        yaml.safe_load_all(
+            subprocess.check_output(
+                [
+                    "helm",
+                    "template",
+                    "test",
+                    str(chart),
+                    "-f",
+                    str(
+                        chart
+                        / ("values-auth.yaml" if chart_name == "skuld" else "values-cedar.yaml")
+                    ),
+                    "-f",
+                    str(chart / "values-no-auth.yaml"),
+                ]
+            )
+        )
+    )
+    config = next(
+        yaml.safe_load(d["data"]["config.yaml"])
+        for d in docs
+        if d and d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
+    )
+    if chart_name == "skuld":
+        assert config["ws_auth"]["enforce_ownership"] is False
+        return
+    assert (
+        config["authorization"]["adapter"]
+        == "identity.adapters.authorization.AllowAllAuthorizationAdapter"
+    )
+    if chart_name == "ting":
+        assert config["auth"]["allow_anonymous_dev"] is True
+    else:
+        assert config["identity"]["adapter"] == "identity.adapters.identity.AllowAllIdentityAdapter"
+
+
+@pytest.mark.parametrize(
+    "path,allowed",
+    [
+        ("/api/v1/ting/workflows/abc/launch", True),
+        ("/api/v1/ting/workflows/abc/delete", False),
+        ("/api/v1/ting/workflows/abc/nested/launch", False),
+        ("/api/v1/ting/workflows//launch", False),
+    ],
+)
+def test_ting_scope_is_bound_to_launch_route(path, allowed):
+    docs = render_cedar(chart=CHART.parent / "ting")
+    config = next(
+        yaml.safe_load(d["data"]["authz.yaml"])
+        for d in docs
+        if d["kind"] == "ConfigMap" and "authz.yaml" in d["data"]
+    )
+    route = AuthorizationGatewayConfig.model_validate(config).routes[0]
+    assert route.required_scope == "ting:workflow:launch"
+    assert route.matches(path) is allowed
+    deployment = next(d for d in docs if d["kind"] == "Deployment")
+    app = next(
+        c for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == "ting"
+    )
+    assert next(e["value"] for e in app["env"] if e["name"] == "HOST") == "127.0.0.1"
+    assert app["readinessProbe"]["httpGet"]["port"] == 8443
+
+
+@pytest.mark.parametrize("path,prefix", [("/api/{id}/launch", True), ("/api/item-{id}", False)])
+def test_ambiguous_route_templates_rejected(path, prefix):
+    from identity.authz_config import GatewayRoute
+
+    with pytest.raises(ValueError):
+        GatewayRoute(path=path, path_template=True, prefix=prefix, methods=["POST"])
+
+
+def test_ravn_explicit_no_auth_profile():
+    chart = CHART.parent / "ravn"
+    docs = list(
+        yaml.safe_load_all(
+            subprocess.check_output(
+                ["helm", "template", "test", str(chart), "-f", str(chart / "values-no-auth.yaml")]
+            )
+        )
+    )
+    config = next(
+        yaml.safe_load(d["data"]["config.yaml"])
+        for d in docs
+        if d and d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
+    )
+    assert config["api_auth"]["adapter"].endswith("AllowAllHeaderAuthenticationAdapter")
+
+
+def test_skuld_secure_profile_has_private_backends_and_verified_jwks():
+    chart = CHART.parent / "skuld"
+    command = ["helm", "template", "test", str(chart), "-f", str(chart / "values-auth.yaml")]
+    for setting in [
+        "session.id=one",
+        "session.ownerId=alice",
+        "session.tenantId=acme",
+        "envoy.jwt.issuer=https://issuer.test",
+        "envoy.jwt.audiences[0]=skuld",
+        "envoy.jwt.jwksUri=https://issuer.test/jwks",
+        "envoy.jwt.keycloakHost=issuer.test",
+        "envoy.jwt.keycloakTls=true",
+        "envoy.jwt.keycloakPort=443",
+    ]:
+        command.extend(["--set", setting])
+    docs = [d for d in yaml.safe_load_all(subprocess.check_output(command)) if d]
+    config = next(
+        yaml.safe_load(d["data"]["config.yaml"])
+        for d in docs
+        if d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
+    )
+    assert config["host"] == "127.0.0.1"
+    assert config["ws_auth"]["enforce_ownership"] is True
+    assert (
+        config["ws_auth"]["authorization"]["adapter"]
+        == "identity.adapters.cedar.CedarAuthorizationAdapter"
+    )
+    nginx = next(
+        d["data"]["nginx.conf"]
+        for d in docs
+        if d["kind"] == "ConfigMap" and "nginx.conf" in d.get("data", {})
+    )
+    assert "listen 127.0.0.1:8080;" in nginx
+    assert "$request_uri" not in nginx.split("log_format", 1)[1].split(";", 1)[0]
+    envoy = envoy_config(docs)
+    filters = envoy["static_resources"]["listeners"][0]["filter_chains"][0]["filters"][0][
+        "typed_config"
+    ]["http_filters"]
+    assert [f["name"] for f in filters] == [
+        "envoy.filters.http.lua",
+        "envoy.filters.http.jwt_authn",
+        "envoy.filters.http.ext_authz",
+        "envoy.filters.http.router",
+    ]
+    binding = AuthorizationGatewayConfig.model_validate(
+        next(
+            yaml.safe_load(d["data"]["authz.yaml"])
+            for d in docs
+            if d["kind"] == "ConfigMap" and "authz.yaml" in d.get("data", {})
+        )
+    )
+    pod = next(d for d in docs if d["kind"] == "Deployment")["spec"]["template"]["spec"]
+    assert any(c["name"] == "cedar-authz" for c in pod["containers"])
+    policy = next(d for d in docs if d["kind"] == "NetworkPolicy")
+    assert policy["spec"]["policyTypes"] == ["Ingress"]
+    assert policy["spec"]["ingress"] == [{"ports": [{"protocol": "TCP", "port": 8444}]}]
+    assert all("image" not in v and "command" not in v for v in pod["volumes"])
+    authz_container = next(c for c in pod["containers"] if c["name"] == "cedar-authz")
+    assert "fsGroup" not in authz_container["securityContext"]
+    assert authz_container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert binding.session.owner_id == "alice"
+    assert binding.session.tenant_id == "acme"
+    cluster = next(c for c in envoy["static_resources"]["clusters"] if "transport_socket" in c)
+    validation = cluster["transport_socket"]["typed_config"]["common_tls_context"][
+        "validation_context"
+    ]
+    assert validation["trusted_ca"]["filename"]
+    assert validation["match_typed_subject_alt_names"]

@@ -802,33 +802,36 @@ def create_app(
                         resource_id = UUID(session_id)
                     except ValueError:
                         return False
+                    from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
+
+                    principal = Principal(
+                        user_id=user_id or "",
+                        email="",
+                        tenant_id=tenant_id or "",
+                        roles=list(roles),
+                    )
+                    if isinstance(identity_adapter, HeaderAuthenticationPort):
+                        keys = settings.identity.kwargs
+                        headers = {
+                            keys.get("user_id_header", "x-auth-user-id"): principal.user_id,
+                            keys.get("tenant_header", "x-auth-tenant"): principal.tenant_id,
+                            keys.get("roles_header", "x-auth-roles"): ",".join(principal.roles),
+                        }
+                        try:
+                            principal = await identity_adapter.validate_headers(headers)
+                        except InvalidTokenError:
+                            return False
                     session = await repository.get(resource_id)
                     if session is None:
-                        principal = Principal(
-                            user_id=user_id or "",
-                            email="",
-                            tenant_id=tenant_id or "default",
-                            roles=list(roles),
-                        )
                         try:
                             await resident_runtime_service.get(principal, resource_id)
                         except ResidentRuntimeNotFoundError:
                             return False
                         return True
-                    if not session.owner_id:
-                        # Unknown or unowned (legacy/dev) session: not the
-                        # proxy's job to invent a policy — stay permissive.
-                        return True
                     # Delegate to the ONE authorization policy (the same adapter
                     # the REST API uses) so the WS attach check can never drift
                     # from it. "start" is the mutating action-class the ladder
                     # gates on owner match.
-                    principal = Principal(
-                        user_id=user_id or "",
-                        email="",
-                        tenant_id=tenant_id or "default",
-                        roles=list(roles),
-                    )
                     resource = Resource(
                         kind="session",
                         id=session_id,

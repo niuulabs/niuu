@@ -11,6 +11,8 @@ from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from identity.models import Principal, Resource
+from identity.ports import AuthorizationEvaluationError
 from niuu.domain.transcript_reducer import PER_CONNECT_MARKER
 from skuld.channels import WebSocketChannel, _is_expected_ws_disconnect
 from skuld.websocket_auth import (
@@ -30,28 +32,30 @@ def _sanitize_log(value: object) -> str:
 class WebSocketLifecycleMixin:
     """Own browser, CLI, and Ravn WebSocket connection handling."""
 
-    def _authorize_websocket(self, websocket: WebSocket, *, endpoint: str) -> bool:
-        """Enforce session ownership on an inbound WebSocket connection.
-
-        Authorization only — token signatures are validated upstream (Envoy /
-        API gateway). The verdict mirrors Volundr's
-        ``SimpleRoleAuthorizationAdapter``: tenant scoping first, admin
-        bypass, then owner match. Sessions without an ``owner_id`` (legacy or
-        unauthenticated dev sessions) are not restricted. Unauthenticated
-        loopback peers (the in-pod CLI, flock ravn daemons) are trusted when
-        ``ws_auth.allow_loopback`` is set — they share the pod trust boundary.
-        """
+    async def _authorize_websocket(self, websocket: WebSocket, *, endpoint: str) -> bool:
+        """Enforce configured ownership using only proxy-verified identity."""
         cfg = self._settings.ws_auth
         if not cfg.enforce_ownership:
             return True
 
         owner_id = (self._settings.session.owner_id or "").strip()
-        if not owner_id:
-            return True
+        session_tenant = (self._settings.session.tenant_id or "").strip()
+        if not owner_id or not session_tenant:
+            return False
 
-        principal = _resolve_ws_principal(websocket)
+        principal = _resolve_ws_principal(
+            websocket,
+            user_id_header=cfg.user_id_header,
+            tenant_header=cfg.tenant_header,
+            roles_header=cfg.roles_header,
+        )
         if principal is None:
-            if cfg.allow_loopback and _is_loopback_ws_client(websocket):
+            if (
+                cfg.allow_loopback
+                and endpoint in ("handle_cli_websocket", "handle_ravn_websocket")
+                and _is_loopback_ws_client(websocket)
+                and not websocket.headers.get("x-forwarded-for")
+            ):
                 return True
             logger.warning(
                 "%s: rejecting unauthenticated WebSocket (session owner enforced)",
@@ -59,8 +63,7 @@ class WebSocketLifecycleMixin:
             )
             return False
 
-        session_tenant = (self._settings.session.tenant_id or "").strip()
-        if session_tenant and principal.tenant_id and principal.tenant_id != session_tenant:
+        if principal.tenant_id != session_tenant:
             logger.warning(
                 "%s: rejecting cross-tenant WebSocket (user=%s)",
                 endpoint,
@@ -68,18 +71,24 @@ class WebSocketLifecycleMixin:
             )
             return False
 
-        if any(role in principal.roles for role in cfg.admin_roles):
-            return True
-
-        if principal.user_id == owner_id:
-            return True
-
-        logger.warning(
-            "%s: rejecting WebSocket from non-owner (user=%s)",
-            endpoint,
-            _sanitize_log(principal.user_id),
+        mapped_roles = [cfg.role_mapping.get(r, r) for r in principal.roles]
+        roles = [r for r in mapped_roles if r != "volundr:admin" and r not in cfg.admin_roles]
+        if any(r in cfg.admin_roles for r in mapped_roles):
+            roles.append("volundr:admin")
+        actor = Principal(principal.user_id, "", principal.tenant_id, roles)
+        resource = Resource(
+            "session",
+            self.session_id,
+            {
+                "owner_id": owner_id,
+                "tenant_id": session_tenant,
+            },
         )
-        return False
+        try:
+            return await self._ws_authorization.is_allowed(actor, "start", resource)
+        except AuthorizationEvaluationError:
+            logger.exception("WebSocket authorization failed")
+            return False
 
     def _update_jwt_from_websocket(self, websocket: WebSocket) -> None:
         """Extract and store JWT from an incoming WebSocket connection.
@@ -124,7 +133,7 @@ class WebSocketLifecycleMixin:
         """Handle a browser WebSocket connection at /session."""
         # Ownership check first — a rejected caller must not overwrite the
         # broker's stored JWT or reach any session frames.
-        if not self._authorize_websocket(websocket, endpoint="handle_websocket"):
+        if not await self._authorize_websocket(websocket, endpoint="handle_websocket"):
             await websocket.close(code=1008, reason="Not authorized for this session")
             return
 
@@ -363,7 +372,7 @@ class WebSocketLifecycleMixin:
             type(self._transport).__name__ if self._transport else None,
         )
 
-        if not self._authorize_websocket(websocket, endpoint="handle_cli_websocket"):
+        if not await self._authorize_websocket(websocket, endpoint="handle_cli_websocket"):
             await websocket.close(code=1008, reason="Not authorized for this session")
             return
 
@@ -406,7 +415,7 @@ class WebSocketLifecycleMixin:
             await websocket.close(code=1008, reason="Room mode is not enabled")
             return
 
-        if not self._authorize_websocket(websocket, endpoint="handle_ravn_websocket"):
+        if not await self._authorize_websocket(websocket, endpoint="handle_ravn_websocket"):
             await websocket.close(code=1008, reason="Not authorized for this session")
             return
 

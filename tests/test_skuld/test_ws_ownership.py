@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import WebSocketDisconnect
+from fastapi import WebSocket, WebSocketDisconnect
 
 from skuld.broker import (
     Broker,
@@ -28,7 +28,7 @@ from skuld.config import SkuldSettings
 def _fake_ws(headers=None, query=None, host="203.0.113.7"):
     """Minimal WebSocket stand-in for pre-accept authorization checks."""
     return SimpleNamespace(
-        headers=dict(headers or {}),
+        headers={"x-auth-tenant": "t1", "x-auth-roles": "volundr:developer", **dict(headers or {})},
         query_params=dict(query or {}),
         client=SimpleNamespace(host=host),
         accept=AsyncMock(),
@@ -44,17 +44,17 @@ def _jwt(claims: dict) -> str:
     return f"eyJhbGciOiJub25lIn0.{payload}.sig"
 
 
-def _broker(owner_id="", tenant_id="", **ws_auth) -> Broker:
+def _broker(owner_id="", tenant_id="t1", **ws_auth) -> Broker:
     settings = SkuldSettings(
         session={"id": "test-session", "owner_id": owner_id, "tenant_id": tenant_id},
         transport="subprocess",
-        **({"ws_auth": ws_auth} if ws_auth else {}),
+        ws_auth={"enforce_ownership": True, **ws_auth},
     )
     return Broker(settings=settings)
 
 
 class TestResolveWsPrincipal:
-    def test_envoy_headers_win(self):
+    async def test_envoy_headers_win(self):
         ws = _fake_ws(
             headers={
                 "x-auth-user-id": "alice",
@@ -69,103 +69,76 @@ class TestResolveWsPrincipal:
         assert principal.tenant_id == "t1"
         assert "volundr:admin" in principal.roles
 
-    def test_dev_query_params(self):
-        ws = _fake_ws(query={"devUserId": "bob", "devTenantId": "t2", "devRoles": "volundr:viewer"})
-        principal = _resolve_ws_principal(ws)
-        assert principal is not None
-        assert principal.user_id == "bob"
-        assert principal.tenant_id == "t2"
-        assert principal.roles == ("volundr:viewer",)
+    @pytest.mark.parametrize(
+        "carrier", ["authorization", "token", "access_token", "protocol", "dev"]
+    )
+    async def test_unverified_identity_is_not_accepted(self, carrier):
+        token = _jwt({"sub": "alice", "tenant": "t1", "roles": ["volundr:admin"]})
+        ws = {
+            "authorization": _fake_ws(headers={"authorization": f"Bearer {token}"}),
+            "token": _fake_ws(query={"token": token}),
+            "access_token": _fake_ws(query={"access_token": token}),
+            "protocol": _fake_ws(headers={"sec-websocket-protocol": f"volundr.bearer.{token}"}),
+            "dev": _fake_ws(query={"devUserId": "alice", "devTenantId": "t1"}),
+        }[carrier]
+        assert _resolve_ws_principal(ws) is None
 
-    def test_dev_query_default_role(self):
-        principal = _resolve_ws_principal(_fake_ws(query={"devUserId": "bob"}))
-        assert principal is not None
-        assert principal.roles == ("volundr:developer",)
+    async def test_missing_roles_grant_nothing(self):
+        assert (
+            _resolve_ws_principal(
+                _fake_ws(headers={"x-auth-user-id": "alice", "x-auth-roles": ""})
+            ).roles
+            == ()
+        )
 
-    def test_bearer_token_claims(self):
-        token = _jwt({"sub": "carol", "tenant": "t3", "roles": ["volundr:developer"]})
-        ws = _fake_ws(headers={"authorization": f"Bearer {token}"})
-        principal = _resolve_ws_principal(ws)
-        assert principal is not None
-        assert principal.user_id == "carol"
-        assert principal.tenant_id == "t3"
-        assert principal.roles == ("volundr:developer",)
-
-    def test_envoy_token_query_param(self):
-        token = _jwt({"sub": "dave"})
-        principal = _resolve_ws_principal(_fake_ws(query={"token": token}))
-        assert principal is not None
-        assert principal.user_id == "dave"
-
-    def test_legacy_access_token_query_param(self):
-        token = _jwt({"sub": "dave"})
-        principal = _resolve_ws_principal(_fake_ws(query={"access_token": token}))
-        assert principal is not None
-        assert principal.user_id == "dave"
-        assert principal.tenant_id == ""
-        assert principal.roles == ()
-
-    def test_subprotocol_token(self):
-        token = _jwt({"sub": "erin"})
-        ws = _fake_ws(headers={"sec-websocket-protocol": f"volundr.bearer.{token}"})
-        principal = _resolve_ws_principal(ws)
-        assert principal is not None
-        assert principal.user_id == "erin"
-
-    def test_keycloak_realm_access_roles(self):
-        token = _jwt({"sub": "frank", "realm_access": {"roles": ["volundr:admin"]}})
-        principal = _resolve_ws_principal(_fake_ws(headers={"authorization": f"Bearer {token}"}))
-        assert principal is not None
-        assert principal.roles == ("volundr:admin",)
-
-    def test_no_identity(self):
+    async def test_no_identity(self):
         assert _resolve_ws_principal(_fake_ws()) is None
 
-    def test_token_without_sub(self):
+    async def test_token_without_sub(self):
         token = _jwt({"name": "nobody"})
         assert _resolve_ws_principal(_fake_ws(query={"access_token": token})) is None
 
 
 class TestLoopbackDetection:
-    def test_loopback_hosts(self):
+    async def test_loopback_hosts(self):
         assert _is_loopback_ws_client(_fake_ws(host="127.0.0.1"))
         assert _is_loopback_ws_client(_fake_ws(host="::1"))
 
-    def test_remote_host(self):
+    async def test_remote_host(self):
         assert not _is_loopback_ws_client(_fake_ws(host="203.0.113.7"))
 
-    def test_missing_client(self):
+    async def test_missing_client(self):
         ws = _fake_ws()
         ws.client = None
         assert not _is_loopback_ws_client(ws)
 
 
 class TestAuthorizeWebsocket:
-    def test_no_owner_allows_everyone(self):
+    async def test_no_owner_denies_when_enforced(self):
         broker = _broker(owner_id="")
-        assert broker._authorize_websocket(_fake_ws(), endpoint="t") is True
+        assert await broker._authorize_websocket(_fake_ws(), endpoint="t") is False
 
-    def test_enforcement_disabled_allows_everyone(self):
+    async def test_enforcement_disabled_allows_everyone(self):
         broker = _broker(owner_id="alice", enforce_ownership=False)
         ws = _fake_ws(headers={"x-auth-user-id": "mallory"})
-        assert broker._authorize_websocket(ws, endpoint="t") is True
+        assert await broker._authorize_websocket(ws, endpoint="t") is True
 
-    def test_owner_match_allows(self):
+    async def test_owner_match_allows(self):
         broker = _broker(owner_id="alice")
         ws = _fake_ws(headers={"x-auth-user-id": "alice"})
-        assert broker._authorize_websocket(ws, endpoint="t") is True
+        assert await broker._authorize_websocket(ws, endpoint="t") is True
 
-    def test_non_owner_denied(self):
+    async def test_non_owner_denied(self):
         broker = _broker(owner_id="alice")
         ws = _fake_ws(headers={"x-auth-user-id": "mallory"})
-        assert broker._authorize_websocket(ws, endpoint="t") is False
+        assert await broker._authorize_websocket(ws, endpoint="t") is False
 
-    def test_admin_bypass(self):
+    async def test_admin_bypass(self):
         broker = _broker(owner_id="alice")
         ws = _fake_ws(headers={"x-auth-user-id": "root", "x-auth-roles": "volundr:admin"})
-        assert broker._authorize_websocket(ws, endpoint="t") is True
+        assert await broker._authorize_websocket(ws, endpoint="t") is True
 
-    def test_cross_tenant_denied_even_for_admin(self):
+    async def test_cross_tenant_denied_even_for_admin(self):
         broker = _broker(owner_id="alice", tenant_id="t1")
         ws = _fake_ws(
             headers={
@@ -174,32 +147,32 @@ class TestAuthorizeWebsocket:
                 "x-auth-roles": "volundr:admin",
             }
         )
-        assert broker._authorize_websocket(ws, endpoint="t") is False
+        assert await broker._authorize_websocket(ws, endpoint="t") is False
 
-    def test_unknown_identity_tenant_skips_tenant_check(self):
-        # PATs carry only ``sub`` — an empty identity tenant must not deny
-        # the owner.
+    async def test_unknown_identity_tenant_denied(self):
         broker = _broker(owner_id="alice", tenant_id="t1")
         token = _jwt({"sub": "alice"})
         ws = _fake_ws(query={"access_token": token})
-        assert broker._authorize_websocket(ws, endpoint="t") is True
+        assert await broker._authorize_websocket(ws, endpoint="t") is False
 
-    def test_unauthenticated_loopback_allowed(self):
+    async def test_unauthenticated_loopback_denied_by_default(self):
         broker = _broker(owner_id="alice")
-        assert broker._authorize_websocket(_fake_ws(host="127.0.0.1"), endpoint="t") is True
+        assert await broker._authorize_websocket(_fake_ws(host="127.0.0.1"), endpoint="t") is False
 
-    def test_unauthenticated_remote_denied(self):
+    async def test_unauthenticated_remote_denied(self):
         broker = _broker(owner_id="alice")
-        assert broker._authorize_websocket(_fake_ws(host="203.0.113.7"), endpoint="t") is False
+        assert (
+            await broker._authorize_websocket(_fake_ws(host="203.0.113.7"), endpoint="t") is False
+        )
 
-    def test_loopback_disallowed_when_configured(self):
+    async def test_loopback_disallowed_when_configured(self):
         broker = _broker(owner_id="alice", allow_loopback=False)
-        assert broker._authorize_websocket(_fake_ws(host="127.0.0.1"), endpoint="t") is False
+        assert await broker._authorize_websocket(_fake_ws(host="127.0.0.1"), endpoint="t") is False
 
-    def test_dev_identity_owner_match(self):
+    async def test_dev_identity_does_not_bypass_enforcement(self):
         broker = _broker(owner_id="dev-user")
         ws = _fake_ws(query={"devUserId": "dev-user"})
-        assert broker._authorize_websocket(ws, endpoint="t") is True
+        assert await broker._authorize_websocket(ws, endpoint="t") is False
 
 
 class TestHandlerRejection:
@@ -242,7 +215,7 @@ class TestHandlerRejection:
     @pytest.mark.asyncio
     async def test_ravn_websocket_loopback_peer_allowed(self):
         # In-pod flock daemons carry no user token; loopback keeps them working.
-        broker = _broker(owner_id="alice")
+        broker = _broker(owner_id="alice", allow_loopback=True)
         register = AsyncMock()
         unregister = AsyncMock()
         broker._room_bridge = MagicMock(register=register, unregister=unregister)
@@ -252,3 +225,100 @@ class TestHandlerRejection:
         ws.accept.assert_awaited_once()
         register.assert_awaited()
         unregister.assert_awaited_once()
+
+
+async def test_mini_mode_without_auth_accepts_unauthenticated_browser():
+    broker = Broker(settings=SkuldSettings(transport="subprocess"))
+    assert await broker._authorize_websocket(_fake_ws(), endpoint="handle_websocket")
+
+
+async def test_loopback_trust_never_applies_to_browser_endpoint():
+    broker = _broker(owner_id="alice", allow_loopback=True)
+    assert not await broker._authorize_websocket(
+        _fake_ws(host="127.0.0.1"), endpoint="handle_websocket"
+    )
+
+
+async def test_missing_tenant_denies_even_verified_owner():
+    broker = _broker(owner_id="alice")
+    assert not await broker._authorize_websocket(
+        _fake_ws(headers={"x-auth-user-id": "alice", "x-auth-tenant": ""}), endpoint="t"
+    )
+
+
+@pytest.mark.parametrize("endpoint", ["handle_cli_websocket", "handle_ravn_websocket"])
+async def test_proxied_loopback_cannot_claim_in_pod_trust(endpoint):
+    broker = _broker(owner_id="alice", allow_loopback=True)
+    ws = _fake_ws(host="127.0.0.1", headers={"x-forwarded-for": "203.0.113.7"})
+    assert not await broker._authorize_websocket(ws, endpoint=endpoint)
+
+
+@pytest.mark.parametrize("role", ["volundr:viewer", "unknown", ""])
+async def test_cedar_denies_interactive_attachment_without_write_role(role):
+    broker = _broker(owner_id="alice")
+    ws = _fake_ws(headers={"x-auth-user-id": "alice", "x-auth-roles": role})
+    assert not await broker._authorize_websocket(ws, endpoint="handle_websocket")
+
+
+async def test_cedar_failure_denies_before_socket_accept():
+    from identity.ports import AuthorizationEvaluationError
+
+    broker = _broker(owner_id="alice")
+    broker._ws_authorization = AsyncMock()
+    broker._ws_authorization.is_allowed.side_effect = AuthorizationEvaluationError("unavailable")
+    ws = _fake_ws(headers={"x-auth-user-id": "alice"})
+    await broker.handle_websocket(ws)
+    ws.accept.assert_not_awaited()
+    ws.close.assert_awaited_once()
+
+
+async def test_custom_proxy_headers_and_roles_reach_cedar():
+    broker = _broker(
+        owner_id="alice",
+        user_id_header="x-verified-user",
+        tenant_header="x-verified-tenant",
+        roles_header="x-verified-roles",
+        role_mapping={"builder": "volundr:developer"},
+    )
+    ws = _fake_ws(
+        headers={
+            "x-verified-user": "alice",
+            "x-verified-tenant": "t1",
+            "x-verified-roles": "builder",
+            "x-auth-user-id": "forged",
+            "x-auth-roles": "volundr:admin",
+        }
+    )
+    assert await broker._authorize_websocket(ws, endpoint="handle_websocket") is True
+    ws.headers["x-verified-roles"] = "unknown"
+    assert await broker._authorize_websocket(ws, endpoint="handle_websocket") is False
+
+
+def test_enforced_broker_closes_expired_browser_connection(monkeypatch):
+    import time
+    from collections import deque
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from skuld import broker_api
+
+    app = FastAPI()
+    monkeypatch.setattr(broker_api, "app", app)
+    monkeypatch.setattr(broker_api, "_broker_getter", broker_api._broker_getter)
+    monkeypatch.setattr(broker_api, "_log_buffer", broker_api._log_buffer)
+    secured = _broker(owner_id="alice", websocket_check_interval=0.01)
+    broker_api.bind_broker(lambda: secured, deque())
+
+    async def connection(websocket: WebSocket):
+        await websocket.accept()
+        await websocket.receive_text()
+
+    app.websocket("/socket")(connection)
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            f"/socket?token={_jwt({'exp': time.time() + 0.2})}"
+        ) as socket:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                socket.receive_text()
+            assert exc.value.code == 1008
