@@ -6,6 +6,7 @@ import os
 import stat
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -454,3 +455,28 @@ async def test_clear_decision_streak_forgets_it(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_clear_decision_streak_reports_when_there_was_none(tmp_path) -> None:
     assert await _memory(tmp_path).clear_decision_streak("regin") is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reference", ["../outside.md", "absolute", "symlink"])
+async def test_local_memory_rejects_paths_outside_root(tmp_path, reference) -> None:
+    root = tmp_path / "memory"
+    root.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("private outside content")
+    if reference == "absolute":
+        reference = str(outside)
+    elif reference == "symlink":
+        (root / "escape.md").symlink_to(outside)
+        reference = "escape.md"
+    mem = LocalResidentMemory(root)
+    with pytest.raises(ValueError, match="storage root"):
+        await mem.read(reference)
+    with pytest.raises(ValueError, match="storage root"):
+        mem._write(Path(reference), "overwritten")
+    assert outside.read_text() == "private outside content"
+
+
+def test_local_memory_rejects_prefix_escape(tmp_path) -> None:
+    with pytest.raises(ValueError, match="storage root"):
+        LocalResidentMemory(tmp_path, prefix="../outside")
