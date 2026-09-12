@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from ting.api.runs import (
     create_runs_router,
     resolve_git,
@@ -362,6 +363,7 @@ def client(
     git: MockGit,
 ) -> TestClient:
     app = FastAPI()
+    app.state.authorization = AllowAllAuthorizationAdapter()
     app.include_router(create_runs_router())
     app.dependency_overrides[resolve_tracker] = lambda: tracker
     app.dependency_overrides[resolve_volundr] = lambda: volundr
@@ -738,6 +740,7 @@ class TestRunsSummary:
     def _make_client(self, counts: dict[str, int] | None = None) -> TestClient:
         repo = MockSagaRepository(counts)
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_runs_router())
         app.dependency_overrides[resolve_run_repo] = lambda: repo
         app.state.settings = SimpleNamespace(
@@ -782,6 +785,7 @@ class TestRunsSummary:
 
     def test_unconfigured_repo_returns_503(self):
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_runs_router())
         app.state.settings = SimpleNamespace(
             review=REVIEW_CFG,

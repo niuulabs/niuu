@@ -36,6 +36,9 @@ def _make_row(
         "name": name,
         "created_at": datetime.now(UTC),
         "last_used_at": None,
+        "tenant_id": "acme",
+        "scopes": None,
+        "expires_at": None,
     }
 
 

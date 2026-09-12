@@ -278,6 +278,7 @@ def create_research_router() -> APIRouter:
         now = datetime.now(UTC)
         stage_state = _initial_stage_state(execution.workflow_snapshot, now)
         campaign = WorkflowCampaign(
+            tenant_id=principal.tenant_id,
             id=uuid4(),
             slug=slug,
             name=campaign_name,

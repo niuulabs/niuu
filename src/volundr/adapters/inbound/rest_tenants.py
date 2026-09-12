@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_serializer
 
 from identity.application import IdentityService, TenantCreateCommand, TenantUpdateCommand
-from identity.models import Principal, TenantRole, TenantTier
+from identity.models import Principal, Resource, TenantRole, TenantTier
+from identity.ports import AuthorizationEvaluationError
 from identity.service import (
     TenantAlreadyExistsError,
     TenantNotFoundError,
@@ -427,12 +428,37 @@ def _register_identity_routes(
         tags=["Identity"],
     )
 
+    async def allowed(request: Request, principal: Principal, tenant_id: str, action: str):
+        authorization = getattr(request.app.state, "authorization", None)
+        if authorization is None:
+            raise HTTPException(status_code=503, detail="Authorization unavailable")
+        try:
+            return await authorization.is_allowed(
+                principal,
+                action,
+                Resource(kind="tenant", id=tenant_id, attr={"tenant_id": tenant_id}),
+            )
+        except AuthorizationEvaluationError as exc:
+            raise HTTPException(status_code=503, detail="Authorization unavailable") from exc
+
+    async def authorize(request: Request, principal: Principal, tenant_id: str, action: str):
+        if not await allowed(request, principal, tenant_id, action):
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+    async def managed_users(request: Request, principal: Principal) -> set[str] | None:
+        if await allowed(request, principal, "", "update"):
+            return None
+        await authorize(request, principal, principal.tenant_id, "update")
+        return {member.user_id for member in await service.list_members(principal.tenant_id)}
+
     async def list_users(
-        _: Principal = Depends(require_role("volundr:admin")),
+        request: Request,
+        principal: Principal = Depends(require_role("volundr:admin")),
     ):
         """List all users (admin only)."""
+        user_ids = await managed_users(request, principal)
         users = await service.list_users()
-        return [_user_to_response(u) for u in users]
+        return [_user_to_response(u) for u in users if user_ids is None or u.id in user_ids]
 
     router.add_api_route(
         "/users",
@@ -445,9 +471,12 @@ def _register_identity_routes(
     async def reprovision_user(
         user_id: str,
         request: Request,
-        _: Principal = Depends(require_role("volundr:admin")),
+        principal: Principal = Depends(require_role("volundr:admin")),
     ):
         """Re-provision storage for a user (admin only)."""
+        user_ids = await managed_users(request, principal)
+        if user_ids is not None and user_id not in user_ids:
+            raise HTTPException(status_code=403, detail="Forbidden")
         result = await service.reprovision_user(user_id, storage=_storage_from_request(request))
         return _provisioning_result_to_payload(result)
 
@@ -459,12 +488,17 @@ def _register_identity_routes(
     )
 
     async def list_tenants(
+        request: Request,
         parent_id: str | None = Query(default=None, description="Filter by parent tenant ID"),
-        _: Principal = Depends(extract_principal),
+        principal: Principal = Depends(extract_principal),
     ):
         """List tenants."""
         tenants = await service.list_tenants(parent_id)
-        return [_tenant_to_response(t) for t in tenants]
+        return [
+            _tenant_to_response(t)
+            for t in tenants
+            if await allowed(request, principal, t.id, "read")
+        ]
 
     router.add_api_route(
         "/tenants",
@@ -474,10 +508,12 @@ def _register_identity_routes(
     )
 
     async def create_tenant(
+        request: Request,
         body: TenantCreate,
-        _: Principal = Depends(require_role("volundr:admin")),
+        principal: Principal = Depends(require_role("volundr:admin")),
     ):
         """Create a new tenant (admin only)."""
+        await authorize(request, principal, "", "create")
         try:
             tenant = await service.create_tenant(
                 TenantCreateCommand(
@@ -504,10 +540,12 @@ def _register_identity_routes(
     )
 
     async def get_tenant(
+        request: Request,
         tenant_id: str,
-        _: Principal = Depends(extract_principal),
+        principal: Principal = Depends(extract_principal),
     ):
         """Get a tenant by ID."""
+        await authorize(request, principal, tenant_id, "read")
         try:
             tenant = await service.get_tenant(tenant_id)
         except TenantNotFoundError as e:
@@ -522,11 +560,13 @@ def _register_identity_routes(
     )
 
     async def update_tenant(
+        request: Request,
         tenant_id: str,
         body: TenantUpdate,
-        _: Principal = Depends(require_role("volundr:admin")),
+        principal: Principal = Depends(require_role("volundr:admin")),
     ):
         """Update tenant settings (admin only)."""
+        await authorize(request, principal, tenant_id, "update")
         try:
             tenant = await service.update_tenant(
                 tenant_id,
@@ -548,10 +588,12 @@ def _register_identity_routes(
     )
 
     async def delete_tenant(
+        request: Request,
         tenant_id: str,
-        _: Principal = Depends(require_role("volundr:admin")),
+        principal: Principal = Depends(require_role("volundr:admin")),
     ):
         """Delete a tenant (admin only)."""
+        await authorize(request, principal, tenant_id, "delete")
         deleted = await service.delete_tenant(tenant_id)
         if not deleted:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
@@ -564,10 +606,12 @@ def _register_identity_routes(
     )
 
     async def list_members(
+        request: Request,
         tenant_id: str,
-        _: Principal = Depends(extract_principal),
+        principal: Principal = Depends(extract_principal),
     ):
         """List members of a tenant."""
+        await authorize(request, principal, tenant_id, "read")
         members = await service.list_members(tenant_id)
         return [_membership_to_response(m) for m in members]
 
@@ -579,11 +623,13 @@ def _register_identity_routes(
     )
 
     async def add_member(
+        request: Request,
         tenant_id: str,
         body: MemberCreate,
-        _: Principal = Depends(require_role("volundr:admin")),
+        principal: Principal = Depends(require_role("volundr:admin")),
     ):
         """Add a member to a tenant (admin only)."""
+        await authorize(request, principal, tenant_id, "update")
         try:
             membership = await service.add_member(
                 tenant_id,
@@ -605,11 +651,13 @@ def _register_identity_routes(
     )
 
     async def remove_member(
+        request: Request,
         tenant_id: str,
         user_id: str,
-        _: Principal = Depends(require_role("volundr:admin")),
+        principal: Principal = Depends(require_role("volundr:admin")),
     ):
         """Remove a member from a tenant (admin only)."""
+        await authorize(request, principal, tenant_id, "update")
         removed = await service.remove_member(tenant_id, user_id)
         if not removed:
             raise HTTPException(
@@ -627,9 +675,10 @@ def _register_identity_routes(
     async def reprovision_tenant(
         tenant_id: str,
         request: Request,
-        _: Principal = Depends(require_role("volundr:admin")),
+        principal: Principal = Depends(require_role("volundr:admin")),
     ):
         """Re-provision storage for all users in a tenant (admin only)."""
+        await authorize(request, principal, tenant_id, "update")
         results = await service.reprovision_tenant(
             tenant_id,
             storage=_storage_from_request(request),

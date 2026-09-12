@@ -1,37 +1,15 @@
-"""Least-privilege scope enforcement for short-lived workload credentials.
+"""Restrict IDP-signed OAuth PAT scopes and workload scope arrays.
 
-A workload that needs to do one specific thing — commission a build, launch a
-workflow, publish its own topology — authenticates with a short-lived JWT
-minted by the workload-identity exchange. Those tokens carry two extra claims:
-
-- ``token_use == "valkyrie_build"`` — marks the token as a scoped credential
-  (ordinary human PATs and ordinary workload tokens never carry this value).
-  The value is historical: builds were the first use, but the marker means
-  "this credential is scoped", not "this credential builds".
-- ``scopes`` — what the credential may do, bounded to
-  :data:`KNOWN_WORKLOAD_SCOPES` at issuance time.
-
-Enforcement is **stateless and fail-closed for scoped tokens only**:
-
-- A token WITHOUT ``token_use == "valkyrie_build"`` (humans, PATs, legacy
-  workload tokens) passes through untouched — full backward compatibility.
-- A scoped token is admitted at an entry point only when its ``scopes`` claim
-  contains the required scope; otherwise it is 403'd.
-
-A scope is only real because code enforces it: :func:`require_scope` on a
-route is what gives the string meaning. Adding an entry here without a
-matching enforcement point produces a credential that reads as restricted but
-protects nothing, which is why `test_token_scope.py` asserts the two stay in
-step.
-
-The JWT is decoded WITHOUT signature verification — the same posture as
-``PATValidator``: Envoy validates the signature upstream, so this layer
-only reads the already-trusted claims.
+Envoy verifies the JWT signature; this module only narrows verified authority.
+Scoped credentials are admitted solely at their named entry points and may
+inspect their own current identity. Legacy unscoped credentials retain their
+resource-policy permissions; hardened PAT issuance requires explicit scopes.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Awaitable, Callable
 
 import jwt
@@ -82,20 +60,32 @@ def _decode_claims(token: str) -> dict | None:
 
 def token_requires_scope_check(claims: dict) -> bool:
     """Return True when the token's claims mark it as a scoped credential."""
-    return claims.get("token_use") == VALKYRIE_BUILD_TOKEN_USE
+    return claims.get("token_use") == VALKYRIE_BUILD_TOKEN_USE or (
+        claims.get("type") == "pat"
+        and bool(set(str(claims.get("scope", "")).split()) & KNOWN_WORKLOAD_SCOPES)
+    )
+
+
+def credential_scopes(claims: dict) -> list[str]:
+    """Read the signed OAuth scope claim for PATs, or workload scope array."""
+    if claims.get("type") == "pat":
+        value = claims.get("scope", "")
+        return value.split() if isinstance(value, str) else []
+    value = claims.get("scopes", [])
+    return value if isinstance(value, list) and all(isinstance(s, str) for s in value) else []
+
+
+def validate_pat_scopes(scopes: list[str] | None) -> tuple[str, ...] | None:
+    """Reject unknown or empty grants rather than mint an unrestricted token."""
+    if scopes is None:
+        return None
+    if not scopes or any(s not in KNOWN_WORKLOAD_SCOPES for s in scopes):
+        raise ValueError("PAT scopes must be a non-empty list of supported scopes")
+    return tuple(sorted(set(scopes)))
 
 
 def token_has_scope(token: str, scope: str) -> bool:
-    """Return True when ``token`` is permitted to use ``scope``.
-
-    Backward-compatible and fail-closed for scoped tokens only:
-
-    - A missing or malformed token, or any token that is NOT a
-      ``valkyrie_build`` token, returns True (humans / PATs / legacy
-      workload tokens pass through unchanged).
-    - A ``valkyrie_build`` token returns True only when ``scope`` is present
-      in its ``scopes`` claim.
-    """
+    """Check a named grant on scoped PATs and workload credentials."""
     claims = _decode_claims(token)
     if claims is None:
         return True
@@ -103,7 +93,7 @@ def token_has_scope(token: str, scope: str) -> bool:
     if not token_requires_scope_check(claims):
         return True
 
-    granted = claims.get("scopes", [])
+    granted = credential_scopes(claims)
     if not isinstance(granted, list):
         return False
     return scope in granted
@@ -139,6 +129,26 @@ def bound_workload_scopes(requested: list[str] | None) -> list[str]:
             ", ".join(sorted(dropped)),
         )
     return allowed
+
+
+def credential_allows_route(token: str, method: str, path: str) -> bool:
+    """Deny scoped credentials everywhere except their explicit entry points."""
+    claims = _decode_claims(token)
+    if claims is None or not token_requires_scope_check(claims):
+        return True
+    if method == "GET" and path == "/api/v1/identity/me":
+        return True
+    routes = [
+        ("POST", r"/api/v1/forge/sessions", "forge:session:create"),
+        ("POST", r"/api/v1/ting/workflows/[^/?%]+/launch", "ting:workflow:launch"),
+        ("PUT", r"/api/v1/niuu/observatory/fragments/[^/?%]+", "observatory:topology:push"),
+        ("DELETE", r"/api/v1/niuu/observatory/fragments/[^/?%]+", "observatory:topology:push"),
+    ]
+    granted = credential_scopes(claims)
+    return any(
+        method == verb and re.fullmatch(pattern, path) and scope in granted
+        for verb, pattern, scope in routes
+    )
 
 
 def _bearer_from_request(request: Request) -> str:

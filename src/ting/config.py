@@ -469,6 +469,10 @@ class CerbosConfig(BaseModel):
 class PATConfig(BaseModel):
     """Personal access token configuration (matches Volundr's PATConfig)."""
 
+    service_adapter: str = "niuu.domain.services.pat.PATService"
+    service_kwargs: dict = Field(default_factory=dict)
+    validator_adapter: str = "niuu.domain.services.pat_validator.PATValidator"
+    validator_kwargs: dict = Field(default_factory=dict)
     token_issuer_adapter: str = Field(
         default="niuu.adapters.memory_token_issuer.MemoryTokenIssuer",
         description="Fully-qualified class path for the token issuer adapter.",
@@ -500,6 +504,8 @@ class PATConfig(BaseModel):
 class AuthConfig(BaseModel):
     """Authentication configuration."""
 
+    adapter: str = "identity.adapters.identity.EnvoyHeaderAuthenticationAdapter"
+    kwargs: dict = Field(default_factory=dict)
     allow_anonymous_dev: bool = Field(
         default=False,
         description=(

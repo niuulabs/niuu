@@ -15,6 +15,17 @@ data:
     adapter: {{ .Values.wsAuth.authorization.adapter | quote }}
     kwargs:
       {{- toYaml .Values.wsAuth.authorization.kwargs | nindent 6 }}
+    {{- if .Values.identityAuthority.enabled }}
+    identity:
+      adapter: identity.adapters.remote.RemoteHeaderAuthenticationAdapter
+      kwargs:
+        {{- include "skuld.identityAuthorityKwargs" . | nindent 8 }}
+    {{- else }}
+    {{- with .Values.envoy.authorization.identity }}
+    identity:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- end }}
     role_mapping:
       {{- toYaml .Values.envoy.authorization.roleMapping | nindent 6 }}
     providers:

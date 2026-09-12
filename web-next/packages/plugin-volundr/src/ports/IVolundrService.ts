@@ -335,6 +335,6 @@ export interface IVolundrService {
 
   // Personal Access Tokens
   listTokens(): Promise<PersonalAccessToken[]>;
-  createToken(name: string): Promise<CreatePATResult>;
+  createToken(name: string, scopes?: string[]): Promise<CreatePATResult>;
   revokeToken(id: string): Promise<void>;
 }

@@ -12,11 +12,12 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel, ConfigDict, Field, model_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
 
 from identity.adapters.http_auth import authorization_http_errors
 from niuu.domain.models import Principal
 from niuu.domain.services.pat import PATService
+from niuu.domain.services.token_scope import validate_pat_scopes
 from niuu.domain.services.workload_identity import (
     WorkloadIdentityError,
     WorkloadIdentityService,
@@ -42,6 +43,14 @@ class CreatePATRequest(BaseModel):
         description="Human-readable label for the token",
     )
 
+    scopes: list[str] | None = None
+
+    @field_validator("scopes")
+    @classmethod
+    def supported_scopes(cls, value):
+        validate_pat_scopes(value)
+        return value
+
 
 class PATResponse(BaseModel):
     """Response model for a personal access token (no raw token)."""
@@ -49,9 +58,13 @@ class PATResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: str
+    owner_id: str = ""
+    tenant_id: str = ""
     name: str
     created_at: datetime
     last_used_at: datetime | None
+    scopes: list[str] | None = None
+    expires_at: datetime | None = None
 
     @model_serializer(mode="wrap")
     def serialize_with_aliases(self, handler):
@@ -67,9 +80,13 @@ class CreatePATResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: str
+    owner_id: str = ""
+    tenant_id: str = ""
     name: str
     token: str
     created_at: datetime
+    scopes: list[str] | None = None
+    expires_at: datetime | None = None
 
     @model_serializer(mode="wrap")
     def serialize_with_aliases(self, handler):
@@ -250,15 +267,23 @@ def create_pats_router(
         await ensure_user(request, principal)
         service: PATService = request.app.state.pat_service
         # Extract the user's current access token for IDP token exchange
-        auth_header = request.headers.get("authorization", "")
-        subject_token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+        from niuu.adapters.inbound.auth_context import extract_bearer_token
+
+        subject_token = extract_bearer_token(request) or ""
         with authorization_http_errors():
-            pat, raw_token = await service.create(principal, body.name, subject_token=subject_token)
+            kwargs = {} if body.scopes is None else {"scopes": body.scopes}
+            pat, raw_token = await service.create(
+                principal, body.name, subject_token=subject_token, **kwargs
+            )
         return CreatePATResponse(
             id=str(pat.id),
+            owner_id=pat.owner_id,
+            tenant_id=pat.tenant_id,
             name=pat.name,
             token=raw_token,
             created_at=pat.created_at,
+            scopes=list(pat.scopes) if pat.scopes is not None else None,
+            expires_at=pat.expires_at,
         )
 
     @router.get(
@@ -287,8 +312,12 @@ def create_pats_router(
         return [
             PATResponse(
                 id=str(pat.id),
+                owner_id=pat.owner_id,
+                tenant_id=pat.tenant_id,
                 name=pat.name,
                 created_at=pat.created_at,
+                scopes=list(pat.scopes) if pat.scopes is not None else None,
+                expires_at=pat.expires_at,
                 last_used_at=pat.last_used_at,
             )
             for pat in pats

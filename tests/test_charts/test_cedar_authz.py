@@ -13,6 +13,7 @@ CHART = Path(__file__).parents[2] / "charts" / "volundr"
 
 def render_cedar(chart=CHART, **overrides):
     values = {
+        "pat.token_issuer_adapter": "niuu.adapters.keycloak_token_issuer.KeycloakTokenIssuer",
         "envoy.enabled": "true",
         "envoy.jwt.enabled": "true",
         "envoy.jwt.issuer": "https://issuer.test",
@@ -347,3 +348,99 @@ def test_skuld_secure_profile_has_private_backends_and_verified_jwks():
     ]
     assert validation["trusted_ca"]["filename"]
     assert validation["match_typed_subject_alt_names"]
+
+
+@pytest.mark.parametrize("chart_name", ["volundr", "ting", "skuld"])
+async def test_central_identity_wires_edge_application_and_pat_revocation(chart_name):
+    chart = CHART.parent / chart_name
+    overrides = {
+        "identityAuthority.enabled": "true",
+        "identityAuthority.url": "https://identity.test",
+    }
+    if chart_name == "skuld":
+        overrides.update(
+            {"session.ownerId": "alice", "session.tenantId": "acme", "session.id": "session-test"}
+        )
+    docs = render_cedar(chart, **overrides)
+    configs = [
+        yaml.safe_load(d["data"]["config.yaml"])
+        for d in docs
+        if d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
+    ]
+    config = configs[0]
+    edge = next(
+        yaml.safe_load(d["data"]["authz.yaml"])
+        for d in docs
+        if d["kind"] == "ConfigMap" and "authz.yaml" in d.get("data", {})
+    )
+    assert edge["identity"]["kwargs"]["authority_url"] == "https://identity.test"
+    AuthorizationGatewayConfig.model_validate(edge)
+    if chart_name == "skuld":
+        assert config["ws_auth"]["identity"] == edge["identity"]
+        return
+    auth = config["identity" if chart_name == "volundr" else "auth"]
+    assert auth["kwargs"]["authority_url"] == "https://identity.test"
+    assert config["pat"]["validator_adapter"] == "niuu.adapters.remote_pats.RemotePATValidator"
+    assert config["pat"]["service_adapter"] == "niuu.adapters.remote_pats.RemotePATService"
+
+
+@pytest.mark.parametrize("chart_name", ["volundr", "ting", "skuld", "guild", "observatory"])
+def test_no_auth_overrides_central_identity_profile(chart_name):
+    chart = CHART.parent / chart_name
+    command = [
+        "helm",
+        "template",
+        "test",
+        str(chart),
+        "-f",
+        str(chart / "values-central-identity.yaml"),
+        "-f",
+        str(chart / "values-no-auth.yaml"),
+    ]
+    docs = [d for d in yaml.safe_load_all(subprocess.check_output(command)) if d]
+    config = next(
+        yaml.safe_load(d["data"]["config.yaml"])
+        for d in docs
+        if d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
+    )
+    if chart_name == "skuld":
+        assert not config["ws_auth"]["enforce_ownership"]
+        assert "identity" not in config["ws_auth"]
+    elif chart_name == "ting":
+        assert config["auth"]["allow_anonymous_dev"]
+    else:
+        assert config["identity"]["adapter"] == "identity.adapters.identity.AllowAllIdentityAdapter"
+
+
+@pytest.mark.parametrize("chart_name", ["guild", "observatory"])
+def test_standalone_gateway_central_identity_configuration(chart_name):
+    chart = CHART.parent / chart_name
+    docs = [
+        d
+        for d in yaml.safe_load_all(
+            subprocess.check_output(
+                [
+                    "helm",
+                    "template",
+                    "test",
+                    str(chart),
+                    "-f",
+                    str(chart / "values-central-identity.yaml"),
+                    "--set",
+                    "identityAuthority.url=https://identity.test",
+                ]
+            )
+        )
+        if d
+    ]
+    config = next(
+        yaml.safe_load(d["data"]["config.yaml"])
+        for d in docs
+        if d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
+    )
+    assert (
+        config["identity"]["adapter"]
+        == "identity.adapters.remote.RemoteHeaderAuthenticationAdapter"
+    )
+    assert config["authorization"]["adapter"] == "identity.adapters.cedar.CedarAuthorizationAdapter"
+    assert config["pat"]["validator_kwargs"]["authority_url"] == "https://identity.test"

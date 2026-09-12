@@ -37,6 +37,7 @@ from niuu.service_databases import apply_service_database_settings, database_poo
 from niuu.service_instances import seed_configured_instances
 from niuu.service_runtime import (
     configure_logging,
+    create_authorization_adapter,
     create_identity_adapter,
     create_pat_validator,
     create_workload_identity_service,
@@ -94,7 +95,9 @@ def create_app(
             )
             instance_repository = PostgresInstanceRepository(pool)
             await instance_repository.ensure_schema()
-            instance_service = InstanceService(instance_repository)
+            instance_service = InstanceService(
+                instance_repository, authorization=create_authorization_adapter(loaded_settings)
+            )
 
             pat_repository = PostgresPATRepository(pool)
             pat_validator = create_pat_validator(loaded_settings, pat_repository)
@@ -116,6 +119,7 @@ def create_app(
             fragment_inbox = ObservatoryFragmentInboxService(
                 PostgresObservatoryFragmentRepository(pool),
                 ttl_seconds=loaded_settings.observatory.fragments.ttl_seconds,
+                authorization=create_authorization_adapter(loaded_settings),
             )
             app.include_router(
                 create_instances_router(
@@ -156,11 +160,12 @@ def create_app(
 
     app.router.lifespan_context = lifespan
 
-    apply_cors_middleware(app, loaded_settings.cors)
     app.add_middleware(
         PATRevocationMiddleware,
+        authenticate_http=True,
         websocket_check_interval=loaded_settings.pat.websocket_check_interval,
     )
+    apply_cors_middleware(app, loaded_settings.cors)
 
     @app.get("/health", tags=["Health"])
     async def health_check() -> dict[str, str]:

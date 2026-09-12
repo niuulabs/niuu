@@ -22,6 +22,12 @@ data:
       roles_header: {{ .Values.envoy.headerNames.roles | quote }}
       role_mapping: {{ .Values.envoy.authorization.roleMapping | toJson }}
       {{- toYaml .Values.wsAuth | nindent 6 }}
+      {{- if .Values.identityAuthority.enabled }}
+      identity:
+        adapter: identity.adapters.remote.RemoteHeaderAuthenticationAdapter
+        kwargs:
+          {{- include "skuld.identityAuthorityKwargs" . | nindent 10 }}
+      {{- end }}
 
     session:
       id: {{ include "skuld.sessionId" . | quote }}

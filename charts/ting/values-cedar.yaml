@@ -15,3 +15,9 @@ envoy:
       - /health
   authorization:
     enabled: true
+
+pat:
+  revocation_cache_ttl: 0
+  websocket_check_interval: 5
+  service_kwargs:
+    require_scopes: true

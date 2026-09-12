@@ -14,6 +14,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from identity.adapters.authorization import AllowAllAuthorizationAdapter
+from identity.models import Resource
 from niuu.domain.models import Principal
 from ting.adapters.inbound.auth import extract_principal
 from ting.api.tracker import resolve_trackers
@@ -55,6 +57,46 @@ async def _resolve_run_identifier(tracker: TrackerPort, run_id: str):
             return run
 
     return await tracker.get_run(run_id)
+
+
+async def _authorize_tracker_run(request: Request, principal: Principal, tracker, run):
+    authorization = getattr(request.app.state, "authorization", None)
+    if isinstance(authorization, AllowAllAuthorizationAdapter):
+        return True
+    if authorization is None:
+        raise HTTPException(status_code=503, detail="Authorization is not configured")
+    repo = getattr(request.app.state, "saga_repo", None)
+    if repo is None:
+        raise HTTPException(status_code=503, detail="Saga repository is not configured")
+    # The tracker supplies structure, never tenant or membership authority.
+    parent = await tracker.get_saga_for_run(run.tracker_id)
+    candidates = await repo.list_sagas(owner_id=principal.user_id) if parent else []
+    matches = [
+        s
+        for s in candidates
+        if s.tracker_id == parent.tracker_id and s.tenant_id == principal.tenant_id
+    ]
+    # Tracker UUIDs and imported local saga UUIDs need not be the same.
+    # Ambiguous registrations never establish authority for a mutation.
+    saga = matches[0] if len(matches) == 1 else None
+    action = request.path_params.get("action")
+    if request.method in ("GET", "HEAD"):
+        action = "read"
+    else:
+        action = request.url.path.rsplit("/", 1)[-1]
+        if action == "message":
+            action = "update"
+    kind = "saga" if action == "update" else "run"
+    return saga is not None and await authorization.is_allowed(
+        principal,
+        action,
+        Resource(kind, str(run.id), {"owner_id": saga.owner_id, "tenant_id": saga.tenant_id}),
+    )
+
+
+async def _require_tracker_run(request, principal, tracker, run):
+    if not await _authorize_tracker_run(request, principal, tracker, run):
+        raise HTTPException(status_code=404, detail="Run not found")
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +312,7 @@ def create_runs_router() -> APIRouter:
 
     @router.get("/active", response_model=list[ActiveRunResponse])
     async def list_active_runs(
+        request: Request,
         principal: Principal = Depends(extract_principal),
         adapters: list[TrackerPort] = Depends(resolve_trackers),
     ) -> list[ActiveRunResponse]:
@@ -282,6 +325,8 @@ def create_runs_router() -> APIRouter:
                 except Exception:
                     continue
                 for run in runs:
+                    if not await _authorize_tracker_run(request, principal, tracker, run):
+                        continue
                     results.append(
                         ActiveRunResponse(
                             tracker_id=run.tracker_id,
@@ -302,12 +347,17 @@ def create_runs_router() -> APIRouter:
     @router.get("/{run_id}/review", response_model=ReviewResponse)
     async def get_review(
         run_id: str,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
         tracker: TrackerPort = Depends(resolve_tracker),
         volundr: VolundrPort = Depends(resolve_volundr),
     ) -> ReviewResponse:
         """Get review state for a run: chronicle summary, CI status, confidence."""
         try:
             run = await _resolve_run_identifier(tracker, run_id)
+            await _require_tracker_run(request, principal, tracker, run)
+        except HTTPException:
+            raise
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -371,6 +421,9 @@ def create_runs_router() -> APIRouter:
         # Fetch run for REST-specific pre-steps (CI check, git merge)
         try:
             run = await _resolve_run_identifier(tracker, run_id)
+            await _require_tracker_run(request, principal, tracker, run)
+        except HTTPException:
+            raise
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -430,6 +483,8 @@ def create_runs_router() -> APIRouter:
         try:
             await tracker.update_run_state(result.run.tracker_id, RunStatus.MERGED)
             await tracker.close_run(result.run.tracker_id)
+        except HTTPException:
+            raise
         except Exception:
             logger.warning(
                 "Failed to update tracker for run %s",
@@ -455,6 +510,7 @@ def create_runs_router() -> APIRouter:
         try:
             # Look up run to get internal ID for the service
             run_obj = await _resolve_run_identifier(tracker, run_id)
+            await _require_tracker_run(request, principal, tracker, run_obj)
             result = await svc.reject(run_obj.id, reason=reason)
         except RunNotFoundError:
             raise HTTPException(
@@ -470,6 +526,8 @@ def create_runs_router() -> APIRouter:
         # Post-step: update external tracker
         try:
             await tracker.update_run_state(result.run.tracker_id, result.run.status)
+        except HTTPException:
+            raise
         except Exception:
             logger.warning(
                 "Failed to update tracker for run %s",
@@ -492,6 +550,7 @@ def create_runs_router() -> APIRouter:
         # Core review: confidence event, state → PENDING or QUEUED
         try:
             run_obj = await _resolve_run_identifier(tracker, run_id)
+            await _require_tracker_run(request, principal, tracker, run_obj)
             result = await svc.retry(run_obj.id)
         except RunNotFoundError:
             raise HTTPException(
@@ -507,6 +566,8 @@ def create_runs_router() -> APIRouter:
         # Post-step: update external tracker with actual result status
         try:
             await tracker.update_run_state(result.run.tracker_id, result.run.status)
+        except HTTPException:
+            raise
         except Exception:
             logger.warning(
                 "Failed to update tracker for run %s",
@@ -521,6 +582,7 @@ def create_runs_router() -> APIRouter:
         run_id: str,
         body: SendMessageRequest,
         request: Request,
+        principal: Principal = Depends(extract_principal),
         tracker: TrackerPort = Depends(resolve_tracker),
         volundr: VolundrPort = Depends(resolve_volundr),
     ) -> SendMessageResponse:
@@ -530,6 +592,7 @@ def create_runs_router() -> APIRouter:
 
         try:
             run_obj = await _resolve_run_identifier(tracker, run_id)
+            await _require_tracker_run(request, principal, tracker, run_obj)
             result = await svc.send_message(
                 run_obj.id,
                 body.content,
@@ -551,6 +614,8 @@ def create_runs_router() -> APIRouter:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Run has no active session",
             )
+        except HTTPException:
+            raise
         except Exception as exc:
             logger.warning(
                 "Failed to send message to run %s: %s",
@@ -574,11 +639,16 @@ def create_runs_router() -> APIRouter:
     @router.get("/{run_id}/messages", response_model=list[SessionMessageResponse])
     async def list_messages(
         run_id: str,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
         tracker: TrackerPort = Depends(resolve_tracker),
     ) -> list[SessionMessageResponse]:
         """List all messages sent to a run's session (audit trail)."""
         try:
             run = await _resolve_run_identifier(tracker, run_id)
+            await _require_tracker_run(request, principal, tracker, run)
+        except HTTPException:
+            raise
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

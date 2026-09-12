@@ -309,8 +309,14 @@ data:
       {{- end }}
 
     identity:
+      {{- if .Values.identityAuthority.enabled }}
+      adapter: identity.adapters.remote.RemoteIdentityAdapter
+      kwargs:
+        {{- toYaml (mergeOverwrite (deepCopy .Values.identity.kwargs) (include "volundr.identityAuthorityKwargs" . | fromYaml)) | nindent 8 }}
+      {{- else }}
       adapter: {{ .Values.identity.adapter | quote }}
       kwargs: {{ .Values.identity.kwargs | toJson }}
+      {{- end }}
       {{- if .Values.identity.secretKwargs }}
       secret_kwargs_env:
         {{- range .Values.identity.secretKwargs }}
@@ -369,7 +375,14 @@ data:
 
     {{- if .Values.pat }}
     pat:
-      {{- toYaml .Values.pat | nindent 6 }}
+      {{- $pat := deepCopy .Values.pat }}
+      {{- if .Values.identityAuthority.enabled }}
+      {{- $_ := set $pat "service_adapter" "niuu.adapters.remote_pats.RemotePATService" }}
+      {{- $_ := set $pat "service_kwargs" (include "volundr.identityAuthorityKwargs" . | fromYaml) }}
+      {{- $_ := set $pat "validator_adapter" "niuu.adapters.remote_pats.RemotePATValidator" }}
+      {{- $_ := set $pat "validator_kwargs" (include "volundr.identityAuthorityKwargs" . | fromYaml) }}
+      {{- end }}
+      {{- toYaml $pat | nindent 6 }}
     {{- end }}
 
     workload_identity:

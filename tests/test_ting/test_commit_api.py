@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from ting.api.sagas import (
     create_sagas_router,
     resolve_git,
@@ -134,6 +135,7 @@ def client(
     mock_git: MockGit,
 ) -> TestClient:
     app = FastAPI()
+    app.state.authorization = AllowAllAuthorizationAdapter()
     app.include_router(create_sagas_router())
     app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
     app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -230,6 +232,7 @@ class TestCommitSaga:
                 )
 
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [MetadataTracker()]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -297,6 +300,7 @@ class TestCommitSagaValidation:
         mock_git: MockGit,
     ) -> None:
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: []
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -330,6 +334,7 @@ class TestCommitSagaConfidence:
         mock_git: MockGit,
     ) -> None:
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -379,6 +384,7 @@ class TestCommitSagaTrackerFailure:
                 raise ConnectionError("Tracker down")
 
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [FailingSagaTracker()]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -399,6 +405,7 @@ class TestCommitSagaTrackerFailure:
                 raise ConnectionError("Tracker down")
 
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [FailingPhaseTracker()]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -419,6 +426,7 @@ class TestCommitSagaTrackerFailure:
                 raise ConnectionError("Tracker down")
 
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [FailingRunTracker()]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -442,6 +450,7 @@ class TestCommitSagaGitFailure:
                 raise ConnectionError("GitHub API down")
 
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [MockTracker()]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -473,6 +482,7 @@ class TestCommitSagaGitFailure:
 
         git = PartialFailGit()
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [MockTracker()]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -492,3 +502,25 @@ class TestCommitSagaGitFailure:
     def test_no_warnings_on_success(self, client: TestClient) -> None:
         resp = client.post("/api/v1/ting/sagas/commit", json=VALID_COMMIT_BODY)
         assert resp.json()["warnings"] == []
+
+
+def test_cedar_denial_precedes_tracker_and_git_mutations(client, mock_tracker, mock_git):
+    from unittest.mock import AsyncMock
+
+    from identity.adapters.cedar import CedarAuthorizationAdapter
+
+    client.app.state.authorization = CedarAuthorizationAdapter()
+    mock_tracker.create_saga = AsyncMock()
+    mock_git.create_branch = AsyncMock()
+    response = client.post(
+        "/api/v1/ting/sagas/commit",
+        json=VALID_COMMIT_BODY,
+        headers={
+            "x-auth-user-id": "viewer",
+            "x-auth-tenant": "acme",
+            "x-auth-roles": "volundr:viewer",
+        },
+    )
+    assert response.status_code == 403
+    mock_tracker.create_saga.assert_not_called()
+    mock_git.create_branch.assert_not_called()

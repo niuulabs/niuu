@@ -77,7 +77,14 @@ data:
 
     {{- if .Values.pat }}
     pat:
-      {{- toYaml .Values.pat | nindent 6 }}
+      {{- $pat := deepCopy .Values.pat }}
+      {{- if .Values.identityAuthority.enabled }}
+      {{- $_ := set $pat "service_adapter" "niuu.adapters.remote_pats.RemotePATService" }}
+      {{- $_ := set $pat "service_kwargs" (include "ting.identityAuthorityKwargs" . | fromYaml) }}
+      {{- $_ := set $pat "validator_adapter" "niuu.adapters.remote_pats.RemotePATValidator" }}
+      {{- $_ := set $pat "validator_kwargs" (include "ting.identityAuthorityKwargs" . | fromYaml) }}
+      {{- end }}
+      {{- toYaml $pat | nindent 6 }}
     {{- end }}
 
     dispatch:
@@ -141,6 +148,14 @@ data:
       url: {{ .Values.cerbos.url | default "http://localhost:3592" | quote }}
 
     auth:
+      {{- if .Values.identityAuthority.enabled }}
+      adapter: identity.adapters.remote.RemoteHeaderAuthenticationAdapter
+      kwargs:
+        {{- include "ting.identityAuthorityKwargs" . | nindent 8 }}
+      {{- else }}
+      adapter: {{ .Values.auth.adapter | quote }}
+      kwargs: {{ .Values.auth.kwargs | toJson }}
+      {{- end }}
       allow_anonymous_dev: {{ .Values.auth.allowAnonymousDev }}
       default_user_id: {{ .Values.auth.defaultUserId | quote }}
       pat_ttl_days: {{ .Values.auth.patTtlDays | default 365 }}

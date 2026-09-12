@@ -15,6 +15,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from niuu.domain.models import Principal
 from ting.api.tracker import (
     create_canonical_tracker_router,
@@ -511,6 +512,7 @@ def _build_test_client(
     dispatch_service: object | None = None,
 ) -> TestClient:
     app = FastAPI()
+    app.state.authorization = AllowAllAuthorizationAdapter()
     app.state.legacy_route_hits = {}
     app.include_router(create_canonical_tracker_router())
     app.include_router(create_tracker_router())
@@ -573,6 +575,7 @@ class TestListProjects:
 
     def test_ignores_tracker_failures(self, mock_tracker: MockTracker):
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_tracker_router())
         app.dependency_overrides[resolve_trackers] = lambda: [_FailingTracker(), mock_tracker]
         app.state.saga_repo = MockSagaRepo()

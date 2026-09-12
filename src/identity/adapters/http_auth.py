@@ -31,7 +31,10 @@ async def extract_principal(request: Request) -> Principal:
     )
     if identity is None:
         raise HTTPException(status_code=401, detail="Authentication is not configured")
-    from identity.adapters.identity import AllowAllIdentityAdapter
+    from identity.adapters.identity import (
+        AllowAllHeaderAuthenticationAdapter,
+        AllowAllIdentityAdapter,
+    )
 
     # Impersonation is available only in explicitly configured local-dev mode.
     # Never let query parameters or forwarded headers bypass a token adapter.
@@ -54,6 +57,18 @@ async def extract_principal(request: Request) -> Principal:
             )
         return await identity.validate_token("allow-all")
 
+    if isinstance(identity, AllowAllHeaderAuthenticationAdapter):
+        return await identity.validate_headers(dict(request.headers))
+
+    from niuu.domain.services.token_scope import credential_allows_route
+
+    if not credential_allows_route(
+        extract_bearer_token(request) or "",
+        request.scope.get("method", "WEBSOCKET"),
+        request.url.path,
+    ):
+        raise HTTPException(status_code=403, detail="Credential does not grant this operation")
+
     # If the adapter supports header-based auth (Envoy mode), use it
     if isinstance(identity, HeaderAuthenticationPort):
         header_items = request.headers.items()
@@ -63,8 +78,13 @@ async def extract_principal(request: Request) -> Principal:
         elif inspect.isawaitable(header_items):
             header_items = ()
         headers = {k.lower(): v for k, v in header_items}
+        token = request.query_params.get("token") or request.query_params.get("access_token")
+        if token and "authorization" not in headers:
+            headers["authorization"] = f"Bearer {token}"
         try:
             return await identity.validate_headers(headers)
+        except AuthorizationEvaluationError as e:
+            raise HTTPException(status_code=503, detail="Identity authority unavailable") from e
         except InvalidTokenError as e:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

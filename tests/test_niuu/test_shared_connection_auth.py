@@ -17,6 +17,7 @@ def caller(token):
         Request(
             {
                 "type": "http",
+                "query_string": b"",
                 "headers": [(b"authorization", f"Bearer {token}".encode())] if token else [],
             }
         )

@@ -12,6 +12,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from niuu.domain.models import Principal
 from ting.api.a2a import create_a2a_router
 from ting.api.dispatch import resolve_volundr_factory
@@ -407,6 +408,7 @@ def _make_client(
     campaigns = campaign_repo or InMemoryCampaignRepository()
     port = volundr or RecordingVolundrPort()
     app = FastAPI()
+    app.state.authorization = AllowAllAuthorizationAdapter()
     app.include_router(create_a2a_router())
     app.include_router(create_research_router())
     app.state.settings = settings or Settings(auth=AuthConfig(allow_anonymous_dev=False))

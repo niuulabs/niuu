@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 import ting.api.sagas as sagas_api
+from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from niuu.domain.models import (
     InstanceKind,
     InstanceVisibility,
@@ -421,6 +422,7 @@ def saga_repo() -> MockSagaRepo:
 @pytest.fixture
 def client(mock_tracker: MockTracker, saga_repo: MockSagaRepo) -> TestClient:
     app = FastAPI()
+    app.state.authorization = AllowAllAuthorizationAdapter()
     app.include_router(create_sagas_router())
     app.include_router(create_saga_phases_router())
     app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
@@ -455,6 +457,7 @@ class TestListSagas:
 
     def test_empty_when_no_sagas(self, mock_tracker: MockTracker):
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
@@ -539,6 +542,7 @@ class TestGetSaga:
         )
 
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.include_router(create_saga_phases_router())
         app.dependency_overrides[resolve_trackers] = lambda: [tracker]
@@ -585,6 +589,7 @@ class TestGetSaga:
         )
 
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -606,6 +611,7 @@ class TestAssignWorkflow:
     ):
         workflow = _workflow()
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -631,6 +637,7 @@ class TestAssignWorkflow:
     ):
         workflow = _workflow(executable=False)
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -675,6 +682,7 @@ class TestAssignWorkflow:
             updated_at=datetime.now(UTC),
         )
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.state.settings = _dev_settings()
         app.state.workflow_repo = InMemoryWorkflowRepository([workflow])
 
@@ -702,6 +710,7 @@ class TestAssignWorkflow:
     ) -> None:
         workflow = _workflow()
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -720,6 +729,7 @@ class TestAssignWorkflow:
         saga_repo: MockSagaRepo,
     ) -> None:
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -740,6 +750,7 @@ class TestAssignWorkflow:
         saga_repo: MockSagaRepo,
     ) -> None:
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -761,6 +772,7 @@ class TestAssignWorkflow:
     ) -> None:
         workflow = _workflow()
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
@@ -818,6 +830,7 @@ class TestAssignWorkflow:
                 )
 
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_saga_phases_router())
         app.dependency_overrides[resolve_trackers] = lambda: [LinkTracker()]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -864,6 +877,7 @@ class TestGetSagaErrors:
                 raise ConnectionError("Tracker down")
 
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         failing = FailingTracker()
         app.dependency_overrides[resolve_trackers] = lambda: [failing]
@@ -885,6 +899,7 @@ class TestGetSagaErrors:
                 raise ConnectionError("Tracker down")
 
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         failing = FailingTracker()
         app.dependency_overrides[resolve_trackers] = lambda: [failing]
@@ -947,6 +962,7 @@ class TestAssignRepos:
 class TestSpawnPlanSession:
     def test_plan_config_returns_finalize_prompt(self, mock_tracker: MockTracker) -> None:
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
@@ -999,6 +1015,7 @@ class TestSpawnPlanSession:
             status=WorkflowCampaignStatus.COMPLETED,
         )
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
@@ -1045,6 +1062,7 @@ class TestSpawnPlanSession:
         )
         campaign_repo = InMemoryWorkflowCampaignRepository([active_plan])
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
@@ -1075,6 +1093,7 @@ class TestSpawnPlanSession:
         monkeypatch.setattr(sagas_api, "_PLAN_FEEDBACK_POLL_SECONDS", 0)
         monkeypatch.setattr(sagas_api, "_PLAN_GATE_POLL_SECONDS", 0)
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
@@ -1489,6 +1508,7 @@ class TestCommitSaga:
     ) -> None:
         repo = MockSagaRepo()
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: repo
@@ -1532,6 +1552,7 @@ class TestCommitSaga:
     ) -> None:
         repo = MockSagaRepo()
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: repo
@@ -1587,6 +1608,7 @@ class TestCommitSaga:
             )
         )
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: repo
@@ -1610,6 +1632,7 @@ class TestCommitSaga:
 
     def test_rejects_empty_phases_and_missing_tracker(self) -> None:
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
         app.dependency_overrides[resolve_git] = AsyncMock
@@ -1650,6 +1673,7 @@ class TestCommitSaga:
                 raise RuntimeError("tracker unavailable")
 
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [FailingTracker()]
         app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
@@ -1686,6 +1710,7 @@ class TestAssignTarget:
         saga_repo: MockSagaRepo,
     ) -> None:
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -1725,6 +1750,7 @@ class TestAssignTarget:
         saga_repo: MockSagaRepo,
     ) -> None:
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -1748,6 +1774,7 @@ class TestAssignTarget:
         saga_repo: MockSagaRepo,
     ) -> None:
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
@@ -1778,6 +1805,7 @@ class TestExtractStructure:
     @pytest.fixture
     def client(self) -> TestClient:
         app = FastAPI()
+        app.state.authorization = AllowAllAuthorizationAdapter()
         app.state.settings = _dev_settings()
         app.include_router(create_sagas_router())
         return TestClient(app)

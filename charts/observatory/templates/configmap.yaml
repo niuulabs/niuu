@@ -16,6 +16,32 @@ data:
   {{- end }}
 
   config.yaml: |
+    {{- if .Values.identityAuthority.enabled }}
+    identity:
+      adapter: identity.adapters.remote.RemoteHeaderAuthenticationAdapter
+      kwargs:
+        authority_url: {{ required "identityAuthority.url must identify the canonical HTTPS identity service" .Values.identityAuthority.url | quote }}
+        timeout: {{ .Values.identityAuthority.timeout }}
+        {{- if .Values.identityAuthority.caFile }}
+        ca_file: {{ .Values.identityAuthority.caFile | quote }}
+        {{- end }}
+    {{- else }}
+    identity:
+      {{- toYaml .Values.identity | nindent 6 }}
+    {{- end }}
+    authorization:
+      {{- toYaml .Values.authorization | nindent 6 }}
+    pat:
+      {{- $pat := deepCopy .Values.pat }}
+      {{- if .Values.identityAuthority.enabled }}
+      {{- $_ := set $pat "validator_adapter" "niuu.adapters.remote_pats.RemotePATValidator" }}
+      {{- $kwargs := dict "authority_url" .Values.identityAuthority.url "timeout" .Values.identityAuthority.timeout }}
+      {{- if .Values.identityAuthority.caFile }}
+      {{- $_ := set $kwargs "ca_file" .Values.identityAuthority.caFile }}
+      {{- end }}
+      {{- $_ := set $pat "validator_kwargs" $kwargs }}
+      {{- end }}
+      {{- toYaml $pat | nindent 6 }}
     logging:
       level: {{ .Values.config.logLevel | default "info" | quote }}
       format: {{ .Values.config.logFormat | default "json" | quote }}

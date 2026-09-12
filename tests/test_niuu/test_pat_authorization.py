@@ -20,10 +20,15 @@ def app_for(principal, authorization=None):
     repo = AsyncMock()
     issuer = AsyncMock()
     token = PersonalAccessToken(
-        id=uuid4(), owner_id=principal.user_id, name="test", created_at=datetime.now(UTC)
+        id=uuid4(),
+        owner_id=principal.user_id,
+        name="test",
+        created_at=datetime.now(UTC),
+        tenant_id=principal.tenant_id,
     )
     repo.create.return_value = token
     repo.list.return_value = [token]
+    repo.get.return_value = token
     repo.delete.return_value = "hash"
     issuer.issue_token.return_value = IssuedToken(
         "signed-token", "id", principal.user_id, 9999999999
@@ -105,3 +110,24 @@ def test_explicit_disabled_auth_accepts_http_without_credentials():
     with TestClient(app) as client:
         assert client.get("/api/v1/tokens").status_code == 200
     repo.list.assert_awaited_once_with("dev-user")
+
+
+async def test_hardened_issuance_requires_scopes_before_contacting_idp():
+    from unittest.mock import AsyncMock
+
+    from identity.models import Principal
+    from identity.ports import AuthorizationDeniedError
+    from niuu.domain.services.pat import PATService
+
+    repo, issuer = AsyncMock(), AsyncMock()
+    service = PATService(
+        repo, issuer, authorization=CedarAuthorizationAdapter(), require_scopes=True
+    )
+    with pytest.raises(AuthorizationDeniedError, match="scopes"):
+        await service.create(
+            Principal("alice", "", "acme", ["volundr:developer"]),
+            "unrestricted",
+            subject_token="browser",
+        )
+    issuer.issue_token.assert_not_called()
+    repo.create.assert_not_called()

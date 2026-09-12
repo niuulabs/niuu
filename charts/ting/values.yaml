@@ -270,6 +270,9 @@ envoy:
   # -- Extra HTTP filters (inserted before the router filter)
   extraVolumeMounts: []
   authorization:
+    # Optional central identity/PAT revocation check before gateway admission.
+    # Use identity.adapters.remote.RemoteHeaderAuthenticationAdapter with HTTPS authority_url.
+    identity: null
     enabled: false
     port: 9002
     timeout: 1s
@@ -369,6 +372,8 @@ cerbos:
   url: "http://localhost:3592"
 
 auth:
+  adapter: identity.adapters.identity.EnvoyHeaderAuthenticationAdapter
+  kwargs: {}
   # -- Allow requests without identity only in explicitly trusted deployments
   allowAnonymousDev: false
   defaultUserId: dev-user
@@ -462,3 +467,22 @@ authorization:
   adapter: "identity.adapters.cedar.CedarAuthorizationAdapter"
   kwargs: {}
   secret_kwargs_env: {}
+
+pat:
+  token_issuer_adapter: niuu.adapters.memory_token_issuer.MemoryTokenIssuer
+  token_issuer_kwargs: {}
+  ttl_days: 365
+  issuerSecretName: ""
+  issuerSecretKey: client-secret
+  service_adapter: niuu.domain.services.pat.PATService
+  service_kwargs: {}
+  validator_adapter: niuu.domain.services.pat_validator.PATValidator
+  validator_kwargs: {}
+
+# Shared identity service: fresh membership, role and credential checks.
+# Point at the canonical identity service, never back at this client service.
+identityAuthority:
+  enabled: false
+  url: ""
+  timeout: 5
+  caFile: ""

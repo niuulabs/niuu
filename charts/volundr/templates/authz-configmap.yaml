@@ -14,7 +14,7 @@
 {{- if has .Values.authorization.adapter (list "volundr.adapters.outbound.authorization.AllowAllAuthorizationAdapter" "identity.adapters.authorization.AllowAllAuthorizationAdapter") }}
 {{- fail "Cedar gateway authorization requires a resource authorization adapter; allow-all is unsafe" }}
 {{- end }}
-{{- if ne .Values.identity.adapter "volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter" }}
+{{- if not (has .Values.identity.adapter (list "volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter" "identity.adapters.identity.EnvoyHeaderIdentityAdapter" "identity.adapters.remote.RemoteIdentityAdapter")) }}
 {{- fail "Cedar gateway authorization requires EnvoyHeaderIdentityAdapter" }}
 {{- end }}
 {{- if and .Values.envoy.jwt.workload.enabled .Values.envoy.jwt.workload.jwksUri }}
@@ -24,6 +24,10 @@
 {{- end }}
 {{- if and .Values.envoy.jwt.workload.enabled .Values.envoy.jwt.workload.jwksHost (not .Values.envoy.jwt.workload.jwksUri) }}
 {{- fail "Remote workload JWKS requires an explicit HTTPS URI" }}
+{{- end }}
+{{- $authority := .Values.identityAuthority | default dict }}
+{{- if and (not $authority.enabled) (ne (.Values.pat.service_adapter | default "") "niuu.adapters.remote_pats.RemotePATService") (eq (.Values.pat.token_issuer_adapter | default "niuu.adapters.memory_token_issuer.MemoryTokenIssuer") "niuu.adapters.memory_token_issuer.MemoryTokenIssuer") }}
+{{- fail "Hardened PAT issuance requires an IDP token issuer or the central identity/PAT service; MemoryTokenIssuer is development-only" }}
 {{- end }}
 apiVersion: v1
 kind: ConfigMap
@@ -38,6 +42,17 @@ data:
     adapter: {{ .Values.authorization.adapter | quote }}
     kwargs:
       {{- toYaml .Values.authorization.kwargs | nindent 6 }}
+    {{- if .Values.identityAuthority.enabled }}
+    identity:
+      adapter: identity.adapters.remote.RemoteHeaderAuthenticationAdapter
+      kwargs:
+        {{- include "volundr.identityAuthorityKwargs" . | nindent 8 }}
+    {{- else }}
+    {{- with .Values.envoy.authorization.identity }}
+    identity:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- end }}
     role_mapping:
       {{- toYaml .Values.identity.roleMapping | nindent 6 }}
     providers:

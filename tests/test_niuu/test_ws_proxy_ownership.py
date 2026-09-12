@@ -15,6 +15,8 @@ from niuu.app import SkuldPortRegistry, _proxy_ws_identity
 def _ws(headers: dict | None = None, query: dict | None = None):
     return SimpleNamespace(
         app=SimpleNamespace(state=SimpleNamespace(identity=EnvoyHeaderAuthenticationAdapter())),
+        scope={"type": "websocket"},
+        url=SimpleNamespace(path="/ws"),
         headers=(headers or {}),
         query_params=(query or {}),
     )

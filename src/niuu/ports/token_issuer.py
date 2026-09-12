@@ -19,6 +19,7 @@ class IssuedToken:
     token_id: str  # jti claim
     subject: str  # sub claim (user ID)
     expires_at: int  # unix timestamp
+    scopes: tuple[str, ...] | None = None
 
 
 class TokenIssuer(ABC):
@@ -31,6 +32,7 @@ class TokenIssuer(ABC):
         subject_token: str,
         name: str,
         ttl_days: int = 365,
+        scopes: list[str] | None = None,
     ) -> IssuedToken:
         """Issue a long-lived token for a user via the IDP.
 

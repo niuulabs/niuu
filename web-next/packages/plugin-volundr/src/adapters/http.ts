@@ -1865,7 +1865,8 @@ export function buildVolundrHttpAdapter(
       sharedClient.put<UserFeaturePreference[]>('/features/preferences', preferences),
 
     listTokens: () => sharedClient.get<PersonalAccessToken[]>('/tokens'),
-    createToken: (name) => sharedClient.post<CreatePATResult>('/tokens', { name }),
+    createToken: (name, scopes) =>
+      sharedClient.post<CreatePATResult>('/tokens', { name, ...(scopes ? { scopes } : {}) }),
     revokeToken: (id) => sharedClient.delete<void>(`/tokens/${id}`),
   };
 }

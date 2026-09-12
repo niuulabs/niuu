@@ -29,6 +29,9 @@ def _make_row(**kwargs) -> MagicMock:
         "name": _NAME,
         "created_at": _NOW,
         "last_used_at": None,
+        "tenant_id": "acme",
+        "scopes": None,
+        "expires_at": None,
         "token_hash": _HASH,
     }
     defaults.update(kwargs)

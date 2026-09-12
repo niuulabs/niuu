@@ -191,3 +191,33 @@ async def test_session_bound_gateway_checks_deployment_owner(config, role, user,
         None,
     )
     assert response.HasField("ok_response") is allowed
+
+
+async def test_gateway_uses_current_authority_roles_and_fails_closed(config):
+    from unittest.mock import AsyncMock
+
+    from identity.models import Principal
+    from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
+
+    identity = AsyncMock(spec=HeaderAuthenticationPort)
+    identity.validate_headers.return_value = Principal("alice", "", "acme", ["volundr:viewer"])
+    service = EnvoyAuthorizationService(CedarAuthorizationAdapter(), config, identity=identity)
+    req = request(method="POST")
+    req.attributes.request.http.headers["authorization"] = "Bearer verified"
+    assert (await service.Check(req, None)).denied_response.status.code == 403
+    identity.validate_headers.return_value = Principal("alice", "", "acme", ["volundr:developer"])
+    assert (await service.Check(req, None)).status.code == 0
+    identity.validate_headers.side_effect = InvalidTokenError("revoked")
+    assert (await service.Check(req, None)).denied_response.status.code == 401
+    identity.validate_headers.side_effect = AuthorizationEvaluationError("offline")
+    assert (await service.Check(req, None)).denied_response.status.code == 503
+
+
+async def test_gateway_scoped_pat_cannot_escape_named_route(gateway):
+    scoped = {"type": "pat", "scope": "openid forge:session:create"}
+    allowed = await gateway.Check(request(method="POST", **scoped), timeout=2)
+    assert allowed.status.code == 0
+    denied = await gateway.Check(
+        request("/api/v1/forge/sessions/other", method="DELETE", **scoped), timeout=2
+    )
+    assert denied.denied_response.status.code == 403

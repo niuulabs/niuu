@@ -40,7 +40,9 @@ class SagaRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_saga(self, saga_id: UUID, *, owner_id: str | None = None) -> Saga | None:
+    async def get_saga(
+        self, saga_id: UUID, *, owner_id: str | None = None, conn: Any | None = None
+    ) -> Saga | None:
         """Get a saga by ID, optionally scoped to an owner."""
         raise NotImplementedError
 
@@ -92,14 +94,14 @@ class SagaRepository(ABC):
         """
         raise NotImplementedError
 
-    async def get_phase(self, phase_id: UUID) -> Phase | None:
+    async def get_phase(self, phase_id: UUID, *, conn: Any | None = None) -> Phase | None:
         """Get a single phase by ID. Returns None if not found.
 
         Subclasses should override this method.
         """
         raise NotImplementedError(f"{type(self).__name__}.get_phase not implemented")
 
-    async def get_run(self, run_id: UUID) -> Run | None:
+    async def get_run(self, run_id: UUID, *, conn: Any | None = None) -> Run | None:
         """Get a single run by ID. Returns None if not found.
 
         Subclasses should override this method.  The default raises

@@ -65,6 +65,13 @@ async def _resolve_import_workflow(
         return None, None, None
 
     workflow_repo: WorkflowRepository | None = getattr(request.app.state, "workflow_repo", None)
+    if workflow_repo is not None:
+        from ting.domain.services.resource_authorization import AuthorizedWorkflowRepository
+
+        authorization = getattr(request.app.state, "authorization", None)
+        if authorization is None:
+            raise HTTPException(status_code=503, detail="Authorization is not configured")
+        workflow_repo = AuthorizedWorkflowRepository(workflow_repo, authorization, principal)
     if workflow_repo is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -395,7 +402,14 @@ def _build_tracker_router(
 
         now = datetime.now(UTC)
         slug = project.slug or _slugify(project.name)
-        saga_repo: SagaRepository = request.app.state.saga_repo
+        from ting.domain.services.resource_authorization import AuthorizedSagaRepository
+
+        authorization = getattr(request.app.state, "authorization", None)
+        if authorization is None:
+            raise HTTPException(status_code=503, detail="Authorization is not configured")
+        saga_repo: SagaRepository = AuthorizedSagaRepository(
+            request.app.state.saga_repo, authorization, principal, read_action="update"
+        )
         owner_sagas = await saga_repo.list_sagas(owner_id=principal.user_id)
         existing = next((saga for saga in owner_sagas if saga.tracker_id == project.id), None)
         conflicting_slug = next((saga for saga in owner_sagas if saga.slug == slug), None)
@@ -408,6 +422,7 @@ def _build_tracker_router(
             )
 
         saga = Saga(
+            tenant_id=existing.tenant_id if existing is not None else principal.tenant_id,
             id=existing.id if existing is not None else uuid4(),
             tracker_id=project.id,
             tracker_type="linear",

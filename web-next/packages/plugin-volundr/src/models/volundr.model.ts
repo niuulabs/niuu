@@ -672,6 +672,8 @@ export interface AdminSettings {
 // ---------------------------------------------------------------------------
 
 export interface PersonalAccessToken {
+  scopes?: string[] | null;
+  expires_at?: string | null;
   id: string;
   name: string;
   createdAt: string;

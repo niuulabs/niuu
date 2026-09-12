@@ -297,6 +297,9 @@ envVars:
 # Envoy sidecar proxy (JWT validation, header extraction)
 envoy:
   authorization:
+    # Optional central identity/PAT revocation check before gateway admission.
+    # Use identity.adapters.remote.RemoteHeaderAuthenticationAdapter with HTTPS authority_url.
+    identity: null
     # Keep outside localServices.portRange (9001-9020).
     port: 9000
     timeout: 1s
@@ -642,3 +645,11 @@ networkPolicy:
   enabled: false
   ingressFrom: []
   extraIngress: []
+
+# Shared identity service: fresh membership, role and credential checks.
+# Point at the canonical identity service, never back at this client service.
+identityAuthority:
+  enabled: false
+  url: ""
+  timeout: 5
+  caFile: ""

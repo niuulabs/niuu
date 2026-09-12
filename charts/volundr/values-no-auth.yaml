@@ -8,3 +8,13 @@ envoy:
     enabled: false
   jwt:
     enabled: false
+
+pat:
+  service_adapter: niuu.domain.services.pat.PATService
+  service_kwargs:
+    require_scopes: false
+  validator_adapter: niuu.domain.services.pat_validator.PATValidator
+  validator_kwargs: {}
+
+identityAuthority:
+  enabled: false

@@ -76,6 +76,7 @@ class AuthorizationGatewayConfig(BaseModel):
     routes: list[GatewayRoute] = Field(min_length=1)
     role_mapping: dict[str, str] = Field(default_factory=dict)
     session: SessionGatewayResource | None = None
+    identity: AuthorizationAdapterConfig | None = None
 
     @model_validator(mode="after")
     def unique_issuers(self) -> "AuthorizationGatewayConfig":

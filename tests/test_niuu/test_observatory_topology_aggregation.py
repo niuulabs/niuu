@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 
 import pytest
 
+from identity.adapters.authorization import AllowAllAuthorizationAdapter
+from identity.models import Principal
 from niuu.adapters.memory_observatory_fragments import InMemoryObservatoryFragmentRepository
 from niuu.domain.models import InstanceKind, InstanceVisibility, RegisteredInstance
 from niuu.domain.observatory import (
@@ -90,7 +92,11 @@ class TestPullAggregation:
             }
         )
 
-        snapshot = await service.get_snapshot([_instance("obs-a"), _instance("obs-b")], headers={})
+        snapshot = await service.get_snapshot(
+            [_instance("obs-a"), _instance("obs-b")],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
         assert {node.id for node in snapshot.nodes} == {"a-1", "b-1"}
         assert snapshot.partial is False
@@ -104,7 +110,11 @@ class TestPullAggregation:
             }
         )
 
-        snapshot = await service.get_snapshot([_instance("obs-a"), _instance("obs-b")], headers={})
+        snapshot = await service.get_snapshot(
+            [_instance("obs-a"), _instance("obs-b")],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
         assert {node.id for node in snapshot.nodes} == {"a-1"}
         assert snapshot.partial is True
@@ -114,7 +124,11 @@ class TestPullAggregation:
         """An empty graph and an unreachable estate must not look identical."""
         service = _service({"obs-b": RuntimeError("connection refused")})
 
-        snapshot = await service.get_snapshot([_instance("obs-b")], headers={})
+        snapshot = await service.get_snapshot(
+            [_instance("obs-b")],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
         health = {source.source_id: source for source in snapshot.sources}
         assert health["obs-b"].status == "failed"
@@ -132,7 +146,11 @@ class TestPullAggregation:
         """
         service = _service({"obs-b": ConnectionResetError()})
 
-        snapshot = await service.get_snapshot([_instance("obs-b")], headers={})
+        snapshot = await service.get_snapshot(
+            [_instance("obs-b")],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
         assert snapshot.warnings[0].message.endswith("ConnectionResetError")
         assert snapshot.sources[0].message == "ConnectionResetError"
@@ -141,14 +159,20 @@ class TestPullAggregation:
     async def test_health_records_node_counts_per_source(self) -> None:
         service = _service({"obs-a": _fragment("obs-a", node_ids=["a-1", "a-2"])})
 
-        snapshot = await service.get_snapshot([_instance("obs-a")], headers={})
+        snapshot = await service.get_snapshot(
+            [_instance("obs-a")],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
         assert snapshot.sources[0].node_count == 2
         assert snapshot.sources[0].transport == "pull"
 
     @pytest.mark.asyncio
     async def test_no_sources_yields_an_empty_but_honest_snapshot(self) -> None:
-        snapshot = await _service({}).get_snapshot([], headers={})
+        snapshot = await _service({}).get_snapshot(
+            [], headers={}, principal=Principal("publisher", "", "tenant", ["volundr:developer"])
+        )
 
         assert snapshot.nodes == []
         assert snapshot.partial is False
@@ -162,11 +186,20 @@ class TestPushedFragments:
             InMemoryObservatoryFragmentRepository(),
             ttl_seconds=180.0,
             clock=lambda: NOW,
+            authorization=AllowAllAuthorizationAdapter(),
         )
-        await inbox.accept("spark-1", _fragment("spark-1", node_ids=["ivaldi"]))
+        await inbox.accept(
+            "spark-1",
+            _fragment("spark-1", node_ids=["ivaldi"]),
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
         service = _service({"obs-a": _fragment("obs-a", node_ids=["a-1"])}, inbox=inbox)
 
-        snapshot = await service.get_snapshot([_instance("obs-a")], headers={})
+        snapshot = await service.get_snapshot(
+            [_instance("obs-a")],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
         assert {node.id for node in snapshot.nodes} == {"a-1", "ivaldi"}
         transports = {source.source_id: source.transport for source in snapshot.sources}
@@ -179,12 +212,19 @@ class TestPushedFragments:
             InMemoryObservatoryFragmentRepository(),
             ttl_seconds=60.0,
             clock=lambda: clock["now"],
+            authorization=AllowAllAuthorizationAdapter(),
         )
-        await inbox.accept("spark-1", _fragment("spark-1", node_ids=["ivaldi"]))
+        await inbox.accept(
+            "spark-1",
+            _fragment("spark-1", node_ids=["ivaldi"]),
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
         clock["now"] = datetime(2026, 8, 1, 12, 10, 0, tzinfo=UTC)
         service = _service({}, inbox=inbox)
 
-        snapshot = await service.get_snapshot([], headers={})
+        snapshot = await service.get_snapshot(
+            [], headers={}, principal=Principal("publisher", "", "tenant", ["volundr:developer"])
+        )
 
         assert snapshot.partial is True
         assert [warning.code for warning in snapshot.warnings] == ["source_stale"]
@@ -192,9 +232,9 @@ class TestPushedFragments:
         assert {node.id for node in snapshot.nodes} == {"ivaldi"}
 
     @pytest.mark.asyncio
-    async def test_an_unreadable_inbox_degrades_to_pull_only(self) -> None:
+    async def test_an_unreadable_inbox_fails_closed(self) -> None:
         class _BrokenInbox:
-            async def current(self):  # noqa: ANN202
+            async def current(self, *, principal):  # noqa: ANN202
                 raise RuntimeError("inbox down")
 
         service = _service(
@@ -202,9 +242,12 @@ class TestPushedFragments:
             inbox=_BrokenInbox(),  # type: ignore[arg-type]
         )
 
-        snapshot = await service.get_snapshot([_instance("obs-a")], headers={})
-
-        assert {node.id for node in snapshot.nodes} == {"a-1"}
+        with pytest.raises(RuntimeError, match="inbox down"):
+            await service.get_snapshot(
+                [_instance("obs-a")],
+                headers={},
+                principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+            )
 
 
 class TestMerge:
@@ -213,7 +256,11 @@ class TestMerge:
         shared = _fragment("obs-a", node_ids=["shared"])
         service = _service({"obs-a": shared, "obs-b": shared})
 
-        snapshot = await service.get_snapshot([_instance("obs-a"), _instance("obs-b")], headers={})
+        snapshot = await service.get_snapshot(
+            [_instance("obs-a"), _instance("obs-b")],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
         assert [node.id for node in snapshot.nodes] == ["shared"]
         assert snapshot.warnings == []
@@ -254,7 +301,9 @@ class TestMerge:
         service = _service({"obs-ymir": stub, "obs-eitri": owner})
 
         snapshot = await service.get_snapshot(
-            [_instance("obs-ymir"), _instance("obs-eitri")], headers={}
+            [_instance("obs-ymir"), _instance("obs-eitri")],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
         )
 
         by_id = {node.id: node for node in snapshot.nodes}
@@ -278,7 +327,11 @@ class TestMerge:
         )
         service = _service({"obs-a": bare, "obs-b": placed})
 
-        snapshot = await service.get_snapshot([_instance("obs-a"), _instance("obs-b")], headers={})
+        snapshot = await service.get_snapshot(
+            [_instance("obs-a"), _instance("obs-b")],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
         assert snapshot.nodes[0].parent_id == "cluster-x"
 
@@ -324,7 +377,9 @@ class TestMerge:
         service = _service({"obs-ymir": dashboard, "obs-eitri": owner})
 
         snapshot = await service.get_snapshot(
-            [_instance("obs-ymir"), _instance("obs-eitri")], headers={}
+            [_instance("obs-ymir"), _instance("obs-eitri")],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
         )
 
         (node,) = snapshot.nodes
@@ -378,7 +433,11 @@ class TestMerge:
         )
         service = _service({"obs-a": dashboard, "obs-b": owner})
 
-        snapshot = await service.get_snapshot([_instance("obs-a"), _instance("obs-b")], headers={})
+        snapshot = await service.get_snapshot(
+            [_instance("obs-a"), _instance("obs-b")],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
         (node,) = snapshot.nodes
         assert node.label == "Gondul"
@@ -396,7 +455,11 @@ class TestMerge:
         )
         service = _service({"obs-a": first, "obs-b": second})
 
-        snapshot = await service.get_snapshot([_instance("obs-a"), _instance("obs-b")], headers={})
+        snapshot = await service.get_snapshot(
+            [_instance("obs-a"), _instance("obs-b")],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
         assert [node.label for node in snapshot.nodes] == ["from-a"]
         assert [warning.code for warning in snapshot.warnings] == ["node_id_conflict"]
@@ -406,18 +469,30 @@ class TestMerge:
     async def test_revision_is_stable_when_the_graph_is(self) -> None:
         service = _service({"obs-a": _fragment("obs-a", node_ids=["a-1"])})
 
-        first = await service.get_snapshot([_instance("obs-a")], headers={})
-        second = await service.get_snapshot([_instance("obs-a")], headers={})
+        first = await service.get_snapshot(
+            [_instance("obs-a")],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
+        second = await service.get_snapshot(
+            [_instance("obs-a")],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
         assert first.revision == second.revision
 
     @pytest.mark.asyncio
     async def test_revision_changes_when_the_graph_does(self) -> None:
         one = await _service({"obs-a": _fragment("obs-a", node_ids=["a-1"])}).get_snapshot(
-            [_instance("obs-a")], headers={}
+            [_instance("obs-a")],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
         )
         two = await _service({"obs-a": _fragment("obs-a", node_ids=["a-1", "a-2"])}).get_snapshot(
-            [_instance("obs-a")], headers={}
+            [_instance("obs-a")],
+            headers={},
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
         )
 
         assert one.revision != two.revision
@@ -472,6 +547,7 @@ async def test_pending_edge_resolves_across_fragments_by_url() -> None:
     snapshot = await service.get_snapshot(
         [_instance("observatory-valhalla", cluster="valhalla"), _instance("observatory-ymir")],
         headers={},
+        principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
     )
 
     assert [(edge.source_id, edge.target_id) for edge in snapshot.edges] == [
@@ -497,7 +573,11 @@ async def test_pending_edge_nobody_can_place_is_reported() -> None:
     )
     service = _service({"observatory-ymir": fragment})
 
-    snapshot = await service.get_snapshot([_instance("observatory-ymir")], headers={})
+    snapshot = await service.get_snapshot(
+        [_instance("observatory-ymir")],
+        headers={},
+        principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+    )
 
     assert snapshot.edges == []
     unresolved = [w for w in snapshot.warnings if w.code == "edge_unresolved"]

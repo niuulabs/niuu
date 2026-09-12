@@ -12,6 +12,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from identity.adapters.authorization import AllowAllAuthorizationAdapter
+from identity.models import Principal
 from niuu.adapters.memory_observatory_fragments import InMemoryObservatoryFragmentRepository
 from niuu.domain.observatory import FragmentMeta, ObservatoryFragment, TopologyNode
 from niuu.domain.services.observatory_fragments import ObservatoryFragmentInboxService
@@ -60,6 +62,7 @@ def _inbox(clock: _Clock, *, ttl_seconds: float = 180.0) -> ObservatoryFragmentI
         InMemoryObservatoryFragmentRepository(),
         ttl_seconds=ttl_seconds,
         clock=clock,
+        authorization=AllowAllAuthorizationAdapter(),
     )
 
 
@@ -70,10 +73,20 @@ class TestAccepting:
         clock = _Clock()
         inbox = _inbox(clock)
 
-        await inbox.accept("spark-1", _fragment(nodes=3))
-        await inbox.accept("spark-1", _fragment(nodes=1))
+        await inbox.accept(
+            "spark-1",
+            _fragment(nodes=3),
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
+        await inbox.accept(
+            "spark-1",
+            _fragment(nodes=1),
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
-        current = await inbox.current()
+        current = await inbox.current(
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"])
+        )
         assert len(current) == 1
         stored, health = current[0]
         assert len(stored.fragment.nodes) == 1
@@ -84,10 +97,23 @@ class TestAccepting:
         clock = _Clock()
         inbox = _inbox(clock)
 
-        await inbox.accept("spark-1", _fragment(source_id="spark-1"))
-        await inbox.accept("spark-2", _fragment(source_id="spark-2"))
+        await inbox.accept(
+            "spark-1",
+            _fragment(source_id="spark-1"),
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
+        await inbox.accept(
+            "spark-2",
+            _fragment(source_id="spark-2"),
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
-        assert {health.source_id for _stored, health in await inbox.current()} == {
+        assert {
+            health.source_id
+            for _stored, health in await inbox.current(
+                principal=Principal("publisher", "", "tenant", ["volundr:developer"])
+            )
+        } == {
             "spark-1",
             "spark-2",
         }
@@ -98,7 +124,11 @@ class TestAccepting:
         clock = _Clock()
         inbox = _inbox(clock)
 
-        stored = await inbox.accept("spark-1", _fragment())
+        stored = await inbox.accept(
+            "spark-1",
+            _fragment(),
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
         assert stored.received_at == START
 
@@ -106,14 +136,33 @@ class TestAccepting:
     async def test_forget_drops_a_decommissioned_source(self) -> None:
         clock = _Clock()
         inbox = _inbox(clock)
-        await inbox.accept("spark-1", _fragment())
+        await inbox.accept(
+            "spark-1",
+            _fragment(),
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
-        assert await inbox.forget("spark-1") is True
-        assert await inbox.current() == []
+        assert (
+            await inbox.forget(
+                "spark-1", principal=Principal("publisher", "", "tenant", ["volundr:developer"])
+            )
+            is True
+        )
+        assert (
+            await inbox.current(
+                principal=Principal("publisher", "", "tenant", ["volundr:developer"])
+            )
+            == []
+        )
 
     @pytest.mark.asyncio
     async def test_forgetting_an_unknown_source_reports_that(self) -> None:
-        assert await _inbox(_Clock()).forget("never-seen") is False
+        assert (
+            await _inbox(_Clock()).forget(
+                "never-seen", principal=Principal("publisher", "", "tenant", ["volundr:developer"])
+            )
+            is False
+        )
 
 
 class TestFreshness:
@@ -121,10 +170,18 @@ class TestFreshness:
     async def test_a_fresh_source_is_healthy(self) -> None:
         clock = _Clock()
         inbox = _inbox(clock, ttl_seconds=180.0)
-        await inbox.accept("spark-1", _fragment())
+        await inbox.accept(
+            "spark-1",
+            _fragment(),
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
         clock.advance(60)
-        _stored, health = (await inbox.current())[0]
+        _stored, health = (
+            await inbox.current(
+                principal=Principal("publisher", "", "tenant", ["volundr:developer"])
+            )
+        )[0]
 
         assert health.status == "healthy"
         assert health.transport == "push"
@@ -135,10 +192,16 @@ class TestFreshness:
         existed."""
         clock = _Clock()
         inbox = _inbox(clock, ttl_seconds=180.0)
-        await inbox.accept("spark-1", _fragment())
+        await inbox.accept(
+            "spark-1",
+            _fragment(),
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
         clock.advance(240)
-        current = await inbox.current()
+        current = await inbox.current(
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"])
+        )
 
         assert len(current) == 1
         _stored, health = current[0]
@@ -150,11 +213,23 @@ class TestFreshness:
     async def test_republishing_restores_freshness(self) -> None:
         clock = _Clock()
         inbox = _inbox(clock, ttl_seconds=180.0)
-        await inbox.accept("spark-1", _fragment())
+        await inbox.accept(
+            "spark-1",
+            _fragment(),
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
         clock.advance(240)
-        await inbox.accept("spark-1", _fragment())
-        _stored, health = (await inbox.current())[0]
+        await inbox.accept(
+            "spark-1",
+            _fragment(),
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
+        _stored, health = (
+            await inbox.current(
+                principal=Principal("publisher", "", "tenant", ["volundr:developer"])
+            )
+        )[0]
 
         assert health.status == "healthy"
 
@@ -162,9 +237,17 @@ class TestFreshness:
     async def test_health_carries_the_sources_own_placement(self) -> None:
         clock = _Clock()
         inbox = _inbox(clock)
-        await inbox.accept("spark-1", _fragment())
+        await inbox.accept(
+            "spark-1",
+            _fragment(),
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
 
-        _stored, health = (await inbox.current())[0]
+        _stored, health = (
+            await inbox.current(
+                principal=Principal("publisher", "", "tenant", ["volundr:developer"])
+            )
+        )[0]
 
         assert health.realm_id == "sparks"
         assert health.source_kind == "resident"
@@ -176,8 +259,16 @@ class TestFreshness:
         clock = _Clock()
         inbox = _inbox(clock)
 
-        await inbox.accept("anonymous", ObservatoryFragment())
-        _stored, health = (await inbox.current())[0]
+        await inbox.accept(
+            "anonymous",
+            ObservatoryFragment(),
+            principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+        )
+        _stored, health = (
+            await inbox.current(
+                principal=Principal("publisher", "", "tenant", ["volundr:developer"])
+            )
+        )[0]
 
         assert health.source_id == "anonymous"
         assert health.source_kind == ""
@@ -206,7 +297,48 @@ class TestLogSafety:
 
         inbox = _inbox(_Clock())
         with caplog.at_level(logging.DEBUG, logger="niuu.domain.services.observatory_fragments"):
-            await inbox.accept("spark-1\nERROR:root:fake entry", _fragment())
+            await inbox.accept(
+                "spark-1\nERROR:root:fake entry",
+                _fragment(),
+                principal=Principal("publisher", "", "tenant", ["volundr:developer"]),
+            )
 
         assert "\n" not in caplog.records[0].getMessage()
         assert "\\n" in caplog.records[0].getMessage()
+
+
+async def test_cedar_binds_publisher_and_filters_tenant_fragments():
+    from identity.adapters.cedar import CedarAuthorizationAdapter
+    from identity.ports import AuthorizationDeniedError
+
+    repository = InMemoryObservatoryFragmentRepository()
+    inbox = ObservatoryFragmentInboxService(
+        repository, ttl_seconds=30, authorization=CedarAuthorizationAdapter()
+    )
+    alice = Principal("alice", "", "acme", ["volundr:developer"])
+    bob = Principal("bob", "", "acme", ["volundr:developer"])
+    foreign = Principal("alice", "", "other", ["volundr:admin"])
+    await inbox.accept("source", _fragment(), principal=alice)
+    stored = await repository.get("source")
+    assert (stored.owner_id, stored.tenant_id) == ("alice", "acme")
+    assert len(await inbox.current(principal=bob)) == 1
+    assert await inbox.current(principal=foreign) == []
+    for actor in [bob, foreign]:
+        with pytest.raises(AuthorizationDeniedError):
+            await inbox.accept("source", _fragment(), principal=actor)
+        with pytest.raises(AuthorizationDeniedError):
+            await inbox.forget("source", principal=actor)
+    assert await inbox.forget("source", principal=alice)
+
+
+async def test_atomic_source_binding_rejects_competing_first_writer():
+    from identity.ports import AuthorizationDeniedError
+
+    repo = InMemoryObservatoryFragmentRepository()
+    await repo.put(
+        "source", _fragment(), received_at=datetime.now(UTC), owner_id="alice", tenant_id="acme"
+    )
+    with pytest.raises(AuthorizationDeniedError):
+        await repo.put(
+            "source", _fragment(), received_at=datetime.now(UTC), owner_id="bob", tenant_id="acme"
+        )

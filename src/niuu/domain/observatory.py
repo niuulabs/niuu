@@ -196,6 +196,8 @@ class StoredFragment(_ObservatoryModel):
     itself as fresher than it is.
     """
 
+    owner_id: str = ""
+    tenant_id: str = ""
     source_id: str
     fragment: ObservatoryFragment
     received_at: datetime

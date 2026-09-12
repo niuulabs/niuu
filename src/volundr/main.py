@@ -15,7 +15,6 @@ from niuu.adapters.inbound.rest_realms import create_realms_router
 from niuu.adapters.postgres_credential_refresh_lock import PostgresCredentialRefreshLock
 from niuu.adapters.postgres_realms import PostgresRealmRepository
 from niuu.cors import apply_cors_middleware
-from niuu.domain.services.pat import PATService
 from niuu.domain.services.realm import RealmService
 from niuu.service_integrations import (
     has_seeded_linear_integration as _has_seeded_linear_integration,
@@ -987,7 +986,8 @@ def create_app(
             pat_validator = _create_pat_validator(settings, pat_repository)
             token_issuer_cls = import_class(settings.pat.token_issuer_adapter)
             token_issuer = token_issuer_cls(**settings.pat.token_issuer_kwargs)
-            pat_service = PATService(
+            pat_service = import_class(settings.pat.service_adapter)(
+                **settings.pat.service_kwargs,
                 repo=pat_repository,
                 token_issuer=token_issuer,
                 ttl_days=settings.pat.ttl_days,

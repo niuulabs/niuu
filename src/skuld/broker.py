@@ -380,10 +380,18 @@ class Broker(
         sleipnir_publisher: SleipnirPublisher | None = None,
     ):
         self._settings = settings or SkuldSettings()
+        self._ws_identity = None
         self._ws_authorization = None
         if self._settings.ws_auth.enforce_ownership:
             from identity.ports import AuthorizationPort
 
+            identity = self._settings.ws_auth.identity
+            if identity is not None:
+                from niuu.ports.identity import HeaderAuthenticationPort
+
+                self._ws_identity = import_class(identity.adapter)(**identity.kwargs)
+                if not isinstance(self._ws_identity, HeaderAuthenticationPort):
+                    raise TypeError("WebSocket identity must implement HeaderAuthenticationPort")
             auth = self._settings.ws_auth.authorization
             self._ws_authorization = import_class(auth.adapter)(
                 **resolve_secret_kwargs(auth.kwargs, auth.secret_kwargs_env)

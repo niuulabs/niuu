@@ -147,6 +147,7 @@ class TestListSagas:
     ):
         mock_pool.fetch.return_value = [
             {
+                "tenant_id": saga.tenant_id,
                 "id": saga.id,
                 "tracker_id": saga.tracker_id,
                 "tracker_type": saga.tracker_type,
@@ -170,6 +171,7 @@ class TestListSagas:
     ):
         mock_pool.fetch.return_value = [
             {
+                "tenant_id": saga.tenant_id,
                 "id": saga.id,
                 "tracker_id": saga.tracker_id,
                 "tracker_type": saga.tracker_type,
@@ -208,6 +210,7 @@ class TestGetSaga:
     @pytest.mark.asyncio
     async def test_found(self, repo: PostgresSagaRepository, saga: Saga, mock_pool: MagicMock):
         mock_pool.fetchrow.return_value = {
+            "tenant_id": saga.tenant_id,
             "id": saga.id,
             "tracker_id": saga.tracker_id,
             "tracker_type": saga.tracker_type,
@@ -229,6 +232,7 @@ class TestGetSaga:
         self, repo: PostgresSagaRepository, saga: Saga, mock_pool: MagicMock
     ):
         mock_pool.fetchrow.return_value = {
+            "tenant_id": saga.tenant_id,
             "id": saga.id,
             "tracker_id": saga.tracker_id,
             "tracker_type": saga.tracker_type,

@@ -71,6 +71,7 @@ class TestListWorkflows:
     ) -> None:
         mock_pool.fetch.return_value = [
             {
+                "tenant_id": workflow.tenant_id,
                 "id": workflow.id,
                 "name": workflow.name,
                 "description": workflow.description,
@@ -131,6 +132,7 @@ class TestGetWorkflow:
         mock_pool: MagicMock,
     ) -> None:
         mock_pool.fetchrow.return_value = {
+            "tenant_id": workflow.tenant_id,
             "id": workflow.id,
             "name": workflow.name,
             "description": workflow.description,

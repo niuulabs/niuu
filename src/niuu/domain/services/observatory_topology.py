@@ -19,7 +19,7 @@ import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
 
-from niuu.domain.models import RegisteredInstance
+from niuu.domain.models import Principal, RegisteredInstance
 from niuu.domain.observatory import (
     ObservatoryFragment,
     TopologyEdge,
@@ -63,6 +63,7 @@ class ObservatoryTopologyAggregationService:
         instances: list[RegisteredInstance],
         *,
         headers: Mapping[str, str],
+        principal: Principal,
     ) -> TopologySnapshot:
         fragments: list[ObservatoryFragment] = []
         sources: list[TopologySourceHealth] = []
@@ -115,7 +116,7 @@ class ObservatoryTopologyAggregationService:
                 )
             )
 
-        for stored, health in await self._pushed():
+        for stored, health in await self._pushed(principal):
             fragments.append(stored.fragment)
             sources.append(health)
             if health.status == "stale":
@@ -176,14 +177,10 @@ class ObservatoryTopologyAggregationService:
 
         return list(await asyncio.gather(*(load(instance) for instance in instances)))
 
-    async def _pushed(self):
+    async def _pushed(self, principal):
         if self._fragment_inbox is None:
             return []
-        try:
-            return await self._fragment_inbox.current()
-        except Exception:
-            logger.warning("Topology fragment inbox unavailable", exc_info=True)
-            return []
+        return await self._fragment_inbox.current(principal=principal)
 
 
 def _claim_authority(node: TopologyNode, fragment_cluster: str) -> int:

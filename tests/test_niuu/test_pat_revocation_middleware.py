@@ -134,6 +134,7 @@ async def _websocket_run(token, validator=None, *, query=b"", revoke=False, iden
     middleware = PATRevocationMiddleware(application, websocket_check_interval=0.01)
     scope = {
         "type": "websocket",
+        "path": "/ws",
         "app": app,
         "query_string": query,
         "headers": [(b"authorization", f"Bearer {token}".encode())] if token else [],
@@ -263,3 +264,60 @@ def test_explicit_middleware_disable_for_anonymous_ting():
             ).status_code
             == 200
         )
+
+
+async def test_idle_sse_closes_on_revocation():
+    import asyncio
+    import time
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import jwt
+
+    token = jwt.encode(
+        {"type": "pat", "sub": "alice", "exp": time.time() + 60},
+        "test-key-long-enough-for-hmac-tests",
+        algorithm="HS256",
+    )
+    validator = SimpleNamespace(is_valid=AsyncMock(return_value=True))
+    ready = asyncio.Event()
+    cancelled = asyncio.Event()
+    sent = []
+
+    async def stream(scope, receive, send):
+        try:
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"text/event-stream")],
+                }
+            )
+            await send(
+                {"type": "http.response.body", "body": b"data: private\n\n", "more_body": True}
+            )
+            ready.set()
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/events",
+        "query_string": b"",
+        "headers": [(b"authorization", f"Bearer {token}".encode())],
+        "app": SimpleNamespace(state=SimpleNamespace(identity=None, pat_validator=validator)),
+    }
+
+    async def send(message):
+        sent.append(message)
+
+    task = asyncio.create_task(
+        PATRevocationMiddleware(stream, websocket_check_interval=0.01)(scope, AsyncMock(), send)
+    )
+    await asyncio.wait_for(ready.wait(), timeout=1)
+    validator.is_valid.return_value = False
+    await asyncio.wait_for(task, timeout=1)
+    assert cancelled.is_set()
+    assert sent[-1] == {"type": "http.response.body", "body": b"", "more_body": False}

@@ -1,0 +1,6 @@
+identityAuthority:
+  enabled: false
+identity:
+  adapter: identity.adapters.identity.AllowAllIdentityAdapter
+authorization:
+  adapter: identity.adapters.authorization.AllowAllAuthorizationAdapter

@@ -36,12 +36,15 @@ class FakePATRepository(PATRepository):
         self.hashes: dict[str, str] = {}
         self.last_used_touches: list[str] = []
 
-    async def create(self, owner_id: str, name: str, token_hash: str) -> PersonalAccessToken:
+    async def create(
+        self, owner_id: str, name: str, token_hash: str, **metadata
+    ) -> PersonalAccessToken:
         pat = PersonalAccessToken(
             id=uuid4(),
             owner_id=owner_id,
             name=name,
             created_at=datetime.now(UTC),
+            **metadata,
         )
         self.store[str(pat.id)] = pat
         self.hashes[str(pat.id)] = token_hash

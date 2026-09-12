@@ -149,6 +149,10 @@ class TestCreateToken:
         now = datetime.now(UTC)
 
         mock_pat = AsyncMock()
+        mock_pat.owner_id = "user-1"
+        mock_pat.tenant_id = "tenant-1"
+        mock_pat.scopes = None
+        mock_pat.expires_at = None
         mock_pat.id = pat_id
         mock_pat.name = "my-pat"
         mock_pat.created_at = now
@@ -173,6 +177,10 @@ class TestCreateToken:
         now = datetime.now(UTC)
 
         mock_pat = AsyncMock()
+        mock_pat.owner_id = "user-1"
+        mock_pat.tenant_id = "tenant-1"
+        mock_pat.scopes = None
+        mock_pat.expires_at = None
         mock_pat.id = pat_id
         mock_pat.name = "my-pat"
         mock_pat.created_at = now
@@ -194,6 +202,10 @@ class TestCreateToken:
         now = datetime.now(UTC)
 
         mock_pat = AsyncMock()
+        mock_pat.owner_id = "user-1"
+        mock_pat.tenant_id = "tenant-1"
+        mock_pat.scopes = None
+        mock_pat.expires_at = None
         mock_pat.id = pat_id
         mock_pat.name = "tok"
         mock_pat.created_at = now
@@ -216,6 +228,10 @@ class TestCreateToken:
         now = datetime.now(UTC)
 
         mock_pat = AsyncMock()
+        mock_pat.owner_id = "user-1"
+        mock_pat.tenant_id = "tenant-1"
+        mock_pat.scopes = None
+        mock_pat.expires_at = None
         mock_pat.id = pat_id
         mock_pat.name = "tok"
         mock_pat.created_at = now
@@ -235,6 +251,10 @@ class TestListTokens:
         now = datetime.now(UTC)
 
         mock_pat = AsyncMock()
+        mock_pat.owner_id = "user-1"
+        mock_pat.tenant_id = "tenant-1"
+        mock_pat.scopes = None
+        mock_pat.expires_at = None
         mock_pat.id = uuid4()
         mock_pat.name = "my-pat"
         mock_pat.created_at = now
@@ -312,6 +332,10 @@ class TestCanonicalTokenRoutes:
         now = datetime.now(UTC)
 
         mock_pat = AsyncMock()
+        mock_pat.owner_id = "user-1"
+        mock_pat.tenant_id = "tenant-1"
+        mock_pat.scopes = None
+        mock_pat.expires_at = None
         mock_pat.id = uuid4()
         mock_pat.name = "my-pat"
         mock_pat.created_at = now
@@ -336,6 +360,10 @@ class TestCanonicalTokenRoutes:
         now = datetime.now(UTC)
 
         mock_pat = AsyncMock()
+        mock_pat.owner_id = "user-1"
+        mock_pat.tenant_id = "tenant-1"
+        mock_pat.scopes = None
+        mock_pat.expires_at = None
         mock_pat.id = pat_id
         mock_pat.name = "my-pat"
         mock_pat.created_at = now
@@ -374,6 +402,10 @@ class TestCanonicalTokenRoutes:
         now = datetime.now(UTC)
 
         mock_pat = AsyncMock()
+        mock_pat.owner_id = "user-1"
+        mock_pat.tenant_id = "tenant-1"
+        mock_pat.scopes = None
+        mock_pat.expires_at = None
         mock_pat.id = uuid4()
         mock_pat.name = "my-pat"
         mock_pat.created_at = now

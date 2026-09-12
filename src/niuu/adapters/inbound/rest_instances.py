@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, sta
 from pydantic import BaseModel, Field
 from starlette.types import ASGIApp
 
+from identity.adapters.http_auth import authorization_http_errors
 from niuu.adapters.inbound.auth import extract_principal
 from niuu.adapters.inbound.remote_urls import (
     build_remote_url,
@@ -523,7 +524,9 @@ def create_instances_router(
             kind=InstanceKind.OBSERVATORY,
             enabled_only=True,
         )
-        return await topology.get_snapshot(instances, headers=_forward_headers(request))
+        return await topology.get_snapshot(
+            instances, headers=_forward_headers(request), principal=principal
+        )
 
     @router.put(
         "/observatory/fragments/{source_id}",
@@ -547,7 +550,6 @@ def create_instances_router(
         host can appear on the graph without holding a credential that can do
         anything else.
         """
-        del principal
         if fragment_inbox is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -564,8 +566,12 @@ def create_instances_router(
                     f"path source id '{source_id}'"
                 ),
             )
-        await fragment_inbox.accept(source_id, fragment)
-        health = {source.source_id: source for _stored, source in await fragment_inbox.current()}
+        with authorization_http_errors():
+            await fragment_inbox.accept(source_id, fragment, principal=principal)
+        health = {
+            source.source_id: source
+            for _stored, source in await fragment_inbox.current(principal=principal)
+        }
         return health[source_id]
 
     @router.delete(
@@ -578,13 +584,14 @@ def create_instances_router(
         principal: Principal = Depends(extract_principal),
         _scope: None = Depends(require_scope(TOPOLOGY_PUSH_SCOPE)),
     ) -> None:
-        del principal
         if fragment_inbox is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Topology fragment inbox is not configured",
             )
-        if not await fragment_inbox.forget(source_id):
+        with authorization_http_errors():
+            deleted = await fragment_inbox.forget(source_id, principal=principal)
+        if not deleted:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No fragment published by source '{source_id}'",

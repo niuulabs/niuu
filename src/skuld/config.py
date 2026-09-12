@@ -368,6 +368,7 @@ class WsAuthConfig(BaseModel):
         description="Require authenticated session ownership for WebSocket connections.",
     )
     authorization: AuthorizationAdapterConfig = Field(default_factory=AuthorizationAdapterConfig)
+    identity: AuthorizationAdapterConfig | None = None
     websocket_check_interval: float = Field(
         default=5.0,
         gt=0,

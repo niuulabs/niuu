@@ -230,3 +230,22 @@ global:
   niuu:
     # -- Deployment cluster label used by Guild/Observatory discovery.
     cluster: unknown
+
+# Authentication is explicit: mini-mode uses allow-all; central deployments
+# resolve the original credential over TLS at the canonical identity service.
+identity:
+  adapter: identity.adapters.identity.AllowAllIdentityAdapter
+  kwargs: {}
+authorization:
+  adapter: identity.adapters.authorization.AllowAllAuthorizationAdapter
+  kwargs: {}
+pat:
+  validator_adapter: niuu.domain.services.pat_validator.PATValidator
+  validator_kwargs: {}
+  revocation_cache_ttl: 0
+  websocket_check_interval: 5
+identityAuthority:
+  enabled: false
+  url: ""
+  timeout: 5
+  caFile: ""

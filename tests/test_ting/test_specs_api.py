@@ -9,6 +9,7 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from ting.adapters.memory_event_bus import InMemoryEventBus
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.research import resolve_workflow_campaign_repo
@@ -162,6 +163,7 @@ def _make_client(
     volundr_port: RecordingVolundrPort,
 ) -> TestClient:
     app = FastAPI()
+    app.state.authorization = AllowAllAuthorizationAdapter()
     app.include_router(create_specs_router())
     app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
     app.state.event_bus = InMemoryEventBus()

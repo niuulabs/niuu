@@ -12,6 +12,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from niuu.domain.models import Principal
 from ting.adapters.memory_event_bus import InMemoryEventBus
 from ting.api.dispatch import resolve_volundr_factory
@@ -372,6 +373,7 @@ def _make_client(
     volundr_factory: RecordingVolundrFactory,
 ) -> TestClient:
     app = FastAPI()
+    app.state.authorization = AllowAllAuthorizationAdapter()
     app.include_router(create_research_router())
     app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
     app.state.event_bus = InMemoryEventBus()

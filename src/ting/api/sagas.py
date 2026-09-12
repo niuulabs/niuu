@@ -311,6 +311,13 @@ async def _resolve_selected_workflow(
     use_default_when_missing: bool = False,
 ) -> tuple[UUID | None, str | None, dict | None]:
     workflow_repo: WorkflowRepository | None = getattr(request.app.state, "workflow_repo", None)
+    if workflow_repo is not None:
+        from ting.domain.services.resource_authorization import AuthorizedWorkflowRepository
+
+        authorization = getattr(request.app.state, "authorization", None)
+        if authorization is None:
+            raise HTTPException(status_code=503, detail="Authorization is not configured")
+        workflow_repo = AuthorizedWorkflowRepository(workflow_repo, authorization, principal)
     if workflow_repo is None:
         if workflow_id_value is None:
             return None, None, None
@@ -1570,6 +1577,7 @@ def create_sagas_router() -> APIRouter:
             stage_state = _initial_plan_stage_state(execution.workflow_snapshot, now)
             campaign_status = _campaign_status_from_session(execution.session.status)
             campaign = WorkflowCampaign(
+                tenant_id=principal.tenant_id,
                 id=uuid4(),
                 slug=slug,
                 name=plan_name,
@@ -1994,6 +2002,7 @@ def create_sagas_router() -> APIRouter:
 
         # Build saga domain object (tracker_id filled after tracker call)
         saga = Saga(
+            tenant_id=principal.tenant_id,
             id=saga_id,
             tracker_id="",
             tracker_type="",
@@ -2010,6 +2019,25 @@ def create_sagas_router() -> APIRouter:
             workflow_version=workflow_version,
             workflow_snapshot=workflow_snapshot,
         )
+
+        from identity.adapters.http_auth import authorization_http_errors
+        from identity.models import Resource
+
+        authorization = getattr(request.app.state, "authorization", None)
+        if authorization is None:
+            raise HTTPException(status_code=503, detail="Authorization is not configured")
+        with authorization_http_errors():
+            allowed = await authorization.is_allowed(
+                principal,
+                "create",
+                Resource(
+                    "saga",
+                    str(saga.id),
+                    {"owner_id": saga.owner_id, "tenant_id": saga.tenant_id},
+                ),
+            )
+        if not allowed:
+            raise HTTPException(status_code=403, detail="Saga creation denied")
 
         # 1. Create saga in tracker — this MUST succeed or we abort
         tracker_type = type(tracker).__name__

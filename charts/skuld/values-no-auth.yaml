@@ -7,3 +7,6 @@ envoy:
 gateway:
   jwt:
     enabled: false
+
+identityAuthority:
+  enabled: false

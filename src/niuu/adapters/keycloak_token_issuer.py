@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 import jwt as pyjwt
 
+from niuu.domain.services.token_scope import KNOWN_WORKLOAD_SCOPES, validate_pat_scopes
 from niuu.ports.token_issuer import IssuedToken, TokenIssuer
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,8 @@ class KeycloakTokenIssuer(TokenIssuer):
         audience: str = "",
         **_extra: object,
     ) -> None:
+        if not token_url.startswith("https://"):
+            raise ValueError("PAT token exchange requires HTTPS to protect credentials")
         self._token_url = token_url
         self._client_id = client_id
         self._client_secret = client_secret
@@ -65,6 +68,7 @@ class KeycloakTokenIssuer(TokenIssuer):
         subject_token: str,
         name: str,
         ttl_days: int = 365,
+        scopes: list[str] | None = None,
     ) -> IssuedToken:
         """Exchange the user's access token for a long-lived PAT.
 
@@ -72,6 +76,7 @@ class KeycloakTokenIssuer(TokenIssuer):
         access token. Without that marker, the revocation validator cannot
         distinguish the credential from an ordinary interactive token.
         """
+        requested = validate_pat_scopes(scopes)
         client = await self._get_client()
 
         data: dict[str, Any] = {
@@ -82,6 +87,8 @@ class KeycloakTokenIssuer(TokenIssuer):
             "subject_token_type": _ACCESS_TOKEN_TYPE,
             "requested_token_type": _ACCESS_TOKEN_TYPE,
         }
+        if requested is not None:
+            data["scope"] = " ".join(requested)
         if self._audience:
             data["audience"] = self._audience
 
@@ -117,11 +124,18 @@ class KeycloakTokenIssuer(TokenIssuer):
             raise RuntimeError("Exchanged PAT has no token identifier")
         if type(expiry) is not int or expiry <= time.time():
             raise RuntimeError("Exchanged PAT has no valid expiry")
+        oauth_scope = claims.get("scope", "")
+        if not isinstance(oauth_scope, str):
+            raise RuntimeError("Exchanged PAT has an invalid OAuth scope claim")
+        granted = tuple(sorted(set(oauth_scope.split()) & KNOWN_WORKLOAD_SCOPES))
+        if requested is not None and granted != requested:
+            raise RuntimeError("IDP did not sign exactly the requested PAT scopes")
         return IssuedToken(
             raw_token=raw_token,
             token_id=token_id,
             subject=subject,
             expires_at=expiry,
+            scopes=granted if requested is not None or granted else None,
         )
 
     async def close(self) -> None:

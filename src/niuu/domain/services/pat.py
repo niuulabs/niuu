@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
 from identity.models import Resource
 from identity.ports import AuthorizationDeniedError, AuthorizationPort
 from niuu.domain.models import PersonalAccessToken, Principal
+from niuu.domain.services.token_scope import (
+    _decode_claims,
+    credential_scopes,
+    token_requires_scope_check,
+    validate_pat_scopes,
+)
 from niuu.ports.pat_repository import PATRepository
 from niuu.ports.token_issuer import TokenIssuer
 
@@ -34,7 +41,9 @@ class PATService:
         validator: PATValidator | None = None,
         *,
         authorization: AuthorizationPort,
+        require_scopes: bool = False,
     ) -> None:
+        self._require_scopes = require_scopes
         self._repo = repo
         self._issuer = token_issuer
         self._ttl_days = ttl_days
@@ -42,7 +51,12 @@ class PATService:
         self._authorization = authorization
 
     def _resource(
-        self, principal: Principal, identifier: str, *, owner_id: str | None = None
+        self,
+        principal: Principal,
+        identifier: str,
+        *,
+        owner_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> Resource:
         if not principal.user_id or not principal.tenant_id:
             raise AuthorizationDeniedError("An authenticated user and tenant are required")
@@ -51,7 +65,7 @@ class PATService:
             identifier,
             {
                 "owner_id": principal.user_id if owner_id is None else owner_id,
-                "tenant_id": principal.tenant_id,
+                "tenant_id": principal.tenant_id if tenant_id is None else tenant_id,
             },
         )
 
@@ -67,6 +81,7 @@ class PATService:
         name: str,
         *,
         subject_token: str = "",
+        scopes: list[str] | None = None,
     ) -> tuple[PersonalAccessToken, str]:
         """Create a new PAT via the IDP. Returns (metadata, raw_jwt).
 
@@ -81,10 +96,20 @@ class PATService:
         """
         owner_id = principal.user_id
         await self._check(principal, "create", owner_id)
+        requested = validate_pat_scopes(scopes)
+        if self._require_scopes and requested is None:
+            raise AuthorizationDeniedError("Explicit PAT scopes are required")
+        subject_claims = _decode_claims(subject_token) or {}
+        if token_requires_scope_check(subject_claims) and (
+            requested is None or not set(requested) <= set(credential_scopes(subject_claims))
+        ):
+            raise AuthorizationDeniedError("PAT delegation cannot expand credential scopes")
+        issue_kwargs = {} if requested is None else {"scopes": list(requested)}
         issued = await self._issuer.issue_token(
             subject_token=subject_token,
             name=name,
             ttl_days=self._ttl_days,
+            **issue_kwargs,
         )
 
         if issued.subject != owner_id:
@@ -92,8 +117,17 @@ class PATService:
                 "Token issuer returned a different subject than the authenticated owner"
             )
 
+        if requested is not None and issued.scopes != requested:
+            raise ValueError("Token issuer did not confirm the requested signed scopes")
         token_hash = hashlib.sha256(issued.raw_token.encode()).hexdigest()
-        pat = await self._repo.create(owner_id, name, token_hash)
+        pat = await self._repo.create(
+            owner_id,
+            name,
+            token_hash,
+            tenant_id=principal.tenant_id,
+            scopes=issued.scopes,
+            expires_at=datetime.fromtimestamp(issued.expires_at, UTC),
+        )
         logger.info("PAT created: id=%s owner=%s name=%s", pat.id, owner_id, name)
         return pat, issued.raw_token
 
@@ -104,7 +138,10 @@ class PATService:
         allowed = await self._authorization.filter_allowed(
             principal,
             "list",
-            [self._resource(principal, str(p.id), owner_id=p.owner_id) for p in pats],
+            [
+                self._resource(principal, str(p.id), owner_id=p.owner_id, tenant_id=p.tenant_id)
+                for p in pats
+            ],
         )
         allowed_ids = {r.id for r in allowed}
         return [p for p in pats if str(p.id) in allowed_ids]
@@ -112,7 +149,15 @@ class PATService:
     async def revoke(self, pat_id: UUID, principal: Principal) -> bool:
         """Authorize and revoke an owner-bound PAT."""
         owner_id = principal.user_id
-        await self._check(principal, "delete", str(pat_id))
+        pat = await self._repo.get(pat_id, owner_id)
+        if pat is None:
+            return False
+        if not await self._authorization.is_allowed(
+            principal,
+            "delete",
+            self._resource(principal, str(pat_id), owner_id=pat.owner_id, tenant_id=pat.tenant_id),
+        ):
+            raise AuthorizationDeniedError("Personal access token operation denied")
         token_hash = await self._repo.delete(pat_id, owner_id)
         if token_hash is not None:
             logger.info("PAT revoked: id=%s owner=%s", pat_id, owner_id)

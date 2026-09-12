@@ -132,6 +132,64 @@
             }
           }
         }
+      },
+      "campaign": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "owner_id": {
+              "type": "String"
+            },
+            "tenant_id": {
+              "type": "String"
+            }
+          }
+        }
+      },
+      "workflow": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "owner_id": {
+              "type": "String"
+            },
+            "tenant_id": {
+              "type": "String"
+            },
+            "scope": {
+              "type": "String"
+            }
+          }
+        }
+      },
+      "instance": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "owner_id": {
+              "type": "String"
+            },
+            "tenant_id": {
+              "type": "String"
+            },
+            "visibility": {
+              "type": "String"
+            }
+          }
+        }
+      },
+      "topology_source": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "owner_id": {
+              "type": "String"
+            },
+            "tenant_id": {
+              "type": "String"
+            }
+          }
+        }
       }
     },
     "actions": {
@@ -159,7 +217,11 @@
             "secret",
             "personal_access_token",
             "saga",
-            "tenant"
+            "tenant",
+            "workflow",
+            "campaign",
+            "instance",
+            "topology_source"
           ],
           "context": {
             "type": "Record",
@@ -177,7 +239,11 @@
             "secret",
             "personal_access_token",
             "saga",
-            "tenant"
+            "tenant",
+            "workflow",
+            "campaign",
+            "instance",
+            "topology_source"
           ],
           "context": {
             "type": "Record",
@@ -210,7 +276,11 @@
             "personal_access_token",
             "saga",
             "run",
-            "tenant"
+            "tenant",
+            "workflow",
+            "campaign",
+            "instance",
+            "topology_source"
           ],
           "context": {
             "type": "Record",
@@ -229,7 +299,11 @@
             "personal_access_token",
             "saga",
             "run",
-            "tenant"
+            "tenant",
+            "workflow",
+            "campaign",
+            "instance",
+            "topology_source"
           ],
           "context": {
             "type": "Record",
@@ -344,7 +418,11 @@
             "session",
             "secret",
             "saga",
-            "tenant"
+            "tenant",
+            "workflow",
+            "campaign",
+            "instance",
+            "topology_source"
           ],
           "context": {
             "type": "Record",
@@ -373,6 +451,20 @@
           ],
           "resourceTypes": [
             "session"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "launch": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "workflow"
           ],
           "context": {
             "type": "Record",

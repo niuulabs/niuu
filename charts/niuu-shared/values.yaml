@@ -198,6 +198,9 @@ envoy:
       extraClaimHeaders: []
   extraVolumeMounts: []
   authorization:
+    # Optional central identity/PAT revocation check before gateway admission.
+    # Use identity.adapters.remote.RemoteHeaderAuthenticationAdapter with HTTPS authority_url.
+    identity: null
     enabled: false
     port: 9002
     timeout: 1s
@@ -215,6 +218,9 @@ envoy:
         cpu: 500m
         memory: 256Mi
     routes:
+    - path: /api/v1/identity/me
+      methods: [GET]
+      required_scope: identity:self
     - path: /api/v1/tokens
       prefix: true
       methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
@@ -265,6 +271,10 @@ workloadIdentity:
   mappings: []
 
 pat:
+  service_adapter: niuu.domain.services.pat.PATService
+  service_kwargs: {}
+  validator_adapter: niuu.domain.services.pat_validator.PATValidator
+  validator_kwargs: {}
   token_issuer_adapter: "niuu.adapters.memory_token_issuer.MemoryTokenIssuer"
   token_issuer_kwargs: {}
   ttl_days: 365

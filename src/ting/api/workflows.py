@@ -171,6 +171,7 @@ def create_workflows_router() -> APIRouter:
 
         now = datetime.now(UTC)
         workflow = WorkflowDefinition(
+            tenant_id=principal.tenant_id,
             id=uuid4(),
             name=body.name,
             description=body.description,
@@ -202,6 +203,7 @@ def create_workflows_router() -> APIRouter:
 
         saved = await repo.save_workflow(
             WorkflowDefinition(
+                tenant_id=existing.tenant_id,
                 id=existing.id,
                 name=body.name,
                 description=body.description,
@@ -366,6 +368,28 @@ async def launch_workflow_execution(
     principal: Principal,
     bearer_token: str | None = None,
 ) -> WorkflowLaunchExecution:
+    authorization = getattr(request.app.state, "authorization", None)
+    if authorization is None:
+        raise HTTPException(status_code=503, detail="Authorization is not configured")
+    from identity.adapters.http_auth import authorization_http_errors
+    from identity.models import Resource
+
+    with authorization_http_errors():
+        allowed = await authorization.is_allowed(
+            principal,
+            "launch",
+            Resource(
+                "workflow",
+                str(workflow.id),
+                {
+                    "owner_id": workflow.owner_id,
+                    "tenant_id": workflow.tenant_id,
+                    "scope": workflow.scope.value,
+                },
+            ),
+        )
+    if not allowed:
+        raise HTTPException(status_code=403, detail="Workflow launch denied")
     workflow_snapshot = build_workflow_snapshot(workflow)
     if launch.gate_auto_forward_after is not None:
         workflow_snapshot = _apply_gate_auto_forward_override(

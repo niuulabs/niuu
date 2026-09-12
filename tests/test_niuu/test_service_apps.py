@@ -90,13 +90,16 @@ def test_identity_service_app_initializes_state_and_routes(monkeypatch) -> None:
         "create_pat_validator",
         lambda _settings, _repo: pat_validator,
     )
-    monkeypatch.setattr(identity_app, "import_class", lambda _path: DummyTokenIssuer)
-    monkeypatch.setattr(identity_app, "TenantService", DummyTenantService)
     monkeypatch.setattr(
         identity_app,
-        "PATService",
-        lambda **kwargs: (captured.setdefault("pat_service_kwargs", kwargs), pat_service)[-1],
+        "import_class",
+        lambda path: (
+            (lambda **kwargs: (captured.setdefault("pat_service_kwargs", kwargs), pat_service)[-1])
+            if path.endswith(".PATService")
+            else DummyTokenIssuer
+        ),
     )
+    monkeypatch.setattr(identity_app, "TenantService", DummyTenantService)
     monkeypatch.setattr(
         identity_app,
         "create_identity_router",

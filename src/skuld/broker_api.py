@@ -61,6 +61,7 @@ def bind_broker(getter: Callable[[], Any], log_buffer: deque[dict]) -> None:
 
     cfg = getter()._settings.ws_auth
     if cfg.enforce_ownership:
+        app.state.identity = getter()._ws_identity
         from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 
         app.add_middleware(

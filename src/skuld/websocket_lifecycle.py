@@ -76,6 +76,22 @@ class WebSocketLifecycleMixin:
         if any(r in cfg.admin_roles for r in mapped_roles):
             roles.append("volundr:admin")
         actor = Principal(principal.user_id, "", principal.tenant_id, roles)
+        identity = getattr(self, "_ws_identity", None)
+        if identity is not None:
+            from niuu.ports.identity import InvalidTokenError
+
+            headers = dict(websocket.headers)
+            query_token = websocket.query_params.get("token") or websocket.query_params.get(
+                "access_token"
+            )
+            if query_token and "authorization" not in headers:
+                headers["authorization"] = f"Bearer {query_token}"
+            try:
+                actor = await identity.validate_headers(headers)
+            except (InvalidTokenError, AuthorizationEvaluationError):
+                return False
+            if actor.user_id != principal.user_id or actor.tenant_id != principal.tenant_id:
+                return False
         resource = Resource(
             "session",
             self.session_id,

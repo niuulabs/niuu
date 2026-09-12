@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from urllib.parse import parse_qs
 
 from envoy.service.auth.v3 import external_auth_pb2, external_auth_pb2_grpc
 from google.protobuf.json_format import MessageToDict
@@ -14,6 +15,8 @@ from identity.authz_config import AuthorizationGatewayConfig
 from identity.models import Resource
 from identity.ports import AuthorizationEvaluationError, AuthorizationPort
 from niuu.domain.models import Principal
+from niuu.domain.services.token_scope import credential_scopes, token_requires_scope_check
+from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +44,16 @@ class EnvoyAuthorizationService(external_auth_pb2_grpc.AuthorizationServicer):
     not a credential that arbitrary network clients may supply.
     """
 
-    def __init__(self, authorization: AuthorizationPort, config: AuthorizationGatewayConfig):
+    def __init__(
+        self,
+        authorization: AuthorizationPort,
+        config: AuthorizationGatewayConfig,
+        *,
+        identity: HeaderAuthenticationPort | None = None,
+    ):
         self._authorization = authorization
         self._config = config
+        self._identity = identity
 
     async def Check(self, request, context):  # noqa: N802 — Envoy's protobuf RPC name
         metadata = request.attributes.metadata_context.filter_metadata.get(
@@ -74,8 +84,9 @@ class EnvoyAuthorizationService(external_auth_pb2_grpc.AuthorizationServicer):
             return _deny(403)
         if not isinstance(roles, list) or not all(isinstance(r, str) for r in roles):
             return _deny(403)
-        scopes = claims.get("scopes", [])
-        if not isinstance(scopes, list) or not all(isinstance(s, str) for s in scopes):
+        scopes = credential_scopes(claims)
+        raw_scopes = claims.get("scopes", [])
+        if not isinstance(raw_scopes, list) or not all(isinstance(s, str) for s in raw_scopes):
             return _deny(403)
 
         http = request.attributes.request.http
@@ -97,6 +108,30 @@ class EnvoyAuthorizationService(external_auth_pb2_grpc.AuthorizationServicer):
             tenant_id=tenant,
             roles=[self._config.role_mapping.get(r, r) for r in roles],
         )
+        if self._identity is not None:
+            headers = {k.lower(): v for k, v in http.headers.items()}
+            auth = headers.get("authorization", "")
+            token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+            query = parse_qs(http.path.partition("?")[2])
+            tokens = {
+                t for t in [token, *query.get("token", []), *query.get("access_token", [])] if t
+            }
+            if len(tokens) != 1:
+                return _deny(401)
+            try:
+                principal = await self._identity.validate_headers(
+                    {
+                        "authorization": f"Bearer {tokens.pop()}",
+                        "x-auth-user-id": user_id,
+                        "x-auth-tenant": tenant,
+                    }
+                )
+            except InvalidTokenError:
+                return _deny(401)
+            except AuthorizationEvaluationError:
+                return _deny(503)
+            if principal.user_id != user_id or principal.tenant_id != tenant:
+                return _deny(403)
         resource = Resource(
             kind="gateway",
             id=path,
@@ -105,7 +140,7 @@ class EnvoyAuthorizationService(external_auth_pb2_grpc.AuthorizationServicer):
                 "tenant_id": tenant,
                 "method": http.method,
                 "required_scope": route.required_scope,
-                "scoped": claims.get("token_use") == "valkyrie_build",
+                "scoped": token_requires_scope_check(claims),
                 "scopes": scopes,
             },
         )

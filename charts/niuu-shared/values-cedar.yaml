@@ -25,5 +25,7 @@ envoy:
     enabled: true
 
 pat:
+  service_kwargs:
+    require_scopes: true
   revocation_cache_ttl: 0
   websocket_check_interval: 5
