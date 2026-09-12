@@ -224,13 +224,11 @@ class TestHelpOutput:
         assert result_v.exit_code != 0
         assert result_t.exit_code != 0
 
-    def test_no_up_down_at_top_level(self) -> None:
-        """up/down are now under platform, not at top level."""
+    def test_up_down_shortcuts_at_top_level(self) -> None:
+        """up/down exist at top level as shortcuts for the platform commands."""
         app, _, _ = _build_test_app()
-        result_up = runner.invoke(app, ["up"])
-        result_down = runner.invoke(app, ["down"])
-        assert result_up.exit_code != 0
-        assert result_down.exit_code != 0
+        assert runner.invoke(app, ["up", "--help"]).exit_code == 0
+        assert runner.invoke(app, ["down", "--help"]).exit_code == 0
 
     def test_no_migrate_or_serve_at_top_level(self) -> None:
         """migrate and serve have been removed."""

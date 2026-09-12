@@ -1,0 +1,594 @@
+"""Docker mode — render and drive the Docker Compose bundle.
+
+``niuu up`` in docker mode does four things: run the host preflight, write a
+compose bundle (``docker-compose.yaml`` + ``.env`` + ``host-facts.json``)
+under ``docker.compose_dir``, run ``docker compose up -d``, and wait for the
+platform health endpoint. The bundle is plain files the operator can read,
+diff and run by hand; secrets live in ``secrets.env`` with mode 0600 and are
+generated once.
+
+Inside the ``niuu`` container the platform runs ``niuu platform up`` in mini
+mode against the external Postgres container, with the Docker socket mounted
+so sessions run as sibling containers (``DockerContainerPodManager``).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import secrets
+import shutil
+import socket
+import stat
+import subprocess
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import yaml
+
+from cli.services.docker_host import DockerPreflightConfig, docker_socket_gid
+from niuu.service_databases import database_name_for_service, local_service_database_names
+
+if TYPE_CHECKING:
+    from cli.config import CLISettings
+    from cli.services.docker_host import HostFacts
+
+DOCKER_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.docker_container.DockerContainerPodManager"
+SECRET_INJECTION_CONTRIBUTOR = (
+    "volundr.adapters.outbound.contributors.secrets.SecretInjectionContributor"
+)
+WORKLOAD_IDENTITY_CONTRIBUTOR = (
+    "volundr.adapters.outbound.contributors.workload_identity.WorkloadIdentityContributor"
+)
+DOCKER_LOGIN_RUNNER_ADAPTER = "volundr.adapters.outbound.docker_login_runner.DockerLoginRunner"
+SESSION_SECRET_INJECTION_ADAPTER = (
+    "volundr.adapters.outbound.session_file_secret_injection.SessionFileSecretInjectionAdapter"
+)
+DEFAULT_SKULD_IMAGE = "ghcr.io/niuulabs/skuld:dev"
+POSTGRES_USER = "niuu"
+COMPOSE_FILE = "docker-compose.yaml"
+ENV_FILE = ".env"
+SECRETS_FILE = "secrets.env"
+HOST_FACTS_FILE = "host-facts.json"
+SETUP_STATE_FILE = "setup-state.json"
+# Effective bundle settings `niuu up` used, for the in-container stack controller.
+STACK_FILE = "stack.yaml"
+# Changes applied through the wizard; `niuu up` merges them so they survive.
+STACK_OVERRIDES_FILE = "stack-overrides.yaml"
+# Changes staged in the wizard but not applied yet; ignored by `niuu up`.
+STACK_STAGED_FILE = "stack-staged.yaml"
+APPLY_STATE_FILE = "stack-apply.json"
+HEALTH_POLL_INTERVAL_SECONDS = 2.0
+
+
+@dataclass(frozen=True)
+class StackSecrets:
+    """Secrets generated once per installation."""
+
+    postgres_password: str
+    credential_key: str
+
+
+@dataclass(frozen=True)
+class BundlePaths:
+    """Where the rendered bundle lives."""
+
+    compose_dir: Path
+    compose_file: Path
+    env_file: Path
+    secrets_file: Path
+    host_facts_file: Path
+
+
+def compose_dir(settings: CLISettings) -> Path:
+    return Path(settings.docker.compose_dir).expanduser()
+
+
+def data_dir(settings: CLISettings) -> Path:
+    return Path(settings.docker.data_dir).expanduser()
+
+
+def bundle_paths(settings: CLISettings) -> BundlePaths:
+    root = compose_dir(settings)
+    return BundlePaths(
+        compose_dir=root,
+        compose_file=root / COMPOSE_FILE,
+        env_file=root / ENV_FILE,
+        secrets_file=root / SECRETS_FILE,
+        host_facts_file=root / HOST_FACTS_FILE,
+    )
+
+
+def _generate_fernet_key() -> str:
+    from cryptography.fernet import Fernet
+
+    return Fernet.generate_key().decode()
+
+
+def _parse_env_file(text: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, sep, value = stripped.partition("=")
+        if sep:
+            values[key.strip()] = value.strip()
+    return values
+
+
+def _write_private(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content)
+    tmp.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    os.replace(tmp, path)
+
+
+def load_or_create_secrets(settings: CLISettings) -> StackSecrets:
+    """Return the installation secrets, generating and persisting them on first run.
+
+    ``docker.postgres_password`` in the config file wins over the generated one so
+    an operator can point the bundle at an existing password.
+    """
+    paths = bundle_paths(settings)
+    existing: dict[str, str] = {}
+    if paths.secrets_file.exists():
+        existing = _parse_env_file(paths.secrets_file.read_text())
+
+    postgres_password = (
+        settings.docker.postgres_password.strip()
+        or existing.get("NIUU_POSTGRES_PASSWORD", "")
+        or secrets.token_urlsafe(24)
+    )
+    credential_key = existing.get("NIUU_CREDENTIAL_KEY", "") or _generate_fernet_key()
+    result = StackSecrets(postgres_password=postgres_password, credential_key=credential_key)
+
+    content = (
+        "# Generated by `niuu up`. Back this file up: losing NIUU_CREDENTIAL_KEY\n"
+        "# makes every stored credential unreadable.\n"
+        f"NIUU_POSTGRES_PASSWORD={result.postgres_password}\n"
+        f"NIUU_CREDENTIAL_KEY={result.credential_key}\n"
+    )
+    if existing != _parse_env_file(content):
+        _write_private(paths.secrets_file, content)
+    return result
+
+
+def detect_lan_ip() -> str:
+    """Best-effort LAN address for the printed setup URL; never raises."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("10.255.255.255", 1))
+            return str(sock.getsockname()[0])
+    except OSError:
+        return "127.0.0.1"
+
+
+def stack_settings_dict(settings: CLISettings) -> dict[str, Any]:
+    """The bundle-relevant sections of the CLI settings, as plain data."""
+    return {
+        "server": settings.server.model_dump(mode="json"),
+        "docker": settings.docker.model_dump(mode="json"),
+    }
+
+
+def write_stack_file(settings: CLISettings, data_root: Path) -> Path:
+    """Record the effective bundle settings for the in-container stack controller."""
+    path = data_root / STACK_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "# Written by `niuu up`; the setup wizard reads it. Do not edit.\n"
+        + yaml.safe_dump(stack_settings_dict(settings), sort_keys=False)
+    )
+    return path
+
+
+def read_stack_overrides(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    data = yaml.safe_load(path.read_text()) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must contain a mapping of settings overrides")
+    return data
+
+
+def write_stack_overrides(path: Path, overrides: dict[str, Any]) -> None:
+    path.write_text(
+        "# Applied through the setup wizard; `niuu up` merges this over config.yaml.\n"
+        + yaml.safe_dump(overrides, sort_keys=False)
+    )
+
+
+def merge_settings(settings: CLISettings, overrides: dict[str, Any]) -> CLISettings:
+    """Return *settings* with *overrides* (nested dict) merged in and re-validated."""
+    from cli.config import CLISettings
+    from niuu.domain.stack import deep_merge
+
+    if not overrides:
+        return settings
+    return CLISettings.model_validate(deep_merge(settings.model_dump(mode="json"), overrides))
+
+
+def apply_stack_overrides(settings: CLISettings) -> CLISettings:
+    """Honour changes made through the wizard on a previous run."""
+    return merge_settings(settings, read_stack_overrides(data_dir(settings) / STACK_OVERRIDES_FILE))
+
+
+def load_stack_settings(stack_file: Path, overrides_file: Path) -> CLISettings:
+    """Settings as `niuu up` left them, plus overrides applied since."""
+    from cli.config import CLISettings
+
+    base = yaml.safe_load(stack_file.read_text()) or {}
+    if not isinstance(base, dict):
+        raise ValueError(f"{stack_file} must contain a mapping")
+    base.setdefault("mode", "docker")
+    return merge_settings(CLISettings.model_validate(base), read_stack_overrides(overrides_file))
+
+
+def data_subdirs(root: Path) -> dict[str, Path]:
+    return {
+        "postgres": root / "postgres",
+        "workspaces": root / "workspaces",
+        "home": root / "home",
+        "credentials": root / "credentials",
+        "session_secrets": root / "session-secrets",
+        "models": root / "models",
+        "residents": root / "residents",
+    }
+
+
+def ensure_data_dirs(root: Path) -> None:
+    for path in data_subdirs(root).values():
+        path.mkdir(parents=True, exist_ok=True)
+
+
+def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, str]:
+    """Environment for the ``niuu`` container (values reference the env file)."""
+    sub = data_subdirs(data_root)
+    credential_store = {
+        "adapter": "volundr.adapters.outbound.file_credential_store.FileCredentialStore",
+        "kwargs": {"base_dir": str(sub["credentials"])},
+        "secret_kwargs_env": {"encryption_key": "NIUU_CREDENTIAL_KEY"},
+    }
+    # Session containers get their credentials as bind-mounted files rendered
+    # from the same store (env.sh sourced by the skuld entrypoint).
+    secret_injection = {
+        "adapter": SESSION_SECRET_INJECTION_ADAPTER,
+        "kwargs": {
+            "base_dir": str(sub["credentials"]),
+            "sessions_dir": str(sub["session_secrets"]),
+        },
+        "secret_kwargs_env": {"encryption_key": "NIUU_CREDENTIAL_KEY"},
+    }
+    env: dict[str, str] = {
+        "HOME": str(sub["home"]),
+        "NIUU_CONFIG": str(data_root / "config.yaml"),
+        "NIUU_MODE": "mini",
+        "NIUU_SETUP_MODE": "docker",
+        "NIUU_SERVER__HOST": "0.0.0.0",
+        "NIUU_SERVER__EXTERNAL_HOST": "${NIUU_EXTERNAL_HOST}",
+        "NIUU_SERVER__PORT": str(settings.server.port),
+        "NIUU_DATABASE_MODE": "external",
+        "DATABASE__HOST": "postgres",
+        "DATABASE__PORT": "5432",
+        "DATABASE__USER": POSTGRES_USER,
+        "DATABASE__PASSWORD": "${NIUU_POSTGRES_PASSWORD}",
+        # Integration connections are created through the shared API (niuu_shared);
+        # sessions must resolve integration ids from the same database.
+        "INTEGRATIONS__DATABASE_NAME": database_name_for_service("niuu-shared"),
+        "NIUU_CREDENTIAL_KEY": "${NIUU_CREDENTIAL_KEY}",
+        "CREDENTIAL_STORE": json.dumps(credential_store),
+        "SECRET_INJECTION": json.dumps(secret_injection),
+        # Claude / Codex subscription sign-in runs the official CLI in a sealed
+        # sibling container built from the same skuld image sessions use.
+        "CREDENTIAL_ENROLLMENT_RUNNER": json.dumps(
+            {
+                "adapter": DOCKER_LOGIN_RUNNER_ADAPTER,
+                "kwargs": {
+                    "image": "${NIUU_SKULD_IMAGE}",
+                    "network": "${COMPOSE_PROJECT_NAME}_default",
+                },
+            }
+        ),
+        # The secret-injection contributor turns a session's integration
+        # connections into credential mappings for the adapter above. Workload
+        # identity needs a Kubernetes service-account token issuer; on a single
+        # host the session runtime has none, so it is switched off explicitly
+        # rather than left to emit a volume nothing can mount.
+        "SESSION_CONTRIBUTORS": json.dumps(
+            [
+                {"adapter": SECRET_INJECTION_CONTRIBUTOR, "kwargs": {}},
+                {"adapter": WORKLOAD_IDENTITY_CONTRIBUTOR, "kwargs": {"enabled": False}},
+            ]
+        ),
+        "NIUU_POD_MANAGER__ADAPTER": DOCKER_POD_MANAGER_ADAPTER,
+        "NIUU_POD_MANAGER__WORKSPACES_DIR": str(sub["workspaces"]),
+        "NIUU_POD_MANAGER__SKULD_IMAGE": "${NIUU_SKULD_IMAGE}",
+        "NIUU_POD_MANAGER__NETWORK": "${COMPOSE_PROJECT_NAME}_default",
+        "NIUU_POD_MANAGER__PLATFORM_URL": f"http://niuu:{settings.server.port}",
+        "NIUU_DOCKER__DATA_DIR": str(data_root),
+        "NIUU_SETUP_ENABLED": "true",
+        "NIUU_SETUP_STATE_FILE": str(data_root / SETUP_STATE_FILE),
+        "NIUU_HOST_FACTS_FILE": str(data_root / HOST_FACTS_FILE),
+        # The wizard's runtime, access and local-model steps change the bundle
+        # through the stack controller, which reads and writes these here.
+        "NIUU_STACK_DIR": str(data_root),
+        "SESSION_ROOM__INTERNAL_BASE_URL": f"http://127.0.0.1:{settings.server.port}",
+        "OBSERVATORY__GUILD__URL": f"http://127.0.0.1:{settings.server.port}",
+        "BIFROST__URL": f"http://127.0.0.1:{settings.server.port}",
+        "RAVN_GATEWAY__PLATFORM__BASE_URL": f"http://127.0.0.1:{settings.server.port}",
+        "PYTHONUNBUFFERED": "1",
+    }
+    vllm = settings.docker.vllm
+    if vllm.enabled:
+        bifrost = {
+            "providers": {
+                "vllm": {
+                    "base_url": f"http://vllm:{vllm.port}/v1",
+                    "models": [vllm.model],
+                    "cost_per_token": 0.0,
+                }
+            }
+        }
+        env["NIUU_BIFROST"] = json.dumps(bifrost)
+    return env
+
+
+def render_compose(settings: CLISettings) -> dict[str, Any]:
+    """Build the compose document as a plain dict (rendered with yaml.safe_dump)."""
+    data_root = data_dir(settings)
+    bundle_dir = compose_dir(settings)
+    sub = data_subdirs(data_root)
+    port = settings.server.port
+    health_probe = (
+        'python -c "import urllib.request,sys; '
+        f"sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:{port}/health', timeout=5)"
+        '.status == 200 else 1)"'
+    )
+    services: dict[str, Any] = {
+        "postgres": {
+            "image": "${NIUU_POSTGRES_IMAGE}",
+            "restart": "unless-stopped",
+            "environment": {
+                "POSTGRES_USER": POSTGRES_USER,
+                "POSTGRES_PASSWORD": "${NIUU_POSTGRES_PASSWORD}",
+                "POSTGRES_DB": local_service_database_names()[0],
+            },
+            "volumes": [f"{sub['postgres']}:/var/lib/postgresql/data"],
+            "healthcheck": {
+                "test": ["CMD-SHELL", f"pg_isready -U {POSTGRES_USER}"],
+                "interval": "5s",
+                "timeout": "3s",
+                "retries": 20,
+            },
+        },
+        "niuu": {
+            "image": "${NIUU_IMAGE}",
+            "restart": "unless-stopped",
+            "entrypoint": ["/opt/venv/bin/niuu"],
+            "command": ["platform", "up", "--skip-preflight", "--host-profile", "full"],
+            "user": "${NIUU_UID}:${NIUU_GID}",
+            "group_add": ["${NIUU_DOCKER_GID}"],
+            "environment": platform_environment(settings, data_root),
+            "volumes": [
+                f"{data_root}:{data_root}",
+                f"{bundle_dir}:{bundle_dir}",
+                "/var/run/docker.sock:/var/run/docker.sock",
+            ],
+            "ports": [f"${{NIUU_BIND_HOST}}:{port}:{port}"],
+            "extra_hosts": ["host.docker.internal:host-gateway"],
+            "depends_on": {"postgres": {"condition": "service_healthy"}},
+            "healthcheck": {
+                "test": ["CMD-SHELL", health_probe],
+                "interval": "10s",
+                "timeout": "6s",
+                "retries": 30,
+                "start_period": "60s",
+            },
+        },
+    }
+    vllm = settings.docker.vllm
+    if vllm.enabled:
+        services["vllm"] = {
+            "image": "${NIUU_VLLM_IMAGE}",
+            "restart": "unless-stopped",
+            "ipc": "host",
+            "command": [
+                "--model",
+                vllm.model,
+                "--port",
+                str(vllm.port),
+                "--max-model-len",
+                str(vllm.max_model_len),
+                "--gpu-memory-utilization",
+                str(vllm.gpu_memory_utilization),
+            ],
+            "environment": {
+                "HF_TOKEN": "${NIUU_HF_TOKEN}",
+                "HF_HOME": "/models",
+            },
+            "volumes": [f"{sub['models']}:/models"],
+            "deploy": {
+                "resources": {
+                    "reservations": {
+                        "devices": [{"driver": "nvidia", "count": "all", "capabilities": ["gpu"]}]
+                    }
+                }
+            },
+            "healthcheck": {
+                "test": [
+                    "CMD-SHELL",
+                    f'python3 -c "import urllib.request; '
+                    f"urllib.request.urlopen('http://127.0.0.1:{vllm.port}/health', timeout=5)\"",
+                ],
+                "interval": "30s",
+                "timeout": "10s",
+                "retries": 60,
+                "start_period": "600s",
+            },
+        }
+        services["niuu"]["depends_on"]["vllm"] = {"condition": "service_started"}
+    return {"name": "${COMPOSE_PROJECT_NAME}", "services": services}
+
+
+def render_env(settings: CLISettings, *, external_host: str, docker_gid: int | None) -> str:
+    """Non-secret variables the compose file references."""
+    lines = [
+        "# Generated by `niuu up`; edit ~/.niuu/config.yaml instead of this file.",
+        f"COMPOSE_PROJECT_NAME={settings.docker.project_name}",
+        f"NIUU_IMAGE={settings.docker.image}",
+        f"NIUU_POSTGRES_IMAGE={settings.docker.postgres_image}",
+        f"NIUU_SKULD_IMAGE={settings.docker.skuld_image}",
+        f"NIUU_VLLM_IMAGE={settings.docker.vllm.image}",
+        f"NIUU_HF_TOKEN={settings.docker.vllm.hf_token}",
+        f"NIUU_BIND_HOST={settings.docker.bind_host}",
+        f"NIUU_EXTERNAL_HOST={external_host}",
+        f"NIUU_UID={os.getuid()}",
+        f"NIUU_GID={os.getgid()}",
+        f"NIUU_DOCKER_GID={docker_gid if docker_gid is not None else os.getgid()}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def write_bundle(
+    settings: CLISettings,
+    *,
+    host_facts: HostFacts,
+    external_host: str,
+) -> BundlePaths:
+    """Write compose, env, secrets and host facts; returns their paths."""
+    paths = bundle_paths(settings)
+    paths.compose_dir.mkdir(parents=True, exist_ok=True)
+    ensure_data_dirs(data_dir(settings))
+    load_or_create_secrets(settings)
+
+    compose_doc = render_compose(settings)
+    paths.compose_file.write_text(yaml.safe_dump(compose_doc, sort_keys=False))
+    socket_gid = docker_socket_gid(DockerPreflightConfig(data_dir=settings.docker.data_dir))
+    paths.env_file.write_text(
+        render_env(settings, external_host=external_host, docker_gid=socket_gid)
+    )
+    facts_text = host_facts.to_json() + "\n"
+    paths.host_facts_file.write_text(facts_text)
+    (data_dir(settings) / HOST_FACTS_FILE).write_text(facts_text)
+    return paths
+
+
+def compose_args(settings: CLISettings) -> list[str]:
+    """``compose ...`` arguments bound to this bundle (without the docker binary)."""
+    paths = bundle_paths(settings)
+    return [
+        "compose",
+        "--project-name",
+        settings.docker.project_name,
+        "--file",
+        str(paths.compose_file),
+        "--env-file",
+        str(paths.env_file),
+        "--env-file",
+        str(paths.secrets_file),
+    ]
+
+
+def compose_command(settings: CLISettings, *args: str) -> list[str]:
+    """``docker compose`` invocation bound to this bundle."""
+    docker = shutil.which("docker")
+    if not docker:
+        raise RuntimeError("docker not found in PATH; run `niuu doctor`.")
+    return [
+        docker,
+        *compose_args(settings),
+        *args,
+    ]
+
+
+def pull_applier_image(settings: CLISettings) -> str:
+    """Pre-pull the image the wizard uses to apply stack changes.
+
+    Returns an empty string on success, otherwise the reason. A failed pull
+    is reported by the caller, not fatal: the platform pulls it again when a
+    change is actually applied, and an offline host can still come up.
+    """
+    docker = shutil.which("docker")
+    if not docker:
+        raise RuntimeError("docker not found in PATH; run `niuu doctor`.")
+    image = settings.docker.applier_image
+    completed = subprocess.run(  # noqa: S603
+        [docker, "image", "inspect", image], capture_output=True, text=True, check=False
+    )
+    if completed.returncode == 0:
+        return ""
+    completed = subprocess.run(  # noqa: S603
+        [docker, "pull", "--quiet", image], capture_output=True, text=True, check=False
+    )
+    if completed.returncode != 0:
+        return completed.stderr.strip() or f"docker pull exited with {completed.returncode}"
+    return ""
+
+
+def run_compose(settings: CLISettings, *args: str) -> int:
+    """Run ``docker compose <args>`` streaming output; returns the exit code."""
+    cmd = compose_command(settings, *args)
+    completed = subprocess.run(cmd, check=False)  # noqa: S603
+    return completed.returncode
+
+
+SESSION_CONTAINER_LABEL = "niuu.managed-by=docker_container"
+
+
+def remove_session_containers(settings: CLISettings) -> int:
+    """Force-remove session containers the platform started via the Docker socket.
+
+    They are not part of the compose project, so ``docker compose down`` leaves
+    them behind. Returns how many were removed.
+    """
+    del settings
+    docker = shutil.which("docker")
+    if not docker:
+        raise RuntimeError("docker not found in PATH; run `niuu doctor`.")
+    listed = subprocess.run(  # noqa: S603
+        [docker, "ps", "-aq", "--filter", f"label={SESSION_CONTAINER_LABEL}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    ids = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
+    if not ids:
+        return 0
+    subprocess.run([docker, "rm", "-f", *ids], check=False, capture_output=True)  # noqa: S603
+    return len(ids)
+
+
+def health_url(settings: CLISettings) -> str:
+    return f"http://127.0.0.1:{settings.server.port}/health"
+
+
+def wait_for_health(
+    settings: CLISettings,
+    *,
+    timeout_seconds: float,
+    poll_interval_seconds: float = HEALTH_POLL_INTERVAL_SECONDS,
+    sleep: Any = time.sleep,
+    clock: Any = time.monotonic,
+) -> bool:
+    """Poll the platform health endpoint until it answers 200 or the timeout passes."""
+    deadline = clock() + timeout_seconds
+    url = health_url(settings)
+    while clock() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=5) as response:  # noqa: S310
+                if response.status == 200:
+                    return True
+        except (urllib.error.URLError, OSError, ValueError):
+            pass
+        sleep(poll_interval_seconds)
+    return False
+
+
+def setup_url(settings: CLISettings, external_host: str) -> str:
+    return f"http://{external_host}:{settings.server.port}/setup"

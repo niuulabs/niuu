@@ -122,6 +122,10 @@ vi.mock('@niuulabs/plugin-mimir', () => ({
   createMimirMockAdapter: vi.fn(() => ({})),
   buildMimirHttpAdapter: vi.fn(() => ({})),
 }));
+vi.mock('@niuulabs/plugin-setup', () => ({
+  createMockSetupService: vi.fn(() => ({})),
+  buildSetupHttpAdapter: vi.fn(() => ({})),
+}));
 vi.mock('@niuulabs/plugin-observatory', () => observatoryMocks);
 vi.mock('@niuulabs/plugin-valkyrie', () => valkyrieMocks);
 vi.mock('@niuulabs/plugin-volundr', () => volundrMocks);

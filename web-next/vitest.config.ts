@@ -38,6 +38,7 @@ export default defineConfig({
       '@niuulabs/plugin-volundr': resolve(__dirname, 'packages/plugin-volundr/src/index.ts'),
       '@niuulabs/plugin-login': resolve(__dirname, 'packages/plugin-login/src/index.ts'),
       '@niuulabs/plugin-sdk': resolve(__dirname, 'packages/plugin-sdk/src/index.ts'),
+      '@niuulabs/plugin-setup': resolve(__dirname, 'packages/plugin-setup/src/index.ts'),
       '@niuulabs/query': resolve(__dirname, 'packages/query/src/index.ts'),
       '@niuulabs/shell': resolve(__dirname, 'packages/shell/src/index.ts'),
       '@niuulabs/ui': resolve(__dirname, 'packages/ui/src/index.ts'),

@@ -1441,17 +1441,32 @@ class LocalProcessPodManager(PodManager):
 
         raise FileNotFoundError(f"Claude binary '{self._claude_binary}' not found in PATH")
 
-    @staticmethod
-    def _build_env(spec: SessionSpec, workspace: Path) -> dict[str, str]:
-        """Build environment variables for the Skuld process."""
+    @classmethod
+    def _build_env(cls, spec: SessionSpec, workspace: Path) -> dict[str, str]:
+        """Build environment variables for the Skuld process.
+
+        The host process inherits the platform environment; the session-specific
+        values from :meth:`_session_env` are layered on top.
+        """
         env = dict(os.environ)
-        env["SKULD__SESSION__WORKSPACE_DIR"] = str(workspace)
         for key in (
             "SKULD__SKIP_PERMISSIONS",
             "SKULD__APPROVAL_POLICY",
             "SKULD__SANDBOX",
         ):
             env.pop(key, None)
+        env.update(cls._session_env(spec, workspace))
+        return env
+
+    @staticmethod
+    def _session_env(spec: SessionSpec, workspace: Path) -> dict[str, str]:
+        """Environment derived from the session spec alone (no host inheritance).
+
+        Container-based managers use this directly so the platform's own
+        environment never leaks into a sandbox.
+        """
+        env: dict[str, str] = {}
+        env["SKULD__SESSION__WORKSPACE_DIR"] = str(workspace)
 
         api_key = spec.values.get("anthropic_api_key", "")
         if api_key:

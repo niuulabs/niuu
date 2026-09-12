@@ -66,6 +66,7 @@ nav:
       - Review agent changes: concepts/git-and-review-flow.md
   - Operate:
       - Local development: operations/local-development.md
+      - Single-host Docker mode: operations/docker-mode.md
       - Kubernetes deployment: operations/kubernetes-deployment.md
       - OpenShell runtime: operations/openshell-runtime.md
       - Identity and execution boundaries: operations/security-and-permissions.md

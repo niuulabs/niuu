@@ -39,6 +39,9 @@ importers:
       '@niuulabs/plugin-ravn':
         specifier: workspace:*
         version: link:packages/plugin-ravn
+      '@niuulabs/plugin-setup':
+        specifier: workspace:*
+        version: link:packages/plugin-setup
       '@niuulabs/plugin-ting':
         specifier: workspace:*
         version: link:packages/plugin-ting
@@ -193,6 +196,9 @@ importers:
       '@niuulabs/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
+      '@niuulabs/plugin-setup':
+        specifier: workspace:*
+        version: link:../../packages/plugin-setup
       '@niuulabs/plugin-ting':
         specifier: workspace:*
         version: link:../../packages/plugin-ting
@@ -641,6 +647,37 @@ importers:
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
+
+  packages/plugin-setup:
+    dependencies:
+      '@niuulabs/plugin-sdk':
+        specifier: workspace:*
+        version: link:../plugin-sdk
+      '@niuulabs/ui':
+        specifier: workspace:*
+        version: link:../ui
+    devDependencies:
+      '@tanstack/react-query':
+        specifier: ^5.102.8
+        version: 5.102.8(react@19.2.8)
+      '@tanstack/react-router':
+        specifier: ^1.170.33
+        version: 1.170.33(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@types/react':
+        specifier: ^19.2.18
+        version: 19.2.18
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
+      tsup:
+        specifier: ^8.3.5
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.28)(typescript@6.0.3)(yaml@2.8.3)
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vite:
+        specifier: ^8.2.2
+        version: 8.2.2(@types/node@26.5.0)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.8.3)
 
   packages/plugin-ting:
     dependencies:

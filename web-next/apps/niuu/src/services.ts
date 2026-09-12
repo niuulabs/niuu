@@ -40,6 +40,11 @@ import {
 } from '@niuulabs/plugin-ting';
 import { createMimirMockAdapter, buildMimirHttpAdapter } from '@niuulabs/plugin-mimir';
 import {
+  buildSetupHttpAdapter,
+  createMockSetupService,
+  type ISetupService,
+} from '@niuulabs/plugin-setup';
+import {
   createMockAgentDirectory,
   createMockRegistryRepository,
   createMockTopologyStream,
@@ -341,6 +346,17 @@ function resolveCredentialsServiceBase(config: Pick<NiuuConfig, 'services'>): st
 
   const sharedBase = resolveSharedApiBase(config);
   return sharedBase ? `${sharedBase}/credentials` : null;
+}
+
+function resolveSetupServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
+  const setupSvc = config.services['setup'];
+  if (hasHttpBackend(setupSvc)) return setupSvc.baseUrl;
+  // An explicit non-http entry (mock) is a decision; only an absent key derives
+  // the setup API from the shared niuu base.
+  if (setupSvc) return null;
+
+  const niuuBase = resolveNiuuRegistryBase(config);
+  return niuuBase ? `${niuuBase}/setup` : null;
 }
 
 function resolveIntegrationsServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
@@ -1382,6 +1398,17 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     ? buildRavnWardenAdapter(createApiClient(ravnWardenBase))
     : demoService(config, 'ravn.wardens', createMockWardenStore);
 
+  // ── First-launch setup wizard ──
+  const setupBase = resolveSetupServiceBase(config);
+  const setupIntegrationsBase = resolveIntegrationsServiceBase(config);
+  const setup: ISetupService =
+    setupBase && setupIntegrationsBase
+      ? buildSetupHttpAdapter({
+          setup: createApiClient(setupBase),
+          integrations: createApiClient(setupIntegrationsBase),
+        })
+      : demoService(config, 'setup', createMockSetupService);
+
   // ── Mímir ──
   const knowledgeRegistryBase = resolveNiuuRegistryBase(config);
   const mimir = hasHttpBackend(mimirSvc)
@@ -1544,6 +1571,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'ravn.triggers': ravnTriggers,
     'ravn.budget': ravnBudget,
     'ravn.wardens': ravnWardens,
+    setup,
     mimir,
     bifrost,
     volundr,

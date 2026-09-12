@@ -37,14 +37,32 @@ COPY uv.lock /build/uv.lock
 COPY containers/niuu/build_switchyard.py containers/niuu/switchyard-build-constraints.txt /build/
 RUN python build_switchyard.py
 
+# Web UI assets are baked into the platform image so one container serves the
+# API and the SPA on a single port (spark mode). Same build as containers/niuu-web.
+FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS web-build
+WORKDIR /app
+RUN corepack enable
+COPY web-next/package.json web-next/pnpm-lock.yaml web-next/pnpm-workspace.yaml ./
+COPY web-next/tsconfig.base.json web-next/tsconfig.json ./
+COPY web-next/build ./build
+COPY web-next/apps ./apps
+COPY web-next/packages ./packages
+ARG APP_VERSION=dev
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+ENV VITE_APP_VERSION=${APP_VERSION}
+RUN pnpm install --frozen-lockfile
+RUN pnpm build
+
 FROM python-build AS builder
 WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
 COPY src/ /app/src/
-RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats --extra openshell --extra otel \
-    --extra switchyard --no-install-package nemo-switchyard \
+RUN uv sync --frozen --no-dev --no-editable --extra cli --extra k8s --extra nats --extra openshell \
+    --extra otel --extra switchyard --no-install-package nemo-switchyard \
     && mkdir -p /dist-root/data/mimir
+# cli.resources.web_dist_dir() falls back to the installed package data.
+COPY --from=web-build /app/apps/niuu/dist /opt/venv/lib/python3.14/site-packages/cli/web/dist
 RUN --mount=type=bind,from=switchyard-wheel,source=/wheels,target=/wheels \
     uv pip install --python /opt/venv/bin/python --offline --no-deps --no-build /wheels/*.whl \
     && mkdir -p /opt/venv/share/niuu \
@@ -63,7 +81,10 @@ RUN --mount=type=bind,from=switchyard-wheel,source=/wheels,target=/wheels \
 FROM python:3.14-slim-trixie@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6
 
 
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+# git: the platform clones session workspaces before a sandbox container starts.
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 LABEL org.opencontainers.image.title="niuu"
 LABEL org.opencontainers.image.description="Niuu — unified Python control plane services"
