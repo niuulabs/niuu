@@ -19,7 +19,7 @@ on:
         default: ghcr.io
       grype-version:
         type: string
-        default: "0.87.0"
+        default: "0.118.0"
 
 permissions:
   contents: read
