@@ -308,7 +308,7 @@ class OpenShellGatewayClient:
         if resources:
             template.resources.CopyFrom(_protobuf_struct(resources))
         if driver_config:
-            template.driver_config.CopyFrom(_protobuf_struct(driver_config))
+            template.driver_config.CopyFrom(_protobuf_struct({"kubernetes": driver_config}))
         spec = openshell_pb2.SandboxSpec(
             environment=env,
             template=template,

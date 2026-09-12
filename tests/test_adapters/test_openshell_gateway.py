@@ -2790,3 +2790,31 @@ def test_linear_api_key_uses_scoped_inspected_header_route():
     assert endpoint.tls == "terminate"
     assert endpoint.enforcement == "enforce"
     assert not getattr(endpoint, "allow_uninspected_credentials", False)
+
+
+def test_create_sandbox_wraps_storage_in_public_driver_envelope(monkeypatch):
+    from unittest.mock import Mock
+
+    adapter = _import_adapter(monkeypatch)
+    monkeypatch.setattr(
+        adapter.openshell_pb2,
+        "SandboxTemplate",
+        lambda **kwargs: types.SimpleNamespace(
+            **kwargs, labels={}, environment={}, driver_config=adapter.struct_pb2.Struct()
+        ),
+    )
+    monkeypatch.setattr(adapter, "_sandbox_from_proto", lambda raw: raw)
+    client = adapter.OpenShellGatewayClient(token_provider=Mock())
+    client._stub = Mock()
+    config = adapter._driver_config_from_values(
+        {"persistence": {"existingClaim": "forge-workspace", "mountPath": "/sandbox/workspace"}}
+    )
+    client.create_sandbox(
+        name="forge-test", image="sandbox:test", env={}, labels={}, driver_config=config
+    )
+    request = client._stub.CreateSandbox.call_args.args[0]
+    envelope = request.spec.template.driver_config
+    assert set(envelope) == {"kubernetes"}
+    selected = envelope["kubernetes"]
+    assert selected["volumes"][0]["persistent_volume_claim"]["claim_name"] == "forge-workspace"
+    assert selected["containers"]["agent"]["volume_mounts"][0]["mount_path"] == "/sandbox/workspace"
