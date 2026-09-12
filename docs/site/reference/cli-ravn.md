@@ -99,7 +99,7 @@ ravn listen --persona coder                # take dispatched tasks
 ravn gateway --telegram --http           # human-facing chat channels
 
 ravn warden list                           # persisted long-lived agents
-ravn warden create <name>
+ravn warden create notes-warden
 ```
 
 ### Operator surfaces
@@ -110,7 +110,9 @@ ravn web --port 7477                       # standalone web UI
 ravn peers                                 # verified mesh peers
 
 ravn approvals list                        # command approval patterns
-ravn approvals revoke '<pattern>'
+printf 'Exact pattern to revoke from the list above: '
+read -r RAVN_APPROVAL_PATTERN
+ravn approvals revoke "$RAVN_APPROVAL_PATTERN"
 ```
 
 ## Every command
@@ -130,13 +132,16 @@ ravn [OPTIONS] COMMAND [ARGS]...
 | [`evolve`](#ravn-evolve) | Self-improvement pattern extraction. |
 | [`flock`](#ravn-flock) | Manage a local multi-node Ravn flock (mesh of daemon processes). |
 | [`gateway`](#ravn-gateway) | Start the Ravn gateway (Telegram polling + local HTTP server). |
+| [`inbox-migrate`](#ravn-inbox-migrate) | Move flat resident inbox signal files into the archive and slot queue. |
 | [`join`](#ravn-join) | Put a persona-typed Ravn into a room as an addressable member. |
 | [`leave`](#ravn-leave) | Stop a member's daemon and remove it from the room. |
 | [`listen`](#ravn-listen) | Listen for remotely dispatched tasks via Sleipnir (NIU-505). |
+| [`memory-backfill-embeddings`](#ravn-memory-backfill-embeddings) | Embed indexed episodes that predate embeddings being enabled. |
 | [`mimir`](#ravn-mimir) | Mímir knowledge-base utilities. |
 | [`peers`](#ravn-peers) | List verified flock members with persona, capabilities, and status. |
 | [`personas`](#ravn-personas) | Inspect the personas available to --persona. |
 | [`profiles`](#ravn-profiles) | Inspect the profiles available to --profile. |
+| [`resident`](#ravn-resident) | Inspect and repair a resident's durable state (cases, beliefs, questions, wakes). |
 | [`resume`](#ravn-resume) | Resume a task from a checkpoint. |
 | [`room`](#ravn-room) | Create, supervise, and join local Ravn collaboration rooms. |
 | [`run`](#ravn-run) | Start a Ravn conversation. Pass a prompt for single-turn, or omit for REPL. |
@@ -172,7 +177,7 @@ ravn approvals list [OPTIONS]
 Revoke an approval pattern so the command will be prompted again.
 
 ```bash
-ravn approvals revoke [OPTIONS] PATTERN
+ravn approvals revoke [OPTIONS] {pattern}
 ```
 
 | Argument | Required | Description |
@@ -191,9 +196,9 @@ Channels and triggers are configured via the ``gateway:`` and ``initiative:`` se
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--config`, `-c` | TEXT |  | Path to ravn config YAML. |
-| `--persona`, `-p` | TEXT |  | Persona name applied to all daemon sessions. |
-| `--profile` | TEXT |  | Profile name (built-in or from ~/.ravn/profiles/). |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--persona`, `-p` | STR |  | Persona name applied to all daemon sessions. |
+| `--profile` | STR |  | Profile name (built-in or from ~/.ravn/profiles/). |
 | `--resume`, `--no-resume` | flag | `True` | Resume unfinished tasks from the journal. |
 
 #### `ravn evolve`
@@ -206,7 +211,7 @@ ravn evolve [OPTIONS] COMMAND [ARGS]...
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--config`, `-c` | TEXT |  | Path to ravn config YAML. |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
 
 #### `ravn flock`
 
@@ -231,7 +236,7 @@ ravn flock [OPTIONS] COMMAND [ARGS]...
 Initialise a flock definition without starting any processes.
 
 ```bash
-ravn flock init [OPTIONS] [PERSONAS]...
+ravn flock init [OPTIONS] [personas]...
 ```
 
 Creates: flock.yaml — flock definition (edit to customise) node-*.yaml — per-node daemon configs (edit to customise) logs/ — log directory
@@ -251,14 +256,14 @@ ravn flock init --room desk reviewer coder   # nodes join room 'desk'
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--base-port` | INTEGER | `7480` | First nng port. Ports are allocated sequentially per node. |
-| `--flock-dir` | TEXT |  | Override flock state directory. |
+| `--base-port` | INT | `7480` | First nng port. Ports are allocated sequentially per node. |
+| `--flock-dir` | STR |  | Override flock state directory. |
 | `--force`, `-f` | flag |  | Overwrite existing definition. |
-| `--discovery` | TEXT | `mdns` | Discovery method: mdns (default) or static (cluster.yaml, no mDNS). |
-| `--mesh-transport` | TEXT | `tcp` | Mesh transport: tcp (default) or ipc (Unix socket files). |
+| `--discovery` | STR | `mdns` | Discovery method: mdns (default) or static (cluster.yaml, no mDNS). |
+| `--mesh-transport` | STR | `tcp` | Mesh transport: tcp (default) or ipc (Unix socket files). |
 | `--http-gateway`, `--no-http-gateway` | flag | `True` | Enable per-node HTTP/WebSocket gateways. |
-| `--room` | TEXT |  | Join every node to this room (see 'ravn room ls'). Env: `RAVN_ROOM` |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--room` | STR |  | Join every node to this room (see 'ravn room ls'). Env: `RAVN_ROOM` |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 | `--autonomous`, `--responsive` | flag |  | With --room, keep the self-driving triggers on. Responsive (the default) makes room nodes answer what is addressed to them. |
 
 ##### `ravn flock list`
@@ -279,10 +284,10 @@ ravn flock logs [OPTIONS]
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--node`, `-n` | TEXT |  | Persona name or node index to tail. Defaults to all nodes. |
+| `--node`, `-n` | STR |  | Persona name or node index to tail. Defaults to all nodes. |
 | `--follow`, `-f`, `--no-follow`, `-F` | flag | `True` | Follow log output. |
-| `--lines`, `-l` | INTEGER | `20` | Number of initial lines to show. |
-| `--flock-dir` | TEXT |  | Override flock state directory. |
+| `--lines`, `-l` | INT | `20` | Number of initial lines to show. |
+| `--flock-dir` | STR |  | Override flock state directory. |
 
 ##### `ravn flock peers`
 
@@ -294,9 +299,9 @@ ravn flock peers [OPTIONS]
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--node`, `-n` | INTEGER | `0` | Node index to query (default: 0, the first node). |
+| `--node`, `-n` | INT | `0` | Node index to query (default: 0, the first node). |
 | `--verbose`, `-v` | flag |  | Show address and latency. |
-| `--flock-dir` | TEXT |  | Override flock state directory. |
+| `--flock-dir` | STR |  | Override flock state directory. |
 
 ##### `ravn flock start`
 
@@ -315,7 +320,7 @@ ravn flock start --flock-dir /path/to/my-flock
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--flock-dir` | TEXT |  | Override flock state directory. |
+| `--flock-dir` | STR |  | Override flock state directory. |
 
 ##### `ravn flock status`
 
@@ -327,7 +332,7 @@ ravn flock status [OPTIONS]
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--flock-dir` | TEXT |  | Override flock state directory. |
+| `--flock-dir` | STR |  | Override flock state directory. |
 
 ##### `ravn flock stop`
 
@@ -339,7 +344,7 @@ ravn flock stop [OPTIONS]
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--flock-dir` | TEXT |  | Override flock state directory. |
+| `--flock-dir` | STR |  | Override flock state directory. |
 
 #### `ravn gateway`
 
@@ -359,9 +364,23 @@ gateway: enabled: true channels: telegram: enabled: true token_env: TELEGRAM_BOT
 | --- | --- | --- | --- |
 | `--telegram` | flag |  | Enable Telegram polling channel. |
 | `--http` | flag |  | Enable local HTTP channel. |
-| `--config`, `-c` | TEXT |  | Path to ravn config YAML. |
-| `--persona`, `-p` | TEXT |  | Persona name applied to all gateway sessions. |
-| `--profile` | TEXT |  | Profile name (built-in or from ~/.ravn/profiles/). |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--persona`, `-p` | STR |  | Persona name applied to all gateway sessions. |
+| `--profile` | STR |  | Profile name (built-in or from ~/.ravn/profiles/). |
+
+#### `ravn inbox-migrate`
+
+Move flat resident inbox signal files into the archive and slot queue.
+
+```bash
+ravn inbox-migrate [OPTIONS] {root}
+```
+
+One-time, resumable and non-destructive: each record is archived and re-filed before its original file is removed, so an interrupted run simply resumes. Reports counts so the operator can reconcile before and after.
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `ROOT` | yes | Resident inbox root directory to migrate. |
 
 #### `ravn join`
 
@@ -382,12 +401,12 @@ ravn join --persona coder --room desk --here
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--persona`, `-p` | TEXT |  | Persona name, or a path to a persona YAML file. |
-| `--room`, `-r` | TEXT |  | Room to join. Env: `RAVN_ROOM` |
-| `--as` | TEXT |  | Member handle in the room. Defaults to the persona name. |
-| `--profile` | TEXT |  | Profile name or path (deployment wiring). |
-| `--base-config` | TEXT |  | Existing ravn.yaml to layer the membership config over. |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--persona`, `-p` | STR |  | Persona name, or a path to a persona YAML file. |
+| `--room`, `-r` | STR |  | Room to join. Env: `RAVN_ROOM` |
+| `--as` | STR |  | Member handle in the room. Defaults to the persona name. |
+| `--profile` | STR |  | Profile name or path (deployment wiring). |
+| `--base-config` | STR |  | Existing ravn.yaml to layer the membership config over. |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 | `--here` | flag |  | Run the member in this terminal instead of detaching. |
 | `--force`, `-f` | flag |  | Replace an existing member with the same handle. |
 | `--autonomous` | flag |  | Also enable the self-driving triggers (cron, staleness, wakefulness). |
@@ -407,9 +426,9 @@ ravn leave --as reviewer --room desk
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--as` | TEXT |  | Member handle to remove from the room. **Required.** |
-| `--room`, `-r` | TEXT |  | Room to leave. Env: `RAVN_ROOM` |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--as` | STR |  | Member handle to remove from the room. **Required.** |
+| `--room`, `-r` | STR |  | Room to leave. Env: `RAVN_ROOM` |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 
 #### `ravn listen`
 
@@ -425,9 +444,25 @@ The persona requested in each dispatch event is validated; tasks with unknown pe
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--config`, `-c` | TEXT |  | Path to ravn config YAML. |
-| `--persona`, `-p` | TEXT |  | Default persona for dispatched tasks. |
-| `--profile` | TEXT |  | Profile name (built-in or from ~/.ravn/profiles/). |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--persona`, `-p` | STR |  | Default persona for dispatched tasks. |
+| `--profile` | STR |  | Profile name (built-in or from ~/.ravn/profiles/). |
+
+#### `ravn memory-backfill-embeddings`
+
+Embed indexed episodes that predate embeddings being enabled.
+
+```bash
+ravn memory-backfill-embeddings [OPTIONS]
+```
+
+Turning embeddings on only affects new writes, so a corpus built while they were off stays lexical-only — the state in which a conversational query returned nothing against tens of thousands of episodes. Resumable: each batch commits before the next is fetched, so a run interrupted or refused partway can simply be run again.
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--config` | STR |  | Path to the ravn config file. |
+| `--batch-size` | INT | `64` | Documents embedded per request. |
+| `--max-documents` | INT | `0` | Stop after this many; 0 means all. |
 
 #### `ravn mimir`
 
@@ -446,7 +481,7 @@ ravn mimir [OPTIONS] COMMAND [ARGS]...
 Ingest a file or stdin into the Mímir knowledge base.
 
 ```bash
-ravn mimir ingest [OPTIONS] PATH
+ravn mimir ingest [OPTIONS] {path}
 ```
 
 Works with both local (filesystem) and remote (HTTP) Mímir adapters — the adapter is selected from ravn config, no explicit URL needed.
@@ -467,11 +502,11 @@ cat doc.md | ravn mimir ingest -
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--title`, `-t` | TEXT |  | Title override (defaults to filename). |
-| `--type` | TEXT | `document` | Source type: document, web, research, conversation, tool_output. |
-| `--url`, `-u` | TEXT |  | Original URL (optional metadata). |
-| `--mimir`, `-m` | TEXT |  | Named Mímir instance to ingest into (e.g. 'local', 'shared'). Defaults to all configured instances. |
-| `--config`, `-c` | TEXT |  | Path to ravn config YAML. |
+| `--title`, `-t` | STR |  | Title override (defaults to filename). |
+| `--type` | STR | `document` | Source type: document, web, research, conversation, tool_output. |
+| `--url`, `-u` | STR |  | Original URL (optional metadata). |
+| `--mimir`, `-m` | STR |  | Named Mímir instance to ingest into (e.g. 'local', 'shared'). Defaults to all configured instances. |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
 
 #### `ravn peers`
 
@@ -489,7 +524,7 @@ ravn peers --scan        — force a fresh network scan first
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--config`, `-c` | TEXT |  | Path to ravn config YAML. |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
 | `--verbose`, `-v` | flag |  | Show address, latency, task_count, last_seen. |
 | `--scan` | flag |  | Force a fresh mDNS/K8s scan before displaying. |
 
@@ -551,12 +586,222 @@ ravn profiles list --builtin  — only the built-in set
 | --- | --- | --- | --- |
 | `--builtin` | flag |  | List only the built-in profiles. |
 
+#### `ravn resident`
+
+Inspect and repair a resident's durable state (cases, beliefs, questions, wakes).
+
+```bash
+ravn resident [OPTIONS] COMMAND [ARGS]...
+```
+
+| Subcommand | Description |
+| --- | --- |
+| [`answer`](#ravn-resident-answer) | Answer the operator question a case is blocked on. |
+| [`case`](#ravn-resident-case) | Show one case: every ref it holds, and what resumes it. |
+| [`case-drop`](#ravn-resident-case-drop) | Delete one case and everything under it. |
+| [`cases`](#ravn-resident-cases) | List durable cases and say which of them can still resume. |
+| [`cases-prune`](#ravn-resident-cases-prune) | Delete cases nothing can resume, per the store's retention policy. |
+| [`questions`](#ravn-resident-questions) | List the operator questions this resident is blocked on. |
+| [`status`](#ravn-resident-status) | Show one screen of what this resident is currently doing and believing. |
+| [`streak`](#ravn-resident-streak) | Show the repeated-decision streak — how long this resident has been stuck. |
+| [`streak-reset`](#ravn-resident-streak-reset) | Forget the repeated-decision streak once its cause is actually fixed. |
+| [`wake-cancel`](#ravn-resident-wake-cancel) | Cancel a case's scheduled wake so it stops resuming itself. |
+| [`wakes`](#ravn-resident-wakes) | List the wakes this resident scheduled for itself. |
+| [`working-state`](#ravn-resident-working-state) | Print the resident's own model of its current reality. |
+
+##### `ravn resident answer`
+
+Answer the operator question a case is blocked on.
+
+```bash
+ravn resident answer [OPTIONS] {case_id} {answer}
+```
+
+The one repair here that adds rather than removes: it unblocks the case the resident actually suspended, so work resumes instead of a phantom being deleted.
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `CASE_ID` | yes | Case id (slug) the resident asked about. |
+| `ANSWER` | yes | The answer to give it. |
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--yes`, `-y` | flag |  | Skip the confirmation. |
+
+##### `ravn resident case`
+
+Show one case: every ref it holds, and what resumes it.
+
+```bash
+ravn resident case [OPTIONS] {case_id}
+```
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `CASE_ID` | yes | Case id (slug) to show. |
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--content` | flag |  | Print each ref's full content. |
+| `--json` | flag |  | Output raw JSON. |
+
+##### `ravn resident case-drop`
+
+Delete one case and everything under it.
+
+```bash
+ravn resident case-drop [OPTIONS] {case_id}
+```
+
+This is how a belief built on a case that never existed gets retired. Deleting a resumable case is allowed on purpose — a case an operator has judged phantom is not made real by holding a pending wake — but the wake is named in the confirmation so the choice is a deliberate one.
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `CASE_ID` | yes | Case id (slug) to delete. |
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--yes`, `-y` | flag |  | Skip the confirmation. |
+
+##### `ravn resident cases`
+
+List durable cases and say which of them can still resume.
+
+```bash
+ravn resident cases [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--resumable` | flag |  | Only cases something can still bring back. |
+| `--inert` | flag |  | Only cases nothing can resume. |
+| `--json` | flag |  | Output raw JSON. |
+
+##### `ravn resident cases-prune`
+
+Delete cases nothing can resume, per the store's retention policy.
+
+```bash
+ravn resident cases-prune [OPTIONS]
+```
+
+This runs the store's own sweep rather than a second pruning path, so an operator prune and the daemon's background prune can never disagree about what is safe to remove.
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--yes`, `-y` | flag |  | Skip the confirmation. |
+
+##### `ravn resident questions`
+
+List the operator questions this resident is blocked on.
+
+```bash
+ravn resident questions [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--answers` | flag |  | Show unconsumed operator answers instead. |
+| `--json` | flag |  | Output raw JSON. |
+
+##### `ravn resident status`
+
+Show one screen of what this resident is currently doing and believing.
+
+```bash
+ravn resident status [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--json` | flag |  | Output raw JSON. |
+
+##### `ravn resident streak`
+
+Show the repeated-decision streak — how long this resident has been stuck.
+
+```bash
+ravn resident streak [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--json` | flag |  | Output raw JSON. |
+
+##### `ravn resident streak-reset`
+
+Forget the repeated-decision streak once its cause is actually fixed.
+
+```bash
+ravn resident streak-reset [OPTIONS]
+```
+
+The streak is what escalates a resident that keeps reaching the same conclusion. After the underlying problem is resolved the count is stale evidence, and leaving it makes the resident keep escalating a fixed issue.
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--yes`, `-y` | flag |  | Skip the confirmation. |
+
+##### `ravn resident wake-cancel`
+
+Cancel a case's scheduled wake so it stops resuming itself.
+
+```bash
+ravn resident wake-cancel [OPTIONS] {case_id}
+```
+
+Consumes the wake exactly as the runtime would on firing, so the case goes inert without losing the record that a wake was once scheduled — which deleting the case would.
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `CASE_ID` | yes | Case id (slug) whose wake should be cancelled. |
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--yes`, `-y` | flag |  | Skip the confirmation. |
+
+##### `ravn resident wakes`
+
+List the wakes this resident scheduled for itself.
+
+```bash
+ravn resident wakes [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--json` | flag |  | Output raw JSON. |
+
+##### `ravn resident working-state`
+
+Print the resident's own model of its current reality.
+
+```bash
+ravn resident working-state [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--json` | flag |  | Output raw JSON. |
+
 #### `ravn resume`
 
 Resume a task from a checkpoint.
 
 ```bash
-ravn resume [OPTIONS] TASK_ID
+ravn resume [OPTIONS] {task_id}
 ```
 
 Loads the crash-recovery checkpoint (or a named snapshot when --checkpoint is given) and re-enters the REPL at the point the task was interrupted.
@@ -567,8 +812,8 @@ Loads the crash-recovery checkpoint (or a named snapshot when --checkpoint is gi
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--checkpoint`, `-c` | TEXT |  | Specific checkpoint_id to restore (defaults to latest crash-recovery checkpoint). |
-| `--config` | TEXT |  | Path to ravn config YAML. |
+| `--checkpoint`, `-c` | STR |  | Specific checkpoint_id to restore (defaults to latest crash-recovery checkpoint). |
+| `--config` | STR |  | Path to ravn config YAML. |
 | `--show-usage` | flag |  | Print token usage after turn. |
 
 #### `ravn room`
@@ -607,18 +852,18 @@ ravn room close [OPTIONS]
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--room` | TEXT |  | Huddle room id to close. **Required.** |
-| `--environment` | TEXT |  | Environment (room) id. |
-| `--reason` | TEXT | `closed` | Reason recorded for the closure. |
-| `--broker-url` | TEXT |  | Skuld broker base URL. Defaults to the named room's broker. Env: `SKULD_BROKER_URL` |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--room` | STR |  | Huddle room id to close. **Required.** |
+| `--environment` | STR |  | Environment (room) id. |
+| `--reason` | STR | `closed` | Reason recorded for the closure. |
+| `--broker-url` | STR |  | Skuld broker base URL. Defaults to the named room's broker. Env: `SKULD_BROKER_URL` |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 
 ##### `ravn room create`
 
 Create a room and start its broker.
 
 ```bash
-ravn room create [OPTIONS] NAME
+ravn room create [OPTIONS] {name}
 ```
 
 ```bash
@@ -633,9 +878,9 @@ ravn room create desk --no-start   # write the definition only
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--host` | TEXT | `127.0.0.1` | Bind address for the room broker. |
-| `--port` | INTEGER | `0` | Broker port. 0 allocates the first free port from 7500. |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--host` | STR | `127.0.0.1` | Bind address for the room broker. |
+| `--port` | INT | `0` | Broker port. 0 allocates the first free port from 7500. |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 | `--force`, `-f` | flag |  | Overwrite an existing definition. |
 | `--start`, `--no-start` | flag | `True` | Start the broker after writing the definition. |
 
@@ -649,10 +894,10 @@ ravn room heartbeat [OPTIONS]
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--participant` | TEXT |  | Participant id. **Required.** |
-| `--environment` | TEXT |  | Environment (room) id. |
-| `--broker-url` | TEXT |  | Skuld broker base URL. Defaults to the named room's broker. Env: `SKULD_BROKER_URL` |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--participant` | STR |  | Participant id. **Required.** |
+| `--environment` | STR |  | Environment (room) id. |
+| `--broker-url` | STR |  | Skuld broker base URL. Defaults to the named room's broker. Env: `SKULD_BROKER_URL` |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 
 ##### `ravn room join`
 
@@ -664,12 +909,12 @@ ravn room join [OPTIONS]
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--participant` | TEXT |  | Participant id, e.g. human:jozef. **Required.** |
-| `--environment` | TEXT |  | Environment (room) id to join. **Required.** |
-| `--role` | TEXT | `observer` | Room role: observer\|teacher\|approver\|debugger\|owner. |
-| `--room` | TEXT |  | Optional huddle room id. |
-| `--broker-url` | TEXT |  | Skuld broker base URL. Defaults to the named room's broker. Env: `SKULD_BROKER_URL` |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--participant` | STR |  | Participant id, e.g. human:jozef. **Required.** |
+| `--environment` | STR |  | Environment (room) id to join. **Required.** |
+| `--role` | STR | `observer` | Room role: observer\|teacher\|approver\|debugger\|owner. |
+| `--room` | STR |  | Optional huddle room id. |
+| `--broker-url` | STR |  | Skuld broker base URL. Defaults to the named room's broker. Env: `SKULD_BROKER_URL` |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 
 ##### `ravn room leave`
 
@@ -681,11 +926,11 @@ ravn room leave [OPTIONS]
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--participant` | TEXT |  | Participant id. **Required.** |
-| `--environment` | TEXT |  | Environment (room) id. |
-| `--reason` | TEXT | `left` | Reason recorded for the departure. |
-| `--broker-url` | TEXT |  | Skuld broker base URL. Defaults to the named room's broker. Env: `SKULD_BROKER_URL` |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--participant` | STR |  | Participant id. **Required.** |
+| `--environment` | STR |  | Environment (room) id. |
+| `--reason` | STR | `left` | Reason recorded for the departure. |
+| `--broker-url` | STR |  | Skuld broker base URL. Defaults to the named room's broker. Env: `SKULD_BROKER_URL` |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 
 ##### `ravn room ls`
 
@@ -697,7 +942,7 @@ ravn room ls [OPTIONS]
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 
 ##### `ravn room members`
 
@@ -711,8 +956,8 @@ Local membership records are cross-checked against the room's live participant r
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--room`, `-r` | TEXT |  | Room name. Env: `RAVN_ROOM` |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--room`, `-r` | STR |  | Room name. Env: `RAVN_ROOM` |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 
 ##### `ravn room message`
 
@@ -724,12 +969,12 @@ ravn room message [OPTIONS]
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--participant` | TEXT |  | Participant id. **Required.** |
-| `--text` | TEXT |  | Message text. **Required.** |
-| `--environment` | TEXT |  | Environment (room) id. |
-| `--room` | TEXT |  | Optional huddle room id. |
-| `--broker-url` | TEXT |  | Skuld broker base URL. Defaults to the named room's broker. Env: `SKULD_BROKER_URL` |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--participant` | STR |  | Participant id. **Required.** |
+| `--text` | STR |  | Message text. **Required.** |
+| `--environment` | STR |  | Environment (room) id. |
+| `--room` | STR |  | Optional huddle room id. |
+| `--broker-url` | STR |  | Skuld broker base URL. Defaults to the named room's broker. Env: `SKULD_BROKER_URL` |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 
 ##### `ravn room participants`
 
@@ -741,16 +986,16 @@ ravn room participants [OPTIONS]
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--environment` | TEXT |  | Environment (room) id. |
-| `--broker-url` | TEXT |  | Skuld broker base URL. Defaults to the named room's broker. Env: `SKULD_BROKER_URL` |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--environment` | STR |  | Environment (room) id. |
+| `--broker-url` | STR |  | Skuld broker base URL. Defaults to the named room's broker. Env: `SKULD_BROKER_URL` |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 
 ##### `ravn room post`
 
 Post a message into a room, addressed with @handle or --to.
 
 ```bash
-ravn room post [OPTIONS] BODY
+ravn room post [OPTIONS] {body}
 ```
 
 Each recipient receives the whole message — parts addressed to different members usually depend on each other, so splitting the body would hide that. With no valid address the message goes to whoever spoke last, and with nobody to address it is recorded as room commentary.
@@ -769,10 +1014,10 @@ ravn room post --as human:jozef --to reviewer 'take a look'
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--as` | TEXT |  | Participant id posting the message, e.g. human:jozef. **Required.** |
-| `--to` | TEXT |  | Deliver to this member, overriding any @mentions in the body. |
-| `--room`, `-r` | TEXT |  | Room name. Env: `RAVN_ROOM` |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--as` | STR |  | Participant id posting the message, e.g. human:jozef. **Required.** |
+| `--to` | STR |  | Deliver to this member, overriding any @mentions in the body. |
+| `--room`, `-r` | STR |  | Room name. Env: `RAVN_ROOM` |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 | `--dry-run` | flag |  | Show the resolved recipients without delivering. |
 
 ##### `ravn room rm`
@@ -780,7 +1025,7 @@ ravn room post --as human:jozef --to reviewer 'take a look'
 Stop a room and delete its directory, including its transcript logs.
 
 ```bash
-ravn room rm [OPTIONS] NAME
+ravn room rm [OPTIONS] {name}
 ```
 
 | Argument | Required | Description |
@@ -789,7 +1034,7 @@ ravn room rm [OPTIONS] NAME
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 | `--force`, `-f` | flag |  | Delete without the interactive confirmation. |
 
 ##### `ravn room show`
@@ -797,7 +1042,7 @@ ravn room rm [OPTIONS] NAME
 Show one room's definition, status, and file locations.
 
 ```bash
-ravn room show [OPTIONS] NAME
+ravn room show [OPTIONS] {name}
 ```
 
 | Argument | Required | Description |
@@ -806,14 +1051,14 @@ ravn room show [OPTIONS] NAME
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 
 ##### `ravn room start`
 
 Start a stopped room's broker.
 
 ```bash
-ravn room start [OPTIONS] NAME
+ravn room start [OPTIONS] {name}
 ```
 
 | Argument | Required | Description |
@@ -822,14 +1067,14 @@ ravn room start [OPTIONS] NAME
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 
 ##### `ravn room stop`
 
 Stop a room's broker. Preserves the definition.
 
 ```bash
-ravn room stop [OPTIONS] NAME
+ravn room stop [OPTIONS] {name}
 ```
 
 | Argument | Required | Description |
@@ -838,7 +1083,7 @@ ravn room stop [OPTIONS] NAME
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 
 ##### `ravn room tail`
 
@@ -856,17 +1101,17 @@ ravn room tail --follow
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--room`, `-r` | TEXT |  | Room name. Env: `RAVN_ROOM` |
-| `--limit`, `-n` | INTEGER | `50` | Turns of history. |
+| `--room`, `-r` | STR |  | Room name. Env: `RAVN_ROOM` |
+| `--limit`, `-n` | INT | `50` | Turns of history. |
 | `--follow`, `-f` | flag |  | Keep streaming new turns. |
-| `--rooms-dir` | TEXT |  | Override the rooms state directory. |
+| `--rooms-dir` | STR |  | Override the rooms state directory. |
 
 #### `ravn run`
 
 Start a Ravn conversation. Pass a prompt for single-turn, or omit for REPL.
 
 ```bash
-ravn run [OPTIONS] [PROMPT]
+ravn run [OPTIONS] [prompt]
 ```
 
 | Argument | Required | Description |
@@ -877,10 +1122,10 @@ ravn run [OPTIONS] [PROMPT]
 | --- | --- | --- | --- |
 | `--no-tools` | flag |  | Disable all tool execution. |
 | `--show-usage` | flag |  | Print token usage after turn. |
-| `--config`, `-c` | TEXT |  | Path to ravn config YAML. |
-| `--persona`, `-p` | TEXT |  | Persona name (built-in or from ~/.ravn/personas/). |
-| `--profile` | TEXT |  | Profile name (built-in or from ~/.ravn/profiles/). |
-| `--resume`, `-r` | TEXT |  | Resume an interrupted task by its task_id. |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--persona`, `-p` | STR |  | Persona name (built-in or from ~/.ravn/personas/). |
+| `--profile` | STR |  | Profile name (built-in or from ~/.ravn/profiles/). |
+| `--resume`, `-r` | STR |  | Resume an interrupted task by its task_id. |
 
 #### `ravn tool-build`
 
@@ -892,12 +1137,12 @@ ravn tool-build [OPTIONS] COMMAND [ARGS]...
 
 | Subcommand | Description |
 | --- | --- |
-| [`doctor`](#ravn-tool-build-doctor) | Diagnose the Valkyrie -> Ting/Forge tool-build path hop by hop. |
-| [`workflows`](#ravn-tool-build-workflows) | List Ting workflows and mark those matching the tool-build selector. |
+| [`doctor`](#ravn-tool-build-doctor) | Diagnose the Valkyrie -> A2A/Forge tool-build path hop by hop. |
+| [`workflows`](#ravn-tool-build-workflows) | List agent-card workflows and mark those matching the tool-build selector. |
 
 ##### `ravn tool-build doctor`
 
-Diagnose the Valkyrie -> Ting/Forge tool-build path hop by hop.
+Diagnose the Valkyrie -> A2A/Forge tool-build path hop by hop.
 
 ```bash
 ravn tool-build doctor [OPTIONS]
@@ -909,22 +1154,22 @@ Exits non-zero when any hop fails.
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--config`, `-c` | TEXT |  | Path to ravn config YAML. |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
 | `--json` | flag |  | Emit the checklist as structured JSON. |
 
 ##### `ravn tool-build workflows`
 
-List Ting workflows and mark those matching the tool-build selector.
+List agent-card workflows and mark those matching the tool-build selector.
 
 ```bash
 ravn tool-build workflows [OPTIONS]
 ```
 
-READ-ONLY inspection of the "configure from existing Ting workflows" UX. The selector is the realm build grant's workflow (when a realm is configured and grants one) or the static ``tool_builder_workflow``.
+READ-ONLY inspection of the "configure from existing workflows" UX. The selector is the realm build grant's workflow (when a realm is configured and grants one) or the static ``tool_builder_workflow``.
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--config`, `-c` | TEXT |  | Path to ravn config YAML. |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
 | `--json` | flag |  | Emit workflows as structured JSON. |
 
 #### `ravn tool-mcp`
@@ -937,9 +1182,9 @@ ravn tool-mcp [OPTIONS]
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--config`, `-c` | TEXT |  | Path to ravn config YAML. |
-| `--persona`, `-p` | TEXT |  | Persona whose allowed tools should be exposed. |
-| `--profile` | TEXT |  | Profile name (built-in or from ~/.ravn/profiles/). |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
+| `--persona`, `-p` | STR |  | Persona whose allowed tools should be exposed. |
+| `--profile` | STR |  | Profile name (built-in or from ~/.ravn/profiles/). |
 
 #### `ravn tui`
 
@@ -958,10 +1203,10 @@ ravn tui --layout cascade
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--connect`, `-C` | TEXT | `[]` | Connect to a Ravn daemon at host:port. May be repeated. |
+| `--connect`, `-C` | STR | `[]` | Connect to a Ravn daemon at host:port. May be repeated. |
 | `--discover` | flag |  | Auto-discover Ravn daemons via mDNS. |
-| `--layout`, `-l` | TEXT |  | Start with a named layout preset (flokk, cascade, mimir, compare, broadcast). |
-| `--config`, `-c` | TEXT |  | Path to ravn config YAML. |
+| `--layout`, `-l` | STR |  | Start with a named layout preset (flokk, cascade, mimir, compare, broadcast). |
+| `--config`, `-c` | STR |  | Path to ravn config YAML. |
 
 #### `ravn warden`
 
@@ -986,7 +1231,7 @@ ravn warden [OPTIONS] COMMAND [ARGS]...
 Create and persist a new warden spec.
 
 ```bash
-ravn warden create [OPTIONS] NAME
+ravn warden create [OPTIONS] {name}
 ```
 
 | Argument | Required | Description |
@@ -995,14 +1240,14 @@ ravn warden create [OPTIONS] NAME
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--persona` | TEXT | `research-and-distill` | Default persona used by this warden. |
-| `--profile` | TEXT |  | Optional Ravn profile name. |
-| `--deployment` | TEXT | `launchd` | Deployment backend shorthand, for example launchd, systemd, k8s-apply, or k8s-gitops. |
-| `--deployment-arg` | TEXT |  | Repeat key=value pairs for deployment backend configuration. |
-| `--mount` | TEXT |  | Repeat to attach one or more Mimir mounts. |
-| `--write-mount` | TEXT |  | Default Mimir write mount. |
+| `--persona` | STR | `research-and-distill` | Default persona used by this warden. |
+| `--profile` | STR |  | Optional Ravn profile name. |
+| `--deployment` | STR | `launchd` | Deployment backend shorthand, for example launchd, systemd, k8s-apply, or k8s-gitops. |
+| `--deployment-arg` | STR |  | Repeat key=value pairs for deployment backend configuration. |
+| `--mount` | STR |  | Repeat to attach one or more Mimir mounts. |
+| `--write-mount` | STR |  | Default Mimir write mount. |
 | `--autostart` | flag |  | Mark this warden for autostart. |
-| `--created-by` | TEXT | `cli` | Creator label for provenance. |
+| `--created-by` | STR | `cli` | Creator label for provenance. |
 | `--json` | flag |  | Output raw JSON. |
 
 ##### `ravn warden install`
@@ -1010,7 +1255,7 @@ ravn warden create [OPTIONS] NAME
 Generate local service artifacts for one warden.
 
 ```bash
-ravn warden install [OPTIONS] WARDEN_ID
+ravn warden install [OPTIONS] {warden_id}
 ```
 
 | Argument | Required | Description |
@@ -1038,7 +1283,7 @@ ravn warden list [OPTIONS]
 Show one persisted warden.
 
 ```bash
-ravn warden show [OPTIONS] WARDEN_ID
+ravn warden show [OPTIONS] {warden_id}
 ```
 
 | Argument | Required | Description |
@@ -1054,7 +1299,7 @@ ravn warden show [OPTIONS] WARDEN_ID
 Mark an installed warden as started.
 
 ```bash
-ravn warden start [OPTIONS] WARDEN_ID
+ravn warden start [OPTIONS] {warden_id}
 ```
 
 | Argument | Required | Description |
@@ -1070,7 +1315,7 @@ ravn warden start [OPTIONS] WARDEN_ID
 Stop an installed warden.
 
 ```bash
-ravn warden stop [OPTIONS] WARDEN_ID
+ravn warden stop [OPTIONS] {warden_id}
 ```
 
 | Argument | Required | Description |
@@ -1086,7 +1331,7 @@ ravn warden stop [OPTIONS] WARDEN_ID
 Uninstall a warden deployment while keeping the persisted spec.
 
 ```bash
-ravn warden uninstall [OPTIONS] WARDEN_ID
+ravn warden uninstall [OPTIONS] {warden_id}
 ```
 
 | Argument | Required | Description |
@@ -1115,7 +1360,7 @@ ravn web --persona-dir ./my-personas
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--port`, `-p` | INTEGER | `7477` | Port to listen on (default: 7477). |
-| `--host` | TEXT | `0.0.0.0` | Bind address (default: 0.0.0.0). |
-| `--persona-dir` | TEXT | `[]` | Extra directory to search for persona YAML files. May be repeated. |
+| `--port`, `-p` | INT | `7477` | Port to listen on (default: 7477). |
+| `--host` | STR | `0.0.0.0` | Bind address (default: 0.0.0.0). |
+| `--persona-dir` | STR | `[]` | Extra directory to search for persona YAML files. May be repeated. |
 | `--reload` | flag |  | Enable auto-reload (development only). |

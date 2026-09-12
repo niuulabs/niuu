@@ -1,23 +1,43 @@
-# FAQ
+# Frequently asked questions
 
-Frequently asked questions about Niuu.
+## Do I have to install every service?
 
-## Is Niuu self-hosted?
+No. Start with the local host and one session. Add services for the capabilities
+you need. [Choose your next step](../get-started/path-from-small-to-autonomous.md)
+by the result you want, rather than following a mandatory platform ladder.
 
-Yes. You can run it locally or deploy it into your own infrastructure.
+## Can agents use the same interfaces as humans?
 
-## Does Niuu require cloud models?
+Yes. APIs and channels can be used by agents as well as people. Skuld adapts
+runtime communication to those interfaces; shared Niuu libraries provide room
+and mesh mechanics. See [architecture](../concepts/platform-model.md).
 
-No. Niuu can expose local models when configured. Cloud providers are optional and depend on your model routing setup.
+## Is Ravn required to run Claude Code or Codex?
 
-## Is the local stack production-ready?
+Ravn is one agent runtime. Skuld supports other runtimes, including Claude Code
+and Codex. Ordinary sessions do not need to become Ravn residents. Ravn adds its
+own judgment, learning, and resident behavior when you choose to use it.
 
-No. The local stack is for development and demos. Use Kubernetes deployment guidance and production hardening for shared use.
+## Does self-hosted mean no data leaves my machine?
 
-## Why does the UI show multiple service names?
+No. Niuu runs on your infrastructure, but a configured cloud model or external
+tool sends requests to that service. Check the endpoints and credentials used by
+the actual runtime. Bifröst affects clients configured to call it.
 
-Niuu is composed of services. The UI keeps those service boundaries visible so operators can understand what owns each part of the workflow.
+## Is a local workspace a sandbox?
 
-## Where did the old docs go?
+A directory alone is not a sandbox. Local-process sessions run under the host
+account. OpenShell and Kubernetes have separate configured execution boundaries.
+See [execution permissions](../operations/security-and-permissions.md).
 
-Older Volundr-first docs remain in `docs/archive/site-legacy` as rewrite source material. The published docs now focus on Niuu as the platform.
+## Does stopping a session preserve its files?
+
+The local-process backend retains the workspace. OpenShell cleanup and Kubernetes
+storage behavior differ. Verify the selected backend's contract and preserve
+required output before deleting or stopping resources that own its storage.
+
+## Has every deployment path been tested?
+
+No. The [verification record](../operations/quickstart-verification.md) states
+what ran successfully, what is covered by CI, and what still needs live proof.
+A successful docs build or local session does not certify a cluster deployment.

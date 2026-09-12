@@ -31,65 +31,23 @@ The result is a self-hosted system where you can move smoothly between direct op
 
 ## Platform Map
 
-```
-                         Users
-                    ┌───────────┐
-                    │ Niuu Web  │  React/Vite, OIDC auth
-                    │ (browser) │
-                    └─────┬─────┘
-                          │
-              ┌───────────┴───────────┐
-              │                       │
-         REST/SSE                 WebSocket
-         (sessions,               (chat)
-          chronicles,
-          git, etc.)
-              │                       │
-    ┌─────────▼──────────┐            │
-    │ Volundr / Shared   │            │
-    │ platform APIs      │            │
-    └────────┬───────────┘            │
-             │                        │
-    ┌────────┴──────────────────────┐ │
-    │ Kubernetes                    │ │
-    │  ┌──────────────────────────┐ │ │
-    │  │      Session Pod         │ │ │
-    │  │  ┌────────┐ ┌─────────┐  │◄┘ │
-    │  │  │ Skuld  │ │VS Code  │  │   │
-    │  │  │(broker)│ │ Server  │  │   │
-    │  │  └───┬────┘ └─────────┘  │   │
-    │  │      │  Claude Code CLI  │   │
-    │  │      │  / Codex CLI      │   │
-    │  │  ┌───▼──────────────┐    │   │
-    │  │  │  Workspace PVC   │    │   │
-    │  └──┴──────────────────┴────┘   │
-    └───────────────────────────────┘ │
-                                       │
-    ┌──────────────────────────────────┘
-    │  Coordination & Runtime
-    │  ┌──────┐  ┌──────┐  ┌──────┐
-    │  │ Ting │  │ Ravn │  │Guild │
-    │  │flows │  │agents│  │regis.│
-    │  └──────┘  └──────┘  └──────┘
-    │
-    │  Supporting Services
-    │  ┌──────────┐ ┌────────┐ ┌────────────┐ ┌─────────────┐
-    │  │ Bifröst  │ │ Mimir  │ │ Observatory│ │  Sleipnir   │
-    │  │(LLM gw)  │ │(memory)│ │ (ops view) │ │ (transport) │
-    └──┴──────────┴─┴────────┴─┴────────────┴─┴─────────────┘
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/site/images/niuu-architecture-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/site/images/niuu-architecture-light.png">
+  <img src="docs/site/images/niuu-architecture-light.png" alt="Niuu architecture: composable microservices, session runtimes, and shared infrastructure">
+</picture>
 
 | Component | Role |
 |-----------|------|
 | **Niuu Web** | Operator interface for sessions, workflows, registered instances, memory, assistants, and platform settings |
 | **Volundr** | Live AI workspaces, session lifecycle, workspace provisioning, chronicles, git workflows, and direct operator pairing |
-| **Skuld** | Live broker inside session pods connecting the browser to coding agents, tools, terminals, and workflow runtime events |
+| **Skuld** | Communication gateway between sessions and external services, including channels, tools, terminals, and runtime events |
 | **Ting** | Workflow and coordination layer for teams, review loops, staged execution, and launchable flows |
 | **Ravn** | Assistant runtime and persona harness for one assistant or a connected team, with tools, wakefulness, and long-lived behaviors |
 | **Guild** | Shared registry for platform instances and targets, so Niuu can discover and use Volundr, Ting, Mimir, and other services across environments |
 | **Mimir** | Shared knowledge and memory system for durable documentation, ingest, research artifacts, curation, and assistant recall |
 | **Bifröst** | Local and cloud model gateway that decides what models are available, where they run, and how callers route between them |
-| **Observatory** | Platform topology and operations view for health, discovery, and event visibility across the running system |
+| **Observatory** | Topology and observability across the running system |
 | **Sleipnir** | Transport abstraction for events and messaging across NATS, NNG, RabbitMQ, subprocesses, and other backbones |
 | **niuu CLI** | Unified CLI and TUI for managing local and remote services |
 
@@ -150,6 +108,11 @@ Chat traffic flows directly from the browser to Skuld inside the session pod —
 
 ## Quick Start
 
+For the operator walkthrough, see [Install](https://docs.niuu.cloud/get-started/install/) and
+[Quick start: first local stack](https://docs.niuu.cloud/get-started/first-local-stack/).
+The commands below are for a source checkout. Install `curl`, `make`, a C compiler
+(`gcc`), and `pkg-config` first; the development script builds PostgreSQL and web assets.
+
 ```bash
 # Install Python 3.12 dependencies
 uv sync --python 3.12 --extra dev
@@ -208,7 +171,7 @@ GIT__GITHUB__TOKEN=ghp_xxxx
 EVENT_PIPELINE__OTEL__ENABLED=true
 ```
 
-See the [configuration reference](https://niuulabs.github.io/volundr/reference/configuration/) for all options.
+See the [configuration reference](https://docs.niuu.cloud/reference/configuration/) for all options.
 
 ## Testing
 
@@ -245,7 +208,7 @@ helm upgrade niuu ./charts/niuu -n niuu
 
 You can still deploy individual component charts when you need to, but the default platform deployment path should be the `niuu` chart.
 
-See the [deployment guide](https://niuulabs.github.io/volundr/operations/kubernetes-deployment/) for Helm values, migrations, and production setup.
+See the [deployment guide](https://docs.niuu.cloud/operations/kubernetes-deployment/) for Helm values, migrations, and production setup.
 
 ## Tech Stack
 
@@ -276,7 +239,7 @@ uv sync --extra tui        # Terminal UI (niuu CLI)
 
 ## Documentation
 
-Full documentation at [niuulabs.github.io/volundr](https://niuulabs.github.io/volundr/).
+Full documentation at [docs.niuu.cloud](https://docs.niuu.cloud/).
 
 ## License
 

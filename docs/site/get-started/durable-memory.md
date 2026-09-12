@@ -1,85 +1,56 @@
-# Durable Memory
+# Ingest and retrieve knowledge
 
-Add memory when useful information should survive a single session.
+This exercise stores a short source in Mímir, then reads it back. It verifies
+persistence of source material without requiring a model to synthesize a page.
+Use a local Niuu host with Mímir enabled and a writable store. The commands below
+use its default local origin and write to the default mount.
 
-This is where Mímir becomes useful. Treat it as shared knowledge for operators
-and assistants: sources, pages, research outputs, curated notes, and wardens.
+## 1. Inspect the store
 
-![Mímir knowledge overview](../images/landing/landing-memory.png)
+```bash
+curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/mimir/mounts
+curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/mimir/stats
+```
 
-## What belongs in memory
+Identify the mount you are using before writing. On a shared instance, use the
+normal authentication and select the intended mount explicitly; do not use a
+shared production knowledge base to try an unfamiliar write.
 
-Good candidates:
+## 2. Add a small source
 
-- project decisions
-- architecture notes
-- research summaries
-- postmortems
-- recurring operator preferences
-- durable facts that future sessions should recall
+```bash
+curl --fail --silent --show-error   -H 'Content-Type: application/json'   --data '{"title":"Niuu onboarding note","content":"Our onboarding exercise verifies a file named hello.txt before stopping the session.","source_type":"document"}'   http://127.0.0.1:8080/api/v1/mimir/ingest
+```
 
-Bad candidates:
+The response contains a `source_id` and `pages_updated`. Preserve the ID. An empty
+`pages_updated` list means no pages were produced by this operation; it does not
+mean the source disappeared. Source ingestion and model-based synthesis are
+separate results.
 
-- raw tokens
-- private keys
-- broad home-directory dumps
-- temporary terminal output
-- anything you would not want another assistant to read later
+## 3. Read the source back
 
-## Start with one mount
+```bash
+curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/mimir/sources
+```
 
-Begin with one local or shared knowledge mount. Make it obvious what it is for.
+Find the returned source ID and title. In the Mímir UI, inspect that source and
+its compilation state. To inspect existing knowledge pages through search:
 
-For example:
+```bash
+curl --fail --silent --show-error --get   --data-urlencode 'q=onboarding'   http://127.0.0.1:8080/api/v1/mimir/search
+```
 
-- personal project notes
-- team wiki
-- research outputs
-- operational runbooks
+Search results are knowledge retrieval, not a guarantee that every raw source
+has already become a searchable synthesized page. If the result is empty, check
+which pages cite the source and which mount is being queried.
 
-Avoid creating many mounts before you have a habit for what should go where.
+## 4. Give the agent access
 
-## Add sources
+Configure the agent's Mímir adapter or tools to use this store. Ask it to retrieve
+the onboarding note and cite the source. Verify the returned content rather than
+accepting a plausible answer from model memory. This final agent step requires a
+working model and configured tools and is not covered by the source-ingest check.
 
-Sources are raw material that can be compiled, summarized, or curated into
-knowledge pages.
-
-Use sources for:
-
-- imported documents
-- research material
-- transcripts
-- external notes
-- session outputs that need curation
-
-The goal is not to hoard raw material. The goal is to turn useful raw material
-into durable knowledge.
-
-## Add a warden later
-
-A warden is a resident assistant focused on maintaining knowledge. It can watch
-sources, compile missing pages, curate stale material, and keep a mount healthy.
-
-Do this after a mount is useful. A warden with no clear knowledge boundary just
-creates noise.
-
-## What good looks like
-
-You should be able to answer:
-
-- What is this mount for?
-- Who or what writes to it?
-- Who or what reads from it?
-- Which source material is waiting to be compiled?
-- Which assistant is responsible for curation, if any?
-
-## Common mistake
-
-Do not use memory as a secret store. Use the platform credential and secret
-systems for sensitive values.
-
-## Next
-
-When work needs several stages or roles, add workflows:
-
-[Workflows and teams](workflows-and-teams-step.md)
+A warden can maintain knowledge over time once the store has a defined scope.
+See [memory concepts](../concepts/memory-and-knowledge.md) for evidence, page
+structure, and what must be backed up.

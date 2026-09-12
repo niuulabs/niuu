@@ -1,101 +1,65 @@
-# Direct And Resident Assistants
+# Run Ravn directly and understand residents
 
-Install `ravn` when you want an assistant runtime outside the platform UI.
+Ravn can run independently of Forge. A direct conversation is the smallest way
+to use it; a resident adds a purpose, environment, persistent state, and autonomous
+behavior. You need the `ravn` executable and a working model-provider configuration.
 
-Use `ravn run` for direct conversations and `ravn daemon` when an assistant
-should stay alive, respond to triggers, or maintain knowledge over time.
+## Prepare a direct configuration
 
-![Chronicle timeline](../images/chronicle-timeline.png)
-
-## Direct assistant
-
-Start with a direct assistant:
+From a source checkout, inspect the supplied setup before generating it into a
+new directory:
 
 ```bash
-ravn run --config ~/.ravn/config.yaml
-```
-
-Or pass a prompt:
-
-```bash
-ravn run --config ~/.ravn/config.yaml "explain this repo"
-```
-
-This is the smallest Ravn shape: one operator, one assistant, one local config.
-
-## Resident assistant
-
-Move to daemon mode when the assistant should keep running:
-
-```bash
-ravn daemon --config ~/.ravn/config.yaml --persona autonomous-agent
-```
-
-Resident assistants are useful for:
-
-- watching sources
-- maintaining memory
-- responding to events
-- producing recaps
-- investigating signals
-- running scheduled or idle-time work
-
-## Start from a setup profile
-
-For local source development, `scripts/setups/ravn-setup` shows the available
-setup profiles:
-
-```bash
-scripts/setups/ravn-setup list
 scripts/setups/ravn-setup describe minimal
+NIUU_RAVN_SETUP_DIR=$(mktemp -d)
+scripts/setups/ravn-setup generate minimal "$NIUU_RAVN_SETUP_DIR"
+```
+
+The generated config is a template. Its model name, provider URL, and credential
+environment-variable name are intentionally unset. Fill them with values for a
+real provider before starting. The `minimal` profile uses an OpenAI-compatible
+adapter; a Claude Code subscription login is not an API key for that adapter.
+
+After editing the generated `config.yaml`, run:
+
+```bash
+ravn run --config "$NIUU_RAVN_SETUP_DIR/config.yaml" 'Reply with exactly OK.'
+```
+
+A successful response verifies that Ravn's configured model path works. An
+authentication or model error should be fixed here before enabling daemon
+behavior. Run without the prompt to enter an interactive conversation.
+
+## Move to a daemon deliberately
+
+Inspect the daemon profile first:
+
+```bash
 scripts/setups/ravn-setup describe daemon-http
 ```
 
-The important progression is:
+It adds a local HTTP channel, task processing, memory, and persistent queue state.
+Generate it into a separate directory and review all enabled behavior before
+launching. Do not overwrite a working direct config just to experiment.
 
-| Profile style | Use it for |
-| --- | --- |
-| `minimal` | direct assistant, no daemon |
-| `mimir-local` | assistant with local memory |
-| `daemon-http` | local resident assistant with an HTTP channel |
-| `daemon-full` | resident assistant with triggers, wakefulness, recap, and trust rules |
-| `flock-*` | several Ravn peers |
+The daemon command uses a completed config:
 
-## Trust rules
+```bash
+ravn daemon --help
+```
 
-Before leaving an assistant running, decide what it may do without approval.
+Use its `--config` option to select the file you prepared. A daemon is not a
+resident merely because it keeps running. A resident also needs its environment,
+observations, identity, state storage, authority, and intended stewardship.
 
-Examples:
+## Operate a resident
 
-- reading is usually safe
-- writing notes may be safe
-- pushing branches may require approval
-- pushing main should usually be disabled
-- sending external messages should require approval
-- spending beyond a cap should be blocked
+In a platform deployment, select a target and runtime profile that actually
+advertise the controls you need. Verify chat, logs, waiting-for-input behavior,
+and persistence across a restart. Check the case that is waiting before sending
+an answer; continuation belongs to that case.
 
-Long-running assistants need boundaries more than one-off chats do.
-
-## Dream cycles and wardens
-
-Dream cycles are background reflection and maintenance passes. Wardens are a
-specific resident-assistant shape focused on keeping Mímir knowledge healthy.
-
-Use them after you have memory worth maintaining.
-
-## What good looks like
-
-You should be able to answer:
-
-- Which persona is running?
-- Which config file controls it?
-- Where does state live?
-- What triggers can wake it?
-- What actions require approval?
-- How do you stop it?
-
-## Next
-
-When you have multiple runtimes, add discovery and topology:
-
-[Shared discovery and topology](shared-discovery-and-topology.md)
+The [Ravn CLI reference](../reference/cli-ravn.md) covers rooms, flocks, personas,
+and wardens. [Architecture](../concepts/platform-model.md) explains the boundary
+between Ravn judgment and shared Niuu infrastructure. Live resident deployment is
+separate from the validated local Forge bootstrap.

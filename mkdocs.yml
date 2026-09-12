@@ -1,8 +1,8 @@
 site_name: Niuu
-site_description: Self-hosted platform for AI coding sessions, workflows, memory, and LLM operations
-site_url: https://niuulabs.github.io/volundr/
-repo_url: https://github.com/niuulabs/volundr
-repo_name: niuulabs/volundr
+site_description: A composable platform for agent runtimes, collaborative workflows, shared knowledge, and autonomous residents
+site_url: https://docs.niuu.cloud/
+repo_url: https://github.com/niuulabs/niuu
+repo_name: niuulabs/niuu
 
 docs_dir: docs/site
 
@@ -29,7 +29,6 @@ theme:
     repo: fontawesome/brands/github
   features:
     - navigation.sections
-    - navigation.expand
     - navigation.top
     - navigation.instant
     - navigation.instant.progress
@@ -44,56 +43,52 @@ extra_css:
   - stylesheets/extra.css
 
 nav:
-  - Home: index.md
-  - Get Started:
-      - Introduction: get-started/introduction.md
+  - Documentation: index.md
+  - Start here:
+      - What is Niuu?: get-started/introduction.md
       - Install: get-started/install.md
-      - First local stack: get-started/first-local-stack.md
-      - First AI workspace: get-started/first-ai-workspace.md
-      - Configure your project: get-started/configure-project.md
-      - From small to autonomous:
-          - Overview: get-started/path-from-small-to-autonomous.md
-          - 1. One local platform: get-started/one-local-platform.md
-          - 2. One workspace session: get-started/one-workspace-session.md
-          - 3. Model routing: get-started/model-routing-step.md
-          - 4. Durable memory: get-started/durable-memory.md
-          - 5. Workflows and teams: get-started/workflows-and-teams-step.md
-          - 6. Direct and resident assistants: get-started/direct-and-resident-assistants.md
-          - 7. Shared discovery and topology: get-started/shared-discovery-and-topology.md
-          - 8. Kubernetes and GitOps: get-started/kubernetes-and-gitops-step.md
-  - Concepts:
-      - Platform model: concepts/platform-model.md
+      - Your first working session: get-started/first-local-stack.md
+      - Work on a repository: get-started/configure-project.md
+      - Choose your next step: get-started/path-from-small-to-autonomous.md
+  - Guides:
+      - Inspect model routing: get-started/model-routing-step.md
+      - Ingest and retrieve knowledge: get-started/durable-memory.md
+      - Inspect workflows and runs: get-started/workflows-and-teams-step.md
+      - Direct agents and residents: get-started/direct-and-resident-assistants.md
+      - Discovery and topology: get-started/shared-discovery-and-topology.md
+  - Understand Niuu:
+      - Architecture and composability: concepts/platform-model.md
       - Sessions and workspaces: concepts/sessions-and-workspaces.md
+      - Agents, personas, and residents: concepts/agents-and-personas.md
       - Workflows and teams: concepts/workflows-and-teams.md
-      - Agents and personas: concepts/agents-and-personas.md
       - Memory and knowledge: concepts/memory-and-knowledge.md
-      - Model routing: concepts/model-routing.md
-      - Git and review flow: concepts/git-and-review-flow.md
+      - Models and routing: concepts/model-routing.md
+      - Review agent changes: concepts/git-and-review-flow.md
+  - Operate:
+      - Local development: operations/local-development.md
+      - Kubernetes deployment: operations/kubernetes-deployment.md
+      - OpenShell runtime: operations/openshell-runtime.md
+      - Identity and execution boundaries: operations/security-and-permissions.md
+      - Diagnose an operation: operations/observability.md
+      - Migrations and upgrades: operations/migrations.md
+      - Accept a shared deployment: operations/production-checklist.md
+      - Quick-start verification: operations/quickstart-verification.md
   - Reference:
-      - CLI:
-          - Overview: reference/cli.md
-          - niuu: reference/cli-niuu.md
-          - ravn: reference/cli-ravn.md
-      - Web UI: reference/web-ui.md
+      - Command-line tools: reference/cli.md
+      - Niuu commands: reference/cli-niuu.md
+      - Ravn commands: reference/cli-ravn.md
       - Configuration: reference/configuration.md
-      - API: reference/api.md
-      - Helm charts: reference/helm-charts.md
-      - Sessions: reference/sessions.md
+      - HTTP API: reference/api.md
+      - Session lifecycle API: reference/sessions.md
+      - Web interface: reference/web-ui.md
       - Credentials and secrets: reference/credentials-and-secrets.md
       - Identity: reference/identity.md
       - Integrations: reference/integrations.md
-      - Events: reference/events.md
-  - Operations:
-      - Local development: operations/local-development.md
-      - OpenShell runtime: operations/openshell-runtime.md
-      - Kubernetes deployment: operations/kubernetes-deployment.md
-      - Production checklist: operations/production-checklist.md
-      - Migrations: operations/migrations.md
-      - Observability: operations/observability.md
-      - Security and permissions: operations/security-and-permissions.md
+      - Events and streams: reference/events.md
+      - Helm charts: reference/helm-charts.md
   - Troubleshooting:
-      - FAQ: troubleshooting/faq.md
-      - Common issues: troubleshooting/common-issues.md
+      - Fix a failed launch: troubleshooting/common-issues.md
+      - Frequently asked questions: troubleshooting/faq.md
 
 markdown_extensions:
   - admonition

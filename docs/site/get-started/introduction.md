@@ -1,36 +1,28 @@
-# Introduction
+# What is Niuu?
 
-Start small, then add the parts of Niuu when you need them.
+Niuu is a self-hosted platform for agent work. It gives agents managed workspaces,
+shared services, and ways to collaborate with people and other agents. You can
+use its browser interface or call its APIs from your own tools and agents.
 
-Niuu is a self-hosted platform for AI workspaces, assistant teams, durable
-memory, workflows, and long-running assistants. You do not need to understand
-the whole platform before you can use it.
+Start with [one local session](first-local-stack.md). You will authenticate Claude
+Code, start Niuu, launch an empty workspace, and verify a file created by the agent.
+You do not need to configure every service to complete that exercise.
 
-The first mental model is simple:
+## Three useful starting points
 
-| Tool | Use it for |
+| You want to… | Start here |
 | --- | --- |
-| `niuu` | Run and operate the local platform, web UI, sessions, and service stack. |
-| `ravn` | Run an assistant directly, or run a resident assistant/daemon outside the UI. |
+| Run a coding agent and inspect its output | [Quick start](first-local-stack.md) |
+| Understand how Niuu, Skuld, and Ravn fit together | [Architecture](../concepts/platform-model.md) |
+| Operate services on shared infrastructure | [Deployment](../operations/kubernetes-deployment.md) |
 
-The rest of the names in the platform are capabilities that the stack provides.
-You will meet them when they become useful.
+After the first session, [attach a repository](configure-project.md). Add memory,
+model routing, workflows, or residents when those capabilities serve the work.
+[Choose your next step](path-from-small-to-autonomous.md) by the result you need.
 
-## Recommended path
+## Know which version you are using
 
-1. [Install the tools](install.md).
-2. [Run the first local stack](first-local-stack.md).
-3. [Launch your first AI workspace](first-ai-workspace.md).
-4. [Configure your project](configure-project.md).
-5. [Grow from small to autonomous](path-from-small-to-autonomous.md).
-
-## What you will build up to
-
-- A local platform you can open in the browser.
-- One workspace session with chat, terminal, files, diffs, logs, and telemetry.
-- Model routing when you want consistent access to local or cloud models.
-- Shared memory when the work should survive one session.
-- Workflows when work needs stages, gates, or several roles.
-- Resident assistants when something should keep watching, curating, or improving.
-
-Start with the first workspace. The rest can wait.
+The docs describe the current source tree. Published binaries can lag behind it;
+[installation](install.md) lists known release issues, and the
+[verification record](../operations/quickstart-verification.md) separates tests
+that passed from paths that still need live validation.

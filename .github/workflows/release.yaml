@@ -27,7 +27,7 @@ jobs:
         id: extract
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Releasing version: $VERSION"
 
   # ---------------------------------------------------------------------------
@@ -417,6 +417,30 @@ jobs:
       - name: Build
         run: make copy-migrations build-cli-bin
 
+      - name: Set up Node.js for the real agent runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: 22
+
+      - name: Install the quick-start Claude CLI
+        run: npm install --global @anthropic-ai/claude-code@2.1.181
+
+      - name: Verify quick start against the release binary
+        run: uv run python scripts/check_quickstart.py --niuu dist/niuu-${{ matrix.os }}-${{ matrix.arch }}
+
+      - name: Verify live quick-start inference when credentials are configured
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.NIUU_QUICKSTART_CLAUDE_TOKEN }}
+        shell: bash
+        run: |
+          if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            uv run python scripts/check_quickstart.py \
+              --niuu dist/niuu-${{ matrix.os }}-${{ matrix.arch }} --live
+            echo "Live quick-start inference passed." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Live inference NOT TESTED: configure NIUU_QUICKSTART_CLAUDE_TOKEN to enable it. Runtime startup and shutdown were tested separately." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -562,6 +586,18 @@ jobs:
           helm push .helm-packages/niuu-shared-*.tgz ${{ env.CHART_REPO }}
           helm push .helm-packages/niuu-[0-9]*.tgz ${{ env.CHART_REPO }}
 
+  docs-check:
+    name: Validate published documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v6
+      - name: Build documentation strictly
+        run: |
+          uv run --extra dev python scripts/extract_openapi.py -o docs/site/openapi.json
+          uv run --extra dev pytest tests/test_scripts/test_check_quickstart.py --no-cov -q
+          uvx --from mkdocs-material==9.7.5 mkdocs build --strict
+
   # ---------------------------------------------------------------------------
   # GitHub Release
   # ---------------------------------------------------------------------------
@@ -575,6 +611,7 @@ jobs:
         build-charts,
         build-cli,
         build-ravn,
+        docs-check,
       ]
     runs-on: ubuntu-latest
     permissions:

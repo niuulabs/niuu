@@ -1,22 +1,55 @@
-# Local Development
+# Develop Niuu locally
 
-Use the local stack for day-to-day platform development.
+Use a source checkout when changing the platform or testing unreleased fixes.
+[Installation](../get-started/install.md#from-source) lists the required build
+tools and dependency setup.
 
-## Start and stop
+## Build and start
+
+From the repository root:
 
 ```bash
+uv sync --python 3.12 --extra dev
 ./start-dev
+```
+
+The script prepares dependencies and assets and starts a background stack. Use
+the exact URL it prints, including its UI configuration query string. The first
+run can take longer because PostgreSQL and web assets must be built.
+
+## Inspect and stop
+
+```bash
+tail -n 100 build/dev-run/logs/platform.log
 ./stop-dev
 ```
 
-## Logs
+`stop-dev` manages the stack launched by `start-dev`. For a direct
+`niuu platform up` run, use Ctrl+C in that process's terminal. A separate
+`niuu platform down` invocation does not own the foreground process's service
+manager.
 
-The startup script prints the platform log path. By default, logs are written under:
+## Verify a change
 
-```text
-build/dev-run/logs/
+Run focused tests for the affected behavior while developing. Repository checks:
+
+```bash
+make verify
 ```
 
-## Web UI
+For web changes, from `web-next`:
 
-The local stack builds and serves the web-next UI. Use the URL printed by `start-dev`, including the `config.live.json` query parameter.
+```bash
+pnpm test
+```
+
+For docs, from the repository root:
+
+```bash
+uv run --extra dev python scripts/extract_openapi.py -o docs/site/openapi.json
+uvx --from mkdocs-material==9.7.5 mkdocs build --strict
+```
+
+The [quick-start check](quickstart-verification.md) exercises real database and
+session startup. Its live mode requires provider authentication. Unit tests,
+docs rendering, and a real model response verify different parts of the system.
