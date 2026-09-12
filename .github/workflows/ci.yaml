@@ -75,7 +75,7 @@ jobs:
               return any(regex.search(path) for path in changed)
 
           all_containers = [
-              "agent", "skuld", "openshell", "devrunner", "volundr-web", "niuu-web", "niuu"
+              "agent", "skuld", "openshell", "devrunner", "volundr-web", "niuu-web", "niuu", "gbrain"
           ]
 
           if full_tier:
@@ -96,6 +96,7 @@ jobs:
                   "skuld": r"^containers/skuld/|^(src/|pyproject\.toml$|uv\.lock$)",
                   "openshell": r"^containers/openshell/|^(src/|pyproject\.toml$|uv\.lock$)",
                   "devrunner": r"^containers/devrunner/",
+                  "gbrain": r"^containers/gbrain/",
                   "volundr-web": r"^containers/volundr-web/|^web-next/",
                   "niuu-web": r"^containers/niuu-web/|^web-next/",
                   "niuu": r"^containers/niuu/|^tests/(container/|test_bifrost/|conftest\.py$|__init__\.py$)|^(src/|pyproject\.toml$|uv\.lock$|bifrost\.pi\.example\.yaml$)",
