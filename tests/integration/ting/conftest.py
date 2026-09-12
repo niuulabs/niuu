@@ -16,7 +16,6 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from identity.adapters.authorization import AllowAllAuthorizationAdapter
-
 from ting.domain.models import (
     TrackerIssue,
     TrackerMilestone,
