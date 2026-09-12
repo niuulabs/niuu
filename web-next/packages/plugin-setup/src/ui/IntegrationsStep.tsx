@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import {
+  availableModes,
   connectionForSlug,
+  entryConnected,
+  entryForMode,
   connectionNeedsSignIn,
   credentialExpiryLabel,
   credentialProblemLabel,
@@ -101,10 +104,11 @@ export function IntegrationsStep({
     .filter((item): item is { group: ProviderGroup; row: NonNullable<typeof item.row> } =>
       Boolean(item.row),
     );
-  const addable = groups.filter((group) => !groupConnection(group, connections));
+  const addable = groups.filter((group) => availableModes(group, connections).length > 0);
   const addingGroup = adding?.key ? groups.find((g) => g.key === adding.key) : undefined;
-  // The dialog closes itself the moment its provider becomes usable.
-  const dialogOpen = adding !== null && !(addingGroup && groupConnection(addingGroup, connections));
+  // The dialog closes itself the moment the method being added becomes usable.
+  const target = addingGroup && adding?.mode ? entryForMode(addingGroup, adding.mode) : undefined;
+  const dialogOpen = adding !== null && !entryConnected(target, connections);
 
   return (
     <div className="setup-col" data-testid={`setup-step-${step.id}`}>
@@ -217,9 +221,9 @@ export function IntegrationsStep({
           onOpenChange={(open) => {
             if (!open) setAdding(null);
           }}
-          onPick={(key) => setAdding((prev) => (prev ? { ...prev, key } : prev))}
+          onSelection={(key, mode) => setAdding((prev) => (prev ? { ...prev, key, mode } : prev))}
           noun={noun.one}
-          groups={adding.mode ? groups : addable}
+          groups={groups}
           initialGroupKey={adding.key}
           initialMode={adding.mode}
           connections={connections}

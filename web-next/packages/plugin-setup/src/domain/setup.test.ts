@@ -4,7 +4,9 @@ import {
   providerGroups,
   signInUnavailableReason,
   supportsSignIn,
+  availableModes,
   connectionNeedsSignIn,
+  entryForMode,
   credentialExpiryLabel,
   credentialProblemLabel,
   accessMode,
@@ -285,6 +287,22 @@ describe('connection credential state', () => {
     expect(connectionNeedsSignIn(connection)).toBe(false);
     expect(connectionNeedsSignIn({ ...connection, credentialStatus: 'auth_required' })).toBe(true);
     expect(connectionNeedsSignIn({ ...connection, credentialStatus: 'enrolling' })).toBe(true);
+  });
+
+  it('offers only the methods that are not connected yet', () => {
+    const step = WIZARD_STEPS.find((s) => s.id === 'providers')!;
+    const anthropic = providerGroups(MOCK_CATALOG, step).find((g) => g.key === 'anthropic')!;
+    expect(availableModes(anthropic, undefined)).toEqual(['signin', 'key']);
+    expect(availableModes(anthropic, [connection])).toEqual(['key']);
+    expect(
+      availableModes(anthropic, [connection, { ...connection, id: 'k', slug: 'anthropic' }]),
+    ).toEqual([]);
+    expect(
+      availableModes(anthropic, [{ ...connection, credentialStatus: 'auth_required' }]),
+    ).toEqual(['signin', 'key']);
+    expect(entryForMode(anthropic, 'key')?.slug).toBe('anthropic');
+    expect(entryForMode(anthropic, 'signin')?.slug).toBe('claude-code');
+    expect(anthropic.keyHelpUrl).toContain('console.anthropic.com');
   });
 
   it('says how long a token is still good for', () => {

@@ -70,6 +70,56 @@ describe('AddProviderDialog', () => {
     await waitFor(() => expect(screen.getByTestId('setup-signin-code-codex')).toBeInTheDocument());
   });
 
+  it('still offers the other method for a provider that is already signed in', () => {
+    const groups = providerGroups(MOCK_CATALOG, providers);
+    const signedIn = {
+      id: 'c1',
+      slug: 'claude-code',
+      integrationType: 'ai_provider',
+      credentialName: 'claude-code-setup',
+      enabled: true,
+      config: {},
+      credentialStatus: 'active',
+    };
+    renderWithSetup(<AddProviderDialog {...base} groups={groups} connections={[signedIn]} />);
+    const row = screen.getByTestId('setup-add-pick-anthropic');
+    expect(row).toHaveTextContent('Signed in');
+    expect(row).toHaveTextContent('Use an API key');
+    expect(row).not.toBeDisabled();
+    fireEvent.click(row);
+    // Only the key is left, so the method question is skipped.
+    expect(screen.getByTestId('setup-add-intro-key').querySelector('a')).toHaveAttribute(
+      'href',
+      'https://console.anthropic.com/settings/keys',
+    );
+    expect(screen.getByTestId('setup-input-anthropic-api_key')).toBeInTheDocument();
+  });
+
+  it('disables a provider with nothing left to add', () => {
+    const groups = providerGroups(MOCK_CATALOG, providers);
+    const keyed = {
+      id: 'c2',
+      slug: 'deepseek',
+      integrationType: 'ai_provider',
+      credentialName: 'deepseek-setup',
+      enabled: true,
+      config: {},
+      credentialStatus: 'valid',
+    };
+    renderWithSetup(<AddProviderDialog {...base} groups={groups} connections={[keyed]} />);
+    expect(screen.getByTestId('setup-add-pick-deepseek')).toBeDisabled();
+    expect(screen.getByTestId('setup-add-pick-deepseek')).toHaveTextContent('API key');
+  });
+
+  it('introduces the sign-in before the button', () => {
+    const groups = providerGroups(MOCK_CATALOG, providers);
+    renderWithSetup(
+      <AddProviderDialog {...base} groups={groups} initialGroupKey="openai" initialMode="signin" />,
+    );
+    expect(screen.getByTestId('setup-add-intro-signin')).toHaveTextContent('short code');
+    expect(screen.getByTestId('setup-signin-start-codex')).toBeInTheDocument();
+  });
+
   it('explains a sign-in this install cannot run and honours presets', () => {
     const catalog = MOCK_CATALOG.map((e) =>
       e.slug === 'github' ? { ...e, signInAvailable: false } : e,

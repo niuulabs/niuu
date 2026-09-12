@@ -195,7 +195,11 @@ export interface ProviderGroup {
   /** Tab labels, in the provider's own words. */
   signInLabel: string;
   keyLabel: string;
+  /** Where the provider lets you create a key or token, when known. */
+  keyHelpUrl?: string;
 }
+
+export type ConnectMode = 'signin' | 'key';
 
 interface GroupSpec {
   key: string;
@@ -205,8 +209,19 @@ interface GroupSpec {
   signInSlug?: string;
   signInLabel?: string;
   keyLabel?: string;
+  keyHelpUrl?: string;
   unavailable?: Array<{ label: string; reason: string }>;
 }
+
+const KEY_HELP_URLS: Record<string, string> = {
+  anthropic: 'https://console.anthropic.com/settings/keys',
+  openai: 'https://platform.openai.com/api-keys',
+  xai: 'https://console.x.ai/',
+  deepseek: 'https://platform.deepseek.com/api_keys',
+  github: 'https://github.com/settings/tokens',
+  gitlab: 'https://gitlab.com/-/user_settings/personal_access_tokens',
+  linear: 'https://linear.app/settings/api',
+};
 
 function defaultKeyLabel(step: WizardStep): string {
   return step.integrationType === 'source_control' ? 'Use a token' : 'Use an API key';
@@ -289,6 +304,7 @@ export function providerGroups(entries: CatalogEntry[], step: WizardStep): Provi
       unavailable: spec.unavailable ?? [],
       signInLabel: spec.signInLabel ?? 'Sign in',
       keyLabel: spec.keyLabel ?? defaultKeyLabel(step),
+      keyHelpUrl: spec.keyHelpUrl ?? (keyEntry ? KEY_HELP_URLS[keyEntry.slug] : undefined),
     });
   }
   for (const entry of forStep) {
@@ -302,9 +318,42 @@ export function providerGroups(entries: CatalogEntry[], step: WizardStep): Provi
       unavailable: [],
       signInLabel: `Sign in with ${entry.name}`,
       keyLabel: defaultKeyLabel(step),
+      keyHelpUrl: KEY_HELP_URLS[entry.slug],
     });
   }
   return groups;
+}
+
+/** True when this catalog entry has a usable connection. */
+export function entryConnected(
+  entry: CatalogEntry | undefined,
+  connections: IntegrationConnection[] | undefined,
+): boolean {
+  if (!entry || !connections) return false;
+  const connection = connectionForSlug(connections, entry.slug);
+  return connection !== undefined && !connectionNeedsSignIn(connection);
+}
+
+/** The catalog entry a connect mode targets. */
+export function entryForMode(group: ProviderGroup, mode: ConnectMode): CatalogEntry | undefined {
+  return mode === 'signin' ? group.signInEntry : group.keyEntry;
+}
+
+/**
+ * Ways this provider can still be connected: every mode the catalog offers
+ * that is not connected yet, with the one that can run here first. A
+ * provider signed in through a subscription can still take an API key, and
+ * the other way round.
+ */
+export function availableModes(
+  group: ProviderGroup,
+  connections: IntegrationConnection[] | undefined,
+): ConnectMode[] {
+  const modes: ConnectMode[] = [];
+  if (group.signInEntry && !entryConnected(group.signInEntry, connections)) modes.push('signin');
+  if (group.keyEntry && !entryConnected(group.keyEntry, connections)) modes.push('key');
+  if (group.signInEntry?.signInAvailable === false && modes.length === 2) modes.reverse();
+  return modes;
 }
 
 /** The connection that makes a pane "connected", if any. */
