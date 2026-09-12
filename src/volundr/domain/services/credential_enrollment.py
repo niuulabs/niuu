@@ -29,6 +29,10 @@ CREDENTIAL_ENROLLMENT_RECONCILE_INTERVAL_SECONDS = 30
 
 logger = logging.getLogger(__name__)
 
+# Sign-ins whose token cannot be refreshed: the worker reports when it runs
+# out, and the wizard asks for a new sign-in then.
+METHODS_WITH_FIXED_LIFETIME = frozenset({"claude_setup", "grok_device"})
+
 
 class CredentialEnrollmentError(ValueError):
     """Raised for a safe, user-actionable enrollment failure."""
@@ -202,7 +206,7 @@ class CredentialEnrollmentService:
                     }
                 )
                 metadata.pop("auth_error_code", None)
-                if enrollment.method == "claude_setup":
+                if enrollment.method in METHODS_WITH_FIXED_LIFETIME:
                     metadata["auth_expires_at"] = poll.credential_data["expires_at"]
                 await self._credential_store.store(
                     "user",

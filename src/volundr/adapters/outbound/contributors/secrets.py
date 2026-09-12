@@ -83,29 +83,6 @@ def _codex_auth_values(
     return {}
 
 
-def _grok_auth_values(
-    context: SessionContext,
-    registry: IntegrationRegistry | None,
-) -> dict[str, object]:
-    """Name the credential a Grok session may hand its rotated auth file back to."""
-    if registry is None:
-        return {}
-    for connection in context.integration_connections:
-        definition = registry.get_definition(connection.slug)
-        enrollment = definition.credential_enrollment if definition is not None else None
-        if enrollment is None or enrollment.method != "grok_device":
-            continue
-        return {
-            "broker": {
-                "grokAuth": {
-                    "credential_name": connection.credential_name,
-                    "credential_field": enrollment.credential_field,
-                }
-            }
-        }
-    return {}
-
-
 class SecretInjectionContributor(SessionContributor):
     """Returns PodSpecAdditions for secret injection (agent injector, hostPath, etc.).
 
@@ -300,11 +277,6 @@ class SecretInjectionContributor(SessionContributor):
         codex_values = _codex_auth_values(context, self._registry)
         if codex_values:
             values.update(codex_values)
-        grok_values = _grok_auth_values(context, self._registry)
-        if grok_values:
-            broker = values.setdefault("broker", {})
-            if isinstance(broker, dict):
-                broker.update(grok_values["broker"])  # type: ignore[index]
         if context.runtime_backend == "openshell":
             return SessionContribution(values=values)
 

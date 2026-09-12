@@ -87,7 +87,7 @@ class DockerLoginRunner(CredentialEnrollmentRunnerPort):
         grok_executable: str = "/usr/local/bin/grok",
         worker_interval: float = 0.1,
         memory_limit: str = "512m",
-        temporary_storage_limit: str = "32m",
+        temporary_storage_limit: str = "256m",
         log_tail: int = DEFAULT_LOG_TAIL,
         log_chars: int = DEFAULT_LOG_CHARS,
         **_extra: object,

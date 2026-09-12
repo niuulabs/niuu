@@ -42,9 +42,6 @@ from volundr.adapters.inbound.rest_audit import (
     create_canonical_audit_router,
 )
 from volundr.adapters.inbound.rest_codex_credentials import create_codex_credentials_router
-from volundr.adapters.inbound.rest_credential_writeback import (
-    create_credential_writeback_router,
-)
 from volundr.adapters.inbound.rest_credentials import create_canonical_credentials_router
 from volundr.adapters.inbound.rest_events import create_events_router
 from volundr.adapters.inbound.rest_git import create_git_router
@@ -930,13 +927,6 @@ def create_app(
             app.include_router(create_resident_runtimes_router(resident_runtime_service))
             app.state.resident_runtime_service = resident_runtime_service
             app.include_router(create_codex_credentials_router(codex_credential_broker))
-            app.include_router(
-                create_credential_writeback_router(
-                    integration_repository=integration_repo,
-                    integration_registry=integration_registry,
-                    credential_store=credential_store,
-                )
-            )
             credential_grant_brokers = {
                 id(adapter): adapter
                 for adapter in [pod_manager, *resident_controllers]

@@ -26,6 +26,9 @@ CLAUDE_TOKEN = re.compile(
     r"Your OAuth token[^\r\n]*:\s*(.*?)\s*Store this token securely", re.DOTALL
 )
 CLAUDE_TOKEN_LIFETIME_DAYS = 365  # Duration documented by `claude setup-token`.
+# The grok CLI documents that `auth.json` tokens expire after 7 days and asks
+# for a new `grok login`; the device flow issues no refresh token.
+GROK_TOKEN_LIFETIME_DAYS = 7
 DEFAULT_SHUTDOWN_TIMEOUT = 2.0
 
 
@@ -233,7 +236,7 @@ async def grok_login(
     """``grok login --device-auth``: prints a verification URL and code, then waits.
 
     The CLI writes its session to ``$GROK_HOME/auth.json`` once the user has
-    approved; that file is the credential (mounted back at ``~/.grok/auth.json``
+    approved; that file is the credential (mounted read-only at ``~/.grok/auth.json``
     in sessions).
     """
     home = root / "grok"
@@ -294,7 +297,11 @@ async def grok_login(
         auth = home / "auth.json"
         if not auth.exists():
             raise RuntimeError("credential_missing")
-        write_json(root / "credential.json", {"auth.json": auth.read_text()})
+        expiry = datetime.now(UTC) + timedelta(days=GROK_TOKEN_LIFETIME_DAYS)
+        write_json(
+            root / "credential.json",
+            {"auth.json": auth.read_text(), "expires_at": expiry.isoformat()},
+        )
         write_json(root / "status.json", {"state": "complete"})
     finally:
         await stop_process(process, shutdown_timeout)

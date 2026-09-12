@@ -34,7 +34,7 @@ class KubernetesLoginRunner(CredentialEnrollmentRunnerPort):
         cleanup_ttl_seconds: int = 60,
         memory_limit: str = "512Mi",
         cpu_limit: str = "500m",
-        temporary_storage_limit: str = "32Mi",
+        temporary_storage_limit: str = "256Mi",
         in_cluster: bool = True,
         **_extra: object,
     ) -> None:

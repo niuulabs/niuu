@@ -53,11 +53,6 @@ class TransportLifecycleMixin:
             "dsh_api_key": self._settings.dsh.api_key,
             "dsh_provider": self._settings.dsh.provider,
             "dsh_prompt_timeout_s": self._settings.dsh.prompt_timeout_s,
-            "grok_auth_credential_name": self._settings.grok_auth.credential_name,
-            "grok_auth_credential_field": self._settings.grok_auth.credential_field,
-            "grok_auth_seed_path": self._settings.grok_auth.seed_path,
-            "grok_auth_writeback_path": self._settings.grok_auth.writeback_path,
-            "http_client_provider": self._get_http_client,
         }
 
     def _create_codex_auth_provider(self) -> CodexAuthProviderPort:

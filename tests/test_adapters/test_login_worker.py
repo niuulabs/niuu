@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -124,6 +125,7 @@ async def test_grok_device_login_captures_the_session_file(tmp_path, success):
         assert status == {"state": "complete"}
         credential = json.loads((tmp_path / "credential.json").read_text())
         assert json.loads(credential["auth.json"]) == {"token": "grok-secret"}
+        assert credential["expires_at"] > datetime.now(UTC).isoformat()
     else:
         assert status["state"] == "awaiting_user"
         assert status["verification_uri"] == (

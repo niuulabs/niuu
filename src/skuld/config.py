@@ -504,24 +504,6 @@ class CodexAuthConfig(BaseModel):
     secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
 
 
-class GrokAuthConfig(BaseModel):
-    """How a Grok Build session receives and hands back its xAI session file."""
-
-    credential_name: str = Field(
-        default="",
-        description="Platform credential the session's auth file belongs to; empty = none.",
-    )
-    credential_field: str = Field(default="auth.json")
-    seed_path: str = Field(
-        default="/run/secrets/grok/auth.json",
-        description="Read-only copy of the auth file the platform mounts into the session.",
-    )
-    writeback_path: str = Field(
-        default="/api/v1/internal/credentials/writeback",
-        description="Platform route that stores the rotated auth file.",
-    )
-
-
 class DshRuntimeConfig(BaseModel):
     """DeepSeek Harness (dsh) SDK runtime settings for DshJsonRpcTransport."""
 
@@ -722,7 +704,6 @@ class SkuldSettings(BaseSettings):
     )
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
     codex_auth: CodexAuthConfig = Field(default_factory=CodexAuthConfig)
-    grok_auth: GrokAuthConfig = Field(default_factory=GrokAuthConfig)
     dsh: DshRuntimeConfig = Field(default_factory=DshRuntimeConfig)
     service_user_id: str = Field(default="skuld-broker")
     service_tenant_id: str = Field(default="default")

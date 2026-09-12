@@ -170,8 +170,8 @@ changes go through a stack controller (`NIUU_STACK_DIR`, the data directory):
 
 The bundle configures `CREDENTIAL_ENROLLMENT_RUNNER` with
 `DockerLoginRunner`: each sign-in starts a `niuu-login-<id>` container from the
-skuld image on the compose network, read-only except for a memory-backed
-`/tmp`, with no platform environment and all capabilities dropped. It runs the
+skuld image on the compose network, read-only except for a 256 MB memory-backed
+`/tmp` (the Codex app-server clones its plugin marketplace on startup), with no platform environment and all capabilities dropped. It runs the
 same `login_worker.py` the Kubernetes runner uses (`claude setup-token`, the
 Codex app-server device flow, or `grok login --device-auth`). The platform
 reads the worker's status over `docker exec`, stores the resulting credential
@@ -213,7 +213,7 @@ platform runs:
 |---|---|---|
 | Claude Code (subscription) | About a year | Sign in again from the same row when the wizard shows *Token expired*. |
 | OpenAI Codex (ChatGPT) | Hours | Sessions fetch tokens from the platform's Codex credential broker, which refreshes them in the store. |
-| Grok Build | Hours | The session gets a read-only copy of the auth file under `/run/secrets/grok`, copies it to `~/.grok` so the CLI can rotate it, and hands the rotated file back to the platform when the session stops. |
+| Grok Build | 7 days, no refresh token | Sign in again from the same row when the wizard shows *Token expired*. The file is mounted read-only at `~/.grok/auth.json`; the CLI hot-reloads it, so a new sign-in reaches running sessions on their next start. |
 | GitHub (App sign-in) | 8 hours when the app issues expiring tokens, otherwise unlimited | The platform's token refresher. Add `docker.sign_in_client_secrets.github` for refresh, or turn off *Expire user authorization tokens* on the app. |
 | GitLab (device sign-in) | 2 hours | The platform's token refresher, with the public client id alone. |
 
@@ -222,10 +222,9 @@ shared host, the one place that owns integrations in every deployment. It
 refreshes any device-flow token that expires within ten minutes and
 flips the connection to *Sign-in needed* with the reason `refresh_failed` when
 the provider rejects the refresh. The wizard row shows how long the current
-token is still good for and why a sign-in is needed. Sessions hand rotated
-credentials back through `POST /api/v1/internal/credentials/writeback`, which
-only accepts the caller's own enrollment-sourced credential and the field the
-enrollment produced.
+token is still good for and why a sign-in is needed. Sessions never write
+credentials back: the platform is the only writer of the store, and a session
+only ever reads what the platform renders for it.
 
 ## Updating
 

@@ -107,7 +107,7 @@ async def test_start_runs_sealed_worker_container(
     assert kwargs["name"] == f"niuu-login-{started.id.hex}"
     assert started.runner_ref == {"container_name": kwargs["name"]}
     assert kwargs["read_only"] is True
-    assert kwargs["tmpfs"] == {"/tmp": "size=32m,mode=1777"}
+    assert kwargs["tmpfs"] == {"/tmp": "size=256m,mode=1777"}
     assert kwargs["environment"] == {}
     assert kwargs["network"] == "niuu_default"
     assert kwargs["labels"][dlr.LOGIN_LABEL] == str(started.id)

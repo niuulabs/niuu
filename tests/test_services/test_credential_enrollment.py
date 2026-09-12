@@ -91,6 +91,9 @@ class _Runner:
     def supports_enrollment(self, method: str) -> bool:
         return method == "codex_device"
 
+    def available_for(self, slug: str, method: str) -> bool:
+        return self.supports_enrollment(method)
+
     async def start_enrollment(self, enrollment):
         return replace(
             enrollment,
@@ -187,6 +190,23 @@ async def test_completed_login_persists_only_to_enrollment_owner() -> None:
     }
     assert stored["metadata"]["auth_state"] == "active"
     assert runner.cancelled == [enrollment.id]
+
+
+async def test_fixed_lifetime_sign_ins_record_when_the_token_runs_out() -> None:
+    service, repository, _, credential_store, runner = _service()
+    principal = _principal("user-1")
+    enrollment = await service.start(principal=principal, slug="codex")
+    await repository.save(replace(enrollment, method="grok_device"))
+    runner.poll_result = CredentialEnrollmentPoll(
+        state=CredentialEnrollmentState.COMPLETE,
+        credential_data={"auth.json": "{}", "expires_at": "2026-09-19T10:00:00+00:00"},
+    )
+
+    completed = await service.get(enrollment.id, principal)
+
+    assert completed.state == CredentialEnrollmentState.COMPLETE
+    stored = credential_store.items[("user", "user-1", "codex-credentials")]
+    assert stored["metadata"]["auth_expires_at"] == "2026-09-19T10:00:00+00:00"
 
 
 async def test_other_user_cannot_read_or_complete_enrollment() -> None:

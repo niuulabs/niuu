@@ -53,7 +53,7 @@ async def test_job_uses_only_temporary_storage_and_records_identity_immediately(
     assert started.runner_ref["job_name"] == job["metadata"]["name"]
     assert spec["automountServiceAccountToken"] is False
     assert spec["volumes"] == [
-        {"name": "temporary", "emptyDir": {"medium": "Memory", "sizeLimit": "32Mi"}}
+        {"name": "temporary", "emptyDir": {"medium": "Memory", "sizeLimit": "256Mi"}}
     ]
     assert spec["containers"][0]["securityContext"]["readOnlyRootFilesystem"] is True
     assert "env" not in spec["containers"][0]
