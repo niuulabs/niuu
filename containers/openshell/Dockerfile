@@ -1,7 +1,22 @@
+FROM ghcr.io/astral-sh/uv:0.12.13@sha256:b485bd65cc2cf1c9a93b3554012c9c3778cf7b1b5fd3d3096ce9e1226c97e1e6 AS uv
+
 FROM ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:aeef1c63f00e2913ea002ccb3aaf925f338b5c5d70e63576f0d95c16a138044e
 
 USER root
 WORKDIR /app
+
+COPY --from=uv /uv /uvx /usr/local/bin/
+# Refresh inherited runtime packages and the Python managed by uv.
+RUN apt-get update && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/* \
+    && UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python uv python upgrade 3.14
+
+COPY containers/node/npm-bootstrap/package.json containers/node/npm-bootstrap/package-lock.json /opt/npm-bootstrap/
+RUN cd /opt/npm-bootstrap && npm ci --omit=dev \
+    && rm -rf /usr/lib/node_modules/npm \
+    && ln -s /opt/npm-bootstrap/node_modules/npm /usr/lib/node_modules/npm \
+    && ln -sf /usr/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sf /usr/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 # OpenShell's base image includes agent CLIs, but their versions are outside
 # Niuu's release lifecycle. Install the same locked tools used by Skuld.

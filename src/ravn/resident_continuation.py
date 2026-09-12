@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import time
@@ -600,10 +601,14 @@ class LocalResidentMemory(ResidentMemoryPort):
         return entries
 
     def _safe_path(self, ref: str | Path) -> Path:
-        path = (self._root / ref).resolve()
-        if not path.is_relative_to(self._root) or path == self._root:
+        root_prefix = str(self._root).rstrip(os.sep) + os.sep
+        candidate = os.path.abspath(os.path.join(self._root, ref))
+        if not candidate.startswith(root_prefix):
             raise ValueError("Resident memory path must stay inside its storage root")
-        return path
+        resolved = os.path.realpath(candidate)
+        if not resolved.startswith(root_prefix):
+            raise ValueError("Resident memory path must stay inside its storage root")
+        return Path(resolved)
 
     def _write(self, rel: Path, content: str) -> str:
         path = self._safe_path(rel)
