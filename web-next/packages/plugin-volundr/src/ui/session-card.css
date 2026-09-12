@@ -1,0 +1,102 @@
+.lx-pod-entry {
+  position: relative;
+  cursor: pointer;
+}
+.lx-pod-entry:not(.lx-pod-entry--selected):hover {
+  background: var(--color-bg-tertiary);
+}
+
+/* Clear, high-contrast highlight for the currently selected session. */
+.lx-pod-entry--selected {
+  background: color-mix(in srgb, var(--color-brand) 22%, transparent);
+  box-shadow: inset 3px 0 0 var(--color-brand);
+}
+.lx-pod-entry--selected:hover {
+  background: color-mix(in srgb, var(--color-brand) 26%, transparent);
+}
+
+/* Hover/focus action cluster (stop · archive), pinned to the right edge so it
+   does not shift the row layout when it appears. */
+.lx-pod-actions {
+  position: absolute;
+  right: var(--space-2);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.lx-pod-entry:hover .lx-pod-actions,
+.lx-pod-entry:focus-within .lx-pod-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* When the action cluster is showing, hide the age/time so the row stays clean
+   (the buttons occupy that top-right corner). */
+.lx-pod-entry:hover .lx-pod-age,
+.lx-pod-entry:focus-within .lx-pod-age {
+  opacity: 0;
+}
+
+.lx-pod-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-5);
+  height: var(--space-5);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-subtle);
+  cursor: pointer;
+  transition:
+    color 120ms ease,
+    background 120ms ease,
+    border-color 120ms ease;
+}
+.lx-pod-action-btn:hover {
+  color: var(--color-text-primary);
+  border-color: color-mix(in srgb, var(--color-text-primary) 30%, var(--color-border-subtle));
+}
+.lx-pod-action-btn--stop:hover {
+  color: var(--color-critical);
+  border-color: color-mix(in srgb, var(--color-critical) 50%, transparent);
+}
+.lx-pod-action-btn--archive:hover {
+  color: var(--color-brand);
+  border-color: color-mix(in srgb, var(--color-brand) 50%, transparent);
+}
+.lx-pod-action-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.lx-pod-entry[data-zebra]:not(.lx-pod-entry--selected) {
+  background: color-mix(in srgb, var(--color-text-primary) 3%, transparent);
+}
+.vol-session-group-chevron[data-folded='false'] {
+  rotate: 90deg;
+}
+.vol-session-resize {
+  width: var(--space-1);
+  flex-shrink: 0;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  background: var(--color-border-subtle);
+}
+.vol-session-resize:focus-visible {
+  outline: 2px solid var(--color-brand);
+}
+@media (hover: none) {
+  .lx-pod-actions {
+    opacity: 1;
+    pointer-events: auto;
+    position: static;
+    transform: none;
+  }
+}

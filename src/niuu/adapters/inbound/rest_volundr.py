@@ -1101,9 +1101,10 @@ def create_volundr_router(
     @router.get("/feature-flags")
     async def get_feature_flags(
         request: Request,
+        instance_id: str | None = Query(default=None),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
-        instance = await _resolve_target_instance(service, principal, None)
+        instance = await _resolve_target_instance(service, principal, instance_id)
         response = await _request_remote(
             instance,
             request,

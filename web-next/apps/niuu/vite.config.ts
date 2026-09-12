@@ -152,7 +152,12 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // Opt into remote development explicitly; Vite keeps its hostname checks.
+    host: process.env.NIUU_DEV_HOST ?? 'localhost',
     proxy: {
+      '/s/': { target: apiProxyTarget, changeOrigin: true, ws: true },
+      '/health': { target: apiProxyTarget, changeOrigin: true },
+      '/mcp': { target: apiProxyTarget, changeOrigin: true },
       '/api': {
         target: apiProxyTarget,
         changeOrigin: true,
