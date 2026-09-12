@@ -30,28 +30,30 @@ class TestStorageContributor:
         result = await c.contribute(session, SessionContext())
         assert result.values == {}
 
-    async def test_openshell_backend_skips_k8s_storage(self, session):
-        storage = AsyncMock()
-        c = StorageContributor(storage=storage)
-        result = await c.contribute(session, SessionContext(runtime_backend="openshell"))
-
-        assert result.values == {}
-        assert result.pod_spec is None
-        storage.get_workspace_by_session.assert_not_called()
-        storage.create_session_workspace.assert_not_called()
-        storage.provision_user_storage.assert_not_called()
-
-    async def test_provisions_pvc(self, session):
+    @pytest.mark.parametrize("runtime_backend", ["kubernetes", "openshell"])
+    async def test_provisions_pvc(self, session, runtime_backend):
         storage = AsyncMock()
         storage.create_session_workspace.return_value = PVCRef(name="ws-pvc")
         storage.provision_user_storage.return_value = PVCRef(name="home-pvc")
         storage.get_workspace_by_session.return_value = None
 
         c = StorageContributor(storage=storage)
-        result = await c.contribute(session, SessionContext())
+        result = await c.contribute(session, SessionContext(runtime_backend=runtime_backend))
         assert result.values["homeVolume"]["enabled"] is True
         assert result.values["homeVolume"]["existingClaim"] == "home-pvc"
         assert result.values["persistence"]["existingClaim"] == "ws-pvc"
+
+    async def test_legacy_openshell_resume_does_not_replace_storage(self, session):
+        storage = AsyncMock()
+        storage.get_workspace_by_session.return_value = None
+        contributor = StorageContributor(storage=storage)
+        result = await contributor.contribute(
+            session.with_pod_name("legacy"),
+            SessionContext(runtime_backend="openshell"),
+        )
+        assert result.values == {}
+        storage.create_session_workspace.assert_not_awaited()
+        storage.provision_user_storage.assert_not_awaited()
 
     async def test_reuses_existing_workspace(self, session):
         existing = Workspace(

@@ -50,10 +50,16 @@ class StorageContributor(SessionContributor):
         session: Session,
         context: SessionContext,
     ) -> SessionContribution:
-        if context.runtime_backend == "openshell":
+        if self._storage is None:
             return SessionContribution()
 
-        if self._storage is None:
+        # Pre-existing OpenShell sessions keep their gateway-owned volume and
+        # use native stop/start; do not provision replacement empty storage.
+        if (
+            context.runtime_backend == "openshell"
+            and session.pod_name
+            and await self._storage.get_workspace_by_session(str(session.id)) is None
+        ):
             return SessionContribution()
 
         home_pvc, workspace_pvc = await self._provision(session)
