@@ -56,7 +56,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "${GITHUB_REF}" == "refs/heads/main" || "${GITHUB_REF}" == refs/tags/v* ]]; then
+          if [[ "${GITHUB_REF}" == "refs/heads/main" || "${GITHUB_REF}" == refs/tags/v* ]] ||
+             [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${GITHUB_REF}" == "refs/heads/dev" ]]; then
             echo "deploy_enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "deploy_enabled=false" >> "$GITHUB_OUTPUT"
