@@ -1,6 +1,6 @@
 FROM ghcr.io/astral-sh/uv:0.12.13@sha256:b485bd65cc2cf1c9a93b3554012c9c3778cf7b1b5fd3d3096ce9e1226c97e1e6 AS uv
 
-FROM ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:aeef1c63f00e2913ea002ccb3aaf925f338b5c5d70e63576f0d95c16a138044e
+FROM ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:aeef1c63f00e2913ea002ccb3aaf925f338b5c5d70e63576f0d95c16a138044e AS base
 
 USER root
 WORKDIR /app
@@ -35,6 +35,27 @@ RUN cd /opt/openshell-tools && GROK_HOME=/tmp/grok-install npm ci --omit=dev --l
     && ln -s /opt/openshell-tools/node_modules/tar /usr/lib/node_modules/tar \
     && ln -sf /opt/openshell-tools/node_modules/.bin/copilot /usr/local/bin/copilot
 
+# Remove superseded upstream agents and installation caches before exporting
+# the base filesystem. Deleting them in the final image would retain their layers.
+RUN rm -rf /usr/lib/node_modules/opencode-ai /usr/lib/node_modules/@openai \
+        /root/.local/share/claude /root/.local/bin/claude \
+        /root/.npm /root/.cache /var/cache/apt/archives/* \
+    && rm -f /usr/local/bin/claude /usr/local/bin/codex /usr/local/bin/opencode \
+        /usr/bin/codex /usr/bin/opencode
+
+FROM scratch
+COPY --from=base / /
+# COPY preserves the filesystem, but not the upstream image configuration.
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python \
+    PATH=/sandbox/.venv/bin:/usr/local/bin:/usr/bin:/bin \
+    VIRTUAL_ENV=/sandbox/.venv
+USER root
+WORKDIR /app
+ENTRYPOINT ["/bin/bash"]
+
 # OpenShell's base image includes agent CLIs, but their versions are outside
 # Niuu's release lifecycle. Install the same locked tools used by Skuld.
 COPY containers/skuld/npm-tools/package.json containers/skuld/npm-tools/package-lock.json /opt/skuld-tools/
@@ -66,7 +87,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends file \
     && rm -rf /var/lib/apt/lists/*
 
 # Fail the image build if an advertised CLI is missing or cannot execute.
-RUN claude --version && codex --version && opencode --version && grok --version
+RUN test ! -e /usr/lib/node_modules/opencode-ai \
+    && test ! -e /root/.local/share/claude \
+    && test ! -e /root/.npm \
+    && claude --version && codex --version && opencode --version && grok --version
 
 USER sandbox
 WORKDIR /sandbox
