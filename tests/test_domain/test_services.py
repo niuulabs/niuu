@@ -19,6 +19,7 @@ from volundr.domain.models import (
     CleanupTarget,
     GitProviderType,
     GitSource,
+    Principal,
     RepoInfo,
     SessionStatus,
 )
@@ -998,6 +999,66 @@ class TestSessionServiceRecordActivity:
 
 class TestSessionServiceGitValidation:
     """Tests for SessionService git repository validation."""
+
+    @pytest.mark.parametrize("runtime_backend", ["kubernetes", "openshell"])
+    @pytest.mark.parametrize("valid", [True, False])
+    async def test_deployment_validates_with_owner_integration(
+        self, repository: Repo, pod_manager: Pods, runtime_backend: str, valid: bool
+    ):
+        shared = MockGitProvider(validate_success=not valid)
+        owner = MockGitProvider(validate_success=valid)
+        integrations = AsyncMock()
+        integrations.find_git_provider_for.return_value = owner
+        service = SessionService(
+            repository,
+            pod_manager,
+            git_registry=MockGitRegistry([shared]),
+            user_integration=integrations,
+            runtime_backend=runtime_backend,
+        )
+        principal = Principal(user_id="owner", email="owner@test.local", tenant_id="t", roles=[])
+        repo = "https://github.com/org/private"
+        if valid:
+            session = await service.create_session(
+                name="test",
+                model="test",
+                source=GitSource(repo=repo),
+                principal=principal,
+            )
+            assert session.owner_id == "owner"
+        else:
+            with pytest.raises(RepoValidationError):
+                await service.create_session(
+                    name="test",
+                    model="test",
+                    source=GitSource(repo=repo),
+                    principal=principal,
+                )
+        integrations.find_git_provider_for.assert_awaited_once_with(repo, "owner")
+        assert owner.validate_calls == [repo]
+        assert shared.validate_calls == []
+
+    async def test_local_launch_preserves_shared_validation(
+        self, repository: Repo, pod_manager: Pods
+    ):
+        shared = MockGitProvider(validate_success=True)
+        integrations = AsyncMock()
+        service = SessionService(
+            repository,
+            pod_manager,
+            git_registry=MockGitRegistry([shared]),
+            user_integration=integrations,
+            runtime_backend="local",
+        )
+        repo = "https://github.com/org/repo"
+        await service.create_session(
+            name="test",
+            model="test",
+            source=GitSource(repo=repo),
+            principal=Principal(user_id="owner", email="owner@test.local", tenant_id="t", roles=[]),
+        )
+        integrations.find_git_provider_for.assert_not_awaited()
+        assert shared.validate_calls == [repo]
 
     async def test_create_session_with_git_validation_success(
         self, repository: Repo, pod_manager: Pods
