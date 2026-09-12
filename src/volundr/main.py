@@ -118,7 +118,6 @@ from volundr.composition_builders import (  # noqa: F401
     _create_resource_provider,
     _create_secret_injection_adapter,
     _runtime_backend,
-    create_oauth_token_refresh_service,
     integration_database_pool,
     with_oauth_device_runner,
 )
@@ -146,9 +145,6 @@ from volundr.domain.services.credential_enrollment import (
 )
 from volundr.domain.services.event_ingestion import EventIngestionService
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
-from volundr.domain.services.oauth_token_refresh import (
-    refresh_oauth_tokens_loop,
-)
 from volundr.domain.services.resident_runtime import (
     ResidentRuntimeNotFoundError,
     ResidentRuntimeService,
@@ -1278,16 +1274,6 @@ def create_app(
                 if credential_enrollment_service is not None
                 else None
             )
-            oauth_token_refresh_task = asyncio.create_task(
-                refresh_oauth_tokens_loop(
-                    create_oauth_token_refresh_service(
-                        settings,
-                        integration_repository=integration_repo,
-                        integration_registry=integration_registry,
-                        credential_store=credential_store,
-                    )
-                )
-            )
             if settings.telegram_ingress.enabled:
                 await telegram_ingress.start()
             else:
@@ -1329,11 +1315,6 @@ def create_app(
                 resident_reconcile_task.cancel()
                 try:
                     await resident_reconcile_task
-                except asyncio.CancelledError:
-                    pass
-                oauth_token_refresh_task.cancel()
-                try:
-                    await oauth_token_refresh_task
                 except asyncio.CancelledError:
                     pass
                 if credential_enrollment_reconcile_task is not None:

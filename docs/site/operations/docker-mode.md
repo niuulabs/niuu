@@ -217,8 +217,9 @@ platform runs:
 | GitHub (App sign-in) | 8 hours when the app issues expiring tokens, otherwise unlimited | The platform's token refresher. Add `docker.sign_in_client_secrets.github` for refresh, or turn off *Expire user authorization tokens* on the app. |
 | GitLab (device sign-in) | 2 hours | The platform's token refresher, with the public client id alone. |
 
-The refresher (`OAuthTokenRefreshService`) runs every five minutes inside the
-platform, refreshes any device-flow token that expires within ten minutes, and
+The refresher (`OAuthTokenRefreshService`) runs every five minutes in the
+shared host, the one place that owns integrations in every deployment. It
+refreshes any device-flow token that expires within ten minutes and
 flips the connection to *Sign-in needed* with the reason `refresh_failed` when
 the provider rejects the refresh. The wizard row shows how long the current
 token is still good for and why a sign-in is needed. Sessions hand rotated
