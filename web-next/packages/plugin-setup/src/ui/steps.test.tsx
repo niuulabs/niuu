@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MOCK_CATALOG, MOCK_SYSTEM } from '../adapters/mock';
-import { WIZARD_STEPS } from '../domain/setup';
+import { WIZARD_STEPS, providerGroups } from '../domain/setup';
+import { renderWithSetup } from '../testing/renderWithSetup';
+import { ProviderPane } from './ProviderPane';
 import { FinishStep, summarizeConnections } from './FinishStep';
 import { IntegrationCard } from './IntegrationCard';
 import { IntegrationsStep } from './IntegrationsStep';
@@ -48,14 +50,27 @@ describe('SystemStep', () => {
     expect(
       screen.getByTestId('setup-check-host-facts').querySelector('.setup-row__icon--ok'),
     ).not.toBeNull();
-    expect(screen.getByText(/4 checks · 0 failed · 0 warnings/)).toBeInTheDocument();
+    expect(screen.getByText(/12 checks · 0 failed · 0 warnings/)).toBeInTheDocument();
+    expect(screen.getByTestId('setup-host-checks')).toBeInTheDocument();
+    expect(screen.getByTestId('setup-check-outbound-network')).toBeInTheDocument();
     expect(screen.queryByTestId('setup-system-blocked')).not.toBeInTheDocument();
+  });
+
+  it('shows a passed warn-only check as a warning', () => {
+    const report = {
+      host: { ...MOCK_SYSTEM.host!, checks: [] },
+      checks: [{ name: 'docker socket', passed: true, warnOnly: true, message: 'sudo needed' }],
+      healthy: true,
+    };
+    render(<SystemStep report={report} loading={false} error={null} onRerun={vi.fn()} />);
+    expect(screen.getByText(/1 checks · 0 failed · 1 warnings/)).toBeInTheDocument();
+    expect(screen.queryByTestId('setup-host-checks')).not.toBeInTheDocument();
   });
 
   it('shows failures, warnings, errors and re-runs', () => {
     const onRerun = vi.fn();
     const report = {
-      host: { ...MOCK_SYSTEM.host!, gpus: [], docker_version: '' },
+      host: { ...MOCK_SYSTEM.host!, gpus: [], docker_version: '', checks: [] },
       checks: [
         { name: 'database', passed: false, warnOnly: false, message: 'down' },
         { name: 'docker socket', passed: false, warnOnly: true, message: 'missing' },
@@ -219,6 +234,91 @@ describe('IntegrationsStep', () => {
   });
 });
 
+describe('ProviderPane', () => {
+  const noop = {
+    connections: [],
+    connectingSlug: null,
+    connectErrorSlug: null,
+    connectError: null,
+    testingId: null,
+    testResults: {},
+    onConnect: vi.fn(),
+    onTest: vi.fn(),
+  };
+
+  it('offers subscription sign-in and API key as modes', () => {
+    const groups = providerGroups(
+      MOCK_CATALOG,
+      WIZARD_STEPS.find((s) => s.id === 'providers')!,
+    );
+    const anthropic = groups.find((g) => g.key === 'anthropic')!;
+    renderWithSetup(<ProviderPane group={anthropic} {...noop} />);
+    expect(screen.getByText('Anthropic · Claude')).toBeInTheDocument();
+    expect(screen.getByTestId('setup-provider-modes-anthropic')).toBeInTheDocument();
+    expect(screen.getByTestId('setup-signin-start-claude-code')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('setup-provider-mode-anthropic-key'));
+    expect(screen.getByTestId('setup-input-anthropic-api_key')).toBeInTheDocument();
+    expect(screen.queryByTestId('setup-signin-start-claude-code')).not.toBeInTheDocument();
+  });
+
+  it('shows connected state and hides the mode switch', () => {
+    const groups = providerGroups(
+      MOCK_CATALOG,
+      WIZARD_STEPS.find((s) => s.id === 'providers')!,
+    );
+    const anthropic = groups.find((g) => g.key === 'anthropic')!;
+    renderWithSetup(
+      <ProviderPane
+        group={anthropic}
+        {...noop}
+        connections={[
+          {
+            id: 'c1',
+            slug: 'anthropic',
+            integrationType: 'ai_provider',
+            credentialName: 'anthropic-setup',
+            enabled: true,
+            config: {},
+            credentialStatus: 'active',
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText('Connected')).toBeInTheDocument();
+    expect(screen.queryByTestId('setup-provider-modes-anthropic')).not.toBeInTheDocument();
+    expect(screen.getByTestId('setup-test-anthropic')).toBeInTheDocument();
+  });
+
+  it('marks a pending sign-in and lists unavailable ways to connect', () => {
+    const gitStep = WIZARD_STEPS.find((s) => s.id === 'git')!;
+    const github = providerGroups(MOCK_CATALOG, gitStep).find((g) => g.key === 'github')!;
+    renderWithSetup(<ProviderPane group={github} {...noop} />);
+    expect(screen.getByTestId('setup-provider-unavailable-github')).toHaveTextContent('GitHub App');
+    expect(screen.queryByTestId('setup-provider-modes-github')).not.toBeInTheDocument();
+
+    const providers = WIZARD_STEPS.find((s) => s.id === 'providers')!;
+    const openai = providerGroups(MOCK_CATALOG, providers).find((g) => g.key === 'openai')!;
+    renderWithSetup(
+      <ProviderPane
+        group={openai}
+        {...noop}
+        connections={[
+          {
+            id: 'c2',
+            slug: 'codex',
+            integrationType: 'ai_provider',
+            credentialName: 'codex-setup',
+            enabled: true,
+            config: {},
+            credentialStatus: 'auth_required',
+          },
+        ]}
+      />,
+    );
+    expect(screen.getAllByText('Sign-in needed').length).toBeGreaterThan(0);
+  });
+});
+
 describe('FinishStep', () => {
   it('summarises connections by type', () => {
     const rows = summarizeConnections([
@@ -245,12 +345,32 @@ describe('FinishStep', () => {
       completedSteps: [],
     };
     const { rerender } = render(
-      <FinishStep state={state} connections={[connection]} finishing error={null} />,
+      <FinishStep
+        state={state}
+        connections={[connection]}
+        stack={undefined}
+        apply={undefined}
+        applying={false}
+        reconnecting={false}
+        newAddress={null}
+        finishing
+        error={null}
+      />,
     );
     expect(screen.getByText('Saving…')).toBeInTheDocument();
     expect(screen.getByText(/docker mode/)).toBeInTheDocument();
     rerender(
-      <FinishStep state={undefined} connections={[]} finishing={false} error={new Error('no')} />,
+      <FinishStep
+        state={undefined}
+        connections={[]}
+        stack={undefined}
+        apply={undefined}
+        applying={false}
+        reconnecting={false}
+        newAddress={null}
+        finishing={false}
+        error={new Error('no')}
+      />,
     );
     expect(screen.getByRole('alert')).toHaveTextContent('no');
     expect(screen.getByText(/running/)).toBeInTheDocument();

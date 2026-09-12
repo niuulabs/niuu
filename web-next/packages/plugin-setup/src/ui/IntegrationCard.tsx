@@ -21,6 +21,8 @@ export interface IntegrationCardProps {
   testing: boolean;
   onConnect: (input: ConnectIntegrationInput) => void;
   onTest: (connectionId: string) => void;
+  /** Render only the body; the enclosing pane shows the title and status. */
+  headless?: boolean;
 }
 
 function inputType(type: string): string {
@@ -39,6 +41,7 @@ export function IntegrationCard({
   testing,
   onConnect,
   onTest,
+  headless = false,
 }: IntegrationCardProps) {
   const [credential, setCredential] = useState<Record<string, string>>({});
   const [config, setConfig] = useState<Record<string, string>>({});
@@ -58,23 +61,29 @@ export function IntegrationCard({
     });
   };
 
+  const Wrapper = headless ? 'div' : 'section';
   return (
-    <section className="setup-card" data-testid={`setup-integration-${entry.slug}`}>
-      <div className="setup-card__head">
-        <div>
-          <h3 className="setup-card__title">{entry.name}</h3>
-          <p className="setup-card__desc">{entry.description}</p>
+    <Wrapper
+      className={headless ? 'setup-col' : 'setup-card'}
+      data-testid={`setup-integration-${entry.slug}`}
+    >
+      {headless ? null : (
+        <div className="setup-card__head">
+          <div>
+            <h3 className="setup-card__title">{entry.name}</h3>
+            <p className="setup-card__desc">{entry.description}</p>
+          </div>
+          {connection ? (
+            <span className="setup-chip setup-chip--ok">
+              <CheckIcon size={12} /> Connected
+            </span>
+          ) : connectable ? (
+            <span className="setup-chip">Not connected</span>
+          ) : (
+            <span className="setup-chip setup-chip--warn">Needs interactive sign-in</span>
+          )}
         </div>
-        {connection ? (
-          <span className="setup-chip setup-chip--ok">
-            <CheckIcon size={12} /> Connected
-          </span>
-        ) : connectable ? (
-          <span className="setup-chip">Not connected</span>
-        ) : (
-          <span className="setup-chip setup-chip--warn">Needs interactive sign-in</span>
-        )}
-      </div>
+      )}
 
       {connection ? (
         <div className="setup-form__actions">
@@ -162,6 +171,6 @@ export function IntegrationCard({
           sign-in card for it.
         </p>
       )}
-    </section>
+    </Wrapper>
   );
 }

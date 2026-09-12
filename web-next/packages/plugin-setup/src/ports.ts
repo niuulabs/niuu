@@ -1,8 +1,11 @@
 import type {
+  ApplyStatus,
   CatalogEntry,
   ConnectIntegrationInput,
   Enrollment,
   IntegrationConnection,
+  StackChanges,
+  StackView,
   IntegrationTestResult,
   SetupState,
   SystemReport,
@@ -31,4 +34,11 @@ export interface ISetupService {
   cancelEnrollment(enrollmentId: string): Promise<Enrollment>;
   /** Hand a browser authorization code back to a sign-in that asked for one. */
   submitEnrollmentCode(enrollmentId: string, code: string): Promise<Enrollment>;
+  /** Bundle settings the wizard may change (docker mode); rejects when unavailable. */
+  getStack(): Promise<StackView>;
+  stageStack(changes: StackChanges): Promise<StackView>;
+  discardStack(): Promise<StackView>;
+  /** Re-render the bundle with the staged changes and restart what changed. */
+  applyStack(): Promise<ApplyStatus>;
+  stackStatus(): Promise<ApplyStatus>;
 }

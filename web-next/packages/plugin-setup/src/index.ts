@@ -29,11 +29,16 @@ export { buildSetupHttpAdapter } from './adapters/http';
 export { createMockSetupService, MOCK_CATALOG, MOCK_SYSTEM } from './adapters/mock';
 export type { ISetupService } from './ports';
 export type {
+  ApplyStatus,
   CatalogEntry,
   ConnectIntegrationInput,
   Enrollment,
   EnrollmentState,
   HostFacts,
+  ModelOption,
+  StackChanges,
+  StackSettings,
+  StackView,
   IntegrationConnection,
   IntegrationTestResult,
   SetupState,

@@ -73,6 +73,7 @@ describe('catalog helpers', () => {
       'openai',
       'claude-code',
       'codex',
+      'xai',
     ]);
     expect(catalogForStep(MOCK_CATALOG, WIZARD_STEPS[0]!)).toEqual([]);
   });

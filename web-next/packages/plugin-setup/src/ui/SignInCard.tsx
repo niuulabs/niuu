@@ -20,6 +20,8 @@ import {
 export interface SignInCardProps {
   entry: CatalogEntry;
   connection: IntegrationConnection | undefined;
+  /** Render only the body; the enclosing pane shows the title and status. */
+  headless?: boolean;
 }
 
 /**
@@ -29,7 +31,7 @@ export interface SignInCardProps {
  * link (and device code) it produces, polls until the provider confirms, and
  * for Claude passes the authorization code the browser hands back.
  */
-export function SignInCard({ entry, connection }: SignInCardProps) {
+export function SignInCard({ entry, connection, headless = false }: SignInCardProps) {
   const [enrollmentId, setEnrollmentId] = useState<string | null>(null);
   const [code, setCode] = useState('');
   const start = useStartEnrollment();
@@ -60,23 +62,29 @@ export function SignInCard({ entry, connection }: SignInCardProps) {
   const signedIn = connection !== undefined && !connectionNeedsSignIn(connection);
   const connectedNow = signedIn || enrollment?.state === 'complete';
 
+  const Wrapper = headless ? 'div' : 'section';
   return (
-    <section className="setup-card" data-testid={`setup-integration-${entry.slug}`}>
-      <div className="setup-card__head">
-        <div>
-          <h3 className="setup-card__title">{entry.name}</h3>
-          <p className="setup-card__desc">{entry.description}</p>
+    <Wrapper
+      className={headless ? 'setup-col' : 'setup-card'}
+      data-testid={`setup-integration-${entry.slug}`}
+    >
+      {headless ? null : (
+        <div className="setup-card__head">
+          <div>
+            <h3 className="setup-card__title">{entry.name}</h3>
+            <p className="setup-card__desc">{entry.description}</p>
+          </div>
+          {connectedNow ? (
+            <span className="setup-chip setup-chip--ok">
+              <CheckIcon size={12} /> Connected
+            </span>
+          ) : active ? (
+            <span className="setup-chip setup-chip--brand">Signing in…</span>
+          ) : (
+            <span className="setup-chip">Not connected</span>
+          )}
         </div>
-        {connectedNow ? (
-          <span className="setup-chip setup-chip--ok">
-            <CheckIcon size={12} /> Connected
-          </span>
-        ) : active ? (
-          <span className="setup-chip setup-chip--brand">Signing in…</span>
-        ) : (
-          <span className="setup-chip">Not connected</span>
-        )}
-      </div>
+      )}
 
       {connectedNow ? (
         <div className="setup-note" data-testid={`setup-signin-done-${entry.slug}`}>
@@ -196,6 +204,6 @@ export function SignInCard({ entry, connection }: SignInCardProps) {
           {error.message}
         </span>
       ) : null}
-    </section>
+    </Wrapper>
   );
 }

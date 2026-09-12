@@ -8,12 +8,15 @@
  */
 
 import type {
+  ApplyStatus,
   CatalogEntry,
   CatalogSchema,
   ConnectIntegrationInput,
   Enrollment,
   EnrollmentState,
   IntegrationConnection,
+  StackChanges,
+  StackView,
   IntegrationTestResult,
   SetupState,
   SystemReport,
@@ -186,6 +189,21 @@ export function buildSetupHttpAdapter(clients: SetupHttpClients): ISetupService 
         { code },
       );
       return mapEnrollment(row);
+    },
+    getStack(): Promise<StackView> {
+      return clients.setup.get<StackView>('/stack');
+    },
+    stageStack(changes: StackChanges): Promise<StackView> {
+      return clients.setup.put<StackView>('/stack', { changes });
+    },
+    discardStack(): Promise<StackView> {
+      return clients.setup.delete<StackView>('/stack');
+    },
+    applyStack(): Promise<ApplyStatus> {
+      return clients.setup.post<ApplyStatus>('/stack/apply');
+    },
+    stackStatus(): Promise<ApplyStatus> {
+      return clients.setup.get<ApplyStatus>('/stack/status');
     },
   };
 }

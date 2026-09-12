@@ -104,7 +104,8 @@ class SetupService:
             SystemCheck(
                 name="host facts",
                 passed=host is not None,
-                warn_only=True,
+                # A warning only when they are missing; present facts are simply fine.
+                warn_only=host is None,
                 message=(
                     "Host facts recorded by `niuu up`."
                     if host is not None

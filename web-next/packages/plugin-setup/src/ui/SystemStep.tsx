@@ -1,4 +1,10 @@
-import { formatGib, formatGpu, type SystemCheck, type SystemReport } from '../domain/setup';
+import {
+  formatGib,
+  formatGpu,
+  hostChecks,
+  type SystemCheck,
+  type SystemReport,
+} from '../domain/setup';
 import { AlertIcon, CheckIcon, CrossIcon } from './icons';
 
 export interface SystemStepProps {
@@ -9,7 +15,8 @@ export interface SystemStepProps {
 }
 
 function tone(check: SystemCheck): 'ok' | 'warn' | 'fail' {
-  if (check.passed) return 'ok';
+  if (check.passed && !check.warnOnly) return 'ok';
+  if (check.passed) return 'warn';
   return check.warnOnly ? 'warn' : 'fail';
 }
 
@@ -28,10 +35,24 @@ function CheckRow({ check }: { check: SystemCheck }) {
   );
 }
 
+function summarize(checks: SystemCheck[]): { failed: number; warnings: number } {
+  return {
+    failed: checks.filter((c) => tone(c) === 'fail').length,
+    warnings: checks.filter((c) => tone(c) === 'warn').length,
+  };
+}
+
+/**
+ * System check: the host-side preflight `niuu up` recorded (Docker, GPU,
+ * disk, ports, outbound network, git) plus the checks the platform makes
+ * from inside (database, Docker socket, tooling).
+ */
 export function SystemStep({ report, loading, error, onRerun }: SystemStepProps) {
   const host = report?.host ?? null;
-  const failures = report ? report.checks.filter((c) => !c.passed && !c.warnOnly).length : 0;
-  const warnings = report ? report.checks.filter((c) => c.warnOnly && !c.passed).length : 0;
+  const fromHost = hostChecks(host);
+  const fromPlatform = report?.checks ?? [];
+  const all = [...fromHost, ...fromPlatform];
+  const { failed, warnings } = summarize(all);
   return (
     <div className="setup-col" data-testid="setup-system">
       {host ? (
@@ -67,11 +88,13 @@ export function SystemStep({ report, loading, error, onRerun }: SystemStepProps)
               {loading
                 ? 'Checking…'
                 : report
-                  ? `${report.checks.length} checks · ${failures} failed · ${warnings} warnings`
+                  ? `${all.length} checks · ${failed} failed · ${warnings} warnings`
                   : 'Platform checks'}
             </h3>
             <p className="setup-card__desc">
-              Checks run inside the platform: database, container runtime, tooling.
+              {fromHost.length > 0
+                ? 'Host checks as `niuu up` saw them, then checks run inside the platform.'
+                : 'Checks run inside the platform: database, container runtime, tooling.'}
             </p>
           </div>
           <button
@@ -89,11 +112,29 @@ export function SystemStep({ report, loading, error, onRerun }: SystemStepProps)
             Could not run checks: {error.message}
           </div>
         ) : null}
-        {report ? report.checks.map((check) => <CheckRow key={check.name} check={check} />) : null}
+        {fromHost.length > 0 ? (
+          <div className="setup-label" data-testid="setup-host-checks">
+            On the host
+          </div>
+        ) : null}
+        {fromHost.map((check) => (
+          <CheckRow key={`host-${check.name}`} check={check} />
+        ))}
+        {fromHost.length > 0 && fromPlatform.length > 0 ? (
+          <div className="setup-label">Inside the platform</div>
+        ) : null}
+        {fromPlatform.map((check) => (
+          <CheckRow key={`platform-${check.name}`} check={check} />
+        ))}
       </div>
-      {report && failures > 0 ? (
+      {report && failed > 0 ? (
         <div className="setup-note setup-note--warn" data-testid="setup-system-blocked">
           <AlertIcon /> Fix the failed checks before continuing.
+        </div>
+      ) : null}
+      {report && failed === 0 ? (
+        <div className="setup-note">
+          Warnings do not block setup. Host checks re-run on the next `niuu up`.
         </div>
       ) : null}
     </div>

@@ -1,8 +1,12 @@
 import type {
+  ApplyStatus,
   CatalogEntry,
   ConnectIntegrationInput,
   Enrollment,
   IntegrationConnection,
+  StackChanges,
+  StackSettings,
+  StackView,
   IntegrationTestResult,
   SetupState,
   SystemReport,
@@ -50,6 +54,18 @@ export const MOCK_CATALOG: CatalogEntry[] = [
     integrationType: 'ai_provider',
     authType: 'device_code',
     credentialSchema: {},
+    configSchema: {},
+  },
+  {
+    slug: 'xai',
+    name: 'xAI (Grok)',
+    description: 'xAI API key for Grok models',
+    integrationType: 'ai_provider',
+    authType: 'api_key',
+    credentialSchema: {
+      required: ['api_key'],
+      properties: { api_key: { label: 'API Key', type: 'password' } },
+    },
     configSchema: {},
   },
   {
@@ -103,12 +119,37 @@ export const MOCK_SYSTEM: SystemReport = {
     external_host: '192.168.1.42',
     port: 8080,
     skuld_image: 'ghcr.io/niuulabs/skuld:dev',
+    checks: [
+      { name: 'docker binary', passed: true, warn_only: false, message: 'docker found.' },
+      { name: 'docker daemon', passed: true, warn_only: false, message: 'Docker 27.3.1.' },
+      {
+        name: 'nvidia runtime',
+        passed: true,
+        warn_only: false,
+        message: 'NVIDIA runtime registered.',
+      },
+      { name: 'gpu', passed: true, warn_only: false, message: 'NVIDIA GB10 · 128 GiB.' },
+      {
+        name: 'disk space',
+        passed: true,
+        warn_only: false,
+        message: '3 TiB free on /var/lib/niuu.',
+      },
+      { name: 'port 8080', passed: true, warn_only: false, message: 'Port 8080 is free.' },
+      {
+        name: 'outbound network',
+        passed: true,
+        warn_only: false,
+        message: 'ghcr.io, huggingface.co, api.anthropic.com, api.openai.com reachable.',
+      },
+      { name: 'git', passed: true, warn_only: false, message: 'git 2.43.' },
+    ],
   },
   checks: [
     {
       name: 'host facts',
       passed: true,
-      warnOnly: true,
+      warnOnly: false,
       message: 'Host facts recorded by niuu up.',
     },
     { name: 'database', passed: true, warnOnly: false, message: 'PostgreSQL reachable.' },
@@ -130,6 +171,50 @@ export interface MockSetupOptions {
   system?: SystemReport;
   /** How many status reads an interactive sign-in stays pending before it completes. */
   enrollmentPolls?: number;
+  /** Simulate an install without the stack controller (no `niuu up`). */
+  stackAvailable?: boolean;
+  /** How many status reads an apply stays "applying" before it reports applied. */
+  applyPolls?: number;
+  initialStack?: Partial<StackSettings>;
+}
+
+export const MOCK_MODELS: StackView['models'] = [
+  {
+    id: 'nemotron-3-nano-30b',
+    model: 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16',
+    name: 'NVIDIA Nemotron 3 Nano 30B',
+    description: 'Fast agentic coder tuned by NVIDIA. Best default for sessions and residents.',
+    weightGib: 62,
+    recommended: true,
+    fits: true,
+    memoryNeededGib: 74,
+  },
+  {
+    id: 'gpt-oss-120b',
+    model: 'openai/gpt-oss-120b',
+    name: 'OpenAI gpt-oss-120b',
+    description: 'Larger reasoning model. Slower per token, stronger on planning.',
+    weightGib: 78,
+    recommended: false,
+    fits: true,
+    memoryNeededGib: 90,
+  },
+  {
+    id: 'qwen3-coder-30b',
+    model: 'Qwen/Qwen3-Coder-30B-A3B-Instruct',
+    name: 'Qwen3-Coder 30B-A3B',
+    description: 'Lean coding model with generous headroom for long contexts.',
+    weightGib: 24,
+    recommended: false,
+    fits: true,
+    memoryNeededGib: 36,
+  },
+];
+
+function accessUrlsFor(bindHost: string, externalHost: string, port: number): string[] {
+  const urls = [`http://127.0.0.1:${port}`];
+  if (bindHost !== '127.0.0.1' && externalHost) urls.push(`http://${externalHost}:${port}`);
+  return urls;
 }
 
 export function createMockSetupService(options: MockSetupOptions = {}): ISetupService {
@@ -149,7 +234,72 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
   const connections: IntegrationConnection[] = [];
   const enrollments = new Map<string, Enrollment & { polls: number }>();
   const enrollmentPolls = options.enrollmentPolls ?? 2;
+  const stackAvailable = options.stackAvailable ?? true;
+  const applyPolls = options.applyPolls ?? 2;
+  let stackCurrent: StackSettings = {
+    bindHost: '0.0.0.0',
+    externalHost: '192.168.1.42',
+    port: 8080,
+    projectName: 'niuu',
+    skuldImage: 'ghcr.io/niuulabs/skuld:dev',
+    vllm: {
+      enabled: false,
+      model: '',
+      image: 'nvcr.io/nvidia/vllm:25.09-py3',
+      maxModelLen: 65536,
+      gpuMemoryUtilization: 0.6,
+    },
+    accessUrls: [],
+    ...options.initialStack,
+  };
+  let staged: StackChanges = {};
+  let apply: { polls: number; changes: Record<string, unknown> } | null = null;
   let sequence = 0;
+
+  const requireStack = () => {
+    if (!stackAvailable) {
+      throw new Error(
+        'Stack changes are not available on this install; start it with `niuu up` (docker mode) to enable them.',
+      );
+    }
+  };
+
+  const withChanges = (base: StackSettings, changes: StackChanges): StackSettings => {
+    const bindHost = changes.bind_host ?? base.bindHost;
+    const vllm = {
+      ...base.vllm,
+      enabled: changes.vllm_enabled ?? base.vllm.enabled,
+      model: changes.vllm_model ?? base.vllm.model,
+      maxModelLen: changes.vllm_max_model_len ?? base.vllm.maxModelLen,
+      gpuMemoryUtilization: changes.vllm_gpu_memory_utilization ?? base.vllm.gpuMemoryUtilization,
+    };
+    return {
+      ...base,
+      bindHost,
+      vllm,
+      accessUrls: accessUrlsFor(bindHost, base.externalHost, base.port),
+    };
+  };
+
+  const stackView = (): StackView => {
+    const current = withChanges(stackCurrent, {});
+    const stagedNested: Record<string, unknown> = {};
+    const docker: Record<string, unknown> = {};
+    if (staged.bind_host !== undefined) docker.bind_host = staged.bind_host;
+    const vllm: Record<string, unknown> = {};
+    if (staged.vllm_enabled !== undefined) vllm.enabled = staged.vllm_enabled;
+    if (staged.vllm_model !== undefined) vllm.model = staged.vllm_model;
+    if (Object.keys(vllm).length > 0) docker.vllm = vllm;
+    if (Object.keys(docker).length > 0) stagedNested.docker = docker;
+    return {
+      current,
+      staged: stagedNested,
+      effective: withChanges(stackCurrent, staged),
+      models: MOCK_MODELS,
+      acceleratorMemoryGib: 128,
+      hasStagedChanges: Object.keys(stagedNested).length > 0,
+    };
+  };
 
   const addConnection = (
     entry: CatalogEntry,
@@ -289,6 +439,70 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
       if (!row) throw new Error('Credential enrollment not found');
       if (row.state === 'pending' || row.state === 'awaiting_user') row.state = 'cancelled';
       return publicEnrollment(row);
+    },
+    async getStack() {
+      await wait();
+      requireStack();
+      return stackView();
+    },
+    async stageStack(changes) {
+      await wait();
+      requireStack();
+      if (
+        changes.bind_host !== undefined &&
+        !['127.0.0.1', '0.0.0.0'].includes(changes.bind_host)
+      ) {
+        throw new Error(`bind_host must be one of 127.0.0.1, 0.0.0.0; got ${changes.bind_host}`);
+      }
+      staged = { ...staged, ...changes };
+      return stackView();
+    },
+    async discardStack() {
+      await wait();
+      requireStack();
+      staged = {};
+      return stackView();
+    },
+    async applyStack() {
+      await wait();
+      requireStack();
+      const view = stackView();
+      if (!view.hasStagedChanges)
+        throw new Error('Nothing is staged; stage a change before applying');
+      stackCurrent = withChanges(stackCurrent, staged);
+      apply = { polls: 0, changes: view.staged };
+      staged = {};
+      return {
+        state: 'applying',
+        startedAt: 'now',
+        detail: 'Restarting…',
+        changes: apply.changes,
+        vllm: null,
+      };
+    },
+    async stackStatus(): Promise<ApplyStatus> {
+      await wait();
+      requireStack();
+      const vllm = stackCurrent.vllm.enabled
+        ? {
+            state: apply ? 'starting' : 'ready',
+            detail: apply ? 'Downloading shards: 40%' : `Serving ${stackCurrent.vllm.model}.`,
+          }
+        : null;
+      if (!apply) return { state: 'idle', startedAt: '', detail: '', changes: {}, vllm };
+      apply.polls += 1;
+      if (apply.polls < applyPolls) {
+        return {
+          state: 'applying',
+          startedAt: 'now',
+          detail: 'Restarting…',
+          changes: apply.changes,
+          vllm,
+        };
+      }
+      const done = apply.changes;
+      apply = null;
+      return { state: 'applied', startedAt: 'now', detail: 'Applied.', changes: done, vllm };
     },
     async submitEnrollmentCode(enrollmentId, code) {
       await wait();

@@ -42,7 +42,8 @@ Under `docker.compose_dir` (default `~/.niuu/docker`):
 
 Under `docker.data_dir` (default `/var/lib/niuu`): `postgres/`, `workspaces/`,
 `home/`, `credentials/`, `session-secrets/`, `models/`, `residents/`, plus
-`config.yaml`, `host-facts.json` and `setup-state.json`. The data directory is
+`config.yaml`, `host-facts.json`, `setup-state.json`, `stack.yaml` and the
+wizard's `stack-staged.yaml` / `stack-overrides.yaml`. The data directory is
 bind-mounted into the platform container at the same path so session
 containers can mount workspaces and secrets from it.
 
@@ -79,7 +80,8 @@ docker:
   image: ghcr.io/niuulabs/niuu:dev
   skuld_image: ghcr.io/niuulabs/skuld:dev
   postgres_image: pgvector/pgvector:pg17
-  bind_host: 0.0.0.0        # 127.0.0.1 = this machine only
+  bind_host: 0.0.0.0        # 127.0.0.1 = this machine only (the wizard can change this)
+  applier_image: docker:28-cli
   require_gpu: false
   min_disk_space_gib: 50
   startup_timeout_seconds: 180
@@ -109,6 +111,7 @@ be read there:
 | Variable | Purpose |
 | --- | --- |
 | `NIUU_SETUP_MODE=docker` | What the wizard reports as the runtime (the platform itself still runs `NIUU_MODE=mini`). |
+| `NIUU_STACK_DIR` | Where the stack controller finds `stack.yaml` and keeps staged and applied wizard changes. |
 | `NIUU_DATABASE_MODE=external` + `DATABASE__*` | Use the `postgres` service instead of embedded PostgreSQL; service databases are created on start-up. |
 | `INTEGRATIONS__DATABASE_NAME=niuu_shared` | Sessions resolve the integration connections the wizard created through the shared API. |
 | `CREDENTIAL_STORE` / `SECRET_INJECTION` | File credential store under `credentials/` and the per-session materializer under `session-secrets/`, both keyed by `NIUU_CREDENTIAL_KEY`. |
@@ -127,19 +130,41 @@ front door over the platform's existing APIs: every value it stores lands where
 | Step | What it shows | What it writes |
 | --- | --- | --- |
 | Welcome | Host facts recorded by `niuu up` (hostname, OS, memory, GPU, Docker version). | Nothing. |
-| System check | The same facts plus live checks from inside the platform: database reachable, Docker socket present, git installed. A failed check blocks **Continue**; a warning does not. | Nothing. |
+| System check | Every preflight result `niuu up` recorded (Docker, Compose, NVIDIA runtime, GPU, data directory, disk space, ports, outbound network to the registries and providers, git) plus live checks from inside the platform: database reachable, Docker socket present, git installed. A failed check blocks **Continue**; a warning does not. | Nothing. |
+| Local model | Curated models (Nemotron 3 Nano 30B, gpt-oss-120b, Qwen3-Coder 30B) with a fit verdict against the host's accelerator memory and a memory meter, a custom Hugging Face id, or cloud-only. | A staged stack change (`vllm_enabled`, `vllm_model`) through `PUT /api/v1/niuu/setup/stack`; applied on the finish step. |
 | AI providers | Every `ai_provider` entry in the integrations catalog. API-key entries (Anthropic, OpenAI) get a form. Subscription entries (Claude Code, Codex) get a **Sign in** card: the platform runs the official CLI in a sealed helper container, the card shows the link and device code it produces, polls until the provider confirms, and for Claude takes the authorization code the browser hands back. **Test connection** appears once connected. | An integration connection with an inline credential (`POST /api/v1/integrations`), or an enrollment (`POST /api/v1/integrations/enrollments`) whose credential the platform stores when the sign-in completes. Both encrypted with the key from `secrets.env`. |
 | Git | `source_control` entries (GitHub, GitLab) with token and instance fields from the catalog schema. | Same. |
 | Tickets | `issue_tracker` entries (Linear). | Same. |
-| Runtime & access | How sessions are isolated (one container each, credentials mounted read-only), the addresses the web app answers on, whether that is this machine only or the network, and that sign-in is off. Changing the bind address is `docker.bind_host` in `~/.niuu/config.yaml` plus `niuu up`; the step says so instead of offering a toggle it cannot honour. | The bind and external host it showed, as the step's non-secret data. |
-| Finish | What was connected, grouped by type, and the access note. **Open Niuu** marks setup complete and opens `/ready`, whose three cards each spell out the first steps in Völundr, Ting and Ravn. | `POST /api/v1/niuu/setup/complete`. |
+| Runtime & access | Where sessions run (Docker container; OpenShell and host process shown as not offered here) and who can reach this Niuu: only this machine, your local network (with the LAN address and a warning while sign-in is off), or public behind sign-in (later, in Settings → Access). | A staged stack change (`bind_host`); applied on the finish step. |
+| Finish | What was connected, the local model and access choice, and the staged changes about to be applied. **Apply and open Niuu** applies them (the platform restarts the services whose configuration changed, the page waits for it to answer again and warns when the current address stops being served), then marks setup complete and opens `/ready`. | `POST /api/v1/niuu/setup/stack/apply`, then `POST /api/v1/niuu/setup/complete`. |
 
 Progress is kept in `setup-state.json` under the data directory (each finished
 step, and the completion time) so a reload resumes at the first unfinished
 step. `POST /api/v1/niuu/setup/reset` clears it and the wizard shows again on
-the next visit. The local-model step (a model served by vLLM, chosen from a
-curated list) is not offered yet rather than shown as a placeholder; enable
-vLLM through `docker.vllm` in `config.yaml` for now.
+the next visit.
+
+### How the wizard changes the stack
+
+The platform cannot re-bind its own published port from a browser toggle, so
+changes go through a stack controller (`NIUU_STACK_DIR`, the data directory):
+
+1. `niuu up` records the effective bundle settings in `stack.yaml`, mounts the
+   compose directory into the platform container and pre-pulls the applier
+   image (`docker.applier_image`, default `docker:28-cli`).
+2. The wizard stages a whitelisted change set (`bind_host`, `vllm_enabled`,
+   `vllm_model`, `vllm_max_model_len`, `vllm_gpu_memory_utilization`) into
+   `stack-staged.yaml`; `GET /api/v1/niuu/setup/stack` shows current, staged
+   and effective settings plus the curated model list with fit verdicts.
+3. **Apply** folds the staged set into `stack-overrides.yaml`, re-renders the
+   compose bundle, and runs `docker compose up -d` from a short-lived applier
+   container on the Docker socket, so the platform container can be recreated
+   underneath it. `GET /api/v1/niuu/setup/stack/status` reports applying,
+   applied or failed (with the applier's log tail), and the vLLM container's
+   state (absent, starting with its last log line, ready, failed) while a
+   model downloads.
+4. Every later `niuu up` merges `stack-overrides.yaml` over `config.yaml`, so
+   a restart from the CLI never reverts what the wizard applied. Delete that
+   file to go back to `config.yaml` alone.
 
 ### Subscription sign-in (Claude Code, Codex)
 

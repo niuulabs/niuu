@@ -20,12 +20,22 @@ describe('initialStep', () => {
   it('resumes at the first unfinished step', () => {
     expect(initialStep(undefined)).toBe('welcome');
     expect(initialStep(stateWith(['welcome']))).toBe('system');
-    expect(initialStep(stateWith(['welcome', 'system', 'providers', 'git', 'tracker']))).toBe(
-      'runtime',
-    );
+    expect(initialStep(stateWith(['welcome', 'system']))).toBe('model');
+    expect(
+      initialStep(stateWith(['welcome', 'system', 'model', 'providers', 'git', 'tracker'])),
+    ).toBe('runtime');
     expect(
       initialStep(
-        stateWith(['welcome', 'system', 'providers', 'git', 'tracker', 'runtime', 'launch']),
+        stateWith([
+          'welcome',
+          'system',
+          'model',
+          'providers',
+          'git',
+          'tracker',
+          'runtime',
+          'launch',
+        ]),
       ),
     ).toBe('finish');
   });
@@ -45,10 +55,15 @@ describe('SetupPage', () => {
     await waitFor(() => expect(screen.getByTestId('setup-continue')).not.toBeDisabled());
     fireEvent.click(screen.getByTestId('setup-continue'));
 
+    await waitFor(() => expect(screen.getByTestId('setup-model')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('setup-model-skip')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('setup-continue'));
+
     await waitFor(() => expect(screen.getByTestId('setup-step-providers')).toBeInTheDocument());
     await waitFor(() =>
-      expect(screen.getByTestId('setup-integration-anthropic')).toBeInTheDocument(),
+      expect(screen.getByTestId('setup-provider-modes-anthropic')).toBeInTheDocument(),
     );
+    fireEvent.click(screen.getByTestId('setup-provider-mode-anthropic-key'));
     fireEvent.change(screen.getByTestId('setup-input-anthropic-api_key'), {
       target: { value: 'sk-ant' },
     });
@@ -68,7 +83,7 @@ describe('SetupPage', () => {
     fireEvent.click(screen.getByTestId('setup-continue'));
 
     await waitFor(() => expect(screen.getByTestId('setup-runtime')).toBeInTheDocument());
-    expect(screen.getByTestId('setup-access-lan')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('setup-access-lan')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('setup-continue'));
 
     await waitFor(() => expect(screen.getByTestId('setup-finish')).toBeInTheDocument());
@@ -80,6 +95,10 @@ describe('SetupPage', () => {
     expect(steps.find((r) => r.step === 'runtime')?.data).toEqual({
       bind_host: '0.0.0.0',
       external_host: '192.168.1.42',
+    });
+    expect(steps.find((r) => r.step === 'model')?.data).toEqual({
+      vllm_enabled: false,
+      vllm_model: '',
     });
   });
 
@@ -104,7 +123,15 @@ describe('SetupPage', () => {
   it('surfaces connect and finish errors', async () => {
     const base = createMockSetupService({
       latencyMs: 0,
-      initialState: stateWith(['welcome', 'system', 'providers', 'git', 'tracker', 'runtime']),
+      initialState: stateWith([
+        'welcome',
+        'system',
+        'model',
+        'providers',
+        'git',
+        'tracker',
+        'runtime',
+      ]),
     });
     const service = {
       ...base,
@@ -121,7 +148,7 @@ describe('SetupPage', () => {
   it('shows a connect error on the card', async () => {
     const base = createMockSetupService({
       latencyMs: 0,
-      initialState: stateWith(['welcome', 'system']),
+      initialState: stateWith(['welcome', 'system', 'model']),
     });
     const service = {
       ...base,
@@ -130,7 +157,10 @@ describe('SetupPage', () => {
       },
     };
     renderWithSetup(<SetupPage onNavigate={vi.fn()} />, { service });
-    await waitFor(() => expect(screen.getByTestId('setup-integration-openai')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByTestId('setup-provider-modes-openai')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('setup-provider-mode-openai-key'));
     fireEvent.change(screen.getByTestId('setup-input-openai-api_key'), {
       target: { value: 'sk' },
     });
@@ -148,13 +178,94 @@ describe('SetupPage', () => {
     });
     const service = createMockSetupService({
       latencyMs: 0,
-      initialState: stateWith(['welcome', 'system', 'providers', 'git', 'tracker', 'runtime']),
+      initialState: stateWith([
+        'welcome',
+        'system',
+        'model',
+        'providers',
+        'git',
+        'tracker',
+        'runtime',
+      ]),
     });
     renderWithSetup(<SetupPage />, { service });
     await waitFor(() => expect(screen.getByTestId('setup-finish')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('setup-finish-button'));
     await waitFor(() => expect(assign).toHaveBeenCalledWith('/ready?config=default'));
     vi.unstubAllGlobals();
+  });
+});
+
+describe('SetupPage apply flow', () => {
+  it('applies staged changes, waits for the restart, then finishes', async () => {
+    const service = createMockSetupService({
+      latencyMs: 0,
+      applyPolls: 2,
+      initialState: stateWith([
+        'welcome',
+        'system',
+        'model',
+        'providers',
+        'git',
+        'tracker',
+        'runtime',
+      ]),
+    });
+    await service.stageStack({ bind_host: '127.0.0.1' });
+    const onNavigate = vi.fn();
+    renderWithSetup(<SetupPage onNavigate={onNavigate} origin="http://192.168.1.42:8080" />, {
+      service,
+    });
+    await waitFor(() => expect(screen.getByTestId('setup-finish-staged')).toBeInTheDocument());
+    expect(screen.getByTestId('setup-finish-new-address')).toHaveTextContent(
+      'http://127.0.0.1:8080',
+    );
+    expect(screen.getByText('Bringing Niuu up')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('setup-finish-button'));
+    await waitFor(() => expect(screen.getByTestId('setup-finish-progress')).toBeInTheDocument());
+    await waitFor(() => expect(onNavigate).toHaveBeenCalledWith('/ready'), { timeout: 8000 });
+    expect((await service.getState()).completed).toBe(true);
+    expect((await service.getStack()).current.bindHost).toBe('127.0.0.1');
+  }, 10000);
+
+  it('reports a failed apply and lets the user try again', async () => {
+    const base = createMockSetupService({
+      latencyMs: 0,
+      initialState: stateWith([
+        'welcome',
+        'system',
+        'model',
+        'providers',
+        'git',
+        'tracker',
+        'runtime',
+      ]),
+    });
+    await base.stageStack({ bind_host: '127.0.0.1' });
+    const service = {
+      ...base,
+      applyStack: async () => {
+        throw new Error('applier image missing');
+      },
+    };
+    renderWithSetup(<SetupPage onNavigate={vi.fn()} />, { service });
+    await waitFor(() => expect(screen.getByTestId('setup-finish-staged')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('setup-finish-button'));
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('applier image missing'),
+    );
+    expect(screen.getByTestId('setup-finish-button')).not.toBeDisabled();
+  });
+
+  it('shows the model step without a stack controller', async () => {
+    const service = createMockSetupService({
+      latencyMs: 0,
+      stackAvailable: false,
+      initialState: stateWith(['welcome', 'system']),
+    });
+    renderWithSetup(<SetupPage onNavigate={vi.fn()} />, { service });
+    await waitFor(() => expect(screen.getByTestId('setup-model-unavailable')).toBeInTheDocument());
+    expect(screen.getByTestId('setup-continue')).not.toBeDisabled();
   });
 });
 

@@ -1,15 +1,12 @@
 import {
-  catalogForStep,
-  connectionForSlug,
-  needsInteractiveSignIn,
+  providerGroups,
   type CatalogEntry,
   type ConnectIntegrationInput,
   type IntegrationConnection,
   type IntegrationTestResult,
   type WizardStep,
 } from '../domain/setup';
-import { IntegrationCard } from './IntegrationCard';
-import { SignInCard } from './SignInCard';
+import { ProviderPane } from './ProviderPane';
 
 export interface IntegrationsStepProps {
   step: WizardStep;
@@ -26,6 +23,7 @@ export interface IntegrationsStepProps {
   onTest: (connectionId: string) => void;
 }
 
+/** One pane per provider (Anthropic, OpenAI, GitHub, ...), each with its ways to connect. */
 export function IntegrationsStep({
   step,
   catalog,
@@ -40,7 +38,7 @@ export function IntegrationsStep({
   onConnect,
   onTest,
 }: IntegrationsStepProps) {
-  const entries = catalog ? catalogForStep(catalog, step) : [];
+  const groups = catalog ? providerGroups(catalog, step) : [];
   return (
     <div className="setup-col" data-testid={`setup-step-${step.id}`}>
       {error ? (
@@ -49,30 +47,27 @@ export function IntegrationsStep({
         </div>
       ) : null}
       {loading ? <div className="setup-note">Loading catalog…</div> : null}
-      {!loading && !error && entries.length === 0 ? (
+      {!loading && !error && groups.length === 0 ? (
         <div className="setup-note" data-testid="setup-catalog-empty">
           Nothing in the catalog for this step. You can skip it.
         </div>
       ) : null}
-      {entries.map((entry) => {
-        const connection = connections ? connectionForSlug(connections, entry.slug) : undefined;
-        if (needsInteractiveSignIn(entry)) {
-          return <SignInCard key={entry.slug} entry={entry} connection={connection} />;
-        }
-        return (
-          <IntegrationCard
-            key={entry.slug}
-            entry={entry}
-            connection={connection}
-            connecting={connectingSlug === entry.slug}
-            connectError={connectErrorSlug === entry.slug ? connectError : null}
-            testResult={connection ? testResults[connection.id] : undefined}
-            testing={connection ? testingId === connection.id : false}
+      <div className="setup-two">
+        {groups.map((group) => (
+          <ProviderPane
+            key={group.key}
+            group={group}
+            connections={connections}
+            connectingSlug={connectingSlug}
+            connectErrorSlug={connectErrorSlug}
+            connectError={connectError}
+            testingId={testingId}
+            testResults={testResults}
             onConnect={onConnect}
             onTest={onTest}
           />
-        );
-      })}
+        ))}
+      </div>
     </div>
   );
 }
