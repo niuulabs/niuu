@@ -902,8 +902,8 @@ config:
   serverPublicHost: "127.0.0.1"
   # -- Internal OpenShell gateway used for server-side session proxying
   openshellInternalGatewayUrl: "http://openshell.openshell.svc.cluster.local:8080"
-  # -- Number of uvicorn workers
-  workers: 4
+  # -- Number of uvicorn workers. Keep at 1 with the development in-memory credential store.
+  workers: 1
   # -- Session timeout in seconds
   sessionTimeout: "3600"
   # -- Maximum sessions per user

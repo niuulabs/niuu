@@ -10,7 +10,7 @@ data:
   LOG_FORMAT: {{ .Values.config.logFormat | default "json" | quote }}
   HOST: {{ .Values.config.host | default "0.0.0.0" | quote }}
   PORT: {{ .Values.service.targetPort | default 8080 | quote }}
-  WORKERS: {{ .Values.config.workers | default 4 | quote }}
+  WORKERS: {{ .Values.config.workers | default 1 | quote }}
   SESSION_TIMEOUT: {{ .Values.config.sessionTimeout | default "3600" | quote }}
   MAX_SESSIONS_PER_USER: {{ .Values.config.maxSessionsPerUser | default "5" | quote }}
   {{- with .Values.config.extra }}

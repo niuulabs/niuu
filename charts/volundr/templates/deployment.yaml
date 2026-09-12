@@ -71,7 +71,7 @@ spec:
             - name: PORT
               value: {{ .Values.service.targetPort | default 8080 | quote }}
             - name: WORKERS
-              value: {{ .Values.config.workers | default 4 | quote }}
+              value: {{ .Values.config.workers | default 1 | quote }}
             # Database secrets (override YAML config)
             - name: DATABASE__HOST
               value: {{ include "volundr.databaseHost" . | quote }}
