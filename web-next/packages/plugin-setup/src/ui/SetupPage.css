@@ -633,6 +633,13 @@
   max-height: calc(100vh - 64px);
   overflow: auto;
 }
+/* The wizard overlays the shell (z-index 100); its dialogs must sit above it. */
+body:has(.setup-page) .niuu-dialog-overlay {
+  z-index: 200;
+}
+body:has(.setup-page) .niuu-dialog-content {
+  z-index: 201;
+}
 .setup-dialog .setup-option {
   align-items: center;
 }
