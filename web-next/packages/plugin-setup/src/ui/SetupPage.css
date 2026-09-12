@@ -626,3 +626,21 @@
   background: var(--color-brand);
   box-shadow: 0 0 8px var(--color-brand);
 }
+
+/* ── Add-provider dialog ─────────────────────────────── */
+.setup-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  overflow: auto;
+}
+.setup-dialog .setup-option {
+  align-items: center;
+}
+.setup-dialog__back {
+  align-self: flex-start;
+  padding-left: 0;
+}
+.setup-chip--inline {
+  margin-left: 8px;
+  vertical-align: middle;
+}

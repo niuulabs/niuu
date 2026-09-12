@@ -60,14 +60,16 @@ describe('SetupPage', () => {
     fireEvent.click(screen.getByTestId('setup-continue'));
 
     await waitFor(() => expect(screen.getByTestId('setup-step-providers')).toBeInTheDocument());
-    await waitFor(() =>
-      expect(screen.getByTestId('setup-provider-modes-anthropic')).toBeInTheDocument(),
-    );
-    fireEvent.click(screen.getByTestId('setup-provider-mode-anthropic-key'));
+    await waitFor(() => expect(screen.getByTestId('setup-provider-empty')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('setup-provider-add'));
+    fireEvent.click(screen.getByTestId('setup-add-pick-anthropic'));
+    fireEvent.click(screen.getByTestId('setup-add-mode-key'));
     fireEvent.change(screen.getByTestId('setup-input-anthropic-api_key'), {
       target: { value: 'sk-ant' },
     });
     fireEvent.click(screen.getByTestId('setup-connect-anthropic'));
+    // the dialog closes by itself once the provider is connected
+    await waitFor(() => expect(screen.queryByTestId('setup-add-dialog')).not.toBeInTheDocument());
     await waitFor(() => expect(screen.getByTestId('setup-test-anthropic')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('setup-test-anthropic'));
     await waitFor(() => expect(screen.getByTestId('setup-test-ok-anthropic')).toBeInTheDocument());
@@ -157,10 +159,10 @@ describe('SetupPage', () => {
       },
     };
     renderWithSetup(<SetupPage onNavigate={vi.fn()} />, { service });
-    await waitFor(() =>
-      expect(screen.getByTestId('setup-provider-modes-openai')).toBeInTheDocument(),
-    );
-    fireEvent.click(screen.getByTestId('setup-provider-mode-openai-key'));
+    await waitFor(() => expect(screen.getByTestId('setup-provider-add')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('setup-provider-add'));
+    fireEvent.click(screen.getByTestId('setup-add-pick-openai'));
+    fireEvent.click(screen.getByTestId('setup-add-mode-key'));
     fireEvent.change(screen.getByTestId('setup-input-openai-api_key'), {
       target: { value: 'sk' },
     });

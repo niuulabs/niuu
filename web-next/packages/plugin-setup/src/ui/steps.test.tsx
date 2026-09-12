@@ -1,9 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MOCK_CATALOG, MOCK_SYSTEM } from '../adapters/mock';
-import { WIZARD_STEPS, providerGroups } from '../domain/setup';
+import { WIZARD_STEPS } from '../domain/setup';
 import { renderWithSetup } from '../testing/renderWithSetup';
-import { ProviderPane } from './ProviderPane';
 import { FinishStep, summarizeConnections } from './FinishStep';
 import { IntegrationCard } from './IntegrationCard';
 import { IntegrationsStep } from './IntegrationsStep';
@@ -215,123 +214,75 @@ describe('IntegrationsStep', () => {
     onTest: vi.fn(),
   };
 
-  it('renders catalog entries for the step with their connections', () => {
+  it('lists connected providers as rows with a test action', () => {
+    const onTest = vi.fn();
     renderWithSetup(
-      <IntegrationsStep {...props} catalog={MOCK_CATALOG} connections={[connection]} />,
+      <IntegrationsStep
+        {...props}
+        onTest={onTest}
+        catalog={MOCK_CATALOG}
+        connections={[connection]}
+        testResults={{
+          c1: {
+            success: true,
+            provider: 'GitHubProvider',
+            workspace: null,
+            user: 'octocat',
+            error: null,
+            detail: '2 repositories reachable',
+            repositories: ['niuulabs/volundr', 'niuulabs/skuld'],
+          },
+        }}
+      />,
     );
-    expect(screen.getByTestId('setup-integration-github')).toBeInTheDocument();
-    expect(screen.queryByTestId('setup-integration-linear')).not.toBeInTheDocument();
-    expect(screen.getByText('Connected')).toBeInTheDocument();
+    expect(screen.getByTestId('setup-provider-row-github')).toHaveTextContent('GitHub');
+    expect(screen.getByTestId('setup-provider-row-github')).toHaveTextContent(
+      'Personal access token',
+    );
+    expect(screen.queryByTestId('setup-provider-empty')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('setup-test-github'));
+    expect(onTest).toHaveBeenCalledWith('c1');
+    expect(screen.getByTestId('setup-test-ok-github')).toHaveTextContent('2 repositories');
   });
 
-  it('shows loading, error and empty states', () => {
-    const { rerender } = render(
+  it('shows the empty state and opens the add dialog', () => {
+    renderWithSetup(<IntegrationsStep {...props} catalog={MOCK_CATALOG} connections={[]} />);
+    expect(screen.getByTestId('setup-provider-empty')).toHaveTextContent('No Git hosts yet');
+    fireEvent.click(screen.getByTestId('setup-provider-add'));
+    expect(screen.getByTestId('setup-add-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('setup-add-pick-github')).toBeInTheDocument();
+    expect(screen.queryByTestId('setup-add-pick-linear')).not.toBeInTheDocument();
+  });
+
+  it('offers to finish a pending sign-in', () => {
+    renderWithSetup(
+      <IntegrationsStep
+        {...props}
+        catalog={MOCK_CATALOG}
+        connections={[{ ...connection, credentialStatus: 'auth_required' }]}
+      />,
+    );
+    expect(screen.getByTestId('setup-provider-row-github')).toHaveTextContent('Sign-in needed');
+    fireEvent.click(screen.getByTestId('setup-provider-finish-github'));
+    expect(screen.getByTestId('setup-add-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('setup-signin-start-github')).toBeInTheDocument();
+  });
+
+  it('shows loading, error and empty catalog states', () => {
+    const { rerender } = renderWithSetup(
       <IntegrationsStep {...props} catalog={undefined} connections={undefined} loading />,
     );
     expect(screen.getByText('Loading catalog…')).toBeInTheDocument();
+    expect(screen.getByTestId('setup-provider-add')).toBeDisabled();
     rerender(
       <IntegrationsStep
         {...props}
         catalog={undefined}
         connections={undefined}
-        error={new Error('x')}
+        error={new Error('boom')}
       />,
     );
-    expect(screen.getByRole('alert')).toHaveTextContent('x');
-    rerender(<IntegrationsStep {...props} catalog={[]} connections={[]} />);
-    expect(screen.getByTestId('setup-catalog-empty')).toBeInTheDocument();
-  });
-});
-
-describe('ProviderPane', () => {
-  const noop = {
-    connections: [],
-    connectingSlug: null,
-    connectErrorSlug: null,
-    connectError: null,
-    testingId: null,
-    testResults: {},
-    onConnect: vi.fn(),
-    onTest: vi.fn(),
-  };
-
-  it('offers subscription sign-in and API key as modes', () => {
-    const groups = providerGroups(
-      MOCK_CATALOG,
-      WIZARD_STEPS.find((s) => s.id === 'providers')!,
-    );
-    const anthropic = groups.find((g) => g.key === 'anthropic')!;
-    renderWithSetup(<ProviderPane group={anthropic} {...noop} />);
-    expect(screen.getByText('Anthropic · Claude')).toBeInTheDocument();
-    expect(screen.getByTestId('setup-provider-modes-anthropic')).toBeInTheDocument();
-    expect(screen.getByTestId('setup-signin-start-claude-code')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('setup-provider-mode-anthropic-key'));
-    expect(screen.getByTestId('setup-input-anthropic-api_key')).toBeInTheDocument();
-    expect(screen.queryByTestId('setup-signin-start-claude-code')).not.toBeInTheDocument();
-  });
-
-  it('shows connected state and hides the mode switch', () => {
-    const groups = providerGroups(
-      MOCK_CATALOG,
-      WIZARD_STEPS.find((s) => s.id === 'providers')!,
-    );
-    const anthropic = groups.find((g) => g.key === 'anthropic')!;
-    renderWithSetup(
-      <ProviderPane
-        group={anthropic}
-        {...noop}
-        connections={[
-          {
-            id: 'c1',
-            slug: 'anthropic',
-            integrationType: 'ai_provider',
-            credentialName: 'anthropic-setup',
-            enabled: true,
-            config: {},
-            credentialStatus: 'active',
-          },
-        ]}
-      />,
-    );
-    expect(screen.getByText('Connected')).toBeInTheDocument();
-    expect(screen.queryByTestId('setup-provider-modes-anthropic')).not.toBeInTheDocument();
-    expect(screen.getByTestId('setup-test-anthropic')).toBeInTheDocument();
-  });
-
-  it('marks a pending sign-in and explains a sign-in this install cannot run', () => {
-    const gitStep = WIZARD_STEPS.find((s) => s.id === 'git')!;
-    const catalog = MOCK_CATALOG.map((e) =>
-      e.slug === 'github' ? { ...e, signInAvailable: false } : e,
-    );
-    const github = providerGroups(catalog, gitStep).find((g) => g.key === 'github')!;
-    renderWithSetup(<ProviderPane group={github} {...noop} />);
-    // the usable mode (token) comes first; the sign-in tab explains what is missing
-    expect(screen.getByTestId('setup-input-github-token')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('setup-provider-mode-github-signin'));
-    expect(screen.getByTestId('setup-signin-unavailable-github')).toHaveTextContent(
-      'oauth.clients.github.client_id',
-    );
-
-    const providers = WIZARD_STEPS.find((s) => s.id === 'providers')!;
-    const openai = providerGroups(MOCK_CATALOG, providers).find((g) => g.key === 'openai')!;
-    renderWithSetup(
-      <ProviderPane
-        group={openai}
-        {...noop}
-        connections={[
-          {
-            id: 'c2',
-            slug: 'codex',
-            integrationType: 'ai_provider',
-            credentialName: 'codex-setup',
-            enabled: true,
-            config: {},
-            credentialStatus: 'auth_required',
-          },
-        ]}
-      />,
-    );
-    expect(screen.getAllByText('Sign-in needed').length).toBeGreaterThan(0);
+    expect(screen.getByRole('alert')).toHaveTextContent('boom');
   });
 });
 

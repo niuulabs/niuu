@@ -58,7 +58,10 @@ export function SignInCard({
     setCode('');
     // Re-use the connection a previous attempt created so a retry never
     // leaves a second, unusable connection behind.
-    const credentialName = connection?.credentialName ?? credentialNameFor(entry.slug);
+    const credentialName =
+      connection?.credentialName ??
+      entry.credentialEnrollment?.defaultCredentialName ??
+      credentialNameFor(entry.slug);
     start.mutate(
       { slug: entry.slug, credentialName },
       { onSuccess: (started) => setEnrollmentId(started.id) },
