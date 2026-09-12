@@ -135,6 +135,7 @@ class OIDCClient:
             return tokens
         finally:
             server.shutdown()
+            server.server_close()
 
     async def _exchange_code(
         self,
