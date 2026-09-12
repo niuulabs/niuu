@@ -383,6 +383,100 @@ class TestGrokACPTransport:
         assert transport._process is None
         assert transport._reader_task is None or transport._reader_task.done()
 
+    def test_seed_copies_the_platform_auth_file_once(self, tmp_path, monkeypatch):
+        seed = tmp_path / "seed" / "auth.json"
+        seed.parent.mkdir()
+        seed.write_text('{"access_token": "seeded"}')
+        home = tmp_path / "grokhome"
+        monkeypatch.setenv("GROK_HOME", str(home))
+        t = GrokACPTransport(str(tmp_path), grok_auth_seed_path=str(seed))
+
+        t._seed_auth_file()
+
+        target = home / "auth.json"
+        assert target.read_text() == '{"access_token": "seeded"}'
+        assert target.stat().st_mode & 0o777 == 0o600
+        # A file the CLI already rotated is never clobbered by the older seed.
+        target.write_text('{"access_token": "rotated"}')
+        t._seed_auth_file()
+        assert target.read_text() == '{"access_token": "rotated"}'
+
+    def test_seed_is_a_no_op_without_a_platform_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GROK_HOME", str(tmp_path / "home"))
+        t = GrokACPTransport(str(tmp_path), grok_auth_seed_path=str(tmp_path / "missing"))
+        t._seed_auth_file()
+        assert not (tmp_path / "home" / "auth.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_stop_hands_a_rotated_auth_file_back(self, tmp_path, monkeypatch):
+        seed = tmp_path / "seed.json"
+        seed.write_text('{"access_token": "seeded"}')
+        home = tmp_path / "grokhome"
+        monkeypatch.setenv("GROK_HOME", str(home))
+        client = MagicMock()
+        client.post = AsyncMock(return_value=MagicMock(status_code=200, text=""))
+        t = GrokACPTransport(
+            str(tmp_path),
+            grok_auth_seed_path=str(seed),
+            grok_auth_credential_name="grok-credentials",
+            http_client_provider=AsyncMock(return_value=client),
+        )
+        t._seed_auth_file()
+
+        await t.stop()
+        client.post.assert_not_called()  # unchanged: nothing to hand back
+
+        (home / "auth.json").write_text('{"access_token": "rotated"}')
+        await t.stop()
+
+        client.post.assert_awaited_once_with(
+            "/api/v1/internal/credentials/writeback",
+            json={
+                "credential_name": "grok-credentials",
+                "credential_field": "auth.json",
+                "value": '{"access_token": "rotated"}',
+            },
+        )
+        client.post.reset_mock()
+        await t.stop()
+        client.post.assert_not_called()  # handed back once, now known
+
+    @pytest.mark.asyncio
+    async def test_stop_without_a_platform_credential_never_calls_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "grokhome"
+        home.mkdir()
+        (home / "auth.json").write_text("{}")
+        monkeypatch.setenv("GROK_HOME", str(home))
+        provider = AsyncMock()
+        t = GrokACPTransport(str(tmp_path), http_client_provider=provider)
+
+        await t.stop()
+
+        provider.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_write_back_is_logged_and_retried_next_stop(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        home = tmp_path / "grokhome"
+        home.mkdir()
+        (home / "auth.json").write_text('{"access_token": "rotated"}')
+        monkeypatch.setenv("GROK_HOME", str(home))
+        client = MagicMock()
+        client.post = AsyncMock(return_value=MagicMock(status_code=422, text="nope"))
+        t = GrokACPTransport(
+            str(tmp_path),
+            grok_auth_credential_name="grok-credentials",
+            http_client_provider=AsyncMock(return_value=client),
+        )
+
+        with caplog.at_level("ERROR"):
+            await t.stop()
+            await t.stop()
+
+        assert client.post.await_count == 2
+        assert "write-back rejected (HTTP 422)" in caplog.text
+
     def test_capabilities_grok_vs_others(self):
         # Grok is between Codex (very limited) and Sdk (everything). Resume + interrupt + skills.
         t = GrokACPTransport("/tmp")

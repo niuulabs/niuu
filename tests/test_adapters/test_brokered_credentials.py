@@ -39,6 +39,30 @@ def test_shared_mixin_projects_one_skuld_auth_contract() -> None:
     }
 
 
+def test_grok_auth_reaches_the_session_beside_codex() -> None:
+    manager = _Manager()
+    manager._configure_brokered_credentials()
+
+    projected = manager._with_brokered_credentials(
+        SessionSpec(
+            values={
+                "broker": {
+                    "grokAuth": {
+                        "credential_name": "grok-credentials",
+                        "credential_field": "auth.json",
+                    }
+                }
+            },
+            pod_spec=PodSpecAdditions(),
+        )
+    )
+
+    environment = manager._brokered_credential_environment(projected)
+    assert environment["SKULD__GROK_AUTH__CREDENTIAL_NAME"] == "grok-credentials"
+    assert environment["SKULD__GROK_AUTH__CREDENTIAL_FIELD"] == "auth.json"
+    assert environment["SKULD__CODEX_AUTH__ADAPTER"] == "skuld.codex_auth.VolundrCodexAuthProvider"
+
+
 def test_kubernetes_managers_share_mixin_while_local_process_keeps_host_auth() -> None:
     assert issubclass(FluxPodManager, BrokeredCredentialPodManager)
     assert issubclass(DirectK8sPodManager, BrokeredCredentialPodManager)

@@ -63,6 +63,7 @@ from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.composition_builders import (
     _create_credential_enrollment_runner,
+    create_oauth_token_refresh_service,
     with_oauth_device_runner,
 )
 from volundr.config import Settings
@@ -77,6 +78,7 @@ from volundr.domain.services.integration_registry import (
     definitions_from_config,
 )
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
+from volundr.domain.services.oauth_token_refresh import refresh_oauth_tokens_loop
 from volundr.domain.services.tenant import TenantService
 from volundr.domain.services.tracker import TrackerService
 from volundr.domain.services.tracker_factory import TrackerFactory
@@ -305,9 +307,22 @@ def create_app(
             enrollment_reconcile_task = asyncio.create_task(
                 reconcile_credential_enrollments_loop(credential_enrollment_service)
             )
+            token_refresh_task = asyncio.create_task(
+                refresh_oauth_tokens_loop(
+                    create_oauth_token_refresh_service(
+                        loaded_settings,
+                        integration_repository=integration_repo,
+                        integration_registry=integration_registry,
+                        credential_store=credential_store,
+                    )
+                )
+            )
             try:
                 yield
             finally:
+                token_refresh_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await token_refresh_task
                 enrollment_reconcile_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await enrollment_reconcile_task

@@ -1143,8 +1143,9 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "credential_field": "auth.json",
                 "default_credential_name": "grok-credentials",
             },
-            # The grok CLI reads its session from ~/.grok/auth.json.
-            file_mounts={"/home/skuld/.grok/auth.json": "auth.json"},
+            # Mounted read-only; the session copies it to ~/.grok/auth.json so the
+            # grok CLI can rotate tokens, and hands the rotated file back on stop.
+            file_mounts={"/run/secrets/grok/auth.json": "auth.json"},
         ),
         IntegrationDefinitionConfig(
             slug="deepseek",

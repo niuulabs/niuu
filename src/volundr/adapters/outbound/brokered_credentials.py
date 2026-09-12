@@ -44,11 +44,17 @@ class BrokeredCredentialPodManager:
     @staticmethod
     def _brokered_credential_environment_values(values: dict) -> dict[str, str]:
         broker = values.get("broker")
+        environment: dict[str, str] = {}
         configured = broker.get("codexAuth") if isinstance(broker, dict) else None
-        if not isinstance(configured, dict):
-            return {}
-        environment = {
-            "SKULD__CODEX_AUTH__ADAPTER": str(configured.get("adapter") or ""),
-            "SKULD__CODEX_AUTH__KWARGS": json.dumps(configured.get("kwargs") or {}),
-        }
+        if isinstance(configured, dict):
+            environment["SKULD__CODEX_AUTH__ADAPTER"] = str(configured.get("adapter") or "")
+            environment["SKULD__CODEX_AUTH__KWARGS"] = json.dumps(configured.get("kwargs") or {})
+        grok = broker.get("grokAuth") if isinstance(broker, dict) else None
+        if isinstance(grok, dict):
+            environment["SKULD__GROK_AUTH__CREDENTIAL_NAME"] = str(
+                grok.get("credential_name") or ""
+            )
+            environment["SKULD__GROK_AUTH__CREDENTIAL_FIELD"] = str(
+                grok.get("credential_field") or ""
+            )
         return {name: value for name, value in environment.items() if value}

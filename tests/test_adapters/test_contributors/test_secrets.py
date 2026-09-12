@@ -10,6 +10,7 @@ from volundr.adapters.outbound.contributors.secrets import (
     SecretsContributor,
 )
 from volundr.domain.models import (
+    CredentialEnrollmentSpec,
     CredentialMapping,
     GitSource,
     IntegrationConnection,
@@ -86,6 +87,35 @@ class TestSecretInjectionContributor:
         result = await c.contribute(session, SessionContext())
         assert result.values == {}
         assert result.pod_spec is None
+
+    async def test_grok_sign_in_names_the_credential_to_hand_back(self, session):
+        defn = IntegrationDefinition(
+            slug="grok-build",
+            name="Grok",
+            description="",
+            integration_type=IntegrationType.AI_PROVIDER,
+            adapter="some.adapter",
+            file_mounts={"/run/secrets/grok/auth.json": "auth.json"},
+            credential_enrollment=CredentialEnrollmentSpec(
+                method="grok_device",
+                credential_field="auth.json",
+                default_credential_name="grok-credentials",
+            ),
+        )
+        ctx = SessionContext(
+            runtime_backend="openshell",
+            integration_connections=(_connection("grok-credentials", "grok-build"),),
+        )
+        c = SecretInjectionContributor(integration_registry=_registry([defn]))
+
+        result = await c.contribute(session, ctx)
+
+        assert result.values["broker"] == {
+            "grokAuth": {
+                "credential_name": "grok-credentials",
+                "credential_field": "auth.json",
+            }
+        }
 
     async def test_openshell_uses_its_native_credential_mapping(self, session):
         defn = _definition(

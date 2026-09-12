@@ -182,6 +182,19 @@ def stack_settings_dict(settings: CLISettings) -> dict[str, Any]:
     }
 
 
+def sign_in_clients(settings: CLISettings) -> dict[str, dict[str, str]]:
+    """OAuth client settings for the platform, one entry per slug with a client id."""
+    clients: dict[str, dict[str, str]] = {}
+    for slug, client_id in settings.docker.sign_in_client_ids.items():
+        if not client_id:
+            continue
+        clients[slug] = {"client_id": client_id}
+        secret = settings.docker.sign_in_client_secrets.get(slug, "")
+        if secret:
+            clients[slug]["client_secret"] = secret
+    return clients
+
+
 def write_stack_file(settings: CLISettings, data_root: Path) -> Path:
     """Record the effective bundle settings for the in-container stack controller."""
     path = data_root / STACK_FILE
@@ -289,14 +302,9 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         "NIUU_CREDENTIAL_KEY": "${NIUU_CREDENTIAL_KEY}",
         "CREDENTIAL_STORE": json.dumps(credential_store),
         "SECRET_INJECTION": json.dumps(secret_injection),
-        # Sign in with GitHub / GitLab (device flow) needs only a public client id.
-        "OAUTH__CLIENTS": json.dumps(
-            {
-                slug: {"client_id": client_id}
-                for slug, client_id in settings.docker.sign_in_client_ids.items()
-                if client_id
-            }
-        ),
+        # Sign in with GitHub / GitLab (device flow) needs only a public client id;
+        # a secret is optional and only used to refresh expiring GitHub tokens.
+        "OAUTH__CLIENTS": json.dumps(sign_in_clients(settings)),
         # Codex sessions fetch ChatGPT tokens from the platform, which refreshes
         # them in the credential store; without this the bundle's default
         # broker refuses and Codex sessions cannot authenticate.

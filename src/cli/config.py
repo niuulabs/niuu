@@ -196,6 +196,13 @@ class DockerConfig(BaseModel):
             "(github, gitlab). No secret is needed; the app must have the device flow enabled."
         ),
     )
+    sign_in_client_secrets: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Optional OAuth client secrets keyed by integration slug. GitHub only needs one to "
+            "refresh expiring user tokens; GitLab refreshes with the public client id alone."
+        ),
+    )
     applier_image: str = Field(
         default="docker:28-cli",
         description=(

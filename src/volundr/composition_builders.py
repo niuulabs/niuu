@@ -17,6 +17,7 @@ from volundr.domain.ports import (
     CredentialStorePort,
     ExternalSessionProvider,
     GatewayPort,
+    IntegrationRepository,
     PodManager,
     ResidentRuntimeController,
     ResidentSessionController,
@@ -25,6 +26,7 @@ from volundr.domain.ports import (
     SessionContributor,
 )
 from volundr.domain.services.integration_registry import IntegrationRegistry
+from volundr.domain.services.oauth_token_refresh import OAuthTokenRefreshService
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,25 @@ def _create_credential_enrollment_runner(settings: Settings) -> CredentialEnroll
         )
     logger.info("Credential enrollment runner: %s", config.adapter.rsplit(".", 1)[-1])
     return instance
+
+
+def create_oauth_token_refresh_service(
+    settings: Settings,
+    *,
+    integration_repository: IntegrationRepository,
+    integration_registry: IntegrationRegistry,
+    credential_store: CredentialStorePort,
+) -> OAuthTokenRefreshService:
+    """Refresher for device-flow sign-in tokens (GitLab, GitHub)."""
+    return OAuthTokenRefreshService(
+        integration_repository=integration_repository,
+        integration_registry=integration_registry,
+        credential_store=credential_store,
+        client_ids={slug: client.client_id for slug, client in settings.oauth.clients.items()},
+        client_secrets={
+            slug: client.client_secret for slug, client in settings.oauth.clients.items()
+        },
+    )
 
 
 def with_oauth_device_runner(

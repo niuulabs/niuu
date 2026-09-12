@@ -130,6 +130,14 @@ class TestRender:
         assert env["NIUU_HOST_FACTS_FILE"] == f"{data}/host-facts.json"
         assert services["postgres"]["environment"]["POSTGRES_DB"] == "volundr"
 
+    def test_sign_in_client_secret_is_optional_and_needs_an_id(self, settings: CLISettings) -> None:
+        settings.docker.sign_in_client_ids = {"github": "Iv1.abc", "gitlab": ""}
+        settings.docker.sign_in_client_secrets = {"github": "shh", "gitlab": "orphan"}
+        env = sc.render_compose(settings)["services"]["niuu"]["environment"]
+        assert json.loads(env["OAUTH__CLIENTS"]) == {
+            "github": {"client_id": "Iv1.abc", "client_secret": "shh"}
+        }
+
     def test_sign_in_client_ids_reach_the_platform(self, settings: CLISettings) -> None:
         settings.docker.sign_in_client_ids = {"github": "Iv1.abc", "gitlab": ""}
         env = sc.render_compose(settings)["services"]["niuu"]["environment"]

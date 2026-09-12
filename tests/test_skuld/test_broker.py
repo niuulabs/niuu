@@ -2233,6 +2233,9 @@ class TestBroker:
         assert kwargs["agent_teams"] is True
         assert kwargs["system_prompt"] == "be helpful"
         assert kwargs["initial_prompt"] == "hello"
+        assert kwargs["grok_auth_credential_name"] == ""
+        assert kwargs["grok_auth_seed_path"] == "/run/secrets/grok/auth.json"
+        assert kwargs["http_client_provider"] == b._get_http_client
 
     def test_build_transport_kwargs_omits_initial_prompt_for_workflow_trigger(self, tmp_path):
         settings = SkuldSettings(

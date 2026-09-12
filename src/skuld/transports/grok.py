@@ -14,12 +14,17 @@ Model example: "grok-build" (default). Pass via Skuld session.model.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import shutil
 import signal
+from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
+
+import httpx
 
 from skuld.transports import (
     CLITransport,
@@ -85,6 +90,11 @@ class GrokACPTransport(CLITransport):
         initial_prompt: str = "",
         acp_prompt_timeout_s: float = 300.0,
         acp_auth_preflight_timeout_s: float = 60.0,
+        grok_auth_credential_name: str = "",
+        grok_auth_credential_field: str = "auth.json",
+        grok_auth_seed_path: str = "/run/secrets/grok/auth.json",
+        grok_auth_writeback_path: str = "/api/v1/internal/credentials/writeback",
+        http_client_provider: Callable[[], Awaitable[httpx.AsyncClient]] | None = None,
         **_: Any,
     ) -> None:
         super().__init__()
@@ -98,6 +108,14 @@ class GrokACPTransport(CLITransport):
         self._initial_prompt = initial_prompt
         self._prompt_timeout = acp_prompt_timeout_s
         self._auth_preflight_timeout = acp_auth_preflight_timeout_s
+        self._auth_credential_name = grok_auth_credential_name
+        self._auth_credential_field = grok_auth_credential_field
+        self._auth_seed_path = Path(grok_auth_seed_path)
+        self._auth_writeback_path = grok_auth_writeback_path
+        self._http_client_provider = http_client_provider
+        # Digest of the auth file as last known by the platform; a changed file
+        # on stop is a rotation worth handing back.
+        self._auth_known_digest: str | None = None
 
         self._process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task | None = None
@@ -188,6 +206,8 @@ class GrokACPTransport(CLITransport):
             self._grok_bin_override or os.environ.get("GROK_BIN") or shutil.which("grok") or "grok"
         )
 
+        self._seed_auth_file()
+
         # Hydrate auth first — a cold `grok agent stdio` otherwise fails with
         # Auth(AuthorizationRequired). (Mirrors the working manual launch flow.)
         await self._preflight_auth(grok_bin)
@@ -258,6 +278,61 @@ class GrokACPTransport(CLITransport):
             self._pending.clear()
             self._early_results.clear()
             self._current_prompt_id = None
+        await self._write_back_auth_file()
+
+    # ------------------------------------------------------------------
+    # Session auth file: seeded from the platform, rotated by the CLI, handed back
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _auth_file_path() -> Path:
+        home = os.environ.get("GROK_HOME")
+        return Path(home) / "auth.json" if home else Path.home() / ".grok" / "auth.json"
+
+    def _seed_auth_file(self) -> None:
+        """Copy the platform's read-only auth file to where the grok CLI can rotate it."""
+        if not self._auth_seed_path.exists():
+            return
+        seed = self._auth_seed_path.read_bytes()
+        self._auth_known_digest = hashlib.sha256(seed).hexdigest()
+        target = self._auth_file_path()
+        if target.exists():
+            return
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        target.touch(mode=0o600)
+        target.write_bytes(seed)
+        target.chmod(0o600)
+        logger.info("Seeded grok auth file at %s from %s", target, self._auth_seed_path)
+
+    async def _write_back_auth_file(self) -> None:
+        """Store a rotated auth file on the platform so the next session starts from it."""
+        if not self._auth_credential_name or self._http_client_provider is None:
+            return
+        target = self._auth_file_path()
+        if not target.exists():
+            return
+        content = target.read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        if digest == self._auth_known_digest:
+            return
+        client = await self._http_client_provider()
+        response = await client.post(
+            self._auth_writeback_path,
+            json={
+                "credential_name": self._auth_credential_name,
+                "credential_field": self._auth_credential_field,
+                "value": content.decode("utf-8", errors="strict"),
+            },
+        )
+        if response.status_code >= 400:
+            logger.error(
+                "Grok auth write-back rejected (HTTP %s): %s",
+                response.status_code,
+                response.text[:200],
+            )
+            return
+        self._auth_known_digest = digest
+        logger.info("Grok auth file handed back to the platform (%s)", self._auth_credential_name)
 
     # ------------------------------------------------------------------
     # ACP JSON-RPC over stdio
