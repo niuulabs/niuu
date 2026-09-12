@@ -229,6 +229,7 @@ package-lock.json
 !containers/volundr/npm-tools/package-lock.json
 !containers/skuld/npm-tools/package-lock.json
 !containers/devrunner/npm-tools/package-lock.json
+!containers/openshell/npm-tools/package-lock.json
 
 # Mac
 .DS_Store
