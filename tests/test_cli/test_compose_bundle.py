@@ -310,6 +310,23 @@ class TestStackFiles:
         assert cmd[:2] == ["/usr/bin/docker", "compose"]
         assert cmd[-1] == "ps"
 
+    def test_stack_is_running(self, settings: CLISettings) -> None:
+        with (
+            patch(f"{MOD}.shutil.which", return_value="/usr/bin/docker"),
+            patch(
+                f"{MOD}.subprocess.run", return_value=MagicMock(returncode=0, stdout="abc\n")
+            ) as run,
+        ):
+            assert sc.stack_is_running(settings) is True
+        assert "name=^niuu-niuu-1$" in run.call_args.args[0]
+        with (
+            patch(f"{MOD}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{MOD}.subprocess.run", return_value=MagicMock(returncode=0, stdout="")),
+        ):
+            assert sc.stack_is_running(settings) is False
+        with patch(f"{MOD}.shutil.which", return_value=None), pytest.raises(RuntimeError):
+            sc.stack_is_running(settings)
+
     def test_pull_applier_image(self, settings: CLISettings) -> None:
         ok = MagicMock(returncode=0, stderr="")
         with (

@@ -526,6 +526,28 @@ def compose_command(settings: CLISettings, *args: str) -> list[str]:
     ]
 
 
+def stack_is_running(settings: CLISettings) -> bool:
+    """Whether this bundle's platform container is up (so it owns the published port)."""
+    docker = shutil.which("docker")
+    if not docker:
+        raise RuntimeError("docker not found in PATH; run `niuu doctor`.")
+    completed = subprocess.run(  # noqa: S603
+        [
+            docker,
+            "ps",
+            "-q",
+            "--filter",
+            f"name=^{settings.docker.project_name}-niuu-1$",
+            "--filter",
+            "status=running",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed.returncode == 0 and bool(completed.stdout.strip())
+
+
 def pull_applier_image(settings: CLISettings) -> str:
     """Pre-pull the image the wizard uses to apply stack changes.
 

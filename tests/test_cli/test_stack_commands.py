@@ -55,6 +55,7 @@ FAIL = PreflightResult(name="gpu", passed=False, message="no gpu")
 class TestStackUp:
     def test_happy_path_prints_setup_url(self, settings: CLISettings, tmp_path: Path) -> None:
         with (
+            patch(f"{MOD}.stack_is_running", return_value=False),
             patch(f"{MOD}.run_docker_preflight_checks", return_value=[OK]),
             patch(f"{MOD}.collect_host_facts", return_value=_facts(tmp_path)),
             patch(f"{MOD}.detect_lan_ip", return_value="10.0.0.5"),
@@ -75,6 +76,7 @@ class TestStackUp:
         data.mkdir()
         (data / "stack-overrides.yaml").write_text("docker:\n  bind_host: 0.0.0.0\n")
         with (
+            patch(f"{MOD}.stack_is_running", return_value=False),
             patch(f"{MOD}.run_docker_preflight_checks", return_value=[OK]),
             patch(f"{MOD}.collect_host_facts", return_value=_facts(tmp_path)) as facts,
             patch(f"{MOD}.detect_lan_ip", return_value="10.0.0.5"),
@@ -94,8 +96,29 @@ class TestStackUp:
         recorded = yaml.safe_load((data / "stack.yaml").read_text())
         assert recorded["docker"]["bind_host"] == "0.0.0.0"
 
+    def test_restart_answers_the_port_check_itself(
+        self, settings: CLISettings, tmp_path: Path
+    ) -> None:
+        with (
+            patch(f"{MOD}.stack_is_running", return_value=True),
+            patch(f"{MOD}.run_docker_preflight_checks", return_value=[OK]) as checks,
+            patch(f"{MOD}.collect_host_facts", return_value=_facts(tmp_path)) as facts,
+            patch(f"{MOD}.detect_lan_ip", return_value="10.0.0.5"),
+            patch(f"{MOD}.write_bundle", return_value=MagicMock(compose_dir=tmp_path)),
+            patch(f"{MOD}.pull_applier_image", return_value=""),
+            patch(f"{MOD}.run_compose", return_value=0),
+            patch(f"{MOD}.wait_for_health", return_value=True),
+        ):
+            stack.stack_up(settings)
+        assert checks.call_args.args[0].ports == []
+        recorded = facts.call_args.kwargs["checks"]
+        assert recorded[-1]["name"] == "port 8080"
+        assert recorded[-1]["passed"] is True
+        assert "published by this stack" in recorded[-1]["message"]
+
     def test_preflight_failure_aborts(self, settings: CLISettings) -> None:
         with (
+            patch(f"{MOD}.stack_is_running", return_value=False),
             patch(f"{MOD}.run_docker_preflight_checks", return_value=[FAIL]),
             patch(f"{MOD}.run_compose") as run_compose,
             pytest.raises(typer.Exit) as exc,
@@ -106,6 +129,7 @@ class TestStackUp:
 
     def test_skip_preflight(self, settings: CLISettings, tmp_path: Path) -> None:
         with (
+            patch(f"{MOD}.stack_is_running", return_value=False),
             patch(f"{MOD}.run_docker_preflight_checks", return_value=[FAIL]) as checks,
             patch(f"{MOD}.collect_host_facts", return_value=_facts(tmp_path)),
             patch(f"{MOD}.write_bundle", return_value=MagicMock(compose_dir=tmp_path)),
@@ -120,6 +144,7 @@ class TestStackUp:
 
     def test_compose_failure_exits_with_code(self, settings: CLISettings, tmp_path: Path) -> None:
         with (
+            patch(f"{MOD}.stack_is_running", return_value=False),
             patch(f"{MOD}.run_docker_preflight_checks", return_value=[OK]),
             patch(f"{MOD}.collect_host_facts", return_value=_facts(tmp_path)),
             patch(f"{MOD}.write_bundle", return_value=MagicMock(compose_dir=tmp_path)),
@@ -132,6 +157,7 @@ class TestStackUp:
 
     def test_health_timeout_exits(self, settings: CLISettings, tmp_path: Path) -> None:
         with (
+            patch(f"{MOD}.stack_is_running", return_value=False),
             patch(f"{MOD}.run_docker_preflight_checks", return_value=[OK]),
             patch(f"{MOD}.collect_host_facts", return_value=_facts(tmp_path)),
             patch(f"{MOD}.write_bundle", return_value=MagicMock(compose_dir=tmp_path)),
@@ -146,6 +172,7 @@ class TestStackUp:
     def test_uses_configured_external_host(self, settings: CLISettings, tmp_path: Path) -> None:
         settings.server.external_host = "spark.local"
         with (
+            patch(f"{MOD}.stack_is_running", return_value=False),
             patch(f"{MOD}.run_docker_preflight_checks", return_value=[OK]),
             patch(f"{MOD}.collect_host_facts", return_value=_facts(tmp_path)),
             patch(f"{MOD}.write_bundle", return_value=MagicMock(compose_dir=tmp_path)) as wb,
@@ -212,6 +239,7 @@ class TestDoctor:
     ) -> None:
         with (
             patch(f"{MOD}.collect_host_facts", return_value=_facts(tmp_path)),
+            patch(f"{MOD}.stack_is_running", return_value=False),
             patch(f"{MOD}.run_docker_preflight_checks", return_value=[OK]),
         ):
             assert stack.run_doctor(settings) is True
@@ -219,6 +247,7 @@ class TestDoctor:
     def test_docker_mode_failure(self, settings: CLISettings, tmp_path: Path) -> None:
         with (
             patch(f"{MOD}.collect_host_facts", return_value=_facts(tmp_path)),
+            patch(f"{MOD}.stack_is_running", return_value=False),
             patch(f"{MOD}.run_docker_preflight_checks", return_value=[FAIL]),
         ):
             assert stack.run_doctor(settings) is False

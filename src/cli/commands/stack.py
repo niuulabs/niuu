@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import typer
@@ -18,6 +19,7 @@ from cli.services.compose_bundle import (
     remove_session_containers,
     run_compose,
     setup_url,
+    stack_is_running,
     wait_for_health,
     write_bundle,
     write_stack_file,
@@ -94,9 +96,23 @@ def stack_up(settings: CLISettings, *, skip_preflight: bool = False) -> None:
         settings = merge_settings(settings, overrides)
         typer.echo(f"Applying wizard overrides from {STACK_OVERRIDES_FILE}")
     config = docker_preflight_config(settings)
+    # A running stack holds the published port itself; that is a restart, not
+    # a conflict, so the port check is answered instead of run.
+    restarting = stack_is_running(settings)
+    if restarting:
+        config = replace(config, ports=[])
     # The checks always run: the wizard shows them. --skip-preflight only
     # means a failure does not stop the start.
     results = run_docker_preflight_checks(config)
+    if restarting:
+        results.append(
+            PreflightResult(
+                name=f"port {settings.server.port}",
+                passed=True,
+                message=f"Port {settings.server.port} is published by this stack; "
+                "it is re-used on restart.",
+            )
+        )
     if not skip_preflight:
         typer.echo("Running preflight checks...")
         _echo_results(results)
