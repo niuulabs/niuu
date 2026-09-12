@@ -6,7 +6,7 @@ import json
 import subprocess
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -22,11 +22,13 @@ from cli.services.docker_host import (
     check_docker_daemon,
     check_gpu,
     check_nvidia_runtime,
+    check_outbound_network,
     check_ports,
     check_registry_reachable,
     collect_host_facts,
     docker_info,
     docker_socket_gid,
+    preflight_results_as_facts,
     query_gpus,
     run_docker_preflight_checks,
 )
@@ -412,3 +414,35 @@ class TestHostFacts:
         ):
             facts = collect_host_facts(config)
         assert facts.memory_total_bytes == 0
+
+
+class TestOutboundNetwork:
+    def test_all_reachable(self) -> None:
+        config = DockerPreflightConfig(outbound_hosts=["a.example", "b.example"])
+        with patch(f"{MOD}.socket.create_connection") as connect:
+            connect.return_value.__enter__ = lambda *_: None
+            connect.return_value.__exit__ = lambda *_: None
+            result = check_outbound_network(config)
+        assert result.passed and not result.warn_only
+        assert "a.example, b.example reachable" in result.message
+
+    def test_partial_failure_warns(self) -> None:
+        config = DockerPreflightConfig(outbound_hosts=["a.example", "b.example"])
+
+        def _connect(address, timeout):
+            del timeout
+            if address[0] == "b.example":
+                raise OSError("unreachable")
+            return MagicMock()
+
+        with patch(f"{MOD}.socket.create_connection", side_effect=_connect):
+            result = check_outbound_network(config)
+        assert result.warn_only
+        assert "Cannot reach b.example" in result.message
+        assert "Reachable: a.example" in result.message
+
+    def test_results_as_facts(self) -> None:
+        rows = preflight_results_as_facts(
+            [PreflightResult(name="x", passed=False, warn_only=True, message="m")]
+        )
+        assert rows == [{"name": "x", "passed": False, "warn_only": True, "message": "m"}]

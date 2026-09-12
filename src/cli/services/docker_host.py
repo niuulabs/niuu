@@ -22,6 +22,7 @@ import socket
 import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 from cli.services.preflight import PreflightResult, check_git, check_port_available
 
@@ -44,6 +45,10 @@ class DockerPreflightConfig:
     min_disk_space_bytes: int = 50 * 1024**3
     require_gpu: bool = False
     registry_hosts: list[str] = field(default_factory=lambda: ["ghcr.io"])
+    # Hosts the platform needs for image pulls, model downloads and providers.
+    outbound_hosts: list[str] = field(
+        default_factory=lambda: ["ghcr.io", "huggingface.co", "api.anthropic.com", "api.openai.com"]
+    )
     registry_port: int = 443
     registry_connect_timeout_seconds: float = 3.0
     command_timeout_seconds: float = 15.0
@@ -81,6 +86,9 @@ class HostFacts:
     external_host: str = ""
     port: int = 0
     skuld_image: str = ""
+    # Preflight results as `niuu up` saw them (name, passed, warn_only, message),
+    # so the wizard can show host-side checks the platform cannot run itself.
+    checks: list[dict[str, Any]] = field(default_factory=list)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2)
@@ -392,6 +400,39 @@ def check_registry_reachable(config: DockerPreflightConfig) -> list[PreflightRes
     return results
 
 
+def check_outbound_network(config: DockerPreflightConfig) -> PreflightResult:
+    """One row: which of the hosts the platform depends on are reachable."""
+    reachable: list[str] = []
+    unreachable: list[str] = []
+    for host in config.outbound_hosts:
+        try:
+            with socket.create_connection(
+                (host, config.registry_port),
+                timeout=config.registry_connect_timeout_seconds,
+            ):
+                pass
+        except OSError:
+            unreachable.append(host)
+            continue
+        reachable.append(host)
+    if unreachable:
+        return PreflightResult(
+            name="outbound network",
+            passed=True,
+            warn_only=True,
+            message=(
+                f"Cannot reach {', '.join(unreachable)}. Image pulls, model downloads or "
+                "provider calls will fail until the network is available."
+                + (f" Reachable: {', '.join(reachable)}." if reachable else "")
+            ),
+        )
+    return PreflightResult(
+        name="outbound network",
+        passed=True,
+        message=f"{', '.join(reachable)} reachable.",
+    )
+
+
 def run_docker_preflight_checks(config: DockerPreflightConfig) -> list[PreflightResult]:
     """Run every Docker-mode check and return all results."""
     results: list[PreflightResult] = [
@@ -404,9 +445,21 @@ def run_docker_preflight_checks(config: DockerPreflightConfig) -> list[Preflight
         check_disk_space(config),
     ]
     results.extend(check_ports(config))
-    results.extend(check_registry_reachable(config))
+    results.append(check_outbound_network(config))
     results.append(check_git())
     return results
+
+
+def preflight_results_as_facts(results: list[PreflightResult]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": r.name,
+            "passed": r.passed,
+            "warn_only": r.warn_only,
+            "message": r.message,
+        }
+        for r in results
+    ]
 
 
 def _memory_total_bytes() -> int:
@@ -440,6 +493,7 @@ def collect_host_facts(
     external_host: str = "",
     port: int = 0,
     skuld_image: str = "",
+    checks: list[dict[str, Any]] | None = None,
 ) -> HostFacts:
     """Gather host facts for the wizard; never raises for missing tools."""
     info = docker_info(config)
@@ -481,4 +535,5 @@ def collect_host_facts(
         external_host=external_host,
         port=port,
         skuld_image=skuld_image,
+        checks=list(checks or []),
     )

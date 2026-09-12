@@ -83,9 +83,12 @@ class TestRender:
         assert "/var/run/docker.sock:/var/run/docker.sock" in niuu["volumes"]
         data = str(sc.data_dir(settings))
         assert f"{data}:{data}" in niuu["volumes"]
+        bundle_dir = str(sc.compose_dir(settings))
+        assert f"{bundle_dir}:{bundle_dir}" in niuu["volumes"]
         assert niuu["ports"] == ["${NIUU_BIND_HOST}:8080:8080"]
         assert niuu["depends_on"] == {"postgres": {"condition": "service_healthy"}}
         env = niuu["environment"]
+        assert env["NIUU_STACK_DIR"] == data
         assert env["NIUU_MODE"] == "mini"
         assert env["NIUU_SETUP_MODE"] == "docker"
         assert env["NIUU_DATABASE_MODE"] == "external"
@@ -252,3 +255,69 @@ class TestHelpers:
 
     def test_setup_url(self, settings: CLISettings) -> None:
         assert sc.setup_url(settings, "spark.local") == "http://spark.local:8080/setup"
+
+
+class TestStackFiles:
+    def test_stack_file_round_trips_and_overrides_merge(
+        self, settings: CLISettings, tmp_path: Path
+    ) -> None:
+        data = tmp_path / "data"
+        path = sc.write_stack_file(settings, data)
+        assert path == data / sc.STACK_FILE
+        loaded = sc.load_stack_settings(path, data / sc.STACK_OVERRIDES_FILE)
+        assert loaded.docker.compose_dir == settings.docker.compose_dir
+        assert loaded.server.port == settings.server.port
+
+        assert sc.read_stack_overrides(data / sc.STACK_OVERRIDES_FILE) == {}
+        sc.write_stack_overrides(
+            data / sc.STACK_OVERRIDES_FILE,
+            {"docker": {"bind_host": "0.0.0.0", "vllm": {"enabled": True, "model": "org/m"}}},
+        )
+        merged = sc.load_stack_settings(path, data / sc.STACK_OVERRIDES_FILE)
+        assert merged.docker.bind_host == "0.0.0.0"
+        assert merged.docker.vllm.enabled is True
+        assert merged.docker.vllm.model == "org/m"
+        assert merged.docker.vllm.image == settings.docker.vllm.image
+
+        assert sc.merge_settings(settings, {}) is settings
+        with_overrides = sc.apply_stack_overrides(settings)
+        assert with_overrides.docker.bind_host == "0.0.0.0"
+
+    def test_malformed_files_are_rejected(self, settings: CLISettings, tmp_path: Path) -> None:
+        bad = tmp_path / "bad.yaml"
+        bad.write_text("- not\n- a mapping\n")
+        with pytest.raises(ValueError, match="mapping"):
+            sc.read_stack_overrides(bad)
+        with pytest.raises(ValueError, match="mapping"):
+            sc.load_stack_settings(bad, tmp_path / "none.yaml")
+
+    def test_compose_args_and_command(self, settings: CLISettings) -> None:
+        args = sc.compose_args(settings)
+        assert args[0] == "compose"
+        assert "--project-name" in args
+        with patch(f"{MOD}.shutil.which", return_value="/usr/bin/docker"):
+            cmd = sc.compose_command(settings, "ps")
+        assert cmd[:2] == ["/usr/bin/docker", "compose"]
+        assert cmd[-1] == "ps"
+
+    def test_pull_applier_image(self, settings: CLISettings) -> None:
+        ok = MagicMock(returncode=0, stderr="")
+        with (
+            patch(f"{MOD}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{MOD}.subprocess.run", return_value=ok),
+        ):
+            assert sc.pull_applier_image(settings) == ""
+        missing = MagicMock(returncode=1, stderr="")
+        failed_pull = MagicMock(returncode=1, stderr="no network")
+        with (
+            patch(f"{MOD}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{MOD}.subprocess.run", side_effect=[missing, failed_pull]),
+        ):
+            assert sc.pull_applier_image(settings) == "no network"
+        with (
+            patch(f"{MOD}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{MOD}.subprocess.run", side_effect=[missing, ok]),
+        ):
+            assert sc.pull_applier_image(settings) == ""
+        with patch(f"{MOD}.shutil.which", return_value=None), pytest.raises(RuntimeError):
+            sc.pull_applier_image(settings)

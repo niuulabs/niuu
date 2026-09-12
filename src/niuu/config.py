@@ -387,6 +387,14 @@ class NiuuHostConfig(BaseSettings):
         description="Host facts JSON written by `niuu up`; empty when not started that way.",
         validation_alias=AliasChoices("host_facts_file", "NIUU_HOST_FACTS_FILE"),
     )
+    stack_dir: str = Field(
+        default="",
+        description=(
+            "Directory with the bundle settings `niuu up` recorded (stack.yaml); enables the "
+            "wizard's runtime, access and local-model changes. Empty = not available."
+        ),
+        validation_alias=AliasChoices("stack_dir", "NIUU_STACK_DIR"),
+    )
 
     @field_validator("cors_origins", mode="before")
     @classmethod

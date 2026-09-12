@@ -189,6 +189,13 @@ class DockerConfig(BaseModel):
         description="How long `niuu up` waits for the platform health endpoint.",
     )
     vllm: DockerVllmConfig = Field(default_factory=DockerVllmConfig)
+    applier_image: str = Field(
+        default="docker:28-cli",
+        description=(
+            "Image that runs `docker compose up` when the wizard applies a stack change "
+            "(a sibling container, so the platform can be recreated underneath it)."
+        ),
+    )
 
 
 class ServerConfig(BaseModel):

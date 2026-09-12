@@ -59,6 +59,7 @@ class TestStackUp:
             patch(f"{MOD}.collect_host_facts", return_value=_facts(tmp_path)),
             patch(f"{MOD}.detect_lan_ip", return_value="10.0.0.5"),
             patch(f"{MOD}.write_bundle") as write_bundle,
+            patch(f"{MOD}.pull_applier_image", return_value=""),
             patch(f"{MOD}.run_compose", return_value=0) as run_compose,
             patch(f"{MOD}.wait_for_health", return_value=True),
         ):
@@ -66,6 +67,32 @@ class TestStackUp:
             stack.stack_up(settings)
         run_compose.assert_called_once_with(settings, "up", "--detach", "--remove-orphans")
         assert write_bundle.call_args.kwargs["external_host"] == "10.0.0.5"
+
+    def test_up_merges_wizard_overrides_and_records_stack_file(
+        self, settings: CLISettings, tmp_path: Path
+    ) -> None:
+        data = tmp_path / "data"
+        data.mkdir()
+        (data / "stack-overrides.yaml").write_text("docker:\n  bind_host: 0.0.0.0\n")
+        with (
+            patch(f"{MOD}.run_docker_preflight_checks", return_value=[OK]),
+            patch(f"{MOD}.collect_host_facts", return_value=_facts(tmp_path)) as facts,
+            patch(f"{MOD}.detect_lan_ip", return_value="10.0.0.5"),
+            patch(f"{MOD}.write_bundle") as write_bundle,
+            patch(f"{MOD}.pull_applier_image", return_value="pull failed"),
+            patch(f"{MOD}.run_compose", return_value=0),
+            patch(f"{MOD}.wait_for_health", return_value=True),
+        ):
+            write_bundle.return_value = MagicMock(compose_dir=tmp_path / "bundle")
+            stack.stack_up(settings)
+        used = write_bundle.call_args.args[0]
+        assert used.docker.bind_host == "0.0.0.0"
+        assert facts.call_args.kwargs["bind_host"] == "0.0.0.0"
+        assert facts.call_args.kwargs["checks"] == [
+            {"name": "x", "passed": True, "warn_only": False, "message": "ok"}
+        ]
+        recorded = yaml.safe_load((data / "stack.yaml").read_text())
+        assert recorded["docker"]["bind_host"] == "0.0.0.0"
 
     def test_preflight_failure_aborts(self, settings: CLISettings) -> None:
         with (
@@ -79,20 +106,24 @@ class TestStackUp:
 
     def test_skip_preflight(self, settings: CLISettings, tmp_path: Path) -> None:
         with (
-            patch(f"{MOD}.run_docker_preflight_checks") as checks,
+            patch(f"{MOD}.run_docker_preflight_checks", return_value=[FAIL]) as checks,
             patch(f"{MOD}.collect_host_facts", return_value=_facts(tmp_path)),
             patch(f"{MOD}.write_bundle", return_value=MagicMock(compose_dir=tmp_path)),
-            patch(f"{MOD}.run_compose", return_value=0),
+            patch(f"{MOD}.pull_applier_image", return_value=""),
+            patch(f"{MOD}.run_compose", return_value=0) as compose,
             patch(f"{MOD}.wait_for_health", return_value=True),
         ):
             stack.stack_up(settings, skip_preflight=True)
-        checks.assert_not_called()
+        # The checks still run (the wizard shows them) but a failure does not block.
+        checks.assert_called_once()
+        compose.assert_called_once()
 
     def test_compose_failure_exits_with_code(self, settings: CLISettings, tmp_path: Path) -> None:
         with (
             patch(f"{MOD}.run_docker_preflight_checks", return_value=[OK]),
             patch(f"{MOD}.collect_host_facts", return_value=_facts(tmp_path)),
             patch(f"{MOD}.write_bundle", return_value=MagicMock(compose_dir=tmp_path)),
+            patch(f"{MOD}.pull_applier_image", return_value=""),
             patch(f"{MOD}.run_compose", return_value=17),
             pytest.raises(typer.Exit) as exc,
         ):
@@ -104,6 +135,7 @@ class TestStackUp:
             patch(f"{MOD}.run_docker_preflight_checks", return_value=[OK]),
             patch(f"{MOD}.collect_host_facts", return_value=_facts(tmp_path)),
             patch(f"{MOD}.write_bundle", return_value=MagicMock(compose_dir=tmp_path)),
+            patch(f"{MOD}.pull_applier_image", return_value=""),
             patch(f"{MOD}.run_compose", return_value=0),
             patch(f"{MOD}.wait_for_health", return_value=False),
             pytest.raises(typer.Exit) as exc,

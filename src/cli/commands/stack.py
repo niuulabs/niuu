@@ -7,19 +7,26 @@ from typing import TYPE_CHECKING
 import typer
 
 from cli.services.compose_bundle import (
+    STACK_OVERRIDES_FILE,
     bundle_paths,
     compose_dir,
+    data_dir,
     detect_lan_ip,
+    merge_settings,
+    pull_applier_image,
+    read_stack_overrides,
     remove_session_containers,
     run_compose,
     setup_url,
     wait_for_health,
     write_bundle,
+    write_stack_file,
 )
 from cli.services.docker_host import (
     DockerPreflightConfig,
     HostFacts,
     collect_host_facts,
+    preflight_results_as_facts,
     run_docker_preflight_checks,
 )
 from cli.services.preflight import PreflightResult, format_results, has_failures
@@ -80,10 +87,18 @@ def run_doctor(settings: CLISettings) -> bool:
 
 def stack_up(settings: CLISettings, *, skip_preflight: bool = False) -> None:
     """Preflight, render the compose bundle, start it, and wait for health."""
+    # Changes applied through the setup wizard on an earlier run win over
+    # config.yaml, so a restart from the CLI never silently reverts them.
+    overrides = read_stack_overrides(data_dir(settings) / STACK_OVERRIDES_FILE)
+    if overrides:
+        settings = merge_settings(settings, overrides)
+        typer.echo(f"Applying wizard overrides from {STACK_OVERRIDES_FILE}")
     config = docker_preflight_config(settings)
+    # The checks always run: the wizard shows them. --skip-preflight only
+    # means a failure does not stop the start.
+    results = run_docker_preflight_checks(config)
     if not skip_preflight:
         typer.echo("Running preflight checks...")
-        results = run_docker_preflight_checks(config)
         _echo_results(results)
         if has_failures(results):
             typer.echo("\nPreflight checks failed. Fix the issues above and retry.")
@@ -97,9 +112,17 @@ def stack_up(settings: CLISettings, *, skip_preflight: bool = False) -> None:
         external_host=external_host,
         port=settings.server.port,
         skuld_image=settings.docker.skuld_image,
+        checks=preflight_results_as_facts(results),
     )
     paths = write_bundle(settings, host_facts=facts, external_host=external_host)
+    write_stack_file(settings, data_dir(settings))
     typer.echo(f"Compose bundle written to {paths.compose_dir}")
+    pull_error = pull_applier_image(settings)
+    if pull_error:
+        typer.echo(
+            f"Could not pull {settings.docker.applier_image} ({pull_error}); the wizard will "
+            "pull it when a stack change is applied."
+        )
 
     typer.echo("Starting the Niuu stack (this pulls images on first run)...")
     code = run_compose(settings, "up", "--detach", "--remove-orphans")

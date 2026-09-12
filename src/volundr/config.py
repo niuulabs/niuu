@@ -1066,6 +1066,18 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             env_from_credentials={"OPENAI_API_KEY": "api_key"},
         ),
         IntegrationDefinitionConfig(
+            slug="xai",
+            name="xAI (Grok)",
+            description="xAI API key for Grok models",
+            integration_type="ai_provider",
+            icon="xai",
+            credential_schema={
+                "required": ["api_key"],
+                "properties": {"api_key": {"label": "API Key", "type": "password"}},
+            },
+            env_from_credentials={"XAI_API_KEY": "api_key"},
+        ),
+        IntegrationDefinitionConfig(
             slug="claude-code",
             name="Claude Code (subscription)",
             description="Connect your Claude subscription for Claude Code sessions",

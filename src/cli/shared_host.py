@@ -288,7 +288,12 @@ def create_app(
                 database_probe=_database_probe,
             )
             app.state.setup_service = setup_service
-            app.include_router(create_setup_router(setup_service))
+            stack_control = None
+            if host_config.stack_dir:
+                from cli.services.stack_control import DockerStackController
+
+                stack_control = DockerStackController(stack_dir=host_config.stack_dir)
+            app.include_router(create_setup_router(setup_service, stack=stack_control))
 
             enrollment_reconcile_task = asyncio.create_task(
                 reconcile_credential_enrollments_loop(credential_enrollment_service)

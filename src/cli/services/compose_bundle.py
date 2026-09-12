@@ -55,6 +55,13 @@ ENV_FILE = ".env"
 SECRETS_FILE = "secrets.env"
 HOST_FACTS_FILE = "host-facts.json"
 SETUP_STATE_FILE = "setup-state.json"
+# Effective bundle settings `niuu up` used, for the in-container stack controller.
+STACK_FILE = "stack.yaml"
+# Changes applied through the wizard; `niuu up` merges them so they survive.
+STACK_OVERRIDES_FILE = "stack-overrides.yaml"
+# Changes staged in the wizard but not applied yet; ignored by `niuu up`.
+STACK_STAGED_FILE = "stack-staged.yaml"
+APPLY_STATE_FILE = "stack-apply.json"
 HEALTH_POLL_INTERVAL_SECONDS = 2.0
 
 
@@ -162,6 +169,67 @@ def detect_lan_ip() -> str:
         return "127.0.0.1"
 
 
+def stack_settings_dict(settings: CLISettings) -> dict[str, Any]:
+    """The bundle-relevant sections of the CLI settings, as plain data."""
+    return {
+        "server": settings.server.model_dump(mode="json"),
+        "docker": settings.docker.model_dump(mode="json"),
+    }
+
+
+def write_stack_file(settings: CLISettings, data_root: Path) -> Path:
+    """Record the effective bundle settings for the in-container stack controller."""
+    path = data_root / STACK_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "# Written by `niuu up`; the setup wizard reads it. Do not edit.\n"
+        + yaml.safe_dump(stack_settings_dict(settings), sort_keys=False)
+    )
+    return path
+
+
+def read_stack_overrides(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    data = yaml.safe_load(path.read_text()) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must contain a mapping of settings overrides")
+    return data
+
+
+def write_stack_overrides(path: Path, overrides: dict[str, Any]) -> None:
+    path.write_text(
+        "# Applied through the setup wizard; `niuu up` merges this over config.yaml.\n"
+        + yaml.safe_dump(overrides, sort_keys=False)
+    )
+
+
+def merge_settings(settings: CLISettings, overrides: dict[str, Any]) -> CLISettings:
+    """Return *settings* with *overrides* (nested dict) merged in and re-validated."""
+    from cli.config import CLISettings
+    from niuu.domain.stack import deep_merge
+
+    if not overrides:
+        return settings
+    return CLISettings.model_validate(deep_merge(settings.model_dump(mode="json"), overrides))
+
+
+def apply_stack_overrides(settings: CLISettings) -> CLISettings:
+    """Honour changes made through the wizard on a previous run."""
+    return merge_settings(settings, read_stack_overrides(data_dir(settings) / STACK_OVERRIDES_FILE))
+
+
+def load_stack_settings(stack_file: Path, overrides_file: Path) -> CLISettings:
+    """Settings as `niuu up` left them, plus overrides applied since."""
+    from cli.config import CLISettings
+
+    base = yaml.safe_load(stack_file.read_text()) or {}
+    if not isinstance(base, dict):
+        raise ValueError(f"{stack_file} must contain a mapping")
+    base.setdefault("mode", "docker")
+    return merge_settings(CLISettings.model_validate(base), read_stack_overrides(overrides_file))
+
+
 def data_subdirs(root: Path) -> dict[str, Path]:
     return {
         "postgres": root / "postgres",
@@ -247,6 +315,9 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         "NIUU_SETUP_ENABLED": "true",
         "NIUU_SETUP_STATE_FILE": str(data_root / SETUP_STATE_FILE),
         "NIUU_HOST_FACTS_FILE": str(data_root / HOST_FACTS_FILE),
+        # The wizard's runtime, access and local-model steps change the bundle
+        # through the stack controller, which reads and writes these here.
+        "NIUU_STACK_DIR": str(data_root),
         "SESSION_ROOM__INTERNAL_BASE_URL": f"http://127.0.0.1:{settings.server.port}",
         "OBSERVATORY__GUILD__URL": f"http://127.0.0.1:{settings.server.port}",
         "BIFROST__URL": f"http://127.0.0.1:{settings.server.port}",
@@ -271,6 +342,7 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
 def render_compose(settings: CLISettings) -> dict[str, Any]:
     """Build the compose document as a plain dict (rendered with yaml.safe_dump)."""
     data_root = data_dir(settings)
+    bundle_dir = compose_dir(settings)
     sub = data_subdirs(data_root)
     port = settings.server.port
     health_probe = (
@@ -305,6 +377,7 @@ def render_compose(settings: CLISettings) -> dict[str, Any]:
             "environment": platform_environment(settings, data_root),
             "volumes": [
                 f"{data_root}:{data_root}",
+                f"{bundle_dir}:{bundle_dir}",
                 "/var/run/docker.sock:/var/run/docker.sock",
             ],
             "ports": [f"${{NIUU_BIND_HOST}}:{port}:{port}"],
@@ -406,14 +479,10 @@ def write_bundle(
     return paths
 
 
-def compose_command(settings: CLISettings, *args: str) -> list[str]:
-    """``docker compose`` invocation bound to this bundle."""
-    docker = shutil.which("docker")
-    if not docker:
-        raise RuntimeError("docker not found in PATH; run `niuu doctor`.")
+def compose_args(settings: CLISettings) -> list[str]:
+    """``compose ...`` arguments bound to this bundle (without the docker binary)."""
     paths = bundle_paths(settings)
     return [
-        docker,
         "compose",
         "--project-name",
         settings.docker.project_name,
@@ -423,8 +492,43 @@ def compose_command(settings: CLISettings, *args: str) -> list[str]:
         str(paths.env_file),
         "--env-file",
         str(paths.secrets_file),
+    ]
+
+
+def compose_command(settings: CLISettings, *args: str) -> list[str]:
+    """``docker compose`` invocation bound to this bundle."""
+    docker = shutil.which("docker")
+    if not docker:
+        raise RuntimeError("docker not found in PATH; run `niuu doctor`.")
+    return [
+        docker,
+        *compose_args(settings),
         *args,
     ]
+
+
+def pull_applier_image(settings: CLISettings) -> str:
+    """Pre-pull the image the wizard uses to apply stack changes.
+
+    Returns an empty string on success, otherwise the reason. A failed pull
+    is reported by the caller, not fatal: the platform pulls it again when a
+    change is actually applied, and an offline host can still come up.
+    """
+    docker = shutil.which("docker")
+    if not docker:
+        raise RuntimeError("docker not found in PATH; run `niuu doctor`.")
+    image = settings.docker.applier_image
+    completed = subprocess.run(  # noqa: S603
+        [docker, "image", "inspect", image], capture_output=True, text=True, check=False
+    )
+    if completed.returncode == 0:
+        return ""
+    completed = subprocess.run(  # noqa: S603
+        [docker, "pull", "--quiet", image], capture_output=True, text=True, check=False
+    )
+    if completed.returncode != 0:
+        return completed.stderr.strip() or f"docker pull exited with {completed.returncode}"
+    return ""
 
 
 def run_compose(settings: CLISettings, *args: str) -> int:
