@@ -25,18 +25,6 @@ class PATRevocationMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: RequestResponseEndpoint,
     ) -> Response:
-        import logging
-
-        _mw_logger = logging.getLogger("niuu.middleware.pat")
-
-        if "activity" in request.url.path:
-            _mw_logger.info(
-                "PAT middleware: %s %s auth=%s",
-                request.method,
-                request.url.path,
-                request.headers.get("authorization", "none")[:30],
-            )
-
         validator = getattr(request.app.state, "pat_validator", None)
         if validator is None:
             return await call_next(request)

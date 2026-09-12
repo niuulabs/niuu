@@ -4339,12 +4339,21 @@ class ValkyrieRuntimeConfig(_LegacyAliasSettings):
     )
 
 
+class APIAuthenticationConfig(BaseModel):
+    """Authentication for Ravn HTTP APIs behind the trusted Envoy proxy."""
+
+    adapter: str = "identity.adapters.identity.EnvoyHeaderAuthenticationAdapter"
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+
+
 class Settings(BaseSettings):
     """Ravn application settings.
 
     Loaded from YAML with RAVN_ environment variable overrides.
     Precedence: env vars > yaml file > defaults.
     """
+
+    api_auth: APIAuthenticationConfig = Field(default_factory=APIAuthenticationConfig)
 
     model_config = SettingsConfigDict(
         yaml_file_encoding="utf-8",

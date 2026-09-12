@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from starlette.websockets import WebSocketDisconnect
 
+from identity.adapters.identity import AllowAllIdentityAdapter
 from niuu.adapters.inbound.rest_ravn import (
     _safe_log_value,
     create_ravn_router,
@@ -95,6 +96,7 @@ def _client(
     embedded_forge_app: FastAPI | None = None,
 ) -> TestClient:
     app = FastAPI()
+    app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
     service = StubInstanceService(instances)
     app.include_router(  # type: ignore[arg-type]
         create_ravn_router(

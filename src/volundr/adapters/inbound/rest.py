@@ -1481,15 +1481,18 @@ def create_router(
 
         from volundr.adapters.inbound.auth import extract_principal
 
-        try:
-            principal = await extract_principal(request)
-        except HTTPException:
-            return None
+        principal = await extract_principal(request)
+
+        from niuu.ports.identity import UserProvisioningError
 
         try:
             await identity.get_or_provision_user(principal)
-        except Exception:
-            logger.warning("JIT user provisioning failed for %s", principal.user_id, exc_info=True)
+        except UserProvisioningError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="User provisioning unavailable",
+                headers={"Retry-After": "5"},
+            ) from exc
 
         return principal
 

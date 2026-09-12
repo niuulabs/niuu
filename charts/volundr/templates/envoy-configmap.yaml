@@ -20,6 +20,7 @@ data:
                   typed_config:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: ingress_http
+                    internal_address_config: {}
                     codec_type: AUTO
                     # Browser session WebSockets (/s/{id}/session) terminate at
                     # this sidecar; without this Envoy rejects every Upgrade
@@ -32,13 +33,36 @@ data:
                         typed_config:
                           "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
                           log_format:
-                            text_format: "[ENVOY] %REQ(:METHOD)% %REQ(:PATH)% %RESPONSE_CODE% %UPSTREAM_HOST% %RESPONSE_FLAGS%\n"
+                            text_format: "[ENVOY] %REQ(:METHOD)% %RESPONSE_CODE% %UPSTREAM_HOST% %RESPONSE_FLAGS%\n"
                     route_config:
                       name: local_route
                       virtual_hosts:
                         - name: backend
                           domains: ["*"]
                           routes:
+                            {{- if .Values.envoy.authorization.enabled }}
+                            {{- range .Values.envoy.jwt.bypassPrefixes }}
+                            - match:
+                                path: {{ . | quote }}
+                              route:
+                                cluster: local_service
+                              typed_per_filter_config:
+                                envoy.filters.http.ext_authz:
+                                  "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                                  disabled: true
+                            {{- end }}
+                            - match:
+                                prefix: "/"
+                                headers:
+                                  - name: ":method"
+                                    exact_match: "OPTIONS"
+                              route:
+                                cluster: local_service
+                              typed_per_filter_config:
+                                envoy.filters.http.ext_authz:
+                                  "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                                  disabled: true
+                            {{- end }}
                             {{- range .Values.envoy.ssePathPrefixes | default list }}
                             - match:
                                 prefix: {{ . | quote }}
@@ -53,6 +77,24 @@ data:
                                 cluster: local_service
                                 timeout: {{ .Values.envoy.upstreamTimeout }}
                     http_filters:
+                      {{- if .Values.envoy.authorization.enabled }}
+                      - name: envoy.filters.http.lua
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+                          default_source_code:
+                            inline_string: |
+                              function envoy_on_request(handle)
+                                {{- range .Values.envoy.headerNames }}
+                                handle:headers():remove({{ . | quote }})
+                                {{- end }}
+                                {{- range .Values.envoy.jwt.extraClaimHeaders }}
+                                handle:headers():remove({{ .headerName | quote }})
+                                {{- end }}
+                                {{- range .Values.envoy.jwt.workload.extraClaimHeaders }}
+                                handle:headers():remove({{ .headerName | quote }})
+                                {{- end }}
+                              end
+                      {{- end }}
                       {{- if .Values.envoy.jwt.enabled }}
                       # JWT Authentication filter
                       - name: envoy.filters.http.jwt_authn
@@ -156,6 +198,21 @@ data:
                       {{- with .Values.envoy.extraHttpFilters }}
                       {{- toYaml . | nindent 22 }}
                       {{- end }}
+                      {{- if .Values.envoy.authorization.enabled }}
+                      - name: envoy.filters.http.ext_authz
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                          transport_api_version: V3
+                          grpc_service:
+                            envoy_grpc:
+                              cluster_name: cedar_authz
+                            timeout: {{ .Values.envoy.authorization.timeout }}
+                          failure_mode_allow: false
+                          status_on_error:
+                            code: ServiceUnavailable
+                          metadata_context_namespaces:
+                            - envoy.filters.http.jwt_authn
+                      {{- end }}
                       - name: envoy.filters.http.router
                         typed_config:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -174,6 +231,25 @@ data:
                         socket_address:
                           address: 127.0.0.1
                           port_value: {{ .Values.service.targetPort | default 8080 }}
+        {{- if .Values.envoy.authorization.enabled }}
+        - name: cedar_authz
+          connect_timeout: {{ .Values.envoy.connectTimeout }}
+          type: STATIC
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+          load_assignment:
+            cluster_name: cedar_authz
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: 127.0.0.1
+                          port_value: {{ .Values.envoy.authorization.port }}
+        {{- end }}
         {{- if .Values.envoy.jwt.enabled }}
         - name: keycloak
           connect_timeout: {{ .Values.envoy.connectTimeout }}
@@ -194,6 +270,14 @@ data:
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
               sni: {{ .Values.envoy.jwt.keycloakHost | quote }}
+              common_tls_context:
+                validation_context:
+                  trusted_ca:
+                    filename: {{ .Values.envoy.jwt.keycloakCaFile | quote }}
+                  match_typed_subject_alt_names:
+                    - san_type: DNS
+                      matcher:
+                        exact: {{ .Values.envoy.jwt.keycloakHost | quote }}
           {{- end }}
         {{- end }}
         {{- with .Values.envoy.extraClusters }}

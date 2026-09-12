@@ -245,6 +245,7 @@ class SessionService:
             origin=origin,
             external_session_id=external_session_id,
         )
+        await self._check_access(session, principal, "create")
         created = await self._repository.create(session)
 
         if self._broadcaster is not None:
@@ -603,20 +604,29 @@ class SessionService:
         if principal and TenantRole.ADMIN not in principal.roles:
             owner_id = principal.user_id
 
-        if status is not None:
-            return await self._repository.list(
-                status=status,
-                tenant_id=tenant_id,
-                owner_id=owner_id,
-            )
-
         sessions = await self._repository.list(
+            status=status,
             tenant_id=tenant_id,
             owner_id=owner_id,
         )
-        if include_archived:
-            return sessions
-        return [s for s in sessions if s.status != SessionStatus.ARCHIVED]
+        if status is None and not include_archived:
+            sessions = [s for s in sessions if s.status != SessionStatus.ARCHIVED]
+        if principal is not None and self._authorization is not None:
+            allowed = await self._authorization.filter_allowed(
+                principal,
+                "list",
+                [
+                    Resource(
+                        kind="session",
+                        id=str(s.id),
+                        attr={"owner_id": s.owner_id, "tenant_id": s.tenant_id},
+                    )
+                    for s in sessions
+                ],
+            )
+            allowed_ids = {r.id for r in allowed if r.kind == "session"}
+            sessions = [s for s in sessions if str(s.id) in allowed_ids]
+        return sessions
 
     async def update_session(
         self,

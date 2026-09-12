@@ -9,6 +9,7 @@ Exercises the auth check paths added to:
 """
 
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -38,6 +39,40 @@ from volundr.domain.services.chronicle import ChronicleService
 from volundr.domain.services.event_ingestion import EventIngestionService
 from volundr.domain.services.session import SessionService
 from volundr.domain.services.token import TokenService
+
+
+@pytest.mark.parametrize("method", ["GET", "DELETE"])
+@pytest.mark.parametrize(
+    "headers,query",
+    [
+        ({}, ""),
+        ({"x-auth-user-id": "owner", "x-auth-roles": "volundr:admin"}, ""),
+        ({}, "?devUserId=owner&devRoles=volundr:admin"),
+        ({"Authorization": "Bearer invalid"}, ""),
+    ],
+)
+def test_forge_route_cannot_downgrade_failed_auth_to_no_principal(method, headers, query):
+    from identity.adapters.cedar import CedarAuthorizationAdapter
+    from niuu.ports.identity import InvalidTokenError
+
+    repository = InMemorySessionRepository()
+    session = Session(name="protected", model="model", owner_id="owner", tenant_id="acme")
+    repository._sessions[session.id] = session
+    service = SessionService(
+        repository, MockPodManager(), authorization=CedarAuthorizationAdapter()
+    )
+    identity = AsyncMock()
+    identity.validate_token.side_effect = InvalidTokenError("invalid")
+    app = FastAPI()
+    app.state.identity = identity
+    app.include_router(create_router(service))
+    result = TestClient(app).request(
+        method, f"/api/v1/forge/sessions/{session.id}" + query, headers=headers
+    )
+    assert result.status_code == 401
+    assert session.id in repository._sessions
+    identity.get_or_provision_user.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Test doubles

@@ -73,6 +73,32 @@ class TestAllowAllIdentityAdapter:
 class TestEnvoyHeaderIdentityAdapter:
     """Tests for EnvoyHeaderIdentityAdapter."""
 
+    async def test_missing_roles_cannot_provision_developer_membership(self):
+        from niuu.domain.models import Principal
+        from niuu.ports.identity import InvalidTokenError
+
+        tenants = AsyncMock()
+        adapter = EnvoyHeaderIdentityAdapter(
+            user_repository=AsyncMock(),
+            tenant_service=tenants,
+        )
+        with pytest.raises(InvalidTokenError, match="No recognized tenant role"):
+            await adapter._sync_tenant(Principal("alice", "", "acme", []))
+        tenants.sync_tenant_from_principal.assert_not_called()
+        tenants.add_member.assert_not_called()
+
+    async def test_membership_sync_failure_is_not_reported_as_success(self):
+        from niuu.domain.models import Principal
+
+        tenants = AsyncMock()
+        tenants.add_member.side_effect = RuntimeError("database unavailable")
+        adapter = EnvoyHeaderIdentityAdapter(
+            user_repository=AsyncMock(),
+            tenant_service=tenants,
+        )
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await adapter._sync_tenant(Principal("alice", "", "acme", ["volundr:developer"]))
+
     async def test_validate_headers_falls_back_to_default_tenant_when_header_blank(self):
         user_repo = AsyncMock()
         adapter = EnvoyHeaderIdentityAdapter(
@@ -92,4 +118,4 @@ class TestEnvoyHeaderIdentityAdapter:
         assert principal.user_id == "svc-user"
         assert principal.email == "svc@example.com"
         assert principal.tenant_id == "default"
-        assert principal.roles == ["volundr:developer"]
+        assert principal.roles == []

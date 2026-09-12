@@ -461,11 +461,16 @@ def test_ravn_api_lists_discovered_standalone_residents(tmp_path) -> None:
         return_value=httpx.Response(200, json=[])
     )
     client = TestClient(
-        create_app(
+        headers={
+            "x-auth-user-id": "dev-user",
+            "x-auth-tenant": "default",
+            "x-auth-roles": "volundr:developer",
+        },
+        app=create_app(
             warden_store=WardenStore(tmp_path),
             settings=settings,
             resident_discovery=_StaticResidentDiscovery([_resident()]),
-        )
+        ),
     )
 
     ravens = client.get("/api/v1/ravn/ravens")

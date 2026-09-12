@@ -3,9 +3,24 @@
 from __future__ import annotations
 
 import pytest
+from fastapi.testclient import TestClient as _TestClient
 
 from niuu.ports.plugin import ServiceDefinition, ServiceLifecycle, TUIPageSpec
 from ravn.plugin import RavnPlugin
+
+
+def TestClient(app, **kwargs):  # noqa: N802 — test client factory
+    """Simulate identity headers supplied by the trusted Envoy proxy."""
+    return _TestClient(
+        app,
+        headers={
+            "x-auth-user-id": "dev-user",
+            "x-auth-tenant": "default",
+            "x-auth-roles": "volundr:developer",
+        },
+        **kwargs,
+    )
+
 
 # ---------------------------------------------------------------------------
 # RavnPlugin identity
@@ -286,8 +301,6 @@ def test_create_api_app_returns_fastapi():
 def test_create_api_app_does_not_mount_personas_endpoint():
     from pathlib import Path
 
-    from fastapi.testclient import TestClient
-
     plugin = RavnPlugin()
 
     with pytest.MonkeyPatch.context() as mp:
@@ -301,8 +314,6 @@ def test_create_api_app_does_not_mount_personas_endpoint():
 
 def test_create_api_app_lists_ravens_sessions_and_triggers():
     from pathlib import Path
-
-    from fastapi.testclient import TestClient
 
     plugin = RavnPlugin()
 
@@ -351,8 +362,6 @@ def test_create_api_app_lists_ravens_sessions_and_triggers():
 def test_create_api_app_supports_session_messages_and_budget_routes():
     from pathlib import Path
 
-    from fastapi.testclient import TestClient
-
     plugin = RavnPlugin()
 
     with pytest.MonkeyPatch.context() as mp:
@@ -396,8 +405,6 @@ def test_create_api_app_supports_session_messages_and_budget_routes():
 
 def test_create_api_app_rejects_trigger_mutation_without_store():
     from pathlib import Path
-
-    from fastapi.testclient import TestClient
 
     plugin = RavnPlugin()
 

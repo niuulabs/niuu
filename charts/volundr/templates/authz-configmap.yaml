@@ -1,0 +1,48 @@
+{{- if .Values.envoy.authorization.enabled }}
+{{- if not (and .Values.envoy.enabled .Values.envoy.jwt.enabled) }}
+{{- fail "Cedar gateway authorization requires Envoy and JWT verification" }}
+{{- end }}
+{{- if not .Values.envoy.jwt.audiences }}
+{{- fail "Cedar gateway authorization requires explicit JWT audiences" }}
+{{- end }}
+{{- if not (and .Values.envoy.jwt.keycloakTls (hasPrefix "https://" .Values.envoy.jwt.jwksUri)) }}
+{{- fail "Cedar gateway authorization requires HTTPS JWKS with certificate verification" }}
+{{- end }}
+{{- if and .Values.envoy.jwt.workload.enabled (not .Values.envoy.jwt.workload.audiences) }}
+{{- fail "Cedar gateway authorization requires explicit workload JWT audiences" }}
+{{- end }}
+{{- if eq .Values.authorization.adapter "volundr.adapters.outbound.authorization.AllowAllAuthorizationAdapter" }}
+{{- fail "Cedar gateway authorization requires a resource authorization adapter; allow-all is unsafe" }}
+{{- end }}
+{{- if ne .Values.identity.adapter "volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter" }}
+{{- fail "Cedar gateway authorization requires EnvoyHeaderIdentityAdapter" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "volundr.fullname" . }}-authz
+  labels:
+    {{- include "volundr.labels" . | nindent 4 }}
+data:
+  authz.yaml: |
+    port: {{ .Values.envoy.authorization.port }}
+    shutdown_grace_seconds: {{ .Values.envoy.authorization.shutdownGraceSeconds }}
+    adapter: {{ .Values.authorization.adapter | quote }}
+    kwargs:
+      {{- toYaml .Values.authorization.kwargs | nindent 6 }}
+    role_mapping:
+      {{- toYaml .Values.identity.roleMapping | nindent 6 }}
+    providers:
+      - issuer: {{ .Values.envoy.jwt.issuer | quote }}
+        audiences: {{ .Values.envoy.jwt.audiences | toJson }}
+        tenant_claim: {{ .Values.envoy.jwt.tenantClaim | quote }}
+        roles_claim: {{ .Values.envoy.jwt.rolesClaim | quote }}
+      {{- if .Values.envoy.jwt.workload.enabled }}
+      - issuer: {{ .Values.envoy.jwt.workload.issuer | quote }}
+        audiences: {{ .Values.envoy.jwt.workload.audiences | toJson }}
+        tenant_claim: {{ .Values.envoy.jwt.workload.tenantClaim | quote }}
+        roles_claim: {{ .Values.envoy.jwt.workload.rolesClaim | quote }}
+      {{- end }}
+    routes:
+      {{- toYaml .Values.envoy.authorization.routes | nindent 6 }}
+{{- end }}

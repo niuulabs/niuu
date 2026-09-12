@@ -20,6 +20,7 @@ from niuu.domain.agent_directory import (
 from niuu.domain.models import Principal
 from niuu.domain.observatory import ObservatoryFragment
 from niuu.service_databases import apply_service_database_settings, database_pool
+from niuu.service_runtime import create_identity_adapter
 from niuu.settings_schema import (
     SettingsFieldSchema,
     SettingsProviderSchema,
@@ -36,6 +37,7 @@ from observatory.registry import (
     RegistryNotFoundError,
     RegistryValidationError,
 )
+from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.config import Settings
 
 KEEPALIVE_INTERVAL = 15.0
@@ -428,6 +430,9 @@ def create_app(
             return
 
         async with database_pool(loaded_settings.database) as pool:
+            app.state.identity = create_identity_adapter(
+                loaded_settings, PostgresUserRepository(pool)
+            )
             repo = PostgresObservatoryRegistryRepository(pool)
             await repo.ensure_seeded()
             app.state.registry_repository = repo

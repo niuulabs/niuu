@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
 
+from identity.adapters.identity import AllowAllIdentityAdapter
 from niuu.adapters.inbound.rest_volundr import create_volundr_router
 from niuu.domain.models import InstanceKind, InstanceVisibility, Principal, RegisteredInstance
 
@@ -92,6 +93,7 @@ def _client(
     embedded_forge_app: FastAPI | None = None,
 ) -> TestClient:
     app = FastAPI()
+    app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
     app.include_router(  # type: ignore[arg-type]
         create_volundr_router(
             StubInstanceService(instances),

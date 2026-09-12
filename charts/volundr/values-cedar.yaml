@@ -1,0 +1,18 @@
+# Apply AFTER deployment-specific values containing the real issuer, audience,
+# JWKS configuration, and role mapping. This profile intentionally cannot run
+# against the development defaults: missing identity configuration is fatal.
+identity:
+  adapter: "volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter"
+  kwargs:
+    default_tenant_id: ""
+authorization:
+  adapter: "identity.adapters.cedar.CedarAuthorizationAdapter"
+  kwargs: {}
+envoy:
+  enabled: true
+  image:
+    tag: "v1.39.1"
+  jwt:
+    enabled: true
+  authorization:
+    enabled: true

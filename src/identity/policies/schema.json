@@ -1,0 +1,367 @@
+{
+  "Niuu": {
+    "entityTypes": {
+      "User": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "email": {
+              "type": "String"
+            },
+            "tenant_id": {
+              "type": "String"
+            },
+            "roles": {
+              "type": "Set",
+              "element": {
+                "type": "String"
+              }
+            },
+            "user_id": {
+              "type": "String"
+            }
+          }
+        }
+      },
+      "session": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "owner_id": {
+              "type": "String"
+            },
+            "tenant_id": {
+              "type": "String"
+            }
+          }
+        }
+      },
+      "tenant": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "owner_id": {
+              "type": "String"
+            },
+            "tenant_id": {
+              "type": "String"
+            }
+          }
+        }
+      },
+      "secret": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "owner_id": {
+              "type": "String"
+            },
+            "tenant_id": {
+              "type": "String"
+            }
+          }
+        }
+      },
+      "personal_access_token": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "owner_id": {
+              "type": "String"
+            },
+            "tenant_id": {
+              "type": "String"
+            }
+          }
+        }
+      },
+      "saga": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "owner_id": {
+              "type": "String"
+            },
+            "tenant_id": {
+              "type": "String"
+            }
+          }
+        }
+      },
+      "run": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "owner_id": {
+              "type": "String"
+            },
+            "tenant_id": {
+              "type": "String"
+            }
+          }
+        }
+      },
+      "gateway": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "owner_id": {
+              "type": "String"
+            },
+            "tenant_id": {
+              "type": "String"
+            },
+            "method": {
+              "type": "String"
+            },
+            "required_scope": {
+              "type": "String"
+            },
+            "scoped": {
+              "type": "Boolean"
+            },
+            "scopes": {
+              "type": "Set",
+              "element": {
+                "type": "String"
+              }
+            }
+          }
+        }
+      }
+    },
+    "actions": {
+      "approve": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "run"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "create": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "session",
+            "secret",
+            "personal_access_token",
+            "saga",
+            "tenant"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "delete": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "session",
+            "secret",
+            "personal_access_token",
+            "saga",
+            "tenant"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "emit_event": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "session"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "list": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "session",
+            "secret",
+            "personal_access_token",
+            "saga",
+            "run",
+            "tenant"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "read": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "session",
+            "secret",
+            "personal_access_token",
+            "saga",
+            "run",
+            "tenant"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "reject": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "run"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "report_chronicle": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "session"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "report_timeline": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "session"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "report_usage": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "session"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "retry": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "run"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "start": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "session"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "stop": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "session"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "update": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "session",
+            "secret",
+            "saga",
+            "tenant"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      },
+      "enter": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "gateway"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
+      }
+    }
+  }
+}

@@ -7,6 +7,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from tests.conftest import MockEventBroadcaster
 from volundr.adapters.inbound.rest import (
     _server_side_http_proxy_target,
@@ -68,7 +69,7 @@ class _FakeDeviceRepo(DeviceTokenRepository):
         return len(self.devices) < before
 
 
-class _StubIdentity:
+class _StubIdentity(EnvoyHeaderAuthenticationAdapter):
     """Minimal identity so _optional_principal resolves a header principal."""
 
     async def get_or_provision_user(self, principal):

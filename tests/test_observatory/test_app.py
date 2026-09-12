@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock
 
 from starlette.testclient import TestClient
 
+from identity.adapters.identity import AllowAllIdentityAdapter
 from niuu.domain.agent_directory import AgentDirectoryEntry, AgentDirectoryPage
 from observatory.app import _events_stream, _topology_stream, create_app
 from observatory.registry import (
@@ -16,6 +18,13 @@ from observatory.registry import (
     RegistryValidationError,
     seed_registry_payload,
 )
+
+
+def _test_app(**kwargs):
+    """Registry tests run in explicitly configured local-development mode."""
+    app = create_app(**kwargs)
+    app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
+    return app
 
 
 class _FakeDiscoveryService:
@@ -158,7 +167,7 @@ def _extract_sse_payload(chunk: str) -> dict[str, object]:
 
 
 def _make_client() -> TestClient:
-    app = create_app(
+    app = _test_app(
         registry_repository=InMemoryObservatoryRegistryRepository(),
         discovery_service=_FakeDiscoveryService(),
     )
@@ -232,7 +241,7 @@ class TestObservatoryApp:
 
     def test_agent_directory_forwards_principal_auth_and_all_filters(self) -> None:
         directory = _StubAgentDirectory()
-        app = create_app(
+        app = _test_app(
             registry_repository=InMemoryObservatoryRegistryRepository(),
             discovery_service=_FakeDiscoveryService(),
             agent_directory_service=directory,
@@ -265,7 +274,7 @@ class TestObservatoryApp:
 
     def test_agent_directory_detail_does_not_disclose_missing_agent(self) -> None:
         directory = _StubAgentDirectory()
-        app = create_app(
+        app = _test_app(
             registry_repository=InMemoryObservatoryRegistryRepository(),
             discovery_service=_FakeDiscoveryService(),
             agent_directory_service=directory,
@@ -440,7 +449,7 @@ class TestObservatoryApp:
         assert second == ": keepalive\n\n"
 
     def test_registry_errors_return_http_statuses(self) -> None:
-        app = create_app(
+        app = _test_app(
             registry_repository=_RaisingRepository(),
             discovery_service=_FakeDiscoveryService(),
         )
@@ -489,7 +498,7 @@ class TestObservatoryApp:
             _FakePostgresRepository,
         )
 
-        app = create_app(discovery_service=_FakeDiscoveryService())
+        app = _test_app(discovery_service=_FakeDiscoveryService())
         with TestClient(app) as client:
             response = client.get("/api/v1/observatory/registry")
             assert response.status_code == 200
@@ -506,7 +515,7 @@ class TestObservatoryFragment:
         """It was listed in the gateway's bypassPrefixes, so it served every
         cluster's namespace names, workload names, labels and endpoints to
         anyone who asked. It must not come back."""
-        app = create_app(
+        app = _test_app(
             registry_repository=InMemoryObservatoryRegistryRepository(),
             discovery_service=_FakeDiscoveryService(),
         )
@@ -523,7 +532,7 @@ class TestObservatoryFragment:
         must be reachable at no path that the bypass list names.
         """
         bypassed_by_the_gateway = {"/health", "/api/v1/observatory/topology/snapshot"}
-        app = create_app(
+        app = _test_app(
             registry_repository=InMemoryObservatoryRegistryRepository(),
             discovery_service=_FakeDiscoveryService(),
         )
@@ -537,7 +546,7 @@ class TestObservatoryFragment:
         assert not (graph_routes & bypassed_by_the_gateway)
 
     def test_returns_this_sources_view_with_its_identity(self) -> None:
-        app = create_app(
+        app = _test_app(
             registry_repository=InMemoryObservatoryRegistryRepository(),
             discovery_service=_FakeDiscoveryService(),
         )
@@ -554,7 +563,7 @@ class TestObservatoryFragment:
         assert body["meta"]["sourceId"]
 
     def test_is_camel_case_on_the_wire(self) -> None:
-        app = create_app(
+        app = _test_app(
             registry_repository=InMemoryObservatoryRegistryRepository(),
             discovery_service=_FakeDiscoveryService(),
         )
@@ -592,7 +601,7 @@ class TestObservatoryFragment:
                 ]
                 return snapshot
 
-        app = create_app(
+        app = _test_app(
             registry_repository=InMemoryObservatoryRegistryRepository(),
             discovery_service=_WithPending(),
         )
@@ -607,7 +616,7 @@ class TestObservatoryFragment:
         ]
 
     def test_carries_the_events_alongside_the_graph(self) -> None:
-        app = create_app(
+        app = _test_app(
             registry_repository=InMemoryObservatoryRegistryRepository(),
             discovery_service=_FakeDiscoveryService(),
         )

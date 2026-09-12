@@ -37,9 +37,11 @@ from niuu.service_databases import apply_service_database_settings, database_poo
 from niuu.service_instances import seed_configured_instances
 from niuu.service_runtime import (
     configure_logging,
+    create_identity_adapter,
     create_pat_validator,
     create_workload_identity_service,
 )
+from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.config import Settings
 
 
@@ -87,6 +89,9 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         async with database_pool(loaded_settings.database) as pool:
+            app.state.identity = create_identity_adapter(
+                loaded_settings, PostgresUserRepository(pool)
+            )
             instance_repository = PostgresInstanceRepository(pool)
             await instance_repository.ensure_schema()
             instance_service = InstanceService(instance_repository)

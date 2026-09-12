@@ -76,7 +76,7 @@ class TestValidateHeaders:
         principal = await adapter.validate_headers(headers)
         assert principal.tenant_id == "default"
 
-    async def test_default_role_when_no_roles(self):
+    async def test_no_roles_does_not_grant_developer(self):
         adapter = _make_adapter()
         headers = {
             "x-auth-user-id": "u1",
@@ -84,9 +84,9 @@ class TestValidateHeaders:
         }
 
         principal = await adapter.validate_headers(headers)
-        assert principal.roles == ["volundr:developer"]
+        assert principal.roles == []
 
-    async def test_empty_roles_header_defaults(self):
+    async def test_empty_roles_header_grants_no_roles(self):
         adapter = _make_adapter()
         headers = {
             "x-auth-user-id": "u1",
@@ -95,7 +95,7 @@ class TestValidateHeaders:
         }
 
         principal = await adapter.validate_headers(headers)
-        assert principal.roles == ["volundr:developer"]
+        assert principal.roles == []
 
     async def test_single_role(self):
         adapter = _make_adapter()
