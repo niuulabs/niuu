@@ -542,7 +542,14 @@
   color: var(--color-text-secondary);
 }
 .setup-option__aside {
-  flex-shrink: 0;
+  /* Chips wrap onto a second line before they squeeze the text column. */
+  flex: 0 1 auto;
+  max-width: 40%;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.setup-option__body {
+  flex: 1 1 60%;
 }
 .setup-segment {
   display: inline-flex;
