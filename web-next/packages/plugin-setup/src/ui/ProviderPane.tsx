@@ -100,7 +100,7 @@ export function ProviderPane({
               onClick={() => setChosen(candidate)}
               data-testid={`setup-provider-mode-${group.key}-${candidate}`}
             >
-              {candidate === 'signin' ? 'Sign in with your subscription' : 'Use an API key'}
+              {candidate === 'signin' ? group.signInLabel : group.keyLabel}
             </button>
           ))}
         </div>

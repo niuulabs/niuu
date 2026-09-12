@@ -192,6 +192,9 @@ export interface ProviderGroup {
   signInEntry?: CatalogEntry;
   /** Ways to connect that exist as a product but not on this install. */
   unavailable: Array<{ label: string; reason: string }>;
+  /** Tab labels, in the provider's own words. */
+  signInLabel: string;
+  keyLabel: string;
 }
 
 interface GroupSpec {
@@ -200,7 +203,13 @@ interface GroupSpec {
   description: string;
   keySlug?: string;
   signInSlug?: string;
+  signInLabel?: string;
+  keyLabel?: string;
   unavailable?: Array<{ label: string; reason: string }>;
+}
+
+function defaultKeyLabel(step: WizardStep): string {
+  return step.integrationType === 'source_control' ? 'Use a token' : 'Use an API key';
 }
 
 const GROUP_SPECS: readonly GroupSpec[] = [
@@ -210,6 +219,7 @@ const GROUP_SPECS: readonly GroupSpec[] = [
     description: 'Claude Code sessions, Ravn judgment',
     keySlug: 'anthropic',
     signInSlug: 'claude-code',
+    signInLabel: 'Sign in with your Claude subscription',
   },
   {
     key: 'openai',
@@ -217,6 +227,7 @@ const GROUP_SPECS: readonly GroupSpec[] = [
     description: 'Codex sessions and GPT models',
     keySlug: 'openai',
     signInSlug: 'codex',
+    signInLabel: 'Sign in with ChatGPT',
   },
   {
     key: 'xai',
@@ -224,6 +235,7 @@ const GROUP_SPECS: readonly GroupSpec[] = [
     description: 'Grok Build sessions and Grok models through the model gateway',
     keySlug: 'xai',
     signInSlug: 'grok-build',
+    signInLabel: 'Sign in with your X account',
   },
   {
     key: 'deepseek',
@@ -237,6 +249,8 @@ const GROUP_SPECS: readonly GroupSpec[] = [
     description: 'Clone, push, open pull requests, MCP server',
     keySlug: 'github',
     signInSlug: 'github',
+    signInLabel: 'Sign in with GitHub',
+    keyLabel: 'Use a personal access token',
   },
   {
     key: 'gitlab',
@@ -244,6 +258,8 @@ const GROUP_SPECS: readonly GroupSpec[] = [
     description: 'Clone, push, open merge requests, MCP server',
     keySlug: 'gitlab',
     signInSlug: 'gitlab',
+    signInLabel: 'Sign in with GitLab',
+    keyLabel: 'Use a personal access token',
   },
 ];
 
@@ -271,6 +287,8 @@ export function providerGroups(entries: CatalogEntry[], step: WizardStep): Provi
       keyEntry,
       signInEntry,
       unavailable: spec.unavailable ?? [],
+      signInLabel: spec.signInLabel ?? 'Sign in',
+      keyLabel: spec.keyLabel ?? defaultKeyLabel(step),
     });
   }
   for (const entry of forStep) {
@@ -282,6 +300,8 @@ export function providerGroups(entries: CatalogEntry[], step: WizardStep): Provi
       keyEntry: isConnectableFromWizard(entry) ? entry : undefined,
       signInEntry: supportsSignIn(entry) ? entry : undefined,
       unavailable: [],
+      signInLabel: `Sign in with ${entry.name}`,
+      keyLabel: defaultKeyLabel(step),
     });
   }
   return groups;

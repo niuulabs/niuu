@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MOCK_CATALOG, MOCK_SYSTEM } from '../adapters/mock';
 import {
+  providerGroups,
   signInUnavailableReason,
   supportsSignIn,
   connectionNeedsSignIn,
@@ -282,5 +283,24 @@ describe('connection credential state', () => {
     expect(connectionNeedsSignIn(connection)).toBe(false);
     expect(connectionNeedsSignIn({ ...connection, credentialStatus: 'auth_required' })).toBe(true);
     expect(connectionNeedsSignIn({ ...connection, credentialStatus: 'enrolling' })).toBe(true);
+  });
+});
+
+describe('provider pane labels', () => {
+  it("speaks in each provider's own words", () => {
+    const providers = WIZARD_STEPS.find((s) => s.id === 'providers')!;
+    const git = WIZARD_STEPS.find((s) => s.id === 'git')!;
+    const byKey = (step: typeof providers) =>
+      Object.fromEntries(providerGroups(MOCK_CATALOG, step).map((g) => [g.key, g]));
+    expect(byKey(providers).anthropic!.signInLabel).toBe('Sign in with your Claude subscription');
+    expect(byKey(providers).anthropic!.keyLabel).toBe('Use an API key');
+    expect(byKey(git).github!.signInLabel).toBe('Sign in with GitHub');
+    expect(byKey(git).github!.keyLabel).toBe('Use a personal access token');
+    const other = providerGroups(
+      [{ ...MOCK_CATALOG[0]!, slug: 'other', name: 'Other', integrationType: 'source_control' }],
+      git,
+    )[0]!;
+    expect(other.keyLabel).toBe('Use a token');
+    expect(other.signInLabel).toBe('Sign in with Other');
   });
 });
