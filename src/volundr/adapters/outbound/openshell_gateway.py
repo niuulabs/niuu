@@ -3599,6 +3599,20 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
             ),
             "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
         }
+    if env_name == "LINEAR_API_KEY":
+        return {
+            "auth_style": "header",
+            "header_name": "Authorization",
+            "hosts": ("api.linear.app",),
+            "binaries": (
+                "/usr/bin/curl",
+                "/usr/bin/node",
+                "/usr/local/bin/node",
+                "/opt/venv/bin/python3",
+                "/opt/niuu/bin/python",
+            ),
+            "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
+        }
     if env_name in {
         "GIT_TOKEN",
         "GH_TOKEN",

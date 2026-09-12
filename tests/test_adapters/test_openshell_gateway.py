@@ -2769,3 +2769,24 @@ def test_claude_subscription_uses_bearer_provider_route():
     assert subscription["header_name"] == "Authorization"
     assert api_key["auth_style"] == "header"
     assert api_key["header_name"] == "x-api-key"
+
+
+def test_linear_api_key_uses_scoped_inspected_header_route():
+    from volundr.adapters.outbound.openshell_gateway import _provider_profile
+
+    profile = _provider_profile(
+        profile_id="linear-test",
+        env_name="LINEAR_API_KEY",
+        token_endpoint="https://volundr.example.test/token",
+    )
+    credential = profile.credentials[0]
+    assert credential.auth_style == "header"
+    assert credential.header_name == "Authorization"
+    assert list(credential.env_vars) == ["LINEAR_API_KEY"]
+    assert credential.token_grant.token_endpoint == "https://volundr.example.test/token"
+    assert len(profile.endpoints) == 1
+    endpoint = profile.endpoints[0]
+    assert (endpoint.host, endpoint.port) == ("api.linear.app", 443)
+    assert endpoint.tls == "terminate"
+    assert endpoint.enforcement == "enforce"
+    assert not getattr(endpoint, "allow_uninspected_credentials", False)
