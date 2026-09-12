@@ -40,7 +40,7 @@ theme:
     - header.autohide
 
 extra_css:
-  - stylesheets/extra.css
+  - stylesheets/niuu.css
 
 nav:
   - Documentation: index.md
