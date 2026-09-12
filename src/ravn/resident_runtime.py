@@ -998,11 +998,10 @@ class ResidentRuntime:
             content={"decision": decision, "rationale": rationale},
         )
         logger.warning(
-            "resident %s: reached decision %r %d times running without its tools returning "
+            "resident %s: repeated the same decision %d times without its tools returning "
             "anything new (stuck for %.0fs) — escalating to the operator instead of "
             "sleeping again",
             self._resident_id,
-            decision or "unknown",
             streak.count,
             stuck_for,
         )

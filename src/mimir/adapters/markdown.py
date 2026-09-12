@@ -780,7 +780,7 @@ class MarkdownMimirAdapter(MimirPort):
         self._remove_from_index(path)
         self._graph_cache = None
 
-        logger.info("mimir: deleted page %s", _sanitize_log(path))
+        logger.info("mimir: deleted page")
         return True
 
     async def get_page(self, path: str) -> MimirPage:

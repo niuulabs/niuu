@@ -6,6 +6,7 @@ import os
 import stat
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -454,3 +455,58 @@ async def test_clear_decision_streak_forgets_it(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_clear_decision_streak_reports_when_there_was_none(tmp_path) -> None:
     assert await _memory(tmp_path).clear_decision_streak("regin") is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reference", ["../outside.md", "absolute", "symlink"])
+async def test_local_memory_rejects_paths_outside_root(tmp_path, reference) -> None:
+    root = tmp_path / "memory"
+    root.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("private outside content")
+    if reference == "absolute":
+        reference = str(outside)
+    elif reference == "symlink":
+        (root / "escape.md").symlink_to(outside)
+        reference = "escape.md"
+    mem = LocalResidentMemory(root)
+    with pytest.raises(ValueError, match="storage root"):
+        await mem.read(reference)
+    with pytest.raises(ValueError, match="storage root"):
+        mem._write(Path(reference), "overwritten")
+    assert outside.read_text() == "private outside content"
+
+
+def test_local_memory_rejects_prefix_escape(tmp_path) -> None:
+    with pytest.raises(ValueError, match="storage root"):
+        LocalResidentMemory(tmp_path, prefix="../outside")
+
+
+@pytest.mark.asyncio
+async def test_local_memory_rejects_symlinked_parent_on_write(tmp_path) -> None:
+    root = tmp_path / "memory"
+    root.mkdir()
+    outside = tmp_path / "memory-other"
+    outside.mkdir()
+    (root / "escape").symlink_to(outside, target_is_directory=True)
+    mem = LocalResidentMemory(root)
+    with pytest.raises(ValueError, match="storage root"):
+        mem._write(Path("escape/new.md"), "private")
+    assert not (outside / "new.md").exists()
+
+
+def test_local_memory_sets_permissions_before_writing(tmp_path, monkeypatch) -> None:
+    original = os.fdopen
+    observed = []
+
+    def inspect_permissions(fd, *args, **kwargs):
+        observed.append(stat.S_IMODE(os.fstat(fd).st_mode))
+        return original(fd, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fdopen", inspect_permissions)
+    old_umask = os.umask(0)
+    try:
+        LocalResidentMemory(tmp_path)._write(Path("private.md"), "private")
+    finally:
+        os.umask(old_umask)
+    assert observed == [0o600]

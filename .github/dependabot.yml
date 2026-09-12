@@ -47,6 +47,7 @@ updates:
       - /containers/node/npm-bootstrap
       - /containers/skuld/npm-tools
       - /containers/devrunner/npm-tools
+      - /containers/openshell/npm-tools
       - /containers/volundr/npm-tools
     target-branch: dev
     schedule:
