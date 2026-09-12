@@ -9,13 +9,14 @@ import {
   type IFeatureCatalogService,
   niuuConfigSchema,
   type NiuuConfig,
+  type PluginDescriptor,
   useConfig,
 } from '@niuulabs/plugin-sdk';
 import { createQueryClient } from '@niuulabs/query';
 import { AuthProvider, useAuth } from '@niuulabs/auth';
 import { Shell } from '@niuulabs/shell';
 import { LogoKnot } from '@niuulabs/plugin-login';
-import { plugins } from './plugins';
+import { loadEnabledPlugins } from './plugins';
 import { buildServiceBackendStatus, buildServices, isUnavailableService } from './services';
 
 const DEFAULT_CONFIG_ENDPOINT = '/config.json';
@@ -51,7 +52,7 @@ export function publishServiceBackends(
   target.__NIUU_SERVICE_BACKENDS__ = backends;
 }
 
-function AppInner() {
+function AppInner({ plugins }: { plugins: PluginDescriptor[] }) {
   const config = useConfig();
   const serviceState = useMemo(() => {
     try {
@@ -144,7 +145,7 @@ export function App() {
   const configEndpoint = resolveConfigEndpoint();
   const [state, setState] = useState<
     | { status: 'loading' }
-    | { status: 'ready'; config: NiuuConfig }
+    | { status: 'ready'; config: NiuuConfig; plugins: PluginDescriptor[] }
     | { status: 'error'; error: Error }
   >({ status: 'loading' });
 
@@ -160,9 +161,10 @@ export function App() {
         }
         return niuuConfigSchema.parse(await response.json());
       })
-      .then((config) => {
+      .then(async (config) => {
+        const plugins = await loadEnabledPlugins(config);
         if (!cancelled) {
-          setState({ status: 'ready', config });
+          setState({ status: 'ready', config, plugins });
         }
       })
       .catch((error: unknown) => {
@@ -190,7 +192,7 @@ export function App() {
     <ConfigProvider value={state.config}>
       <ThemeProvider theme="ice">
         <QueryClientProvider client={queryClient}>
-          <AppInner />
+          <AppInner plugins={state.plugins} />
           <ReactQueryDevtools initialIsOpen={false} />
         </QueryClientProvider>
       </ThemeProvider>

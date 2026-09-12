@@ -489,3 +489,108 @@
     flex-direction: column;
   }
 }
+
+.niuu-chat-compact-turn,
+.niuu-chat-worked-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.niuu-chat-worked-trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  text-align: left;
+}
+.niuu-chat-worked-steps {
+  margin-top: var(--space-3);
+  margin-left: var(--space-2);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--color-border-subtle);
+}
+.niuu-chat-preferences {
+  position: relative;
+  font-size: var(--text-xs);
+}
+.niuu-chat-preferences summary {
+  cursor: pointer;
+}
+.niuu-chat-preferences-panel {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 20;
+  min-width: max-content;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+}
+.niuu-chat-preferences-panel label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* ── Themed scrollbar ──────────────────────────────────────────────
+ * Reusable brand/ink-blue scrollbar matching the conversation panel
+ * (see SessionChat.css .niuu-chat-messages-container). Thin width,
+ * transparent track, brand-tinted rounded thumb, subtle hover brighten.
+ * Apply to any bounded overflow container (e.g. the session list). */
+
+.niuu-scroll-themed {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-brand) 35%, var(--color-bg-elevated)) transparent;
+}
+
+.niuu-scroll-themed::-webkit-scrollbar {
+  width: 8px;
+}
+
+.niuu-scroll-themed::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.niuu-scroll-themed::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-brand) 28%, var(--color-bg-elevated));
+  background-clip: padding-box;
+}
+
+.niuu-scroll-themed::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-brand) 42%, var(--color-bg-elevated));
+  background-clip: padding-box;
+}
+
+.niuu-chat-display-controls {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+}
+.niuu-chat-preferences-panel select {
+  color: var(--color-text-primary);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1);
+}
+
+.niuu-chat-preferences-panel input[type='checkbox'] {
+  appearance: auto;
+  width: var(--space-4);
+  height: var(--space-4);
+  accent-color: var(--color-brand);
+}

@@ -1,3 +1,4 @@
+import { useShowDebugMeta } from './uxPrefs';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
@@ -87,7 +88,7 @@ const FIXED_TAB_ORDER: Partial<Record<SessionTab, number>> = {
 };
 
 export function isSessionBooting(status: string | null | undefined): boolean {
-  return status === 'starting' || status === 'provisioning';
+  return status === 'created' || status === 'starting' || status === 'provisioning';
 }
 
 export function formatCount(value: number): string {
@@ -3591,6 +3592,7 @@ function LiveSessionDetailPageInner({
     if (looksLikeRunLabel(domainRunId)) return domainRunId;
     return sessionName;
   }, [sessionHandle, sessionName, sessionQuery.data?.ravnId]);
+  const showDebugMeta = useShowDebugMeta();
   const forgeBadgeLabel = useMemo(() => {
     const clusterName = sessionQuery.data?.clusterName?.trim();
     if (clusterName) return clusterName;
@@ -3968,7 +3970,7 @@ function LiveSessionDetailPageInner({
                 <SourceMeta session={liveSession} />
               </>
             ) : null}
-            {forgeBadgeLabel ? (
+            {showDebugMeta && forgeBadgeLabel ? (
               <>
                 <HeaderDivider />
                 <SessionForgeBadge label={forgeBadgeLabel} />
@@ -3988,7 +3990,7 @@ function LiveSessionDetailPageInner({
             <HeaderMetric label="Msgs" value={formatCount(headerMessageCount)} />
             <HeaderDivider />
             <HeaderMetric label="Tokens" value={formatCount(liveSession?.tokensUsed ?? 0)} />
-            {trailingMetric ? (
+            {trailingMetric && (showDebugMeta || trailingMetric.label !== 'Forge') ? (
               <>
                 <HeaderDivider />
                 <HeaderMetric label={trailingMetric.label} value={trailingMetric.value} />

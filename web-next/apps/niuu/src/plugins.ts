@@ -1,32 +1,9 @@
-import { createElement, useEffect } from 'react';
+import { useEffect } from 'react';
 import { createRoute } from '@tanstack/react-router';
 import { useAuth } from '@niuulabs/auth';
-import { bifrostPlugin } from '@niuulabs/plugin-bifrost/plugin';
 import { loginPlugin } from '@niuulabs/plugin-login';
-import { ravnPlugin } from '@niuulabs/plugin-ravn';
-import { mimirPlugin } from '@niuulabs/plugin-mimir';
-import { observatoryPlugin } from '@niuulabs/plugin-observatory';
-import { tingPlugin } from '@niuulabs/plugin-ting';
-import { valkyriePlugin } from '@niuulabs/plugin-valkyrie';
-import { volundrPlugin } from '@niuulabs/plugin-volundr';
-import { definePlugin, type PluginDescriptor } from '@niuulabs/plugin-sdk';
-import { GuildPage } from './GuildPage';
+import { definePlugin, type NiuuConfig, type PluginDescriptor } from '@niuulabs/plugin-sdk';
 import { SettingsPage } from './SettingsPage';
-
-function GuildTopbar() {
-  return createElement(
-    'button',
-    {
-      type: 'button',
-      onClick: () => {
-        window.dispatchEvent(new Event('guild:open-register'));
-      },
-      className:
-        'niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-lg niuu:border niuu:border-brand/35 niuu:bg-brand/12 niuu:px-3 niuu:py-1.5 niuu:text-[12px] niuu:font-medium niuu:text-brand niuu:hover:bg-brand/18',
-    },
-    '+ register',
-  );
-}
 
 function LogoutRoute() {
   const { logout } = useAuth();
@@ -37,22 +14,6 @@ function LogoutRoute() {
 
   return null;
 }
-
-const guildPlugin = definePlugin({
-  id: 'guild',
-  rune: 'G',
-  title: 'Guild',
-  subtitle: 'runtime registry',
-  tabs: [{ id: 'instances', label: 'Instances', path: '/guild' }],
-  routes: (rootRoute) => [
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/guild',
-      component: GuildPage,
-    }),
-  ],
-  topbarRight: () => createElement(GuildTopbar),
-});
 
 const settingsPlugin = definePlugin({
   id: 'settings',
@@ -94,16 +55,70 @@ const logoutPlugin = definePlugin({
   ],
 });
 
-export const plugins: PluginDescriptor[] = [
-  loginPlugin,
-  volundrPlugin,
-  tingPlugin,
-  ravnPlugin,
-  mimirPlugin,
-  valkyriePlugin,
-  observatoryPlugin,
-  bifrostPlugin,
-  guildPlugin,
-  settingsPlugin,
-  logoutPlugin,
-];
+const pluginLoaders: Record<string, () => Promise<PluginDescriptor>> = {
+  login: async () => loginPlugin,
+  volundr: async () => {
+    const [module] = await Promise.all([
+      import('@niuulabs/plugin-volundr'),
+      import('@niuulabs/plugin-volundr/styles.css'),
+      import('@niuulabs/plugin-volundr/index.css'),
+    ]);
+    return module.volundrPlugin;
+  },
+  ting: async () => {
+    const [module] = await Promise.all([
+      import('@niuulabs/plugin-ting'),
+      import('@niuulabs/plugin-ting/styles.css'),
+      import('@niuulabs/plugin-ting/index.css'),
+    ]);
+    return module.tingPlugin;
+  },
+  ravn: async () => {
+    const [module] = await Promise.all([
+      import('@niuulabs/plugin-ravn'),
+      import('@niuulabs/plugin-ravn/styles.css'),
+      import('@niuulabs/plugin-ravn/index.css'),
+    ]);
+    return module.ravnPlugin;
+  },
+  mimir: async () => {
+    const [module] = await Promise.all([
+      import('@niuulabs/plugin-mimir'),
+      import('@niuulabs/plugin-mimir/styles.css'),
+      import('@niuulabs/plugin-mimir/index.css'),
+    ]);
+    return module.mimirPlugin;
+  },
+  valkyrie: async () => {
+    const [module] = await Promise.all([
+      import('@niuulabs/plugin-valkyrie'),
+      import('@niuulabs/plugin-valkyrie/styles.css'),
+      import('@niuulabs/plugin-valkyrie/index.css'),
+    ]);
+    return module.valkyriePlugin;
+  },
+  observatory: async () => {
+    const [module] = await Promise.all([
+      import('@niuulabs/plugin-observatory'),
+      import('@niuulabs/plugin-observatory/styles.css'),
+      import('@niuulabs/plugin-observatory/index.css'),
+    ]);
+    return module.observatoryPlugin;
+  },
+  bifrost: async () => {
+    const [module] = await Promise.all([import('@niuulabs/plugin-bifrost/plugin')]);
+    return module.bifrostPlugin;
+  },
+  guild: async () => (await import('./guild')).guildPlugin,
+  settings: async () => settingsPlugin,
+  logout: async () => logoutPlugin,
+};
+
+/** Load only operator-enabled modules, with their styles, preserving configured shell ordering. */
+export async function loadEnabledPlugins(config: NiuuConfig): Promise<PluginDescriptor[]> {
+  return Promise.all(
+    Object.entries(pluginLoaders)
+      .filter(([id]) => config.plugins[id]?.enabled !== false)
+      .map(([, load]) => load()),
+  );
+}

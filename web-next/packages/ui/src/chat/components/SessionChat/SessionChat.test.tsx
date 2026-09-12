@@ -124,6 +124,12 @@ describe('SessionChat', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    // niuu:ux made the per-message action bar opt-in and the conversation
+    // view compact-by-default. These tests assert the copy/regenerate/bookmark
+    // wiring and the inline message layout, so opt those back on for the suite;
+    // the product defaults (hidden actions, compact view) are unchanged.
+    localStorage.setItem('niuu.compactUx.showMessageActions', '1');
+    localStorage.setItem('niuu.compactUx.conversationView', 'expanded');
     window.HTMLElement.prototype.scrollIntoView = vi.fn();
   });
 
@@ -985,6 +991,77 @@ describe('SessionChat', () => {
     expect(within(dialog).getByText('/api/v1/credentials/secrets')).toBeInTheDocument();
   });
 
+  it('builds the outcome dialog from the event when no outcome block message exists', () => {
+    // Circular reference: JSON.stringify throws -> stringifyOutcomeValue catch branch.
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const events: MeshOutcomeEvent[] = [
+      {
+        id: 'me-1',
+        type: 'outcome',
+        timestamp: new Date('2026-04-26T12:00:04Z'),
+        participantId: 'peer-1',
+        participant: { color: 'amber' },
+        persona: 'Ravn-A',
+        eventType: 'code_review',
+        verdict: 'approve',
+        // No top-level summary: formatOutcomeMarkdown falls back to fields.summary.
+        fields: {
+          summary: 'Looks good',
+          count: 3, // number -> stringifyOutcomeValue String() branch
+          passed: true, // boolean -> String() branch
+          meta: { nested: 1 }, // object -> JSON.stringify branch
+          notes: 'line one\nline two', // multiline -> pushOutcomeField block branch
+          empty: null, // empty -> pushOutcomeField early-return branch
+          circular, // unserializable -> stringifyOutcomeValue catch branch
+        },
+      },
+    ];
+    // messages contains no ```outcome block, so the dialog content is produced by
+    // formatOutcomeMarkdown(event) rather than the extracted-block path.
+    render(
+      <SessionChat
+        {...defaultProps}
+        messages={[roomAssistantMessage]}
+        connected
+        participants={new Map([[participant.peerId, participant]])}
+        meshEvents={events}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('Ravn-A outcome')).toBeInTheDocument();
+  });
+
+  it('falls back to event_type when an outcome event has no verdict, summary or fields', () => {
+    const events: MeshOutcomeEvent[] = [
+      {
+        id: 'me-bare',
+        type: 'outcome',
+        timestamp: new Date('2026-04-26T12:00:04Z'),
+        participantId: 'peer-1',
+        participant: { color: 'amber' },
+        persona: 'Ravn-A',
+        eventType: 'code_review',
+        // No verdict / summary / fields: formatOutcomeMarkdown takes the
+        // lines.length === 0 branch and emits event_type instead.
+      },
+    ];
+    render(
+      <SessionChat
+        {...defaultProps}
+        messages={[roomAssistantMessage]}
+        connected
+        participants={new Map([[participant.peerId, participant]])}
+        meshEvents={events}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
   it('collapses and expands the mesh peers and mesh cascade sidebars', () => {
     const events: MeshOutcomeEvent[] = [
       {
@@ -1316,5 +1393,30 @@ describe('SessionChat', () => {
   it('hides rewind files when onRewindFiles is not provided', () => {
     render(<SessionChat {...defaultProps} connected capabilities={{ rewind_files: true }} />);
     expect(screen.queryByTestId('rewind-files')).not.toBeInTheDocument();
+  });
+  it('updates shared display preferences from the display controls', () => {
+    localStorage.clear();
+    render(<SessionChat {...defaultProps} messages={[userMessage, assistantMessage]} />);
+    fireEvent.click(screen.getByLabelText('Agent avatars'));
+    expect(localStorage.getItem('niuu.compactUx.showAgentAvatar')).toBe('true');
+    fireEvent.change(screen.getByLabelText('Timestamps'), { target: { value: 'never' } });
+    expect(screen.getByTestId('assistant-message')).toHaveAttribute('data-timestamp', 'never');
+    expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Copy button'), { target: { value: 'inline' } });
+    expect(localStorage.getItem('niuu.compactUx.copyMode')).toBe('inline');
+  });
+  it('keeps display controls available when Forge supplies its own toolbar', () => {
+    localStorage.clear();
+    render(
+      <SessionChat
+        {...defaultProps}
+        showToolbar={false}
+        messages={[userMessage, assistantMessage]}
+      />,
+    );
+    expect(screen.getByTestId('conversation-view-toggle')).toBeInTheDocument();
+    expect(screen.getByText('Display')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('conversation-view-toggle'));
+    expect(localStorage.getItem('niuu.compactUx.conversationView')).toBe('expanded');
   });
 });

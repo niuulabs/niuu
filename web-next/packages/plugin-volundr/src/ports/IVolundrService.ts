@@ -115,7 +115,7 @@ export interface UserHomeListing {
 
 export interface IVolundrService {
   // Feature flags
-  getFeatures(): Promise<VolundrFeatures>;
+  getFeatures(instanceId?: string): Promise<VolundrFeatures>;
 
   // Session definitions
   getSessionDefinitions(): Promise<SessionDefinition[]>;

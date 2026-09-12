@@ -8,6 +8,16 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
+      // Resolve stylesheet subpaths before package entry aliases. Browser tests
+      // exercise the generated CSS bundles; unit tests use the source stylesheet.
+      ...Object.fromEntries(
+        ['volundr', 'ting', 'ravn', 'mimir', 'valkyrie', 'observatory'].flatMap((name) =>
+          ['styles', 'index'].map((entry) => [
+            `@niuulabs/plugin-${name}/${entry}.css`,
+            resolve(__dirname, `packages/plugin-${name}/src/styles.css`),
+          ]),
+        ),
+      ),
       '@niuulabs/auth': resolve(__dirname, 'packages/auth/src/index.ts'),
       '@niuulabs/domain': resolve(__dirname, 'packages/domain/src/index.ts'),
       '@niuulabs/design-tokens': resolve(__dirname, 'packages/design-tokens/src/index.ts'),

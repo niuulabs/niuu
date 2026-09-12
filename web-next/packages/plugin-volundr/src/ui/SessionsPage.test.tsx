@@ -137,6 +137,7 @@ function createSessionStoreWithSessions(sessions: Session[]): ISessionStore {
 
 describe('SessionsPage', () => {
   beforeEach(() => {
+    localStorage.clear();
     navigate.mockClear();
   });
 
@@ -169,7 +170,7 @@ describe('SessionsPage', () => {
     wrap();
     await waitFor(() => expect(screen.getByTestId('pod-launch-button')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('pod-launch-button'));
-    await waitFor(() => expect(screen.getByText('Launch pod')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('New session')).toBeInTheDocument());
   });
 
   it('renders ACTIVE group with running sessions', async () => {
@@ -187,12 +188,14 @@ describe('SessionsPage', () => {
     await waitFor(() => expect(screen.getByTestId('pod-group-error')).toBeInTheDocument());
   });
 
-  it('renders ARCHIVED group when archived sessions are present', async () => {
+  it('renders ARCHIVED group when archived sessions are revealed', async () => {
+    localStorage.setItem('niuu.compactUx.sessions.hideArchived', '0');
     const store = createSessionStoreWithSessions([
       makeSession({ id: 'arch-1', personaName: 'archiver', state: 'archived' }),
     ]);
     wrap(store);
     await waitFor(() => expect(screen.getByTestId('pod-group-archived')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('pod-group-archived-header'));
     expect(screen.getByTestId('pod-entry-arch-1')).toBeInTheDocument();
   });
 
@@ -343,7 +346,8 @@ describe('SessionsPage', () => {
     expect(row).toHaveTextContent(/ago/i);
   });
 
-  it('renders the forge label when a session has an instance name', async () => {
+  it('renders the forge label when debug metadata is enabled', async () => {
+    localStorage.setItem('niuu.compactUx.showDebugMeta', '1');
     const store = createSessionStoreWithSessions([
       makeSession({
         id: 'forge-1',
@@ -525,5 +529,61 @@ describe('SessionsPage', () => {
     await waitFor(() =>
       expect(navigate).toHaveBeenCalledWith({ to: '/volundr/sessions', replace: true }),
     );
+  });
+  it('resizes the sidebar with the keyboard and persists the width', async () => {
+    wrap();
+    const resize = await screen.findByRole('separator', { name: 'Resize session list' });
+    fireEvent.keyDown(resize, { key: 'End' });
+    expect(resize).toHaveAttribute('aria-valuenow', '560');
+    expect(localStorage.getItem('niuu.compactUx.sessions.leftWidth')).toBe('560');
+    fireEvent.keyDown(resize, { key: 'Home' });
+    expect(resize).toHaveAttribute('aria-valuenow', '200');
+  });
+
+  it('reveals archived sessions and expands their group on request', async () => {
+    const store = createSessionStoreWithSessions([
+      makeSession({ id: 'archived-1', state: 'archived' }),
+    ]);
+    wrap(store);
+    fireEvent.click(await screen.findByTestId('pod-toggle-archived'));
+    fireEvent.click(screen.getByTestId('pod-group-archived-header'));
+    expect(screen.getByTestId('pod-entry-archived-1')).toBeInTheDocument();
+  });
+  it('stops before archiving an active session', async () => {
+    const volundr = createMockVolundrService();
+    const order: string[] = [];
+    volundr.stopSession = vi.fn(async () => {
+      order.push('stop');
+    });
+    volundr.archiveSession = vi.fn(async () => {
+      order.push('archive');
+    });
+    wrap(createSessionStoreWithSessions([makeSession({ id: 'work', state: 'running' })]), volundr);
+    fireEvent.click(await screen.findByTestId('pod-entry-work-archive'));
+    await waitFor(() => expect(order).toEqual(['stop', 'archive']));
+  });
+
+  it('reports a failed stop and does not archive the session', async () => {
+    const volundr = createMockVolundrService();
+    volundr.stopSession = vi.fn().mockRejectedValue(new Error('Stop failed'));
+    volundr.archiveSession = vi.fn();
+    wrap(
+      createSessionStoreWithSessions([makeSession({ id: 'work', state: 'awaiting_input' })]),
+      volundr,
+    );
+    fireEvent.click(await screen.findByTestId('pod-entry-work-archive'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Stop failed');
+    expect(volundr.archiveSession).not.toHaveBeenCalled();
+  });
+
+  it('stops a session from its row and refreshes the list', async () => {
+    const volundr = createMockVolundrService();
+    volundr.stopSession = vi.fn().mockResolvedValue(undefined);
+    const store = createSessionStoreWithSessions([makeSession({ id: 'work', state: 'running' })]);
+    const list = vi.spyOn(store, 'listSessions');
+    wrap(store, volundr);
+    fireEvent.click(await screen.findByTestId('pod-entry-work-stop'));
+    await waitFor(() => expect(volundr.stopSession).toHaveBeenCalledWith('work'));
+    await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(1));
   });
 });
