@@ -58,8 +58,8 @@ WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
 COPY src/ /app/src/
-RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats --extra openshell --extra otel \
-    --extra switchyard --no-install-package nemo-switchyard \
+RUN uv sync --frozen --no-dev --no-editable --extra cli --extra k8s --extra nats --extra openshell \
+    --extra otel --extra switchyard --no-install-package nemo-switchyard \
     && mkdir -p /dist-root/data/mimir
 # cli.resources.web_dist_dir() falls back to the installed package data.
 COPY --from=web-build /app/apps/niuu/dist /opt/venv/lib/python3.14/site-packages/cli/web/dist

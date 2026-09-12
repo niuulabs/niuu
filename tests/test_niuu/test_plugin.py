@@ -78,6 +78,7 @@ class TestNiuuPlugin:
             "/api/v1/features",
             "/api/v1/personas",
             "/api/v1/ravn/personas",
+            "/api/v1/niuu/setup",
         )
 
     def test_create_api_client(self, plugin: NiuuPlugin) -> None:
