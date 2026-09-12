@@ -109,6 +109,8 @@ class SharedIntegrationsConfig(BaseModel):
     """Configuration for consuming shared integration connections."""
 
     base_url: str = Field(default="")
+    database_name: str = Field(default="")
+    auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
     timeout_seconds: float = Field(default=30.0)
 
 
