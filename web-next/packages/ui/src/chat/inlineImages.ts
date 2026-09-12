@@ -105,6 +105,6 @@ export function extractInlineImages(content: string): {
     .join('');
   if (!attachments.length) return { text: content, attachments: [] };
   // drop any now-empty markdown image wrapper left behind, e.g. ![alt]()
-  text = text.replace(/!\[[^\]]*\]\(\s*\)/g, '').trim();
+  text = text.replace(/!\[[^[\]]*\]\(\s*\)/g, '').trim();
   return { text, attachments };
 }

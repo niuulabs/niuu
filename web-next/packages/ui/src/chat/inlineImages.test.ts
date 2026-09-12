@@ -31,6 +31,12 @@ describe('history images', () => {
     for (const text of ['', 'hello', '[{"type": broken'])
       expect(extractInlineImages(text)).toEqual({ text, attachments: [] });
   });
+  it('preserves repeated unfinished image labels without rescanning each suffix', () => {
+    const labels = '!['.repeat(100_000);
+    const result = extractInlineImages(`${labels}\n![screen](data:image/png;base64,${data})`);
+    expect(result.text).toBe(labels);
+    expect(result.attachments).toHaveLength(1);
+  });
   it('preserves whitespace when a long message has no images', () => {
     const text = '  ' + 'Ordinary text '.repeat(30) + '\n';
     expect(extractInlineImages(text)).toEqual({ text, attachments: [] });

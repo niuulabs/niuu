@@ -1266,10 +1266,12 @@ def test_home_storage_routes_only_to_selected_visible_cluster(method):
 
 @respx.mock
 def test_feature_flags_select_requested_instance() -> None:
-    client = _client([
-        _instance("alpha", base_url="http://alpha", is_default=True),
-        _instance("beta", base_url="http://beta"),
-    ])
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha", is_default=True),
+            _instance("beta", base_url="http://beta"),
+        ]
+    )
     route = respx.get("http://beta/api/v1/forge/feature-flags").mock(
         return_value=Response(200, json={"mini_mode": False, "local_mounts_enabled": False})
     )
