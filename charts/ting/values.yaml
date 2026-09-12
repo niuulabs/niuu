@@ -362,6 +362,11 @@ credentialStore:
   secretKwargs: []
 
 sharedIntegrations:
+  # -- Shared database on the configured PostgreSQL host; mutually exclusive with baseUrl
+  databaseName: ""
+  auth:
+    adapter: niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter
+    kwargs: {}
   # -- Internal base URL for niuu-shared integration APIs
   baseUrl: ""
   # -- HTTP timeout for shared integration requests
