@@ -134,15 +134,23 @@ class TestDownStatus:
         compose_file = stack.bundle_paths(settings).compose_file
         compose_file.parent.mkdir(parents=True)
         compose_file.write_text("services: {}\n")
-        with patch(f"{MOD}.run_compose", return_value=0) as run_compose:
+        with (
+            patch(f"{MOD}.run_compose", return_value=0) as run_compose,
+            patch(f"{MOD}.remove_session_containers", return_value=2) as remove,
+        ):
             stack.stack_down(settings)
         run_compose.assert_called_once_with(settings, "down")
+        remove.assert_called_once_with(settings)
 
     def test_down_propagates_failure(self, settings: CLISettings) -> None:
         compose_file = stack.bundle_paths(settings).compose_file
         compose_file.parent.mkdir(parents=True)
         compose_file.write_text("services: {}\n")
-        with patch(f"{MOD}.run_compose", return_value=2), pytest.raises(typer.Exit):
+        with (
+            patch(f"{MOD}.run_compose", return_value=2),
+            patch(f"{MOD}.remove_session_containers", return_value=0),
+            pytest.raises(typer.Exit),
+        ):
             stack.stack_down(settings)
 
     def test_status_before_start(self, settings: CLISettings) -> None:

@@ -371,6 +371,12 @@ class NiuuHostConfig(BaseSettings):
         description="Serve the first-launch setup wizard (single-host installs).",
         validation_alias=AliasChoices("setup_enabled", "NIUU_SETUP_ENABLED"),
     )
+    setup_mode: str = Field(
+        default="",
+        description="Mode name the wizard reports (e.g. docker) when it differs from the "
+        "mode the host process runs in; empty = platform_mode.",
+        validation_alias=AliasChoices("setup_mode", "NIUU_SETUP_MODE"),
+    )
     setup_state_file: str = Field(
         default="~/.niuu/setup-state.json",
         description="Where wizard progress is recorded.",

@@ -1120,6 +1120,19 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
     ]
 
 
+class SessionRoomConfig(BaseModel):
+    """How the platform reaches a session's broker for room and route calls."""
+
+    internal_base_url: str = Field(
+        default="",
+        description=(
+            "Origin to dial instead of the session's public chat endpoint origin, "
+            "e.g. http://127.0.0.1:8080 when the public address is not reachable "
+            "from the platform process itself (single-host Docker). Empty = public."
+        ),
+    )
+
+
 class IntegrationsConfig(BaseModel):
     """Integration catalog configuration."""
 
@@ -1763,6 +1776,7 @@ class Settings(BaseSettings):
     pat: PATConfig = Field(default_factory=PATConfig)
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
     auth_discovery: AuthDiscoveryConfig = Field(default_factory=AuthDiscoveryConfig)
+    session_room: SessionRoomConfig = Field(default_factory=SessionRoomConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     oauth: OAuthConfig = Field(default_factory=OAuthConfig)
     provisioning: ProvisioningConfig = Field(default_factory=ProvisioningConfig)

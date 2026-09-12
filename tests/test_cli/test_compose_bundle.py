@@ -87,14 +87,29 @@ class TestRender:
         assert niuu["depends_on"] == {"postgres": {"condition": "service_healthy"}}
         env = niuu["environment"]
         assert env["NIUU_MODE"] == "mini"
+        assert env["NIUU_SETUP_MODE"] == "docker"
         assert env["NIUU_DATABASE_MODE"] == "external"
         assert env["DATABASE__HOST"] == "postgres"
+        assert env["INTEGRATIONS__DATABASE_NAME"] == "niuu_shared"
+        assert env["SESSION_ROOM__INTERNAL_BASE_URL"] == "http://127.0.0.1:8080"
         assert env["NIUU_POD_MANAGER__ADAPTER"] == sc.DOCKER_POD_MANAGER_ADAPTER
         assert env["NIUU_POD_MANAGER__NETWORK"] == "${COMPOSE_PROJECT_NAME}_default"
         assert env["NIUU_POD_MANAGER__PLATFORM_URL"] == "http://niuu:8080"
         store = json.loads(env["CREDENTIAL_STORE"])
         assert store["secret_kwargs_env"] == {"encryption_key": "NIUU_CREDENTIAL_KEY"}
         assert store["kwargs"]["base_dir"] == f"{data}/credentials"
+        injection = json.loads(env["SECRET_INJECTION"])
+        assert injection["adapter"] == sc.SESSION_SECRET_INJECTION_ADAPTER
+        assert injection["kwargs"] == {
+            "base_dir": f"{data}/credentials",
+            "sessions_dir": f"{data}/session-secrets",
+        }
+        assert injection["secret_kwargs_env"] == {"encryption_key": "NIUU_CREDENTIAL_KEY"}
+        contributors = json.loads(env["SESSION_CONTRIBUTORS"])
+        assert contributors == [
+            {"adapter": sc.SECRET_INJECTION_CONTRIBUTOR, "kwargs": {}},
+            {"adapter": sc.WORKLOAD_IDENTITY_CONTRIBUTOR, "kwargs": {"enabled": False}},
+        ]
         assert "NIUU_BIFROST" not in env
         assert env["NIUU_SETUP_ENABLED"] == "true"
         assert env["NIUU_SETUP_STATE_FILE"] == f"{data}/setup-state.json"
@@ -172,6 +187,35 @@ class TestBundle:
         assert run.call_args.args[0][-2:] == ["up", "-d"]
 
 
+class TestSessionContainers:
+    def test_removes_labelled_containers(self, settings: CLISettings) -> None:
+        listed = subprocess.CompletedProcess(args=[], returncode=0, stdout="abc\ndef\n")
+        removed = subprocess.CompletedProcess(args=[], returncode=0)
+        with (
+            patch(f"{MOD}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{MOD}.subprocess.run", side_effect=[listed, removed]) as run,
+        ):
+            assert sc.remove_session_containers(settings) == 2
+        assert run.call_args_list[0].args[0][-1] == f"label={sc.SESSION_CONTAINER_LABEL}"
+        assert run.call_args_list[1].args[0][-3:] == ["-f", "abc", "def"]
+
+    def test_nothing_to_remove(self, settings: CLISettings) -> None:
+        listed = subprocess.CompletedProcess(args=[], returncode=0, stdout="")
+        with (
+            patch(f"{MOD}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{MOD}.subprocess.run", return_value=listed) as run,
+        ):
+            assert sc.remove_session_containers(settings) == 0
+        assert run.call_count == 1
+
+    def test_requires_docker(self, settings: CLISettings) -> None:
+        with (
+            patch(f"{MOD}.shutil.which", return_value=None),
+            pytest.raises(RuntimeError, match="docker not found"),
+        ):
+            sc.remove_session_containers(settings)
+
+
 class TestHelpers:
     def test_detect_lan_ip_falls_back(self) -> None:
         with patch(f"{MOD}.socket.socket", side_effect=OSError("no network")):
@@ -183,14 +227,6 @@ class TestHelpers:
         sock.__enter__.return_value = sock
         with patch(f"{MOD}.socket.socket", return_value=sock):
             assert sc.detect_lan_ip() == "192.168.1.9"
-
-    def test_docker_socket_gid_missing(self, tmp_path: Path) -> None:
-        assert sc.docker_socket_gid(str(tmp_path / "nope.sock")) is None
-
-    def test_docker_socket_gid_present(self, tmp_path: Path) -> None:
-        sock = tmp_path / "docker.sock"
-        sock.write_text("")
-        assert sc.docker_socket_gid(str(sock)) == sock.stat().st_gid
 
     def test_wait_for_health_success(self, settings: CLISettings) -> None:
         response = MagicMock(status=200)

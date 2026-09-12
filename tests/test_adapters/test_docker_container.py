@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -197,6 +197,9 @@ class TestStart:
         assert info.pid == dc.DockerContainerPodManager._synthetic_pid(sid)
         state = json.loads(Path(manager._state_file).read_text())
         assert state[sid]["managed_by"] == MANAGED_BY
+        # network mode: no loopback port is kept, so the proxy uses the resolver
+        assert state[sid]["port"] is None
+        assert info.port is None
         await manager.stop(session)
 
     @pytest.mark.asyncio
@@ -305,6 +308,96 @@ class TestStart:
             await manager.start(session, spec)
 
 
+class TestHostPathBinds:
+    def test_binds_host_path_volumes(self, tmp_path: Path) -> None:
+        env_file = tmp_path / "env.sh"
+        env_file.write_text("export A='1'\n")
+        spec = SessionSpec(
+            values={},
+            pod_spec=PodSpecAdditions(
+                volumes=(
+                    {"name": "secret-env", "hostPath": {"path": str(env_file), "type": "File"}},
+                    {
+                        "name": "creds",
+                        "hostPath": {"path": str(tmp_path / "new"), "type": "DirectoryOrCreate"},
+                    },
+                ),
+                volume_mounts=(
+                    {"name": "secret-env", "mountPath": "/run/secrets/env.sh", "readOnly": True},
+                    {"name": "creds", "mountPath": "/run/secrets/user"},
+                ),
+            ),
+        )
+        binds = DockerContainerPodManager._host_path_binds(spec)
+        assert binds[str(env_file)] == {"bind": "/run/secrets/env.sh", "mode": "ro"}
+        assert binds[str(tmp_path / "new")] == {"bind": "/run/secrets/user", "mode": "rw"}
+        assert (tmp_path / "new").is_dir()
+
+    def test_no_pod_spec_means_no_binds(self) -> None:
+        spec = SessionSpec(values={}, pod_spec=None)
+        assert DockerContainerPodManager._host_path_binds(spec) == {}
+
+    def test_rejects_non_host_path_volume(self) -> None:
+        spec = SessionSpec(
+            values={},
+            pod_spec=PodSpecAdditions(
+                volumes=({"name": "csi", "csi": {"driver": "secrets-store.csi.k8s.io"}},),
+                volume_mounts=({"name": "csi", "mountPath": "/run/secrets"},),
+            ),
+        )
+        with pytest.raises(ValueError, match="not a hostPath volume"):
+            DockerContainerPodManager._host_path_binds(spec)
+
+    def test_rejects_undeclared_mount_and_missing_file(self, tmp_path: Path) -> None:
+        spec = SessionSpec(
+            values={},
+            pod_spec=PodSpecAdditions(volume_mounts=({"name": "ghost", "mountPath": "/x"},)),
+        )
+        with pytest.raises(ValueError, match="undeclared volume"):
+            DockerContainerPodManager._host_path_binds(spec)
+        spec = SessionSpec(
+            values={},
+            pod_spec=PodSpecAdditions(
+                volumes=(
+                    {"name": "f", "hostPath": {"path": str(tmp_path / "nope"), "type": "File"}},
+                ),
+                volume_mounts=({"name": "f", "mountPath": "/x", "readOnly": True},),
+            ),
+        )
+        with pytest.raises(FileNotFoundError, match="does not exist"):
+            DockerContainerPodManager._host_path_binds(spec)
+
+    @pytest.mark.asyncio
+    async def test_start_includes_secret_binds(
+        self,
+        manager: DockerContainerPodManager,
+        client: _Client,
+        workspaces: Path,
+        session: Session,
+        tmp_path: Path,
+    ) -> None:
+        env_file = tmp_path / "env.sh"
+        env_file.write_text("export ANTHROPIC_API_KEY='sk'\n")
+        spec = SessionSpec(
+            values={},
+            pod_spec=PodSpecAdditions(
+                volumes=(
+                    {"name": "secret-env", "hostPath": {"path": str(env_file), "type": "File"}},
+                ),
+                volume_mounts=(
+                    {"name": "secret-env", "mountPath": "/run/secrets/env.sh", "readOnly": True},
+                ),
+            ),
+        )
+        ws = _workspace(workspaces, session)
+        with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
+            await manager.start(session, spec)
+        volumes = client.containers.run_kwargs[0]["volumes"]
+        assert volumes[str(env_file)] == {"bind": "/run/secrets/env.sh", "mode": "ro"}
+        assert "ANTHROPIC_API_KEY" not in client.containers.run_kwargs[0]["environment"]
+        await manager.stop(session)
+
+
 class TestLifecycle:
     @pytest.mark.asyncio
     async def test_stop_stops_and_removes(
@@ -377,8 +470,9 @@ class TestLifecycle:
         sid = str(session.id)
         container = client.containers.by_name[manager.container_name(sid)]
         container.status = "exited"
-        with patch.object(dc, "READY_POLL_INTERVAL", 0.01):
-            await manager._monitor_process(sid, manager._processes[sid].pid or 0)
+        manager._monitor_interval = 0.01
+        await manager._monitor_process(sid, manager._processes[sid].pid or 0)
+        assert manager._alive[sid] is False
         assert manager._processes[sid].state == ProcessState.STOPPED
         death.assert_awaited_once_with(sid)
         monitor = manager._monitors.pop(sid, None)
@@ -399,6 +493,9 @@ class TestLifecycle:
             await manager.start(session, spec)
         sid = str(session.id)
         client.containers.by_name.clear()
+        # Liveness comes from the monitor's last observation, never a blocking
+        # Docker call on the request path.
+        manager._alive[sid] = False
         assert manager._reconcile_active() == []
         assert manager._processes[sid].state == ProcessState.STOPPED
         monitor = manager._monitors.pop(sid, None)
@@ -426,6 +523,7 @@ class TestLifecycle:
         )
         assert manager._processes[sid].state == ProcessState.RUNNING
         assert manager._processes[sid].managed_by == MANAGED_BY
+        assert sid in manager._ready
 
     def test_marks_stopped_when_container_gone(
         self, client: _Client, workspaces: Path, tmp_path: Path
@@ -458,9 +556,148 @@ class TestLifecycle:
         assert manager._processes[sid].state == ProcessState.STOPPED
 
 
+class TestReadiness:
+    @pytest.mark.asyncio
+    async def test_ready_when_broker_answers(
+        self,
+        manager: DockerContainerPodManager,
+        client: _Client,
+        workspaces: Path,
+        session: Session,
+        spec: SessionSpec,
+    ) -> None:
+        ws = _workspace(workspaces, session)
+        with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
+            await manager.start(session, spec)
+        # The monitor task also probes health; stop it so the probe count is ours.
+        manager._monitors.pop(str(session.id)).cancel()
+        manager._ready_poll = 0.01
+        healthy = AsyncMock(side_effect=[False, True])
+        with patch.object(manager, "_broker_healthy", healthy):
+            assert await manager.wait_for_ready(session, timeout=5) == SessionStatus.RUNNING
+        assert healthy.await_count == 2
+        await manager.stop(session)
+
+    @pytest.mark.asyncio
+    async def test_status_is_provisioning_until_broker_answers(
+        self,
+        manager: DockerContainerPodManager,
+        client: _Client,
+        workspaces: Path,
+        session: Session,
+        spec: SessionSpec,
+    ) -> None:
+        ws = _workspace(workspaces, session)
+        with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
+            await manager.start(session, spec)
+        assert await manager.status(session) == SessionStatus.PROVISIONING
+        manager._ready_poll = 0.01
+        with patch.object(manager, "_broker_healthy", AsyncMock(return_value=True)):
+            assert await manager.wait_for_ready(session, timeout=1) == SessionStatus.RUNNING
+        assert await manager.status(session) == SessionStatus.RUNNING
+        await manager.stop(session)
+        assert str(session.id) not in manager._ready
+
+    @pytest.mark.asyncio
+    async def test_monitor_marks_ready_when_broker_answers(
+        self,
+        manager: DockerContainerPodManager,
+        client: _Client,
+        workspaces: Path,
+        session: Session,
+        spec: SessionSpec,
+    ) -> None:
+        ws = _workspace(workspaces, session)
+        with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
+            await manager.start(session, spec)
+        sid = str(session.id)
+        container = client.containers.by_name[manager.container_name(sid)]
+        manager._monitor_interval = 0.01
+
+        async def _healthy(_sid: str) -> bool:
+            container.status = "exited"  # end the monitor loop after this poll
+            return True
+
+        with patch.object(manager, "_broker_healthy", _healthy):
+            await manager._monitor_process(sid, manager._processes[sid].pid or 0)
+        # ready was set during the loop and cleared when the container exited
+        assert sid not in manager._ready
+        assert manager._processes[sid].state == ProcessState.STOPPED
+        monitor = manager._monitors.pop(sid, None)
+        if monitor is not None:
+            monitor.cancel()
+
+    @pytest.mark.asyncio
+    async def test_times_out_when_broker_never_answers(
+        self,
+        manager: DockerContainerPodManager,
+        client: _Client,
+        workspaces: Path,
+        session: Session,
+        spec: SessionSpec,
+    ) -> None:
+        ws = _workspace(workspaces, session)
+        with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
+            await manager.start(session, spec)
+        manager._ready_poll = 0.01
+        with patch.object(manager, "_broker_healthy", AsyncMock(return_value=False)):
+            assert await manager.wait_for_ready(session, timeout=0.05) == SessionStatus.FAILED
+        await manager.stop(session)
+
+    @pytest.mark.asyncio
+    async def test_reports_failed_and_stopped_states(
+        self, manager: DockerContainerPodManager, session: Session
+    ) -> None:
+        assert await manager.wait_for_ready(session, timeout=0.01) == SessionStatus.FAILED
+        sid = str(session.id)
+        manager._processes[sid] = ProcessInfo(session_id=sid, state=ProcessState.STOPPED)
+        assert await manager.wait_for_ready(session, timeout=0.01) == SessionStatus.STOPPED
+
+    @pytest.mark.asyncio
+    async def test_health_probe_urls_and_errors(
+        self, manager: DockerContainerPodManager, workspaces: Path, tmp_path: Path, client: _Client
+    ) -> None:
+        sid = "abc"
+        assert manager._broker_health_url(sid) == "http://niuu-session-abc:8081/health"
+        loopback = DockerContainerPodManager(
+            workspaces_dir=str(workspaces), state_file=str(tmp_path / "s.json")
+        )
+        assert loopback._broker_health_url(sid) is None
+        loopback._processes[sid] = ProcessInfo(session_id=sid, port=9105)
+        assert loopback._broker_health_url(sid) == "http://127.0.0.1:9105/health"
+        assert await loopback._broker_healthy("missing") is False
+
+        class _Resp:
+            status_code = 200
+
+        class _Client2:
+            def __init__(self, **kwargs: Any) -> None:
+                del kwargs
+
+            async def __aenter__(self) -> _Client2:
+                return self
+
+            async def __aexit__(self, *args: Any) -> None:
+                return None
+
+            async def get(self, url: str) -> _Resp:
+                del url
+                return _Resp()
+
+        with patch.object(dc.httpx, "AsyncClient", _Client2):
+            assert await manager._broker_healthy(sid) is True
+
+        class _Broken(_Client2):
+            async def get(self, url: str) -> _Resp:
+                raise dc.httpx.ConnectError("refused")
+
+        with patch.object(dc.httpx, "AsyncClient", _Broken):
+            assert await manager._broker_healthy(sid) is False
+
+
 class TestProxyRouting:
     @pytest.mark.asyncio
-    async def test_network_mode_installs_resolver_and_suppresses_port(
+    async def test_network_mode_exposes_proxy_target_and_suppresses_port(
         self,
         manager: DockerContainerPodManager,
         client: _Client,
@@ -486,16 +723,18 @@ class TestProxyRouting:
         registry = _Registry()
         manager.set_skuld_registry(registry)
         assert isinstance(manager._skuld_registry, _NetworkRegistry)
-        assert registry.resolver is not None
+        # The platform installs its own composite resolver; this manager only
+        # answers session_proxy_target.
+        assert registry.resolver is None
 
         sid = str(session.id)
-        assert await registry.resolver(sid) is None
+        assert manager.session_proxy_target(session) is None
 
         ws = _workspace(workspaces, session)
         with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
             await manager.start(session, spec)
         assert registry.registered == []
-        target = await registry.resolver(sid)
+        target = manager.session_proxy_target(session)
         assert target == SessionProxyTarget(
             service_url=f"http://niuu-session-{sid}:8081",
             connect_host=f"niuu-session-{sid}",
@@ -522,6 +761,7 @@ class TestProxyRouting:
         registry = _Registry()
         manager.set_skuld_registry(registry)
         assert manager._skuld_registry is registry
+        assert manager.session_proxy_target(MagicMock(id="x")) is None
 
     def test_network_registry_unregister_without_method(self) -> None:
         facade = _NetworkRegistry(object())
@@ -530,6 +770,35 @@ class TestProxyRouting:
 
 
 class TestHelpers:
+    def test_liveness_falls_back_to_docker_once(
+        self, client: _Client, workspaces: Path, tmp_path: Path
+    ) -> None:
+        sid = str(uuid4())
+        name = f"niuu-session-{sid}"
+        client.containers.by_name[name] = _Container(name, status="running")
+        state_file = tmp_path / "state.json"
+        state_file.write_text(
+            json.dumps(
+                {
+                    sid: ProcessInfo(
+                        session_id=sid,
+                        pid=DockerContainerPodManager._synthetic_pid(sid),
+                        state=ProcessState.RUNNING,
+                    ).to_dict()
+                }
+            )
+        )
+        manager = DockerContainerPodManager(
+            workspaces_dir=str(workspaces), state_file=str(state_file)
+        )
+        manager._alive.clear()
+        pid = manager._processes[sid].pid or 0
+        assert manager._is_process_alive(pid) is True
+        client.containers.by_name.clear()
+        # cached: no second Docker round-trip
+        assert manager._is_process_alive(pid) is True
+        assert manager._is_process_alive(424242) is False
+
     def test_as_bool(self) -> None:
         assert dc._as_bool(True) is True
         assert dc._as_bool("yes") is True

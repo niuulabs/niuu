@@ -28,16 +28,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import docker
+import httpx
 from docker.errors import DockerException, ImageNotFound, NotFound
 
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.local_process import (
-    READY_POLL_INTERVAL,
     FlockPortPlan,
     LocalProcessPodManager,
     ProcessInfo,
     ProcessState,
 )
+from volundr.domain.models import SessionStatus
 
 if TYPE_CHECKING:
     from volundr.domain.models import Session, SessionSpec
@@ -51,6 +52,9 @@ DEFAULT_SANDBOX_SESSIONS_DIR = "/volundr/sessions"
 DEFAULT_SANDBOX_HOME = "/home/skuld"
 DEFAULT_PLATFORM_URL = "http://host.docker.internal:8080"
 DEFAULT_LOG_TAIL = 100
+DEFAULT_MONITOR_INTERVAL_SECONDS = 2.0
+DEFAULT_READY_POLL_SECONDS = 0.5
+DEFAULT_READY_PROBE_TIMEOUT_SECONDS = 2.0
 MANAGED_BY = "docker_container"
 LABEL_SESSION = "niuu.session-id"
 LABEL_MANAGED_BY = "niuu.managed-by"
@@ -93,6 +97,9 @@ class DockerContainerPodManager(LocalProcessPodManager):
         run_as_host_user: bool = True,
         pull_missing: bool = True,
         log_tail: int = DEFAULT_LOG_TAIL,
+        monitor_interval_seconds: float = DEFAULT_MONITOR_INTERVAL_SECONDS,
+        ready_poll_seconds: float = DEFAULT_READY_POLL_SECONDS,
+        ready_probe_timeout_seconds: float = DEFAULT_READY_PROBE_TIMEOUT_SECONDS,
         **kwargs: Any,
     ) -> None:
         # The base constructor recovers persisted sessions through
@@ -107,6 +114,15 @@ class DockerContainerPodManager(LocalProcessPodManager):
         self._run_as_host_user = _as_bool(run_as_host_user)
         self._pull_missing = _as_bool(pull_missing)
         self._log_tail = int(log_tail)
+        self._monitor_interval = float(monitor_interval_seconds)
+        self._ready_poll = float(ready_poll_seconds)
+        self._ready_probe_timeout = float(ready_probe_timeout_seconds)
+        # Liveness as last observed by the monitor tasks. Consulted by the
+        # synchronous base-class hooks so the event loop never waits on the
+        # Docker API while serving requests.
+        self._alive: dict[str, bool] = {}
+        # Sessions whose broker has answered /health at least once.
+        self._ready: set[str] = set()
         self._client = (
             docker.DockerClient(base_url=str(docker_base_url))
             if str(docker_base_url).strip()
@@ -115,6 +131,10 @@ class DockerContainerPodManager(LocalProcessPodManager):
         super().__init__(**kwargs)
         for info in self._processes.values():
             info.managed_by = MANAGED_BY
+            if info.state == ProcessState.RUNNING:
+                # Recovered from the state file: the broker was up before the
+                # platform restarted and there is no monitor to re-observe it.
+                self._ready.add(info.session_id)
 
     # ------------------------------------------------------------------
     # Naming and lookup
@@ -156,12 +176,15 @@ class DockerContainerPodManager(LocalProcessPodManager):
         if not self._network:
             super().set_skuld_registry(registry)
             return
-        set_resolver = getattr(registry, "set_target_resolver", None)
-        if callable(set_resolver):
-            set_resolver(self._resolve_proxy_target)
+        # Network mode: no loopback port to register. Routing goes through
+        # session_proxy_target, which the platform's composite resolver calls.
         self._skuld_registry = _NetworkRegistry(registry)
 
-    async def _resolve_proxy_target(self, session_id: str) -> SessionProxyTarget | None:
+    def session_proxy_target(self, session: Session) -> SessionProxyTarget | None:
+        """Where the session proxy should dial for this session (network mode only)."""
+        if not self._network:
+            return None
+        session_id = str(session.id)
         info = self._processes.get(session_id)
         if info is None or info.state != ProcessState.RUNNING:
             return None
@@ -171,6 +194,54 @@ class DockerContainerPodManager(LocalProcessPodManager):
             connect_host=name,
             connect_port=self._broker_port,
         )
+
+    # ------------------------------------------------------------------
+    # Readiness
+    # ------------------------------------------------------------------
+
+    def _broker_health_url(self, session_id: str) -> str | None:
+        if self._network:
+            return f"http://{self.container_name(session_id)}:{self._broker_port}/health"
+        info = self._processes.get(session_id)
+        if info is None or info.port is None:
+            return None
+        return f"http://127.0.0.1:{info.port}/health"
+
+    async def _broker_healthy(self, session_id: str) -> bool:
+        url = self._broker_health_url(session_id)
+        if url is None:
+            return False
+        try:
+            async with httpx.AsyncClient(timeout=self._ready_probe_timeout) as client:
+                response = await client.get(url)
+        except httpx.HTTPError:
+            return False
+        return response.status_code == 200
+
+    async def status(self, session: Session) -> SessionStatus:
+        """Like the base class, but RUNNING only once the broker has answered."""
+        base = await super().status(session)
+        if base == SessionStatus.RUNNING and str(session.id) not in self._ready:
+            return SessionStatus.PROVISIONING
+        return base
+
+    async def wait_for_ready(self, session: Session, timeout: float) -> SessionStatus:
+        """Ready means the container runs *and* its broker answers ``/health``."""
+        session_id = str(session.id)
+        elapsed = 0.0
+        while elapsed < timeout:
+            info = self._processes.get(session_id)
+            if info is None or info.state == ProcessState.FAILED:
+                return SessionStatus.FAILED
+            if info.state == ProcessState.STOPPED:
+                return SessionStatus.STOPPED
+            if info.state == ProcessState.RUNNING and await self._broker_healthy(session_id):
+                self._ready.add(session_id)
+                return SessionStatus.RUNNING
+            await asyncio.sleep(self._ready_poll)
+            elapsed += self._ready_poll
+        logger.warning("Session %s broker did not answer /health within %.0fs", session_id, timeout)
+        return SessionStatus.FAILED
 
     # ------------------------------------------------------------------
     # Container lifecycle (replaces the subprocess hooks of the base class)
@@ -225,6 +296,45 @@ class DockerContainerPodManager(LocalProcessPodManager):
         del workspace
         return env
 
+    @staticmethod
+    def _host_path_binds(spec: SessionSpec) -> dict[str, dict[str, str]]:
+        """Translate ``hostPath`` volumes contributed to the pod spec into binds.
+
+        Secret injection adapters describe what to mount in Kubernetes terms;
+        on a single host the same paths are bound straight into the container.
+        Anything that is not a ``hostPath`` volume cannot be honoured here and
+        is a configuration error, not something to skip.
+        """
+        if spec.pod_spec is None:
+            return {}
+        host_paths: dict[str, tuple[str, str]] = {}
+        for volume in spec.pod_spec.volumes:
+            name = str(volume.get("name", ""))
+            host_path = volume.get("hostPath")
+            if not isinstance(host_path, dict) or not host_path.get("path"):
+                raise ValueError(
+                    f"Volume {name!r} is not a hostPath volume; the docker session "
+                    "runtime can only bind host paths (check secret_injection.adapter)"
+                )
+            host_paths[name] = (str(host_path["path"]), str(host_path.get("type", "")))
+
+        binds: dict[str, dict[str, str]] = {}
+        for mount in spec.pod_spec.volume_mounts:
+            name = str(mount.get("name", ""))
+            if name not in host_paths:
+                raise ValueError(f"Volume mount {name!r} references an undeclared volume")
+            path, path_type = host_paths[name]
+            source = Path(path)
+            if path_type == "DirectoryOrCreate":
+                source.mkdir(parents=True, exist_ok=True)
+            elif not source.exists():
+                raise FileNotFoundError(f"Volume {name!r} host path {path} does not exist")
+            binds[str(source)] = {
+                "bind": str(mount["mountPath"]),
+                "mode": "ro" if mount.get("readOnly") else "rw",
+            }
+        return binds
+
     def _run_kwargs(
         self,
         session: Session,
@@ -235,6 +345,11 @@ class DockerContainerPodManager(LocalProcessPodManager):
         session_id = str(session.id)
         home_dir = self._session_home_dir(session_id)
         home_dir.mkdir(parents=True, exist_ok=True)
+        volumes: dict[str, dict[str, str]] = {
+            str(workspace): {"bind": self._sandbox_workspace(session_id), "mode": "rw"},
+            str(home_dir): {"bind": self._sandbox_home, "mode": "rw"},
+        }
+        volumes.update(self._host_path_binds(spec))
         kwargs: dict[str, Any] = {
             "image": self._skuld_image,
             "name": self.container_name(session_id),
@@ -242,10 +357,7 @@ class DockerContainerPodManager(LocalProcessPodManager):
             "init": True,
             "labels": {LABEL_SESSION: session_id, LABEL_MANAGED_BY: MANAGED_BY},
             "environment": self._container_environment(session, spec, workspace),
-            "volumes": {
-                str(workspace): {"bind": self._sandbox_workspace(session_id), "mode": "rw"},
-                str(home_dir): {"bind": self._sandbox_home, "mode": "rw"},
-            },
+            "volumes": volumes,
             "extra_hosts": {"host.docker.internal": "host-gateway"},
         }
         if self._run_as_host_user:
@@ -281,7 +393,7 @@ class DockerContainerPodManager(LocalProcessPodManager):
                 "run the session without a flock or use the local-process pod manager."
             )
         session_id = str(session.id)
-        stale = self._get_container(session_id)
+        stale = await asyncio.to_thread(self._get_container, session_id)
         if stale is not None:
             await asyncio.to_thread(stale.remove, force=True)
 
@@ -303,6 +415,12 @@ class DockerContainerPodManager(LocalProcessPodManager):
         info = self._processes.get(session_id)
         if info is not None:
             info.managed_by = MANAGED_BY
+            if self._network:
+                # The proxy dials by container name; a persisted loopback port
+                # would be tried first and shadow the resolver.
+                self._port_allocator.release(port)
+                info.port = None
+        self._alive[session_id] = True
         return self._synthetic_pid(session_id)
 
     async def _monitor_process(self, session_id: str, pid: int) -> None:
@@ -310,7 +428,12 @@ class DockerContainerPodManager(LocalProcessPodManager):
         del pid
         try:
             while await asyncio.to_thread(self._container_running, session_id):
-                await asyncio.sleep(READY_POLL_INTERVAL)
+                self._alive[session_id] = True
+                if session_id not in self._ready and await self._broker_healthy(session_id):
+                    self._ready.add(session_id)
+                await asyncio.sleep(self._monitor_interval)
+            self._alive[session_id] = False
+            self._ready.discard(session_id)
 
             info = self._processes.get(session_id)
             if info and info.state == ProcessState.RUNNING:
@@ -332,6 +455,8 @@ class DockerContainerPodManager(LocalProcessPodManager):
         session_id = self._session_for_pid(pid)
         if session_id is None:
             return
+        self._alive[session_id] = False
+        self._ready.discard(session_id)
         container = await asyncio.to_thread(self._get_container, session_id)
         if container is None:
             return
@@ -344,11 +469,26 @@ class DockerContainerPodManager(LocalProcessPodManager):
         except NotFound:
             return
 
+    def _persist_state(self) -> None:
+        if self._network:
+            # The proxy recovers loopback ports from this file and would try
+            # 127.0.0.1:<port> before the container-name target.
+            for info in self._processes.values():
+                info.port = None
+        super()._persist_state()
+
     def _is_process_alive(self, pid: int) -> bool:  # type: ignore[override]
         session_id = self._session_for_pid(pid)
         if session_id is None:
             return False
-        return self._container_running(session_id)
+        cached = self._alive.get(session_id)
+        if cached is not None:
+            return cached
+        # No monitor has reported yet (e.g. a session recovered from the state
+        # file); ask Docker once and remember the answer.
+        alive = self._container_running(session_id)
+        self._alive[session_id] = alive
+        return alive
 
     def _is_recoverable_local_process(self, info: ProcessInfo) -> bool:
         if info.managed_by not in {MANAGED_BY, "local_process"}:

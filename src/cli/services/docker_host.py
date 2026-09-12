@@ -146,6 +146,29 @@ def docker_info(config: DockerPreflightConfig) -> dict[str, object] | PreflightR
     return payload
 
 
+def docker_socket_gid(
+    config: DockerPreflightConfig,
+    socket_path: str = "/var/run/docker.sock",
+) -> int | None:
+    """Group id of the Docker socket as containers will see it.
+
+    On Linux the socket bind-mounted into a container keeps the host's group
+    (usually ``docker``), so the host stat is right. Docker Desktop runs the
+    daemon in a VM and presents the socket as ``root:root`` inside containers,
+    whatever the host symlink says, so the root group is what grants access.
+    Returns ``None`` when no socket exists.
+    """
+    info = docker_info(config)
+    if not isinstance(info, PreflightResult):
+        operating_system = str(info.get("OperatingSystem", ""))
+        if "Docker Desktop" in operating_system:
+            return 0
+    try:
+        return os.stat(socket_path).st_gid
+    except OSError:
+        return None
+
+
 def check_docker_daemon(config: DockerPreflightConfig) -> PreflightResult:
     """Verify the Docker daemon is reachable by the current user."""
     info = docker_info(config)

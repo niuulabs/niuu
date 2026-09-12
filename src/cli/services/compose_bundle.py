@@ -30,13 +30,23 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from niuu.service_databases import local_service_database_names
+from cli.services.docker_host import DockerPreflightConfig, docker_socket_gid
+from niuu.service_databases import database_name_for_service, local_service_database_names
 
 if TYPE_CHECKING:
     from cli.config import CLISettings
     from cli.services.docker_host import HostFacts
 
 DOCKER_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.docker_container.DockerContainerPodManager"
+SECRET_INJECTION_CONTRIBUTOR = (
+    "volundr.adapters.outbound.contributors.secrets.SecretInjectionContributor"
+)
+WORKLOAD_IDENTITY_CONTRIBUTOR = (
+    "volundr.adapters.outbound.contributors.workload_identity.WorkloadIdentityContributor"
+)
+SESSION_SECRET_INJECTION_ADAPTER = (
+    "volundr.adapters.outbound.session_file_secret_injection.SessionFileSecretInjectionAdapter"
+)
 DEFAULT_SKULD_IMAGE = "ghcr.io/niuulabs/skuld:dev"
 POSTGRES_USER = "niuu"
 COMPOSE_FILE = "docker-compose.yaml"
@@ -151,20 +161,13 @@ def detect_lan_ip() -> str:
         return "127.0.0.1"
 
 
-def docker_socket_gid(path: str = "/var/run/docker.sock") -> int | None:
-    """Return the group id owning the Docker socket, or None if it is absent."""
-    try:
-        return os.stat(path).st_gid
-    except OSError:
-        return None
-
-
 def data_subdirs(root: Path) -> dict[str, Path]:
     return {
         "postgres": root / "postgres",
         "workspaces": root / "workspaces",
         "home": root / "home",
         "credentials": root / "credentials",
+        "session_secrets": root / "session-secrets",
         "models": root / "models",
         "residents": root / "residents",
     }
@@ -183,10 +186,21 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         "kwargs": {"base_dir": str(sub["credentials"])},
         "secret_kwargs_env": {"encryption_key": "NIUU_CREDENTIAL_KEY"},
     }
+    # Session containers get their credentials as bind-mounted files rendered
+    # from the same store (env.sh sourced by the skuld entrypoint).
+    secret_injection = {
+        "adapter": SESSION_SECRET_INJECTION_ADAPTER,
+        "kwargs": {
+            "base_dir": str(sub["credentials"]),
+            "sessions_dir": str(sub["session_secrets"]),
+        },
+        "secret_kwargs_env": {"encryption_key": "NIUU_CREDENTIAL_KEY"},
+    }
     env: dict[str, str] = {
         "HOME": str(sub["home"]),
         "NIUU_CONFIG": str(data_root / "config.yaml"),
         "NIUU_MODE": "mini",
+        "NIUU_SETUP_MODE": "docker",
         "NIUU_SERVER__HOST": "0.0.0.0",
         "NIUU_SERVER__EXTERNAL_HOST": "${NIUU_EXTERNAL_HOST}",
         "NIUU_SERVER__PORT": str(settings.server.port),
@@ -195,8 +209,23 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         "DATABASE__PORT": "5432",
         "DATABASE__USER": POSTGRES_USER,
         "DATABASE__PASSWORD": "${NIUU_POSTGRES_PASSWORD}",
+        # Integration connections are created through the shared API (niuu_shared);
+        # sessions must resolve integration ids from the same database.
+        "INTEGRATIONS__DATABASE_NAME": database_name_for_service("niuu-shared"),
         "NIUU_CREDENTIAL_KEY": "${NIUU_CREDENTIAL_KEY}",
         "CREDENTIAL_STORE": json.dumps(credential_store),
+        "SECRET_INJECTION": json.dumps(secret_injection),
+        # The secret-injection contributor turns a session's integration
+        # connections into credential mappings for the adapter above. Workload
+        # identity needs a Kubernetes service-account token issuer; on a single
+        # host the session runtime has none, so it is switched off explicitly
+        # rather than left to emit a volume nothing can mount.
+        "SESSION_CONTRIBUTORS": json.dumps(
+            [
+                {"adapter": SECRET_INJECTION_CONTRIBUTOR, "kwargs": {}},
+                {"adapter": WORKLOAD_IDENTITY_CONTRIBUTOR, "kwargs": {"enabled": False}},
+            ]
+        ),
         "NIUU_POD_MANAGER__ADAPTER": DOCKER_POD_MANAGER_ADAPTER,
         "NIUU_POD_MANAGER__WORKSPACES_DIR": str(sub["workspaces"]),
         "NIUU_POD_MANAGER__SKULD_IMAGE": "${NIUU_SKULD_IMAGE}",
@@ -206,6 +235,7 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         "NIUU_SETUP_ENABLED": "true",
         "NIUU_SETUP_STATE_FILE": str(data_root / SETUP_STATE_FILE),
         "NIUU_HOST_FACTS_FILE": str(data_root / HOST_FACTS_FILE),
+        "SESSION_ROOM__INTERNAL_BASE_URL": f"http://127.0.0.1:{settings.server.port}",
         "OBSERVATORY__GUILD__URL": f"http://127.0.0.1:{settings.server.port}",
         "BIFROST__URL": f"http://127.0.0.1:{settings.server.port}",
         "RAVN_GATEWAY__PLATFORM__BASE_URL": f"http://127.0.0.1:{settings.server.port}",
@@ -354,8 +384,9 @@ def write_bundle(
 
     compose_doc = render_compose(settings)
     paths.compose_file.write_text(yaml.safe_dump(compose_doc, sort_keys=False))
+    socket_gid = docker_socket_gid(DockerPreflightConfig(data_dir=settings.docker.data_dir))
     paths.env_file.write_text(
-        render_env(settings, external_host=external_host, docker_gid=docker_socket_gid())
+        render_env(settings, external_host=external_host, docker_gid=socket_gid)
     )
     facts_text = host_facts.to_json() + "\n"
     paths.host_facts_file.write_text(facts_text)
@@ -389,6 +420,32 @@ def run_compose(settings: CLISettings, *args: str) -> int:
     cmd = compose_command(settings, *args)
     completed = subprocess.run(cmd, check=False)  # noqa: S603
     return completed.returncode
+
+
+SESSION_CONTAINER_LABEL = "niuu.managed-by=docker_container"
+
+
+def remove_session_containers(settings: CLISettings) -> int:
+    """Force-remove session containers the platform started via the Docker socket.
+
+    They are not part of the compose project, so ``docker compose down`` leaves
+    them behind. Returns how many were removed.
+    """
+    del settings
+    docker = shutil.which("docker")
+    if not docker:
+        raise RuntimeError("docker not found in PATH; run `niuu doctor`.")
+    listed = subprocess.run(  # noqa: S603
+        [docker, "ps", "-aq", "--filter", f"label={SESSION_CONTAINER_LABEL}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    ids = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
+    if not ids:
+        return 0
+    subprocess.run([docker, "rm", "-f", *ids], check=False, capture_output=True)  # noqa: S603
+    return len(ids)
 
 
 def health_url(settings: CLISettings) -> str:

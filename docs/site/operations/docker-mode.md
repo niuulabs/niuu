@@ -41,10 +41,30 @@ Under `docker.compose_dir` (default `~/.niuu/docker`):
 | `host-facts.json` | Host facts shown on the wizard's welcome step. |
 
 Under `docker.data_dir` (default `/var/lib/niuu`): `postgres/`, `workspaces/`,
-`home/`, `credentials/`, `models/`, `residents/`, plus `config.yaml`,
-`host-facts.json` and `setup-state.json`. The data directory is bind-mounted
-into the platform container at the same path so session containers can mount
-workspaces from it.
+`home/`, `credentials/`, `session-secrets/`, `models/`, `residents/`, plus
+`config.yaml`, `host-facts.json` and `setup-state.json`. The data directory is
+bind-mounted into the platform container at the same path so session
+containers can mount workspaces and secrets from it.
+
+### How sessions get their credentials
+
+Credentials entered in the wizard are stored encrypted (Fernet, key in
+`secrets.env`) under `credentials/`. When a session starts, the platform
+renders only the fields that session's integrations ask for into
+`session-secrets/<session-id>/`: an `env.sh` with `export NAME='value'` lines
+and one file per requested file mount. Those files are bind-mounted read-only
+into the session container (`/run/secrets/env.sh` and the requested paths) and
+the skuld entrypoint sources them on start-up. Secret values never appear in
+the container's environment as seen by `docker inspect`, the platform's own
+environment is not inherited by the sandbox, and the directory is removed when
+the session stops. A session whose integration credential is missing from the
+store fails to start with an error naming the credential.
+
+Kubernetes-only session features are switched off explicitly in this mode:
+workload identity (the projected service-account token) has no issuer on a
+single host, so the bundle disables that contributor. Any other volume a
+contributor asks for must be a host path; anything else fails the session
+start with a clear error instead of being silently dropped.
 
 ## Configuration
 
@@ -81,6 +101,20 @@ as sibling containers (`DockerContainerPodManager`) rather than as host
 processes, and the browser reaches them through the platform's session proxy.
 The setup wizard is enabled with `NIUU_SETUP_ENABLED=true`, which only this
 bundle sets; cluster deployments never show it.
+
+The bundle sets these on the platform container beyond the usual mini-mode
+values; they are plain environment variables in `docker-compose.yaml` and can
+be read there:
+
+| Variable | Purpose |
+| --- | --- |
+| `NIUU_SETUP_MODE=docker` | What the wizard reports as the runtime (the platform itself still runs `NIUU_MODE=mini`). |
+| `NIUU_DATABASE_MODE=external` + `DATABASE__*` | Use the `postgres` service instead of embedded PostgreSQL; service databases are created on start-up. |
+| `INTEGRATIONS__DATABASE_NAME=niuu_shared` | Sessions resolve the integration connections the wizard created through the shared API. |
+| `CREDENTIAL_STORE` / `SECRET_INJECTION` | File credential store under `credentials/` and the per-session materializer under `session-secrets/`, both keyed by `NIUU_CREDENTIAL_KEY`. |
+| `SESSION_CONTRIBUTORS` | Enables the secret-injection contributor and disables workload identity (see above). |
+| `NIUU_POD_MANAGER__*` | `DockerContainerPodManager` with the compose network, the skuld image and the in-network platform URL sessions call back to. |
+| `SESSION_ROOM__INTERNAL_BASE_URL` | The platform dials session brokers through its own loopback proxy instead of the published LAN address, which is not reachable from inside the container. |
 
 ## The setup wizard
 

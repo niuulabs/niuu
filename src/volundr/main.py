@@ -679,7 +679,10 @@ def create_app(
                 integration_registry=integration_registry,
                 credential_store=credential_store,
             )
-            session_room_port = SkuldRoomAdapter(repository)
+            session_room_port = SkuldRoomAdapter(
+                repository,
+                internal_base_url=settings.session_room.internal_base_url,
+            )
             communication_ingress = CommunicationIngressService(
                 route_repository=communication_route_repository,
                 room_port=session_room_port,

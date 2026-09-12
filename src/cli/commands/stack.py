@@ -10,6 +10,7 @@ from cli.services.compose_bundle import (
     bundle_paths,
     compose_dir,
     detect_lan_ip,
+    remove_session_containers,
     run_compose,
     setup_url,
     wait_for_health,
@@ -124,6 +125,9 @@ def stack_down(settings: CLISettings) -> None:
     if not bundle_paths(settings).compose_file.exists():
         typer.echo(f"No compose bundle at {compose_dir(settings)}; nothing to stop.")
         return
+    removed = remove_session_containers(settings)
+    if removed:
+        typer.echo(f"Removed {removed} session container(s).")
     code = run_compose(settings, "down")
     if code != 0:
         raise typer.Exit(code)

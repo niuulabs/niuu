@@ -26,6 +26,7 @@ from cli.services.docker_host import (
     check_registry_reachable,
     collect_host_facts,
     docker_info,
+    docker_socket_gid,
     query_gpus,
     run_docker_preflight_checks,
 )
@@ -238,6 +239,29 @@ class TestGpu:
             result = check_gpu(replace(config, require_gpu=False))
         assert result.passed is True
         assert result.warn_only is True
+
+
+class TestDockerSocketGid:
+    def test_docker_desktop_uses_root_group(
+        self, config: DockerPreflightConfig, tmp_path: Path
+    ) -> None:
+        sock = tmp_path / "docker.sock"
+        sock.write_text("")
+        with patch(f"{MOD}.docker_info", return_value={"OperatingSystem": "Docker Desktop"}):
+            assert docker_socket_gid(config, str(sock)) == 0
+
+    def test_linux_uses_host_socket_group(
+        self, config: DockerPreflightConfig, tmp_path: Path
+    ) -> None:
+        sock = tmp_path / "docker.sock"
+        sock.write_text("")
+        with patch(f"{MOD}.docker_info", return_value={"OperatingSystem": "Ubuntu 24.04"}):
+            assert docker_socket_gid(config, str(sock)) == sock.stat().st_gid
+
+    def test_missing_socket(self, config: DockerPreflightConfig, tmp_path: Path) -> None:
+        failed = PreflightResult(name="docker", passed=False, message="missing")
+        with patch(f"{MOD}.docker_info", return_value=failed):
+            assert docker_socket_gid(config, str(tmp_path / "nope.sock")) is None
 
 
 class TestDataDir:

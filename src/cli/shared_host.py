@@ -283,7 +283,7 @@ def create_app(
             setup_service = SetupService(
                 FileSetupStateStore(path=host_config.setup_state_file),
                 enabled=host_config.setup_enabled,
-                mode=host_config.platform_mode,
+                mode=host_config.setup_mode or host_config.platform_mode,
                 host_facts_file=host_config.host_facts_file,
                 database_probe=_database_probe,
             )
