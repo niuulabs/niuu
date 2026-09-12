@@ -16,3 +16,7 @@ envoy:
     enabled: true
   authorization:
     enabled: true
+
+pat:
+  revocation_cache_ttl: 0
+  websocket_check_interval: 5

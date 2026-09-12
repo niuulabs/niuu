@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from identity.adapters.identity import EnvoyHeaderIdentityAdapter
+from tests.test_adapters.test_rest_session_log import allow_log_access
 from volundr.adapters.inbound.rest_events import create_events_router
 from volundr.domain.models import SessionEvent, SessionEventType
 from volundr.domain.ports import EventSink, SessionEventRepository
@@ -78,7 +79,7 @@ def event_app():
     sink = InMemoryEventSink()
     service = EventIngestionService(sinks=[sink])
     app = FastAPI()
-    router = create_events_router(service, sink)
+    router = create_events_router(service, sink, session_service=allow_log_access(app))
     app.include_router(router)
     return app, sink
 

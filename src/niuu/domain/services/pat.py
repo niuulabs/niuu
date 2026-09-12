@@ -60,6 +60,11 @@ class PATService:
             ttl_days=self._ttl_days,
         )
 
+        if issued.subject != owner_id:
+            raise ValueError(
+                "Token issuer returned a different subject than the authenticated owner"
+            )
+
         token_hash = hashlib.sha256(issued.raw_token.encode()).hexdigest()
         pat = await self._repo.create(owner_id, name, token_hash)
         logger.info("PAT created: id=%s owner=%s name=%s", pat.id, owner_id, name)

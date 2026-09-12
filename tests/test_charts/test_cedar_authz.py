@@ -113,3 +113,14 @@ def test_private_listeners_and_network_policy():
 def test_unsafe_gateway_configuration_rejected(overrides):
     with pytest.raises(subprocess.CalledProcessError):
         render_cedar(**overrides)
+
+
+def test_hardened_pat_revocation_settings_reach_application():
+    documents = render_cedar()
+    config = next(
+        yaml.safe_load(d["data"]["config.yaml"])
+        for d in documents
+        if d["kind"] == "ConfigMap" and "config.yaml" in d["data"]
+    )
+    assert config["pat"]["revocation_cache_ttl"] == 0
+    assert config["pat"]["websocket_check_interval"] == 5

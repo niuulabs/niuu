@@ -31,7 +31,7 @@ async def check_session_or_resident_access(
 ) -> None:
     """Authorize an existing Forge session or resident runtime subject."""
     if session_service is None and resident_runtime_service is None:
-        return
+        raise HTTPException(status_code=503, detail="Resource authorization unavailable")
 
     from volundr.domain.services.resident_runtime import ResidentRuntimeNotFoundError
     from volundr.domain.services.session import SessionAccessDeniedError
@@ -46,12 +46,6 @@ async def check_session_or_resident_access(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Not authorized to access {resource_name} for session {subject_id}",
             )
-        return
-
-    # Session telemetry historically accepts late events after the session row
-    # has gone away. Only resident-aware routers can validate the alternate
-    # subject type and therefore reject an unknown identifier safely.
-    if resident_runtime_service is None:
         return
 
     if resident_runtime_service is not None:

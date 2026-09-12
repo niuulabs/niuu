@@ -148,6 +148,13 @@ class EnvoyHeaderIdentityAdapter(EnvoyHeaderAuthenticationAdapter, IdentityPort)
         self._default_tenant_id = default_tenant_id
         self._role_mapping = role_mapping
 
+    async def validate_headers(self, headers: dict[str, str]) -> Principal:
+        principal = await super().validate_headers(headers)
+        user = await self._user_repository.get(principal.user_id)
+        if user is not None and user.status in (UserStatus.SUSPENDED, UserStatus.FAILED):
+            raise InvalidTokenError("User account is not active")
+        return principal
+
     async def validate_token(self, raw_token: str) -> Principal:
         """Validate by reading Envoy-injected headers from the raw token.
 
@@ -170,6 +177,9 @@ class EnvoyHeaderIdentityAdapter(EnvoyHeaderAuthenticationAdapter, IdentityPort)
                 from niuu.ports.identity import UserProvisioningError
 
                 raise UserProvisioningError("User provisioning in progress, retry later")
+
+            if user.status in (UserStatus.SUSPENDED, UserStatus.FAILED):
+                raise InvalidTokenError("User account is not active")
 
             # Sync tenant membership from IDP on every login
             if self._tenant_service is not None:

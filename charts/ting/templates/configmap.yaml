@@ -72,6 +72,11 @@ data:
         secret_kwargs_env: {}
         {{- end }}
 
+    {{- if .Values.pat }}
+    pat:
+      {{- toYaml .Values.pat | nindent 6 }}
+    {{- end }}
+
     dispatch:
       default_system_prompt: {{ .Values.dispatch.defaultSystemPrompt | quote }}
       default_model: {{ .Values.dispatch.defaultModel | quote }}

@@ -462,8 +462,10 @@ class TestEventsEndpointAuth:
             )
         assert resp.status_code == 403
 
-    def test_event_for_nonexistent_session_passes(self, session_repo, owner_identity, allow_authz):
-        """When session doesn't exist, auth check is skipped (session lookup returns None)."""
+    def test_event_for_nonexistent_session_is_denied(
+        self, session_repo, owner_identity, allow_authz
+    ):
+        """Missing ownership records cannot authorize event ingestion."""
         app, _ = _build_events_app(owner_identity, allow_authz, session_repo)
         with TestClient(app) as client:
             resp = client.post(
@@ -476,7 +478,7 @@ class TestEventsEndpointAuth:
                     "sequence": 0,
                 },
             )
-        assert resp.status_code == 201
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -507,7 +509,7 @@ class TestNoIdentityDevMode:
         assert resp.status_code == 201
 
     def test_events_no_session_service(self):
-        """When session_service is None, auth check is skipped."""
+        """An unavailable authorization service must not admit telemetry."""
         sink = InMemoryEventSink()
         ingestion = EventIngestionService(sinks=[sink])
         router = create_events_router(ingestion, sink, session_service=None)
@@ -525,4 +527,4 @@ class TestNoIdentityDevMode:
                     "sequence": 0,
                 },
             )
-        assert resp.status_code == 201
+        assert resp.status_code == 503

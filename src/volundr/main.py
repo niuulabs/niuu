@@ -1328,7 +1328,9 @@ def create_app(
     # PAT revocation enforcement
     from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 
-    app.add_middleware(PATRevocationMiddleware)
+    app.add_middleware(
+        PATRevocationMiddleware, websocket_check_interval=settings.pat.websocket_check_interval
+    )
 
     @app.get("/health", tags=["Health"])
     @app.get("/api/v1/forge/health", include_in_schema=False)

@@ -369,11 +369,7 @@ data:
 
     {{- if .Values.pat }}
     pat:
-      token_issuer_adapter: {{ .Values.pat.token_issuer_adapter | quote }}
-      token_issuer_kwargs: {{ .Values.pat.token_issuer_kwargs | toJson }}
-      {{- if .Values.pat.ttl_days }}
-      ttl_days: {{ .Values.pat.ttl_days }}
-      {{- end }}
+      {{- toYaml .Values.pat | nindent 6 }}
     {{- end }}
 
     workload_identity:

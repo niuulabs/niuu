@@ -484,6 +484,12 @@ class PATConfig(BaseModel):
         default=300.0,
         description="Seconds to cache valid-token lookups before re-checking the DB.",
     )
+    websocket_check_interval: float = Field(
+        default=30.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="Seconds between revocation checks on open WebSockets; expiry is immediate.",
+    )
     revoked_cache_ttl: float = Field(
         default=60.0,
         description="Seconds to cache revoked-token lookups (shorter for fast propagation).",

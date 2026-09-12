@@ -1835,7 +1835,7 @@ def create_router(
 
         principal = await _optional_principal(request)
         try:
-            await forge.ensure_access(session, principal, "view")
+            await forge.ensure_access(session, principal, "read")
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -3306,7 +3306,7 @@ def create_router(
             )
         principal = await _optional_principal(request)
         try:
-            await forge.ensure_access(session, principal, "view")
+            await forge.ensure_access(session, principal, "read")
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

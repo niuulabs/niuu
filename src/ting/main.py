@@ -978,7 +978,9 @@ def create_app(
 
     app.router.lifespan_context = lifespan
     apply_cors_middleware(app, settings.cors)
-    app.add_middleware(PATRevocationMiddleware)
+    app.add_middleware(
+        PATRevocationMiddleware, websocket_check_interval=settings.pat.websocket_check_interval
+    )
 
     @app.middleware("http")
     async def correlation_id_middleware(request: Request, call_next):  # noqa: ANN001

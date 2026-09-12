@@ -21,6 +21,7 @@ JWT_SIGNING_KEY = "jwt-signing-key-at-least-32-bytes-long"
 def _make_jwt(sub: str = "user-1", jti: str = "tok-123", exp_offset: int = 3600) -> str:
     payload = {
         "sub": sub,
+        "type": "pat",
         "jti": jti,
         "exp": int(time.time()) + exp_offset,
     }
@@ -163,3 +164,22 @@ class TestClose:
         # Should not raise
         await issuer.close()
         assert issuer._client is None
+
+
+@pytest.mark.parametrize(
+    "claim,value", [("type", "Bearer"), ("sub", ""), ("jti", ""), ("exp", None), ("exp", 0)]
+)
+@respx.mock
+async def test_invalid_exchange_claims_cannot_be_issued_as_a_pat(claim, value):
+    claims = {"sub": "alice", "type": "pat", "jti": "id", "exp": int(time.time()) + 60}
+    claims[claim] = value
+    token = jwt.encode(claims, JWT_SIGNING_KEY, algorithm="HS256")
+    respx.post(TOKEN_URL).mock(return_value=Response(200, json={"access_token": token}))
+    issuer = KeycloakTokenIssuer(
+        token_url=TOKEN_URL, client_id=CLIENT_ID, client_secret=CLIENT_SECRET
+    )
+    try:
+        with pytest.raises(RuntimeError):
+            await issuer.issue_token(subject_token=SUBJECT_TOKEN, name="pat")
+    finally:
+        await issuer.close()

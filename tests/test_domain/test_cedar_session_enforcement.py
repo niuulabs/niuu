@@ -56,3 +56,51 @@ async def test_list_applies_cedar_even_when_repository_returns_candidates(status
         ),
     )
     assert [s.name for s in result] == ["allowed"]
+
+
+@pytest.mark.parametrize("action", ["read", "stop", "update", "delete", "emit_event"])
+async def test_missing_principal_cannot_bypass_configured_authorization(action):
+    repository = InMemorySessionRepository()
+    service = SessionService(
+        repository, MockPodManager(), authorization=CedarAuthorizationAdapter()
+    )
+    session = Session(name="private", model="m", owner_id="alice", tenant_id="acme")
+    with pytest.raises(SessionAccessDeniedError):
+        await service._check_access(session, None, action)
+
+
+async def test_missing_principal_cannot_list_sessions():
+    repository = AsyncMock()
+    service = SessionService(
+        repository, MockPodManager(), authorization=CedarAuthorizationAdapter()
+    )
+    with pytest.raises(PermissionError):
+        await service.list_sessions()
+    repository.list.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "read",
+        "report_activity",
+        "report_usage",
+        "report_timeline",
+        "report_chronicle",
+        "emit_event",
+    ],
+)
+async def test_session_read_and_telemetry_actions_work_for_owner_only(action):
+    service = SessionService(
+        InMemorySessionRepository(), MockPodManager(), authorization=CedarAuthorizationAdapter()
+    )
+    session = Session(name="owned", model="m", owner_id="alice", tenant_id="acme")
+    await service._check_access(
+        session, Principal("alice", "", "acme", ["volundr:developer"]), action
+    )
+    for principal in [
+        Principal("bob", "", "acme", ["volundr:developer"]),
+        Principal("alice", "", "other", ["volundr:admin"]),
+    ]:
+        with pytest.raises(SessionAccessDeniedError):
+            await service._check_access(session, principal, action)

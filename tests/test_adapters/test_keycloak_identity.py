@@ -186,3 +186,19 @@ class TestGetOrProvisionUser:
             await adapter.get_or_provision_user(principal)
 
         assert user_repo.update.call_count == 2
+
+
+@pytest.mark.parametrize("status", [UserStatus.SUSPENDED, UserStatus.FAILED])
+async def test_disabled_user_is_denied_before_authority_or_membership_sync(status):
+    user_repo = AsyncMock()
+    user_repo.get.return_value = User(id="alice", email="alice@test", status=status)
+    tenant_service = AsyncMock()
+    adapter = EnvoyHeaderIdentityAdapter(user_repository=user_repo, tenant_service=tenant_service)
+    with pytest.raises(InvalidTokenError, match="not active"):
+        await adapter.validate_headers({"x-auth-user-id": "alice", "x-auth-tenant": "acme"})
+    with pytest.raises(InvalidTokenError, match="not active"):
+        await adapter.get_or_provision_user(
+            Principal("alice", "alice@test", "acme", ["volundr:admin"])
+        )
+    tenant_service.add_member.assert_not_called()
+    user_repo.update.assert_not_called()

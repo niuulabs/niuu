@@ -283,7 +283,10 @@ def create_app(
     app.router.lifespan_context = lifespan
 
     apply_cors_middleware(app, loaded_settings.cors)
-    app.add_middleware(PATRevocationMiddleware)
+    app.add_middleware(
+        PATRevocationMiddleware,
+        websocket_check_interval=loaded_settings.pat.websocket_check_interval,
+    )
 
     @app.get("/health", tags=["Health"])
     async def health_check() -> dict[str, str]:

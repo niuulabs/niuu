@@ -48,21 +48,18 @@ class TestCreateSessionScoping:
         assert session.owner_id == "alice"
         assert session.tenant_id == "acme"
 
-    async def test_create_without_principal_leaves_null(
+    async def test_create_without_principal_is_denied(
         self,
         repository: Repo,
         pod_manager: Pods,
     ):
         service = SessionService(repository, pod_manager, authorization=_authz)
 
-        session = await service.create_session(
-            name="s1",
-            model="m",
-            source=GitSource(repo="r", branch="main"),
-        )
-
-        assert session.owner_id is None
-        assert session.tenant_id is None
+        with pytest.raises(SessionAccessDeniedError):
+            await service.create_session(
+                name="s1", model="m", source=GitSource(repo="r", branch="main")
+            )
+        assert await repository.list() == []
 
 
 class TestListSessionsScoping:
@@ -146,7 +143,7 @@ class TestListSessionsScoping:
         assert len(carol_sessions) == 1
         assert carol_sessions[0].id == s_carol.id
 
-    async def test_no_principal_sees_all(
+    async def test_no_principal_is_denied(
         self,
         repository: Repo,
         pod_manager: Pods,
@@ -154,9 +151,8 @@ class TestListSessionsScoping:
         service = SessionService(repository, pod_manager, authorization=_authz)
         await self._seed(service, repository)
 
-        sessions = await service.list_sessions(principal=None)
-
-        assert len(sessions) == 3
+        with pytest.raises(PermissionError):
+            await service.list_sessions(principal=None)
 
 
 class TestOwnershipValidation:
@@ -337,22 +333,19 @@ class TestOwnershipValidation:
         with pytest.raises(SessionAccessDeniedError):
             await service.stop_session(session.id, principal=bob)
 
-    async def test_no_principal_allows_all(
-        self,
-        repository: Repo,
-        pod_manager: Pods,
-    ):
-        """Backward compat: None principal skips all access checks."""
+    async def test_no_principal_is_denied(self, repository: Repo, pod_manager: Pods):
         service = SessionService(repository, pod_manager, authorization=_authz)
         alice = _principal(user_id="alice", tenant_id="acme")
         session = await self._create_session_as(service, alice)
-
-        # All operations should succeed with principal=None
-        await service.update_session(session.id, name="ok", principal=None)
-        await service.start_session(session.id, principal=None)
-        await service.stop_session(session.id, principal=None)
-        result = await service.delete_session(session.id, principal=None)
-        assert result is True
+        for method in [
+            service.update_session,
+            service.start_session,
+            service.stop_session,
+            service.delete_session,
+        ]:
+            with pytest.raises(SessionAccessDeniedError):
+                await method(session.id, principal=None)
+        assert await repository.get(session.id) == session
 
     async def test_owner_can_archive(
         self,

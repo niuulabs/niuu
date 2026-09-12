@@ -68,8 +68,9 @@ class KeycloakTokenIssuer(TokenIssuer):
     ) -> IssuedToken:
         """Exchange the user's access token for a long-lived PAT.
 
-        The returned JWT is signed by Keycloak and includes a custom
-        ``pat_name`` claim so we can identify it as a PAT.
+        The dedicated exchange client must map ``type: pat`` into the signed
+        access token. Without that marker, the revocation validator cannot
+        distinguish the credential from an ordinary interactive token.
         """
         client = await self._get_client()
 
@@ -93,13 +94,8 @@ class KeycloakTokenIssuer(TokenIssuer):
         resp = await client.post(self._token_url, data=data)
 
         if resp.status_code != 200:
-            detail = resp.text[:200]
-            logger.error(
-                "Token exchange failed: status=%d, body=%s",
-                resp.status_code,
-                detail,
-            )
-            raise RuntimeError(f"Token exchange failed (HTTP {resp.status_code}): {detail}")
+            logger.error("Token exchange failed: status=%d", resp.status_code)
+            raise RuntimeError(f"Token exchange failed (HTTP {resp.status_code})")
 
         body = resp.json()
         raw_token = body["access_token"]
@@ -107,11 +103,25 @@ class KeycloakTokenIssuer(TokenIssuer):
         # Decode without verification — we trust Keycloak signed it
         claims = pyjwt.decode(raw_token, options={"verify_signature": False})
 
+        if claims.get("type") != "pat":
+            raise RuntimeError(
+                "Exchanged token is not revocable: configure the dedicated PAT "
+                "exchange client's signed type=pat claim"
+            )
+        subject = claims.get("sub")
+        token_id = claims.get("jti")
+        expiry = claims.get("exp")
+        if not isinstance(subject, str) or not subject.strip():
+            raise RuntimeError("Exchanged PAT has no subject")
+        if not isinstance(token_id, str) or not token_id.strip():
+            raise RuntimeError("Exchanged PAT has no token identifier")
+        if type(expiry) is not int or expiry <= time.time():
+            raise RuntimeError("Exchanged PAT has no valid expiry")
         return IssuedToken(
             raw_token=raw_token,
-            token_id=claims.get("jti", ""),
-            subject=claims.get("sub", ""),
-            expires_at=claims.get("exp", int(time.time()) + ttl_days * 86400),
+            token_id=token_id,
+            subject=subject,
+            expires_at=expiry,
         )
 
     async def close(self) -> None:

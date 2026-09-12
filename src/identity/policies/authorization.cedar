@@ -14,7 +14,7 @@ when { principal.roles.contains("volundr:admin") };
 permit(principal, action in [
     Niuu::Action::"read", Niuu::Action::"list", Niuu::Action::"update",
     Niuu::Action::"delete", Niuu::Action::"start", Niuu::Action::"stop",
-    Niuu::Action::"report_usage", Niuu::Action::"report_timeline",
+    Niuu::Action::"report_usage", Niuu::Action::"report_activity", Niuu::Action::"report_timeline",
     Niuu::Action::"report_chronicle", Niuu::Action::"emit_event"
 ], resource is Niuu::session)
 when {

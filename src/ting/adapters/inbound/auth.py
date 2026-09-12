@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException, Request, status
 
+from niuu.adapters.identity_headers import parse_roles_header
 from niuu.adapters.inbound.auth_context import (
     current_bearer_token as current_bearer_token,
 )
@@ -45,5 +46,5 @@ async def extract_principal(request: Request) -> Principal:
         user_id=user_id,
         email=request.headers.get("x-auth-email", ""),
         tenant_id=request.headers.get("x-auth-tenant", ""),
-        roles=request.headers.get("x-auth-roles", "volundr:developer").split(","),
+        roles=parse_roles_header(request.headers.get("x-auth-roles", "")),
     )

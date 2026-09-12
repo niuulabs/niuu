@@ -91,7 +91,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.router.lifespan_context = lifespan
     apply_cors_middleware(app, settings.cors)
-    app.add_middleware(PATRevocationMiddleware)
+    app.add_middleware(
+        PATRevocationMiddleware, websocket_check_interval=settings.pat.websocket_check_interval
+    )
 
     @app.get("/health")
     async def health() -> dict[str, str]:

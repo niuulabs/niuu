@@ -361,6 +361,20 @@
             "attributes": {}
           }
         }
+      },
+      "report_activity": {
+        "appliesTo": {
+          "principalTypes": [
+            "User"
+          ],
+          "resourceTypes": [
+            "session"
+          ],
+          "context": {
+            "type": "Record",
+            "attributes": {}
+          }
+        }
       }
     }
   }

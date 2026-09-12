@@ -30,6 +30,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 
 from tests.integration.pool_wrapper import TransactionalPool
+from tests.test_adapters.test_rest_session_log import allow_log_access
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
@@ -159,7 +160,9 @@ async def test_post_log_with_nul_returns_201_not_500(txn_pool):
     201 (was 500: asyncpg UntranslatableCharacterError black-holed the stream)."""
     app = FastAPI()
     app.include_router(
-        create_session_log_router(PostgresSessionEventLog(txn_pool), session_service=None)
+        create_session_log_router(
+            PostgresSessionEventLog(txn_pool), session_service=allow_log_access(app)
+        )
     )
     session_id = str(uuid4())
     body = {
