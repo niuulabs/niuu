@@ -757,7 +757,8 @@ def create_platform_commands(
     """Create the ``platform`` command group with dynamic service flags."""
     platform_app = typer.Typer(
         name="platform",
-        help="Manage the platform (up, down, status, init).",
+        help="Manage the platform (up, down, status, init). "
+        "`niuu up|down|status` are shortcuts for these with default flags.",
         no_args_is_help=True,
     )
 

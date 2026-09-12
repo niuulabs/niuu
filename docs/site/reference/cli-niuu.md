@@ -21,6 +21,18 @@ The scripts are the short path for day-to-day work. Use the CLI directly for a f
 niuu platform up            # foreground; Ctrl+C to stop
 ```
 
+### Lifecycle shortcuts
+
+`niuu up`, `niuu down`, and `niuu status` forward to the `platform` commands with default flags; use the `platform` group when you need per-service flags. In docker mode `niuu up` starts the Docker compose bundle instead of host processes. `niuu doctor` runs the host checks for the configured mode without starting anything.
+
+```bash
+niuu up                     # same as `niuu platform up` with default flags
+niuu down                   # same as `niuu platform down`
+niuu status                 # same as `niuu platform status`
+niuu doctor                 # host checks only; exit 1 on failure
+niuu up --mode docker       # whole stack as containers on this host
+```
+
 ### Choose what starts
 
 Services resolve from plugin defaults, then config, then these flags. `--all` overrides everything.
@@ -113,14 +125,18 @@ niuu [OPTIONS] COMMAND [ARGS]...
 | --- | --- |
 | [`config`](#niuu-config) | Show or update configuration. |
 | [`context`](#niuu-context) | Manage server contexts. |
+| [`doctor`](#niuu-doctor) | Check this host can run the platform in the configured mode. |
+| [`down`](#niuu-down) | Stop the platform. Same as `niuu platform down`. |
 | [`login`](#niuu-login) | Authenticate with the Niuu platform. |
 | [`logout`](#niuu-logout) | Clear stored credentials. |
-| [`platform`](#niuu-platform) | Manage the platform (up, down, status, init). |
+| [`platform`](#niuu-platform) | Manage the platform (up, down, status, init). `niuu up\|down\|status` are shortcuts for these with default flags. |
 | [`ravn`](#niuu-ravn) | Manage Ravn AI agent sessions. |
 | [`runs`](#niuu-runs) | Manage runs. |
 | [`sagas`](#niuu-sagas) | Manage sagas. |
 | [`sessions`](#niuu-sessions) | Manage coding sessions. |
+| [`status`](#niuu-status) | Show platform status. Same as `niuu platform status`. |
 | [`tui`](#niuu-tui) | Launch the interactive TUI. |
+| [`up`](#niuu-up) | Start the platform. |
 | [`version`](#niuu-version) | Print the niuu CLI version. |
 | [`whoami`](#niuu-whoami) | Show the currently authenticated user. |
 
@@ -218,6 +234,28 @@ niuu context use [OPTIONS] {name}
 | --- | --- | --- |
 | `NAME` | yes | Context name to activate |
 
+#### `niuu doctor`
+
+Check this host can run the platform in the configured mode.
+
+```bash
+niuu doctor [OPTIONS]
+```
+
+Prints the same preflight `niuu up` runs (Docker, GPU, disk, ports, ... in docker mode; claude binary, embedded database, ... in mini mode) without starting anything. Exit code 1 when a check fails.
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--mode` | STR |  | Check the host for this mode instead of the configured one. |
+
+#### `niuu down`
+
+Stop the platform. Same as `niuu platform down`.
+
+```bash
+niuu down [OPTIONS]
+```
+
 #### `niuu login`
 
 Authenticate with the Niuu platform.
@@ -241,7 +279,7 @@ niuu logout [OPTIONS]
 
 #### `niuu platform`
 
-Manage the platform (up, down, status, init).
+Manage the platform (up, down, status, init). `niuu up\|down\|status` are shortcuts for these with default flags.
 
 ```bash
 niuu platform [OPTIONS] COMMAND [ARGS]...
@@ -588,6 +626,14 @@ niuu sessions stop [OPTIONS] {session_id}
 | --- | --- | --- | --- |
 | `--json` | flag |  | Output raw JSON. |
 
+#### `niuu status`
+
+Show platform status. Same as `niuu platform status`.
+
+```bash
+niuu status [OPTIONS]
+```
+
 #### `niuu tui`
 
 Launch the interactive TUI.
@@ -595,6 +641,21 @@ Launch the interactive TUI.
 ```bash
 niuu tui [OPTIONS]
 ```
+
+#### `niuu up`
+
+Start the platform.
+
+```bash
+niuu up [OPTIONS]
+```
+
+Shortcut for `niuu platform up` with default service flags. In docker mode it renders the compose bundle under ~/.niuu/docker, runs `docker compose up -d` and waits for the health endpoint; use `niuu platform up --<service>` flags when you need per-service control.
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--mode` | STR |  | Override the configured mode for this run (mini, openshell, cluster, docker). |
+| `--skip-preflight`, `--no-skip-preflight` | flag |  | Skip the host preflight checks. |
 
 #### `niuu version`
 

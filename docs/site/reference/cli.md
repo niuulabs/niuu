@@ -23,6 +23,16 @@ every example. Use the [quick start](../get-started/first-local-stack.md) for th
 validated local lifecycle, and [Ravn setup](../get-started/direct-and-resident-assistants.md)
 for the model configuration needed by direct agent calls.
 
+## Lifecycle shortcuts
+
+`niuu up`, `niuu down`, and `niuu status` are shortcuts for `niuu platform up`,
+`niuu platform down`, and `niuu platform status` with default flags. Use the
+`platform` group when you need the per-service `--<service>/--no-<service>`
+flags, `--host-profile`, or `--mounts`. In docker mode `niuu up` starts the
+Docker compose bundle instead of host processes; `niuu doctor` runs the host
+checks for the configured mode without starting anything. Both spellings are
+supported; the shortcuts are what the installer and the setup wizard print.
+
 ## Server contexts and local processes
 
 A CLI operation against a configured server context is different from starting

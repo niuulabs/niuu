@@ -4,6 +4,10 @@ New command tree (NIU-405):
 
   Platform:
     platform up|down|status|init    — lifecycle (dynamic service flags)
+    up|down|status                  — shortcuts that forward to `platform ...`
+                                      with default flags; `up` drives the Docker
+                                      compose bundle when mode is `docker`
+    doctor                          — host checks for the configured mode
 
   Workflow (registered by plugins at top level):
     sessions list|create|stop|delete
@@ -81,7 +85,13 @@ def _register_lifecycle_aliases(
         ),
         skip_preflight: bool = typer.Option(False, help="Skip the host preflight checks."),
     ) -> None:
-        """Start the platform (shortcut for `niuu platform up`)."""
+        """Start the platform.
+
+        Shortcut for `niuu platform up` with default service flags. In docker
+        mode it renders the compose bundle under ~/.niuu/docker, runs
+        `docker compose up -d` and waits for the health endpoint; use
+        `niuu platform up --<service>` flags when you need per-service control.
+        """
         effective = _effective(mode)
         if effective.mode == "docker":
             from cli.commands.stack import stack_up
@@ -92,12 +102,12 @@ def _register_lifecycle_aliases(
 
     @app.command()
     def down() -> None:
-        """Stop the platform (shortcut for `niuu platform down`)."""
+        """Stop the platform. Same as `niuu platform down`."""
         _forward("down", [])
 
     @app.command()
     def status() -> None:
-        """Show platform status (shortcut for `niuu platform status`)."""
+        """Show platform status. Same as `niuu platform status`."""
         _forward("status", [])
 
     @app.command()
@@ -108,7 +118,12 @@ def _register_lifecycle_aliases(
             help="Check the host for this mode instead of the configured one.",
         ),
     ) -> None:
-        """Check this host can run the platform in the configured mode."""
+        """Check this host can run the platform in the configured mode.
+
+        Prints the same preflight `niuu up` runs (Docker, GPU, disk, ports, ...
+        in docker mode; claude binary, embedded database, ... in mini mode)
+        without starting anything. Exit code 1 when a check fails.
+        """
         from cli.commands.stack import run_doctor
 
         if not run_doctor(_effective(mode)):

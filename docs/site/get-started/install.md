@@ -10,6 +10,22 @@ paths lead to the same [first-session quick start](first-local-stack.md).
     corrected release passes the bootstrap check. Linux binaries have not been
     verified in this documentation pass. See the [verification record](../operations/quickstart-verification.md).
 
+## One command on a Docker host
+
+On a machine with Docker Engine and the Compose plugin (a DGX Spark, a Linux
+box, a Raspberry Pi, a Mac with Docker Desktop), the installer downloads the
+CLI, verifies its checksum, and starts the whole platform as containers:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/niuulabs/niuu/main/scripts/install.sh | sh
+```
+
+It ends by printing a setup URL; open it to finish configuration in the browser.
+`NIUU_NO_UP=1` installs without starting. See
+[Single-host Docker mode](../operations/docker-mode.md) for what runs, where
+data lives, and how `niuu up`, `niuu doctor`, and `niuu down` relate to the
+`niuu platform` commands.
+
 ## Release binary: macOS and Linux
 
 The release contains the Niuu executable, web UI, and embedded PostgreSQL.
