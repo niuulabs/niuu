@@ -2819,3 +2819,36 @@ def test_create_sandbox_wraps_storage_in_public_driver_envelope(monkeypatch):
     assert selected["volumes"][0]["name"] == "forge-workspace"
     assert selected["volumes"][0]["persistent_volume_claim"]["claim_name"] == "forge-workspace"
     assert selected["containers"]["agent"]["volume_mounts"][0]["mount_path"] == "/sandbox/workspace"
+
+
+@pytest.mark.parametrize("changed_field", [None, "audience", "scopes", "grant_type", "endpoints"])
+def test_profile_comparison_accepts_only_gateway_normalization(monkeypatch, changed_field):
+    pb2 = pytest.importorskip("openshell._proto.openshell_pb2")
+    adapter = _import_adapter(monkeypatch)
+    monkeypatch.setattr(adapter, "openshell_pb2", pb2)
+    expected = pb2.ProviderProfile(id="resume-proof")
+    grant = expected.credentials.add(name="access_token").token_grant
+    grant.token_endpoint = "https://issuer.example/token"
+    grant.audience = "workload"
+    saved = pb2.ProviderProfile()
+    saved.CopyFrom(expected)
+    saved.resource_version = 3
+    saved.source = "user"
+    saved.scope = "platform"
+    saved.credentials[0].token_grant.grant_type = (
+        pb2.PROVIDER_CREDENTIAL_TOKEN_GRANT_TYPE_CLIENT_CREDENTIALS
+    )
+    if changed_field == "audience":
+        saved.credentials[0].token_grant.audience = "another-workload"
+    if changed_field == "scopes":
+        saved.credentials[0].token_grant.scopes.append("admin")
+    if changed_field == "grant_type":
+        saved.credentials[0].token_grant.grant_type = (
+            pb2.PROVIDER_CREDENTIAL_TOKEN_GRANT_TYPE_TOKEN_EXCHANGE
+        )
+    if changed_field == "endpoints":
+        saved.endpoints.add(host="unexpected.example", port=443)
+    before = saved.SerializeToString()
+    assert adapter._profiles_equivalent(saved, expected) is (changed_field is None)
+    assert saved.SerializeToString() == before
+    assert expected.credentials[0].token_grant.grant_type == 0

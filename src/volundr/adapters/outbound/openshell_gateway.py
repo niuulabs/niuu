@@ -3656,10 +3656,19 @@ def _profile_authorizes_audience(profile: Any, audience: str) -> bool:
 def _profiles_equivalent(existing: Any, expected: Any) -> bool:
     existing_copy = openshell_pb2.ProviderProfile()
     existing_copy.CopyFrom(existing)
-    existing_copy.resource_version = 0
     expected_copy = openshell_pb2.ProviderProfile()
     expected_copy.CopyFrom(expected)
-    expected_copy.resource_version = 0
+    for profile in (existing_copy, expected_copy):
+        # These fields are gateway-owned and ignored on profile import.
+        profile.resource_version = 0
+        profile.source = ""
+        profile.scope = ""
+        for credential in profile.credentials:
+            if credential.HasField("token_grant") and not credential.token_grant.grant_type:
+                # OpenShell canonicalizes an omitted grant type on import.
+                credential.token_grant.grant_type = (
+                    openshell_pb2.PROVIDER_CREDENTIAL_TOKEN_GRANT_TYPE_CLIENT_CREDENTIALS
+                )
     return existing_copy.SerializeToString(deterministic=True) == expected_copy.SerializeToString(
         deterministic=True
     )
