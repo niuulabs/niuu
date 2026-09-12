@@ -96,6 +96,9 @@ class TestRender:
         assert store["secret_kwargs_env"] == {"encryption_key": "NIUU_CREDENTIAL_KEY"}
         assert store["kwargs"]["base_dir"] == f"{data}/credentials"
         assert "NIUU_BIFROST" not in env
+        assert env["NIUU_SETUP_ENABLED"] == "true"
+        assert env["NIUU_SETUP_STATE_FILE"] == f"{data}/setup-state.json"
+        assert env["NIUU_HOST_FACTS_FILE"] == f"{data}/host-facts.json"
         assert services["postgres"]["environment"]["POSTGRES_DB"] == "volundr"
 
     def test_vllm_service_when_enabled(self, settings: CLISettings) -> None:

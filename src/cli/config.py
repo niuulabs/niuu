@@ -188,11 +188,6 @@ class DockerConfig(BaseModel):
         default=180.0,
         description="How long `niuu up` waits for the platform health endpoint.",
     )
-    host_facts_file: str = Field(
-        default="",
-        description="Host facts JSON written by `niuu up`; read by the setup wizard "
-        "inside the platform container.",
-    )
     vllm: DockerVllmConfig = Field(default_factory=DockerVllmConfig)
 
 

@@ -43,6 +43,7 @@ COMPOSE_FILE = "docker-compose.yaml"
 ENV_FILE = ".env"
 SECRETS_FILE = "secrets.env"
 HOST_FACTS_FILE = "host-facts.json"
+SETUP_STATE_FILE = "setup-state.json"
 HEALTH_POLL_INTERVAL_SECONDS = 2.0
 
 
@@ -202,7 +203,9 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         "NIUU_POD_MANAGER__NETWORK": "${COMPOSE_PROJECT_NAME}_default",
         "NIUU_POD_MANAGER__PLATFORM_URL": f"http://niuu:{settings.server.port}",
         "NIUU_DOCKER__DATA_DIR": str(data_root),
-        "NIUU_DOCKER__HOST_FACTS_FILE": str(data_root / HOST_FACTS_FILE),
+        "NIUU_SETUP_ENABLED": "true",
+        "NIUU_SETUP_STATE_FILE": str(data_root / SETUP_STATE_FILE),
+        "NIUU_HOST_FACTS_FILE": str(data_root / HOST_FACTS_FILE),
         "OBSERVATORY__GUILD__URL": f"http://127.0.0.1:{settings.server.port}",
         "BIFROST__URL": f"http://127.0.0.1:{settings.server.port}",
         "RAVN_GATEWAY__PLATFORM__BASE_URL": f"http://127.0.0.1:{settings.server.port}",

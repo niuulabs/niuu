@@ -10,18 +10,21 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from niuu.adapters.file_setup_state import FileSetupStateStore
 from niuu.adapters.inbound.auth import extract_principal
 from niuu.adapters.inbound.rest_credentials_settings import create_credentials_settings_router
 from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
 from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.adapters.inbound.rest_repos import create_repos_router
+from niuu.adapters.inbound.rest_setup import create_setup_router
 from niuu.adapters.outbound.git_registry import create_git_registry
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.adapters.postgres_pats import PostgresPATRepository
-from niuu.config import GitConfig
+from niuu.config import GitConfig, NiuuSettings
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.repo import RepoService
+from niuu.domain.services.setup import SetupService
 from niuu.service_database import database_pool
 from niuu.service_databases import apply_service_database_settings
 from niuu.service_integrations import (
@@ -271,6 +274,21 @@ def create_app(
             app.include_router(create_canonical_issues_router(integration_repo, tracker_factory))
             app.include_router(create_features_router(feature_service))
             app.include_router(create_ravn_personas_router())
+
+            host_config = NiuuSettings().host
+
+            async def _database_probe() -> bool:
+                return await pool.fetchval("SELECT 1") == 1
+
+            setup_service = SetupService(
+                FileSetupStateStore(path=host_config.setup_state_file),
+                enabled=host_config.setup_enabled,
+                mode=host_config.platform_mode,
+                host_facts_file=host_config.host_facts_file,
+                database_probe=_database_probe,
+            )
+            app.state.setup_service = setup_service
+            app.include_router(create_setup_router(setup_service))
 
             enrollment_reconcile_task = asyncio.create_task(
                 reconcile_credential_enrollments_loop(credential_enrollment_service)
