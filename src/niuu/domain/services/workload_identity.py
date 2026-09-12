@@ -118,16 +118,23 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
 
         build_scopes = bound_workload_scopes(scopes)
         last_error: Exception | None = None
+        verified: dict[str, dict[str, Any] | Exception] = {}
         for mapping in getattr(self._config, "mappings", []) or []:
             verifier_name = getattr(mapping, "verifier", "kubernetes")
             verifier = self._verifiers.get(verifier_name)
             if verifier is None:
                 last_error = WorkloadIdentityError(f"Verifier not configured: {verifier_name}")
                 continue
-            try:
-                claims = await verifier.verify(token)
-            except Exception as exc:
-                last_error = exc
+            # Preserve mapping priority, but verify a proof only once per verifier.
+            # Cache failures too so multiple mappings cannot multiply an outage.
+            if verifier_name not in verified:
+                try:
+                    verified[verifier_name] = await verifier.verify(token)
+                except Exception as exc:
+                    verified[verifier_name] = exc
+            claims = verified[verifier_name]
+            if isinstance(claims, Exception):
+                last_error = claims
                 continue
             if self._matches(mapping, claims):
                 return self._issue(
