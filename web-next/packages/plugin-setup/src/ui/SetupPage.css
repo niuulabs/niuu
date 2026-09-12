@@ -463,6 +463,9 @@
   letter-spacing: 0.12em;
   color: var(--color-text-primary);
 }
+.setup-row__detail--warn {
+  color: var(--state-warn);
+}
 .setup-row__detail a {
   color: var(--brand-300);
   word-break: break-all;

@@ -5,6 +5,8 @@ import {
   signInUnavailableReason,
   supportsSignIn,
   connectionNeedsSignIn,
+  credentialExpiryLabel,
+  credentialProblemLabel,
   accessMode,
   accessUrls,
   enrollmentFailureMessage,
@@ -283,6 +285,36 @@ describe('connection credential state', () => {
     expect(connectionNeedsSignIn(connection)).toBe(false);
     expect(connectionNeedsSignIn({ ...connection, credentialStatus: 'auth_required' })).toBe(true);
     expect(connectionNeedsSignIn({ ...connection, credentialStatus: 'enrolling' })).toBe(true);
+  });
+
+  it('says how long a token is still good for', () => {
+    const now = Date.parse('2026-09-12T10:00:00Z');
+    const at = (iso: string) => ({ ...connection, credentialExpiresAt: iso });
+    expect(credentialExpiryLabel(connection, now)).toBeNull();
+    expect(credentialExpiryLabel(at('garbage'), now)).toBeNull();
+    expect(credentialExpiryLabel(at('2026-09-12T11:50:00Z'), now)).toBe(
+      'Token valid for 1 h 50 min',
+    );
+    expect(credentialExpiryLabel(at('2026-09-12T13:00:00Z'), now)).toBe('Token valid for 3 h');
+    expect(credentialExpiryLabel(at('2026-09-12T10:07:00Z'), now)).toBe('Token valid for 7 min');
+    expect(credentialExpiryLabel(at('2026-09-20T10:00:00Z'), now)).toBe('Token valid for 8 days');
+    expect(credentialExpiryLabel(at('2026-09-12T09:00:00Z'), now)).toBe('Token expired');
+  });
+
+  it('explains a recorded credential problem in plain words', () => {
+    expect(credentialProblemLabel(connection)).toBeNull();
+    expect(credentialProblemLabel({ ...connection, credentialErrorCode: 'refresh_failed' })).toBe(
+      'The token could not be renewed automatically. Sign in again.',
+    );
+    expect(
+      credentialProblemLabel({ ...connection, credentialErrorCode: 'login_worker_failed' }),
+    ).toBe('The last sign-in did not finish. Start it again.');
+    expect(
+      credentialProblemLabel({ ...connection, credentialErrorCode: 'provider_login_rejected' }),
+    ).toBe('The provider rejected the last sign-in.');
+    expect(credentialProblemLabel({ ...connection, credentialErrorCode: 'grok_exit_1' })).toBe(
+      'Last sign-in problem: grok exit 1.',
+    );
   });
 });
 

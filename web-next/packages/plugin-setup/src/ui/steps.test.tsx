@@ -254,6 +254,27 @@ describe('IntegrationsStep', () => {
     expect(screen.queryByTestId('setup-add-pick-linear')).not.toBeInTheDocument();
   });
 
+  it('shows token expiry and the reason a sign-in is needed', () => {
+    renderWithSetup(
+      <IntegrationsStep
+        {...props}
+        catalog={MOCK_CATALOG}
+        connections={[
+          {
+            ...connection,
+            credentialStatus: 'auth_required',
+            credentialExpiresAt: new Date(Date.now() - 60_000).toISOString(),
+            credentialErrorCode: 'refresh_failed',
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByTestId('setup-provider-expiry-github')).toHaveTextContent('Token expired');
+    expect(screen.getByTestId('setup-provider-problem-github')).toHaveTextContent(
+      'could not be renewed automatically',
+    );
+  });
+
   it('offers to finish a pending sign-in', () => {
     renderWithSetup(
       <IntegrationsStep

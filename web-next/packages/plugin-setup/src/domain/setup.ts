@@ -410,6 +410,10 @@ export interface IntegrationConnection {
   enabled: boolean;
   config: Record<string, unknown>;
   credentialStatus: string;
+  /** When the stored token stops working (ISO 8601), if the provider told us. */
+  credentialExpiresAt?: string | null;
+  /** Why the credential is unusable, e.g. `refresh_failed`, if it is. */
+  credentialErrorCode?: string | null;
 }
 
 export interface IntegrationTestResult {
@@ -559,6 +563,50 @@ const UNUSABLE_CREDENTIAL_STATUSES = new Set(['auth_required', 'enrolling']);
 /** True when the connection's credential still has to be (re)established. */
 export function connectionNeedsSignIn(connection: IntegrationConnection): boolean {
   return UNUSABLE_CREDENTIAL_STATUSES.has(connection.credentialStatus);
+}
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+function shortDuration(ms: number): string {
+  if (ms >= 2 * DAY_MS) return `${Math.round(ms / DAY_MS)} days`;
+  if (ms >= HOUR_MS) {
+    const hours = Math.floor(ms / HOUR_MS);
+    const minutes = Math.round((ms - hours * HOUR_MS) / MINUTE_MS);
+    return minutes > 0 ? `${hours} h ${minutes} min` : `${hours} h`;
+  }
+  return `${Math.max(1, Math.round(ms / MINUTE_MS))} min`;
+}
+
+/**
+ * How long the stored token is still good for, or that it has run out.
+ * Null when the provider gave no expiry (API keys, most sign-ins).
+ */
+export function credentialExpiryLabel(
+  connection: IntegrationConnection,
+  now: number = Date.now(),
+): string | null {
+  if (!connection.credentialExpiresAt) return null;
+  const expires = Date.parse(connection.credentialExpiresAt);
+  if (Number.isNaN(expires)) return null;
+  const left = expires - now;
+  if (left <= 0) return 'Token expired';
+  return `Token valid for ${shortDuration(left)}`;
+}
+
+/** Plain words for why a connection cannot be used, when the platform recorded a reason. */
+export function credentialProblemLabel(connection: IntegrationConnection): string | null {
+  const code = connection.credentialErrorCode;
+  if (!code) return null;
+  if (code === 'refresh_failed') {
+    return 'The token could not be renewed automatically. Sign in again.';
+  }
+  if (code === 'login_worker_failed' || code === 'runner_start_failed') {
+    return 'The last sign-in did not finish. Start it again.';
+  }
+  if (code === 'provider_login_rejected') return 'The provider rejected the last sign-in.';
+  return `Last sign-in problem: ${code.replace(/_/g, ' ')}.`;
 }
 
 export function connectionForSlug(

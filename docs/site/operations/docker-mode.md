@@ -196,11 +196,35 @@ docker:
   sign_in_client_ids:
     github: Iv1.xxxxxxxxxxxxxxxx   # a GitHub App with "Device flow" enabled
     gitlab: xxxxxxxx               # an application on gitlab.com (or your instance)
+  sign_in_client_secrets:          # optional; only GitHub needs one, to refresh tokens
+    github: ${GITHUB_APP_CLIENT_SECRET}
 ```
 
 Until a client id is set the pane still offers the token form and the sign-in
 tab says exactly what is missing. Linear and DeepSeek have no device or OAuth
 flow usable without a registered callback, so they stay key-based.
+
+### How sign-in tokens stay valid
+
+Nothing you sign into from the wizard has to be redone by hand while the
+platform runs:
+
+| Provider | Token lifetime | Who renews it |
+|---|---|---|
+| Claude Code (subscription) | About a year | Sign in again from the same row when the wizard shows *Token expired*. |
+| OpenAI Codex (ChatGPT) | Hours | Sessions fetch tokens from the platform's Codex credential broker, which refreshes them in the store. |
+| Grok Build | Hours | The session gets a read-only copy of the auth file under `/run/secrets/grok`, copies it to `~/.grok` so the CLI can rotate it, and hands the rotated file back to the platform when the session stops. |
+| GitHub (App sign-in) | 8 hours when the app issues expiring tokens, otherwise unlimited | The platform's token refresher. Add `docker.sign_in_client_secrets.github` for refresh, or turn off *Expire user authorization tokens* on the app. |
+| GitLab (device sign-in) | 2 hours | The platform's token refresher, with the public client id alone. |
+
+The refresher (`OAuthTokenRefreshService`) runs every five minutes inside the
+platform, refreshes any device-flow token that expires within ten minutes, and
+flips the connection to *Sign-in needed* with the reason `refresh_failed` when
+the provider rejects the refresh. The wizard row shows how long the current
+token is still good for and why a sign-in is needed. Sessions hand rotated
+credentials back through `POST /api/v1/internal/credentials/writeback`, which
+only accepts the caller's own enrollment-sourced credential and the field the
+enrollment produced.
 
 ## Updating
 

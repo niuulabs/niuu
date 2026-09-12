@@ -2,6 +2,8 @@ import { useState } from 'react';
 import {
   connectionForSlug,
   connectionNeedsSignIn,
+  credentialExpiryLabel,
+  credentialProblemLabel,
   groupConnection,
   providerGroups,
   type CatalogEntry,
@@ -144,7 +146,25 @@ export function IntegrationsStep({
                   {row.pending ? 'Sign-in needed' : methodLabel(group, row.connection)}
                 </span>
               </span>
-              <span className="setup-row__detail">credential {row.connection.credentialName}</span>
+              <span className="setup-row__detail">
+                credential {row.connection.credentialName}
+                {credentialExpiryLabel(row.connection) ? (
+                  <>
+                    {' · '}
+                    <span data-testid={`setup-provider-expiry-${group.key}`}>
+                      {credentialExpiryLabel(row.connection)}
+                    </span>
+                  </>
+                ) : null}
+              </span>
+              {row.pending && credentialProblemLabel(row.connection) ? (
+                <span
+                  className="setup-row__detail setup-row__detail--warn"
+                  data-testid={`setup-provider-problem-${group.key}`}
+                >
+                  {credentialProblemLabel(row.connection)}
+                </span>
+              ) : null}
               <div className="setup-form__actions">
                 {row.pending ? (
                   <button

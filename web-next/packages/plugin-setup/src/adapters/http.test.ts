@@ -69,6 +69,8 @@ describe('buildSetupHttpAdapter', () => {
       enabled: true,
       config: {},
       credentialStatus: 'unknown',
+      credentialExpiresAt: null,
+      credentialErrorCode: null,
     });
     expect(c.integrations.get).toHaveBeenNthCalledWith(1, '/catalog');
     expect(c.integrations.get).toHaveBeenNthCalledWith(2, '');
@@ -139,8 +141,17 @@ describe('buildSetupHttpAdapter', () => {
         enabled: false,
         config: { a: 1 },
         credential_status: 'expired',
+        credential_expires_at: '2026-09-12T10:00:00Z',
+        credential_error_code: 'refresh_failed',
       }),
-    ).toMatchObject({ slug: 'x', enabled: false, credentialStatus: 'expired', config: { a: 1 } });
+    ).toMatchObject({
+      slug: 'x',
+      enabled: false,
+      credentialStatus: 'expired',
+      config: { a: 1 },
+      credentialExpiresAt: '2026-09-12T10:00:00Z',
+      credentialErrorCode: 'refresh_failed',
+    });
     expect(mapTestResult({ success: true, provider: 'p', workspace: 'w', user: 'u' })).toEqual({
       success: true,
       provider: 'p',

@@ -360,6 +360,8 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
       enabled: true,
       config,
       credentialStatus: 'valid',
+      credentialExpiresAt: null,
+      credentialErrorCode: null,
     };
     connections.push(connection);
     return connection;

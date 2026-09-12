@@ -61,6 +61,8 @@ export interface IntegrationWire {
   enabled: boolean;
   config?: Record<string, unknown>;
   credential_status?: string;
+  credential_expires_at?: string | null;
+  credential_error_code?: string | null;
 }
 
 export interface IntegrationTestWire {
@@ -131,6 +133,8 @@ export function mapIntegration(row: IntegrationWire): IntegrationConnection {
     enabled: row.enabled,
     config: row.config ?? {},
     credentialStatus: row.credential_status ?? 'unknown',
+    credentialExpiresAt: row.credential_expires_at ?? null,
+    credentialErrorCode: row.credential_error_code ?? null,
   };
 }
 
