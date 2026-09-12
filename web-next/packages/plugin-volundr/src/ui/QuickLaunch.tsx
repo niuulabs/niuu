@@ -211,8 +211,8 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
                 value={selectedTarget}
                 onChange={(event) => {
                   setTargetId(event.target.value);
-                  setSourceType(null);
-                  setFolder('');
+                  setSourceType(local ? null : 'git');
+                  if (local) setFolder('');
                 }}
               >
                 {targets.map((target) => (

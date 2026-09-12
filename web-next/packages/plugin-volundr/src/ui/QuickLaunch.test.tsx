@@ -77,7 +77,8 @@ describe('QuickLaunch', () => {
       ];
       renderQuickLaunch(volundr);
       await screen.findByTestId('quick-launch-engine-codex');
-      fireEvent.change(screen.getByLabelText('Forge target'), { target: { value: 'second' } });
+      if (mini)
+        fireEvent.change(screen.getByLabelText('Forge target'), { target: { value: 'second' } });
       await waitFor(() =>
         expect(screen.queryByText('Loading launch options…')).not.toBeInTheDocument(),
       );
@@ -92,6 +93,8 @@ describe('QuickLaunch', () => {
       fireEvent.click(screen.getByTestId('quick-launch-engine-codex'));
       if (!mini)
         fireEvent.change(screen.getByLabelText('Branch'), { target: { value: 'feature/custom' } });
+      if (!mini)
+        fireEvent.change(screen.getByLabelText('Forge target'), { target: { value: 'second' } });
       fireEvent.click(screen.getByRole('button', { name: 'Advanced launch' }));
       expect(await screen.findByDisplayValue(source)).toBeInTheDocument();
       expect(screen.getByDisplayValue('keep-my-name')).toBeInTheDocument();
