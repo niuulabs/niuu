@@ -7,3 +7,7 @@
 ## Implementation pass
 
 Resolved the Linear task through the repository tracker shim and confirmed it is `In Progress` before starting code changes.
+
+## Revision pass
+
+Resolved the review-blocking duplicate public metric emission by keeping `ravn_tool_build_*` ownership in the Ravn `BuildTool` lifecycle wrapper and removing the same public metric emissions from the A2A backend.

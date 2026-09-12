@@ -4,6 +4,7 @@ install a hard-failed tool."""
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +121,92 @@ async def test_verify_skipped_for_empty_test_code_still_installs(tmp_path) -> No
     )
     assert result.is_error is False
     assert len(registered) == 1
+
+
+async def test_commissioned_build_public_metrics_are_recorded_by_lifecycle_once(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class _Span:
+        def set_attribute(self, _name: str, _value: object) -> None:
+            return None
+
+    class _Telemetry:
+        def __init__(self) -> None:
+            self.counts: list[tuple[str, dict[str, object], str]] = []
+            self.durations: list[tuple[str, dict[str, object], str]] = []
+
+        @contextmanager
+        def span(self, _name: str, **_kwargs: object):
+            yield _Span()
+
+        def event(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def mark_error(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def count(
+            self,
+            name: str,
+            *,
+            attributes: dict[str, object],
+            description: str = "",
+        ) -> None:
+            self.counts.append((name, attributes, description))
+
+        def duration(
+            self,
+            name: str,
+            _seconds: float,
+            *,
+            attributes: dict[str, object],
+            description: str = "",
+        ) -> None:
+            self.durations.append((name, attributes, description))
+
+    class _Backend:
+        name = "a2a"
+
+        async def build(self, _request: Any) -> ToolBuildResult:
+            return ToolBuildResult(
+                manifest=_manifest(),
+                tool_code=_ECHO_TOOL,
+                test_code="",
+                requirements=[],
+                provenance={"builder": "remote"},
+            )
+
+    telemetry = _Telemetry()
+    monkeypatch.setattr(build_tool_mod, "get_observability", lambda: telemetry)
+    tool, registered = _tool(tmp_path, build_backend=_Backend())
+
+    result = await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+
+    assert result.is_error is False
+    assert len(registered) == 1
+    public_counts = [
+        (attributes, description)
+        for name, attributes, description in telemetry.counts
+        if name == "ravn_tool_build_total"
+    ]
+    assert public_counts == [
+        (
+            {"backend": "a2a", "outcome": "completed"},
+            "Ravn tool-build operations by backend and outcome.",
+        )
+    ]
+    public_durations = [
+        (attributes, description)
+        for name, attributes, description in telemetry.durations
+        if name == "ravn_tool_build_duration_seconds"
+    ]
+    assert public_durations == [
+        (
+            {"backend": "a2a", "outcome": "completed"},
+            "Ravn tool-build operation duration.",
+        )
+    ]
     verification = _persisted_provenance(tmp_path)["verification"]
     assert verification["ok"] is True
     assert "structural validation only" in verification["logs"]

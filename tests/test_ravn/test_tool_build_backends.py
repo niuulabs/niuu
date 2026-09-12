@@ -852,14 +852,22 @@ async def test_a2a_backend_propagates_active_trace_in_message_metadata(
     metadata = client.post_bodies[0]["params"]["message"]["metadata"]
     assert metadata["traceContext"] == telemetry.inject.return_value
     telemetry.count.assert_any_call(
-        "ravn_tool_build_total",
-        attributes={"backend": "a2a", "outcome": "completed"},
-        description="Ravn tool-build commissions by backend and outcome.",
+        "ravn.tool_build.operations",
+        attributes={
+            "ravn.tool_build.backend": "a2a",
+            "ravn.tool_build.outcome": "completed",
+        },
     )
-    assert any(
-        call.args and call.args[0] == "ravn_tool_build_duration_seconds"
+    public_count_calls = [
+        call for call in telemetry.count.call_args_list if call.args[0] == "ravn_tool_build_total"
+    ]
+    assert public_count_calls == []
+    public_duration_calls = [
+        call
         for call in telemetry.duration.call_args_list
-    )
+        if call.args[0] == "ravn_tool_build_duration_seconds"
+    ]
+    assert public_duration_calls == []
     state_events = [
         call
         for call in telemetry.event.call_args_list

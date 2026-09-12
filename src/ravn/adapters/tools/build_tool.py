@@ -1850,8 +1850,11 @@ def _build_result_outcome(result: ToolResult) -> str:
         return "completed"
     if not isinstance(payload, dict):
         return "completed"
-    if payload.get("status") == "input_required":
+    status = payload.get("status")
+    if status == "input_required":
         return "input_required"
+    if status == "pending":
+        return "pending"
     if payload.get("registered") is True:
         return "registered"
     if payload.get("review_required") is True and payload.get("review_filed") is True:

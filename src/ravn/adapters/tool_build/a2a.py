@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from time import monotonic
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
@@ -171,13 +170,11 @@ class A2AToolBuildBackend(ToolBuildBackend):
             "connection_id": self._connection_id,
             "a2a.card.url": self._card_url,
         }
-        started = monotonic()
         with telemetry.span("tool_build", attributes=attributes) as span:
             telemetry.event("ravn.tool_build.requested", attributes=attributes, content=request)
             try:
                 result = await self._build_observed(request)
             except ToolBuildPendingError as exc:
-                outcome = "pending"
                 span.set_attribute("ravn.tool_build.outcome", "pending")
                 span.set_attribute("a2a.task.id", exc.task_id)
                 span.set_attribute("a2a.push.registered", exc.push_registered)
@@ -190,15 +187,15 @@ class A2AToolBuildBackend(ToolBuildBackend):
                         "a2a.push.registered": exc.push_registered,
                     },
                 )
-                _record_tool_build_metrics(
-                    telemetry,
-                    started=started,
-                    attributes=attributes,
-                    outcome=outcome,
+                telemetry.count(
+                    "ravn.tool_build.operations",
+                    attributes={
+                        "ravn.tool_build.backend": self.name,
+                        "ravn.tool_build.outcome": "pending",
+                    },
                 )
                 raise
             except ToolBuildInputRequiredError as exc:
-                outcome = "input_required"
                 span.set_attribute("ravn.tool_build.outcome", "input_required")
                 span.set_attribute("a2a.task.id", exc.task_id)
                 span.set_attribute("a2a.input.kind", exc.input_kind)
@@ -222,15 +219,8 @@ class A2AToolBuildBackend(ToolBuildBackend):
                         "ravn.tool_build.outcome": "input_required",
                     },
                 )
-                _record_tool_build_metrics(
-                    telemetry,
-                    started=started,
-                    attributes=attributes,
-                    outcome=outcome,
-                )
                 raise
             except Exception as exc:
-                outcome = "error"
                 telemetry.mark_error(span, type(exc).__name__, str(exc))
                 telemetry.event(
                     "ravn.a2a.tool_build.failed",
@@ -248,14 +238,7 @@ class A2AToolBuildBackend(ToolBuildBackend):
                         "error.type": type(exc).__name__,
                     },
                 )
-                _record_tool_build_metrics(
-                    telemetry,
-                    started=started,
-                    attributes=attributes,
-                    outcome=outcome,
-                )
                 raise
-            outcome = "completed"
             span.set_attribute("ravn.tool_build.outcome", "completed")
             telemetry.event(
                 "ravn.tool_build.completed",
@@ -276,12 +259,6 @@ class A2AToolBuildBackend(ToolBuildBackend):
                     "ravn.tool_build.backend": self.name,
                     "ravn.tool_build.outcome": "completed",
                 },
-            )
-            _record_tool_build_metrics(
-                telemetry,
-                started=started,
-                attributes=attributes,
-                outcome=outcome,
             )
             return result
 
@@ -1263,29 +1240,6 @@ def _jsonrpc_endpoint(card: dict[str, Any]) -> str:
             return url
     return ""
 
-
-def _record_tool_build_metrics(
-    telemetry: Any,
-    *,
-    started: float,
-    attributes: dict[str, Any],
-    outcome: str,
-) -> None:
-    metric_attributes = {
-        "backend": str(attributes.get("ravn.tool_build.backend") or ""),
-        "outcome": outcome,
-    }
-    telemetry.count(
-        "ravn_tool_build_total",
-        attributes=metric_attributes,
-        description="Ravn tool-build commissions by backend and outcome.",
-    )
-    telemetry.duration(
-        "ravn_tool_build_duration_seconds",
-        monotonic() - started,
-        attributes=metric_attributes,
-        description="Ravn tool-build commission duration.",
-    )
 
 
 def _skill_capability(skill: Any) -> WorkflowCapability:

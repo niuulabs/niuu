@@ -29,6 +29,10 @@ from ravn.domain.models import ToolResult
             ToolResult(tool_call_id="", content='{"status": "input_required"}'),
             "input_required",
         ),
+        (
+            ToolResult(tool_call_id="", content='{"status": "pending"}'),
+            "pending",
+        ),
     ],
 )
 def test_tool_build_lifecycle_outcome_is_not_inferred_from_success_alone(

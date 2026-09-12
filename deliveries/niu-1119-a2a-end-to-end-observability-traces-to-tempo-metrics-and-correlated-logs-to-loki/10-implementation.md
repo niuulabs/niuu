@@ -21,3 +21,15 @@ Added config-gated OpenTelemetry support for Ting and completed the A2A observab
 - **Branch:** `feat/niu-1119-a2a-observability`
 - **Base:** `origin/dev`
 - **Hosted PR:** Not created; the GitHub connector returned 403 `Resource not accessible by integration`. The branch is pushed and GitHub advertised https://github.com/niuulabs/niuu/pull/new/feat/niu-1119-a2a-observability for a human or authorized bot to open the PR.
+
+## Revision — duplicate public tool-build metrics
+
+- Removed public `ravn_tool_build_total` and `ravn_tool_build_duration_seconds` emission from the A2A backend so the lifecycle `BuildTool` wrapper is the single public metric owner for commissioned builds.
+- Kept backend-local `ravn.tool_build.operations` diagnostic counts, including the pending outcome.
+- Classified pending build-tool results explicitly so lifecycle metrics record `outcome=pending` instead of defaulting to completed.
+
+## Revision verification
+
+- `python -m compileall -q src/ravn/adapters/tool_build/a2a.py src/ravn/adapters/tools/build_tool.py tests/test_ravn/test_observability.py tests/test_ravn/test_tool_build_backends.py tests/test_ravn/test_build_tool_verify.py` passed.
+- `git diff --check` passed.
+- Focused pytest and ruff were attempted but unavailable in this runtime (`No module named pytest`, `No module named ruff`; `uv` is not installed).
