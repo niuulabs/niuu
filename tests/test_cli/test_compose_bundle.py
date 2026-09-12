@@ -108,7 +108,8 @@ class TestRender:
             "sessions_dir": f"{data}/session-secrets",
         }
         assert injection["secret_kwargs_env"] == {"encryption_key": "NIUU_CREDENTIAL_KEY"}
-        assert json.loads(env["OAUTH__CLIENTS"]) == {}
+        # No override: the platform keeps the sign-in client ids it ships with.
+        assert "OAUTH__CLIENTS" not in env
         assert json.loads(env["CODEX_CREDENTIAL_BROKER"]) == {
             "adapter": sc.CODEX_CREDENTIAL_BROKER_ADAPTER,
             "kwargs": {},

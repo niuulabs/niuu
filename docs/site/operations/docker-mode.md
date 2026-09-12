@@ -133,7 +133,7 @@ front door over the platform's existing APIs: every value it stores lands where
 | System check | Every preflight result `niuu up` recorded (Docker, Compose, NVIDIA runtime, GPU, data directory, disk space, ports, outbound network to the registries and providers, git) plus live checks from inside the platform: database reachable, Docker socket present, git installed. A failed check blocks **Continue**; a warning does not. | Nothing. |
 | Local model | Curated models (Nemotron 3 Nano 30B, gpt-oss-120b, Qwen3-Coder 30B) with a fit verdict against the host's accelerator memory and a memory meter, a custom Hugging Face id, or cloud-only. | A staged stack change (`vllm_enabled`, `vllm_model`) through `PUT /api/v1/niuu/setup/stack`; applied on the finish step. |
 | AI providers | A list of what is connected, empty at first, and an **Add provider** button. Adding walks three small steps in a dialog: which provider, sign in or API key, then the sign-in card or the key form; the dialog closes by itself once the connection exists. Providers: Anthropic · Claude (Claude Code sign-in, or a key), OpenAI · Codex (ChatGPT device sign-in, or a key), xAI · Grok (Grok Build device sign-in, or a key), DeepSeek (key). Sign-ins run the official CLI in a sealed helper container; the card shows the link and device code, polls until the provider confirms, and for Claude takes the authorization code the browser hands back. **Test connection** calls the provider's models endpoint with the key and reports how many models it can see. | An integration connection with an inline credential (`POST /api/v1/integrations`), or an enrollment (`POST /api/v1/integrations/enrollments`) whose credential the platform stores when the sign-in completes. Both encrypted with the key from `secrets.env`. |
-| Git | The same list and **Add Git host** dialog for GitHub and GitLab: **Sign in** (OAuth device flow, needs only the public client id in `docker.sign_in_client_ids`) or a personal access token. **Test connection** signs in as you and lists the repositories the credential can reach, so a wrong scope shows up here, not in a session. | Same. |
+| Git | The same list and **Add Git host** dialog for GitHub and GitLab: **Sign in** (OAuth device flow with the client ids Niuu ships) or a personal access token. Right after a host is connected the wizard signs in as you and lists the repositories the credential can reach, so a wrong scope shows up here, not in a session; **Test connection** repeats that check. | Same. |
 | Tickets | `issue_tracker` entries (Linear). | Same. |
 | Runtime & access | Where sessions run (Docker container; OpenShell and host process shown as not offered here) and who can reach this Niuu: only this machine, your local network (with the LAN address and a warning while sign-in is off), or public behind sign-in (later, in Settings → Access). | A staged stack change (`bind_host`); applied on the finish step. |
 | Finish | What was connected, the local model and access choice, and the staged changes about to be applied. **Apply and open Niuu** applies them (the platform restarts the services whose configuration changed, the page waits for it to answer again and warns when the current address stops being served), then marks setup complete and opens `/ready`. | `POST /api/v1/niuu/setup/stack/apply`, then `POST /api/v1/niuu/setup/complete`. |
@@ -182,14 +182,29 @@ any helper that is still around.
 
 ### Sign in with GitHub / GitLab (device flow)
 
-GitHub Apps and GitLab applications (17.2+) support the OAuth 2.0 device
-authorization grant: only a public client id is needed, no secret and no
-callback URL, so it works on a single host. The platform runs it in-process
+GitHub OAuth Apps and GitLab applications (17.2+) support the OAuth 2.0
+device authorization grant: only a public client id is needed, no secret and
+no callback URL, so it works on a single host. The platform runs it in-process
 (`OAuthDeviceFlowRunner`): the card shows the provider's verification page
 and code, polls the token endpoint at the interval the provider asks for, and
 stores the user token (plus refresh token and expiry when the app issues
-expiring tokens) under the same credential the token form would use. Configure
-the client ids once:
+expiring tokens) under the same credential the token form would use.
+
+Niuu ships the public client ids of its own applications
+(`SHIPPED_SIGN_IN_CLIENT_IDS` in `src/volundr/config.py`), the way the `gh`,
+Codex and Claude CLIs ship theirs, so a fresh install signs in without any
+configuration. Registering them is a one-time step for the niuulabs
+organisation:
+
+- **GitHub:** an *OAuth App* (not a GitHub App: an OAuth App's token reaches
+  every repository the user can reach, a GitHub App's only the installations)
+  under the organisation's developer settings, with *Enable Device Flow*
+  ticked. Device-flow tokens of OAuth Apps do not expire.
+- **GitLab:** an application on gitlab.com with the *Device authorization
+  grant* enabled and the `api` and `read_user` scopes. Its tokens last two
+  hours and the platform refreshes them.
+
+A self-hosted GitLab needs its own application; set its id per instance:
 
 ```yaml
 docker:
@@ -200,9 +215,10 @@ docker:
     github: ${GITHUB_APP_CLIENT_SECRET}
 ```
 
-Until a client id is set the pane still offers the token form and the sign-in
-tab says exactly what is missing. Linear and DeepSeek have no device or OAuth
-flow usable without a registered callback, so they stay key-based.
+Where no client id is known the wizard offers the token form only; it never
+asks the person at the keyboard to edit configuration. Linear and DeepSeek
+have no device or OAuth flow usable without a registered callback, so they
+stay key-based.
 
 ### How sign-in tokens stay valid
 

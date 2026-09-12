@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { MOCK_CATALOG, MOCK_SYSTEM } from '../adapters/mock';
 import {
   providerGroups,
-  signInUnavailableReason,
+  signInOffered,
   supportsSignIn,
   availableModes,
   connectionNeedsSignIn,
@@ -94,8 +94,9 @@ describe('catalog helpers', () => {
     expect(supportsSignIn(github)).toBe(true);
     expect(supportsSignIn(claudeCode)).toBe(true);
     expect(supportsSignIn({ ...github, credentialEnrollment: null })).toBe(false);
-    expect(signInUnavailableReason(github)).toMatch(/oauth\.clients\.github\.client_id/);
-    expect(signInUnavailableReason(claudeCode)).toMatch(/not available on this install/);
+    expect(signInOffered(github)).toBe(true);
+    expect(signInOffered({ ...github, signInAvailable: false })).toBe(false);
+    expect(signInOffered({ ...github, credentialEnrollment: null })).toBe(false);
   });
 
   it('finds enabled connections by slug', () => {

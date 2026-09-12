@@ -4,7 +4,6 @@ import {
   availableModes,
   connectionForSlug,
   entryConnected,
-  signInUnavailableReason,
   type ConnectIntegrationInput,
   type ConnectMode,
   type IntegrationConnection,
@@ -13,7 +12,7 @@ import {
 } from '../domain/setup';
 import { IntegrationCard } from './IntegrationCard';
 import { SignInCard } from './SignInCard';
-import { AlertIcon, BackIcon, CheckIcon } from './icons';
+import { BackIcon, CheckIcon } from './icons';
 
 export type { ConnectMode } from '../domain/setup';
 
@@ -39,7 +38,7 @@ export interface AddProviderDialogProps {
   onTest: (connectionId: string) => void;
 }
 
-/** Modes a provider still offers, sign-in first unless it cannot run here. */
+/** Modes a provider still offers, sign-in first. */
 export function modesFor(
   group: ProviderGroup,
   connections: IntegrationConnection[] | undefined = undefined,
@@ -216,25 +215,16 @@ export function AddProviderDialog({
             : null}
 
           {group && mode === 'signin' && group.signInEntry ? (
-            group.signInEntry.signInAvailable === false ? (
-              <div
-                className="setup-note setup-note--warn"
-                data-testid={`setup-signin-unavailable-${group.signInEntry.slug}`}
-              >
-                <AlertIcon size={13} /> {signInUnavailableReason(group.signInEntry)}
-              </div>
-            ) : (
-              <div className="setup-pane">
-                {modeIntro(group, 'signin')}
-                <SignInCard
-                  entry={group.signInEntry}
-                  connection={
-                    connections ? connectionForSlug(connections, group.signInEntry.slug) : undefined
-                  }
-                  headless
-                />
-              </div>
-            )
+            <div className="setup-pane">
+              {modeIntro(group, 'signin')}
+              <SignInCard
+                entry={group.signInEntry}
+                connection={
+                  connections ? connectionForSlug(connections, group.signInEntry.slug) : undefined
+                }
+                headless
+              />
+            </div>
           ) : null}
 
           {group && mode === 'key' && group.keyEntry ? (

@@ -136,10 +136,7 @@ from volundr.domain.services import (
 from volundr.domain.services.attention_notifier import PushAttentionNotifier
 from volundr.domain.services.communication_ingress import CommunicationIngressService
 from volundr.domain.services.credential import CredentialService
-from volundr.domain.services.credential_enrollment import (
-    CredentialEnrollmentService,
-    reconcile_credential_enrollments_loop,
-)
+from volundr.domain.services.credential_enrollment import CredentialEnrollmentService
 from volundr.domain.services.event_ingestion import EventIngestionService
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
 from volundr.domain.services.resident_runtime import (
@@ -1257,13 +1254,6 @@ def create_app(
                     flock_adapter=resident_flock_adapter,
                 )
             )
-            credential_enrollment_reconcile_task = (
-                asyncio.create_task(
-                    reconcile_credential_enrollments_loop(credential_enrollment_service)
-                )
-                if credential_enrollment_service is not None
-                else None
-            )
             if settings.telegram_ingress.enabled:
                 await telegram_ingress.start()
             else:
@@ -1307,12 +1297,6 @@ def create_app(
                     await resident_reconcile_task
                 except asyncio.CancelledError:
                     pass
-                if credential_enrollment_reconcile_task is not None:
-                    credential_enrollment_reconcile_task.cancel()
-                    try:
-                        await credential_enrollment_reconcile_task
-                    except asyncio.CancelledError:
-                        pass
                 if resident_flock_adapter is not None:
                     await resident_flock_adapter.stop()
                 await resident_runtime_service.close()

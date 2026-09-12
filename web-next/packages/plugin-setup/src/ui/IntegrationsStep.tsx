@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   availableModes,
   connectionForSlug,
@@ -106,9 +106,22 @@ export function IntegrationsStep({
     );
   const addable = groups.filter((group) => availableModes(group, connections).length > 0);
   const addingGroup = adding?.key ? groups.find((g) => g.key === adding.key) : undefined;
-  // The dialog closes itself the moment the method being added becomes usable.
+  // The dialog closes itself the moment the method being added becomes usable,
+  // and the new connection is checked right away so a wrong scope or a dead
+  // key shows up here, not in a session.
   const target = addingGroup && adding?.mode ? entryForMode(addingGroup, adding.mode) : undefined;
-  const dialogOpen = adding !== null && !entryConnected(target, connections);
+  const added =
+    target && connections && entryConnected(target, connections)
+      ? connectionForSlug(connections, target.slug)
+      : undefined;
+  const dialogOpen = adding !== null && added === undefined;
+  const addedId = added?.id ?? null;
+  const checkedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (addedId === null || checkedRef.current === addedId) return;
+    checkedRef.current = addedId;
+    onTest(addedId);
+  }, [addedId, onTest]);
 
   return (
     <div className="setup-col" data-testid={`setup-step-${step.id}`}>

@@ -939,11 +939,29 @@ class OAuthClientConfig(BaseModel):
     client_secret: str = ""
 
 
+# Public OAuth client ids Niuu ships for the device-flow sign-ins, so a fresh
+# install can sign in to GitHub and GitLab without any configuration, the way
+# the gh, Codex and Claude CLIs ship theirs. The device flow needs no secret.
+# An entry is only listed once the application is registered:
+#   github: an OAuth App owned by niuulabs with "Enable Device Flow" ticked
+#   gitlab: an application on gitlab.com with the device grant enabled
+# Operators override or add per-instance ids through ``oauth.clients``.
+SHIPPED_SIGN_IN_CLIENT_IDS: dict[str, str] = {}
+
+
 class OAuthConfig(BaseModel):
     """Top-level OAuth configuration."""
 
     redirect_base_url: str = ""
     clients: dict[str, OAuthClientConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _merge_shipped_clients(self) -> "OAuthConfig":
+        """Configured clients win; shipped ids fill in the rest."""
+        for slug, client_id in SHIPPED_SIGN_IN_CLIENT_IDS.items():
+            if client_id and slug not in self.clients:
+                self.clients[slug] = OAuthClientConfig(client_id=client_id)
+        return self
 
 
 class IntegrationDefinitionConfig(BaseModel):

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MOCK_CATALOG, MOCK_SYSTEM } from '../adapters/mock';
@@ -273,6 +274,38 @@ describe('IntegrationsStep', () => {
     expect(screen.getByTestId('setup-provider-problem-github')).toHaveTextContent(
       'could not be renewed automatically',
     );
+  });
+
+  it('checks a host right after it is connected and closes the dialog', () => {
+    const onTest = vi.fn();
+    function Harness() {
+      const [connections, setConnections] = useState<(typeof connection)[]>([]);
+      return (
+        <>
+          <button
+            type="button"
+            data-testid="simulate-connected"
+            onClick={() => setConnections([connection])}
+          />
+          <IntegrationsStep
+            {...props}
+            onTest={onTest}
+            catalog={MOCK_CATALOG}
+            connections={connections}
+          />
+        </>
+      );
+    }
+    renderWithSetup(<Harness />);
+    fireEvent.click(screen.getByTestId('setup-provider-add'));
+    fireEvent.click(screen.getByTestId('setup-add-pick-github'));
+    fireEvent.click(screen.getByTestId('setup-add-mode-key'));
+    expect(screen.getByTestId('setup-input-github-token')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('simulate-connected'));
+    expect(onTest).toHaveBeenCalledTimes(1);
+    expect(onTest).toHaveBeenCalledWith('c1');
+    expect(screen.queryByTestId('setup-add-dialog')).not.toBeInTheDocument();
+    expect(screen.getByTestId('setup-provider-row-github')).toBeInTheDocument();
   });
 
   it('offers to finish a pending sign-in', () => {

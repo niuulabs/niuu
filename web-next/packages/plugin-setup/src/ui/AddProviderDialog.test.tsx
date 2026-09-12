@@ -23,7 +23,7 @@ const base = {
 };
 
 describe('modesFor', () => {
-  it('puts the usable mode first', () => {
+  it('offers sign-in first and only when this install can run it', () => {
     const groups = providerGroups(MOCK_CATALOG, providers);
     expect(modesFor(groups.find((g) => g.key === 'anthropic')!)).toEqual(['signin', 'key']);
     expect(modesFor(groups.find((g) => g.key === 'deepseek')!)).toEqual(['key']);
@@ -31,7 +31,8 @@ describe('modesFor', () => {
       MOCK_CATALOG.map((e) => (e.slug === 'github' ? { ...e, signInAvailable: false } : e)),
       git,
     ).find((g) => g.key === 'github')!;
-    expect(modesFor(github)).toEqual(['key', 'signin']);
+    expect(modesFor(github)).toEqual(['key']);
+    expect(github.signInEntry).toBeUndefined();
   });
 });
 
@@ -120,23 +121,19 @@ describe('AddProviderDialog', () => {
     expect(screen.getByTestId('setup-signin-start-codex')).toBeInTheDocument();
   });
 
-  it('explains a sign-in this install cannot run and honours presets', () => {
+  it('goes straight to the token form when this install cannot run the sign-in', () => {
     const catalog = MOCK_CATALOG.map((e) =>
       e.slug === 'github' ? { ...e, signInAvailable: false } : e,
     );
     const groups = providerGroups(catalog, git);
-    renderWithSetup(
-      <AddProviderDialog
-        {...base}
-        noun="Git host"
-        groups={groups}
-        initialGroupKey="github"
-        initialMode="signin"
-      />,
-    );
-    expect(screen.getByTestId('setup-signin-unavailable-github')).toHaveTextContent(
-      'oauth.clients.github.client_id',
-    );
+    renderWithSetup(<AddProviderDialog {...base} noun="Git host" groups={groups} />);
+    const row = screen.getByTestId('setup-add-pick-github');
+    expect(row).not.toHaveTextContent('Sign in');
+    expect(row).toHaveTextContent('Use a personal access token');
+    fireEvent.click(row);
+    expect(screen.queryByTestId('setup-add-mode-signin')).not.toBeInTheDocument();
+    expect(screen.getByTestId('setup-input-github-token')).toBeInTheDocument();
+    expect(screen.getByTestId('setup-add-dialog')).not.toHaveTextContent('oauth.clients');
   });
 
   it('says when nothing is left to add and resets on close', () => {

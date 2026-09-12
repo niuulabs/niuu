@@ -304,7 +304,11 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         "SECRET_INJECTION": json.dumps(secret_injection),
         # Sign in with GitHub / GitLab (device flow) needs only a public client id;
         # a secret is optional and only used to refresh expiring GitHub tokens.
-        "OAUTH__CLIENTS": json.dumps(sign_in_clients(settings)),
+        **(
+            {"OAUTH__CLIENTS": json.dumps(sign_in_clients(settings))}
+            if sign_in_clients(settings)
+            else {}
+        ),
         # Codex sessions fetch ChatGPT tokens from the platform, which refreshes
         # them in the credential store; without this the bundle's default
         # broker refuses and Codex sessions cannot authenticate.

@@ -291,7 +291,7 @@ export function providerGroups(entries: CatalogEntry[], step: WizardStep): Provi
     const keyEntry =
       keyCandidate && isConnectableFromWizard(keyCandidate) ? keyCandidate : undefined;
     const signInEntry =
-      signInCandidate && supportsSignIn(signInCandidate) ? signInCandidate : undefined;
+      signInCandidate && signInOffered(signInCandidate) ? signInCandidate : undefined;
     if (!keyEntry && !signInEntry) continue;
     if (keyEntry) used.add(keyEntry.slug);
     if (signInEntry) used.add(signInEntry.slug);
@@ -314,7 +314,7 @@ export function providerGroups(entries: CatalogEntry[], step: WizardStep): Provi
       title: entry.name,
       description: entry.description,
       keyEntry: isConnectableFromWizard(entry) ? entry : undefined,
-      signInEntry: supportsSignIn(entry) ? entry : undefined,
+      signInEntry: signInOffered(entry) ? entry : undefined,
       unavailable: [],
       signInLabel: `Sign in with ${entry.name}`,
       keyLabel: defaultKeyLabel(step),
@@ -352,7 +352,6 @@ export function availableModes(
   const modes: ConnectMode[] = [];
   if (group.signInEntry && !entryConnected(group.signInEntry, connections)) modes.push('signin');
   if (group.keyEntry && !entryConnected(group.keyEntry, connections)) modes.push('key');
-  if (group.signInEntry?.signInAvailable === false && modes.length === 2) modes.reverse();
   return modes;
 }
 
@@ -593,12 +592,13 @@ export function needsInteractiveSignIn(entry: CatalogEntry): boolean {
 }
 
 /** Why a sign-in cannot run here, in the user's words. */
-export function signInUnavailableReason(entry: CatalogEntry): string {
-  const method = entry.credentialEnrollment?.method ?? '';
-  if (method === 'oauth_device') {
-    return `Sign in with ${entry.name} needs this install's public client id configured (oauth.clients.${entry.slug}.client_id). Use a token until then.`;
-  }
-  return `Sign in with ${entry.name} is not available on this install yet. Use an API key instead.`;
+/**
+ * Whether the wizard offers signing in through this entry. A sign-in the
+ * install cannot run (no shipped client id, no helper image) is simply not
+ * offered: the person at the keyboard is never asked to configure anything.
+ */
+export function signInOffered(entry: CatalogEntry): boolean {
+  return supportsSignIn(entry) && entry.signInAvailable !== false;
 }
 
 export function catalogForStep(entries: CatalogEntry[], step: WizardStep): CatalogEntry[] {
