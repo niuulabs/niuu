@@ -2,16 +2,17 @@
   "theme": "ice",
   "plugins": {
     "login": { "enabled": true, "order": 0 },
-    "credentials": { "enabled": true, "order": 1 },
-    "integrations": { "enabled": true, "order": 2 },
-    "volundr": { "enabled": true, "order": 3 },
-    "ting": { "enabled": true, "order": 4 },
-    "mimir": { "enabled": true, "order": 5 },
-    "ravn": { "enabled": true, "order": 6 },
-    "valkyrie": { "enabled": true, "order": 7 },
-    "observatory": { "enabled": true, "order": 8 },
-    "bifrost": { "enabled": true, "order": 9 },
-    "settings": { "enabled": true, "order": 10 }
+    "realms": { "enabled": true, "order": 1 },
+    "credentials": { "enabled": true, "order": 2 },
+    "integrations": { "enabled": true, "order": 3 },
+    "volundr": { "enabled": true, "order": 4 },
+    "ting": { "enabled": true, "order": 5 },
+    "mimir": { "enabled": true, "order": 6 },
+    "ravn": { "enabled": true, "order": 7 },
+    "valkyrie": { "enabled": true, "order": 8 },
+    "observatory": { "enabled": true, "order": 9 },
+    "bifrost": { "enabled": true, "order": 10 },
+    "settings": { "enabled": true, "order": 11 }
   },
   "services": {
     "identity": { "mode": "http", "baseUrl": "/api/v1" },

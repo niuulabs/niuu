@@ -57,6 +57,14 @@ const logoutPlugin = definePlugin({
 
 const pluginLoaders: Record<string, () => Promise<PluginDescriptor>> = {
   login: async () => loginPlugin,
+  realms: async () => {
+    const [module] = await Promise.all([
+      import('@niuulabs/plugin-realms'),
+      import('@niuulabs/plugin-realms/styles.css'),
+      import('@niuulabs/plugin-realms/index.css'),
+    ]);
+    return module.realmsPlugin;
+  },
   volundr: async () => {
     const [module] = await Promise.all([
       import('@niuulabs/plugin-volundr'),

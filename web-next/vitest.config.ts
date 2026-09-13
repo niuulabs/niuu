@@ -11,7 +11,7 @@ export default defineConfig({
       // Resolve stylesheet subpaths before package entry aliases. Browser tests
       // exercise the generated CSS bundles; unit tests use the source stylesheet.
       ...Object.fromEntries(
-        ['volundr', 'ting', 'ravn', 'mimir', 'valkyrie', 'observatory'].flatMap((name) =>
+        ['volundr', 'ting', 'ravn', 'realms', 'mimir', 'valkyrie', 'observatory'].flatMap((name) =>
           ['styles', 'index'].map((entry) => [
             `@niuulabs/plugin-${name}/${entry}.css`,
             resolve(__dirname, `packages/plugin-${name}/src/styles.css`),
@@ -33,6 +33,7 @@ export default defineConfig({
         'packages/plugin-observatory/src/index.tsx',
       ),
       '@niuulabs/plugin-ravn': resolve(__dirname, 'packages/plugin-ravn/src/index.ts'),
+      '@niuulabs/plugin-realms': resolve(__dirname, 'packages/plugin-realms/src/index.tsx'),
       '@niuulabs/plugin-ting': resolve(__dirname, 'packages/plugin-ting/src/index.ts'),
       '@niuulabs/plugin-valkyrie': resolve(__dirname, 'packages/plugin-valkyrie/src/index.tsx'),
       '@niuulabs/plugin-volundr': resolve(__dirname, 'packages/plugin-volundr/src/index.ts'),

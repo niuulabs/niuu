@@ -63,6 +63,14 @@ const workspaceAlias = [
     replacement: fromHere('../../packages/plugin-ting/dist/index.css'),
   },
   {
+    find: '@niuulabs/plugin-realms/styles.css',
+    replacement: fromHere('../../packages/plugin-realms/dist/styles.css'),
+  },
+  {
+    find: '@niuulabs/plugin-realms/index.css',
+    replacement: fromHere('../../packages/plugin-realms/dist/index.css'),
+  },
+  {
     find: '@niuulabs/plugin-valkyrie/styles.css',
     replacement: fromHere('../../packages/plugin-valkyrie/dist/styles.css'),
   },
@@ -121,6 +129,10 @@ const workspaceAlias = [
   {
     find: '@niuulabs/plugin-ting',
     replacement: fromHere('../../packages/plugin-ting/src/index.ts'),
+  },
+  {
+    find: '@niuulabs/plugin-realms',
+    replacement: fromHere('../../packages/plugin-realms/src/index.tsx'),
   },
   {
     find: '@niuulabs/plugin-valkyrie',
