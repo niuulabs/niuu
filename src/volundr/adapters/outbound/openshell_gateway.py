@@ -1356,10 +1356,24 @@ class OpenShellGatewayPodManager(
                         f"OpenShell runtime process {process.name!r} failed with exit "
                         f"{process_exit}"
                     )
+            # ExecSandbox env values reject newlines; command arguments are
+            # shell-quoted by exec_detached and preserve the original prose.
+            session_values = spec.values.get("session", {})
+            prompts = [
+                f"SKULD__SESSION__{name}={session_values[key]}"
+                for name, key in (
+                    ("INITIAL_PROMPT", "initialPrompt"),
+                    ("SYSTEM_PROMPT", "systemPrompt"),
+                )
+                if session_values.get(key)
+            ]
+            command = (
+                ["env", *prompts, *self._sandbox_command] if prompts else self._sandbox_command
+            )
             exit_code = await asyncio.to_thread(
                 self._client.exec_detached,
                 sandbox_id=ready.id,
-                command=self._sandbox_command,
+                command=command,
                 env=process_env,
                 log_path=self._command_log_path,
             )

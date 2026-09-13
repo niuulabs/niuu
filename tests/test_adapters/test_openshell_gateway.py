@@ -968,7 +968,10 @@ def test_storage_rejects_mount_outside_sandbox(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_start_uses_gateway_client_without_host_cli(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("initial_prompt", ["", "# Workflow\nDo the 'localhost' check; $(false)"])
+async def test_start_uses_gateway_client_without_host_cli(
+    monkeypatch: pytest.MonkeyPatch, initial_prompt
+):
     adapter = _import_adapter(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-real-from-volundr-env")
     session = _session()
@@ -976,6 +979,7 @@ async def test_start_uses_gateway_client_without_host_cli(monkeypatch: pytest.Mo
     spec = SessionSpec(
         values={
             "broker": {"cliType": "codex", "approvalPolicy": "on-request"},
+            "session": {"initialPrompt": initial_prompt, "systemPrompt": initial_prompt},
             "env": {"CUSTOM_ENV": "yes"},
             "resources": {
                 "requests": {"cpu": "500m", "memory": "1Gi"},
@@ -1039,7 +1043,17 @@ async def test_start_uses_gateway_client_without_host_cli(monkeypatch: pytest.Mo
     assert client.execs == [
         {
             "sandbox_id": "sandbox-id",
-            "command": ["skuld", "serve"],
+            "command": (
+                [
+                    "env",
+                    f"SKULD__SESSION__INITIAL_PROMPT={initial_prompt}",
+                    f"SKULD__SESSION__SYSTEM_PROMPT={initial_prompt}",
+                    "skuld",
+                    "serve",
+                ]
+                if initial_prompt
+                else ["skuld", "serve"]
+            ),
             "env": client.created["env"],
             "log_path": "/sandbox/.volundr/skuld.log",
         }
