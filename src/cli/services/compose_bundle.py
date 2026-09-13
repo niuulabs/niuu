@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from cli.services.docker_host import DockerPreflightConfig, docker_socket_gid
-from cli.services.model_catalog import model_trusts_remote_code
+from cli.services.model_catalog import model_serve_args, model_trusts_remote_code
 from niuu.service_databases import database_name_for_service, local_service_database_names
 
 if TYPE_CHECKING:
@@ -505,6 +505,8 @@ def render_compose(settings: CLISettings) -> dict[str, Any]:
         # a custom model.
         if vllm.trust_remote_code or model_trusts_remote_code(vllm.model):
             vllm_command.append("--trust-remote-code")
+        # Tool-call parsers and the like, from the model card via the catalog.
+        vllm_command.extend(model_serve_args(vllm.model))
         services["vllm"] = {
             "image": "${NIUU_VLLM_IMAGE}",
             "restart": "unless-stopped",

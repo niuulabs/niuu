@@ -25,6 +25,9 @@ class CuratedModel:
     recommended: bool = False
     # The repository ships model code vLLM must run (`--trust-remote-code`).
     trust_remote_code: bool = False
+    # Extra `vllm serve` arguments the model card prescribes, e.g. the tool-call
+    # parser without which agent sessions get no tool calls back.
+    serve_args: tuple[str, ...] = ()
 
 
 CURATED_MODELS: tuple[CuratedModel, ...] = (
@@ -36,6 +39,7 @@ CURATED_MODELS: tuple[CuratedModel, ...] = (
         weight_gib=62,
         recommended=True,
         trust_remote_code=True,
+        serve_args=("--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"),
     ),
     CuratedModel(
         id="gpt-oss-120b",
@@ -50,6 +54,7 @@ CURATED_MODELS: tuple[CuratedModel, ...] = (
         name="Qwen3-Coder 30B-A3B",
         description="Lean coding model with generous headroom for long contexts.",
         weight_gib=24,
+        serve_args=("--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"),
     ),
 )
 
@@ -57,6 +62,14 @@ CURATED_MODELS: tuple[CuratedModel, ...] = (
 def model_trusts_remote_code(model: str) -> bool:
     """True for a curated model whose repository ships code vLLM has to run."""
     return any(entry.model == model and entry.trust_remote_code for entry in CURATED_MODELS)
+
+
+def model_serve_args(model: str) -> list[str]:
+    """Extra `vllm serve` arguments the catalog prescribes for *model* (none for custom ids)."""
+    for entry in CURATED_MODELS:
+        if entry.model == model:
+            return list(entry.serve_args)
+    return []
 
 
 def expected_weight_bytes(model: str) -> int:

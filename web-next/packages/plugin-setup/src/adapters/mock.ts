@@ -305,7 +305,7 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
     vllm: {
       enabled: false,
       model: '',
-      image: 'nvcr.io/nvidia/vllm:25.09-py3',
+      image: 'nvcr.io/nvidia/vllm:25.12.post1-py3',
       maxModelLen: 65536,
       gpuMemoryUtilization: 0.6,
     },

@@ -160,7 +160,9 @@ class TestRender:
         # Nemotron ships model code; vLLM refuses it without the flag.
         settings.docker.vllm.model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
         curated = sc.render_compose(settings)["services"]["vllm"]["command"]
-        assert curated[-1] == "--trust-remote-code"
+        assert "--trust-remote-code" in curated
+        # and the tool-call parser its model card prescribes, so agents get tool calls back
+        assert curated[-3:] == ["--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"]
         # A custom repository gets the flag from the setting.
         settings.docker.vllm.model = "org/custom"
         settings.docker.vllm.trust_remote_code = True
