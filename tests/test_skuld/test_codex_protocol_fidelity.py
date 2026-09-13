@@ -655,3 +655,55 @@ async def test_resolution_without_exact_rpc_id_never_retires_pending_request(tmp
     await transport._resolve_server_request(invalid_id)
     assert request_id in transport._pending_approvals
     transport._emit.assert_not_awaited()
+
+
+@pytest.mark.parametrize("operation", ["start", "import", "resume"])
+async def test_native_history_requests_do_not_send_removed_persistence_flag(tmp_path, operation):
+    transport = CodexWebSocketTransport(
+        str(tmp_path), resume_session_id="thread" if operation == "import" else ""
+    )
+    transport._send_rpc = AsyncMock(return_value={"thread": {"id": "thread"}})
+    transport._send_notification = AsyncMock()
+    transport._authenticate_codex = AsyncMock()
+    transport._emit = AsyncMock()
+    if operation == "resume":
+        await transport.resume("thread")
+    else:
+        await transport._handshake()
+    calls = [
+        call
+        for call in transport._send_rpc.await_args_list
+        if call.args[0] in ("thread/start", "thread/resume")
+    ]
+    assert len(calls) == 1
+    assert "persistExtendedHistory" not in calls[0].args[1]
+    assert calls[0].args[1].get("historyMode", "legacy") == "legacy"
+
+
+@pytest.mark.parametrize("operation", ["start", "import", "resume"])
+async def test_native_thread_response_cannot_invent_success_without_identity(tmp_path, operation):
+    transport = CodexWebSocketTransport(
+        str(tmp_path), resume_session_id="thread" if operation == "import" else ""
+    )
+    transport._send_rpc = AsyncMock(return_value={})
+    transport._send_notification = AsyncMock()
+    transport._authenticate_codex = AsyncMock()
+    transport._emit = AsyncMock()
+    with pytest.raises(RuntimeError, match="identify"):
+        if operation == "resume":
+            await transport.resume("thread")
+        else:
+            await transport._handshake()
+    assert transport._thread_id is None
+    transport._emit.assert_not_awaited()
+
+
+async def test_resume_cannot_replace_bound_conversation_with_wrong_thread(tmp_path):
+    transport = CodexWebSocketTransport(str(tmp_path))
+    transport._thread_id = "original"
+    transport._send_rpc = AsyncMock(return_value={"thread": {"id": "unexpected"}})
+    transport._emit = AsyncMock()
+    with pytest.raises(RuntimeError, match="different conversation"):
+        await transport.resume("requested")
+    assert transport._thread_id == "original"
+    transport._emit.assert_not_awaited()

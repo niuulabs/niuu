@@ -1983,7 +1983,7 @@ class TestResume:
 
         async def fake_send_rpc(method, params=None):
             calls.append((method, params))
-            return {"thread": {"id": "resumed-thread"}}
+            return {"thread": {"id": "old-thread-id"}}
 
         t._send_rpc = fake_send_rpc
         emit = _collect_emits(t)
@@ -1992,11 +1992,11 @@ class TestResume:
 
         assert calls[0][0] == "thread/resume"
         assert calls[0][1]["threadId"] == "old-thread-id"
-        assert t._thread_id == "resumed-thread"
+        assert t._thread_id == "old-thread-id"
 
         init_event = emit.call_args[0][0]
         assert init_event["type"] == "system"
-        assert init_event["session_id"] == "resumed-thread"
+        assert init_event["session_id"] == "old-thread-id"
 
 
 # ---------------------------------------------------------------------------
@@ -2916,7 +2916,7 @@ class TestResumeEdgeCases:
 
         async def fake_send_rpc(method, params=None):
             calls.append((method, params))
-            return {"thread": {"id": "resumed-t"}}
+            return {"thread": {"id": "old-id"}}
 
         t._send_rpc = fake_send_rpc
         _collect_emits(t)
@@ -2940,7 +2940,7 @@ class TestResumeEdgeCases:
 
         async def fake_send_rpc(method, params=None):
             calls.append((method, params))
-            return {"thread": {"id": "resumed-t"}}
+            return {"thread": {"id": "old-id"}}
 
         t._send_rpc = fake_send_rpc
         _collect_emits(t)
@@ -2959,7 +2959,7 @@ class TestResumeEdgeCases:
 
         async def fake_send_rpc(method, params=None):
             calls.append((method, params))
-            return {"thread": {"id": "resumed-t"}}
+            return {"thread": {"id": "old-id"}}
 
         t._send_rpc = fake_send_rpc
         _collect_emits(t)
@@ -2977,7 +2977,7 @@ class TestResumeEdgeCases:
 
         async def fake_send_rpc(method, params=None):
             calls.append((method, params))
-            return {"thread": {"id": "resumed-t"}}
+            return {"thread": {"id": "old-id"}}
 
         t._send_rpc = fake_send_rpc
         _collect_emits(t)
@@ -2988,8 +2988,8 @@ class TestResumeEdgeCases:
         assert "model" not in params
 
     @pytest.mark.asyncio
-    async def test_resume_fallback_thread_id(self, tmp_path):
-        """When the response thread has no id, resume uses the passed thread_id."""
+    async def test_resume_missing_native_identity_is_rejected(self, tmp_path):
+        """A successful RPC without a native ID cannot prove a resumed thread."""
         t = _make_transport(tmp_path)
 
         async def fake_send_rpc(method, params=None):
@@ -2998,9 +2998,10 @@ class TestResumeEdgeCases:
         t._send_rpc = fake_send_rpc
         _collect_emits(t)
 
-        await t.resume("fallback-id")
+        with pytest.raises(RuntimeError, match="identify"):
+            await t.resume("requested-id")
 
-        assert t._thread_id == "fallback-id"
+        assert t._thread_id is None
 
 
 # ---------------------------------------------------------------------------

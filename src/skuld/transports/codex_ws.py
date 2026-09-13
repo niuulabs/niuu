@@ -654,7 +654,6 @@ class CodexWebSocketTransport(CLITransport):
             # instead of starting a fresh one.
             resume_params: dict = {
                 "threadId": self._resume_session_id,
-                "persistExtendedHistory": True,
             }
             if self._model:
                 resume_params["model"] = self._model
@@ -667,11 +666,7 @@ class CodexWebSocketTransport(CLITransport):
             resume_params.update(self._permission_thread_params())
 
             result = await self._send_rpc("thread/resume", resume_params)
-            thread = result.get("thread", {})
-            resumed_id = thread.get("id") or self._resume_session_id
-            if resumed_id != self._resume_session_id:
-                raise RuntimeError("Codex resumed a different conversation than requested")
-            self._thread_id = resumed_id
+            self._thread_id = self._thread_response_id(result, expected=self._resume_session_id)
             logger.info("Codex thread resumed: %s", self._thread_id)
         else:
             thread_params: dict = {
@@ -680,7 +675,9 @@ class CodexWebSocketTransport(CLITransport):
                 # raw events enabled so the transport can normalize those
                 # calls into the same generic tool lifecycle as CLI/MCP tools.
                 "experimentalRawEvents": True,
-                "persistExtendedHistory": True,
+                # 0.154 uses legacy history by default. The removed
+                # persistExtendedHistory flag no longer affects persistence;
+                # paginated history creation/resume is not supported upstream.
                 "cwd": self.workspace_dir,
             }
             if self._model:
@@ -704,10 +701,7 @@ class CodexWebSocketTransport(CLITransport):
                 thread_params["baseInstructions"] = self._system_prompt
 
             result = await self._send_rpc("thread/start", thread_params)
-            # The response triggers a thread/started notification with the thread info.
-            # But the RPC response itself may contain the thread_id.
-            thread = result.get("thread", {})
-            self._thread_id = thread.get("id") or result.get("threadId")
+            self._thread_id = self._thread_response_id(result)
             logger.info("Codex thread started: %s", self._thread_id)
 
         # Emit a synthetic init event so the broker knows we're ready.
@@ -720,6 +714,18 @@ class CodexWebSocketTransport(CLITransport):
                 "tools": [],
             }
         )
+
+    @staticmethod
+    def _thread_response_id(result: dict, *, expected: str | None = None) -> str:
+        """Bind only an identified native conversation, never an invented one."""
+        thread = result.get("thread")
+        thread_id = thread.get("id") if isinstance(thread, dict) else None
+        thread_id = thread_id or result.get("threadId")
+        if not isinstance(thread_id, str) or not thread_id.strip():
+            raise RuntimeError("Codex thread response did not identify a conversation")
+        if expected is not None and thread_id != expected:
+            raise RuntimeError("Codex resumed a different conversation than requested")
+        return thread_id
 
     async def _authenticate_codex(self) -> None:
         """Select host-managed or externally managed auth through the configured port."""
@@ -2822,15 +2828,13 @@ class CodexWebSocketTransport(CLITransport):
         """Resume a previous Codex thread."""
         params: dict = {
             "threadId": thread_id,
-            "persistExtendedHistory": True,
         }
         if self._model:
             params["model"] = self._model
         params.update(self._permission_thread_params())
 
         result = await self._send_rpc("thread/resume", params)
-        thread = result.get("thread", {})
-        self._thread_id = thread.get("id") or thread_id
+        self._thread_id = self._thread_response_id(result, expected=thread_id)
         logger.info("Codex thread resumed: %s", self._thread_id)
 
         await self._emit(
