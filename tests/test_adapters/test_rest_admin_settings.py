@@ -40,7 +40,7 @@ class TestAdminSettings:
         data = response.json()
         assert data["title"] == "Forge"
         assert data["scope"] == "admin"
-        assert data["sections"][0]["path"] == "/admin/settings"
+        assert data["sections"][0]["path"] == "/admin/settings/storage"
         assert data["sections"][0]["saveLabel"] == "Save storage settings"
 
     def test_get_canonical_settings_schema_alias(self, client: TestClient) -> None:
@@ -103,10 +103,66 @@ class TestAdminSettings:
         assert data["storage"]["file_manager_enabled"] is False
         assert data["storage"]["fileManagerEnabled"] is False
 
-    def test_update_without_storage_is_noop(self, client: TestClient) -> None:
+    def test_update_without_storage_is_rejected(self, client: TestClient) -> None:
         response = client.put(
             "/api/v1/forge/admin/settings",
             json={},
         )
+        assert response.status_code == 422
+
+    def test_flat_keys_at_the_nested_endpoint_are_rejected(self, client: TestClient) -> None:
+        """The settings shell used to post this shape here and got a 200 that changed nothing."""
+        response = client.patch(
+            "/api/v1/forge/admin/settings",
+            json={"homeEnabled": False, "fileManagerEnabled": False},
+        )
+        assert response.status_code == 422
+        assert client.get("/api/v1/forge/admin/settings").json()["storage"]["homeEnabled"] is True
+
+
+class TestStorageSection:
+    """The Storage section of the settings page saves through its own flat endpoint."""
+
+    def test_saves_the_section_form(self, client: TestClient) -> None:
+        response = client.patch(
+            "/api/v1/forge/admin/settings/storage",
+            json={"homeEnabled": False, "fileManagerEnabled": False},
+        )
         assert response.status_code == 200
-        assert response.json()["storage"]["home_enabled"] is True
+        data = response.json()
+        assert data["homeEnabled"] is False
+        assert data["fileManagerEnabled"] is False
+        stored = client.get("/api/v1/forge/admin/settings").json()["storage"]
+        assert stored == {
+            "home_enabled": False,
+            "file_manager_enabled": False,
+            "homeEnabled": False,
+            "fileManagerEnabled": False,
+        }
+
+    def test_partial_update_keeps_the_other_field(self, client: TestClient) -> None:
+        response = client.patch(
+            "/api/v1/forge/admin/settings/storage",
+            json={"file_manager_enabled": False},
+        )
+        assert response.status_code == 200
+        assert response.json() == {
+            "home_enabled": True,
+            "file_manager_enabled": False,
+            "homeEnabled": True,
+            "fileManagerEnabled": False,
+        }
+
+    def test_empty_and_unknown_bodies_are_rejected(self, client: TestClient) -> None:
+        assert client.patch("/api/v1/forge/admin/settings/storage", json={}).status_code == 422
+        unknown = client.patch("/api/v1/forge/admin/settings/storage", json={"other": True})
+        assert unknown.status_code == 422
+
+    def test_needs_the_admin_role(self, app: FastAPI, client: TestClient) -> None:
+        app.dependency_overrides[extract_principal] = lambda: Principal(
+            user_id="u-1", email="u@test.com", tenant_id="t1", roles=[]
+        )
+        response = client.patch(
+            "/api/v1/forge/admin/settings/storage", json={"fileManagerEnabled": False}
+        )
+        assert response.status_code == 403

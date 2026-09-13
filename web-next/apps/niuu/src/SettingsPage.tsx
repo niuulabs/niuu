@@ -31,6 +31,16 @@ function buildInitialDraft(section: RemoteSettingsSectionSchema | null): Record<
   return Object.fromEntries(section.fields.map((field) => [field.key, field.value]));
 }
 
+/** The server's reason for a failed save, so the page never just says "failed". */
+function saveErrorText(error: unknown): string {
+  if (error && typeof error === 'object' && 'detail' in error) {
+    const detail = (error as { detail?: unknown }).detail;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+  }
+  if (error instanceof Error && error.message.trim()) return error.message;
+  return 'The server did not say why.';
+}
+
 type ProviderStatus = 'ready' | 'loading' | 'missing' | 'idle' | 'error';
 
 const CREDENTIAL_ENROLLMENT_STATUS_INTERVAL_MS = 2000;
@@ -1909,8 +1919,11 @@ function SettingsSectionPanel({
                   </span>
                 ) : null}
                 {saveMutation.isError ? (
-                  <span className="settings-shell__status settings-shell__status--error">
-                    Failed to save this section.
+                  <span
+                    className="settings-shell__status settings-shell__status--error"
+                    data-testid="settings-save-error"
+                  >
+                    Failed to save this section: {saveErrorText(saveMutation.error)}
                   </span>
                 ) : null}
                 <button

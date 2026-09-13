@@ -279,6 +279,38 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('button', { name: 'Save notification settings' })).toBeTruthy();
   });
 
+  it('saves a section as flat field values to the section path', async () => {
+    routerMocks.params = { providerId: 'ting', sectionId: 'notifications' };
+    apiMocks.patch.mockResolvedValueOnce(null);
+    wrap(<SettingsPage />);
+
+    const checkbox = await screen.findByRole('checkbox', { name: 'Enabled' });
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByRole('button', { name: 'Save notification settings' }));
+
+    await waitFor(() => {
+      expect(apiMocks.patch).toHaveBeenCalledWith('/settings/notifications', { enabled: false });
+    });
+    expect(await screen.findByText('Saved.')).toBeTruthy();
+  });
+
+  it('shows the server reason when a section save fails', async () => {
+    routerMocks.params = { providerId: 'ting', sectionId: 'notifications' };
+    apiMocks.patch.mockRejectedValueOnce(
+      Object.assign(new Error('API request failed: 422'), {
+        detail: 'send homeEnabled and/or fileManagerEnabled; nothing to update',
+      }),
+    );
+    wrap(<SettingsPage />);
+
+    await screen.findByRole('checkbox', { name: 'Enabled' });
+    fireEvent.click(screen.getByRole('button', { name: 'Save notification settings' }));
+
+    expect((await screen.findByTestId('settings-save-error')).textContent).toBe(
+      'Failed to save this section: send homeEnabled and/or fileManagerEnabled; nothing to update',
+    );
+  });
+
   it('renders the credentials resource composer inside the unified shell', async () => {
     routerMocks.params = { providerId: 'credentials', sectionId: 'user' };
     apiMocks.get.mockImplementation(async (path: string) => {

@@ -320,6 +320,30 @@ describe('resolveSettingsServiceBase', () => {
     ).toBe('http://localhost:9090/api/v1/niuu/setup');
   });
 
+  it('resolves volundr settings from the forge base, where the settings router lives', () => {
+    expect(
+      resolveSettingsServiceBase(
+        {
+          services: {
+            forge: { mode: 'http', baseUrl: '/api/v1/forge' },
+            volundr: { mode: 'http', baseUrl: '/api/v1/volundr' },
+          },
+        } as any,
+        'volundr',
+      ),
+    ).toBe('/api/v1/forge');
+    expect(
+      resolveSettingsServiceBase(
+        {
+          services: {
+            volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
+          },
+        } as any,
+        'volundr',
+      ),
+    ).toBe('http://localhost:8080/api/v1/forge');
+  });
+
   it('resolves identity settings from the canonical identity base', () => {
     expect(
       resolveSettingsServiceBase(

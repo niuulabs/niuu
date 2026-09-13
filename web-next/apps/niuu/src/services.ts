@@ -332,6 +332,14 @@ function resolveVolundrServiceBase(config: Pick<NiuuConfig, 'services'>): string
   return sharedBase ? `${sharedBase}/volundr` : null;
 }
 
+function resolveForgeSettingsBase(config: Pick<NiuuConfig, 'services'>): string | null {
+  const explicitBase = resolveForgeServiceBase(config);
+  if (explicitBase) return explicitBase;
+
+  const sharedBase = resolveSharedApiBase(config);
+  return sharedBase ? `${sharedBase}/forge` : null;
+}
+
 function resolveBifrostServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
   const explicitBase = resolveDirectServiceBase(config, 'bifrost');
   if (explicitBase) return explicitBase;
@@ -567,7 +575,10 @@ export function resolveSettingsServiceBase(
     case 'ting':
       return resolveTingServiceBase(config, 'ting.settings');
     case 'volundr':
-      return resolveVolundrServiceBase(config);
+      // Forge serves its settings schema and the Storage section under the
+      // forge prefix (/api/v1/forge/settings); the volundr prefix only carries
+      // the launch catalog and has no settings route.
+      return resolveForgeSettingsBase(config);
     case 'mimir':
       return resolveDirectServiceBase(config, 'mimir');
     case 'ravn':
