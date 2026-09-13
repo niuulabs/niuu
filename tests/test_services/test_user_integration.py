@@ -423,3 +423,18 @@ async def test_session_git_supports_gitlab(service):
     )
     assert connection is conn
     assert provider.get_clone_url("https://gitlab.com/org/repo").startswith("https://oauth2:")
+
+
+async def test_unnamed_accounts_are_known_by_their_credential_name(
+    service: UserIntegrationService,
+    integration_repo: AsyncMock,
+) -> None:
+    """Two GitHub accounts stay apart in the repository list."""
+    unnamed = {"base_url": "https://api.github.com"}
+    personal = _make_connection(conn_id="c-1", credential_name="github-signin", config=unnamed)
+    work = _make_connection(conn_id="c-2", credential_name="github-work", config=unnamed)
+    integration_repo.list_connections.return_value = [personal, work]
+
+    providers = await service.get_git_providers("user-1")
+
+    assert [p.name for p in providers[:2]] == ["github-signin", "github-work"]

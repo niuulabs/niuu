@@ -232,14 +232,24 @@ class GitLabProvider(GitProvider, GitWorkflowProvider):
         group_path = quote_plus(org)
 
         try:
-            # Try group endpoint first
             page = 1
-            url = f"/groups/{group_path}/projects"
-            params: dict[str, str | int | bool] = {
-                "per_page": 100,
-                "include_subgroups": True,
-                "page": page,
-            }
+            if org:
+                # Try group endpoint first
+                url = f"/groups/{group_path}/projects"
+                params: dict[str, str | int | bool] = {
+                    "per_page": 100,
+                    "include_subgroups": True,
+                    "page": page,
+                }
+            else:
+                # No group named: every project the token is a member of.
+                if not self._token:
+                    raise ValueError(
+                        f"GitLabProvider[{self._name}]: listing projects without a group "
+                        "needs a token"
+                    )
+                url = "/projects"
+                params = {"per_page": 100, "membership": True, "page": page}
 
             logger.info(
                 "GitLabProvider[%s]: listing repos for org=%s, url=%s, authenticated=%s",
@@ -252,7 +262,7 @@ class GitLabProvider(GitProvider, GitWorkflowProvider):
             response = await client.get(url, params=params)
 
             # Fall back to user projects if group not found
-            if response.status_code == 404:
+            if org and response.status_code == 404:
                 logger.debug(
                     "GitLabProvider[%s]: group endpoint 404 for %s, trying user endpoint",
                     self._name,

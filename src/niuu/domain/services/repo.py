@@ -99,10 +99,17 @@ class RepoService:
             async with sem:
                 return await coro
 
+        shared = {id(provider) for provider in self._git_registry.providers}
         tasks = []
         task_labels: list[str] = []
         for provider in providers:
-            for org in provider.orgs:
+            # A personal account added without organisations still has
+            # repositories: everything its token can reach. Shared providers
+            # from config keep needing explicit orgs.
+            orgs: tuple[str, ...] = tuple(provider.orgs)
+            if not orgs and id(provider) not in shared:
+                orgs = ("",)
+            for org in orgs:
                 tasks.append(_capped(provider.list_repos(org)))
                 task_labels.append(provider.name)
 

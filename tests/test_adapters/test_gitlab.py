@@ -711,3 +711,40 @@ class TestGitLabProviderWorkflow:
 
         assert status == CIStatus.UNKNOWN
         await provider.close()
+
+
+class TestGitLabEverythingTheTokenReaches:
+    """An account added without a group lists every project it is a member of."""
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_empty_group_lists_membership_projects(self) -> None:
+        provider = GitLabProvider(name="gitlab-work", base_url="https://gitlab.com", token="t")
+        listing = respx.get("https://gitlab.com/api/v4/projects").mock(
+            return_value=Response(
+                200,
+                json=[
+                    {
+                        "path": "skuld",
+                        "namespace": {"path": "niuulabs"},
+                        "web_url": "https://gitlab.com/niuulabs/skuld",
+                        "default_branch": "main",
+                    }
+                ],
+                headers={"x-next-page": ""},
+            )
+        )
+        respx.get(url__regex=r"https://gitlab\.com/api/v4/projects/.*/repository/branches").mock(
+            return_value=Response(200, json=[{"name": "main"}])
+        )
+
+        repos = await provider.list_repos("")
+
+        assert listing.calls.last.request.url.params["membership"] == "true"
+        assert [(r.org, r.name) for r in repos] == [("niuulabs", "skuld")]
+
+    @pytest.mark.asyncio
+    async def test_empty_group_without_a_token_is_refused(self) -> None:
+        provider = GitLabProvider(name="anon", base_url="https://gitlab.com", token="")
+        with pytest.raises(ValueError, match="needs a token"):
+            await provider.list_repos("")

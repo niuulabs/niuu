@@ -249,8 +249,10 @@ class UserIntegrationService:
         # Merge credential data with connection config.
         # Config keys take precedence (explicit user settings override
         # credential-level defaults like "url").
+        # Two accounts of one provider must stay apart in the repository list,
+        # so an unnamed connection is known by its credential name.
         kwargs: dict[str, Any] = {
-            "name": conn.config.get("name", conn.slug),
+            "name": conn.config.get("name") or conn.credential_name or conn.slug,
             **cred_data,
             **conn.config,
         }

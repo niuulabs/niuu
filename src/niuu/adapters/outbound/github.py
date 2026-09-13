@@ -258,14 +258,29 @@ class GitHubProvider(GitProvider, GitWorkflowProvider):
         filter_owner: bool = False
 
         try:
-            # Try org endpoint first, type=all includes public+private+forks
-            url: str | None = f"/orgs/{org}/repos"
-            params: dict[str, str | int] = {"per_page": 100, "type": "all"}
+            if org:
+                # Try org endpoint first, type=all includes public+private+forks
+                url: str | None = f"/orgs/{org}/repos"
+                params: dict[str, str | int] = {"per_page": 100, "type": "all"}
+            else:
+                # No organisation named: everything the token can reach, own
+                # repositories and those of every organisation it belongs to.
+                if not self._token:
+                    raise ValueError(
+                        f"GitHubProvider[{self._name}]: listing repositories without an "
+                        "organisation needs a token"
+                    )
+                url = "/user/repos"
+                params = {
+                    "per_page": 100,
+                    "visibility": "all",
+                    "affiliation": "owner,collaborator,organization_member",
+                }
 
             logger.info(
                 "GitHubProvider[%s]: listing repos for org=%s, url=%s, authenticated=%s",
                 self._name,
-                org,
+                org or "<all>",
                 url,
                 bool(self._token),
             )
@@ -273,7 +288,7 @@ class GitHubProvider(GitProvider, GitWorkflowProvider):
             response = await client.get(url, params=params)
 
             # Fall back to user endpoint if org not found
-            if response.status_code == 404:
+            if org and response.status_code == 404:
                 if self._token:
                     # Use authenticated /user/repos endpoint to include private repos.
                     # /users/{name}/repos only returns public repos even with a token.
@@ -324,12 +339,13 @@ class GitHubProvider(GitProvider, GitWorkflowProvider):
                             continue
 
                     repo_name = repo_data["name"]
+                    owner = str(repo_data.get("owner", {}).get("login") or org)
                     repos.append(
                         RepoInfo(
                             provider=GitProviderType.GITHUB,
-                            org=org,
+                            org=owner,
                             name=repo_name,
-                            clone_url=f"https://{self._web_host}/{org}/{repo_name}.git",
+                            clone_url=f"https://{self._web_host}/{owner}/{repo_name}.git",
                             url=repo_data["html_url"],
                             default_branch=repo_data.get("default_branch", "main"),
                         )
@@ -341,7 +357,7 @@ class GitHubProvider(GitProvider, GitWorkflowProvider):
 
             # Fetch branches concurrently for all repos
             branch_lists = await asyncio.gather(
-                *(self._fetch_branches(client, org, r.name) for r in repos),
+                *(self._fetch_branches(client, r.org, r.name) for r in repos),
                 return_exceptions=True,
             )
             updated_repos: list[RepoInfo] = []

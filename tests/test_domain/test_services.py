@@ -1449,3 +1449,31 @@ class TestSessionServiceCreateWithTemplate:
         assert session.repo == "https://github.com/other/repo"
         assert session.branch == "main"
         assert session.model == "claude-sonnet-4-20250514"
+
+
+class TestRepoServiceAccountsWithoutOrgs:
+    """A person's account added without organisations still lists its repositories."""
+
+    async def test_user_provider_without_orgs_lists_everything_it_can_reach(self) -> None:
+        from unittest.mock import AsyncMock
+
+        repo = RepoInfo(
+            provider=GitProviderType.GITHUB,
+            org="jve",
+            name="dotfiles",
+            clone_url="https://github.com/jve/dotfiles.git",
+            url="https://github.com/jve/dotfiles",
+        )
+        shared = MockGitProvider(name="Shared", orgs=())  # config provider: orgs stay explicit
+        personal = MockGitProvider(name="github-signin", orgs=(), repos=[repo])
+        registry = MockGitRegistry([shared])
+        user_int = AsyncMock()
+        user_int.get_git_providers = AsyncMock(return_value=[personal, shared])
+        service = RepoService(registry, user_integration=user_int)
+
+        result = await service.list_repos(user_id="user-1")
+
+        assert list(result) == ["github-signin"]
+        assert [r.name for r in result["github-signin"]] == ["dotfiles"]
+        assert personal.list_repos_calls == [""]
+        assert shared.list_repos_calls == []
