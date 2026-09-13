@@ -93,7 +93,7 @@ async def test_openshell_peer_uses_skuld_broker_origin(monkeypatch) -> None:
 
     provider = _runtime_cli_transport_kwargs(_CODEX, settings)["codex_auth_provider"]
     async with await provider._http_client_provider() as client:
-        assert str(client.base_url) == "http://niuu-volundr.volundr.svc.cluster.local/"
+        assert str(client.base_url).rstrip("/") == "http://niuu-volundr.volundr.svc.cluster.local"
         assert "Authorization" not in client.headers
 
 
