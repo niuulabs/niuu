@@ -748,3 +748,16 @@ class TestGitLabEverythingTheTokenReaches:
         provider = GitLabProvider(name="anon", base_url="https://gitlab.com", token="")
         with pytest.raises(ValueError, match="needs a token"):
             await provider.list_repos("")
+
+
+def test_ignores_connection_keys_it_does_not_take() -> None:
+    """Connection config carries keys like oauth_app; the provider takes what it needs."""
+    provider = GitLabProvider(
+        name="gitlab-work",
+        base_url="https://gitlab.com",
+        token="t",
+        orgs="niuulabs, other",
+        oauth_app="work-org",
+        refresh_token="r",
+    )
+    assert provider.orgs == ("niuulabs", "other")

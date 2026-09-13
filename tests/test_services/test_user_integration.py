@@ -438,3 +438,30 @@ async def test_unnamed_accounts_are_known_by_their_credential_name(
     providers = await service.get_git_providers("user-1")
 
     assert [p.name for p in providers[:2]] == ["github-signin", "github-work"]
+
+
+async def test_wizard_connections_get_the_catalog_defaults(
+    integration_repo: AsyncMock,
+    credential_store: AsyncMock,
+) -> None:
+    """A connection saved without an API URL still builds: the catalog default fills it."""
+    from volundr.config import _default_integration_definitions
+    from volundr.domain.services.integration_registry import definitions_from_config
+
+    catalog = IntegrationRegistry(
+        definitions_from_config([d.model_dump() for d in _default_integration_definitions()])
+    )
+    service = UserIntegrationService(
+        integration_repo=integration_repo,
+        integration_registry=catalog,
+        credential_store=credential_store,
+    )
+    conn = _make_connection(credential_name="github-signin", config={"oauth_app": "niuulabs"})
+    integration_repo.list_connections.return_value = [conn]
+
+    providers = await service.get_git_providers("user-1")
+
+    user_provider = providers[0]
+    assert user_provider.name == "github-signin"
+    assert user_provider.supports("https://github.com/niuulabs/volundr")
+    assert user_provider.orgs == ()
