@@ -40,7 +40,7 @@ class Host:
         runtimes = '{"nvidia": {}, "runc": {}}' if runtime else '{"runc": {}}'
         _tool(self.bin, "docker", FAKE_DOCKER.format(runtimes=runtimes))
         if gpu:
-            _tool(self.bin, "nvidia-smi", "echo 'GPU 0: NVIDIA GB10 (UUID: GPU-1)'\n")
+            _tool(self.bin, "nvidia-smi", "echo 'NVIDIA GB10'\n")
         if ctk:
             _tool(self.bin, "nvidia-ctk", "exit 0\n")
         _tool(self.bin, "sudo", f'printf "%s\\n" "$*" >> "{self.sudo_log}"\nexit 0\n')
@@ -74,8 +74,8 @@ def test_a_gpu_docker_cannot_use_stops_the_install_with_the_registration_command
     host = Host(tmp_path, gpu=True, runtime=False, ctk=True)
     result = host.run()
     assert result.returncode == 1
-    assert "NVIDIA GB10" in result.stderr
-    assert "Container Toolkit is installed; it only needs registering" in result.stderr
+    assert "GPU found (NVIDIA GB10)" in result.stderr
+    assert "Container Toolkit is installed. Register it" in result.stderr
     assert "sudo nvidia-ctk runtime configure --runtime=docker" in result.stderr
     assert "sudo systemctl restart docker" in result.stderr
     assert "rerun this installer" in result.stderr
@@ -87,7 +87,7 @@ def test_without_the_toolkit_it_points_at_the_install_guide(tmp_path: Path) -> N
     host = Host(tmp_path, gpu=True, runtime=False, ctk=False)
     result = host.run()
     assert result.returncode == 1
-    assert "Install the NVIDIA Container Toolkit first" in result.stderr
+    assert "Install the NVIDIA Container Toolkit" in result.stderr
     assert "docs.nvidia.com" in result.stderr
     assert not host.sudo_ran()
     assert not host.installed()

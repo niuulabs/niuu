@@ -81,17 +81,17 @@ check_nvidia_runtime() {
     say "NVIDIA GPU found and Docker has the NVIDIA runtime."
     return 0
   fi
-  say "niuu: this host has an NVIDIA GPU ($(nvidia-smi -L 2>/dev/null | head -1)), but Docker has no NVIDIA"
-  say "runtime registered, so no session or local model could use it. Niuu will not start half-blind."
+  gpu_name="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
+  say "niuu: GPU found (${gpu_name:-NVIDIA}), but Docker has no NVIDIA runtime registered."
+  say "Containers cannot use the GPU until it is. Not started."
   if command -v nvidia-ctk >/dev/null 2>&1; then
-    say "The NVIDIA Container Toolkit is installed; it only needs registering with Docker. Run once:"
+    say "The NVIDIA Container Toolkit is installed. Register it, then rerun this installer:"
     say "  sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
   else
-    say "Install the NVIDIA Container Toolkit first: ${NVIDIA_TOOLKIT_GUIDE}"
-    say "then register it with Docker:"
+    say "Install the NVIDIA Container Toolkit (${NVIDIA_TOOLKIT_GUIDE}), register it, then rerun this installer:"
     say "  sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
   fi
-  say "then rerun this installer. (To run without the GPU on purpose: NIUU_SKIP_GPU=1.)"
+  say "To start without the GPU: NIUU_SKIP_GPU=1"
   exit 1
 }
 
