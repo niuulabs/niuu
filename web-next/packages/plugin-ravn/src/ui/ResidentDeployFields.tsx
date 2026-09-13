@@ -16,7 +16,7 @@ interface PersonaOption {
   role: string;
 }
 
-interface ResidentDeployFieldsProps {
+export interface ResidentDeployFieldsProps {
   draft: ResidentMemberDraft;
   profiles: ResidentDeploymentProfile[];
   personas: PersonaOption[];

@@ -33,6 +33,7 @@ import type {
   ReviewListFilters,
   ReviewSummaryFilters,
   SignalHistoryFilters,
+  RealmCreate,
   TrustGrantCreate,
 } from '../ports';
 
@@ -233,6 +234,12 @@ export function buildRealmGovernanceHttpAdapter(
   return {
     listRealms() {
       return realmsClient.get<RealmSummary[]>('/realms');
+    },
+    getRealm(slug: string) {
+      return realmsClient.get<RealmSummary>(`/realms/${encodeURIComponent(slug)}`);
+    },
+    createRealm(request: RealmCreate) {
+      return realmsClient.post<RealmSummary>('/realms', request);
     },
     listTrustGrants(slug: string) {
       return realmsClient.get<RealmTrustGrant[]>(

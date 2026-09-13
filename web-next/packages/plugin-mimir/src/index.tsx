@@ -13,6 +13,7 @@ export const mimirPlugin = definePlugin({
   rune: 'M',
   title: 'Mímir',
   subtitle: 'the well of knowledge',
+  simple: { tabs: ['overview', 'pages'] },
   tabs: [
     { id: 'overview', label: 'Overview', rune: '◎', path: '/mimir' },
     { id: 'pages', label: 'Pages', rune: '▤', path: '/mimir/pages' },
@@ -155,6 +156,8 @@ export {
 } from './domain';
 
 // UI components (plugin-local; promote to @niuulabs/ui when a second plugin needs them)
+export { RegistryMountEditor, type RegistryMountEditorProps } from './ui/RegistryPage';
+export type { KnowledgeDeployment, DeploymentStatus } from './domain/instances';
 export { WikilinkPill } from './ui/components/WikilinkPill';
 export { PageTypeGlyph } from './ui/components/PageTypeGlyph';
 export { MountChip } from './ui/components/MountChip';

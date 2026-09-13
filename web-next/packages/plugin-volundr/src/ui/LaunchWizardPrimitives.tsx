@@ -61,7 +61,16 @@ export interface LaunchWizardProps {
   initialForm?: Partial<WizardForm>;
 }
 
-export function StepIndicator({ current, steps }: { current: WizardStep; steps: WizardStep[] }) {
+export function StepIndicator({
+  current,
+  steps,
+  labels = STEP_LABELS,
+}: {
+  current: string;
+  steps: readonly string[];
+  /** Label per step id. Defaults to the launch wizard's own steps. */
+  labels?: Record<string, string>;
+}) {
   const idx = steps.indexOf(current);
   return (
     <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:py-4" data-testid="step-indicator">
@@ -84,7 +93,7 @@ export function StepIndicator({ current, steps }: { current: WizardStep; steps: 
               i === idx ? 'niuu:text-text-primary' : 'niuu:text-text-faint'
             }`}
           >
-            {STEP_LABELS[step]}
+            {labels[step] ?? step}
           </span>
           {i < steps.length - 1 && (
             <div

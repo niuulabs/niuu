@@ -14,6 +14,7 @@ export const ravnPlugin = definePlugin({
   rune: 'R',
   title: 'Ravn',
   subtitle: 'personas · ravens · sessions',
+  simple: { tabs: ['ravens', 'personas'] },
   tabs: [
     { id: 'overview', label: 'Overview', path: '/ravn' },
     { id: 'ravens', label: 'Ravens', path: '/ravn/ravens' },
@@ -147,3 +148,30 @@ export {
   type LogEntry,
   type LogFilter,
 } from './application/logFilter';
+
+// Widgets and hooks shared with other plugins (Realms composes them)
+export {
+  ResidentDeployFields,
+  selectedResidentProfile,
+  targetLabel,
+  type ResidentDeployFieldsProps,
+  type ResidentMemberDraft,
+} from './ui/ResidentDeployFields';
+export { ResidentModelSelect } from './ui/ResidentModelSelect';
+export { PersonaList, type PersonaListProps } from './ui/PersonaList';
+export { PersonaForm, type PersonaFormProps } from './ui/PersonaForm';
+export { ResidentLogsView } from './ui/ResidentLogsView';
+export { MessageRow } from './ui/MessageRow';
+export { TriggersView } from './ui/TriggersView';
+export { HeroCard } from './ui/BudgetView';
+export {
+  useResidentProfiles,
+  useDeployResident,
+  useResidentSessions,
+  useResidentLogs,
+  useCreateResidentSession,
+  useResidentLifecycle,
+} from './ui/hooks/useResidentControl';
+export { useTriggers } from './ui/hooks/useTriggers';
+export { useRavnBudget, useFleetBudget } from './ui/hooks/useBudget';
+export { usePersonas, useOptionalPersonas } from './ui/usePersonas';

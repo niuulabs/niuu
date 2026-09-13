@@ -38,6 +38,14 @@ export interface PluginDescriptor {
    */
   position?: 'top' | 'bottom';
 
+  /**
+   * How this plugin appears in Simple mode. A plugin that declares `simple`
+   * stays in the rail with only the listed tab ids (all tabs when omitted);
+   * a plugin without it is hidden from the rail while Simple mode is on.
+   * Routes are unaffected: deep links keep working in either mode.
+   */
+  simple?: { tabs?: string[] };
+
   routes?: (rootRoute: AnyRoute) => AnyRoute[];
 
   render?: (ctx: PluginCtx) => ReactNode;

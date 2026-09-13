@@ -34,6 +34,7 @@ export const tingPlugin = definePlugin({
   rune: 'T',
   title: 'Ting',
   subtitle: 'sagas · runs · dispatch',
+  simple: { tabs: ['dashboard', 'plan', 'sagas'] },
   tabs: [
     { id: 'dashboard', label: 'Dashboard', rune: '◈', path: '/ting' },
     { id: 'sagas', label: 'Sagas', rune: '✦', path: '/ting/sagas' },
@@ -174,6 +175,7 @@ export type {
   ITingSessionService,
   ITrackerBrowserService,
   IWorkflowService,
+  WorkflowLaunchRequest,
   IResearchService,
   ISpecsService,
   CreateResearchCampaignRequest,
@@ -291,6 +293,12 @@ export type { WorkflowIssue, WorkflowIssueKind } from './domain/workflowValidati
 
 // WorkflowBuilder UI
 export { WorkflowBuilder } from './ui/WorkflowBuilder';
+export { WorkflowLaunchModal, type WorkflowLaunchModalProps } from './ui/WorkflowLaunchModal';
+export { WorkflowCard } from './ui/WorkflowCard';
+export { StageProgressRail } from './ui/StageProgressRail';
+export { StepDots } from './ui/StepDots';
+export { useSagas } from './ui/useSagas';
+export { useWorkflows, useWorkflow } from './ui/useWorkflows';
 
 export {
   PLAN_STEPS,

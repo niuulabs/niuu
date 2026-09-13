@@ -109,7 +109,7 @@ function BudgetAvatar({ ravn, size }: { ravn: Ravn; size: number }) {
   );
 }
 
-function HeroCard({
+export function HeroCard({
   spentUsd,
   capUsd,
   projectedUsd,

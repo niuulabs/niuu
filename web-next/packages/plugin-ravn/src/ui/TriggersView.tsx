@@ -8,6 +8,7 @@
 import { StateDot } from '@niuulabs/ui';
 import { useTriggers } from './hooks/useTriggers';
 import type { Trigger, TriggerKind } from '../domain/trigger';
+import './ravn-views.css';
 
 const KIND_ORDER: TriggerKind[] = ['cron', 'event', 'webhook', 'manual'];
 
@@ -60,8 +61,11 @@ function TriggerGroup({ kind, triggers }: { kind: TriggerKind; triggers: Trigger
   );
 }
 
-export function TriggersView() {
-  const { data: triggers, isLoading, isError } = useTriggers();
+export function TriggersView({ personaName }: { personaName?: string } = {}) {
+  const { data: allTriggers, isLoading, isError } = useTriggers();
+  const triggers = personaName
+    ? allTriggers?.filter((trigger) => trigger.personaName === personaName)
+    : allTriggers;
 
   if (isLoading) {
     return (

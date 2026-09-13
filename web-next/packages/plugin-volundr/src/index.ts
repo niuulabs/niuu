@@ -12,6 +12,7 @@ export const volundrPlugin = definePlugin({
   rune: 'V',
   title: 'Völundr',
   subtitle: 'session forge · remote dev pods',
+  simple: { tabs: ['forge', 'sessions'] },
   tabs: [
     { id: 'forge', label: 'Forge', path: '/volundr/forge' },
     { id: 'sessions', label: 'Sessions', path: '/volundr/sessions' },
@@ -131,7 +132,11 @@ export { SessionsPage } from './ui/SessionsPage';
 export { ForgePage } from './ui/ForgePage';
 export { StructuredLogViewer } from './ui/components/StructuredLogViewer';
 export { useSkuldChat } from './ui/hooks/useSkuldChat';
-export { WizardSelect } from './ui/LaunchWizardPrimitives';
+export { WizardSelect, StepIndicator, SectionCard, RuntimePanel } from './ui/LaunchWizardPrimitives';
+export { ConfirmRow, BootingStep } from './ui/LaunchWizardSteps';
+export { LaunchWizard } from './ui/LaunchWizard';
+export { QuickLaunch } from './ui/QuickLaunch';
+export { useFeatures } from './ui/useFeatures';
 export { formatModelOption, type RuntimeModelDescriptor } from './ui/launchWizardModel';
 
 // Atoms
