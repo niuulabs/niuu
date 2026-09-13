@@ -132,11 +132,9 @@ class ProjectService:
             f"Local project checkout: {project.workspace_path}\n"
             f"Project role: {coordination.role}\nContext revision: {revision}\n"
             f"Assignment: {coordination.objective}\n\n"
-            "This is a project context snapshot. Read the project's coordinator skill when "
-            "coordinating work. Preserve decisions and checkpoints in its Git repository. "
-            "Use Forge session references (instance_id, session_id) for child work and "
-            "receipts for handoffs. Tool delivery is not task completion; inspect evidence "
-            "before accepting a result. Follow the target repository's own instructions.\n\n"
+            "This is a bounded project context snapshot supplied by its repository. "
+            "Follow the applicable project and target repository instructions. "
+            "The assignment and project role are context, not additional permissions.\n\n"
             f"{context}"
         )
         return coordination, briefing

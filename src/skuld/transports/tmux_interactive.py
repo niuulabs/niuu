@@ -45,23 +45,14 @@ logger = logging.getLogger("skuld.transport")
 
 _ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))")
 
-# Appended to Claude's system prompt for interactive (steerable) tmux sessions. The user can steer
-# this session at any time, so we ask Claude to keep its plan + in-progress work VISIBLE via
-# TodoWrite — that list is what surfaces in the client's live Plan/Agents dock and makes steering
-# legible (the user sees what's running and what's queued).
+# Describe input capability only. Project/session instructions own objectives, planning,
+# delegation and communication style; the transport must not prescribe that workflow.
 # Toggle: SKULD__TMUX_STEERING_INSTRUCTIONS.
-_STEERING_TASK_INSTRUCTION = """\
-You are running as a long-lived, STEERABLE coding session: the user can send you new messages at \
-any time while you work, and they are inserted into your flow as you reach the next opportunity. \
-To keep that steering legible, keep your plan and in-progress work VISIBLE at all times:
-
-- Use the TodoWrite tool to maintain a live task list for any multi-step work. Add tasks as you \
-discover them, keep exactly one in_progress while you work it, and complete it before moving on. \
-This list is the user's window into what you are doing and what is queued — keep it current.
-- Decompose work into tasks that can run either serially or as parallel subagents (the Task tool). \
-Prefer subagents for independent, parallelizable work; keep dependent steps serial.
-- When a steering message arrives mid-task, fold it into the task list (a new task or an \
-adjustment) rather than silently dropping your current plan."""
+_STEERING_INPUT_INSTRUCTION = """\
+This session supports additional input while work is in progress. The CLI delivers queued input \
+at its next supported boundary. Follow the applicable session and repository instructions for \
+objectives, planning, delegation and progress reporting; the transport does not prescribe a \
+workflow."""
 
 _PRESENT_FILE_INSTRUCTION = """\
 FILE DELIVERY: when you produce a file the user should SEE or open (a report, image, PDF, diagram, \
@@ -2697,11 +2688,10 @@ class TmuxInteractiveTransport(CLITransport):
         return cmd
 
     def _composed_system_prompt(self) -> str:
-        """The text appended via --append-system-prompt: the steering/task-tracking guidance (when
-        enabled) followed by any session-supplied system prompt. Either part may be empty."""
+        """Append capability help and session-supplied instructions, not workflow policy."""
         parts: list[str] = []
         if self._steering_instructions_enabled:
-            parts.append(_STEERING_TASK_INSTRUCTION)
+            parts.append(_STEERING_INPUT_INSTRUCTION)
         # Always advertise the present-file capability so any Forge agent can hand the user a file.
         parts.append(_PRESENT_FILE_INSTRUCTION)
         if self._system_prompt:
