@@ -2356,3 +2356,30 @@ class TestPluginApiPrefixes:
         for name, prefixes in _PLUGIN_API_PREFIXES.items():
             for prefix in prefixes:
                 assert prefix.startswith("/api/v1/"), f"{name}: {prefix}"
+
+
+class TestWebUiCaching:
+    """A reload after an upgrade must fetch the new page, never a cached one."""
+
+    def test_spa_page_is_served_no_cache(self, tmp_path, monkeypatch) -> None:
+        import cli.resources
+
+        dist = tmp_path / "dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text("<!doctype html><script src=/assets/index-abc.js>")
+        (dist / "assets" / "index-abc.js").write_text("console.log('hi')")
+        monkeypatch.setattr(cli.resources, "web_dist_dir", lambda: dist)
+
+        app = build_root_app(
+            registry=PluginRegistry(),
+            host="127.0.0.1",
+            port=8080,
+            enabled_mounts={"web-ui"},
+        )
+
+        with TestClient(app) as client:
+            page = client.get("/setup")
+            assert page.status_code == 200
+            assert page.headers["cache-control"] == "no-cache"
+            assert "index-abc.js" in page.text
+            assert client.get("/api/v1/nothing").status_code == 404

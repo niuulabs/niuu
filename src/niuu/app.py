@@ -698,7 +698,9 @@ def build_root_app(
         async def spa_fallback(path: str) -> HTMLResponse | JSONResponse:
             if path.startswith("api/"):
                 return JSONResponse({"detail": "Not found"}, status_code=404)
-            return HTMLResponse(content=index_html)
+            # The page names hashed assets; a reload after an upgrade must fetch
+            # the new page rather than a cached one still naming the old bundle.
+            return HTMLResponse(content=index_html, headers={"Cache-Control": "no-cache"})
 
         logger.info("Serving web UI from %s", dist)
     except FileNotFoundError:
