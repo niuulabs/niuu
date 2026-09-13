@@ -12,6 +12,7 @@ import {
   accountCredentialName,
   connectionNeedsSignIn,
   entryForMode,
+  errorMessage,
   credentialExpiryLabel,
   credentialProblemLabel,
   accessMode,
@@ -381,5 +382,17 @@ describe('provider pane labels', () => {
     )[0]!;
     expect(other.keyLabel).toBe('Use a token');
     expect(other.signInLabel).toBe('Sign in with Other');
+  });
+});
+
+describe('errorMessage', () => {
+  it("prefers the platform's detail over the generic status line", () => {
+    const apiError = Object.assign(new Error('API request failed: 422'), {
+      detail: 'Could not start provider login: github refused the device authorization request',
+    });
+    expect(errorMessage(apiError)).toMatch(/github refused/);
+    expect(errorMessage(new Error('boom'))).toBe('boom');
+    expect(errorMessage(Object.assign(new Error('boom'), { detail: '  ' }))).toBe('boom');
+    expect(errorMessage('plain')).toBe('plain');
   });
 });

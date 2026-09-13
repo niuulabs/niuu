@@ -4,6 +4,7 @@ import {
   connectionNeedsSignIn,
   credentialExpiryLabel,
   credentialProblemLabel,
+  errorMessage,
   groupConnections,
   providerGroups,
   type CatalogEntry,
@@ -136,7 +137,7 @@ export function IntegrationsStep({
     <div className="setup-col" data-testid={`setup-step-${step.id}`}>
       {error ? (
         <div className="setup-error" role="alert">
-          Could not load the integrations catalog: {error.message}
+          Could not load the integrations catalog: {errorMessage(error)}
         </div>
       ) : null}
       {loading ? <div className="setup-note">Loading catalog…</div> : null}

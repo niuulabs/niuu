@@ -1,4 +1,5 @@
 import {
+  errorMessage,
   LOCAL_BIND_HOST,
   NETWORK_BIND_HOST,
   type StackChanges,
@@ -126,7 +127,7 @@ export function RuntimeStep({
         </div>
         {unavailable ? (
           <div className="setup-note setup-note--warn" data-testid="setup-access-unavailable">
-            <AlertIcon size={13} /> {unavailable.message}
+            <AlertIcon size={13} /> {errorMessage(unavailable)}
           </div>
         ) : null}
         {loading ? <div className="setup-note">Reading how the stack was started…</div> : null}
@@ -171,7 +172,7 @@ export function RuntimeStep({
         ) : null}
         {stageError ? (
           <div className="setup-error" role="alert">
-            {stageError.message}
+            {errorMessage(stageError)}
           </div>
         ) : null}
       </div>

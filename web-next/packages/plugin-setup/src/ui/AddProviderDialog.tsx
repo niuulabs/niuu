@@ -167,19 +167,20 @@ function SignInPane({
         <div className="setup-col" data-testid={`setup-oauth-app-choice-${entry.slug}`}>
           <span className="setup-row__title">Sign in through</span>
           {apps.map((app) => (
-            <label key={app.app} className="setup-option">
-              <input
-                type="radio"
-                name={`oauth-app-${entry.slug}`}
-                checked={selectedApp === app.app}
-                onChange={() => setChosenApp(app.app)}
-                data-testid={`setup-oauth-app-pick-${entry.slug}-${app.app}`}
-              />
+            <button
+              key={app.app}
+              type="button"
+              className={`setup-option ${selectedApp === app.app ? 'setup-option--selected' : ''}`}
+              onClick={() => setChosenApp(app.app)}
+              aria-pressed={selectedApp === app.app}
+              data-testid={`setup-oauth-app-pick-${entry.slug}-${app.app}`}
+            >
+              <span className="setup-option__radio" />
               <span className="setup-option__body">
                 <span className="setup-option__title">{app.app}</span>
                 <span className="setup-option__desc">client id {app.clientId}</span>
               </span>
-            </label>
+            </button>
           ))}
           <button
             type="button"

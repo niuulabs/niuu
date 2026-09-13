@@ -3,6 +3,7 @@ import { Field, Input } from '@niuulabs/ui';
 import {
   buildConfigPayload,
   credentialNameFor,
+  errorMessage,
   isConnectableFromWizard,
   missingCredentialKeys,
   type CatalogEntry,
@@ -152,7 +153,7 @@ export function IntegrationCard({
             </button>
             {connectError ? (
               <span className="setup-error" role="alert">
-                {connectError.message}
+                {errorMessage(connectError)}
               </span>
             ) : null}
           </div>

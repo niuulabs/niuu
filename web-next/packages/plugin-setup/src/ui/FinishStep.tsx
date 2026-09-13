@@ -1,5 +1,6 @@
 import {
   describeStagedChanges,
+  errorMessage,
   type ApplyStatus,
   type IntegrationConnection,
   type SetupState,
@@ -176,7 +177,7 @@ export function FinishStep({
       {finishing && !applying ? <div className="setup-note">Saving…</div> : null}
       {error ? (
         <div className="setup-error" role="alert">
-          Could not finish setup: {error.message}
+          Could not finish setup: {errorMessage(error)}
         </div>
       ) : null}
     </div>

@@ -4,6 +4,7 @@ import {
   connectionNeedsSignIn,
   credentialNameFor,
   enrollmentFailureMessage,
+  errorMessage,
   isEnrollmentActive,
   type CatalogEntry,
   type Enrollment,
@@ -240,7 +241,7 @@ export function SignInCard({
       )}
       {error ? (
         <span className="setup-error" role="alert">
-          {error.message}
+          {errorMessage(error)}
         </span>
       ) : null}
     </Wrapper>

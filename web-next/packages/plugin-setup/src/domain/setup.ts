@@ -878,3 +878,17 @@ export function buildConfigPayload(
   }
   return payload;
 }
+
+/**
+ * What to show for a failed request: the platform's own words (the `detail`
+ * an API error carries) rather than the generic status line.
+ */
+export function errorMessage(error: unknown): string {
+  if (error && typeof error === 'object') {
+    const detail = (error as { detail?: unknown }).detail;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) return message;
+  }
+  return String(error);
+}

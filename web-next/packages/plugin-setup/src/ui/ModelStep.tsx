@@ -1,6 +1,12 @@
 import { useState } from 'react';
 import { Field, Input } from '@niuulabs/ui';
-import { memoryPlan, type ModelOption, type StackChanges, type StackView } from '../domain/setup';
+import {
+  memoryPlan,
+  type ModelOption,
+  type StackChanges,
+  type StackView,
+  errorMessage,
+} from '../domain/setup';
 import { AlertIcon, CheckIcon } from './icons';
 
 export interface ModelStepProps {
@@ -72,7 +78,7 @@ export function ModelStep({
     return (
       <div className="setup-col" data-testid="setup-model-unavailable">
         <div className="setup-note setup-note--warn">
-          <AlertIcon size={13} /> {unavailable.message}
+          <AlertIcon size={13} /> {errorMessage(unavailable)}
         </div>
       </div>
     );
@@ -183,7 +189,7 @@ export function ModelStep({
         </button>
         {stageError ? (
           <div className="setup-error" role="alert">
-            {stageError.message}
+            {errorMessage(stageError)}
           </div>
         ) : null}
       </div>

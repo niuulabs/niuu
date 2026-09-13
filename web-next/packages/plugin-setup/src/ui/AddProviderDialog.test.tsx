@@ -208,9 +208,15 @@ describe('AddProviderDialog', () => {
     expect(choice).toHaveTextContent('default');
     expect(choice).toHaveTextContent('niuu-org');
     expect(choice).toHaveTextContent('private window');
-    expect(screen.getByTestId('setup-oauth-app-pick-github-default')).toBeChecked();
+    expect(screen.getByTestId('setup-oauth-app-pick-github-default')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
     fireEvent.click(screen.getByTestId('setup-oauth-app-pick-github-niuu-org'));
-    expect(screen.getByTestId('setup-oauth-app-pick-github-niuu-org')).toBeChecked();
+    expect(screen.getByTestId('setup-oauth-app-pick-github-niuu-org')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
 
     const startSpy = vi.spyOn(service, 'startEnrollment');
     fireEvent.click(screen.getByTestId('setup-signin-start-github'));
@@ -235,7 +241,10 @@ describe('AddProviderDialog', () => {
     });
     fireEvent.click(screen.getByTestId('setup-oauth-app-save-github'));
     await waitFor(() =>
-      expect(screen.getByTestId('setup-oauth-app-pick-github-client-co')).toBeChecked(),
+      expect(screen.getByTestId('setup-oauth-app-pick-github-client-co')).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      ),
     );
     // registering swapped the form back for the chooser, new application selected
     expect(screen.queryByTestId('setup-oauth-app-cancel-github')).not.toBeInTheDocument();

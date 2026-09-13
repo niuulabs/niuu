@@ -1,6 +1,12 @@
 import { useState, type FormEvent } from 'react';
 import { Field, Input } from '@niuulabs/ui';
-import { oauthAppHelp, oauthAppKey, type CatalogEntry, type OAuthApp } from '../domain/setup';
+import {
+  oauthAppHelp,
+  oauthAppKey,
+  type CatalogEntry,
+  type OAuthApp,
+  errorMessage,
+} from '../domain/setup';
 import { useRegisterOAuthClient } from './hooks';
 
 export interface OAuthAppFormProps {
@@ -119,7 +125,7 @@ export function OAuthAppForm({ entry, existingApps = [], onRegistered }: OAuthAp
           </button>
           {register.error ? (
             <span className="setup-error" role="alert">
-              {register.error.message}
+              {errorMessage(register.error)}
             </span>
           ) : null}
         </div>

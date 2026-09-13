@@ -1,4 +1,5 @@
 import {
+  errorMessage,
   formatGib,
   formatGpu,
   hostChecks,
@@ -109,7 +110,7 @@ export function SystemStep({ report, loading, error, onRerun }: SystemStepProps)
         </div>
         {error ? (
           <div className="setup-error" role="alert">
-            Could not run checks: {error.message}
+            Could not run checks: {errorMessage(error)}
           </div>
         ) : null}
         {fromHost.length > 0 ? (
