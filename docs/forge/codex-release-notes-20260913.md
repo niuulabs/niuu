@@ -55,7 +55,9 @@ remains intact; later test success does not erase its impact.
 
 ## Current release status
 
-Release preparation is active. Thor remains on its restored old API; Spark retains
-the earlier API canary. The repaired candidate and safety-only rollback are being
-validated/staged separately. No new shared-service maintenance window or successful
-Thor deployment is claimed by these release notes.
+The repaired candidate and safety-only rollback are **prepared and staged on both
+hosts**, with validation and current preservation checks recorded in the
+[release-readiness checkpoint](codex-release-readiness-20260913.md). Thor remains
+on its restored old API; Spark retains the earlier API canary. A new coordinated
+maintenance window and fresh guards are still required before activation. No
+successful Thor deployment is claimed by these release notes.

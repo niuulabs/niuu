@@ -7,6 +7,20 @@ native implementation. The server candidate includes the fixed Project UX input
 
 ## Core fixes require no new client control
 
+An API-only release may close the proxy WebSocket while the gateway and native
+turn remain alive. Reconnect to the **same Forge session**, recover history and
+the live tail using the existing cursor/identity contract, and do not resend the
+last prompt merely because the connection closed. The isolated release proof
+exercises real HTTP/WebSocket reconnect and output generated during the API gap;
+it is not physical-device or rendered-iOS proof. A separate native owner should
+verify that existing reconnect behavior when performing client acceptance.
+
+Existing live gateways intentionally retain their loaded source during API
+cutover. Do not assume the API's version proves the session has the new Codex
+adapter. Use a new session or an owner-approved saved-boundary gateway transition
+for acceptance of the new transport behavior; this runner does not restart user
+sessions or reserve a native release.
+
 The existing assistant/content-block/tool-result envelopes remain compatible.
 Server normalization now preserves public commentary and final text around tools,
 identifies every streaming block, reports native tool failures accurately, and
