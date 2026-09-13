@@ -71,6 +71,7 @@ from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
 from volundr.adapters.outbound.postgres import PostgresSessionRepository
+from volundr.adapters.outbound.postgres_admin_settings import PostgresAdminSettingsRepository
 from volundr.adapters.outbound.postgres_chronicles import PostgresChronicleRepository
 from volundr.adapters.outbound.postgres_communication_cursors import (
     PostgresCommunicationCursorRepository,
@@ -427,6 +428,13 @@ def create_app(
 
             resource_provider = _create_resource_provider(settings)
             storage_adapter = _create_storage_adapter(settings)
+
+            # Admin settings: the in-process dict the contributors and feature
+            # flags read, filled from the database so a restart keeps them.
+            # Update in place: contributors hold a reference to this dict.
+            admin_settings_repository = PostgresAdminSettingsRepository(pool)
+            for section, values in (await admin_settings_repository.load()).items():
+                app.state.admin_settings.setdefault(section, {}).update(values)
             identity_adapter = _create_identity_adapter(
                 settings,
                 user_repository,
@@ -1038,8 +1046,11 @@ def create_app(
             app.include_router(local_git_router)
             app.state.local_git_service = local_git_service
 
-            # Admin settings (config-driven, runtime-toggleable)
-            admin_settings_router = create_admin_settings_router()
+            # Admin settings (persisted, runtime-toggleable)
+            admin_settings_router = create_admin_settings_router(
+                admin_settings_repository,
+                home_volumes_supported=storage_adapter.supports_home_volumes,
+            )
             app.include_router(admin_settings_router)
             app.include_router(create_user_storage_router(storage_adapter))
 

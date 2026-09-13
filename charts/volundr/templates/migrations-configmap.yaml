@@ -1693,4 +1693,16 @@ data:
     -- The relaxed constraint is additive and also accepts the old user-row shape.
     SELECT 1;
 
+  000065_admin_settings.up.sql: |
+    -- Admin settings edited on the Settings page (Forge → Storage) persist across
+    -- restarts instead of living in process memory. One row per settings section.
+    CREATE TABLE IF NOT EXISTS admin_settings (
+        section     TEXT PRIMARY KEY,
+        data        JSONB NOT NULL DEFAULT '{}'::jsonb,
+        updated_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    );
+
+  000065_admin_settings.down.sql: |
+    DROP TABLE IF EXISTS admin_settings;
+
 {{- end }}

@@ -1514,9 +1514,11 @@ def create_router(
         """
         settings = request.app.state.settings
         admin = request.app.state.admin_settings
+        storage = request.app.state.storage
         return {
             "local_mounts_enabled": settings.local_mounts.enabled,
             "file_manager_enabled": admin.get("storage", {}).get("file_manager_enabled", True),
+            "home_volumes_supported": storage.supports_home_volumes,
             "mini_mode": settings.local_mounts.mini_mode,
             "local_mounts_allowed_prefixes": settings.local_mounts.allowed_prefixes,
         }

@@ -1057,6 +1057,23 @@ class SessionSpanRepository(ABC):
         """Delete all spans for a session. Returns count deleted."""
 
 
+class AdminSettingsRepository(ABC):
+    """Persists the admin settings edited on the Settings page, one row per section.
+
+    The in-process ``app.state.admin_settings`` dict is loaded from here at
+    startup and written back through ``save`` on every change, so a restart
+    keeps what an admin set.
+    """
+
+    @abstractmethod
+    async def load(self) -> dict[str, dict[str, Any]]:
+        """Return every stored section: ``{section: {key: value}}``."""
+
+    @abstractmethod
+    async def save(self, section: str, values: dict[str, Any]) -> None:
+        """Replace one section's stored values."""
+
+
 class SavedPromptRepository(ABC):
     """Port for saved prompt persistence operations."""
 
@@ -1167,6 +1184,15 @@ class StoragePort(ABC):
     @property
     def workspace_mount_path(self) -> str:
         return "/volundr/sessions"
+
+    @property
+    def supports_home_volumes(self) -> bool:
+        """Whether this backend can give each user a persistent home volume.
+
+        Gates the Home Volumes admin setting and the ``home_volumes_supported``
+        feature flag; backends that only simulate storage report ``False``.
+        """
+        return False
 
     @abstractmethod
     async def provision_user_storage(

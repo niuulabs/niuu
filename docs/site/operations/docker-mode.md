@@ -267,6 +267,16 @@ opens it directly). On a host install without the bundle the field is
 read-only and the refusal names `pod_manager.max_concurrent` in `config.yaml`
 instead.
 
+### Settings that persist
+
+**Settings → Forge → Storage** (the file-manager tab in sessions, and home
+volumes where the storage backend has them) is stored in the platform
+database, so what an admin sets survives restarts and the next `niuu up`.
+The **Home Volumes** toggle is only offered when the storage adapter can give
+each user a persistent home volume (Kubernetes PVCs or host directories); the
+bundle's in-memory storage cannot, so the field is hidden and
+`/api/v1/forge/feature-flags` reports `home_volumes_supported: false`.
+
 ### Which engines a session can use
 
 **Launch a new session** (and **Advanced launch** behind it) offers an

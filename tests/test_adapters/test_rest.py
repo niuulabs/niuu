@@ -29,6 +29,7 @@ from volundr.adapters.inbound.rest import (
     _session_proxy_url,
     create_router,
 )
+from volundr.adapters.outbound.k8s_storage import InMemoryStorageAdapter
 from volundr.config import LocalMountsConfig
 from volundr.domain.models import GitProviderType, GitSource, RepoInfo, Session, SessionStatus
 from volundr.domain.ports import SessionCapacity
@@ -93,6 +94,7 @@ def app(
 
     app.state.settings = _SettingsStub()
     app.state.admin_settings = {}
+    app.state.storage = InMemoryStorageAdapter()
     return app
 
 
@@ -1685,6 +1687,12 @@ class TestFeatureFlags:
         data = response.json()
         assert "local_mounts_enabled" in data
         assert isinstance(data["local_mounts_enabled"], bool)
+
+    def test_feature_flags_report_home_volume_support(self, client: TestClient):
+        """The in-memory storage adapter only simulates storage: no home volumes."""
+        response = client.get("/api/v1/forge/feature-flags")
+        assert response.status_code == 200
+        assert response.json()["home_volumes_supported"] is False
 
     def test_feature_flags_lists_allowed_mount_prefixes(self, client: TestClient):
         """Exposes the configured mount prefix allowlist for UI/automation."""
