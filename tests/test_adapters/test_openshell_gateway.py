@@ -2971,6 +2971,24 @@ async def test_start_creates_peer_containers_and_releases_after_workspace(monkey
     assert values == original
 
 
+def test_workflow_memory_urls_use_platform_provider_routes(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    urls = adapter._resident_api_urls(
+        {
+            "mimir": {
+                "hostedUrl": "https://mimir.example/api/v1",
+                "registryRefs": [{"kwargs": {"base_url": "https://memory.example/api/v1"}}],
+                "instances": [{"url": "https://shared.example/api/v1"}],
+            }
+        }
+    )
+    assert set(urls) == {
+        "https://mimir.example/api/v1",
+        "https://memory.example/api/v1",
+        "https://shared.example/api/v1",
+    }
+
+
 def test_large_workflow_configs_do_not_expand_pod_driver_config(monkeypatch):
     adapter = _import_adapter(monkeypatch)
     values = {

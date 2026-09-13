@@ -1274,7 +1274,9 @@ class OpenShellGatewayPodManager(
             annotations.update(self._supported_annotations_from_pod_spec(spec.pod_spec.annotations))
         self._warn_unsupported_pod_spec(session, spec)
         try:
-            platform_providers = await self._resolve_platform_provider(session)
+            platform_providers = await self._resolve_platform_provider(
+                session, api_urls=_resident_api_urls(spec.values)
+            )
             grants = tuple(
                 OpenShellProviderGrant(provider_name=name, profile_id=name)
                 for name in platform_providers
@@ -3101,12 +3103,20 @@ def _resident_api_urls(values: dict[str, Any]) -> tuple[str, ...]:
     if platform_url:
         urls.append(str(platform_url))
     mimir = values.get("mimir")
-    if isinstance(mimir, dict) and isinstance(mimir.get("instances"), list):
-        urls.extend(
-            str(instance["url"])
-            for instance in mimir["instances"]
-            if isinstance(instance, dict) and instance.get("url")
-        )
+    if isinstance(mimir, dict):
+        hosted_url = mimir.get("hostedUrl") or mimir.get("hosted_url")
+        if hosted_url:
+            urls.append(str(hosted_url))
+        for instance in [
+            *(mimir.get("instances") or []),
+            *(mimir.get("registryRefs") or mimir.get("registry_refs") or []),
+        ]:
+            if not isinstance(instance, dict):
+                continue
+            kwargs = instance.get("kwargs") or {}
+            url = kwargs.get("base_url") or instance.get("url")
+            if url:
+                urls.append(str(url))
     llm = resident.get("llm") if isinstance(resident.get("llm"), dict) else {}
     provider = llm.get("provider") if isinstance(llm.get("provider"), dict) else {}
     kwargs = provider.get("kwargs") if isinstance(provider.get("kwargs"), dict) else {}
