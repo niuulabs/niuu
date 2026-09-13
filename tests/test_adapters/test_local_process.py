@@ -752,6 +752,95 @@ class TestAllowedMountPrefixes:
 class TestGitClone:
     """Tests for git clone and branch checkout."""
 
+    @pytest.mark.parametrize("detached", [False, True])
+    async def test_restart_preserves_existing_checkout(
+        self,
+        manager: LocalProcessPodManager,
+        git_session: Session,
+        default_spec: SessionSpec,
+        tmp_path: Path,
+        detached: bool,
+    ) -> None:
+        """Restart keeps local commits, the index, and uncommitted files offline."""
+
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", *args], check=True, capture_output=True, text=True
+            ).stdout.strip()
+
+        remote = tmp_path / "remote"
+        git("init", "--initial-branch=main", str(remote))
+        (remote / "tracked.txt").write_text("original\n")
+        git("-C", str(remote), "add", "tracked.txt")
+        git(
+            "-C",
+            str(remote),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Initial commit",
+        )
+        git_session.source = GitSource(repo=remote.as_uri(), branch="main")
+        workspace = await manager._provision_workspace(git_session, default_spec)
+        repo = workspace / "repo"
+        git("-C", str(repo), "checkout", "-b", "session-work")
+        git(
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "Local work",
+        )
+        if detached:
+            git("-C", str(repo), "checkout", "--detach")
+        (repo / "tracked.txt").write_text("staged\n")
+        git("-C", str(repo), "add", "tracked.txt")
+        (repo / "tracked.txt").write_text("unstaged\n")
+        (repo / "untracked.txt").write_text("unsaved work\n")
+        before = {
+            path.relative_to(repo): path.read_bytes() for path in repo.rglob("*") if path.is_file()
+        }
+        remote.rename(tmp_path / "offline")
+
+        assert await manager._provision_workspace(git_session, default_spec) == workspace
+
+        after = {
+            path.relative_to(repo): path.read_bytes() for path in repo.rglob("*") if path.is_file()
+        }
+        assert after == before
+
+    @pytest.mark.parametrize("git_metadata", [False, True])
+    async def test_restart_rejects_incomplete_checkout_without_deleting_files(
+        self,
+        manager: LocalProcessPodManager,
+        git_session: Session,
+        default_spec: SessionSpec,
+        git_metadata: bool,
+    ) -> None:
+        repo = manager._workspaces_dir / str(git_session.id) / "repo"
+        repo.mkdir(parents=True)
+        if git_metadata:
+            (repo / ".git").mkdir()
+        work = repo / "unsaved.txt"
+        work.write_text("keep this work\n")
+
+        with pytest.raises(RuntimeError, match="Git clone failed|Existing git checkout"):
+            await manager._provision_workspace(git_session, default_spec)
+
+        assert work.read_text() == "keep this work\n"
+
     async def test_clone_calls_git(
         self,
         manager: LocalProcessPodManager,

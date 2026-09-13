@@ -729,7 +729,20 @@ class LocalProcessPodManager(PodManager):
         workspace: Path,
         spec: SessionSpec,
     ) -> None:
-        """Clone a git repository into the workspace."""
+        """Clone on first start; preserve the existing checkout on restart."""
+        repo_dir = workspace / "repo"
+        if (repo_dir / ".git").exists():
+            code, _, _ = await self._run_git(
+                repo_dir, "--git-dir=.git", "rev-parse", "--verify", "HEAD^{commit}"
+            )
+            if code != 0:
+                raise RuntimeError(
+                    f"Existing git checkout at {repo_dir} has no valid HEAD. "
+                    "Repair it or move it aside before restarting; existing files were preserved."
+                )
+            logger.info("Reusing existing git checkout at %s", repo_dir)
+            return
+
         git_cfg = spec.values.get("git", {})
         token = spec.values.get("git_token", "")
         clone_url = str(git_cfg.get("cloneUrl") or "").strip() or _inject_token_into_url(
@@ -747,7 +760,7 @@ class LocalProcessPodManager(PodManager):
             "1",
             "--no-single-branch",
             clone_url,
-            str(workspace / "repo"),
+            str(repo_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -758,7 +771,6 @@ class LocalProcessPodManager(PodManager):
             error_msg = re.sub(r"://[^@]+@", "://***@", error_msg)
             raise RuntimeError(f"Git clone failed: {error_msg}")
 
-        repo_dir = workspace / "repo"
         if branch:
             checkout_ok = await self._checkout_tracking_branch(repo_dir, branch)
             if not checkout_ok:
