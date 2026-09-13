@@ -118,6 +118,11 @@ workspace-scoped calls. Provider profiles are always active in this gateway; the
 `providers_v2_enabled` setting must not be sent. The released `0.0.116` SDK is not compatible with this
 gateway revision.
 
+Ravn peers read `SKULD__VOLUNDR_API_URL` through their typed runtime configuration
+to reach the same Codex credential broker as Skuld. OpenShell's provider proxy
+authenticates that service call; peers do not need a projected service-account
+token. A configured Codex broker without a platform URL fails explicitly.
+
 ## Validate a target
 
 Create a session through the normal Forge launch flow on the intended target.

@@ -3833,6 +3833,11 @@ class _LegacyAliasSettings(BaseSettings):
 class RuntimeExecutorConfig(_LegacyAliasSettings):
     """Typed CLI transport overrides injected into a resident runtime."""
 
+    volundr_api_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("volundr_api_url", "SKULD__VOLUNDR_API_URL"),
+        description="Platform origin shared with Skuld for runtime credential brokering.",
+    )
     transport_adapter: str = Field(
         default="",
         validation_alias=AliasChoices(

@@ -14,6 +14,8 @@ These tests hold both sides to one contract.
 
 from __future__ import annotations
 
+import pytest
+
 from ravn.cli.runtime_builders import _runtime_cli_transport_kwargs
 from ravn.config import Settings
 
@@ -66,9 +68,8 @@ def test_missing_platform_base_url_does_not_build_a_broken_provider() -> None:
         }
     )
 
-    kwargs = _runtime_cli_transport_kwargs(_CODEX, settings)
-
-    assert "codex_auth_provider" not in kwargs
+    with pytest.raises(RuntimeError, match="Configured Codex auth requires"):
+        _runtime_cli_transport_kwargs(_CODEX, settings)
 
 
 def test_non_codex_transports_are_untouched() -> None:
@@ -78,6 +79,22 @@ def test_non_codex_transports_are_untouched() -> None:
         _runtime_cli_transport_kwargs("skuld.transports.subprocess.SubprocessTransport", settings)
         == {}
     )
+
+
+async def test_openshell_peer_uses_skuld_broker_origin(monkeypatch) -> None:
+    from niuu.adapters.outbound.http_auth import WorkloadIdentityBearerTokenAuthAdapter
+
+    monkeypatch.setenv("SKULD__VOLUNDR_API_URL", "http://niuu-volundr.volundr.svc.cluster.local")
+    monkeypatch.setenv("SKULD__CODEX_AUTH__ADAPTER", "skuld.codex_auth.VolundrCodexAuthProvider")
+    monkeypatch.delenv("NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", raising=False)
+    # The OpenShell proxy injects the platform grant; the peer has no SA token.
+    monkeypatch.setattr(WorkloadIdentityBearerTokenAuthAdapter, "headers", lambda self: {})
+    settings = Settings.model_validate({"runtime_executor": {"transport_adapter": _CODEX}})
+
+    provider = _runtime_cli_transport_kwargs(_CODEX, settings)["codex_auth_provider"]
+    async with await provider._http_client_provider() as client:
+        assert str(client.base_url) == "http://niuu-volundr.volundr.svc.cluster.local/"
+        assert "Authorization" not in client.headers
 
 
 def test_unconfigured_workload_settings_defer_to_the_runtime_env() -> None:
