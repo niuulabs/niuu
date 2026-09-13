@@ -234,7 +234,9 @@ async def _request_remote(
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout, connect=min(timeout, 5.0)), follow_redirects=False
+    ) as client:
         response = await client.request(
             method,
             remote_url,
