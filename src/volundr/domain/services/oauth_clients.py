@@ -21,8 +21,8 @@ from volundr.domain.services.integration_registry import IntegrationRegistry
 
 logger = logging.getLogger(__name__)
 
-OAUTH_CLIENTS_OWNER_TYPE = "system"
-OAUTH_CLIENTS_OWNER_ID = "oauth-clients"
+APP_REGISTRY_OWNER_TYPE = "system"
+APP_REGISTRY_OWNER_ID = "oauth-clients"
 SOURCE_CONFIGURED = "configured"
 SOURCE_REGISTERED = "registered"
 DEFAULT_APP = "default"
@@ -87,9 +87,9 @@ class OAuthClientRegistry:
     async def load(self) -> None:
         """Read the registered clients from the store; cheap enough to repeat."""
         registered: dict[tuple[str, str], OAuthClient] = {}
-        for stored in await self._store.list(OAUTH_CLIENTS_OWNER_TYPE, OAUTH_CLIENTS_OWNER_ID):
+        for stored in await self._store.list(APP_REGISTRY_OWNER_TYPE, APP_REGISTRY_OWNER_ID):
             values = await self._store.get_value(
-                OAUTH_CLIENTS_OWNER_TYPE, OAUTH_CLIENTS_OWNER_ID, stored.name
+                APP_REGISTRY_OWNER_TYPE, APP_REGISTRY_OWNER_ID, stored.name
             )
             if not values or not values.get("client_id"):
                 continue
@@ -144,15 +144,16 @@ class OAuthClientRegistry:
             slug=slug, client_id=client_id, client_secret=client_secret.strip(), app=app
         )
         await self._store.store(
-            OAUTH_CLIENTS_OWNER_TYPE,
-            OAUTH_CLIENTS_OWNER_ID,
+            APP_REGISTRY_OWNER_TYPE,
+            APP_REGISTRY_OWNER_ID,
             _storage_name(slug, app),
             SecretType.GENERIC,
             {"client_id": client.client_id, "client_secret": client.client_secret},
             {"integration": slug, "app": app, "source": SOURCE_REGISTERED},
         )
         self._registered[(slug, app)] = client
-        logger.info("OAuth application %r registered for %r", app, slug)
+        # The slug and app name come from the request; the log names neither.
+        logger.info("OAuth application registered; %d registered now", len(self._registered))
         return client
 
     async def remove(self, slug: str, app: str = DEFAULT_APP) -> None:
@@ -160,6 +161,6 @@ class OAuthClientRegistry:
         if (slug, app) not in self._registered:
             raise OAuthClientError(f"No registered OAuth application {app!r} for {slug!r}")
         await self._store.delete(
-            OAUTH_CLIENTS_OWNER_TYPE, OAUTH_CLIENTS_OWNER_ID, _storage_name(slug, app)
+            APP_REGISTRY_OWNER_TYPE, APP_REGISTRY_OWNER_ID, _storage_name(slug, app)
         )
         self._registered.pop((slug, app), None)

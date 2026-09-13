@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 OAUTH_DEVICE_METHOD = "oauth_device"
 DEFAULT_REFRESH_SKEW_SECONDS = 600
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 15.0
-OAUTH_TOKEN_REFRESH_INTERVAL_SECONDS = 300.0
+REFRESH_LOOP_INTERVAL_SECONDS = 300.0
 REFRESH_FAILED_ERROR_CODE = "refresh_failed"
 
 
@@ -199,7 +199,7 @@ def _parse(raw: object) -> datetime | None:
 async def refresh_oauth_tokens_loop(
     service: OAuthTokenRefreshService,
     *,
-    interval_seconds: float = OAUTH_TOKEN_REFRESH_INTERVAL_SECONDS,
+    interval_seconds: float = REFRESH_LOOP_INTERVAL_SECONDS,
 ) -> None:
     """Refresh device-flow tokens on a timer, independently of any session."""
     logger.info("OAuth refresh loop started, interval=%.0fs", interval_seconds)

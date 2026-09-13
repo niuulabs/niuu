@@ -11,8 +11,8 @@ from volundr.domain.services.integration_registry import (
     definitions_from_config,
 )
 from volundr.domain.services.oauth_clients import (
-    OAUTH_CLIENTS_OWNER_ID,
-    OAUTH_CLIENTS_OWNER_TYPE,
+    APP_REGISTRY_OWNER_ID,
+    APP_REGISTRY_OWNER_TYPE,
     SOURCE_CONFIGURED,
     SOURCE_REGISTERED,
     OAuthClient,
@@ -62,7 +62,7 @@ async def test_registered_applications_survive_a_restart_and_win_over_config(sto
     assert fresh.get("github").client_id == "Iv1.mine"  # the wizard replaces a stale config id
     assert [client.slug for client in fresh.list()] == ["github", "gitlab"]
 
-    stored = await store.get_value(OAUTH_CLIENTS_OWNER_TYPE, OAUTH_CLIENTS_OWNER_ID, "gitlab")
+    stored = await store.get_value(APP_REGISTRY_OWNER_TYPE, APP_REGISTRY_OWNER_ID, "gitlab")
     assert stored == {"client_id": "glpub", "client_secret": "shh"}
 
 
@@ -80,7 +80,7 @@ async def test_a_provider_can_have_an_application_per_account(store) -> None:
     assert registry.has_any("github") and not registry.has_any("gitlab")
     assert [c.app for c in registry.list_for("github")] == ["default", "niuu-org"]
     stored = await store.get_value(
-        OAUTH_CLIENTS_OWNER_TYPE, OAUTH_CLIENTS_OWNER_ID, "github--niuu-org"
+        APP_REGISTRY_OWNER_TYPE, APP_REGISTRY_OWNER_ID, "github--niuu-org"
     )
     assert stored == {"client_id": "Iv1.org", "client_secret": ""}
 
@@ -119,7 +119,7 @@ async def test_remove_forgets_registered_applications_only(store) -> None:
     await registry.register("gitlab", "glpub")
     await registry.remove("gitlab")
     assert registry.get("gitlab") is None
-    assert await store.get(OAUTH_CLIENTS_OWNER_TYPE, OAUTH_CLIENTS_OWNER_ID, "gitlab") is None
+    assert await store.get(APP_REGISTRY_OWNER_TYPE, APP_REGISTRY_OWNER_ID, "gitlab") is None
     with pytest.raises(OAuthClientError, match="No registered"):
         await registry.remove("github")
     assert registry.get("github") == configured
