@@ -178,6 +178,23 @@ describe('host presentation', () => {
     expect(formatGpu({ name: 'X', memory_total_mib: 0, driver_version: '1' })).toBe('X');
   });
 
+  it('describes a GPU that shares the system memory by that memory', () => {
+    const spark = {
+      name: 'NVIDIA GB10',
+      memory_total_mib: 0,
+      driver_version: '580',
+      shares_system_memory: true,
+    };
+    expect(formatGpu(spark, 122 * 1024 ** 3)).toBe('NVIDIA GB10 · 122 GiB shared with the system');
+    expect(formatGpu(spark)).toBe('NVIDIA GB10 · shares system memory');
+    const chips = hostChips({
+      ...MOCK_SYSTEM.host!,
+      memory_total_bytes: 122 * 1024 ** 3,
+      gpus: [spark],
+    }).map((chip) => chip.label);
+    expect(chips).toContain('NVIDIA GB10 · 122 GiB shared with the system');
+  });
+
   it('names the host flavor from the GPU', () => {
     expect(hostFlavor(null)).toBe('this machine');
     expect(hostFlavor(MOCK_SYSTEM.host)).toBe('this DGX Spark');

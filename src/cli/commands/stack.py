@@ -28,6 +28,7 @@ from cli.services.docker_host import (
     DockerPreflightConfig,
     HostFacts,
     collect_host_facts,
+    describe_gpu,
     preflight_results_as_facts,
     run_docker_preflight_checks,
 )
@@ -54,7 +55,7 @@ def _echo_results(results: list[PreflightResult]) -> None:
 
 
 def _echo_host_summary(facts: HostFacts) -> None:
-    gpu = ", ".join(f"{g.name} ({g.memory_total_mib // 1024} GiB)" for g in facts.gpus) or "none"
+    gpu = ", ".join(describe_gpu(g, facts.memory_total_bytes) for g in facts.gpus) or "none"
     typer.echo(f"  Host:    {facts.hostname} · {facts.os_name} {facts.os_version} · {facts.arch}")
     typer.echo(
         f"  Docker:  {facts.docker_version or 'unavailable'}"

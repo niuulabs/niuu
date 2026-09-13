@@ -61,6 +61,14 @@ class DockerPreflightConfig:
     command_timeout_seconds: float = 15.0
 
 
+# What ``nvidia-smi`` prints for ``memory.total`` on GPUs that share the
+# system's memory (DGX Spark GB10, Jetson): the accelerator memory is then the
+# host memory, not a dedicated pool.
+UNIFIED_MEMORY_MARKERS = frozenset({"[N/A]", "N/A"})
+BYTES_PER_MIB = 1024**2
+MIB_PER_GIB = 1024
+
+
 @dataclass(frozen=True)
 class GpuFacts:
     """One GPU as reported by ``nvidia-smi``."""
@@ -68,6 +76,17 @@ class GpuFacts:
     name: str
     memory_total_mib: int
     driver_version: str
+    # True when the GPU has no dedicated memory and uses the system's instead;
+    # ``memory_total_mib`` is 0 then and the host memory is the accelerator memory.
+    shares_system_memory: bool = False
+
+
+def describe_gpu(gpu: GpuFacts, system_memory_bytes: int) -> str:
+    """Name a GPU with the memory it can use: ``NVIDIA GB10 (122 GiB shared with the system)``."""
+    if gpu.shares_system_memory:
+        gib = system_memory_bytes // BYTES_PER_MIB // MIB_PER_GIB
+        return f"{gpu.name} ({gib} GiB shared with the system)"
+    return f"{gpu.name} ({gpu.memory_total_mib // MIB_PER_GIB} GiB)"
 
 
 @dataclass(frozen=True)
@@ -96,6 +115,17 @@ class HostFacts:
     # Preflight results as `niuu up` saw them (name, passed, warn_only, message),
     # so the wizard can show host-side checks the platform cannot run itself.
     checks: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def accelerator_memory_mib(self) -> int:
+        """Largest memory a local model can load into; 0 when no GPU is known."""
+        sizes = [
+            self.memory_total_bytes // BYTES_PER_MIB
+            if gpu.shares_system_memory
+            else gpu.memory_total_mib
+            for gpu in self.gpus
+        ]
+        return max(sizes, default=0)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2)
@@ -288,6 +318,16 @@ def query_gpus(config: DockerPreflightConfig) -> list[GpuFacts]:
         parts = [part.strip() for part in line.split(",")]
         if len(parts) != 3:
             continue
+        if parts[1] in UNIFIED_MEMORY_MARKERS:
+            gpus.append(
+                GpuFacts(
+                    name=parts[0],
+                    memory_total_mib=0,
+                    driver_version=parts[2],
+                    shares_system_memory=True,
+                )
+            )
+            continue
         try:
             memory = int(float(parts[1]))
         except ValueError:
@@ -305,7 +345,8 @@ def check_gpu(config: DockerPreflightConfig) -> PreflightResult:
     """
     gpus = query_gpus(config)
     if gpus:
-        summary = ", ".join(f"{gpu.name} ({gpu.memory_total_mib // 1024} GiB)" for gpu in gpus)
+        system_memory = _memory_total_bytes()
+        summary = ", ".join(describe_gpu(gpu, system_memory) for gpu in gpus)
         return PreflightResult(name="gpu", passed=True, message=f"GPU: {summary}")
     info = docker_info(config)
     if isinstance(info, PreflightResult) or not _nvidia_runtime_registered(info):

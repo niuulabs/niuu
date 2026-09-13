@@ -38,7 +38,7 @@ from cli.services.compose_bundle import (
     write_bundle,
     write_stack_overrides,
 )
-from cli.services.docker_host import GpuFacts, HostFacts
+from cli.services.docker_host import MIB_PER_GIB, GpuFacts, HostFacts
 from cli.services.model_catalog import model_options
 from niuu.domain.stack import (
     ApplyStatus,
@@ -59,7 +59,6 @@ MANAGED_BY = "docker_container"
 LABEL_STACK_APPLY = "niuu.io/stack-apply"
 DOCKER_SOCKET = "/var/run/docker.sock"
 DEFAULT_LOG_TAIL = 40
-MIB_PER_GIB = 1024
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -196,7 +195,7 @@ class DockerStackController(StackControlPort):
         effective = self._effective_settings()
         external_host = self._external_host(current)
         facts = self._host_facts()
-        memory_gib = max((gpu.memory_total_mib for gpu in facts.gpus), default=0) // MIB_PER_GIB
+        memory_gib = facts.accelerator_memory_mib // MIB_PER_GIB
         return StackView(
             current=stack_settings_view(current, external_host),
             staged=self._staged(),

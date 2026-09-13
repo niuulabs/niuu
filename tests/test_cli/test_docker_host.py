@@ -16,6 +16,7 @@ from cli.services.docker_host import (
     NVIDIA_RUNTIME_REMEDY,
     DockerPreflightConfig,
     GpuFacts,
+    HostFacts,
     check_data_dir,
     check_disk_space,
     check_docker_binary,
@@ -27,6 +28,7 @@ from cli.services.docker_host import (
     check_ports,
     check_registry_reachable,
     collect_host_facts,
+    describe_gpu,
     docker_info,
     docker_socket_gid,
     preflight_results_as_facts,
@@ -478,3 +480,63 @@ class TestOutboundNetwork:
             [PreflightResult(name="x", passed=False, warn_only=True, message="m")]
         )
         assert rows == [{"name": "x", "passed": False, "warn_only": True, "message": "m"}]
+
+
+class TestUnifiedMemoryGpu:
+    """A DGX Spark GB10 reports ``memory.total`` as ``[N/A]``: it has no memory of
+    its own and uses the host's. That is a GPU, not a parse failure."""
+
+    SPARK = GpuFacts(
+        name="NVIDIA GB10", memory_total_mib=0, driver_version="580", shares_system_memory=True
+    )
+
+    def test_query_keeps_a_gpu_without_dedicated_memory(
+        self, config: DockerPreflightConfig
+    ) -> None:
+        stdout = "NVIDIA GB10, [N/A], 580\n"
+        with (
+            patch(f"{MOD}.shutil.which", return_value="/usr/bin/nvidia-smi"),
+            patch(f"{MOD}.subprocess.run", return_value=_proc(0, stdout=stdout)),
+        ):
+            assert query_gpus(config) == [self.SPARK]
+
+    def test_check_names_the_shared_memory(self, config: DockerPreflightConfig) -> None:
+        with (
+            patch(f"{MOD}.query_gpus", return_value=[self.SPARK]),
+            patch(f"{MOD}._memory_total_bytes", return_value=122 * 1024**3),
+        ):
+            result = check_gpu(config)
+        assert result.passed is True and result.warn_only is False
+        assert result.message == "GPU: NVIDIA GB10 (122 GiB shared with the system)"
+
+    def test_describe_dedicated_memory(self) -> None:
+        gpu = GpuFacts(name="RTX 5090", memory_total_mib=32768, driver_version="580")
+        assert describe_gpu(gpu, 64 * 1024**3) == "RTX 5090 (32 GiB)"
+
+    def test_accelerator_memory_is_the_host_memory(self) -> None:
+        facts = HostFacts(
+            hostname="spark",
+            os_name="Ubuntu",
+            os_version="24.04",
+            arch="aarch64",
+            cpu_count=20,
+            memory_total_bytes=122 * 1024**3,
+            docker_version="29",
+            compose_version="5",
+            nvidia_runtime=True,
+            gpus=[self.SPARK],
+            data_dir="/data",
+            disk_free_bytes=1,
+            disk_total_bytes=2,
+        )
+        assert facts.accelerator_memory_mib == 122 * 1024
+        dedicated = replace(
+            facts,
+            gpus=[GpuFacts(name="RTX 5090", memory_total_mib=32768, driver_version="580")],
+        )
+        assert dedicated.accelerator_memory_mib == 32768
+        assert replace(facts, gpus=[]).accelerator_memory_mib == 0
+        # Facts written before the field existed still load.
+        loaded = json.loads(facts.to_json())
+        del loaded["gpus"][0]["shares_system_memory"]
+        assert GpuFacts(**loaded["gpus"][0]).shares_system_memory is False

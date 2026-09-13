@@ -23,8 +23,11 @@ export interface SetupState {
 
 export interface GpuFacts {
   name: string;
+  /** 0 when the GPU shares the system's memory instead of owning a pool. */
   memory_total_mib: number;
   driver_version: string;
+  /** DGX Spark / Jetson: the accelerator memory is the host memory. */
+  shares_system_memory?: boolean;
 }
 
 export interface HostFacts {
@@ -785,7 +788,12 @@ export function formatGib(bytes: number): string {
   return `${Math.round(bytes / GIB)} GiB`;
 }
 
-export function formatGpu(gpu: GpuFacts): string {
+export function formatGpu(gpu: GpuFacts, systemMemoryBytes = 0): string {
+  if (gpu.shares_system_memory) {
+    return systemMemoryBytes > 0
+      ? `${gpu.name} · ${formatGib(systemMemoryBytes)} shared with the system`
+      : `${gpu.name} · shares system memory`;
+  }
   const gib = Math.round(gpu.memory_total_mib / 1024);
   return gib > 0 ? `${gpu.name} · ${gib} GiB` : gpu.name;
 }
@@ -812,7 +820,7 @@ export function hostChips(facts: HostFacts | null): HostChip[] {
     chips.push({ label: `${formatGib(facts.memory_total_bytes)} memory`, tone: 'neutral' });
   }
   for (const gpu of facts.gpus) {
-    chips.push({ label: formatGpu(gpu), tone: 'ok' });
+    chips.push({ label: formatGpu(gpu, facts.memory_total_bytes), tone: 'ok' });
   }
   if (facts.docker_version) {
     chips.push({ label: `Docker ${facts.docker_version}`, tone: 'neutral' });

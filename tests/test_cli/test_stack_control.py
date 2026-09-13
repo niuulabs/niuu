@@ -386,3 +386,23 @@ def test_stack_settings_view_reports_the_model_server() -> None:
     assert sc.stack_settings_view(CLISettings(mode="docker"), "h").model_server == (
         sc.ModelServerSettings()
     )
+
+
+@pytest.mark.asyncio
+async def test_view_judges_fit_by_host_memory_on_a_unified_memory_gpu(
+    controller: DockerStackController, stack_dir: Path
+) -> None:
+    """A DGX Spark's GB10 owns no memory; the 128 GiB of host memory is what models load into."""
+    facts = json.loads((stack_dir / "host-facts.json").read_text())
+    facts["gpus"] = [
+        {
+            "name": "NVIDIA GB10",
+            "memory_total_mib": 0,
+            "driver_version": "580",
+            "shares_system_memory": True,
+        }
+    ]
+    (stack_dir / "host-facts.json").write_text(json.dumps(facts))
+    view = await controller.view()
+    assert view.accelerator_memory_gib == 128
+    assert all(m.fits is True for m in view.models)

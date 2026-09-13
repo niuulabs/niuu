@@ -70,7 +70,7 @@ export function SystemStep({ report, loading, error, onRerun }: SystemStepProps)
           <div className="setup-chips">
             {host.gpus.map((gpu) => (
               <span key={gpu.name + gpu.driver_version} className="setup-chip setup-chip--ok">
-                {formatGpu(gpu)}
+                {formatGpu(gpu, host.memory_total_bytes)}
               </span>
             ))}
             {host.gpus.length === 0 ? (
