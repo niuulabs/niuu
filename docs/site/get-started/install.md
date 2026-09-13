@@ -14,19 +14,33 @@ paths lead to the same [first-session quick start](first-local-stack.md).
 
 On a machine with Docker Engine and the Compose plugin (a DGX Spark, a Linux
 box, a Raspberry Pi, a Mac with Docker Desktop), the installer starts the
-whole platform as containers:
+whole platform as containers. The script is a release asset, published next
+to the binaries, and `latest` resolves to the newest release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/niuulabs/niuu/main/scripts/install.sh | sh
+curl -fsSL https://github.com/niuulabs/niuu/releases/latest/download/install.sh | sh
+```
+
+To install a specific version, take the script from that release; its copy
+pins that release's platform image, and its `checksums.txt` lists it:
+
+```bash
+curl -fsSL https://github.com/niuulabs/niuu/releases/download/v1.4.0/install.sh | sh
 ```
 
 Nothing is compiled or downloaded onto the host but a small `niuu` wrapper in
 `~/.local/bin`: the CLI runs from the platform image itself, against the
 host's Docker socket, with `~/.niuu` and the data directory mounted at their
 host paths. `niuu up`, `niuu status`, `niuu doctor` and `niuu down` all go
-through that wrapper. The image tag the installer pins is the one it pulled
-(`NIUU_IMAGE_TAG`, default `latest`), so the CLI and the platform never drift
-apart.
+through that wrapper. The image tag the wrapper pins is the one the script
+pulled (the release's own version; `NIUU_IMAGE_TAG` overrides it), so the CLI
+and the platform never drift apart.
+
+The script also writes the initial `~/.niuu/config.yaml`: the vLLM container
+image and the models the setup wizard offers to serve locally, with the
+`vllm serve` flags their model cards prescribe. That file is yours from then
+on; the script never overwrites it. Change a tag or a flag there and run
+`niuu up` again. No platform image is rebuilt for it.
 
 It ends by printing a setup URL; open it to finish configuration in the browser.
 The script asks nothing in the terminal, needs no root, and never runs
@@ -44,8 +58,13 @@ data lives, and how `niuu up`, `niuu doctor`, and `niuu down` relate to the
 The same script installs the single-binary CLI for a laptop without Docker:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/niuulabs/niuu/main/scripts/install.sh | sh -s -- --mode mini
+curl -fsSL https://github.com/niuulabs/niuu/releases/latest/download/install.sh | sh -s -- --mode mini
 ```
+
+Between releases, a branch's own script and images are at
+`https://raw.githubusercontent.com/niuulabs/niuu/<branch>/scripts/install.sh`
+with `NIUU_IMAGE_TAG=<branch name with slashes as dashes>`; that is how a
+feature branch is tried on a real host before it ships.
 
 ## Release binary: macOS and Linux
 
