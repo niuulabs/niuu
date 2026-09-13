@@ -36,6 +36,10 @@ COPY src/ /app/src/
 # --extra dsh bundles the DeepSeek Harness runtime (single-file exe, exact-pinned)
 # for DshJsonRpcTransport; the binary needs no Node at runtime.
 RUN uv sync --frozen --no-dev --no-editable --extra otel --extra dsh
+# xds-protos also ships obsolete OpenTelemetry modules. Restore the locked
+# official package after installation so enabled OTLP exporters can start.
+RUN uv pip install --python /opt/venv/bin/python --no-deps --reinstall \
+    "opentelemetry-proto==$(/opt/venv/bin/python -c 'from importlib.metadata import version; print(version("opentelemetry-proto"))')"
 
 # ---------------------------------------------------------------------------
 # Runtime — Node.js stays (needed for claude-code/codex CLI at runtime)
@@ -125,6 +129,8 @@ RUN claude --version && codex --version && opencode --version && grok --version
 
 # Switch to non-root user
 USER skuld
+RUN --network=none --mount=type=bind,source=tests/container/observability_runtime.py,target=/tmp/verify_observability.py \
+    python /tmp/verify_observability.py
 
 # Expose broker port (nginx is the entry point at 8080)
 EXPOSE 8081
