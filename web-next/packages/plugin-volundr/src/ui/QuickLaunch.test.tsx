@@ -474,3 +474,73 @@ describe('QuickLaunch', () => {
     expect(screen.getByTestId('quick-launch-go')).toBeDisabled();
   });
 });
+
+describe('QuickLaunch with a model server', () => {
+  it('launches Claude Code on a served model through the Model server provider', async () => {
+    const volundr = mockVolundr();
+    volundr.getFeatures = vi
+      .fn()
+      .mockResolvedValue({ miniMode: true, localMountsEnabled: true, fileManagerEnabled: true });
+    volundr.getSessionDefinitions = async () => [
+      {
+        key: 'skuldClaude',
+        displayName: 'Claude Code',
+        description: '',
+        labels: ['session'],
+        defaultModel: 'claude-opus-4-8',
+        compatibleProviders: ['anthropic', 'local'],
+      },
+    ];
+    const catalog = await volundr.getIntegrationCatalog();
+    volundr.getIntegrationCatalog = async () => [
+      ...catalog,
+      {
+        id: 'model-server',
+        slug: 'model-server',
+        name: 'Model server',
+        description: '',
+        integrationType: 'ai_provider',
+        modelVendor: 'local',
+      },
+    ];
+    volundr.getIntegrations = async () => [
+      {
+        id: 'model-server-local',
+        slug: 'model-server',
+        integrationType: 'ai_provider',
+        credentialName: 'model-server-local',
+        enabled: true,
+        credentialStatus: 'active',
+        config: {
+          provider: 'local',
+          gateway_url: 'http://niuu:8080/api/v1/bifrost',
+          models: ['llama3.2:latest', 'qwen3:8b'],
+        },
+        createdAt: '',
+        updatedAt: '',
+      },
+    ];
+    volundr.startSession = vi.fn().mockResolvedValue({ id: 'served-session' });
+    renderQuickLaunch(volundr);
+    await screen.findByTestId('quick-launch-engine');
+    expect(screen.getByTestId('quick-launch-engine-hint')).toHaveTextContent(
+      'Uses Model server · model-server-local',
+    );
+    fireEvent.change(await screen.findByTestId('quick-launch-engine-model'), {
+      target: { value: 'qwen3:8b' },
+    });
+    fireEvent.change(screen.getByTestId('quick-launch-folder'), {
+      target: { value: '/home/test/project' },
+    });
+    fireEvent.click(screen.getByTestId('quick-launch-go'));
+    await waitFor(() =>
+      expect(volundr.startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          definition: 'skuldClaude',
+          model: 'qwen3:8b',
+          integrationIds: ['model-server-local'],
+        }),
+      ),
+    );
+  });
+});

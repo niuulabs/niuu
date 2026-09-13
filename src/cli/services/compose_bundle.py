@@ -300,6 +300,8 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         # sessions must resolve integration ids from the same database.
         "INTEGRATIONS__DATABASE_NAME": database_name_for_service("niuu-shared"),
         "NIUU_CREDENTIAL_KEY": "${NIUU_CREDENTIAL_KEY}",
+        # The operator's model server key, read by the gateway provider's api_key_env.
+        MODEL_SERVER_API_KEY_ENV: f"${{{MODEL_SERVER_API_KEY_ENV}}}",
         "CREDENTIAL_STORE": json.dumps(credential_store),
         "SECRET_INJECTION": json.dumps(secret_injection),
         # Sign in with GitHub / GitLab (device flow) needs only a public client id;
@@ -358,19 +360,53 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         "RAVN_GATEWAY__PLATFORM__BASE_URL": f"http://127.0.0.1:{settings.server.port}",
         "PYTHONUNBUFFERED": "1",
     }
+    if model_gateway_providers(settings):
+        env["NIUU_BIFROST"] = json.dumps({"providers": bifrost_providers(settings)})
+    return env
+
+
+MODEL_SERVER_API_KEY_ENV = "NIUU_MODEL_SERVER_API_KEY"
+MODEL_SERVER_PROVIDER = "local"
+VLLM_PROVIDER = "vllm"
+# Gateway providers that mean "served on our own hardware"; each one with a
+# base URL is seeded as a "Model server" AI provider for sessions.
+MODEL_SERVER_PROVIDERS = frozenset({MODEL_SERVER_PROVIDER, VLLM_PROVIDER, "ollama"})
+
+
+def model_gateway_providers(settings: CLISettings) -> dict[str, dict[str, Any]]:
+    """The model servers the bundle routes through the gateway, keyed by provider.
+
+    The wizard-managed vLLM container and the operator's own model server. The
+    gateway's OpenAI-compatible adapter appends ``/v1/chat/completions`` itself,
+    so base URLs carry no ``/v1``.
+    """
+    providers: dict[str, dict[str, Any]] = {}
     vllm = settings.docker.vllm
     if vllm.enabled:
-        bifrost = {
-            "providers": {
-                "vllm": {
-                    "base_url": f"http://vllm:{vllm.port}/v1",
-                    "models": [vllm.model],
-                    "cost_per_token": 0.0,
-                }
-            }
+        providers[VLLM_PROVIDER] = {
+            "base_url": f"http://vllm:{vllm.port}",
+            "models": [vllm.model],
+            "cost_per_token": 0.0,
         }
-        env["NIUU_BIFROST"] = json.dumps(bifrost)
-    return env
+    server = settings.docker.model_server
+    if server.enabled:
+        providers[MODEL_SERVER_PROVIDER] = {
+            "base_url": server.base_url,
+            "models": [m.strip() for m in server.models if m.strip()],
+            "cost_per_token": 0.0,
+            "api_key_env": MODEL_SERVER_API_KEY_ENV if server.api_key else "",
+        }
+    return providers
+
+
+def bifrost_providers(settings: CLISettings) -> dict[str, dict[str, Any]]:
+    """Every gateway provider the platform container gets: the configured ones plus ours."""
+    providers = {
+        key: provider.model_dump(mode="json")
+        for key, provider in settings.bifrost.providers.items()
+    }
+    providers.update(model_gateway_providers(settings))
+    return providers
 
 
 def render_compose(settings: CLISettings) -> dict[str, Any]:
@@ -480,6 +516,7 @@ def render_env(settings: CLISettings, *, external_host: str, docker_gid: int | N
         f"NIUU_SKULD_IMAGE={settings.docker.skuld_image}",
         f"NIUU_VLLM_IMAGE={settings.docker.vllm.image}",
         f"NIUU_HF_TOKEN={settings.docker.vllm.hf_token}",
+        f"{MODEL_SERVER_API_KEY_ENV}={settings.docker.model_server.api_key}",
         f"NIUU_BIND_HOST={settings.docker.bind_host}",
         f"NIUU_EXTERNAL_HOST={external_host}",
         f"NIUU_UID={os.getuid()}",

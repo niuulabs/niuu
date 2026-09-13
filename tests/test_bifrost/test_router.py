@@ -561,3 +561,51 @@ class TestAdapterLoading:
         await router.complete(req)
 
         assert router._adapters["openai"] is fake
+
+
+class TestModelThinkingFlag:
+    """thinking/reasoning_effort follow the catalog's supports_thinking per model."""
+
+    def _router(self, *, supports_thinking: bool) -> tuple[ModelRouter, FakeProvider]:
+        from bifrost.config import ManagedModelConfig
+
+        config = BifrostConfig(
+            providers={"local": ProviderConfig(models=["llama3.1:8b"])},
+            models=[
+                ManagedModelConfig(
+                    id="llama3.1:8b",
+                    name="Llama",
+                    vendor="local",
+                    supports_thinking=supports_thinking,
+                )
+            ],
+        )
+        provider = FakeProvider(_make_response())
+        router = ModelRouter(config)
+        router._adapters["local"] = provider
+        return router, provider
+
+    async def test_controls_dropped_for_a_model_without_thinking(self):
+        router, provider = self._router(supports_thinking=False)
+        request = _make_request("llama3.1:8b")
+        request.reasoning_effort = "high"
+        request.thinking = {"type": "enabled"}
+        await router.complete(request)
+        sent, _ = provider.complete_calls[-1]
+        assert sent.reasoning_effort is None
+        assert sent.thinking is None
+        assert sent.model == "llama3.1:8b"
+
+    async def test_controls_kept_for_a_thinking_model_and_unknown_models(self):
+        router, provider = self._router(supports_thinking=True)
+        request = _make_request("llama3.1:8b")
+        request.reasoning_effort = "high"
+        await router.complete(request)
+        assert provider.complete_calls[-1][0].reasoning_effort == "high"
+
+        unknown = ModelRouter(BifrostConfig(providers={"local": ProviderConfig(models=["m"])}))
+        unknown._adapters["local"] = provider
+        request = _make_request("m")
+        request.reasoning_effort = "max"
+        await unknown.complete(request)
+        assert provider.complete_calls[-1][0].reasoning_effort == "max"

@@ -222,7 +222,7 @@ class ModelRouter:
                      budget-sensitive rules are skipped silently.
         """
         ctx = context if context is not None else RoutingContext()
-        request = await self.prepare(request, ctx)
+        request = self._honour_model_thinking(await self.prepare(request, ctx))
         candidates = (
             [(request._routed_provider, request.model)]
             if request._routed_provider
@@ -272,7 +272,7 @@ class ModelRouter:
                      budget-sensitive rules are skipped silently.
         """
         ctx = context if context is not None else RoutingContext()
-        request = await self.prepare(request, ctx)
+        request = self._honour_model_thinking(await self.prepare(request, ctx))
         candidates = (
             [(request._routed_provider, request.model)]
             if request._routed_provider
@@ -318,6 +318,31 @@ class ModelRouter:
         if selected not in candidates:
             raise RouterError("Selection adapter returned an unconfigured target")
         return [selected]
+
+    def _honour_model_thinking(self, request: AnthropicRequest) -> AnthropicRequest:
+        """Drop thinking controls for a model the catalog says has none.
+
+        ``thinking`` and ``reasoning_effort`` are threaded to backends on
+        purpose (DeepSeek honours them, vLLM ignores them), but a server that
+        knows the model cannot think (Ollama with Llama) rejects the whole
+        request over them. The catalog's ``supports_thinking`` is the
+        configured answer; an unknown model keeps the controls.
+        """
+        entry = self._config.model_entry(request.model)
+        if entry is None or entry.supports_thinking:
+            return request
+        if request.thinking is None and request.reasoning_effort is None:
+            return request
+        logger.info(
+            "Model %s has no thinking mode (supports_thinking=false); "
+            "dropping thinking/reasoning_effort",
+            request.model,
+        )
+        stripped = request.model_copy(update={"thinking": None, "reasoning_effort": None})
+        stripped._routed_provider = request._routed_provider
+        stripped._routing_prepared = request._routing_prepared
+        stripped._response_format = request._response_format
+        return stripped
 
     async def prepare(
         self,

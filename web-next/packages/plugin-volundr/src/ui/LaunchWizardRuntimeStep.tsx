@@ -41,7 +41,7 @@ import {
 } from './LaunchWizardPrimitives';
 import { AdvancedRuntimeSection } from './LaunchWizardAdvancedRuntime';
 import { EngineSelect } from './EngineSelect';
-import { availableEngines, withEngineProvider } from './launchEngines';
+import { availableEngines, providerModels, withEngineProvider } from './launchEngines';
 import './LaunchWizard.css';
 
 export function RuntimeStep({
@@ -185,15 +185,23 @@ export function RuntimeStep({
             error={providerError}
             testId="runtime-engine"
             selectedIntegrationIds={form.selectedIntegrations}
-            onProviderChange={(connectionId) =>
+            model={form.model}
+            onModelChange={(model) => update({ model })}
+            onProviderChange={(connectionId) => {
+              const engine = engines.find((option) => option.definition.key === form.definition);
+              // A model server serves its own models: switching to it picks its first.
+              const served = providerModels(
+                engine?.providers.find((provider) => provider.connection.id === connectionId),
+              );
               update({
                 selectedIntegrations: withEngineProvider(
                   form.selectedIntegrations,
-                  engines.find((engine) => engine.definition.key === form.definition),
+                  engine,
                   connectionId,
                 ),
-              })
-            }
+                ...(served.length > 0 ? { model: served[0] } : {}),
+              });
+            }}
             onChange={(definitionKey) => {
               const patch: Partial<WizardForm> = {
                 definition: definitionKey,

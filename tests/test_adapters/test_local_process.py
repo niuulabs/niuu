@@ -1047,6 +1047,32 @@ class TestProcessSpawning:
         assert env["FOO"] == "bar"
         assert env["NUM"] == "42"
 
+    def test_build_env_applies_contributed_env_vars(self) -> None:
+        """The integrations contributor's envVars list (SKULD__CLAUDE_AUTH, the
+        model gateway URL) reaches single-host sessions, not only Helm ones."""
+        spec = SessionSpec(
+            values={
+                "env": {"FOO": "bar"},
+                "envVars": [
+                    {
+                        "name": "SKULD__MODEL_GATEWAY__URL",
+                        "value": "http://niuu:8080/api/v1/bifrost",
+                    },
+                    {"name": "SKULD__CLAUDE_AUTH", "value": "api_key"},
+                ],
+            },
+            pod_spec=PodSpecAdditions(),
+        )
+        env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
+        assert env["SKULD__MODEL_GATEWAY__URL"] == "http://niuu:8080/api/v1/bifrost"
+        assert env["SKULD__CLAUDE_AUTH"] == "api_key"
+        assert env["FOO"] == "bar"
+
+    def test_build_env_rejects_nameless_env_vars(self) -> None:
+        spec = SessionSpec(values={"envVars": [{"value": "x"}]}, pod_spec=PodSpecAdditions())
+        with pytest.raises(ValueError, match="need a name"):
+            LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
+
     def test_build_env_sets_structured_workspace_dir(self) -> None:
         """The Skuld workspace is set through structured broker config."""
         spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())

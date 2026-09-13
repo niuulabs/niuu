@@ -19,11 +19,21 @@ export interface ModelStepProps {
   onStage: (changes: StackChanges) => void;
 }
 
-export type ModelChoice = { kind: 'curated'; id: string } | { kind: 'custom' } | { kind: 'skip' };
+export type ModelChoice =
+  { kind: 'curated'; id: string } | { kind: 'custom' } | { kind: 'server' } | { kind: 'skip' };
+
+/** Split a comma- or newline-separated list of model ids. */
+export function parseModelIds(text: string): string[] {
+  return text
+    .split(/[,\n]/)
+    .map((part) => part.trim())
+    .filter((part) => part !== '');
+}
 
 /** Which choice the staged (or current) settings correspond to. */
 export function choiceFor(stack: StackView | undefined): ModelChoice {
   if (!stack) return { kind: 'skip' };
+  if (stack.effective.modelServer.enabled) return { kind: 'server' };
   const vllm = stack.effective.vllm;
   if (!vllm.enabled || !vllm.model) return { kind: 'skip' };
   const curated = stack.models.find((option) => option.model === vllm.model);
@@ -66,6 +76,14 @@ export function ModelStep({
     initial.kind === 'custom' ? (stack?.effective.vllm.model ?? '') : '',
   );
   const [customTouched, setCustomTouched] = useState(false);
+  const [serverUrl, setServerUrl] = useState(stack?.effective.modelServer.baseUrl ?? '');
+  const [serverModels, setServerModels] = useState(
+    stack?.effective.modelServer.models.join(', ') ?? '',
+  );
+  const [serverKey, setServerKey] = useState('');
+  const [serverTouched, setServerTouched] = useState(false);
+  const serverUrlValid = /^https?:\/\//.test(serverUrl.trim());
+  const serverModelList = parseModelIds(serverModels);
   const choice = initial;
   const totalGib = stack?.acceleratorMemoryGib ?? 0;
   const selectedWeight =
@@ -84,12 +102,29 @@ export function ModelStep({
     );
   }
 
-  const pick = (option: ModelOption) => onStage({ vllm_enabled: true, vllm_model: option.model });
-  const pickSkip = () => onStage({ vllm_enabled: false });
+  // The choices are exclusive: picking vLLM (or cloud-only) stops a model
+  // server that was in use, and the model server stops vLLM.
+  const stopServer: StackChanges = stack?.effective.modelServer.enabled
+    ? { model_server_enabled: false }
+    : {};
+  const pick = (option: ModelOption) =>
+    onStage({ ...stopServer, vllm_enabled: true, vllm_model: option.model });
+  const pickSkip = () => onStage({ ...stopServer, vllm_enabled: false });
   const submitCustom = () => {
     setCustomTouched(true);
     if (!custom.trim()) return;
-    onStage({ vllm_enabled: true, vllm_model: custom.trim() });
+    onStage({ ...stopServer, vllm_enabled: true, vllm_model: custom.trim() });
+  };
+  const submitServer = () => {
+    setServerTouched(true);
+    if (!serverUrlValid || serverModelList.length === 0) return;
+    onStage({
+      vllm_enabled: false,
+      model_server_enabled: true,
+      model_server_url: serverUrl.trim(),
+      model_server_models: serverModelList,
+      ...(serverKey.trim() ? { model_server_api_key: serverKey.trim() } : {}),
+    });
   };
 
   return (
@@ -171,6 +206,67 @@ export function ModelStep({
             </div>
           </span>
         </div>
+        <div
+          className={`setup-option ${choice.kind === 'server' ? 'setup-option--selected' : ''}`}
+          data-testid="setup-model-server"
+        >
+          <span className="setup-option__radio" />
+          <span className="setup-option__body">
+            <span className="setup-option__title">A model server I already run</span>
+            <span className="setup-option__desc">
+              vLLM, sparkrun, Ollama or anything OpenAI-compatible, on this host or another. The
+              platform&apos;s model gateway routes Claude Code, Codex and Ravn sessions to it;
+              nothing is downloaded.
+            </span>
+            <Field
+              label="Server URL"
+              hint="Without /v1. A server on this host is http://host.docker.internal:<port>"
+              error={serverTouched && !serverUrlValid ? 'Enter an http(s) URL' : undefined}
+            >
+              <Input
+                value={serverUrl}
+                placeholder="http://host.docker.internal:8000"
+                onChange={(event) => setServerUrl(event.target.value)}
+                data-testid="setup-model-server-url"
+              />
+            </Field>
+            <Field
+              label="Models"
+              hint="Comma-separated model ids; the first is the default"
+              error={
+                serverTouched && serverModelList.length === 0
+                  ? 'Enter at least one model id'
+                  : undefined
+              }
+            >
+              <Input
+                value={serverModels}
+                placeholder="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+                onChange={(event) => setServerModels(event.target.value)}
+                data-testid="setup-model-server-models"
+              />
+            </Field>
+            <Field label="API key" hint="Only if the server checks a bearer token">
+              <Input
+                type="password"
+                value={serverKey}
+                onChange={(event) => setServerKey(event.target.value)}
+                data-testid="setup-model-server-key"
+              />
+            </Field>
+            <div className="setup-form__actions">
+              <button
+                type="button"
+                className="setup-btn"
+                onClick={submitServer}
+                disabled={staging}
+                data-testid="setup-model-server-use"
+              >
+                Use this server
+              </button>
+            </div>
+          </span>
+        </div>
         <button
           type="button"
           className={`setup-option ${choice.kind === 'skip' ? 'setup-option--selected' : ''}`}
@@ -183,7 +279,7 @@ export function ModelStep({
           <span className="setup-option__body">
             <span className="setup-option__title">Skip — cloud models only</span>
             <span className="setup-option__desc">
-              You can add a local model later from Settings → Models.
+              You can add a local model or your own model server later from Settings → Runtime.
             </span>
           </span>
         </button>
@@ -223,6 +319,12 @@ export function ModelStep({
         {stack?.current.vllm.enabled ? (
           <div className="setup-note" data-testid="setup-model-current">
             <CheckIcon size={13} /> Currently serving {stack.current.vllm.model}
+          </div>
+        ) : null}
+        {stack?.current.modelServer.enabled ? (
+          <div className="setup-note" data-testid="setup-model-server-current">
+            <CheckIcon size={13} /> Currently using your model server at{' '}
+            {stack.current.modelServer.baseUrl}
           </div>
         ) : null}
         <div className="setup-note">

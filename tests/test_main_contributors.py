@@ -96,3 +96,27 @@ def test_create_contributors_auto_wires_persona_provider_once() -> None:
     assert names.index("persona") < max(
         index for index, name in enumerate(names) if name == "prompt"
     )
+
+
+def test_create_contributors_auto_wires_integrations_with_a_registry() -> None:
+    """Docker and host installs get the integrations contributor (Claude auth
+    mode, MCP servers, the model gateway URL) without listing it in config."""
+    from volundr.domain.services.integration_registry import IntegrationRegistry
+
+    contributors = _create_contributors(Settings(), integration_registry=IntegrationRegistry([]))
+    assert [c.name for c in contributors if c.name == "integrations"] == ["integrations"]
+    assert not [c for c in _create_contributors(Settings()) if c.name == "integrations"]
+
+
+def test_create_contributors_keeps_a_configured_integrations_contributor_single() -> None:
+    from volundr.domain.services.integration_registry import IntegrationRegistry
+
+    settings = Settings(
+        session_contributors=[
+            SessionContributorConfig(
+                adapter="volundr.adapters.outbound.contributors.integrations.IntegrationContributor"
+            )
+        ]
+    )
+    contributors = _create_contributors(settings, integration_registry=IntegrationRegistry([]))
+    assert len([c for c in contributors if c.name == "integrations"]) == 1

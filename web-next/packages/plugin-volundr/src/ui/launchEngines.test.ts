@@ -8,12 +8,16 @@ import {
   availableEngines,
   connectedProviders,
   describeEngineProviders,
+  launchModel,
   normalizeVendor,
+  providerModels,
   quickLaunchIntegrationIds,
   selectedEngineProvider,
   sourceControlIdsForRepo,
   withEngineProvider,
   withRepoSourceControl,
+  type ConnectedProvider,
+  type EngineOption,
 } from './launchEngines';
 
 const definition = (
@@ -299,5 +303,61 @@ describe('source control for a repository', () => {
         local: true,
       }),
     ).toEqual(['login', 'tracker']);
+  });
+});
+
+describe('served models', () => {
+  const served = (models: unknown): ConnectedProvider => ({
+    connection: {
+      id: 'server-conn',
+      slug: 'model-server',
+      credentialName: 'model-server-local',
+      config: models === undefined ? undefined : { models, gateway_url: 'http://niuu:8080' },
+      createdAt: '',
+      updatedAt: '',
+    },
+    entry: {
+      id: 'model-server',
+      slug: 'model-server',
+      name: 'Model server',
+      description: '',
+      integrationType: 'ai_provider',
+      modelVendor: 'local',
+    },
+    vendor: 'local',
+  });
+  const engine: EngineOption = {
+    definition: {
+      key: 'skuldClaude',
+      displayName: 'Claude Code',
+      description: '',
+      labels: [],
+      defaultModel: 'claude-opus-4-8',
+      compatibleProviders: ['anthropic', 'local'],
+    },
+    providers: [],
+  };
+
+  it('reads the models a model server serves and ignores junk', () => {
+    expect(providerModels(served(['llama3.2:latest', ' ', 7, 'qwen3:8b']))).toEqual([
+      'llama3.2:latest',
+      'qwen3:8b',
+    ]);
+    expect(providerModels(served(undefined))).toEqual([]);
+    expect(providerModels(served('llama3.2:latest'))).toEqual([]);
+    expect(providerModels(undefined)).toEqual([]);
+  });
+
+  it('launches with the picked served model, else the first, else the engine default', () => {
+    const provider = served(['llama3.2:latest', 'qwen3:8b']);
+    expect(launchModel(engine, provider, 'qwen3:8b')).toBe('qwen3:8b');
+    expect(launchModel(engine, provider, 'claude-opus-4-8')).toBe('llama3.2:latest');
+    expect(launchModel(engine, served(undefined), 'anything')).toBe('claude-opus-4-8');
+    expect(launchModel(undefined, undefined, 'x')).toBe('');
+  });
+
+  it('treats vllm-served models as the local vendor', () => {
+    expect(normalizeVendor('vllm')).toBe('local');
+    expect(normalizeVendor('ollama')).toBe('local');
   });
 });

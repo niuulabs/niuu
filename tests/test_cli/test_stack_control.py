@@ -148,7 +148,33 @@ def test_validate_stack_changes_whitelists_keys() -> None:
         "docker": {"bind_host": "0.0.0.0"},
         "pod_manager": {"max_concurrent": 8},
     }
+    # the operator's own model server; models come as a list or one comma-separated string
+    assert validate_stack_changes(
+        {
+            "model_server_enabled": True,
+            "model_server_url": " http://host.docker.internal:8000 ",
+            "model_server_models": "a/b, c:latest,,\n d ",
+            "model_server_api_key": " k ",
+        }
+    ) == {
+        "docker": {
+            "model_server": {
+                "enabled": True,
+                "base_url": "http://host.docker.internal:8000",
+                "models": ["a/b", "c:latest", "d"],
+                "api_key": "k",
+            }
+        }
+    }
+    assert validate_stack_changes({"model_server_models": ["x", " y "]}) == {
+        "docker": {"model_server": {"models": ["x", "y"]}}
+    }
     for bad in (
+        {"model_server_enabled": "yes"},
+        {"model_server_url": "models.lan:8000"},
+        {"model_server_models": ""},
+        {"model_server_models": [1]},
+        {"model_server_api_key": 1},
         {"max_sessions": 0},
         {"max_sessions": True},
         {"max_sessions": "8"},
@@ -336,3 +362,27 @@ def test_stack_view_dict_is_json_ready(controller: DockerStackController) -> Non
     data = sc.stack_view_dict(view)
     assert json.dumps(data)
     assert data["current"]["bind_host"] == "127.0.0.1"
+
+
+def test_stack_settings_view_reports_the_model_server() -> None:
+    settings = CLISettings(
+        mode="docker",
+        docker={
+            "model_server": {
+                "enabled": True,
+                "base_url": "http://host.docker.internal:8000",
+                "models": ["a", "b"],
+                "api_key": "k",
+            }
+        },
+    )
+    view = sc.stack_settings_view(settings, "10.0.0.5")
+    assert view.model_server == sc.ModelServerSettings(
+        enabled=True,
+        base_url="http://host.docker.internal:8000",
+        models=("a", "b"),
+        has_api_key=True,
+    )
+    assert sc.stack_settings_view(CLISettings(mode="docker"), "h").model_server == (
+        sc.ModelServerSettings()
+    )

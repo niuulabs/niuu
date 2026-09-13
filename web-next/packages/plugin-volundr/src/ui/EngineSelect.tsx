@@ -1,7 +1,9 @@
 import { Field } from '@niuulabs/ui';
 import {
   describeProvider,
+  launchModel,
   PROVIDER_SETTINGS_PATH,
+  providerModels,
   selectedEngineProvider,
   type EngineOption,
 } from './launchEngines';
@@ -23,6 +25,10 @@ export interface EngineSelectProps {
   selectedIntegrationIds?: readonly string[];
   /** Called with the connection id when the person picks another account. */
   onProviderChange?: (connectionId: string) => void;
+  /** The model the launch will use; offered as a dropdown when the provider serves several. */
+  model?: string;
+  /** Called with the model id when the person picks another served model. */
+  onModelChange?: (model: string) => void;
   /** Providers or engines are still being fetched. */
   loading?: boolean;
   /** Providers or engines could not be fetched; shown instead of the picker. */
@@ -44,6 +50,8 @@ export function EngineSelect({
   onChange,
   selectedIntegrationIds = [],
   onProviderChange,
+  model = '',
+  onModelChange,
   loading = false,
   error = null,
   unavailableName,
@@ -51,6 +59,7 @@ export function EngineSelect({
 }: EngineSelectProps) {
   const selected = engines.find((engine) => engine.definition.key === value);
   const provider = selectedEngineProvider(selected, selectedIntegrationIds);
+  const servedModels = providerModels(provider);
   const orphaned = !selected && Boolean(value) && !loading && !error;
 
   if (error) {
@@ -127,6 +136,23 @@ export function EngineSelect({
             {selected.providers.map((candidate) => (
               <option key={candidate.connection.id} value={candidate.connection.id}>
                 {describeProvider(candidate)}
+              </option>
+            ))}
+          </select>
+        </Field>
+      ) : null}
+      {selected && provider && servedModels.length > 0 ? (
+        <Field label="Model" hint="Served by this model server">
+          <select
+            className={SELECT_CLASS}
+            aria-label="Model"
+            value={launchModel(selected, provider, model)}
+            onChange={(event) => onModelChange?.(event.target.value)}
+            data-testid={`${testId}-model`}
+          >
+            {servedModels.map((served) => (
+              <option key={served} value={served}>
+                {served}
               </option>
             ))}
           </select>

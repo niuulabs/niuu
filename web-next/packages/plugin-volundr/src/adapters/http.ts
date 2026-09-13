@@ -1836,6 +1836,7 @@ export function buildVolundrHttpAdapter(
         integrationType: connection.integrationType ?? connection.integration_type,
         credentialName: connection.credentialName ?? connection.credential_name,
         credentialStatus: connection.credentialStatus ?? connection.credential_status,
+        config: connection.config,
         createdAt: connection.createdAt ?? connection.created_at ?? '',
         updatedAt: connection.updatedAt ?? connection.updated_at ?? '',
       }));

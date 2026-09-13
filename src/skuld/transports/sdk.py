@@ -294,10 +294,14 @@ class SDKTransport(CLITransport):
         turn_timeout_s: float = _DEFAULT_TURN_TIMEOUT_S,
         resume_session_id: str | None = None,
         ask_user_question_enabled: bool = False,
+        model_gateway_url: str = "",
+        model_gateway_token: str = "",
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
         self._model = model
+        self._model_gateway_url = model_gateway_url
+        self._model_gateway_token = model_gateway_token
         self._skip_permissions = skip_permissions
         self._agent_teams = agent_teams
         self._system_prompt = system_prompt
@@ -652,8 +656,15 @@ class SDKTransport(CLITransport):
             await client.interrupt()
             return
 
+    def _spawn_env(self) -> dict[str, str]:
+        # Subscription auth by default (SKULD__CLAUDE_AUTH); the gateway when set.
+        return claude_spawn_env(
+            gateway_url=self._model_gateway_url,
+            gateway_token=self._model_gateway_token,
+        )
+
     async def _connect_client(self) -> None:
-        env = claude_spawn_env()  # subscription auth by default (SKULD__CLAUDE_AUTH)
+        env = self._spawn_env()
         if self._agent_teams:
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
         _, shim_env = ensure_codex_tool_shims(

@@ -61,6 +61,14 @@ export interface VllmSettings {
   gpuMemoryUtilization: number;
 }
 
+/** A model server the operator already runs, routed through the model gateway. */
+export interface ModelServerSettings {
+  enabled: boolean;
+  baseUrl: string;
+  models: string[];
+  hasApiKey: boolean;
+}
+
 export interface StackSettings {
   bindHost: string;
   externalHost: string;
@@ -70,6 +78,7 @@ export interface StackSettings {
   vllm: VllmSettings;
   /** Sessions that may run at once on this host. */
   maxSessions: number;
+  modelServer: ModelServerSettings;
   accessUrls: string[];
 }
 
@@ -103,6 +112,10 @@ export interface StackChanges {
   vllm_model?: string;
   vllm_max_model_len?: number;
   vllm_gpu_memory_utilization?: number;
+  model_server_enabled?: boolean;
+  model_server_url?: string;
+  model_server_models?: string[];
+  model_server_api_key?: string;
 }
 
 export type ApplyState = 'idle' | 'applying' | 'applied' | 'failed';
@@ -173,6 +186,20 @@ export function describeStagedChanges(view: StackView | undefined): string[] {
   }
   if (view.effective.maxSessions !== view.current.maxSessions) {
     lines.push(`Run up to ${view.effective.maxSessions} sessions at once`);
+  }
+  const serverBefore = view.current.modelServer;
+  const serverAfter = view.effective.modelServer;
+  if (
+    serverAfter.enabled !== serverBefore.enabled ||
+    serverAfter.baseUrl !== serverBefore.baseUrl ||
+    serverAfter.models.join(',') !== serverBefore.models.join(',')
+  ) {
+    const count = serverAfter.models.length;
+    lines.push(
+      serverAfter.enabled
+        ? `Use your model server at ${serverAfter.baseUrl} (${count} model${count === 1 ? '' : 's'})`
+        : 'Stop using your model server',
+    );
   }
   return lines;
 }

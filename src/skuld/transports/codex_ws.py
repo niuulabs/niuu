@@ -42,6 +42,28 @@ from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
 
+# Codex config for the platform's model gateway: a Responses-API provider (the
+# only wire format current Codex accepts) whose key comes from
+# CODEX_GATEWAY_TOKEN_ENV, selected with `model_provider`.
+CODEX_GATEWAY_PROVIDER = "niuu"
+CODEX_GATEWAY_TOKEN_ENV = "NIUU_MODEL_GATEWAY_TOKEN"
+
+
+def codex_gateway_overrides(gateway_url: str) -> list[tuple[str, str]]:
+    """``codex -c key=value`` pairs that point Codex at the model gateway."""
+    url = gateway_url.strip().rstrip("/")
+    if not url:
+        return []
+    base = f"model_providers.{CODEX_GATEWAY_PROVIDER}"
+    return [
+        ("model_provider", json.dumps(CODEX_GATEWAY_PROVIDER)),
+        (f"{base}.name", json.dumps("Niuu model gateway")),
+        (f"{base}.base_url", json.dumps(f"{url}/v1")),
+        (f"{base}.env_key", json.dumps(CODEX_GATEWAY_TOKEN_ENV)),
+        (f"{base}.wire_api", json.dumps("responses")),
+    ]
+
+
 _MAX_WS_FRAME_BYTES = 1024 * 1024
 _WS_FRAME_HEADROOM_BYTES = 8 * 1024
 _DEFAULT_MAX_WS_MESSAGE_BYTES = 8 * _MAX_WS_FRAME_BYTES
@@ -220,13 +242,22 @@ class CodexWebSocketTransport(CLITransport):
         reasoning_effort: str = "",
         max_ws_message_bytes: int = _DEFAULT_MAX_WS_MESSAGE_BYTES,
         codex_auth_provider: CodexAuthProviderPort | None = None,
+        model_gateway_url: str = "",
+        model_gateway_token: str = "",
         **_kwargs: object,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
         self._model = model
-        # Default every Codex model to high unless launch configuration overrides it.
-        self._reasoning_effort = reasoning_effort or _codex_effort_for_model(model)
+        self._model_gateway_url = model_gateway_url.strip()
+        self._model_gateway_token = model_gateway_token
+        self._gateway_overrides = codex_gateway_overrides(self._model_gateway_url)
+        # Default every OpenAI Codex model to high unless launch configuration
+        # overrides it. A model behind the gateway is whatever the operator
+        # serves; only an explicit session setting asks it for reasoning.
+        self._reasoning_effort = reasoning_effort or (
+            "" if self._model_gateway_url else _codex_effort_for_model(model)
+        )
         self._skip_permissions = skip_permissions
         self._approval_policy = approval_policy.strip()
         self._sandbox = sandbox.strip()
@@ -379,10 +410,16 @@ class CodexWebSocketTransport(CLITransport):
         ]
         for key, value in self._mcp_overrides:
             cmd.extend(["-c", f"{key}={value}"])
+        for key, value in self._gateway_overrides:
+            cmd.extend(["-c", f"{key}={value}"])
 
         env = dict(self._env)
         self._ensure_codex_home(env)
-        if "OPENAI_API_KEY" not in env:
+        if self._model_gateway_url:
+            # The provider block names this env var as its key source.
+            env[CODEX_GATEWAY_TOKEN_ENV] = self._model_gateway_token
+            logger.info("Codex routed through the model gateway at %s", self._model_gateway_url)
+        elif "OPENAI_API_KEY" not in env:
             logger.info(
                 "OPENAI_API_KEY not found — relying on Codex CLI auth state for app-server access"
             )
@@ -555,6 +592,9 @@ class CodexWebSocketTransport(CLITransport):
 
     async def _authenticate_codex(self) -> None:
         """Select host-managed or externally managed auth through the configured port."""
+        if self._model_gateway_url:
+            # The gateway provider authenticates with its own key; no ChatGPT login.
+            return
         tokens = await self._codex_auth_provider.get_tokens()
         if tokens is None:
             return

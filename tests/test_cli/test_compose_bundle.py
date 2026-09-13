@@ -11,7 +11,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from cli.config import CLISettings
+from bifrost.config import ProviderConfig
+from cli.config import CLISettings, DockerModelServerConfig
 from cli.services import compose_bundle as sc
 from cli.services.docker_host import GpuFacts, HostFacts
 
@@ -157,8 +158,60 @@ class TestRender:
         assert devices[0]["driver"] == "nvidia"
         assert doc["services"]["niuu"]["depends_on"]["vllm"] == {"condition": "service_started"}
         bifrost = json.loads(doc["services"]["niuu"]["environment"]["NIUU_BIFROST"])
-        assert bifrost["providers"]["vllm"]["base_url"] == "http://vllm:8000/v1"
+        # The gateway's OpenAI-compatible adapter appends /v1/chat/completions itself.
+        assert bifrost["providers"]["vllm"]["base_url"] == "http://vllm:8000"
         assert bifrost["providers"]["vllm"]["models"] == [settings.docker.vllm.model]
+
+    def test_configured_gateway_providers_survive_ours(self, settings: CLISettings) -> None:
+        settings.bifrost.providers["mine"] = ProviderConfig(base_url="http://mine:1", models=["m"])
+        settings.docker.vllm.enabled = True
+        settings.docker.vllm.model = "org/m"
+        bifrost = json.loads(
+            sc.render_compose(settings)["services"]["niuu"]["environment"]["NIUU_BIFROST"]
+        )
+        assert bifrost["providers"]["mine"]["base_url"] == "http://mine:1"
+        assert bifrost["providers"]["mine"]["models"] == ["m"]
+        assert set(bifrost["providers"]) == {"mine", "vllm"}
+
+    def test_model_server_becomes_the_local_gateway_provider(self, settings: CLISettings) -> None:
+        settings.docker.model_server = DockerModelServerConfig(
+            enabled=True,
+            base_url="http://host.docker.internal:8000/v1/",
+            models=["nvidia/nemotron-test", " qwen3 "],
+            api_key="secret-key",
+        )
+        doc = sc.render_compose(settings)
+        niuu_env = doc["services"]["niuu"]["environment"]
+        bifrost = json.loads(niuu_env["NIUU_BIFROST"])
+        local = bifrost["providers"]["local"]
+        assert local["base_url"] == "http://host.docker.internal:8000"
+        assert local["models"] == ["nvidia/nemotron-test", "qwen3"]
+        assert local["api_key_env"] == "NIUU_MODEL_SERVER_API_KEY"
+        assert niuu_env["NIUU_MODEL_SERVER_API_KEY"] == "${NIUU_MODEL_SERVER_API_KEY}"
+        assert "vllm" not in bifrost["providers"]
+        env_file = sc._parse_env_file(
+            sc.render_env(settings, external_host="10.0.0.5", docker_gid=999)
+        )
+        assert env_file["NIUU_MODEL_SERVER_API_KEY"] == "secret-key"
+
+    def test_model_server_without_a_key_names_no_env(self, settings: CLISettings) -> None:
+        settings.docker.model_server = DockerModelServerConfig(
+            enabled=True, base_url="http://models.lan:8000", models=["m"]
+        )
+        bifrost = json.loads(
+            sc.render_compose(settings)["services"]["niuu"]["environment"]["NIUU_BIFROST"]
+        )
+        assert bifrost["providers"]["local"]["api_key_env"] == ""
+
+    def test_model_server_enabled_needs_url_and_models(self) -> None:
+        with pytest.raises(ValueError, match="base_url must be an http"):
+            DockerModelServerConfig(enabled=True, models=["m"])
+        with pytest.raises(ValueError, match="at least one model"):
+            DockerModelServerConfig(enabled=True, base_url="http://x:1", models=[" "])
+        assert DockerModelServerConfig(base_url="http://x:1/v1").base_url == "http://x:1"
+
+    def test_no_model_servers_means_no_gateway_override(self, settings: CLISettings) -> None:
+        assert "NIUU_BIFROST" not in sc.render_compose(settings)["services"]["niuu"]["environment"]
 
     def test_env_file_values(self, settings: CLISettings) -> None:
         text = sc.render_env(settings, external_host="10.0.0.5", docker_gid=999)

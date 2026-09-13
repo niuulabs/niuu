@@ -504,6 +504,28 @@ class CodexAuthConfig(BaseModel):
     secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
 
 
+class ModelGatewayConfig(BaseModel):
+    """Route the Claude Code and Codex CLIs through the platform's model gateway.
+
+    Set by the platform (``SKULD__MODEL_GATEWAY__URL``) when a session is
+    launched with the Model server provider: the CLIs then talk to Bifrost,
+    which speaks both the Anthropic and the OpenAI dialect and forwards to the
+    self-hosted server. Empty means the CLIs use their vendors' own APIs.
+    """
+
+    url: str = Field(
+        default="",
+        description="Bifrost base URL as reachable from the session, e.g. http://niuu:8080/api/v1/bifrost.",
+    )
+    token: str = Field(
+        default="niuu-gateway",
+        description=(
+            "Bearer token the CLIs present to the gateway. The bundle's gateway is open "
+            "and ignores it; a PAT-protected gateway needs a real token here."
+        ),
+    )
+
+
 class DshRuntimeConfig(BaseModel):
     """DeepSeek Harness (dsh) SDK runtime settings for DshJsonRpcTransport."""
 
@@ -705,6 +727,7 @@ class SkuldSettings(BaseSettings):
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
     codex_auth: CodexAuthConfig = Field(default_factory=CodexAuthConfig)
     dsh: DshRuntimeConfig = Field(default_factory=DshRuntimeConfig)
+    model_gateway: ModelGatewayConfig = Field(default_factory=ModelGatewayConfig)
     service_user_id: str = Field(default="skuld-broker")
     service_tenant_id: str = Field(default="default")
     persistence_mount_path: str = Field(default="/volundr/sessions")

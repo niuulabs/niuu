@@ -362,6 +362,16 @@ def _create_contributors(
         contributors.append(WorkloadIdentityContributor())
         logger.info("Session contributor: workload_identity (auto-wired)")
 
+    # The integrations a launch attaches carry more than credentials: the
+    # Claude auth mode, MCP servers, and the model gateway URL of a self-hosted
+    # model server. Wire the contributor whenever a catalog is present, so a
+    # docker or host install behaves like the Helm chart, which lists it.
+    if not _has_contributor("integrations") and ports.get("integration_registry") is not None:
+        from volundr.adapters.outbound.contributors.integrations import IntegrationContributor
+
+        contributors.append(IntegrationContributor(**ports))
+        logger.info("Session contributor: integrations (auto-wired)")
+
     # Auto-wire LocalMountContributor from local_mounts config
     lm = settings.local_mounts
     local_mount_contributor = LocalMountContributor(

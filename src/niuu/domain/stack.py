@@ -26,6 +26,16 @@ class VllmSettings:
 
 
 @dataclass(frozen=True)
+class ModelServerSettings:
+    """A model server the operator already runs, routed through the gateway."""
+
+    enabled: bool = False
+    base_url: str = ""
+    models: tuple[str, ...] = ()
+    has_api_key: bool = False
+
+
+@dataclass(frozen=True)
 class StackSettings:
     """The subset of the docker bundle settings the wizard shows and edits."""
 
@@ -37,6 +47,7 @@ class StackSettings:
     vllm: VllmSettings
     # Sessions that may run at once (the platform's pod_manager.max_concurrent).
     max_sessions: int = 4
+    model_server: ModelServerSettings = field(default_factory=ModelServerSettings)
 
     @property
     def access_urls(self) -> list[str]:
@@ -107,6 +118,22 @@ def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _model_list(value: Any) -> list[str]:
+    """model_server_models: a list of ids, or one string with commas or newlines."""
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.replace("\n", ",").split(",")]
+    elif isinstance(value, list) and all(isinstance(item, str) for item in value):
+        parts = [item.strip() for item in value]
+    else:
+        raise ValueError(
+            "model_server_models must be a list of model ids or a comma-separated string"
+        )
+    models = [part for part in parts if part]
+    if not models:
+        raise ValueError("model_server_models must name at least one model id")
+    return models
+
+
 def validate_stack_changes(changes: dict[str, Any]) -> dict[str, Any]:
     """Whitelist and type-check what the wizard may stage.
 
@@ -115,9 +142,24 @@ def validate_stack_changes(changes: dict[str, Any]) -> dict[str, Any]:
     """
     docker: dict[str, Any] = {}
     vllm: dict[str, Any] = {}
+    model_server: dict[str, Any] = {}
     pod_manager: dict[str, Any] = {}
     for key, value in changes.items():
-        if key == "max_sessions":
+        if key == "model_server_enabled":
+            if not isinstance(value, bool):
+                raise ValueError("model_server_enabled must be true or false")
+            model_server["enabled"] = value
+        elif key == "model_server_url":
+            if not isinstance(value, str) or not value.strip().startswith(("http://", "https://")):
+                raise ValueError("model_server_url must be an http(s) URL")
+            model_server["base_url"] = value.strip()
+        elif key == "model_server_models":
+            model_server["models"] = _model_list(value)
+        elif key == "model_server_api_key":
+            if not isinstance(value, str):
+                raise ValueError("model_server_api_key must be a string")
+            model_server["api_key"] = value.strip()
+        elif key == "max_sessions":
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                 raise ValueError("max_sessions must be a positive integer")
             pod_manager["max_concurrent"] = value
@@ -146,13 +188,16 @@ def validate_stack_changes(changes: dict[str, Any]) -> dict[str, Any]:
         else:
             raise ValueError(
                 f"Unknown stack setting {key!r}; the wizard can change bind_host, "
-                "max_sessions, vllm_enabled, vllm_model, vllm_max_model_len and "
-                "vllm_gpu_memory_utilization"
+                "max_sessions, vllm_enabled, vllm_model, vllm_max_model_len, "
+                "vllm_gpu_memory_utilization, model_server_enabled, model_server_url, "
+                "model_server_models and model_server_api_key"
             )
     if vllm.get("enabled") and not vllm.get("model", "") and "model" in vllm:
         raise ValueError("vllm_model is required when vllm_enabled is true")
     if vllm:
         docker["vllm"] = vllm
+    if model_server:
+        docker["model_server"] = model_server
     result: dict[str, Any] = {}
     if docker:
         result["docker"] = docker

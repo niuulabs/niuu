@@ -66,6 +66,13 @@ class VllmSettingsResponse(BaseModel):
     gpu_memory_utilization: float = Field(serialization_alias="gpuMemoryUtilization")
 
 
+class ModelServerSettingsResponse(BaseModel):
+    enabled: bool
+    base_url: str = Field(serialization_alias="baseUrl")
+    models: list[str]
+    has_api_key: bool = Field(serialization_alias="hasApiKey")
+
+
 class StackSettingsResponse(BaseModel):
     bind_host: str = Field(serialization_alias="bindHost")
     external_host: str = Field(serialization_alias="externalHost")
@@ -74,6 +81,7 @@ class StackSettingsResponse(BaseModel):
     skuld_image: str = Field(serialization_alias="skuldImage")
     vllm: VllmSettingsResponse
     max_sessions: int = Field(serialization_alias="maxSessions")
+    model_server: ModelServerSettingsResponse = Field(serialization_alias="modelServer")
     access_urls: list[str] = Field(serialization_alias="accessUrls")
 
 
@@ -101,7 +109,8 @@ class StackChangesRequest(BaseModel):
     changes: dict[str, Any] = Field(
         description=(
             "Wizard-level keys: bind_host, max_sessions, vllm_enabled, vllm_model, "
-            "vllm_max_model_len, vllm_gpu_memory_utilization."
+            "vllm_max_model_len, vllm_gpu_memory_utilization, model_server_enabled, "
+            "model_server_url, model_server_models, model_server_api_key."
         )
     )
 
@@ -124,6 +133,36 @@ class SessionsSettingsResponse(BaseModel):
         serialization_alias="applyState",
         description="State of the apply the save started; the platform restarts during it.",
     )
+
+
+class ModelServerSettingsUpdate(BaseModel):
+    """The Settings → Runtime → Model server form."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool = Field(
+        validation_alias=AliasChoices("enabled", "modelServerEnabled"),
+        description="Route sessions at a model server you already run.",
+    )
+    url: str = Field(
+        default="",
+        validation_alias=AliasChoices("url", "modelServerUrl"),
+        description="OpenAI-compatible base URL as reachable from the platform container.",
+    )
+    models: str | list[str] = Field(
+        default="",
+        validation_alias=AliasChoices("models", "modelServerModels"),
+        description="Model ids the server serves: a list, or one string separated by commas.",
+    )
+    api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("api_key", "modelServerApiKey"),
+        description="Bearer token for the server; blank keeps the stored one.",
+    )
+
+
+class ModelServerSettingsResponseWithApply(ModelServerSettingsResponse):
+    apply_state: str = Field(serialization_alias="applyState")
 
 
 class VllmStatusResponse(BaseModel):
@@ -154,6 +193,12 @@ def _stack_settings_response(settings: Any) -> StackSettingsResponse:
             gpu_memory_utilization=settings.vllm.gpu_memory_utilization,
         ),
         max_sessions=settings.max_sessions,
+        model_server=ModelServerSettingsResponse(
+            enabled=settings.model_server.enabled,
+            base_url=settings.model_server.base_url,
+            models=list(settings.model_server.models),
+            has_api_key=settings.model_server.has_api_key,
+        ),
         access_urls=settings.access_urls,
     )
 
@@ -267,6 +312,74 @@ def create_setup_router(
         except (ValueError, FileNotFoundError) as exc:
             raise _stack_error(exc) from exc
 
+    def _model_server_section(view: StackView | None) -> SettingsSectionSchema:
+        """Settings → Runtime → Model server: a server you already run, via the gateway."""
+        server = view.effective.model_server if view is not None else None
+        read_only = view is None
+        fields = [
+            SettingsFieldSchema(
+                key="modelServerEnabled",
+                label="Use my model server",
+                type="boolean",
+                value=server.enabled if server else False,
+                read_only=read_only,
+                description=(
+                    "Register a model server you run yourself (vLLM, sparkrun, Ollama, "
+                    "anything OpenAI-compatible) with the platform's model gateway. Its "
+                    "models then appear under the Model server provider in the launch "
+                    "dialog, for Claude Code, Codex and Ravn alike."
+                ),
+            ),
+            SettingsFieldSchema(
+                key="modelServerUrl",
+                label="Server URL",
+                type="text",
+                value=server.base_url if server else "",
+                read_only=read_only,
+                placeholder="http://host.docker.internal:8000",
+                description=(
+                    "Base URL without /v1, as reachable from the platform container. A "
+                    "server on this host is http://host.docker.internal:<port>."
+                ),
+            ),
+            SettingsFieldSchema(
+                key="modelServerModels",
+                label="Models",
+                type="text",
+                value=", ".join(server.models) if server else "",
+                read_only=read_only,
+                placeholder="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+                description=(
+                    "Model ids the server serves, comma-separated; the first is the default."
+                ),
+            ),
+            SettingsFieldSchema(
+                key="modelServerApiKey",
+                label="API key",
+                type="text",
+                value=None,
+                read_only=read_only,
+                secret=True,
+                description=(
+                    "Only if the server checks a bearer token. Leave blank to keep the stored "
+                    f"key{' (one is stored)' if server and server.has_api_key else ''}."
+                ),
+            ),
+        ]
+        return SettingsSectionSchema(
+            id="model-server",
+            label="Model server",
+            description=(
+                "A model you serve yourself, made available to every engine through the "
+                "model gateway."
+                if view is not None
+                else "Not changeable from here: this install was not started with `niuu up`."
+            ),
+            path="/settings/model-server",
+            save_label="Save and restart the platform",
+            fields=fields,
+        )
+
     def _runtime_settings_schema(view: StackView | None) -> SettingsProviderSchema:
         """The Settings → Runtime page: the host stack the wizard also edits."""
         if view is None:
@@ -307,7 +420,8 @@ def create_setup_router(
                     path="/settings/sessions",
                     save_label="Save and restart the platform",
                     fields=[field],
-                )
+                ),
+                _model_server_section(view),
             ],
         )
 
@@ -342,6 +456,39 @@ def create_setup_router(
         except (ValueError, FileNotFoundError) as exc:
             raise _stack_error(exc) from exc
         return SessionsSettingsResponse(max_sessions=body.max_sessions, apply_state=applied.state)
+
+    @router.patch(
+        "/settings/model-server",
+        response_model=ModelServerSettingsResponseWithApply,
+        response_model_by_alias=True,
+    )
+    async def update_model_server_settings(
+        body: ModelServerSettingsUpdate,
+        principal: Principal = Depends(extract_principal),
+    ) -> ModelServerSettingsResponseWithApply:
+        """Stage the model server and apply it: the platform restarts with the gateway
+        provider and the Model server AI provider pointing at it."""
+        _require_admin(principal)
+        control = _require_stack()
+        changes: dict[str, Any] = {"model_server_enabled": body.enabled}
+        if body.enabled:
+            changes["model_server_url"] = body.url
+            changes["model_server_models"] = body.models
+        if body.api_key.strip():
+            changes["model_server_api_key"] = body.api_key.strip()
+        try:
+            staged = await control.stage(changes)
+            applied = await control.apply()
+        except (ValueError, FileNotFoundError) as exc:
+            raise _stack_error(exc) from exc
+        server = staged.effective.model_server
+        return ModelServerSettingsResponseWithApply(
+            enabled=server.enabled,
+            base_url=server.base_url,
+            models=list(server.models),
+            has_api_key=server.has_api_key,
+            apply_state=applied.state,
+        )
 
     @router.put("/stack", response_model=StackViewResponse, response_model_by_alias=True)
     async def stage_stack(

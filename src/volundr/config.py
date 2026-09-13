@@ -959,6 +959,13 @@ class IntegrationDefinitionConfig(BaseModel):
     config_schema: dict[str, Any] = Field(default_factory=dict)
     mcp_server: dict[str, Any] | None = None
     env_from_credentials: dict[str, str] = Field(default_factory=dict)
+    env_from_config: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Session environment variables taken from the connection's (non-secret) config, "
+            "env var name → config key. A missing key fails the launch."
+        ),
+    )
     auth_type: str = "api_key"
     oauth: OAuthSpecConfig | None = None
     file_mounts: dict[str, str] = Field(default_factory=dict)
@@ -985,6 +992,12 @@ GITHUB_DEVICE_AUTHORIZATION_URL = "https://github.com/login/device/code"
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GITLAB_DEVICE_AUTHORIZATION_URL = "https://gitlab.com/oauth/authorize_device"
 GITLAB_TOKEN_URL = "https://gitlab.com/oauth/token"
+
+
+# The seeded "Model server" provider (see cli.commands.platform) and the env var
+# that tells a session's Skuld to route Claude Code and Codex through the gateway.
+MODEL_SERVER_SLUG = "model-server"
+MODEL_GATEWAY_URL_ENV = "SKULD__MODEL_GATEWAY__URL"
 
 
 def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
@@ -1211,6 +1224,28 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             },
         ),
         IntegrationDefinitionConfig(
+            slug=MODEL_SERVER_SLUG,
+            name="Model server",
+            description=(
+                "A model you serve yourself (vLLM, sparkrun, Ollama, anything "
+                "OpenAI-compatible), reached through the platform's model gateway. "
+                "Registered from Settings → Runtime → Model server, not added here."
+            ),
+            integration_type="ai_provider",
+            model_vendor="local",
+            icon="server",
+            auth_type="none",
+            credential_schema={},
+            config_schema={
+                "properties": {
+                    "provider": {"label": "Gateway provider", "type": "string"},
+                    "gateway_url": {"label": "Gateway URL", "type": "string"},
+                    "models": {"label": "Models", "type": "list"},
+                },
+            },
+            env_from_config={MODEL_GATEWAY_URL_ENV: "gateway_url"},
+        ),
+        IntegrationDefinitionConfig(
             slug="telegram",
             name="Telegram",
             description="Telegram bot — notifications, session alerts, and dispatch commands",
@@ -1333,6 +1368,11 @@ class SeededIntegrationConnectionConfig(BaseModel):
         default=None,
         description="Optional credential payload to seed before creating the connection.",
     )
+
+
+# The seed list is declared before its item type; resolve the forward reference
+# so settings sources (env, files) can parse it instead of warning.
+IntegrationsConfig.model_rebuild()
 
 
 class FeatureModuleConfig(BaseModel):

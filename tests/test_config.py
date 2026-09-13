@@ -1107,3 +1107,45 @@ def test_runtime_routing_rejects_invalid_port(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError):
         Settings()
+
+
+def test_model_server_is_a_local_provider_configured_from_runtime_settings():
+    """The seeded "Model server" unlocks the local vendor and hands sessions the
+    gateway URL from its (non-secret) config rather than from a credential."""
+    from volundr.config import (
+        MODEL_GATEWAY_URL_ENV,
+        MODEL_SERVER_SLUG,
+        _default_integration_definitions,
+    )
+
+    entry = next(e for e in _default_integration_definitions() if e.slug == MODEL_SERVER_SLUG)
+    assert entry.integration_type == "ai_provider"
+    assert entry.model_vendor == "local"
+    assert entry.auth_type == "none"
+    assert entry.env_from_credentials == {}
+    assert entry.env_from_config == {MODEL_GATEWAY_URL_ENV: "gateway_url"}
+    assert "Settings → Runtime" in entry.description
+
+
+def test_local_models_unlock_the_claude_and_codex_engines():
+    from niuu.config_models import default_session_definitions
+
+    definitions = default_session_definitions()
+    for key in ("skuldClaude", "skuldClaudeInteractive", "skuldCodex"):
+        assert "local" in definitions[key].compatible_providers, key
+
+
+def test_env_from_config_reaches_the_registry():
+    """Definitions loaded from config keep env_from_config for the contributor."""
+    from volundr.config import (
+        MODEL_GATEWAY_URL_ENV,
+        MODEL_SERVER_SLUG,
+        _default_integration_definitions,
+    )
+    from volundr.domain.services.integration_registry import definitions_from_config
+
+    loaded = definitions_from_config(
+        [entry.model_dump() for entry in _default_integration_definitions()]
+    )
+    entry = next(d for d in loaded if d.slug == MODEL_SERVER_SLUG)
+    assert entry.env_from_config == {MODEL_GATEWAY_URL_ENV: "gateway_url"}

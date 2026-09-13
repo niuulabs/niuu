@@ -42,6 +42,7 @@ from cli.services.docker_host import GpuFacts, HostFacts
 from cli.services.model_catalog import model_options
 from niuu.domain.stack import (
     ApplyStatus,
+    ModelServerSettings,
     StackSettings,
     StackView,
     VllmSettings,
@@ -76,6 +77,7 @@ def _write_yaml(path: Path, data: dict[str, Any]) -> None:
 
 def stack_settings_view(settings: CLISettings, external_host: str) -> StackSettings:
     vllm = settings.docker.vllm
+    server = settings.docker.model_server
     return StackSettings(
         bind_host=settings.docker.bind_host,
         external_host=external_host,
@@ -90,6 +92,12 @@ def stack_settings_view(settings: CLISettings, external_host: str) -> StackSetti
             gpu_memory_utilization=vllm.gpu_memory_utilization,
         ),
         max_sessions=settings.pod_manager.max_concurrent,
+        model_server=ModelServerSettings(
+            enabled=server.enabled,
+            base_url=server.base_url,
+            models=tuple(server.models),
+            has_api_key=bool(server.api_key),
+        ),
     )
 
 

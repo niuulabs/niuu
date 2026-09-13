@@ -318,3 +318,9 @@ def test_transport_adapter_for_session_definition_handles_missing_shapes() -> No
         transport_adapter_for_session_definition("good", session_definitions=definitions)
         == "skuld.transport.Adapter"
     )
+
+
+def test_self_hosted_provider_keys_are_the_local_vendor():
+    assert normalize_model_vendor("vllm") == "local"
+    assert normalize_model_vendor("ollama") == "local"
+    assert normalize_model_vendor("local") == "local"

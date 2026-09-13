@@ -183,3 +183,76 @@ describe('EngineSelect', () => {
     expect(screen.getByTestId('engine')).toBeDisabled();
   });
 });
+
+describe('EngineSelect with a model server', () => {
+  const serverEngine = (): EngineOption => {
+    const option = engine('skuldClaude', 'Claude Code');
+    option.providers = [
+      {
+        connection: {
+          id: 'model-server-local',
+          slug: 'model-server',
+          credentialName: 'model-server-local',
+          config: { models: ['llama3.2:latest', 'qwen3:8b'] },
+          createdAt: '',
+          updatedAt: '',
+        },
+        entry: {
+          id: 'model-server',
+          slug: 'model-server',
+          name: 'Model server',
+          description: '',
+          integrationType: 'ai_provider',
+          modelVendor: 'local',
+        },
+        vendor: 'local',
+      },
+    ];
+    return option;
+  };
+
+  it('offers the served models and reports the pick', () => {
+    const onModelChange = vi.fn();
+    render(
+      <EngineSelect
+        engines={[serverEngine()]}
+        value="skuldClaude"
+        onChange={() => {}}
+        model="qwen3:8b"
+        onModelChange={onModelChange}
+      />,
+    );
+    const select = screen.getByTestId('engine-select-model') as HTMLSelectElement;
+    expect(select.value).toBe('qwen3:8b');
+    expect(
+      within(select)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['llama3.2:latest', 'qwen3:8b']);
+    fireEvent.change(select, { target: { value: 'llama3.2:latest' } });
+    expect(onModelChange).toHaveBeenCalledWith('llama3.2:latest');
+    expect(screen.getByTestId('engine-select-hint')).toHaveTextContent(
+      'Uses Model server · model-server-local',
+    );
+  });
+
+  it('falls back to the first served model when the pick is not served', () => {
+    render(
+      <EngineSelect engines={[serverEngine()]} value="skuldClaude" onChange={() => {}} model="" />,
+    );
+    expect((screen.getByTestId('engine-select-model') as HTMLSelectElement).value).toBe(
+      'llama3.2:latest',
+    );
+  });
+
+  it('shows no model picker for a cloud provider', () => {
+    render(
+      <EngineSelect
+        engines={[engine('skuldClaude', 'Claude Code')]}
+        value="skuldClaude"
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.queryByTestId('engine-select-model')).toBeNull();
+  });
+});

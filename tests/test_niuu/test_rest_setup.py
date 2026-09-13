@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -16,6 +17,7 @@ from niuu.domain.services.setup import SetupService
 from niuu.domain.stack import (
     ApplyStatus,
     ModelOption,
+    ModelServerSettings,
     StackSettings,
     StackView,
     VllmSettings,
@@ -58,7 +60,19 @@ class _FakeStack(StackControlPort):
         self.fail_with: Exception | None = None
 
     def _view(self) -> StackView:
-        effective = _settings(self.staged.get("docker", {}).get("bind_host", "127.0.0.1"))
+        docker = self.staged.get("docker", {})
+        effective = _settings(docker.get("bind_host", "127.0.0.1"))
+        if "model_server" in docker:
+            server = docker["model_server"]
+            effective = replace(
+                effective,
+                model_server=ModelServerSettings(
+                    enabled=server.get("enabled", False),
+                    base_url=server.get("base_url", ""),
+                    models=tuple(server.get("models", ())),
+                    has_api_key=bool(server.get("api_key")),
+                ),
+            )
         return StackView(
             current=_settings(),
             staged=self.staged,
@@ -86,6 +100,11 @@ class _FakeStack(StackControlPort):
     async def stage(self, changes: dict) -> StackView:
         if "bad" in changes:
             raise ValueError("Unknown stack setting 'bad'")
+        if any(key.startswith("model_server_") for key in changes):
+            from niuu.domain.stack import validate_stack_changes
+
+            self.staged = validate_stack_changes(changes)
+            return self._view()
         self.staged = {"docker": changes}
         return self._view()
 
@@ -319,3 +338,113 @@ class TestStackRoutes:
         response = viewer.get("/api/v1/niuu/setup/stack", headers=HEADERS)
         assert response.status_code == 503
         assert "niuu up" in response.json()["detail"]
+
+
+class TestModelServerSettings:
+    """Settings → Runtime → Model server: a server you already run, via the gateway."""
+
+    def test_schema_offers_the_model_server_section(self, tmp_path: Path) -> None:
+        client = _client(tmp_path, roles=["volundr:admin"], stack=_FakeStack())
+        schema = client.get("/api/v1/niuu/setup/settings", headers=HEADERS).json()
+        section = schema["sections"][1]
+        assert section["id"] == "model-server"
+        assert section["path"] == "/settings/model-server"
+        assert [f["key"] for f in section["fields"]] == [
+            "modelServerEnabled",
+            "modelServerUrl",
+            "modelServerModels",
+            "modelServerApiKey",
+        ]
+        key_field = section["fields"][3]
+        assert key_field["secret"] is True
+        assert key_field["value"] is None
+        assert all(f["readOnly"] is False for f in section["fields"])
+
+    def test_saving_stages_the_server_and_applies(self, tmp_path: Path) -> None:
+        stack = _FakeStack()
+        client = _client(tmp_path, roles=["volundr:admin"], stack=stack)
+        saved = client.patch(
+            "/api/v1/niuu/setup/settings/model-server",
+            json={
+                "modelServerEnabled": True,
+                "modelServerUrl": "http://host.docker.internal:11434",
+                "modelServerModels": "llama3.2:latest, qwen3:8b",
+                "modelServerApiKey": "",
+            },
+            headers=HEADERS,
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json() == {
+            "enabled": True,
+            "baseUrl": "http://host.docker.internal:11434",
+            "models": ["llama3.2:latest", "qwen3:8b"],
+            "hasApiKey": False,
+            "applyState": "applying",
+        }
+        assert stack.staged == {
+            "docker": {
+                "model_server": {
+                    "enabled": True,
+                    "base_url": "http://host.docker.internal:11434",
+                    "models": ["llama3.2:latest", "qwen3:8b"],
+                }
+            }
+        }
+        assert stack.applied == 1
+
+    def test_a_key_is_only_sent_when_typed(self, tmp_path: Path) -> None:
+        stack = _FakeStack()
+        client = _client(tmp_path, roles=["volundr:admin"], stack=stack)
+        client.patch(
+            "/api/v1/niuu/setup/settings/model-server",
+            json={
+                "modelServerEnabled": True,
+                "modelServerUrl": "http://x:1",
+                "modelServerModels": ["m"],
+                "modelServerApiKey": " sk ",
+            },
+            headers=HEADERS,
+        )
+        assert stack.staged["docker"]["model_server"]["api_key"] == "sk"
+
+    def test_disabling_sends_only_the_switch(self, tmp_path: Path) -> None:
+        stack = _FakeStack()
+        client = _client(tmp_path, roles=["volundr:admin"], stack=stack)
+        response = client.patch(
+            "/api/v1/niuu/setup/settings/model-server",
+            json={"modelServerEnabled": False, "modelServerUrl": "", "modelServerModels": ""},
+            headers=HEADERS,
+        )
+        assert response.status_code == 200
+        assert stack.staged == {"docker": {"model_server": {"enabled": False}}}
+
+    def test_bad_input_is_a_clean_error(self, tmp_path: Path) -> None:
+        client = _client(tmp_path, roles=["volundr:admin"], stack=_FakeStack())
+        response = client.patch(
+            "/api/v1/niuu/setup/settings/model-server",
+            json={
+                "modelServerEnabled": True,
+                "modelServerUrl": "models:8000",
+                "modelServerModels": "m",
+            },
+            headers=HEADERS,
+        )
+        assert response.status_code == 422
+        assert "http(s) URL" in response.json()["detail"]
+
+    def test_needs_the_admin_role_and_a_controller(self, tmp_path: Path, admin: TestClient) -> None:
+        body = {
+            "modelServerEnabled": True,
+            "modelServerUrl": "http://x:1",
+            "modelServerModels": "m",
+        }
+        denied = _client(tmp_path, roles=[], stack=_FakeStack()).patch(
+            "/api/v1/niuu/setup/settings/model-server", json=body, headers=HEADERS
+        )
+        assert denied.status_code == 403
+        refused = admin.patch(
+            "/api/v1/niuu/setup/settings/model-server", json=body, headers=HEADERS
+        )
+        assert refused.status_code == 503
+        schema = admin.get("/api/v1/niuu/setup/settings", headers=HEADERS).json()
+        assert all(f["readOnly"] is True for f in schema["sections"][1]["fields"])

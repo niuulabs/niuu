@@ -585,6 +585,8 @@ export interface IntegrationConnection {
   enabled?: boolean;
   /** Credential lifecycle state: configured, active, auth_required, enrolling, missing… */
   credentialStatus?: string;
+  /** Non-secret connection settings, e.g. the Model server's `gateway_url` and `models`. */
+  config?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 }

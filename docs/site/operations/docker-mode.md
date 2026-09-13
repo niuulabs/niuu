@@ -131,7 +131,7 @@ front door over the platform's existing APIs: every value it stores lands where
 | --- | --- | --- |
 | Welcome | Host facts recorded by `niuu up` (hostname, OS, memory, GPU, Docker version). | Nothing. |
 | System check | Every preflight result `niuu up` recorded (Docker, Compose, NVIDIA runtime, GPU, data directory, disk space, ports, outbound network to the registries and providers, git) plus live checks from inside the platform: database reachable, Docker socket present, git installed. A failed check blocks **Continue**; a warning does not. | Nothing. |
-| Local model | Curated models (Nemotron 3 Nano 30B, gpt-oss-120b, Qwen3-Coder 30B) with a fit verdict against the host's accelerator memory and a memory meter, a custom Hugging Face id, or cloud-only. | A staged stack change (`vllm_enabled`, `vllm_model`) through `PUT /api/v1/niuu/setup/stack`; applied on the finish step. |
+| Local model | Curated models (Nemotron 3 Nano 30B, gpt-oss-120b, Qwen3-Coder 30B) with a fit verdict against the host's accelerator memory and a memory meter, a custom Hugging Face id, **a model server you already run** (URL, model ids, optional key), or cloud-only. | A staged stack change (`vllm_enabled`, `vllm_model`, or `model_server_enabled`, `model_server_url`, `model_server_models`, `model_server_api_key`) through `PUT /api/v1/niuu/setup/stack`; applied on the finish step. |
 | AI providers | A list of what is connected, one row per account, empty at first, and an **Add provider** button. Adding walks three small steps in a dialog: which provider, sign in or API key, then the sign-in card or the key form; the dialog closes by itself once the connection exists. A provider can be added as often as there are accounts (work and personal GitHub, two Anthropic keys): each account gets a name, which becomes its credential name (`github-work`), and the platform refuses a name already in use rather than overwrite that account's secret. Providers: Anthropic · Claude (Claude Code sign-in, or a key), OpenAI · Codex (ChatGPT device sign-in, or a key), xAI · Grok (Grok Build device sign-in, or a key), DeepSeek (key). Sign-ins run the official CLI in a sealed helper container; the card shows the link and device code, polls until the provider confirms, and for Claude takes the authorization code the browser hands back. **Test connection** calls the provider's models endpoint with the key and reports how many models it can see. | An integration connection with an inline credential (`POST /api/v1/integrations`), or an enrollment (`POST /api/v1/integrations/enrollments`) whose credential the platform stores when the sign-in completes. Both encrypted with the key from `secrets.env`. |
 | Git | The same list and **Add Git host** dialog for GitHub and GitLab: **Sign in** (OAuth device flow through an application you own; the dialog asks for its client id the first time) or a personal access token. Right after a host is connected the wizard signs in as you and lists the repositories the credential can reach, so a wrong scope shows up here, not in a session; **Test connection** repeats that check. | Same. |
 | Tickets | `issue_tracker` entries (Linear). | Same. |
@@ -315,6 +315,43 @@ interactive Claude engine answers the CLI's first-run questions (onboarding,
 workspace trust, the bypass-permissions notice) in the CLI's own config
 before it starts, because nobody is at that keyboard and the OAuth token in
 the environment does not count as a login for the onboarding screen.
+
+### Using a model you serve yourself
+
+You do not have to let the bundle run vLLM. Any OpenAI-compatible server,
+vLLM or sparkrun on this Spark, Ollama on the same machine, a second Spark
+across the network, becomes a provider in two places at once:
+
+- **Settings → Runtime → Model server** (or the wizard's Local model step):
+  switch it on, give the server's base URL *without* `/v1` as the platform
+  container reaches it (a server on this host is
+  `http://host.docker.internal:<port>`), the model ids it serves
+  (comma-separated; the first is the default), and a bearer token only if the
+  server checks one. Saving restarts the platform.
+- After the restart the server is the `local` provider of the model gateway
+  (Bifrost, `/api/v1/bifrost`, which speaks both the Anthropic and the OpenAI
+  dialect and forwards to the server), and a **Model server** AI provider is
+  seeded under **Settings → Integrations**. The wizard-managed vLLM container
+  gets the same treatment as provider `vllm`.
+
+That provider unlocks the `local` vendor, which the Claude Code, Claude Code
+Interactive and OpenAI Codex engines accept, so it appears in the launch
+dialogs like any other account, with a **Model** dropdown of the ids you
+listed. A session launched with it gets `SKULD__MODEL_GATEWAY__URL` from the
+connection and its Skuld routes the CLI through the gateway: Claude Code with
+`ANTHROPIC_BASE_URL` (the platform API key is dropped so it cannot win), Codex
+with a `niuu` model provider block (`wire_api = "responses"`: the gateway
+serves the OpenAI Responses API at `/v1/responses` for it, its key from
+`NIUU_MODEL_GATEWAY_TOKEN`; no ChatGPT sign-in is attempted). Ravn residents
+already talk to the gateway, so the server's models show up for them as
+`niuu/<model>` without further setup. The bundle's gateway is open; the token
+the CLIs present is a placeholder there.
+
+A server that stops serving a model fails the session's first turn with the
+gateway's error, not a silent fallback to a cloud model. Switching the
+server off (or picking vLLM or cloud-only in the wizard) stops seeding the
+provider; delete the stale **Model server** entry under Settings →
+Integrations so it leaves the launch dialogs.
 
 ## Updating
 

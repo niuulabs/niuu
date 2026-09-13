@@ -1482,6 +1482,14 @@ class LocalProcessPodManager(PodManager):
             for key, value in extra_env.items():
                 env[str(key)] = str(value)
 
+        # Contributors (integrations, model gateway routing) hand over env as the
+        # Helm-shaped list; on a single host it is applied here, so a session
+        # gets the same variables whichever runtime starts it.
+        for entry in spec.values.get("envVars") or []:
+            if not isinstance(entry, dict) or not entry.get("name"):
+                raise ValueError(f"envVars entries need a name: {entry!r}")
+            env[str(entry["name"])] = str(entry.get("value", ""))
+
         broker = spec.values.get("broker", {})
         if isinstance(broker, dict):
             cli_type = broker.get("cliType")

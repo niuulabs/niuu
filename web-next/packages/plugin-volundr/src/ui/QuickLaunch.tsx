@@ -20,6 +20,7 @@ import { LinkedText } from './LinkedText';
 import { errorText } from './errorText';
 import {
   availableEngines,
+  launchModel,
   quickLaunchIntegrationIds,
   selectedEngineProvider,
 } from './launchEngines';
@@ -118,6 +119,10 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
   // Which account runs the engine when several could; the first otherwise.
   const [providerId, setProviderId] = useState('');
   const selectedProvider = selectedEngineProvider(selectedEngine, providerId ? [providerId] : []);
+  // The model: what the person picked among the ones a model server serves,
+  // otherwise the engine's own default.
+  const [model, setModel] = useState('');
+  const effectiveModel = launchModel(selectedEngine, selectedProvider, model);
 
   // Auto-derive the session name from the folder's last path segment when blank.
   const effectiveName = useMemo(() => {
@@ -160,7 +165,7 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
         name: effectiveName,
         source,
         instanceId: selectedTarget,
-        model: def?.defaultModel ?? '',
+        model: effectiveModel,
         definition: def?.key,
         taskType: def ? definitionToTaskType(def.key) : undefined,
         initialPrompt: prompt.trim() || undefined,
@@ -210,7 +215,7 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
                 instanceId: selectedTarget ?? '',
                 initialPrompt: prompt,
                 definition: selectedDef?.key ?? '',
-                model: selectedDef?.defaultModel ?? '',
+                model: effectiveModel,
               }
             : undefined
         }
@@ -363,6 +368,8 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
               onChange={setDefinitionKey}
               selectedIntegrationIds={providerId ? [providerId] : []}
               onProviderChange={setProviderId}
+              model={effectiveModel}
+              onModelChange={setModel}
               loading={providersLoading}
               error={providerError}
               testId="quick-launch-engine"

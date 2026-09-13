@@ -150,6 +150,7 @@ def definitions_from_config(
             config_schema=item.get("config_schema", {}),
             mcp_server=mcp_spec,
             env_from_credentials=item.get("env_from_credentials", {}),
+            env_from_config=item.get("env_from_config", {}),
             auth_type=item.get("auth_type", "api_key"),
             oauth=oauth_spec,
             file_mounts=item.get("file_mounts", {}),

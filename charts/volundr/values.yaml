@@ -993,6 +993,8 @@ sessionDefinitions:
     # -- Model providers this runtime accepts (empty = provider-neutral)
     compatibleProviders:
       - anthropic
+      # a model server you run yourself, through the model gateway
+      - local
     # -- Whether this session definition is active
     active: true
 
@@ -1123,6 +1125,8 @@ sessionDefinitions:
     # -- Model providers this runtime accepts
     compatibleProviders:
       - anthropic
+      # a model server you run yourself, through the model gateway
+      - local
     # -- Whether this session definition is active
     active: true
 
@@ -1245,6 +1249,8 @@ sessionDefinitions:
     # -- Model providers this runtime accepts (empty = provider-neutral)
     compatibleProviders:
       - openai
+      # a model server you run yourself, through the model gateway
+      - local
     # -- Whether this session definition is active
     active: true
 

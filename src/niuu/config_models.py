@@ -70,7 +70,7 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
             ),
             labels=["session", "claude"],
             default_model="claude-opus-4-8",
-            compatible_providers=["anthropic"],
+            compatible_providers=["anthropic", "local"],
             defaults={
                 "broker": {
                     "cliType": "claude",
@@ -90,7 +90,7 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
             ),
             labels=["session", "claude", "interactive"],
             default_model="claude-sonnet-4-6",
-            compatible_providers=["anthropic"],
+            compatible_providers=["anthropic", "local"],
             defaults={
                 "broker": {
                     "cliType": "claude",
@@ -112,7 +112,7 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
             ),
             labels=["session", "codex"],
             default_model="",
-            compatible_providers=["openai"],
+            compatible_providers=["openai", "local"],
             defaults={
                 "broker": {
                     "cliType": "codex-ws",

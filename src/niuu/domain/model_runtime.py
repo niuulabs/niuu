@@ -35,6 +35,7 @@ def normalize_model_vendor(value: str | None) -> str:
         "openai": "openai",
         "codex": "openai",
         "ollama": "local",
+        "vllm": "local",
         "local": "local",
     }
     return aliases.get(vendor, vendor)

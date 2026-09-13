@@ -1157,6 +1157,8 @@ class IntegrationDefinition:
     config_schema: dict = ()  # type: ignore[assignment]
     mcp_server: MCPServerSpec | None = None
     env_from_credentials: dict[str, str] = ()  # type: ignore[assignment]
+    # Session env taken from the connection's non-secret config: env var → config key.
+    env_from_config: dict[str, str] = ()  # type: ignore[assignment]
     auth_type: str = "api_key"
     oauth: OAuthSpec | None = None
     file_mounts: dict[str, str] = ()  # type: ignore[assignment]
@@ -1176,6 +1178,8 @@ class IntegrationDefinition:
             object.__setattr__(self, "config_schema", dict(self.config_schema))
         if not isinstance(self.env_from_credentials, dict):
             object.__setattr__(self, "env_from_credentials", dict(self.env_from_credentials))
+        if not isinstance(self.env_from_config, dict):
+            object.__setattr__(self, "env_from_config", dict(self.env_from_config))
         if not isinstance(self.file_mounts, dict):
             object.__setattr__(self, "file_mounts", dict(self.file_mounts))
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -142,6 +142,60 @@ class DockerVllmConfig(BaseModel):
     )
 
 
+class DockerModelServerConfig(BaseModel):
+    """A model server you already run (vLLM, sparkrun, Ollama, ...).
+
+    Registered as the ``local`` provider of the platform's model gateway
+    (Bifrost) and seeded as the "Model server" AI provider, so Claude Code,
+    Codex and Ravn sessions can use its models.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Route the `local` gateway provider and a session provider at this server.",
+    )
+    base_url: str = Field(
+        default="",
+        description=(
+            "OpenAI-compatible base URL without the /v1 suffix, as reachable from the "
+            "platform container (e.g. http://host.docker.internal:8000 for a server on "
+            "this host)."
+        ),
+    )
+    models: list[str] = Field(
+        default_factory=list,
+        description="Model ids the server serves; the first is what sessions pick by default.",
+    )
+    api_key: str = Field(
+        default="",
+        description="Bearer token the server expects, if it needs one.",
+    )
+
+    @field_validator("base_url")
+    @classmethod
+    def _normalize_base_url(cls, value: str) -> str:
+        url = value.strip().rstrip("/")
+        if url.endswith("/v1"):
+            url = url[: -len("/v1")]
+        return url
+
+    @model_validator(mode="after")
+    def _enabled_needs_a_server(self) -> DockerModelServerConfig:
+        if not self.enabled:
+            return self
+        if not self.base_url.startswith(("http://", "https://")):
+            raise ValueError(
+                "docker.model_server.base_url must be an http(s) URL when the model server "
+                "is enabled"
+            )
+        if not [m for m in self.models if m.strip()]:
+            raise ValueError(
+                "docker.model_server.models must name at least one model when the model "
+                "server is enabled"
+            )
+        return self
+
+
 class DockerConfig(BaseModel):
     """Docker mode: the whole platform as containers on one Docker host."""
 
@@ -189,6 +243,7 @@ class DockerConfig(BaseModel):
         description="How long `niuu up` waits for the platform health endpoint.",
     )
     vllm: DockerVllmConfig = Field(default_factory=DockerVllmConfig)
+    model_server: DockerModelServerConfig = Field(default_factory=DockerModelServerConfig)
     sign_in_client_ids: dict[str, str] = Field(
         default_factory=dict,
         description=(

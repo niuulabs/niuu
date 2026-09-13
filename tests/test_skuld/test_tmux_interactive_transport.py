@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -1286,3 +1287,16 @@ def _async_return(value: Any):
         return value
 
     return _coro()
+
+
+def test_spawn_env_routes_through_the_model_gateway(tmp_path):
+    transport = FakeTmuxInteractiveTransport(
+        str(tmp_path),
+        model_gateway_url="http://niuu:8080/api/v1/bifrost",
+        model_gateway_token="niuu-gateway",
+    )
+    with patch.dict("os.environ", {"PATH": "/usr/bin", "ANTHROPIC_API_KEY": "sk-p"}, clear=True):
+        env = transport._spawn_env()
+    assert env["ANTHROPIC_BASE_URL"] == "http://niuu:8080/api/v1/bifrost"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "niuu-gateway"
+    assert "ANTHROPIC_API_KEY" not in env

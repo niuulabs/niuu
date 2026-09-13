@@ -193,10 +193,14 @@ class TmuxInteractiveTransport(CLITransport):
         turn_max_seconds: float | None = None,
         pane_poll_interval_s: float | None = None,
         frame_interval_s: float | None = None,
+        model_gateway_url: str = "",
+        model_gateway_token: str = "",
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
         self._model = model
+        self._model_gateway_url = model_gateway_url
+        self._model_gateway_token = model_gateway_token
         self._forge_session_id = session_id or "skuld-interactive"
         self._skip_permissions = skip_permissions
         self._agent_teams = agent_teams
@@ -1681,7 +1685,10 @@ class TmuxInteractiveTransport(CLITransport):
         )
 
     def _spawn_env(self) -> dict[str, str]:
-        env = claude_spawn_env()
+        env = claude_spawn_env(
+            gateway_url=self._model_gateway_url,
+            gateway_token=self._model_gateway_token,
+        )
         env["TERM"] = env.get("TERM") or "xterm-256color"
         if self._agent_teams:
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"

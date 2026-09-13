@@ -47,6 +47,7 @@ const VENDOR_ALIASES: Record<string, string> = {
   claude: 'anthropic',
   codex: 'openai',
   ollama: 'local',
+  vllm: 'local',
 };
 
 export function normalizeVendor(value: string | undefined): string {
@@ -114,6 +115,33 @@ export function describeProvider(provider: ConnectedProvider): string {
 /** Every provider that powers an engine, comma-separated. */
 export function describeEngineProviders(option: EngineOption): string {
   return Array.from(new Set(option.providers.map(describeProvider))).join(', ');
+}
+
+/**
+ * The models a provider serves itself: the Model server's `config.models`,
+ * registered from Settings → Runtime. Empty for cloud providers, whose engine
+ * picks its own default model.
+ */
+export function providerModels(provider: ConnectedProvider | undefined): string[] {
+  const models = provider?.connection.config?.models;
+  if (!Array.isArray(models)) return [];
+  return models.filter(
+    (model): model is string => typeof model === 'string' && model.trim() !== '',
+  );
+}
+
+/**
+ * The model a launch uses: the person's pick when the provider serves it, else
+ * the first model the provider serves, else the engine's default model.
+ */
+export function launchModel(
+  engine: EngineOption | undefined,
+  provider: ConnectedProvider | undefined,
+  picked: string,
+): string {
+  const served = providerModels(provider);
+  if (served.length === 0) return engine?.definition.defaultModel ?? '';
+  return served.includes(picked) ? picked : (served[0] ?? '');
 }
 
 /**

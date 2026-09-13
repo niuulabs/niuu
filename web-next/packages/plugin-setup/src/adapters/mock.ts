@@ -305,6 +305,7 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
       gpuMemoryUtilization: 0.6,
     },
     maxSessions: 4,
+    modelServer: { enabled: false, baseUrl: '', models: [], hasApiKey: false },
     accessUrls: [],
     ...options.initialStack,
   };
@@ -329,11 +330,18 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
       maxModelLen: changes.vllm_max_model_len ?? base.vllm.maxModelLen,
       gpuMemoryUtilization: changes.vllm_gpu_memory_utilization ?? base.vllm.gpuMemoryUtilization,
     };
+    const modelServer = {
+      enabled: changes.model_server_enabled ?? base.modelServer.enabled,
+      baseUrl: changes.model_server_url ?? base.modelServer.baseUrl,
+      models: changes.model_server_models ?? base.modelServer.models,
+      hasApiKey: changes.model_server_api_key ? true : base.modelServer.hasApiKey,
+    };
     return {
       ...base,
       bindHost,
       vllm,
       maxSessions: changes.max_sessions ?? base.maxSessions,
+      modelServer,
       accessUrls: accessUrlsFor(bindHost, base.externalHost, base.port),
     };
   };
@@ -347,6 +355,12 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
     if (staged.vllm_enabled !== undefined) vllm.enabled = staged.vllm_enabled;
     if (staged.vllm_model !== undefined) vllm.model = staged.vllm_model;
     if (Object.keys(vllm).length > 0) docker.vllm = vllm;
+    const modelServer: Record<string, unknown> = {};
+    if (staged.model_server_enabled !== undefined)
+      modelServer.enabled = staged.model_server_enabled;
+    if (staged.model_server_url !== undefined) modelServer.base_url = staged.model_server_url;
+    if (staged.model_server_models !== undefined) modelServer.models = staged.model_server_models;
+    if (Object.keys(modelServer).length > 0) docker.model_server = modelServer;
     if (Object.keys(docker).length > 0) stagedNested.docker = docker;
     if (staged.max_sessions !== undefined) {
       stagedNested.pod_manager = { max_concurrent: staged.max_sessions };
