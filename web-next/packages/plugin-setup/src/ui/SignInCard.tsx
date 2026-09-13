@@ -28,6 +28,8 @@ export interface SignInCardProps {
   credentialName?: string;
   /** Hold the start button, e.g. while the account name clashes with an existing one. */
   disabled?: boolean;
+  /** Which of the provider's OAuth applications this account signs in through. */
+  oauthApp?: string;
   testResult?: IntegrationTestResult;
   testing?: boolean;
   onTest?: (connectionId: string) => void;
@@ -46,6 +48,7 @@ export function SignInCard({
   headless = false,
   credentialName: requestedName,
   disabled = false,
+  oauthApp,
   testResult,
   testing = false,
   onTest,
@@ -70,7 +73,7 @@ export function SignInCard({
       entry.credentialEnrollment?.defaultCredentialName ??
       credentialNameFor(entry.slug);
     start.mutate(
-      { slug: entry.slug, credentialName },
+      { slug: entry.slug, credentialName, oauthApp },
       { onSuccess: (started) => setEnrollmentId(started.id) },
     );
   };

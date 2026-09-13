@@ -450,8 +450,31 @@ export interface CatalogEntry {
 
 /** The OAuth application a person registers for GitHub or GitLab sign-in. */
 export interface OAuthClientInput {
+  /** Which of the provider's applications this is; empty means "default". */
+  app?: string;
   clientId: string;
   clientSecret?: string;
+}
+
+/** An OAuth application the install signs in through (never the secret). */
+export interface OAuthApp {
+  slug: string;
+  app: string;
+  clientId: string;
+  hasSecret: boolean;
+  source: 'configured' | 'registered';
+}
+
+export const DEFAULT_OAUTH_APP = 'default';
+
+/** The key an application is stored under, the way the platform derives it. */
+export function oauthAppKey(name: string): string {
+  const key = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return key || DEFAULT_OAUTH_APP;
 }
 
 export interface OAuthAppHelp {

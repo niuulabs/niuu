@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -95,10 +96,36 @@ def test_availability_needs_a_client_id_and_a_device_url(runner: OAuthDeviceFlow
 async def test_start_requires_configuration(runner: OAuthDeviceFlowRunner) -> None:
     with pytest.raises(ValueError, match="Unsupported"):
         await runner.start_enrollment(enrollment(method="codex_device"))
-    with pytest.raises(ValueError, match="No OAuth application is registered for 'gitlab'"):
+    with pytest.raises(
+        ValueError, match="No OAuth application 'default' is registered for 'gitlab'"
+    ):
         await runner.start_enrollment(enrollment("gitlab"))
     with pytest.raises(ValueError, match="no OAuth specification"):
         await runner.start_enrollment(enrollment("anthropic"))
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_an_account_signs_in_through_its_own_application() -> None:
+    clients_by_app = clients(github="Iv1.personal")
+    await clients_by_app.register("github", "Iv1.org", app="niuu-org")
+    runner = OAuthDeviceFlowRunner(registry=registry(), clients=clients_by_app)
+    start = respx.post(DEVICE_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"device_code": "d", "user_code": "U", "verification_uri": "v", "interval": 0},
+        )
+    )
+
+    started = await runner.start_enrollment(
+        replace(enrollment(), runner_ref={"oauth_app": "niuu-org"})
+    )
+
+    sent = dict(httpx.QueryParams(start.calls.last.request.content.decode()))
+    assert sent["client_id"] == "Iv1.org"
+    assert started.runner_ref == {"runner": "oauth_device", "oauth_app": "niuu-org"}
+    with pytest.raises(ValueError, match="No OAuth application 'other'"):
+        await runner.start_enrollment(replace(enrollment(), runner_ref={"oauth_app": "other"}))
 
 
 @pytest.mark.asyncio

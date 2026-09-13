@@ -7,6 +7,7 @@ import type {
   StackChanges,
   StackView,
   IntegrationTestResult,
+  OAuthApp,
   OAuthClientInput,
   SetupState,
   SystemReport,
@@ -28,8 +29,12 @@ export interface ISetupService {
   listIntegrations(): Promise<IntegrationConnection[]>;
   connectIntegration(input: ConnectIntegrationInput): Promise<IntegrationConnection>;
   testIntegration(connectionId: string): Promise<IntegrationTestResult>;
-  /** Start (or resume) an interactive provider sign-in for a catalog entry. */
-  startEnrollment(slug: string, credentialName: string): Promise<Enrollment>;
+  /**
+   * Start (or resume) an interactive provider sign-in for a catalog entry.
+   * `oauthApp` names which of the provider's OAuth applications this account
+   * signs in through (GitHub, GitLab); empty means the default one.
+   */
+  startEnrollment(slug: string, credentialName: string, oauthApp?: string): Promise<Enrollment>;
   /** Current state of a sign-in; the backend polls the login helper on each read. */
   getEnrollment(enrollmentId: string): Promise<Enrollment>;
   cancelEnrollment(enrollmentId: string): Promise<Enrollment>;
@@ -37,6 +42,8 @@ export interface ISetupService {
   submitEnrollmentCode(enrollmentId: string, code: string): Promise<Enrollment>;
   /** Register the person's own OAuth application for a provider's sign-in (GitHub, GitLab). */
   registerOAuthClient(slug: string, input: OAuthClientInput): Promise<void>;
+  /** The OAuth applications this install signs in through, all providers. */
+  listOAuthClients(): Promise<OAuthApp[]>;
   /** Bundle settings the wizard may change (docker mode); rejects when unavailable. */
   getStack(): Promise<StackView>;
   stageStack(changes: StackChanges): Promise<StackView>;

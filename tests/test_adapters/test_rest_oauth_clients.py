@@ -81,6 +81,7 @@ def test_registering_an_application_turns_sign_in_on(tmp_path) -> None:
     assert response.status_code == 200
     assert response.json() == {
         "slug": "github",
+        "app": "default",
         "client_id": "Iv1.mine",
         "has_secret": True,
         "source": "registered",
@@ -91,9 +92,47 @@ def test_registering_an_application_turns_sign_in_on(tmp_path) -> None:
     assert after["sign_in_needs_app"] is False
     listed = client.get("/api/v1/integrations/oauth-clients").json()
     assert listed == [
-        {"slug": "github", "client_id": "Iv1.mine", "has_secret": True, "source": "registered"},
-        {"slug": "gitlab", "client_id": "glcfg", "has_secret": False, "source": "configured"},
+        {
+            "slug": "github",
+            "app": "default",
+            "client_id": "Iv1.mine",
+            "has_secret": True,
+            "source": "registered",
+        },
+        {
+            "slug": "gitlab",
+            "app": "default",
+            "client_id": "glcfg",
+            "has_secret": False,
+            "source": "configured",
+        },
     ]
+
+
+def test_a_second_account_registers_its_own_application(tmp_path) -> None:
+    client = _client(tmp_path)
+    client.put("/api/v1/integrations/oauth-clients/github", json={"client_id": "Iv1.personal"})
+
+    response = client.put(
+        "/api/v1/integrations/oauth-clients/github",
+        json={"app": "Niuu Org", "client_id": "Iv1.org"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["app"] == "niuu-org"
+    apps = [
+        (row["app"], row["client_id"])
+        for row in client.get("/api/v1/integrations/oauth-clients").json()
+        if row["slug"] == "github"
+    ]
+    assert apps == [("default", "Iv1.personal"), ("niuu-org", "Iv1.org")]
+    assert (
+        client.delete("/api/v1/integrations/oauth-clients/github?app=niuu-org").status_code == 204
+    )
+    assert (
+        client.delete("/api/v1/integrations/oauth-clients/github?app=niuu-org").status_code == 404
+    )
+    assert _catalog_entry(client, "github")["sign_in_available"] is True
 
 
 def test_registration_is_refused_for_non_oauth_integrations_and_empty_ids(tmp_path) -> None:

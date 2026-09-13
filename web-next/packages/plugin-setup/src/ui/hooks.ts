@@ -15,6 +15,7 @@ export const setupKeys = {
   catalog: ['setup', 'catalog'] as const,
   integrations: ['setup', 'integrations'] as const,
   enrollment: (id: string) => ['setup', 'enrollment', id] as const,
+  oauthClients: ['setup', 'oauth-clients'] as const,
   stack: ['setup', 'stack'] as const,
   stackStatus: ['setup', 'stack', 'status'] as const,
 };
@@ -91,7 +92,19 @@ export function useRegisterOAuthClient() {
   return useMutation({
     mutationFn: ({ slug, input }: { slug: string; input: OAuthClientInput }) =>
       service.registerOAuthClient(slug, input),
-    onSuccess: () => client.invalidateQueries({ queryKey: setupKeys.catalog }),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: setupKeys.oauthClients });
+      await client.invalidateQueries({ queryKey: setupKeys.catalog });
+    },
+  });
+}
+
+/** The OAuth applications this install signs in through, all providers. */
+export function useOAuthClients() {
+  const service = useSetupService();
+  return useQuery({
+    queryKey: setupKeys.oauthClients,
+    queryFn: () => service.listOAuthClients(),
   });
 }
 
@@ -106,8 +119,15 @@ export function useStartEnrollment() {
   const service = useSetupService();
   const client = useQueryClient();
   return useMutation({
-    mutationFn: ({ slug, credentialName }: { slug: string; credentialName: string }) =>
-      service.startEnrollment(slug, credentialName),
+    mutationFn: ({
+      slug,
+      credentialName,
+      oauthApp,
+    }: {
+      slug: string;
+      credentialName: string;
+      oauthApp?: string;
+    }) => service.startEnrollment(slug, credentialName, oauthApp),
     onSuccess: (enrollment) => client.setQueryData(setupKeys.enrollment(enrollment.id), enrollment),
   });
 }

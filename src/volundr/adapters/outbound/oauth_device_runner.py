@@ -29,7 +29,7 @@ from volundr.domain.models import (
 )
 from volundr.domain.ports import CredentialEnrollmentRunnerPort
 from volundr.domain.services.integration_registry import IntegrationRegistry
-from volundr.domain.services.oauth_clients import OAuthClientRegistry
+from volundr.domain.services.oauth_clients import DEFAULT_APP, OAuthClientRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -102,21 +102,21 @@ class OAuthDeviceFlowRunner(CredentialEnrollmentRunnerPort):
         definition = self._registry.get_definition(slug)
         if definition is None or definition.oauth is None:
             return False
-        return (
-            bool(definition.oauth.device_authorization_url) and self._clients.get(slug) is not None
-        )
+        if not definition.oauth.device_authorization_url:
+            return False
+        return self._clients.has_any(slug)
 
-    def _config(self, slug: str) -> tuple[str, str, str, tuple[str, ...]]:
+    def _config(self, slug: str, app: str) -> tuple[str, str, str, tuple[str, ...]]:
         definition = self._registry.get_definition(slug)
         if definition is None or definition.oauth is None:
             raise ValueError(f"Integration {slug!r} has no OAuth specification")
         if not definition.oauth.device_authorization_url:
             raise ValueError(f"Integration {slug!r} does not declare a device authorization URL")
-        client = self._clients.get(slug)
+        client = self._clients.get(slug, app)
         if client is None:
             raise ValueError(
-                f"No OAuth application is registered for {slug!r}; register one from the setup "
-                "wizard (a client id with the device flow enabled) or use a token instead"
+                f"No OAuth application {app!r} is registered for {slug!r}; register one from "
+                "the setup wizard (a client id with the device flow enabled) or use a token instead"
             )
         return (
             definition.oauth.device_authorization_url,
@@ -132,7 +132,10 @@ class OAuthDeviceFlowRunner(CredentialEnrollmentRunnerPort):
     async def start_enrollment(self, enrollment: CredentialEnrollment) -> CredentialEnrollment:
         if not self.supports_enrollment(enrollment.method):
             raise ValueError("Unsupported login method")
-        device_url, token_url, client_id, scopes = self._config(enrollment.provider_slug)
+        # The account remembers which application it signs in through; the
+        # service seeds it in runner_ref so a second account can use its own.
+        app = str(enrollment.runner_ref.get("oauth_app") or DEFAULT_APP)
+        device_url, token_url, client_id, scopes = self._config(enrollment.provider_slug, app)
         form: dict[str, str] = {"client_id": client_id}
         if scopes:
             form["scope"] = " ".join(scopes)
@@ -177,7 +180,7 @@ class OAuthDeviceFlowRunner(CredentialEnrollmentRunnerPort):
             state=CredentialEnrollmentState.AWAITING_USER,
             verification_uri=session.verification_uri,
             user_code=session.user_code,
-            runner_ref={"runner": OAUTH_DEVICE_METHOD},
+            runner_ref={"runner": OAUTH_DEVICE_METHOD, "oauth_app": app},
         )
 
     async def poll_enrollment(self, enrollment: CredentialEnrollment) -> CredentialEnrollmentPoll:

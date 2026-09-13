@@ -275,8 +275,8 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
     ...options.initialState,
   };
   const catalog = options.catalog ?? MOCK_CATALOG;
-  // Providers whose own OAuth application was registered from the wizard.
-  const registeredApps = new Set<string>();
+  // OAuth applications registered from the wizard: slug → app key → client id.
+  const registeredApps = new Map<string, Map<string, string>>();
   const effectiveCatalog = (): CatalogEntry[] =>
     registeredApps.size === 0
       ? catalog
@@ -417,7 +417,38 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
         throw new Error(`${slug} does not sign in through an OAuth application`);
       }
       if (!input.clientId.trim()) throw new Error('A client id is required');
-      registeredApps.add(slug);
+      const apps = registeredApps.get(slug) ?? new Map<string, string>();
+      apps.set(input.app || 'default', input.clientId.trim());
+      registeredApps.set(slug, apps);
+    },
+    async listOAuthClients() {
+      await wait();
+      // A provider whose device sign-in the catalog calls available has a
+      // configured default application, the way oauth.clients provides one.
+      const configured = catalog
+        .filter(
+          (entry) =>
+            entry.credentialEnrollment?.method === 'oauth_device' &&
+            entry.signInAvailable !== false &&
+            !registeredApps.get(entry.slug)?.has('default'),
+        )
+        .map((entry) => ({
+          slug: entry.slug,
+          app: 'default',
+          clientId: `mock-${entry.slug}-client`,
+          hasSecret: false,
+          source: 'configured' as const,
+        }));
+      const registered = [...registeredApps.entries()].flatMap(([slug, apps]) =>
+        [...apps.entries()].map(([app, clientId]) => ({
+          slug,
+          app,
+          clientId,
+          hasSecret: false,
+          source: 'registered' as const,
+        })),
+      );
+      return [...configured, ...registered];
     },
     async listIntegrations() {
       await wait();
@@ -454,7 +485,7 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
         repositories: sourceControl ? ['niuulabs/volundr', 'niuulabs/skuld'] : [],
       };
     },
-    async startEnrollment(slug, credentialName) {
+    async startEnrollment(slug, credentialName, oauthApp = '') {
       await wait();
       const entry = catalog.find((candidate) => candidate.slug === slug);
       if (!entry) throw new Error(`Unknown integration ${slug}`);
@@ -463,6 +494,13 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
       }
       if (entry.signInAvailable === false && !registeredApps.has(slug)) {
         throw new Error(`Sign-in for ${slug} is not configured on this install`);
+      }
+      if (
+        oauthApp &&
+        !registeredApps.get(slug)?.has(oauthApp) &&
+        !(oauthApp === 'default' && entry.signInAvailable !== false)
+      ) {
+        throw new Error(`No OAuth application '${oauthApp}' is registered for ${slug}`);
       }
       const existing = [...enrollments.values()].find(
         (row) =>

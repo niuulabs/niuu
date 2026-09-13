@@ -8,6 +8,42 @@ function clients() {
   };
 }
 
+describe('OAuth applications over HTTP', () => {
+  it('registers an application under its name and lists them', async () => {
+    const c = clients();
+    c.integrations.put.mockResolvedValueOnce({});
+    c.integrations.get.mockResolvedValueOnce([
+      { slug: 'github', app: 'niuu-org', client_id: 'Iv1.org', has_secret: true, source: 'x' },
+      { slug: 'gitlab', client_id: 'glcfg', source: 'configured' },
+    ]);
+    const adapter = buildSetupHttpAdapter(c);
+    await adapter.registerOAuthClient('github', { app: 'niuu-org', clientId: 'Iv1.org' });
+    expect(c.integrations.put).toHaveBeenCalledWith('/oauth-clients/github', {
+      app: 'niuu-org',
+      client_id: 'Iv1.org',
+      client_secret: '',
+    });
+    expect(await adapter.listOAuthClients()).toEqual([
+      {
+        slug: 'github',
+        app: 'niuu-org',
+        clientId: 'Iv1.org',
+        hasSecret: true,
+        source: 'registered',
+      },
+      { slug: 'gitlab', app: 'default', clientId: 'glcfg', hasSecret: false, source: 'configured' },
+    ]);
+    const started = { id: 'e1', connection_id: 'c', provider_slug: 'github', state: 'pending' };
+    c.integrations.post.mockResolvedValueOnce(started);
+    await adapter.startEnrollment('github', 'github-org', 'niuu-org');
+    expect(c.integrations.post).toHaveBeenLastCalledWith('/enrollments', {
+      slug: 'github',
+      credential_name: 'github-org',
+      oauth_app: 'niuu-org',
+    });
+  });
+});
+
 describe('buildSetupHttpAdapter', () => {
   it('reads state and system from the setup base', async () => {
     const c = clients();
@@ -207,6 +243,7 @@ describe('buildSetupHttpAdapter', () => {
     expect(c.integrations.post).toHaveBeenNthCalledWith(1, '/enrollments', {
       slug: 'codex',
       credential_name: 'codex-setup',
+      oauth_app: '',
     });
 
     const pending = await adapter.getEnrollment('e 1');

@@ -760,6 +760,7 @@ class TestIntegrationEndpoints:
             slug="codex",
             credential_name="codex-credentials",
             connection_id="",
+            oauth_app="",
         )
 
     def test_device_enrollment_lookup_hides_foreign_or_missing_attempts(

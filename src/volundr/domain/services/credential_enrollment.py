@@ -23,6 +23,7 @@ from volundr.domain.ports import (
     IntegrationRepository,
 )
 from volundr.domain.services.integration_registry import IntegrationRegistry
+from volundr.domain.services.oauth_clients import DEFAULT_APP
 
 DEFAULT_CREDENTIAL_ENROLLMENT_TTL_SECONDS = 900
 CREDENTIAL_ENROLLMENT_RECONCILE_INTERVAL_SECONDS = 30
@@ -32,6 +33,8 @@ logger = logging.getLogger(__name__)
 # Sign-ins whose token cannot be refreshed: the worker reports when it runs
 # out, and the wizard asks for a new sign-in then.
 METHODS_WITH_FIXED_LIFETIME = frozenset({"claude_setup", "grok_device"})
+# Sign-ins that run through an OAuth application the install owns.
+OAUTH_DEVICE_METHOD = "oauth_device"
 
 
 class CredentialEnrollmentError(ValueError):
@@ -65,6 +68,7 @@ class CredentialEnrollmentService:
         slug: str,
         credential_name: str = "",
         connection_id: str = "",
+        oauth_app: str = "",
     ) -> CredentialEnrollment:
         definition = self._integration_registry.get_definition(slug)
         spec = definition.credential_enrollment if definition is not None else None
@@ -83,12 +87,18 @@ class CredentialEnrollmentService:
             slug=slug,
             connection_id=connection_id,
             credential_name=credential_name or spec.default_credential_name,
+            oauth_app=oauth_app,
         )
         active = await self._repository.find_active(connection.id)
         if active is not None:
             return active
 
         now = datetime.now(UTC)
+        # The account's own OAuth application (GitHub, GitLab) travels with the
+        # attempt so the runner never falls back to another account's app.
+        runner_ref: dict = {}
+        if spec.method == OAUTH_DEVICE_METHOD:
+            runner_ref["oauth_app"] = str(connection.config.get("oauth_app") or DEFAULT_APP)
         enrollment = CredentialEnrollment(
             id=uuid4(),
             connection_id=connection.id,
@@ -98,7 +108,7 @@ class CredentialEnrollmentService:
             credential_name=connection.credential_name,
             method=spec.method,
             state=CredentialEnrollmentState.PENDING,
-            runner_ref={},
+            runner_ref=runner_ref,
             verification_uri="",
             user_code="",
             expires_at=now + timedelta(seconds=self._ttl_seconds),
@@ -324,6 +334,7 @@ class CredentialEnrollmentService:
         slug: str,
         connection_id: str,
         credential_name: str,
+        oauth_app: str = "",
     ) -> IntegrationConnection:
         if connection_id:
             connection = await self._integration_repository.get_connection(connection_id)
@@ -359,7 +370,7 @@ class CredentialEnrollmentService:
             integration_type=definition.integration_type,
             adapter=definition.adapter,
             credential_name=credential_name,
-            config={},
+            config={"oauth_app": oauth_app} if oauth_app else {},
             enabled=True,
             created_at=now,
             updated_at=now,

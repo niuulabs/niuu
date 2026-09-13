@@ -18,6 +18,7 @@ import type {
   StackChanges,
   StackView,
   IntegrationTestResult,
+  OAuthApp,
   OAuthClientInput,
   SetupState,
   SystemReport,
@@ -52,6 +53,15 @@ export interface CatalogEntryWire {
   } | null;
   sign_in_available?: boolean;
   sign_in_needs_app?: boolean;
+}
+
+/** Wire shape of `GET /api/v1/integrations/oauth-clients` rows. */
+export interface OAuthClientWire {
+  slug: string;
+  app?: string;
+  client_id: string;
+  has_secret?: boolean;
+  source?: string;
 }
 
 /** Wire shape of `GET /api/v1/integrations` rows (snake_case). */
@@ -189,10 +199,15 @@ export function buildSetupHttpAdapter(clients: SetupHttpClients): ISetupService 
       );
       return mapTestResult(result);
     },
-    async startEnrollment(slug: string, credentialName: string): Promise<Enrollment> {
+    async startEnrollment(
+      slug: string,
+      credentialName: string,
+      oauthApp: string = '',
+    ): Promise<Enrollment> {
       const row = await clients.integrations.post<EnrollmentWire>('/enrollments', {
         slug,
         credential_name: credentialName,
+        oauth_app: oauthApp,
       });
       return mapEnrollment(row);
     },
@@ -217,9 +232,20 @@ export function buildSetupHttpAdapter(clients: SetupHttpClients): ISetupService 
     },
     async registerOAuthClient(slug: string, input: OAuthClientInput): Promise<void> {
       await clients.integrations.put(`/oauth-clients/${encodeURIComponent(slug)}`, {
+        app: input.app ?? '',
         client_id: input.clientId,
         client_secret: input.clientSecret ?? '',
       });
+    },
+    async listOAuthClients(): Promise<OAuthApp[]> {
+      const rows = await clients.integrations.get<OAuthClientWire[]>('/oauth-clients');
+      return rows.map((row) => ({
+        slug: row.slug,
+        app: row.app ?? 'default',
+        clientId: row.client_id,
+        hasSecret: row.has_secret ?? false,
+        source: row.source === 'configured' ? 'configured' : 'registered',
+      }));
     },
     getStack(): Promise<StackView> {
       return clients.setup.get<StackView>('/stack');

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -193,6 +194,25 @@ async def test_github_refresh_carries_the_app_secret_when_configured(repo, store
     item = store.items[("user", "user-1", "github-signin")]
     # GitHub answers without a new refresh token; the old one stays usable.
     assert item["data"]["refresh_token"] == "old-refresh"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_refreshes_with_the_accounts_own_application(repo, store) -> None:
+    await _seed(repo, store, "gitlab", "gitlab-work", expires_in=timedelta(minutes=1))
+    work = await repo.get_connection("gitlab-gitlab-work")
+    await repo.save_connection(replace(work, config={"oauth_app": "work-org"}))
+    service = _service(repo, store)
+    await service._clients.register("gitlab", "glwork", app="work-org")
+    route = respx.post(GITLAB_TOKEN_URL).mock(
+        return_value=httpx.Response(200, json={"access_token": "t", "expires_in": 7200})
+    )
+
+    report = await service.refresh_due()
+
+    assert report.refreshed == ["gitlab/user-1/gitlab-work"]
+    sent = dict(httpx.QueryParams(route.calls.last.request.content.decode()))
+    assert sent["client_id"] == "glwork"
 
 
 @pytest.mark.asyncio

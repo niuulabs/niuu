@@ -95,7 +95,9 @@ describe('SignInCard', () => {
     expect(screen.getByText('Not connected')).toBeInTheDocument();
     expect(screen.getByTestId('setup-signin-needed-claude-code')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('setup-signin-start-claude-code'));
-    await waitFor(() => expect(startSpy).toHaveBeenCalledWith('claude-code', 'claude-code-probe'));
+    await waitFor(() =>
+      expect(startSpy).toHaveBeenCalledWith('claude-code', 'claude-code-probe', undefined),
+    );
   });
 
   it('runs a device-code sign-in to completion by polling', async () => {

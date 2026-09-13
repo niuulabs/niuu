@@ -171,7 +171,7 @@ describe('AddProviderDialog', () => {
       />,
       { service },
     );
-    const form = screen.getByTestId('setup-oauth-app-github');
+    const form = await screen.findByTestId('setup-oauth-app-github');
     expect(form).toHaveTextContent('Enable Device Flow');
     expect(form.querySelector('a')).toHaveAttribute(
       'href',
@@ -188,6 +188,57 @@ describe('AddProviderDialog', () => {
       const [entry] = (await service.listCatalog()).filter((e) => e.slug === 'github');
       expect(entry?.signInAvailable).toBe(true);
     });
+  });
+
+  it('lets each account pick its own application or register another', async () => {
+    const service = createMockSetupService({ latencyMs: 0 });
+    await service.registerOAuthClient('github', { app: 'niuu-org', clientId: 'Iv1.org' });
+    const groups = providerGroups(MOCK_CATALOG, git);
+    renderWithSetup(
+      <AddProviderDialog
+        {...base}
+        noun="Git host"
+        groups={groups}
+        initialGroupKey="github"
+        initialMode="signin"
+      />,
+      { service },
+    );
+    const choice = await screen.findByTestId('setup-oauth-app-choice-github');
+    expect(choice).toHaveTextContent('default');
+    expect(choice).toHaveTextContent('niuu-org');
+    expect(choice).toHaveTextContent('private window');
+    expect(screen.getByTestId('setup-oauth-app-pick-github-default')).toBeChecked();
+    fireEvent.click(screen.getByTestId('setup-oauth-app-pick-github-niuu-org'));
+    expect(screen.getByTestId('setup-oauth-app-pick-github-niuu-org')).toBeChecked();
+
+    const startSpy = vi.spyOn(service, 'startEnrollment');
+    fireEvent.click(screen.getByTestId('setup-signin-start-github'));
+    await waitFor(() =>
+      expect(startSpy).toHaveBeenCalledWith('github', 'github-signin', 'niuu-org'),
+    );
+
+    fireEvent.click(screen.getByTestId('setup-oauth-app-another-github'));
+    const form = screen.getByTestId('setup-oauth-app-github');
+    expect(form).toHaveTextContent('Already registered: default, niuu-org');
+    fireEvent.click(screen.getByTestId('setup-oauth-app-save-github'));
+    expect(form).toHaveTextContent('A name is required');
+    fireEvent.change(screen.getByTestId('setup-oauth-app-name-github'), {
+      target: { value: 'niuu-org' },
+    });
+    expect(form).toHaveTextContent('already in use');
+    fireEvent.change(screen.getByTestId('setup-oauth-app-name-github'), {
+      target: { value: 'Client Co' },
+    });
+    fireEvent.change(screen.getByTestId('setup-oauth-app-id-github'), {
+      target: { value: 'Iv1.client' },
+    });
+    fireEvent.click(screen.getByTestId('setup-oauth-app-save-github'));
+    await waitFor(() =>
+      expect(screen.getByTestId('setup-oauth-app-pick-github-client-co')).toBeChecked(),
+    );
+    // registering swapped the form back for the chooser, new application selected
+    expect(screen.queryByTestId('setup-oauth-app-cancel-github')).not.toBeInTheDocument();
   });
 
   it('goes straight to the token form when this install cannot run the sign-in', () => {

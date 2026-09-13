@@ -1,4 +1,4 @@
-"""The install's own OAuth applications: configured as the base, registered from the wizard on top."""
+"""The install's own OAuth applications: configured as the base, registered on top."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from volundr.domain.services.oauth_clients import (
     OAuthClient,
     OAuthClientError,
     OAuthClientRegistry,
+    app_key,
 )
 
 
@@ -63,6 +64,37 @@ async def test_registered_applications_survive_a_restart_and_win_over_config(sto
 
     stored = await store.get_value(OAUTH_CLIENTS_OWNER_TYPE, OAUTH_CLIENTS_OWNER_ID, "gitlab")
     assert stored == {"client_id": "glpub", "client_secret": "shh"}
+
+
+@pytest.mark.asyncio
+async def test_a_provider_can_have_an_application_per_account(store) -> None:
+    registry = _registry(store)
+    await registry.load()
+    await registry.register("github", "Iv1.personal")
+    niuu = await registry.register("github", "Iv1.org", "", app="niuu-org")
+
+    assert niuu.app == "niuu-org"
+    assert registry.get("github").client_id == "Iv1.personal"
+    assert registry.get("github", "niuu-org") == niuu
+    assert registry.get("github", "nope") is None
+    assert registry.has_any("github") and not registry.has_any("gitlab")
+    assert [c.app for c in registry.list_for("github")] == ["default", "niuu-org"]
+    stored = await store.get_value(
+        OAUTH_CLIENTS_OWNER_TYPE, OAUTH_CLIENTS_OWNER_ID, "github--niuu-org"
+    )
+    assert stored == {"client_id": "Iv1.org", "client_secret": ""}
+
+    fresh = _registry(store)
+    await fresh.load()
+    assert fresh.get("github", "niuu-org") == niuu
+    await fresh.remove("github", "niuu-org")
+    assert fresh.get("github", "niuu-org") is None
+    assert fresh.get("github").client_id == "Iv1.personal"
+
+    with pytest.raises(OAuthClientError, match="letters, digits and dashes"):
+        await registry.register("github", "x", app="Niuu Org")
+    assert app_key(" Niuu Org! ") == "niuu-org"
+    assert app_key("") == "default"
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Dialog, DialogContent, Field, Input } from '@niuulabs/ui';
 import {
+  DEFAULT_OAUTH_APP,
   accountCredentialName,
   availableModes,
   connectionLabel,
@@ -16,6 +17,7 @@ import {
 import { IntegrationCard } from './IntegrationCard';
 import { OAuthAppForm } from './OAuthAppForm';
 import { SignInCard } from './SignInCard';
+import { useOAuthClients } from './hooks';
 import { BackIcon, CheckIcon } from './icons';
 
 export type { ConnectMode } from '../domain/setup';
@@ -94,6 +96,113 @@ function modeIntro(group: ProviderGroup, mode: ConnectMode) {
         . Niuu stores it encrypted on this machine and only ever sends it to {group.title}. You can
         test it right after.
       </p>
+    </div>
+  );
+}
+
+interface SignInPaneProps {
+  group: ProviderGroup;
+  entry: CatalogEntry;
+  connection: IntegrationConnection | undefined;
+  credentialName: string | undefined;
+  accountField: ReactNode;
+  disabled: boolean;
+}
+
+/**
+ * The sign-in pane. A provider that signs in through an OAuth application
+ * (GitHub, GitLab) first needs one; with several registered, each account
+ * picks the application it signs in through, or registers its own.
+ */
+function SignInPane({
+  group,
+  entry,
+  connection,
+  credentialName,
+  accountField,
+  disabled,
+}: SignInPaneProps) {
+  const usesApp = entry.credentialEnrollment?.method === 'oauth_device';
+  const clients = useOAuthClients();
+  const apps = (clients.data ?? []).filter((app) => app.slug === entry.slug);
+  const [chosenApp, setChosenApp] = useState<string | null>(
+    connection ? ((connection.config.oauth_app as string | undefined) ?? null) : null,
+  );
+  const [registering, setRegistering] = useState(false);
+  const selectedApp = chosenApp ?? apps[0]?.app ?? DEFAULT_OAUTH_APP;
+
+  if (usesApp && !clients.data && !clients.error) {
+    return <div className="setup-note">Loading applications…</div>;
+  }
+  if (usesApp && (apps.length === 0 || signInNeedsApp(entry))) {
+    return <OAuthAppForm entry={entry} existingApps={apps} onRegistered={setChosenApp} />;
+  }
+  if (usesApp && registering) {
+    return (
+      <div className="setup-col">
+        <OAuthAppForm
+          entry={entry}
+          existingApps={apps}
+          onRegistered={(app) => {
+            setChosenApp(app);
+            setRegistering(false);
+          }}
+        />
+        <button
+          type="button"
+          className="setup-btn setup-btn--ghost"
+          onClick={() => setRegistering(false)}
+          data-testid={`setup-oauth-app-cancel-${entry.slug}`}
+        >
+          Use a registered application instead
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="setup-pane">
+      {modeIntro(group, 'signin')}
+      {accountField}
+      {usesApp && !connection ? (
+        <div className="setup-col" data-testid={`setup-oauth-app-choice-${entry.slug}`}>
+          <span className="setup-row__title">Sign in through</span>
+          {apps.map((app) => (
+            <label key={app.app} className="setup-option">
+              <input
+                type="radio"
+                name={`oauth-app-${entry.slug}`}
+                checked={selectedApp === app.app}
+                onChange={() => setChosenApp(app.app)}
+                data-testid={`setup-oauth-app-pick-${entry.slug}-${app.app}`}
+              />
+              <span className="setup-option__body">
+                <span className="setup-option__title">{app.app}</span>
+                <span className="setup-option__desc">client id {app.clientId}</span>
+              </span>
+            </label>
+          ))}
+          <button
+            type="button"
+            className="setup-btn setup-btn--ghost"
+            onClick={() => setRegistering(true)}
+            data-testid={`setup-oauth-app-another-${entry.slug}`}
+          >
+            + Register another application
+          </button>
+          <span className="setup-note">
+            {entry.name} signs in whoever is logged in in your browser. For a different account, use
+            a private window or log out of {entry.name} first.
+          </span>
+        </div>
+      ) : null}
+      <SignInCard
+        entry={entry}
+        connection={connection}
+        credentialName={credentialName}
+        oauthApp={usesApp ? selectedApp : undefined}
+        disabled={disabled}
+        headless
+      />
     </div>
   );
 }
@@ -263,21 +372,14 @@ export function AddProviderDialog({
             : null}
 
           {group && mode === 'signin' && group.signInEntry ? (
-            signInNeedsApp(group.signInEntry) ? (
-              <OAuthAppForm entry={group.signInEntry} />
-            ) : (
-              <div className="setup-pane">
-                {modeIntro(group, 'signin')}
-                {accountField}
-                <SignInCard
-                  entry={group.signInEntry}
-                  connection={finishingConnection}
-                  credentialName={credentialName ?? undefined}
-                  disabled={taken}
-                  headless
-                />
-              </div>
-            )
+            <SignInPane
+              group={group}
+              entry={group.signInEntry}
+              connection={finishingConnection}
+              credentialName={credentialName ?? undefined}
+              accountField={accountField}
+              disabled={taken}
+            />
           ) : null}
 
           {group && mode === 'key' && group.keyEntry ? (

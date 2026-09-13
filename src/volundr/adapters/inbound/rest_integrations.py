@@ -33,6 +33,7 @@ from volundr.domain.services.oauth_clients import (
     OAuthClient,
     OAuthClientError,
     OAuthClientRegistry,
+    app_key,
 )
 from volundr.domain.services.tracker_factory import TrackerFactory
 
@@ -165,12 +166,14 @@ class OAuthClientResponse(BaseModel):
     """An OAuth application this install signs in through (never the secret)."""
 
     slug: str
+    app: str = Field(description="Which of the provider's applications; 'default' unless named")
     client_id: str
     has_secret: bool
     source: str = Field(description="configured (oauth.clients) or registered (from the wizard)")
 
 
 class OAuthClientRegisterRequest(BaseModel):
+    app: str = Field(default="", max_length=64, description="A name; empty means 'default'")
     client_id: str = Field(min_length=1, max_length=512)
     client_secret: str = Field(default="", max_length=1024)
 
@@ -280,6 +283,12 @@ class CredentialEnrollmentStartRequest(BaseModel):
         default="",
         validation_alias=AliasChoices("credential_name", "credentialName"),
         max_length=253,
+    )
+    oauth_app: str = Field(
+        default="",
+        validation_alias=AliasChoices("oauth_app", "oauthApp"),
+        max_length=64,
+        description="Which of the provider's OAuth applications this account signs in through",
     )
     connection_id: str = Field(
         default="",
@@ -550,10 +559,9 @@ def _build_integrations_router(
             if credential_enrollment_service is not None:
                 entry.sign_in_available = credential_enrollment_service.available(definition.slug)
             if oauth_clients is not None and not entry.sign_in_available:
-                entry.sign_in_needs_app = (
-                    oauth_clients.supports(definition.slug)
-                    and oauth_clients.get(definition.slug) is None
-                )
+                entry.sign_in_needs_app = oauth_clients.supports(
+                    definition.slug
+                ) and not oauth_clients.has_any(definition.slug)
             entries.append(entry)
         return entries
 
@@ -568,6 +576,7 @@ def _build_integrations_router(
     def _client_response(client: OAuthClient) -> OAuthClientResponse:
         return OAuthClientResponse(
             slug=client.slug,
+            app=client.app,
             client_id=client.client_id,
             has_secret=bool(client.client_secret),
             source=client.source,
@@ -590,23 +599,28 @@ def _build_integrations_router(
         """Register the application (client id, optional secret) this install signs in through."""
         clients = _require_oauth_clients()
         try:
-            client = await clients.register(slug, data.client_id, data.client_secret)
+            client = await clients.register(
+                slug, data.client_id, data.client_secret, app=app_key(data.app)
+            )
         except OAuthClientError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
             ) from exc
-        logger.info("OAuth application for %s registered by %s", slug, principal.user_id)
+        logger.info(
+            "OAuth application %r for %s registered by %s", client.app, slug, principal.user_id
+        )
         return _client_response(client)
 
     @router.delete("/oauth-clients/{slug}", status_code=status.HTTP_204_NO_CONTENT)
     async def remove_oauth_client(
         slug: str = Path(description="Integration slug, e.g. github"),
+        app: str = "",
         principal: Principal = Depends(extract_principal),
     ) -> Response:
         """Forget a registered application; a configured one cannot be removed here."""
         del principal
         try:
-            await _require_oauth_clients().remove(slug)
+            await _require_oauth_clients().remove(slug, app_key(app))
         except OAuthClientError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -631,6 +645,7 @@ def _build_integrations_router(
                 slug=data.slug,
                 credential_name=data.credential_name,
                 connection_id=data.connection_id,
+                oauth_app=app_key(data.oauth_app) if data.oauth_app else "",
             )
         except CredentialEnrollmentError as exc:
             raise HTTPException(

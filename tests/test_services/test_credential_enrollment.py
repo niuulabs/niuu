@@ -167,6 +167,20 @@ async def test_another_credential_name_is_another_account() -> None:
     assert sorted(c.credential_name for c in connections) == ["codex-credentials", "codex-work"]
 
 
+async def test_an_account_remembers_its_own_oauth_application() -> None:
+    service, _, integration_repository, _, _ = _service()
+    principal = _principal("user-1")
+
+    started = await service.start(
+        principal=principal, slug="codex", credential_name="codex-org", oauth_app="niuu-org"
+    )
+
+    connection = await integration_repository.get_connection(started.connection_id)
+    assert connection.config == {"oauth_app": "niuu-org"}
+    # codex signs in through its CLI, not an OAuth application: nothing to seed
+    assert "oauth_app" not in started.runner_ref
+
+
 async def test_same_credential_name_is_isolated_for_each_user() -> None:
     service, _, integration_repository, credential_store, _ = _service()
 

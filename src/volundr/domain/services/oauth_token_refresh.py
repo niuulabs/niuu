@@ -21,7 +21,7 @@ import httpx
 from volundr.domain.models import IntegrationConnection, SecretType
 from volundr.domain.ports import CredentialStorePort, IntegrationRepository
 from volundr.domain.services.integration_registry import IntegrationRegistry
-from volundr.domain.services.oauth_clients import OAuthClientRegistry
+from volundr.domain.services.oauth_clients import DEFAULT_APP, OAuthClientRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -103,11 +103,12 @@ class OAuthTokenRefreshService:
         values: dict[str, str],
         now: datetime,
     ) -> None:
-        client = self._clients.get(connection.slug)
+        app = str(connection.config.get("oauth_app") or DEFAULT_APP)
+        client = self._clients.get(connection.slug, app)
         if client is None:
             raise ValueError(
-                f"no OAuth application is registered for {connection.slug}; register one from "
-                "the setup wizard or set oauth.clients"
+                f"no OAuth application {app!r} is registered for {connection.slug}; register "
+                "one from the setup wizard or set oauth.clients"
             )
         form = {
             "grant_type": "refresh_token",

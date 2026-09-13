@@ -197,7 +197,15 @@ a GitHub *OAuth App* with *Enable Device Flow* ticked (its device-flow tokens
 do not expire; a secret is optional), or a GitLab application with the device
 grant enabled and the `api` and `read_user` scopes. The id is kept in the
 encrypted credential store (`PUT /api/v1/integrations/oauth-clients/{slug}`)
-and sign-in starts right after. Operators can also set ids per instance:
+and sign-in starts right after. A provider can carry several applications,
+one per account: a second GitHub account may belong to an organisation that
+only trusts its own OAuth App, so the sign-in pane lets each account pick the
+application it signs in through or register another under a name of its own
+(`PUT /api/v1/integrations/oauth-clients/github` with `app`). The account
+remembers its application, and the token refresher uses the same one. Note
+that GitHub and GitLab sign in whoever the browser is already logged in as;
+for a different account use a private window or log out first. Operators can
+also set the default application per instance:
 
 ```yaml
 docker:

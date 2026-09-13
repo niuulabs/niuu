@@ -336,7 +336,7 @@ describe('IntegrationsStep', () => {
     expect(screen.getByTestId('setup-provider-row-c1')).toBeInTheDocument();
   });
 
-  it('offers to finish a pending sign-in', () => {
+  it('offers to finish a pending sign-in', async () => {
     renderWithSetup(
       <IntegrationsStep
         {...props}
@@ -347,7 +347,9 @@ describe('IntegrationsStep', () => {
     expect(screen.getByTestId('setup-provider-row-c1')).toHaveTextContent('Sign-in needed');
     fireEvent.click(screen.getByTestId('setup-provider-finish-c1'));
     expect(screen.getByTestId('setup-add-dialog')).toBeInTheDocument();
-    expect(screen.getByTestId('setup-signin-start-github')).toBeInTheDocument();
+    expect(await screen.findByTestId('setup-signin-start-github')).toBeInTheDocument();
+    // finishing an existing account: no application choice, it keeps its own
+    expect(screen.queryByTestId('setup-oauth-app-choice-github')).not.toBeInTheDocument();
   });
 
   it('shows loading, error and empty catalog states', () => {
