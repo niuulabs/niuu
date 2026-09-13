@@ -21,6 +21,7 @@ import sys
 import tempfile
 import uuid
 from contextlib import suppress
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from itertools import count
@@ -49,6 +50,15 @@ from skuld.transports.owned_codex_process import OwnedCodexProcess, OwnedProcess
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
+
+
+@dataclass(frozen=True)
+class _CodexApproval:
+    """An opaque native request and the exact permissions/action under review."""
+
+    rpc_id: int | str
+    method: str
+    params: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -355,9 +365,7 @@ class CodexWebSocketTransport(CLITransport):
 
         # Pending RPC response futures keyed by request id.
         self._pending: dict[int, asyncio.Future] = {}
-        # Pending approval RPC ids keyed by string request_id. The second value
-        # identifies which app-server approval response shape the request needs.
-        self._pending_approvals: dict[str, tuple[int, str] | int] = {}
+        self._pending_approvals: dict[str, _CodexApproval] = {}
         self._pending_user_inputs: dict[str, tuple[object, list[dict]]] = {}
         self._answer_lock = asyncio.Lock()
         self._agent_states: dict[str, str] = {}
@@ -810,6 +818,7 @@ class CodexWebSocketTransport(CLITransport):
         self._pending_redirects.clear()
         self._redirect_correlations.clear()
         self._redirect_interrupt_requested = False
+        pending_approvals = list(self._pending_approvals)
         self._pending_approvals.clear()
         pending_questions = list(self._pending_user_inputs)
         self._pending_user_inputs.clear()
@@ -820,6 +829,15 @@ class CodexWebSocketTransport(CLITransport):
         ]
         self._agent_states.clear()
         self._buffered_item_output.clear()
+        for request_id in pending_approvals:
+            await self._emit(
+                {
+                    "type": "permission_resolved",
+                    "request_id": request_id,
+                    "behavior": "resolved",
+                    "metadata": {"source": "codex_app_server", "reason": "transport_closed"},
+                }
+            )
         for request_id in pending_questions:
             await self._emit(
                 {
@@ -876,6 +894,12 @@ class CodexWebSocketTransport(CLITransport):
         method = data.get("method", "")
         params = data.get("params", {})
         logger.debug("Codex notification: %s", method)
+
+        if method == "serverRequest/resolved" and "id" not in data:
+            # RPC IDs are unique on this socket, including worker requests.
+            # Resolve before filtering worker transcript notifications.
+            await self._resolve_server_request(params.get("requestId"))
+            return
 
         event_thread = params.get("threadId")
         if method == "thread/started":
@@ -1270,54 +1294,39 @@ class CodexWebSocketTransport(CLITransport):
             )
             return
 
-        if method == "item/commandExecution/requestApproval":
+        approval_tools = {
+            "item/commandExecution/requestApproval": "Bash",
+            "execCommandApproval": "Bash",
+            "item/fileChange/requestApproval": "Edit",
+            "applyPatchApproval": "Edit",
+            "item/permissions/requestApproval": "Permissions",
+            "mcpServer/elicitation/request": "MCP",
+        }
+        if method in approval_tools:
+            if method == "item/permissions/requestApproval" and not isinstance(
+                params.get("permissions"), dict
+            ):
+                await self._send_rpc_error(rid, -32602, "Missing requested permissions profile")
+                return
             request_id = f"codex-approval-{rid}-{uuid.uuid4().hex}"
-            command = params.get("command", "")
-            self._pending_approvals[request_id] = (rid, "command_execution")
+            self._pending_approvals[request_id] = _CodexApproval(rid, method, deepcopy(params))
+            input_payload = deepcopy(params)
+            if method == "execCommandApproval":
+                input_payload["command"] = self._display_command(params.get("command"))
             await self._emit(
                 {
                     "type": "control_request",
                     "subtype": "can_use_tool",
                     "request_id": request_id,
-                    "tool": "Bash",
-                    "input": {"command": command},
-                }
-            )
-            return
-
-        if method == "execCommandApproval":
-            request_id = f"codex-approval-{rid}-{uuid.uuid4().hex}"
-            command = self._display_command(params.get("command"))
-            self._pending_approvals[request_id] = (rid, "exec_command")
-            await self._emit(
-                {
-                    "type": "control_request",
-                    "subtype": "can_use_tool",
-                    "request_id": request_id,
-                    "tool": "Bash",
-                    "input": {
-                        "command": command,
-                        "cwd": params.get("cwd"),
-                        "reason": params.get("reason"),
-                    },
-                }
-            )
-            return
-
-        if method in (
-            "item/fileChange/requestApproval",
-            "item/permissions/requestApproval",
-            "applyPatchApproval",
-        ):
-            request_id = f"codex-approval-{rid}-{uuid.uuid4().hex}"
-            self._pending_approvals[request_id] = (rid, "command_execution")
-            await self._emit(
-                {
-                    "type": "control_request",
-                    "subtype": "can_use_tool",
-                    "request_id": request_id,
-                    "tool": "Edit",
-                    "input": params,
+                    "tool": approval_tools[method],
+                    "input": input_payload,
+                    # Elicitation gathers user input/consent, not permission to
+                    # execute a tool. Sandbox approval policy cannot answer it.
+                    **(
+                        {"auto_approval_allowed": False}
+                        if method == "mcpServer/elicitation/request"
+                        else {}
+                    ),
                 }
             )
             return
@@ -1330,39 +1339,56 @@ class CodexWebSocketTransport(CLITransport):
             task.add_done_callback(self._log_dynamic_tool_task_result)
             return
 
-        if method == "mcpServer/elicitation/request":
-            if self._skip_permissions or self._approval_policy == "never":
-                await self._send_rpc_response(rid, {"action": "accept", "content": {}})
-                return
-            request_id = str(rid)
-            await self._emit(
-                {
-                    "type": "control_request",
-                    "subtype": "can_use_tool",
-                    "request_id": request_id,
-                    "tool": "MCP",
-                    "input": params,
-                }
-            )
-            self._pending_approvals[request_id] = (rid, "mcp_elicitation")
-            return
-
         # New methods have their own response/authorization semantics. Never
         # fabricate an approval for a request this adapter does not implement.
         logger.warning("Unsupported Codex server request: %s", method)
         await self._send_rpc_error(rid, -32601, f"Unsupported Codex server request: {method}")
 
-    async def _send_rpc_response(self, rid: int, result: dict) -> None:
+    async def _resolve_server_request(self, rid: object) -> None:
+        """Retire native controls cleared elsewhere, without inventing a decision."""
+        if type(rid) not in (int, str):
+            return
+        # Do not acquire the answer lock in the socket reader: a raw async
+        # question answer can hold it while awaiting an RPC on this very reader.
+        # Retire all matching handles synchronously, before emitting callbacks.
+        approvals = [key for key, value in self._pending_approvals.items() if value.rpc_id == rid]
+        questions = [
+            key for key, (native_id, _) in self._pending_user_inputs.items() if native_id == rid
+        ]
+        for request_id in approvals:
+            self._pending_approvals.pop(request_id)
+        for request_id in questions:
+            self._pending_user_inputs.pop(request_id)
+        for request_id in approvals:
+            await self._emit(
+                {
+                    "type": "permission_resolved",
+                    "request_id": request_id,
+                    "behavior": "resolved",
+                    "metadata": {"source": "codex_app_server"},
+                }
+            )
+        for request_id in questions:
+            await self._emit(
+                {
+                    "type": "ask_user_resolved",
+                    "request_id": request_id,
+                    "decision": "resolved_by_runtime",
+                    "metadata": {"source": "codex_app_server"},
+                }
+            )
+
+    async def _send_rpc_response(self, rid: int | str, result: dict) -> None:
         """Send a JSON-RPC response for a server-initiated request."""
         if not self._ws:
             raise RuntimeError("Codex WebSocket is not connected; response was not sent")
         msg = {"jsonrpc": "2.0", "id": rid, "result": result}
         await self._ws.send(json.dumps(msg))
 
-    async def _send_rpc_error(self, rid: int, code: int, message: str) -> None:
+    async def _send_rpc_error(self, rid: int | str, code: int, message: str) -> None:
         """Reject a server request without logging credential material."""
         if not self._ws:
-            return
+            raise RuntimeError("Codex WebSocket is not connected; error response was not sent")
         msg = {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": message}}
         await self._ws.send(json.dumps(msg))
 
@@ -2357,30 +2383,58 @@ class CodexWebSocketTransport(CLITransport):
         pending = self._pending_approvals.get(request_id)
         if pending is None:
             raise ValueError("Unknown or already answered Codex approval")
-        if isinstance(pending, tuple):
-            rid, approval_kind = pending
-        else:
-            rid, approval_kind = pending, "command_execution"
-
-        # Map broker permission response to Codex approval decision.
-        # New app-server exec approvals use review decisions; older item-level
-        # approvals use camelCase enum variants.
-        behavior = response.get("behavior", "allow")
-        if approval_kind == "exec_command":
-            decision = "approved_for_session" if behavior == "allowForever" else "approved"
-            if behavior not in ("allow", "allowForever"):
-                decision = "denied"
-            result = {"decision": decision}
-        elif approval_kind == "mcp_elicitation":
-            result = {"action": "accept" if behavior in ("allow", "allowForever") else "decline"}
-            if result["action"] == "accept":
-                content = response.get("content")
-                result["content"] = content if isinstance(content, dict) else {}
-        else:
-            decision = "accept" if behavior in ("allow", "allowForever") else "decline"
-            result = {"decision": decision}
-        await self._send_rpc_response(rid, result)
+        result = self._approval_result(pending, response)
+        await self._send_rpc_response(pending.rpc_id, result)
         self._pending_approvals.pop(request_id, None)
+
+    @staticmethod
+    def _approval_result(pending: _CodexApproval, response: dict) -> dict:
+        """Translate an explicit generic choice to this native method's schema."""
+        behavior = response.get("behavior")
+        if behavior not in ("allow", "allowOnce", "allowForever", "deny", "cancel"):
+            raise ValueError("Codex approval requires an explicit, supported behavior")
+        if response.get("updatedInput") or response.get("updatedPermissions"):
+            raise ValueError(
+                "Codex approvals cannot edit the pending tool input or permission rules"
+            )
+        allowed = behavior in ("allow", "allowOnce", "allowForever")
+        if pending.method == "item/permissions/requestApproval":
+            # An allow grants only the displayed request, never a client-supplied
+            # wider profile. Partial grants need a distinct, validated UI contract.
+            return {
+                "permissions": deepcopy(pending.params["permissions"]) if allowed else {},
+                "scope": "session" if behavior == "allowForever" else "turn",
+            }
+        if pending.method == "mcpServer/elicitation/request":
+            if not allowed:
+                return {"action": "cancel" if behavior == "cancel" else "decline", "content": None}
+            if pending.params.get("mode") == "url":
+                return {"action": "accept"}
+            if "content" not in response or response["content"] is None:
+                raise ValueError("Accepted Codex MCP form requires explicit user content")
+            # Preserve structured input; the native MCP server validates its own
+            # requested schema. Never synthesize an empty/default form submission.
+            return {"action": "accept", "content": response["content"]}
+        if pending.method in ("execCommandApproval", "applyPatchApproval"):
+            decision: str | dict = {
+                "allow": "approved",
+                "allowOnce": "approved",
+                "allowForever": "approved_for_session",
+                "deny": {"denied": {"rejection": "User declined"}},
+                "cancel": "abort",
+            }[behavior]
+            return {"decision": decision}
+        decision = {
+            "allow": "accept",
+            "allowOnce": "accept",
+            "allowForever": "acceptForSession",
+            "deny": "decline",
+            "cancel": "cancel",
+        }[behavior]
+        available = pending.params.get("availableDecisions")
+        if isinstance(available, list) and decision not in available:
+            raise ValueError("Selected Codex approval decision is not available for this request")
+        return {"decision": decision}
 
     async def send_control(self, subtype: str, **kwargs: object) -> None:
         """Handle control messages (interrupt, set_model, etc.)."""

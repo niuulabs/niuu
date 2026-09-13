@@ -13,6 +13,7 @@ from skuld.codex_auth import CodexAuthProviderError, CodexExternalTokens
 from skuld.transports.codex_ws import (
     CodexWebSocketTransport,
     _codex_effort_for_model,
+    _CodexApproval,
     _model_supports_ultra,
     _pick_free_port,
     _rpc_notification,
@@ -1716,7 +1717,7 @@ class TestApprovals:
     async def test_send_control_response_approves(self, tmp_path):
         t = _make_transport(tmp_path)
         t._ws = FakeWebSocket()
-        t._pending_approvals["42"] = 42
+        t._pending_approvals["42"] = _CodexApproval(42, "item/commandExecution/requestApproval")
 
         await t.send_control_response("42", {"behavior": "allow"})
 
@@ -1729,7 +1730,7 @@ class TestApprovals:
     async def test_send_control_response_denies(self, tmp_path):
         t = _make_transport(tmp_path)
         t._ws = FakeWebSocket()
-        t._pending_approvals["42"] = 42
+        t._pending_approvals["42"] = _CodexApproval(42, "item/commandExecution/requestApproval")
 
         await t.send_control_response("42", {"behavior": "deny"})
 
@@ -1756,10 +1757,10 @@ class TestApprovals:
         assert "result" not in sent
 
     @pytest.mark.asyncio
-    async def test_mcp_elicitation_is_auto_accepted_with_protocol_shape(self, tmp_path):
+    async def test_mcp_elicitation_requires_human_even_when_tool_approval_disabled(self, tmp_path):
         t = _make_transport(tmp_path, approval_policy="never")
         t._ws = FakeWebSocket()
-        _collect_emits(t)
+        emit = _collect_emits(t)
 
         await t._handle_server_request(
             {
@@ -1775,9 +1776,8 @@ class TestApprovals:
             }
         )
 
-        sent = json.loads(t._ws.sent[0])
-        assert sent["id"] == 78
-        assert sent["result"] == {"action": "accept", "content": {}}
+        assert t._ws.sent == []
+        assert emit.call_args[0][0]["auto_approval_allowed"] is False
 
     @pytest.mark.asyncio
     async def test_mcp_elicitation_uses_control_channel_when_approval_is_required(self, tmp_path):
@@ -1802,7 +1802,7 @@ class TestApprovals:
         event = emit.call_args[0][0]
         assert event["type"] == "control_request"
         assert event["tool"] == "MCP"
-        await t.send_control_response("79", {"behavior": "allow"})
+        await t.send_control_response(event["request_id"], {"behavior": "allow", "content": {}})
         sent = json.loads(t._ws.sent[0])
         assert sent["result"] == {"action": "accept", "content": {}}
 
@@ -3022,15 +3022,15 @@ class TestSendControlResponseEdgeCases:
         assert len(t._ws.sent) == 0
 
     @pytest.mark.asyncio
-    async def test_allow_forever_maps_to_accept(self, tmp_path):
+    async def test_allow_forever_maps_to_accept_for_session(self, tmp_path):
         t = _make_transport(tmp_path)
         t._ws = FakeWebSocket()
-        t._pending_approvals["10"] = 10
+        t._pending_approvals["10"] = _CodexApproval(10, "item/commandExecution/requestApproval")
 
         await t.send_control_response("10", {"behavior": "allowForever"})
 
         msg = json.loads(t._ws.sent[0])
-        assert msg["result"]["decision"] == "accept"
+        assert msg["result"]["decision"] == "acceptForSession"
 
 
 # ---------------------------------------------------------------------------

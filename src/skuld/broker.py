@@ -2681,14 +2681,25 @@ class Broker(
 
         self._pending_permission_requests[request_id] = dict(data)
 
-        if not self.volundr_api_url:
-            return
-
         existing_task = self._permission_auto_approval_tasks.pop(request_id, None)
         if existing_task is not None:
             existing_task.cancel()
 
-        task = asyncio.create_task(self._auto_approve_permission_request(request_id))
+        if data.get("auto_approval_allowed") is False:
+            # A runtime may request explicit human input/consent rather than
+            # tool execution permission. Permission policy cannot supply it.
+            self._pending_attention[request_id] = "permission"
+            task = asyncio.create_task(
+                self._enter_attention(
+                    request_id,
+                    "permission",
+                    prompt=self._attention_prompt_from_permission(data),
+                )
+            )
+        elif not self.volundr_api_url:
+            return
+        else:
+            task = asyncio.create_task(self._auto_approve_permission_request(request_id))
         self._permission_auto_approval_tasks[request_id] = task
 
         def _cleanup(done: asyncio.Task[None]) -> None:
@@ -2953,6 +2964,16 @@ class Broker(
             self._track_pending_permission_request(data)
             self._unrestored_permissions.pop(str(data.get("request_id", "")), None)
             self._save_control_state()
+
+        if event_type == "permission_resolved":
+            # Native cancellation or another client can settle a request without
+            # passing through our response route. Reconnect must not revive it.
+            resolved_request_id = str(data.get("request_id", ""))
+            if resolved_request_id:
+                self._clear_pending_permission_request(resolved_request_id)
+                self._unrestored_permissions.pop(resolved_request_id, None)
+                self._save_control_state()
+                await self._exit_attention(resolved_request_id)
 
         if event_type == "ask_user_question":
             # The agent is blocked on a human answer. Flip the session to
@@ -3505,6 +3526,9 @@ class Broker(
                 }
                 if data.get("updated_permissions"):
                     response["updatedPermissions"] = data["updated_permissions"]
+                if "content" in data:
+                    # Opaque structured content for native form elicitations.
+                    response["content"] = data["content"]
                 await self._send_permission_control_response(
                     str(request_id),
                     response,
