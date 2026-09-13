@@ -2507,26 +2507,38 @@ class CodexWebSocketTransport(CLITransport):
 
         if subtype == "steer":
             content = _normalize_text_content(kwargs.get("content"))
-            if content and self._thread_id and self._current_turn_id:
-                logger.info(
-                    "Codex steer requested (thread=%s turn=%s)",
-                    self._thread_id,
-                    self._current_turn_id,
-                )
-                result = await self._send_rpc(
-                    "turn/steer",
-                    {
-                        "threadId": self._thread_id,
-                        "expectedTurnId": self._current_turn_id,
-                        "input": [{"type": "text", "text": content, "textElements": []}],
-                    },
-                )
-                logger.info("Codex steer response: %s", result)
-            elif content:
-                logger.info(
-                    "Codex steer ignored without active turn (thread=%s turn=%s)",
-                    self._thread_id,
-                    self._current_turn_id,
+            if not content:
+                return
+            raw_msg_id = kwargs.get("msg_id")
+            msg_id = raw_msg_id if isinstance(raw_msg_id, str) and raw_msg_id else None
+            raw_request_id = kwargs.get("request_id")
+            request_id = (
+                raw_request_id if isinstance(raw_request_id, str) and raw_request_id else None
+            )
+            thread_id, turn_id = self._thread_id, self._current_turn_id
+            if not (thread_id and turn_id):
+                # The turn may finish between broker routing and this call. No input
+                # has crossed the provider boundary yet, so the ordinary start path
+                # is safe and retains the same durable message/request identity.
+                await self.send_message(content, msg_id=msg_id, request_id=request_id)
+                return
+            result = await self._send_rpc(
+                "turn/steer",
+                {
+                    "threadId": thread_id,
+                    "expectedTurnId": turn_id,
+                    "input": [{"type": "text", "text": content, "textElements": []}],
+                },
+            )
+            # turn/steer emits no turn/started. Correlate the exact successful RPC
+            # response instead of leaving the bubble pending or contaminating the
+            # FIFO of future turn/start prompts. This means appended to the active
+            # turn, NOT that the model completed the user's objective.
+            if msg_id:
+                if not isinstance(result, dict) or result.get("turnId") != turn_id:
+                    raise RuntimeError("Codex live steering acceptance was not confirmed")
+                await self._emit_user_consumed(
+                    msg_id, request_id, event_type="codex.turn.steer.accepted"
                 )
             return
 
@@ -2736,15 +2748,22 @@ class CodexWebSocketTransport(CLITransport):
             slash_commands=True,
         )
 
-    async def _emit_user_consumed(self, msg_id: str | None, request_id: str | None) -> None:
-        """Tell the broker a steered user message was consumed (its turn/started), so it flips that
-        message pending→active and broadcasts user_active. No-ops without a msg_id (seed/retry
-        resends carry no correlation)."""
+    async def _emit_user_consumed(
+        self,
+        msg_id: str | None,
+        request_id: str | None,
+        *,
+        event_type: str = "codex.turn.started",
+    ) -> None:
+        """Correlate started input or accepted active-turn input, not objective completion.
+
+        No-op without a message identity (seed/retry resends carry no correlation).
+        """
         if not msg_id:
             return
         event: dict = {
             "type": "user_consumed",
-            "event_type": "codex.turn.started",
+            "event_type": event_type,
             "msg_id": msg_id,
         }
         if request_id:

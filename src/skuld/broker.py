@@ -4043,9 +4043,10 @@ class Broker(
         in a separate task: the turn boundary can move (an idle session becomes busy,
         or a turn ends) between accept and delivery, so a stale snapshot would steer
         into a dead turn or start a spurious one. Recompute against the live transport
-        state instead. ``native`` transports always redirect (the CLI inserts queued
-        input itself); ``interrupt_resume`` transports only redirect while a turn is
-        genuinely in flight.
+        state instead. ``native`` transports always use their input route (the CLI
+        inserts queued input itself); other steer-capable transports only route into
+        an active turn. The delivery method separately honors live versus replacement
+        semantics: a live steer must never be translated into interruption.
         """
         if not self._transport:
             return False
@@ -4065,11 +4066,14 @@ class Broker(
         bounded (and therefore retryable) instead of hanging the delivery forever."""
         timeout = self._settings.delivery.attempt_timeout_seconds
         if self._resolve_delivery_routing():
-            # Carry the ids so a native transport (tmux) can correlate the eventual
-            # UserPromptSubmit back to this message and flip it active.
+            # Live steering appends to the existing turn; redirect may cancel and
+            # replace it. Honor the transport contract, not a model/harness name.
+            # Preserve correlation for both app-server acceptance and native hooks.
+            mode = getattr(self._transport.capabilities, "steering_mode", "none")
+            control = "steer" if mode == "live" else "redirect"
             accepted = await asyncio.wait_for(
                 self._transport.send_control(
-                    "redirect", content=content, msg_id=msg_id, request_id=request_id
+                    control, content=content, msg_id=msg_id, request_id=request_id
                 ),
                 timeout=timeout,
             )
