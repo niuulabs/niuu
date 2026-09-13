@@ -83,6 +83,7 @@ from volundr.domain.services.oauth_token_refresh import refresh_oauth_tokens_loo
 from volundr.domain.services.tenant import TenantService
 from volundr.domain.services.tracker import TrackerService
 from volundr.domain.services.tracker_factory import TrackerFactory
+from volundr.domain.services.user_integration import UserIntegrationService
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,6 @@ def create_app(
         git_registry = create_git_registry(cfg)
 
         async with database_pool(loaded_settings.database) as pool:
-            repo_service = RepoService(git_registry)
             user_repository = PostgresUserRepository(pool)
             tenant_repository = PostgresTenantRepository(pool)
             storage_adapter = create_storage_adapter(loaded_settings)
@@ -166,6 +166,15 @@ def create_app(
                 )
             )
             tracker_factory = TrackerFactory(credential_store)
+            # Repositories come from the person's own connections (the accounts
+            # added in the wizard), not only from git instances in config.
+            user_integration_service = UserIntegrationService(
+                shared_git_providers=git_registry.providers,
+                integration_repo=integration_repo,
+                integration_registry=integration_registry,
+                credential_store=credential_store,
+            )
+            repo_service = RepoService(git_registry, user_integration=user_integration_service)
             oauth_clients = create_oauth_client_registry(
                 loaded_settings,
                 credential_store=credential_store,

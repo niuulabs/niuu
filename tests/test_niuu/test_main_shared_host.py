@@ -16,6 +16,8 @@ from volundr.config import Settings
 
 
 class _DummyGitRegistry:
+    providers: tuple[object, ...] = ()
+
     async def close(self) -> None:
         return None
 
@@ -113,6 +115,15 @@ def test_create_app_mounts_shared_identity_features_and_personas(monkeypatch) ->
     )
     monkeypatch.setattr(niuu_main, "reconcile_credential_enrollments_loop", _idle_reconcile)
 
+    repo_services: list[tuple[object, object]] = []
+    real_repo_service = niuu_main.RepoService
+
+    def _spy_repo_service(git_registry, user_integration=None):
+        repo_services.append((git_registry, user_integration))
+        return real_repo_service(git_registry, user_integration=user_integration)
+
+    monkeypatch.setattr(niuu_main, "RepoService", _spy_repo_service)
+
     enrollment_services: list[object] = []
     real_router = niuu_main.create_canonical_integrations_router
 
@@ -137,6 +148,8 @@ def test_create_app_mounts_shared_identity_features_and_personas(monkeypatch) ->
         response = client.get("/api/v1/identity/auth/config")
         assert response.status_code == 200
         assert response.json()["issuer"] == "https://issuer.example.com"
+        # /api/v1/niuu/repos lists the person's own accounts, not only config
+        assert repo_services and repo_services[0][1] is not None
 
         paths = set(client.get("/openapi.json").json()["paths"])
         assert "/api/v1/niuu/repos" in paths
