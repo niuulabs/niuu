@@ -82,9 +82,30 @@ FROM python:3.14-slim-trixie@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aa
 
 
 # git: the platform clones session workspaces before a sandbox container starts.
+# curl: fetches the docker CLI below.
 RUN apt-get update && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends git ca-certificates \
+    && apt-get install -y --no-install-recommends git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
+
+# docker CLI + compose plugin: in docker mode this image is also the host-side
+# CLI (`niuu up` runs from a container against the host's Docker socket, see
+# scripts/install.sh), and `niuu up` drives `docker compose`.
+ARG TARGETARCH
+ARG DOCKER_CLI_VERSION=29.8.0
+ARG COMPOSE_VERSION=v5.5.1
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      amd64) arch=x86_64 ;; \
+      arm64) arch=aarch64 ;; \
+      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://download.docker.com/linux/static/stable/${arch}/docker-${DOCKER_CLI_VERSION}.tgz" \
+      | tar -xz -C /usr/local/bin --strip-components=1 docker/docker; \
+    mkdir -p /usr/local/lib/docker/cli-plugins; \
+    curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+      "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-${arch}"; \
+    chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose; \
+    docker --version; docker compose version
 
 LABEL org.opencontainers.image.title="niuu"
 LABEL org.opencontainers.image.description="Niuu — unified Python control plane services"

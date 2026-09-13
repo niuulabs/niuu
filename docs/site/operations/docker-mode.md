@@ -18,8 +18,14 @@ local model turned off.
 | `niuu down` | `docker compose down`. Data under the data directory is kept. Same as `niuu platform down`. |
 | `niuu platform init` | Interactive first-time config; choose `4` for docker mode. |
 
-`niuu up --mode docker` overrides the configured mode for one run, which is
-what the installer uses on a machine without a config file yet.
+`niuu up --mode docker` overrides the configured mode for one run. The
+installer instead writes a `niuu` wrapper that runs the CLI from the platform
+image with `NIUU_MODE=docker` and the pinned image tags in its environment, so
+no config file is needed on the host and every later `niuu` command uses the
+same image. The wrapper passes the host's identity (`--user`, the Docker
+socket's group), `~/.niuu`, the data directory, `/etc/os-release` and the host
+network into that container, and `--gpus all` when Docker has the NVIDIA
+runtime, so the host checks below see the real host.
 
 ## What `niuu up` checks
 

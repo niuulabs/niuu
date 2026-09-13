@@ -13,18 +13,36 @@ paths lead to the same [first-session quick start](first-local-stack.md).
 ## One command on a Docker host
 
 On a machine with Docker Engine and the Compose plugin (a DGX Spark, a Linux
-box, a Raspberry Pi, a Mac with Docker Desktop), the installer downloads the
-CLI, verifies its checksum, and starts the whole platform as containers:
+box, a Raspberry Pi, a Mac with Docker Desktop), the installer starts the
+whole platform as containers:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/niuulabs/niuu/main/scripts/install.sh | sh
 ```
 
+Nothing is compiled or downloaded onto the host but a small `niuu` wrapper in
+`~/.local/bin`: the CLI runs from the platform image itself, against the
+host's Docker socket, with `~/.niuu` and the data directory mounted at their
+host paths. `niuu up`, `niuu status`, `niuu doctor` and `niuu down` all go
+through that wrapper. The image tag the installer pins is the one it pulled
+(`NIUU_IMAGE_TAG`, default `latest`), so the CLI and the platform never drift
+apart.
+
 It ends by printing a setup URL; open it to finish configuration in the browser.
-`NIUU_NO_UP=1` installs without starting. See
+The script asks nothing in the terminal and never runs `sudo`: when the host
+is not ready (Docker missing, your user not in the `docker` group, the data
+directory `/var/lib/niuu` not writable) it stops and prints the exact command
+to run, then you rerun it. `NIUU_NO_UP=1` installs without starting;
+`NIUU_DATA_DIR` moves the data directory. See
 [Single-host Docker mode](../operations/docker-mode.md) for what runs, where
 data lives, and how `niuu up`, `niuu doctor`, and `niuu down` relate to the
 `niuu platform` commands.
+
+The same script installs the single-binary CLI for a laptop without Docker:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/niuulabs/niuu/main/scripts/install.sh | sh -s -- --mode mini
+```
 
 ## Release binary: macOS and Linux
 
