@@ -82,6 +82,16 @@ describe('SystemStep', () => {
     );
     expect(screen.getByText('No NVIDIA GPU')).toBeInTheDocument();
     expect(screen.getByText(/2 checks · 1 failed · 1 warnings/)).toBeInTheDocument();
+    // Without the NVIDIA runtime the installer could not look, which is not "no GPU".
+    render(
+      <SystemStep
+        report={{ ...report, host: { ...report.host, nvidia_runtime: false } }}
+        loading={false}
+        error={null}
+        onRerun={onRerun}
+      />,
+    );
+    expect(screen.getByText('GPU not checked (no NVIDIA runtime)')).toBeInTheDocument();
     expect(
       screen.getByTestId('setup-check-database').querySelector('.setup-row__icon--fail'),
     ).not.toBeNull();

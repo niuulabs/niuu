@@ -31,8 +31,15 @@ DOCKER_PERMISSION_REMEDY = (
     "`sudo usermod -aG docker $USER` and log in again (or `newgrp docker`)."
 )
 NVIDIA_RUNTIME_REMEDY = (
-    "Install the NVIDIA Container Toolkit and register the runtime: "
-    "`sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`."
+    "Register the NVIDIA runtime with Docker: "
+    "`sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`, "
+    "then run `niuu up` again. If `nvidia-ctk` is missing, install the NVIDIA Container "
+    "Toolkit first: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/"
+    "latest/install-guide.html"
+)
+GPU_NOT_CHECKED = (
+    "GPU not checked: Docker has no NVIDIA runtime, so `nvidia-smi` is out of reach from "
+    "the installer. Fix the nvidia runtime check and run `niuu up` again."
 )
 
 
@@ -251,7 +258,10 @@ def check_nvidia_runtime(config: DockerPreflightConfig) -> PreflightResult:
         name="nvidia runtime",
         passed=True,
         warn_only=True,
-        message="No NVIDIA container runtime; local models and GPU sandboxes are unavailable.",
+        message=(
+            "No NVIDIA container runtime registered with Docker; local models and GPU "
+            f"sandboxes are unavailable until it is. {NVIDIA_RUNTIME_REMEDY}"
+        ),
     )
 
 
@@ -287,11 +297,26 @@ def query_gpus(config: DockerPreflightConfig) -> list[GpuFacts]:
 
 
 def check_gpu(config: DockerPreflightConfig) -> PreflightResult:
-    """Verify at least one NVIDIA GPU is visible on the host."""
+    """Verify at least one NVIDIA GPU is visible on the host.
+
+    The check runs where `niuu up` runs; from the installer container that is
+    only meaningful once Docker has the NVIDIA runtime (the wrapper passes
+    ``--gpus all`` then). Without it the GPU is unknown, not absent.
+    """
     gpus = query_gpus(config)
     if gpus:
         summary = ", ".join(f"{gpu.name} ({gpu.memory_total_mib // 1024} GiB)" for gpu in gpus)
         return PreflightResult(name="gpu", passed=True, message=f"GPU: {summary}")
+    info = docker_info(config)
+    if isinstance(info, PreflightResult) or not _nvidia_runtime_registered(info):
+        if config.require_gpu:
+            return PreflightResult(
+                name="gpu",
+                passed=False,
+                message=f"{GPU_NOT_CHECKED} Or set `docker.require_gpu: false` to run "
+                "without local models.",
+            )
+        return PreflightResult(name="gpu", passed=True, warn_only=True, message=GPU_NOT_CHECKED)
     if config.require_gpu:
         return PreflightResult(
             name="gpu",

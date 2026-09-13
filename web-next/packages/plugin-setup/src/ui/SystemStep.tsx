@@ -73,7 +73,11 @@ export function SystemStep({ report, loading, error, onRerun }: SystemStepProps)
                 {formatGpu(gpu)}
               </span>
             ))}
-            {host.gpus.length === 0 ? <span className="setup-chip">No NVIDIA GPU</span> : null}
+            {host.gpus.length === 0 ? (
+              <span className="setup-chip">
+                {host.nvidia_runtime ? 'No NVIDIA GPU' : 'GPU not checked (no NVIDIA runtime)'}
+              </span>
+            ) : null}
             <span className="setup-chip">Docker {host.docker_version || 'unknown'}</span>
             <span className="setup-chip">
               {formatGib(host.disk_free_bytes)} free of {formatGib(host.disk_total_bytes)} on{' '}

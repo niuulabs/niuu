@@ -12,6 +12,7 @@ import pytest
 
 from cli.services.docker_host import (
     DOCKER_PERMISSION_REMEDY,
+    GPU_NOT_CHECKED,
     NVIDIA_RUNTIME_REMEDY,
     DockerPreflightConfig,
     GpuFacts,
@@ -159,6 +160,9 @@ class TestDockerCompose:
         assert "2.40.3" in result.message
 
 
+_NVIDIA_INFO = {"Runtimes": {"nvidia": {"path": "nvidia-container-runtime"}, "runc": {}}}
+
+
 class TestNvidiaRuntime:
     def test_registered(self, config: DockerPreflightConfig) -> None:
         info = {"Runtimes": {"nvidia": {"path": "nvidia-container-runtime"}}}
@@ -171,12 +175,13 @@ class TestNvidiaRuntime:
         assert result.passed is False
         assert result.message == NVIDIA_RUNTIME_REMEDY
 
-    def test_missing_optional_warns(self, config: DockerPreflightConfig) -> None:
+    def test_missing_optional_warns_with_the_remedy(self, config: DockerPreflightConfig) -> None:
         optional = replace(config, require_gpu=False)
         with patch(f"{MOD}.docker_info", return_value={"Runtimes": {"runc": {}}}):
             result = check_nvidia_runtime(optional)
         assert result.passed is True
         assert result.warn_only is True
+        assert "nvidia-ctk runtime configure --runtime=docker" in result.message
 
     def test_daemon_unreachable_required(self, config: DockerPreflightConfig) -> None:
         failed = PreflightResult(name="docker daemon", passed=False, message="down")
@@ -231,16 +236,42 @@ class TestGpu:
         assert "128 GiB" in result.message
 
     def test_check_missing_required(self, config: DockerPreflightConfig) -> None:
-        with patch(f"{MOD}.query_gpus", return_value=[]):
+        with (
+            patch(f"{MOD}.query_gpus", return_value=[]),
+            patch(f"{MOD}.docker_info", return_value=_NVIDIA_INFO),
+        ):
             result = check_gpu(config)
         assert result.passed is False
         assert "require_gpu" in result.message
+        assert "No NVIDIA GPU visible" in result.message
 
     def test_check_missing_optional(self, config: DockerPreflightConfig) -> None:
-        with patch(f"{MOD}.query_gpus", return_value=[]):
+        with (
+            patch(f"{MOD}.query_gpus", return_value=[]),
+            patch(f"{MOD}.docker_info", return_value=_NVIDIA_INFO),
+        ):
             result = check_gpu(replace(config, require_gpu=False))
         assert result.passed is True
         assert result.warn_only is True
+        assert "cloud models only" in result.message
+
+    def test_without_the_nvidia_runtime_the_gpu_is_unknown_not_absent(
+        self, config: DockerPreflightConfig
+    ) -> None:
+        """On a DGX Spark with the toolkit unregistered, nvidia-smi is out of reach
+        from the installer container; say so and point at the runtime fix."""
+        with (
+            patch(f"{MOD}.query_gpus", return_value=[]),
+            patch(f"{MOD}.docker_info", return_value={"Runtimes": {"runc": {}}}),
+        ):
+            optional = check_gpu(replace(config, require_gpu=False))
+            required = check_gpu(config)
+        assert optional.passed is True and optional.warn_only is True
+        assert optional.message == GPU_NOT_CHECKED
+        assert "No NVIDIA GPU visible" not in optional.message
+        assert required.passed is False
+        assert required.message.startswith(GPU_NOT_CHECKED)
+        assert "require_gpu" in required.message
 
 
 class TestDockerSocketGid:
