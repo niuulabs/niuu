@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { PersonaSummary } from '@niuulabs/domain';
 import { Field, Input, SegmentedFilter, Textarea } from '@niuulabs/ui';
 import type {
+  CatalogEntry,
   ClusterResourceInfo,
   IntegrationConnection,
   McpServerConfig,
@@ -19,7 +20,6 @@ import {
   formatIntegrationMeta,
   formatModelOption,
   formatResourceValue,
-  getDefinitionRune,
   getMatchingTargets,
   getResourceErrors,
   getTargetTagOptions,
@@ -40,6 +40,8 @@ import {
   WizardSelect,
 } from './LaunchWizardPrimitives';
 import { AdvancedRuntimeSection } from './LaunchWizardAdvancedRuntime';
+import { EngineSelect } from './EngineSelect';
+import { availableEngines } from './launchEngines';
 import './LaunchWizard.css';
 
 export function RuntimeStep({
@@ -56,6 +58,8 @@ export function RuntimeStep({
   selectedPreset,
   availableMcpServers,
   sessionDefinitions,
+  integrationCatalog = [],
+  providerError = null,
   onApplyPreset,
   onSavePreset,
 }: {
@@ -72,9 +76,17 @@ export function RuntimeStep({
   selectedPreset: VolundrLaunchSpec | null;
   availableMcpServers: McpServerConfig[];
   sessionDefinitions: SessionDefinition[];
+  /** The integration catalog; says which model vendor each AI provider unlocks. */
+  integrationCatalog?: CatalogEntry[];
+  /** Why the connected providers could not be loaded, when they could not. */
+  providerError?: Error | null;
   onApplyPreset: (launchSpecRef: string) => void;
   onSavePreset: (name: string) => Promise<void>;
 }) {
+  const engines = useMemo(
+    () => availableEngines(sessionDefinitions, integrations, integrationCatalog),
+    [sessionDefinitions, integrations, integrationCatalog],
+  );
   const compatibleModels = filterModelsForDefinition(models, form.definition, sessionDefinitions);
   const modelOptions = Object.entries(compatibleModels).map(([id, model]) => ({
     value: id,
@@ -166,35 +178,25 @@ export function RuntimeStep({
           title="Runtime"
           description="Choose the CLI agent, model, workspace, and launch prompts."
         >
-          <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
-            {sessionDefinitions.map((def) => (
-              <button
-                key={def.key}
-                className={`niuu:flex niuu:items-center niuu:gap-1.5 niuu:rounded-md niuu:border niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-text-primary ${
-                  form.definition === def.key
-                    ? 'niuu:border-brand niuu:bg-bg-tertiary'
-                    : 'niuu:border-border-subtle niuu:bg-bg-primary niuu:hover:border-brand niuu:hover:bg-bg-tertiary'
-                }`}
-                onClick={() => {
-                  const patch: Partial<WizardForm> = { definition: def.key };
-                  const defaultModel = pickDefaultModelForDefinition(
-                    models,
-                    def.key,
-                    sessionDefinitions,
-                  );
-                  if (defaultModel) {
-                    patch.model = defaultModel;
-                  }
-                  update(patch);
-                }}
-                data-testid={`runtime-option-${def.key}`}
-                title={def.description || undefined}
-              >
-                <span className="niuu:font-mono niuu:text-base">{getDefinitionRune(def.key)}</span>
-                <span className="niuu:font-mono">{def.displayName}</span>
-              </button>
-            ))}
-          </div>
+          <EngineSelect
+            engines={engines}
+            value={form.definition}
+            unavailableName={selectedDefinition}
+            error={providerError}
+            testId="runtime-engine"
+            onChange={(definitionKey) => {
+              const patch: Partial<WizardForm> = { definition: definitionKey };
+              const defaultModel = pickDefaultModelForDefinition(
+                models,
+                definitionKey,
+                sessionDefinitions,
+              );
+              if (defaultModel) {
+                patch.model = defaultModel;
+              }
+              update(patch);
+            }}
+          />
           <div className="niuu:grid niuu:grid-cols-1 niuu:gap-4">
             {personas.length > 0 ? (
               <Field label="Persona (optional)">

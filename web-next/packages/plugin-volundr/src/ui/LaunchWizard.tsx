@@ -30,6 +30,7 @@ export function LaunchWizard(props: LaunchWizardProps) {
     handleBack,
     handleNext,
     handleSavePreset,
+    integrationCatalog,
     integrations,
     isLastStep,
     launchError,
@@ -39,6 +40,7 @@ export function LaunchWizard(props: LaunchWizardProps) {
     navigate,
     personas,
     presets,
+    providerError,
     repos,
     sessionDefinitions,
     step,
@@ -94,6 +96,8 @@ export function LaunchWizard(props: LaunchWizardProps) {
               sessionDefinitions={
                 sessionDefinitions.length > 0 ? sessionDefinitions : FALLBACK_SESSION_DEFINITIONS
               }
+              integrationCatalog={integrationCatalog}
+              providerError={providerError}
               onApplyPreset={handleApplyPreset}
               onSavePreset={handleSavePreset}
             />

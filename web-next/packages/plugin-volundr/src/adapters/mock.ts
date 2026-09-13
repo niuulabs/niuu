@@ -8,6 +8,7 @@ import type { IPtyStream } from '../ports/IPtyStream';
 import type { IMetricsStream } from '../ports/IMetricsStream';
 import type { IFileSystemPort, FileTreeNode } from '../ports/IFileSystemPort';
 import type {
+  CatalogEntry,
   VolundrSession,
   VolundrStats,
   VolundrMessage,
@@ -238,13 +239,111 @@ const SEED_WORKSPACES: VolundrWorkspace[] = [
 const SEED_INTEGRATIONS: IntegrationConnection[] = [
   {
     id: 'github-primary',
+    slug: 'github',
+    integrationType: 'source_control',
+    credentialName: 'github-primary',
+    enabled: true,
+    credentialStatus: 'active',
     createdAt: '2026-04-01T12:00:00Z',
     updatedAt: '2026-04-24T12:00:00Z',
   },
   {
     id: 'linear-main',
+    slug: 'linear',
+    integrationType: 'issue_tracker',
+    credentialName: 'linear-main',
+    enabled: true,
+    credentialStatus: 'active',
     createdAt: '2026-04-02T12:00:00Z',
     updatedAt: '2026-04-23T12:00:00Z',
+  },
+  {
+    id: 'claude-code-setup',
+    slug: 'claude-code',
+    integrationType: 'ai_provider',
+    credentialName: 'claude-code-setup',
+    enabled: true,
+    credentialStatus: 'active',
+    createdAt: '2026-04-03T12:00:00Z',
+    updatedAt: '2026-04-23T12:00:00Z',
+  },
+  {
+    id: 'codex-setup',
+    slug: 'codex',
+    integrationType: 'ai_provider',
+    credentialName: 'codex-setup',
+    enabled: true,
+    credentialStatus: 'active',
+    createdAt: '2026-04-03T12:00:00Z',
+    updatedAt: '2026-04-23T12:00:00Z',
+  },
+];
+
+/** The built-in catalog's AI providers and Git hosts, as the platform serves them. */
+export const SEED_INTEGRATION_CATALOG: CatalogEntry[] = [
+  {
+    id: 'anthropic',
+    slug: 'anthropic',
+    name: 'Anthropic (Claude API)',
+    description: 'Anthropic API key for Claude models',
+    integrationType: 'ai_provider',
+    modelVendor: 'anthropic',
+  },
+  {
+    id: 'claude-code',
+    slug: 'claude-code',
+    name: 'Claude Code (subscription)',
+    description: 'Connect your Claude subscription for Claude Code sessions',
+    integrationType: 'ai_provider',
+    modelVendor: 'anthropic',
+  },
+  {
+    id: 'openai',
+    slug: 'openai',
+    name: 'OpenAI',
+    description: 'OpenAI API key for GPT/Codex models',
+    integrationType: 'ai_provider',
+    modelVendor: 'openai',
+  },
+  {
+    id: 'codex',
+    slug: 'codex',
+    name: 'OpenAI Codex (ChatGPT)',
+    description: 'ChatGPT subscription login for Codex runtimes',
+    integrationType: 'ai_provider',
+    modelVendor: 'openai',
+  },
+  {
+    id: 'xai',
+    slug: 'xai',
+    name: 'xAI (Grok)',
+    description: 'xAI API key for Grok models',
+    integrationType: 'ai_provider',
+    modelVendor: 'xai',
+  },
+  {
+    id: 'deepseek',
+    slug: 'deepseek',
+    name: 'DeepSeek',
+    description: 'DeepSeek API key for DeepSeek models and the DeepSeek Harness runtime',
+    integrationType: 'ai_provider',
+    modelVendor: 'deepseek',
+  },
+  {
+    id: 'github',
+    slug: 'github',
+    name: 'GitHub',
+    description: 'GitHub source control',
+    integrationType: 'source_control',
+    modelVendor: '',
+  },
+  {
+    id: 'linear',
+    slug: 'linear',
+    name: 'Linear',
+    description: 'Linear issue tracker',
+    integrationType: 'issue_tracker',
+    modelVendor: '',
   },
 ];
 
@@ -1440,7 +1539,7 @@ export function createMockVolundrService(): IVolundrService {
     storeTenantCredential: async () => {},
     deleteTenantCredential: async () => {},
 
-    getIntegrationCatalog: async () => [],
+    getIntegrationCatalog: async () => [...SEED_INTEGRATION_CATALOG],
     getIntegrations: async () => [...SEED_INTEGRATIONS],
     createIntegration: async () => ({
       id: `int-${Date.now()}`,

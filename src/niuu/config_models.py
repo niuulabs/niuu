@@ -64,7 +64,10 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
         "skuldClaude": SessionDefinitionConfig(
             enabled=True,
             display_name="Claude Code",
-            description="Anthropic Claude — full IDE with terminal, tools, and MCP",
+            description=(
+                "Claude Code in the full session workspace: chat, terminal, diffs, "
+                "files and MCP tools. The usual choice for Claude."
+            ),
             labels=["session", "claude"],
             default_model="claude-opus-4-8",
             compatible_providers=["anthropic"],
@@ -81,8 +84,9 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
             enabled=True,
             display_name="Claude Code Interactive",
             description=(
-                "Anthropic Claude Code through a tmux-backed interactive terminal "
-                "for subscription sessions, slash commands, and terminal controls"
+                "Claude Code as the plain interactive terminal you know from your own "
+                "machine: slash commands, permission prompts and agent teams. Pick this "
+                "when you want the CLI itself rather than the chat workspace."
             ),
             labels=["session", "claude", "interactive"],
             default_model="claude-sonnet-4-6",
@@ -102,7 +106,10 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
         "skuldCodex": SessionDefinitionConfig(
             enabled=True,
             display_name="OpenAI Codex",
-            description="OpenAI Codex — WebSocket protocol with streaming and tools",
+            description=(
+                "OpenAI's Codex coding agent with streaming chat and tools. "
+                "The usual choice for OpenAI."
+            ),
             labels=["session", "codex"],
             default_model="",
             compatible_providers=["openai"],
@@ -118,7 +125,8 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
             enabled=True,
             display_name="OpenAI Codex (Batch)",
             description=(
-                "OpenAI Codex — app-server transport tuned for autonomous workflow execution"
+                "OpenAI Codex set up for unattended runs. Ting workflows use this one; "
+                "for hands-on work pick OpenAI Codex."
             ),
             labels=["session", "codex", "batch"],
             default_model="",
@@ -134,9 +142,7 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
         "skuldGrok": SessionDefinitionConfig(
             enabled=True,
             display_name="xAI Grok Build",
-            description=(
-                "xAI Grok Build — Agent Client Protocol (ACP) over stdio (Scaldy pipeline)"
-            ),
+            description="xAI's Grok Build coding agent, signed in with your Grok account.",
             labels=["session", "grok"],
             default_model="grok-build",
             compatible_providers=["xai"],
@@ -151,7 +157,10 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
         "skuldOpenCode": SessionDefinitionConfig(
             enabled=True,
             display_name="OpenCode",
-            description="Model-neutral AI coding agent — Claude, OpenAI, Gemini, local",
+            description=(
+                "OpenCode, an open-source coding agent that works with any connected "
+                "provider or a local model."
+            ),
             labels=["session", "opencode"],
             default_model="",
             compatible_providers=[],
@@ -166,10 +175,7 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
         "skuldDeepSeekHarness": SessionDefinitionConfig(
             enabled=True,
             display_name="DeepSeek Harness",
-            description=(
-                "DeepSeek Harness (dsh) — SDK JSON-RPC stdio protocol with "
-                "streaming, tools, and durable session events"
-            ),
+            description="DeepSeek's Harness coding agent (dsh) with streaming chat and tools.",
             labels=["session", "dsh"],
             default_model="deepseek-v4-flash",
             compatible_providers=["deepseek"],
@@ -185,8 +191,8 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
             enabled=True,
             display_name="Claude Remote Control",
             description=(
-                "Claude Code in Remote Control mode — pair with the Claude app or "
-                "claude.ai/code; the native app drives the session"
+                "Claude Code driven from the Claude app or claude.ai/code: the session "
+                "runs here, you steer it from there."
             ),
             labels=["session", "claude", "remote-control"],
             default_model="",

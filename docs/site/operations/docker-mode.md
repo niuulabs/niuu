@@ -249,6 +249,23 @@ token is still good for and why a sign-in is needed. Sessions never write
 credentials back: the platform is the only writer of the store, and a session
 only ever reads what the platform renders for it.
 
+### Which engines a session can use
+
+**Launch a new session** (and **Advanced launch** behind it) offers an
+**Engine** dropdown: Claude Code, Claude Code Interactive, OpenAI Codex, Grok
+Build, OpenCode, DeepSeek Harness and so on. Only the engines a connected AI
+provider powers are listed. Every engine is a session definition that names
+the model vendors it accepts (`compatible_providers`, e.g. `["anthropic"]`),
+and every AI provider in the integration catalog says which vendor a
+connection of it unlocks (`model_vendor`: the Claude subscription sign-in and
+an Anthropic API key both unlock `anthropic`). A provider-neutral engine such
+as OpenCode appears as soon as any AI provider is connected. Under the
+dropdown the launch dialog says what the selected engine is for and which of
+your accounts it will use; **Manage providers** opens **Settings →
+Integrations**, where accounts are added, tested and signed in again. With no
+AI provider connected the dialog says so and links there instead of offering
+an engine that could not start.
+
 ## Updating
 
 Change the image tags in `config.yaml` and run `niuu up` again. The bundle is

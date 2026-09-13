@@ -1046,6 +1046,47 @@ def test_builtin_remote_control_definitions_present():
     assert "skuldCodexRemote" not in defs
 
 
+def test_every_builtin_engine_is_unlocked_by_a_catalog_provider():
+    """Each session definition's compatible vendors must be reachable through at
+    least one AI provider in the built-in catalog, and every AI provider must
+    say which vendor it unlocks; otherwise the launch dialogs could never offer
+    that engine no matter what the person connects."""
+    from niuu.config_models import default_session_definitions
+    from niuu.domain.model_runtime import normalize_model_vendor
+    from volundr.config import _default_integration_definitions
+
+    providers = [
+        entry
+        for entry in _default_integration_definitions()
+        if entry.integration_type == "ai_provider"
+    ]
+    assert providers, "the built-in catalog ships AI providers"
+    for entry in providers:
+        assert entry.model_vendor, f"{entry.slug} does not say which model vendor it unlocks"
+    for entry in _default_integration_definitions():
+        if entry.integration_type != "ai_provider":
+            assert entry.model_vendor == "", f"{entry.slug} is not an AI provider"
+
+    unlocked = {normalize_model_vendor(entry.model_vendor) for entry in providers}
+    for key, definition in default_session_definitions().items():
+        for vendor in definition.compatible_providers:
+            assert normalize_model_vendor(vendor) in unlocked, (
+                f"{key} accepts {vendor!r} but no catalog provider unlocks it"
+            )
+
+
+def test_builtin_engine_descriptions_read_as_plain_language():
+    """The engine picker shows these to people choosing what to launch; they
+    must say what the engine is for rather than which transport it speaks."""
+    from niuu.config_models import default_session_definitions
+
+    jargon = ("transport", "protocol", "stdio", "WebSocket", "JSON-RPC", "tmux-backed")
+    for key, definition in default_session_definitions().items():
+        assert definition.description, f"{key} has no description"
+        for word in jargon:
+            assert word not in definition.description, f"{key} description mentions {word!r}"
+
+
 def test_runtime_routing_legacy_aliases(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NIUU_SERVER_HOST", "10.0.0.8")

@@ -40,7 +40,6 @@ import type {
   VolundrTenant,
   IntegrationConnection,
   IntegrationTestResult,
-  CatalogEntry,
   StoredCredential,
   CredentialCreateRequest,
   SecretType,
@@ -1793,13 +1792,33 @@ export function buildVolundrHttpAdapter(
     storeTenantCredential: (name, data) => credentialsClient.post<void>('/tenant', { name, data }),
     deleteTenantCredential: (name) => credentialsClient.delete<void>(`/tenant/${name}`),
 
-    getIntegrationCatalog: () => sharedClient.get<CatalogEntry[]>('/integrations/catalog'),
+    getIntegrationCatalog: async () => {
+      const entries = await sharedClient.get<
+        {
+          id: string;
+          slug: string;
+          name: string;
+          description: string;
+          integration_type: string;
+          model_vendor?: string;
+        }[]
+      >('/integrations/catalog');
+      return entries.map((entry) => ({
+        id: entry.id,
+        slug: entry.slug,
+        name: entry.name,
+        description: entry.description,
+        integrationType: entry.integration_type,
+        modelVendor: entry.model_vendor ?? '',
+      }));
+    },
     getIntegrations: async () => {
       const connections = await sharedClient.get<
         (Partial<IntegrationConnection> & {
           id: string;
           integration_type?: string;
           credential_name?: string;
+          credential_status?: string;
           created_at?: string;
           updated_at?: string;
         })[]
@@ -1811,6 +1830,7 @@ export function buildVolundrHttpAdapter(
         enabled: connection.enabled,
         integrationType: connection.integrationType ?? connection.integration_type,
         credentialName: connection.credentialName ?? connection.credential_name,
+        credentialStatus: connection.credentialStatus ?? connection.credential_status,
         createdAt: connection.createdAt ?? connection.created_at ?? '',
         updatedAt: connection.updatedAt ?? connection.updated_at ?? '',
       }));

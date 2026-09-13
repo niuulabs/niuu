@@ -14,13 +14,9 @@ import {
 } from '@niuulabs/ui';
 import type { IVolundrService } from '../ports/IVolundrService';
 import type { SessionSource } from '../models/volundr.model';
-import {
-  definitionToTaskType,
-  deriveCliTool,
-  getDefinitionRune,
-  slugifySessionName,
-  validateSessionName,
-} from './launchWizardModel';
+import { definitionToTaskType, slugifySessionName, validateSessionName } from './launchWizardModel';
+import { EngineSelect } from './EngineSelect';
+import { availableEngines } from './launchEngines';
 import { LaunchWizard } from './LaunchWizard';
 import { useFeatures } from './useFeatures';
 
@@ -37,11 +33,6 @@ const PRIMARY_BTN =
   'niuu:rounded-md niuu:border niuu:border-brand niuu:bg-brand niuu:px-4 niuu:py-2 niuu:text-xs niuu:font-mono niuu:text-bg-primary niuu:cursor-pointer niuu:disabled:opacity-50 niuu:disabled:cursor-not-allowed';
 const CANCEL_BTN =
   'niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-4 niuu:py-2 niuu:text-xs niuu:font-mono niuu:text-text-primary niuu:hover:bg-bg-tertiary';
-const ENGINE_BTN =
-  'niuu:flex niuu:items-center niuu:gap-1.5 niuu:rounded-md niuu:border niuu:px-3 niuu:py-2 niuu:text-xs niuu:font-mono niuu:cursor-pointer';
-const ENGINE_BTN_ACTIVE = 'niuu:border-brand niuu:bg-bg-tertiary niuu:text-text-primary';
-const ENGINE_BTN_IDLE =
-  'niuu:border-border-subtle niuu:bg-bg-primary niuu:text-text-muted niuu:hover:border-brand';
 
 /** Compact launch for local and remote Forge hosts; advanced configuration remains available. */
 export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickLaunchProps) {
@@ -60,7 +51,30 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
     queryFn: () => volundr.getTargets(),
     enabled: open,
   });
+  // Only engines a connected AI provider powers are offered; the join runs
+  // through the catalog, which says which model vendor each provider unlocks.
+  const integrationsQuery = useQuery({
+    queryKey: ['volundr', 'integrations'],
+    queryFn: () => volundr.getIntegrations(),
+    enabled: open,
+  });
+  const catalogQuery = useQuery({
+    queryKey: ['volundr', 'integration-catalog'],
+    queryFn: () => volundr.getIntegrationCatalog(),
+    enabled: open,
+  });
   const definitions = definitionsQuery.data ?? [];
+  const engines = useMemo(
+    () =>
+      availableEngines(
+        definitionsQuery.data ?? [],
+        integrationsQuery.data ?? [],
+        catalogQuery.data ?? [],
+      ),
+    [definitionsQuery.data, integrationsQuery.data, catalogQuery.data],
+  );
+  const providerError = integrationsQuery.error ?? catalogQuery.error ?? null;
+  const providersLoading = integrationsQuery.isPending || catalogQuery.isPending;
   const targets = (targetsQuery.data ?? []).filter((target) => target.enabled);
   const [targetId, setTargetId] = useState('');
   const [sourceType, setSourceType] = useState<'git' | 'local_mount' | null>(null);
@@ -93,7 +107,8 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
   const [error, setError] = useState<string | null>(null);
 
   const selectedDef =
-    definitions.find((definition) => definition.key === definitionKey) ?? definitions[0];
+    engines.find((engine) => engine.definition.key === definitionKey)?.definition ??
+    engines[0]?.definition;
 
   // Auto-derive the session name from the folder's last path segment when blank.
   const effectiveName = useMemo(() => {
@@ -106,7 +121,8 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
 
   const nameError = validateSessionName(effectiveName);
   const loadError = definitionsQuery.error ?? features.error ?? targetsQuery.error;
-  const loading = definitionsQuery.isPending || features.isPending || targetsQuery.isPending;
+  const loading =
+    definitionsQuery.isPending || features.isPending || targetsQuery.isPending || providersLoading;
   const canCreate =
     Boolean(folder.trim()) &&
     Boolean(selectedDef) &&
@@ -114,6 +130,7 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
     !creating &&
     !loading &&
     !loadError &&
+    !providerError &&
     (!local || Boolean(features.data?.localMountsEnabled));
 
   async function handleCreate() {
@@ -320,58 +337,16 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
             />
           </Field>
 
-          <Field label="Engine">
-            <div
-              className="niuu:flex niuu:flex-wrap niuu:gap-2"
-              role="radiogroup"
-              aria-label="Coding engine"
-            >
-              {definitions.map((def) => {
-                const active = def.key === selectedDef?.key;
-                return (
-                  <button
-                    key={def.key}
-                    type="button"
-                    role="radio"
-                    aria-checked={active}
-                    tabIndex={active ? 0 : -1}
-                    onKeyDown={(event) => {
-                      if (
-                        ![
-                          'ArrowLeft',
-                          'ArrowRight',
-                          'ArrowUp',
-                          'ArrowDown',
-                          'Home',
-                          'End',
-                        ].includes(event.key)
-                      )
-                        return;
-                      event.preventDefault();
-                      const current = definitions.indexOf(def);
-                      const next =
-                        event.key === 'Home'
-                          ? 0
-                          : event.key === 'End'
-                            ? definitions.length - 1
-                            : (current +
-                                (event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1) +
-                                definitions.length) %
-                              definitions.length;
-                      setDefinitionKey(definitions[next]!.key);
-                      event.currentTarget.parentElement?.querySelectorAll('button')[next]?.focus();
-                    }}
-                    onClick={() => setDefinitionKey(def.key)}
-                    data-testid={`quick-launch-engine-${deriveCliTool(def.key)}`}
-                    className={`${ENGINE_BTN} ${active ? ENGINE_BTN_ACTIVE : ENGINE_BTN_IDLE}`}
-                  >
-                    <span aria-hidden>{getDefinitionRune(def.key)}</span>
-                    {def.displayName}
-                  </button>
-                );
-              })}
-            </div>
-          </Field>
+          {definitions.length > 0 ? (
+            <EngineSelect
+              engines={engines}
+              value={selectedDef?.key ?? ''}
+              onChange={setDefinitionKey}
+              loading={providersLoading}
+              error={providerError}
+              testId="quick-launch-engine"
+            />
+          ) : null}
 
           <Field label="First instruction" hint="Optional — what should the agent start on?">
             <Textarea

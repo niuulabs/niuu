@@ -963,6 +963,15 @@ class IntegrationDefinitionConfig(BaseModel):
     oauth: OAuthSpecConfig | None = None
     file_mounts: dict[str, str] = Field(default_factory=dict)
     credential_enrollment: dict[str, str] | None = None
+    model_vendor: str = Field(
+        default="",
+        description=(
+            "Model vendor an AI provider connection unlocks (anthropic, openai, xai, "
+            "deepseek). Session definitions name the vendors they accept in "
+            "compatible_providers, so this is what decides which engines a connected "
+            "account makes launchable."
+        ),
+    )
     key_probe: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -1098,6 +1107,7 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             name="Anthropic (Claude API)",
             description="Anthropic API key for Claude models",
             integration_type="ai_provider",
+            model_vendor="anthropic",
             icon="anthropic",
             credential_schema={
                 "required": ["api_key"],
@@ -1115,6 +1125,7 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             name="OpenAI",
             description="OpenAI API key for GPT/Codex models",
             integration_type="ai_provider",
+            model_vendor="openai",
             icon="openai",
             credential_schema={
                 "required": ["api_key"],
@@ -1128,6 +1139,7 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             name="xAI (Grok)",
             description="xAI API key for Grok models",
             integration_type="ai_provider",
+            model_vendor="xai",
             icon="xai",
             credential_schema={
                 "required": ["api_key"],
@@ -1141,6 +1153,7 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             name="Grok Build (xAI sign-in)",
             description="Sign in with your SuperGrok or X Premium+ account for Grok Build sessions",
             integration_type="ai_provider",
+            model_vendor="xai",
             icon="xai",
             credential_schema={},
             auth_type="device_code",
@@ -1157,6 +1170,7 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             name="DeepSeek",
             description="DeepSeek API key for DeepSeek models and the DeepSeek Harness runtime",
             integration_type="ai_provider",
+            model_vendor="deepseek",
             icon="deepseek",
             credential_schema={
                 "required": ["api_key"],
@@ -1170,6 +1184,7 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             name="Claude Code (subscription)",
             description="Connect your Claude subscription for Claude Code sessions",
             integration_type="ai_provider",
+            model_vendor="anthropic",
             icon="anthropic",
             credential_schema={},
             auth_type="browser_login",
@@ -1185,6 +1200,7 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             name="OpenAI Codex (ChatGPT)",
             description="User-scoped ChatGPT subscription login for Codex runtimes",
             integration_type="ai_provider",
+            model_vendor="openai",
             icon="openai",
             credential_schema={},
             auth_type="device_code",

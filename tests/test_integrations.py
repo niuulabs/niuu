@@ -693,6 +693,7 @@ class TestIntegrationEndpoints:
                 "credential_enrollment": None,
                 "sign_in_available": False,
                 "sign_in_needs_app": False,
+                "model_vendor": "",
             }
         ]
 

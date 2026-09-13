@@ -230,6 +230,15 @@ class CatalogEntryResponse(BaseModel):
             "registered yet; PUT /oauth-clients/{slug} registers one"
         ),
     )
+    model_vendor: str = Field(
+        default="",
+        description=(
+            "Model vendor a connection of this AI provider unlocks (anthropic, openai, "
+            "xai, deepseek); session definitions list the vendors they accept in "
+            "compatible_providers. Empty for non-AI integrations."
+        ),
+        examples=["anthropic"],
+    )
 
     @classmethod
     def from_definition(
@@ -270,6 +279,7 @@ class CatalogEntryResponse(BaseModel):
                 if defn.credential_enrollment is not None
                 else None
             ),
+            model_vendor=defn.model_vendor,
         )
 
 

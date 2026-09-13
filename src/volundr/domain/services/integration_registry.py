@@ -154,6 +154,7 @@ def definitions_from_config(
             oauth=oauth_spec,
             file_mounts=item.get("file_mounts", {}),
             credential_enrollment=enrollment_spec,
+            model_vendor=item.get("model_vendor", ""),
             key_probe=item.get("key_probe") or {},
         )
         result.append(defn)
