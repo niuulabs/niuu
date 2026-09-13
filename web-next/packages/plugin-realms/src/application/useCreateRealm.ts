@@ -72,7 +72,24 @@ const MOUNT_DISCOVERY_DEADLINE_MS = 60_000;
 const MOUNT_DISCOVERY_INTERVAL_MS = 3_000;
 
 function errorText(error: unknown): string {
-  if (error instanceof Error) return error.message;
+  if (error instanceof Error) {
+    const status = (error as { status?: unknown }).status;
+    const detail = (error as { detail?: unknown }).detail;
+    if (typeof status === 'number') {
+      const reason =
+        status === 403
+          ? 'the platform refused this account for that route'
+          : status === 401
+            ? 'not signed in'
+            : status === 404
+              ? 'the route does not exist on this stack'
+              : `HTTP ${status}`;
+      const extra =
+        typeof detail === 'string' && detail && detail !== 'Unknown error' ? ` (${detail})` : '';
+      return `${reason}${extra}`;
+    }
+    return error.message;
+  }
   return String(error);
 }
 

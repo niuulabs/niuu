@@ -107,9 +107,11 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
             realms
           </span>
           <h1 className="niuu:m-0 niuu:text-2xl niuu:font-bold niuu:tracking-tight niuu:text-text-primary">
-            {home.cards.length === 0
-              ? 'No realms yet. Start with one sentence.'
-              : `${home.cards.length} realm${home.cards.length === 1 ? '' : 's'}, each kept by a resident.`}
+            {home.error
+              ? 'Realms'
+              : home.cards.length === 0
+                ? 'No realms yet. Start with one sentence.'
+                : `${home.cards.length} realm${home.cards.length === 1 ? '' : 's'}, each kept by a resident.`}
           </h1>
           <p className="niuu:m-0 niuu:text-[15px] niuu:text-text-secondary">
             A realm is an environment a resident keeps: it reads your tracker, works the tickets in

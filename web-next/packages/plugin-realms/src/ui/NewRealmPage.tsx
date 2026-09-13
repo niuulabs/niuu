@@ -471,11 +471,13 @@ function LaunchStep({
   inferred: Set<keyof RealmDraft>;
 }) {
   const template = templateById(draft.templateId);
+  // Fields the recipe does not require: an empty value is a default, not a gap.
+  const optional = new Set<keyof RealmDraft>(['branch', 'bugBoard', 'model']);
   const source = (key: keyof RealmDraft) =>
     inferred.has(key) ? (
       <Chip tone="brand">from your sentence</Chip>
     ) : (
-      <Chip tone="muted">{draft[key] ? 'default' : 'needs you'}</Chip>
+      <Chip tone="muted">{draft[key] || optional.has(key) ? 'default' : 'needs you'}</Chip>
     );
   return (
     <div className="niuu:flex niuu:flex-col niuu:gap-4" data-testid="wizard-step-launch">
@@ -505,7 +507,7 @@ function LaunchStep({
         <div className="niuu:flex niuu:flex-col">
           {(
             [
-              ['template', template.name],
+              ['templateId', template.name],
               ['repo', draft.repo],
               ['branch', draft.branch || 'repository default'],
               ['trackerBoard', draft.trackerBoard],
