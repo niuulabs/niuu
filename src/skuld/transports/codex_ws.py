@@ -337,9 +337,11 @@ class CodexWebSocketTransport(CLITransport):
         self._last_result: dict | None = None
         self._turn_error: str | None = None
         self._last_usage: dict | None = None
+        self._turn_model: str | None = None
         self._alive = False
         self._start_lock = asyncio.Lock()
         self._block_index: int = 0
+        self._item_block_indexes: dict[str, int] = {}
         self._text_items: dict[str, _CodexTextItem] = {}
         self._active_text_item_id: str | None = None
         self._pending_redirects: list[str] = []
@@ -835,6 +837,7 @@ class CodexWebSocketTransport(CLITransport):
         ]
         self._agent_states.clear()
         self._buffered_item_output.clear()
+        self._item_block_indexes.clear()
         for request_id in pending_approvals:
             await self._emit(
                 {
@@ -972,6 +975,11 @@ class CodexWebSocketTransport(CLITransport):
                 await self._emit(
                     {
                         "type": "content_block_delta",
+                        **(
+                            {"index": self._item_block_indexes[params["itemId"]]}
+                            if params.get("itemId") in self._item_block_indexes
+                            else {}
+                        ),
                         "delta": {"type": "thinking_delta", "thinking": delta},
                     }
                 )
@@ -984,7 +992,9 @@ class CodexWebSocketTransport(CLITransport):
                 self._text_items.clear()
                 self._active_text_item_id = None
                 self._block_index = 0
+                self._item_block_indexes.clear()
             self._current_turn_id = turn.get("id")
+            self._turn_model = self._model
             if self._is_context_compaction_turn(turn):
                 self._context_compaction_active = True
                 self._context_compaction_starting = False
@@ -1035,34 +1045,24 @@ class CodexWebSocketTransport(CLITransport):
                 return
 
             self._active_user_prompt = None
-            if self._turn_error:
-                self._last_result = {
-                    "type": "result",
-                    "stop_reason": "error",
-                    "result": self._turn_error,
-                    "is_error": True,
-                    "modelUsage": self._last_usage or {},
-                }
-                await self._emit(self._last_result)
-                return
             # Merge saved usage into result event.
             usage = self._last_usage or {}
             self._last_result = {
                 "type": "result",
-                "result": "",
+                "result": self._turn_error or "",
                 "stop_reason": {
                     "failed": "error",
                     "interrupted": "cancelled",
-                }.get(turn.get("status"), "end_turn"),
-                "is_error": turn.get("status") == "failed",
+                }.get(turn.get("status"), "error" if self._turn_error else "end_turn"),
+                "is_error": bool(self._turn_error) or turn.get("status") == "failed",
                 "modelUsage": usage,
                 **({"turn_id": completed_turn_id} if completed_turn_id else {}),
             }
             if turn.get("error"):
                 self._last_result["error"] = self._turn_error_message(turn)
-            await self._emit(self._last_result)
             if completed_turn_id:
                 self._completed_turn_ids.add(completed_turn_id)
+            await self._emit(self._last_result)
             self._current_turn_request_id = None
             next_prompt, redirect_correlations = self._consume_pending_redirects()
             if next_prompt is not None:
@@ -1087,19 +1087,19 @@ class CodexWebSocketTransport(CLITransport):
         if method == "thread/tokenUsage/updated":
             usage = params.get("tokenUsage", {})
             total = usage.get("total", {})
-            last = usage.get("last", {})
-            model_id = self._model
+            last = usage.get("last")
+            measured = last if isinstance(last, dict) else total
+            model_id = self._turn_model or self._model
             self._last_usage = {
                 model_id: {
-                    "inputTokens": last.get("inputTokens", 0) or total.get("inputTokens", 0),
-                    "outputTokens": last.get("outputTokens", 0) or total.get("outputTokens", 0),
-                    "cacheReadInputTokens": last.get("cachedInputTokens", 0)
-                    or total.get("cachedInputTokens", 0),
+                    "inputTokens": measured.get("inputTokens", 0),
+                    "outputTokens": measured.get("outputTokens", 0),
+                    "cacheReadInputTokens": measured.get("cachedInputTokens", 0),
                     "cacheCreationInputTokens": 0,
                 }
             }
             # Emit message_delta so the browser can update token counters live.
-            output_tokens = last.get("outputTokens", 0) or total.get("outputTokens", 0)
+            output_tokens = measured.get("outputTokens", 0)
             if output_tokens:
                 await self._emit(
                     {
@@ -1170,6 +1170,9 @@ class CodexWebSocketTransport(CLITransport):
         if method == "error":
             error = params.get("error", {})
             message = error.get("message", str(params))
+            if params.get("willRetry") is True:
+                await self._emit_runtime_notice("retrying", message)
+                return
             if self._is_context_window_error(error, message):
                 recovered = await self._recover_from_context_window_exceeded(message)
                 if recovered:
@@ -1177,6 +1180,18 @@ class CodexWebSocketTransport(CLITransport):
             logger.warning("Codex error notification: %s", message)
             self._turn_error = message
             await self._emit({"type": "error", "error": message})
+            return
+
+        if method == "model/rerouted":
+            if isinstance(params.get("toModel"), str) and params["toModel"]:
+                self._turn_model = params["toModel"]
+                await self._emit_runtime_notice(
+                    "model_rerouted",
+                    f"Codex changed this turn's model to {self._turn_model}.",
+                    from_model=params.get("fromModel"),
+                    model=self._turn_model,
+                    reason=params.get("reason"),
+                )
             return
 
         # --- Thread lifecycle ---
@@ -1539,7 +1554,7 @@ class CodexWebSocketTransport(CLITransport):
         self._block_index += 1
         return idx
 
-    async def _emit_content_block_start(self, block: dict) -> None:
+    async def _emit_content_block_start(self, block: dict) -> int:
         """Emit a content_block_start event with the given block descriptor."""
         idx = self._next_block_index()
         await self._emit(
@@ -1549,10 +1564,16 @@ class CodexWebSocketTransport(CLITransport):
                 "content_block": block,
             }
         )
+        return idx
 
-    async def _emit_content_block_stop(self) -> None:
+    async def _emit_content_block_stop(self, index: int) -> None:
         """Emit a content_block_stop event."""
-        await self._emit({"type": "content_block_stop"})
+        await self._emit({"type": "content_block_stop", "index": index})
+
+    async def _close_item_block(self, item_id: str) -> None:
+        index = self._item_block_indexes.pop(item_id, None)
+        if index is not None:
+            await self._emit_content_block_stop(index)
 
     def _text_item(
         self, identifier: object, *, phase: object = None, context: dict | None = None
@@ -1654,7 +1675,7 @@ class CodexWebSocketTransport(CLITransport):
                 "type": "assistant",
                 **self._text_context(state),
                 "message": {
-                    "model": self._model,
+                    "model": self._turn_model or self._model,
                     "content": [self._text_block(state, text, complete=True)],
                 },
             }
@@ -1705,6 +1726,7 @@ class CodexWebSocketTransport(CLITransport):
         """
         if not tool_use_id:
             return
+        await self._close_item_block(tool_use_id)
         block: dict = {
             "type": "tool_result",
             "tool_use_id": tool_use_id,
@@ -1731,8 +1753,8 @@ class CodexWebSocketTransport(CLITransport):
         # turn. Same fault, same fix as the Grok transport.
         await self._emit({"type": "user", "message": {"content": [block]}, "content": [block]})
 
-        await self._emit_content_block_start(block)
-        await self._emit_content_block_stop()
+        index = await self._emit_content_block_start(block)
+        await self._emit_content_block_stop(index)
 
     async def _emit_tool_use(self, item_id: str, name: str, tool_input: dict) -> None:
         """Emit an assistant event (for broker tracking) + content_block lifecycle (for browser).
@@ -1746,7 +1768,7 @@ class CodexWebSocketTransport(CLITransport):
             {
                 "type": "assistant",
                 "message": {
-                    "model": self._model,
+                    "model": self._turn_model or self._model,
                     "content": [
                         {
                             "type": "tool_use",
@@ -1759,11 +1781,17 @@ class CodexWebSocketTransport(CLITransport):
             }
         )
         # Browser-facing: content_block lifecycle
-        await self._emit_content_block_start({"type": "tool_use", "id": item_id, "name": name})
+        if item_id in self._item_block_indexes:
+            return  # Authoritative input was upserted above, not another JSON append.
+        index = await self._emit_content_block_start(
+            {"type": "tool_use", "id": item_id, "name": name}
+        )
+        self._item_block_indexes[item_id] = index
         input_json = json.dumps(tool_input)
         await self._emit(
             {
                 "type": "content_block_delta",
+                "index": index,
                 "delta": {"type": "input_json_delta", "partial_json": input_json},
             }
         )
@@ -1823,7 +1851,10 @@ class CodexWebSocketTransport(CLITransport):
             return
 
         if item_type == "reasoning":
-            await self._emit_content_block_start({"type": "thinking"})
+            if item_id not in self._item_block_indexes:
+                self._item_block_indexes[item_id] = await self._emit_content_block_start(
+                    {"type": "thinking", "id": item_id}
+                )
             return
 
         if item_type == "webSearch":
@@ -1848,7 +1879,7 @@ class CodexWebSocketTransport(CLITransport):
         item_id = item.get("id", "")
 
         if item_type == "collabAgentToolCall":
-            await self._emit_content_block_stop()
+            await self._close_item_block(item_id)
             await self._emit_tool_result(
                 item_id,
                 json.dumps(
@@ -1870,20 +1901,24 @@ class CodexWebSocketTransport(CLITransport):
         if item_type == "commandExecution":
             # Close the tool_use block, then emit the output as a tool_result
             # paired by id so the UI groups it under the call.
-            await self._emit_content_block_stop()
+            await self._close_item_block(item_id)
             output = item.get("aggregatedOutput")
             if not isinstance(output, str) or not output:
                 output = self._consume_buffered_item_output(item_id)
             if not isinstance(output, str):
                 output = str(output)
-            exit_code = item.get("exitCode", 0)
+            exit_code = item.get("exitCode")
             # ALWAYS emit a result for a finished call, even a silent success.
             # Gating on `output or exit_code != 0` meant a command that succeeded with
             # no stdout produced no tool_result at all — so the call never paired and
             # never got its D1 end stamp, and a hierarchical row for a perfectly good
             # `touch`/`mkdir` renders as a tool that never finished.
-            prefix = "" if exit_code == 0 else f"[exit code {exit_code}] "
-            await self._emit_tool_result(item_id, prefix + output, is_error=exit_code != 0)
+            prefix = "" if exit_code in (None, 0) else f"[exit code {exit_code}] "
+            await self._emit_tool_result(
+                item_id,
+                prefix + output,
+                is_error=exit_code not in (None, 0) or item.get("status") in {"failed", "declined"},
+            )
             return
 
         if item_type in ("agentMessage", "plan"):
@@ -1915,11 +1950,11 @@ class CodexWebSocketTransport(CLITransport):
             return
 
         if item_type == "reasoning":
-            await self._emit_content_block_stop()
+            await self._close_item_block(item_id)
             return
 
         if item_type == "webSearch":
-            await self._emit_content_block_stop()
+            await self._close_item_block(item_id)
             # Started notifications may be placeholders with an empty query.
             # Refresh the existing call's input by ID, without starting another
             # streaming block. Both live and durable folds upsert this tool ID.
@@ -1927,7 +1962,7 @@ class CodexWebSocketTransport(CLITransport):
                 {
                     "type": "assistant",
                     "message": {
-                        "model": self._model,
+                        "model": self._turn_model or self._model,
                         "content": [
                             {
                                 "type": "tool_use",
@@ -1958,16 +1993,22 @@ class CodexWebSocketTransport(CLITransport):
             return
 
         if item_type in ("fileChange", "mcpToolCall"):
-            await self._emit_content_block_stop()
+            await self._close_item_block(item_id)
             result_text = self._extract_item_result_text(item)
+            if item.get("error"):
+                result_text = "\n".join(
+                    filter(None, [result_text, json.dumps(item["error"], ensure_ascii=False)])
+                )
             if not result_text:
                 result_text = self._consume_buffered_item_output(item_id)
-            is_error = bool(item.get("isError") or item.get("is_error"))
+            is_error = bool(
+                item.get("isError") or item.get("is_error") or item.get("error")
+            ) or item.get("status") in {"failed", "declined"}
             await self._emit_tool_result(item_id, result_text, is_error=is_error)
             return
 
         if item_type == "dynamicToolCall":
-            await self._emit_content_block_stop()
+            await self._close_item_block(item_id)
             result_text = self._dynamic_tool_content_text(item.get("contentItems"))
             await self._emit_tool_result(
                 item_id,
@@ -1990,7 +2031,7 @@ class CodexWebSocketTransport(CLITransport):
             await self._emit_tool_use(
                 item["id"], "Agent", {"agent_id": agent_id, "agent_path": item.get("agentPath")}
             )
-            await self._emit_content_block_stop()
+            await self._close_item_block(item["id"])
             await self._emit_tool_result(
                 item["id"], json.dumps({"agent_id": agent_id, "status": "started"})
             )
@@ -2722,6 +2763,19 @@ class CodexWebSocketTransport(CLITransport):
                 f"Forked Codex thread: {forked_id}" if forked_id else "Forked Codex thread."
             )
             return
+
+    async def _emit_runtime_notice(self, code: str, message: str, **details: object) -> None:
+        await self._emit(
+            {
+                "type": "system",
+                "subtype": "runtime_notice",
+                "code": code,
+                "content": message,
+                "thread_id": self._thread_id,
+                "turn_id": self._current_turn_id,
+                "metadata": {"source": "codex_app_server", **details},
+            }
+        )
 
     async def _emit_system_notice(self, content: str) -> None:
         await self._emit({"type": "system", "subtype": "notice", "content": content})

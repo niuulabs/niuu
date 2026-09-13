@@ -1075,6 +1075,9 @@ class TestItemLifecycle:
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
+        await t._handle_item_started({"type": "commandExecution", "id": "cmd-1", "command": "ls"})
+        emit.reset_mock()
+
         await t._handle_item_completed(
             {
                 "type": "commandExecution",
@@ -1175,6 +1178,9 @@ class TestItemLifecycle:
     async def test_reasoning_completed_emits_stop(self, tmp_path):
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
+
+        await t._handle_item_started({"type": "reasoning", "id": "r-1"})
+        emit.reset_mock()
 
         await t._handle_item_completed({"type": "reasoning", "id": "r-1"})
 
@@ -2159,7 +2165,7 @@ class TestFullTurnFlow:
                             "outputTokens": 20,
                             "reasoningOutputTokens": 0,
                         },
-                        "last": {},
+                        "last": {"inputTokens": 80, "outputTokens": 20, "cachedInputTokens": 0},
                     },
                 },
             }
@@ -2630,14 +2636,14 @@ class TestEmitToolUse:
 class TestItemCompletedEdgeCases:
     @pytest.mark.asyncio
     async def test_file_change_completed_emits_stop(self, tmp_path):
-        """fileChange completion should close both use and result blocks."""
+        """fileChange completion without a start closes only its result block."""
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
         await t._handle_item_completed({"type": "fileChange", "id": "fc-1", "changes": []})
 
         stops = _events_of_type(emit, "content_block_stop")
-        assert len(stops) == 2
+        assert len(stops) == 1
         results = [
             event["content_block"]
             for event in _events_of_type(emit, "content_block_start")
@@ -2647,10 +2653,10 @@ class TestItemCompletedEdgeCases:
         ended_at = results[0].pop("ended_at")
         assert datetime.fromisoformat(ended_at).tzinfo is not None
         assert results == [{"type": "tool_result", "tool_use_id": "fc-1", "content": ""}]
-        # 2 stops now: the tool_use block, plus the tool_result lifecycle every
-        # completed call emits. A completed tool ALWAYS produces a result — that is
-        # what pairs it and stamps its duration; silence left rows hanging open.
-        assert len(stops) == 2
+        # No tool input block was opened in this completion-only fixture. Close
+        # only the result, never an unrelated public text block. Silent completed
+        # tools still need a result to pair the call and stamp its duration.
+        assert len(stops) == 1
         # The durable half: a tool_result must ride in a `user` frame (the only shape
         # the transcript reducer harvests results from).
         user_results = [
@@ -2670,7 +2676,7 @@ class TestItemCompletedEdgeCases:
         await t._handle_item_completed({"type": "webSearch", "id": "ws-1", "query": "test"})
 
         stops = _events_of_type(emit, "content_block_stop")
-        assert len(stops) == 2
+        assert len(stops) == 1
         results = [
             event["content_block"]
             for event in _events_of_type(emit, "content_block_start")
@@ -2678,10 +2684,10 @@ class TestItemCompletedEdgeCases:
         ]
         assert json.loads(results[0]["content"]) == {"query": "test"}
 
-        # 2 stops now: the tool_use block, plus the tool_result lifecycle every
-        # completed call emits. A completed tool ALWAYS produces a result — that is
-        # what pairs it and stamps its duration; silence left rows hanging open.
-        assert len(stops) == 2
+        # No tool input block was opened in this completion-only fixture. Close
+        # only the result, never an unrelated public text block. Silent completed
+        # tools still need a result to pair the call and stamp its duration.
+        assert len(stops) == 1
         # The durable half: a tool_result must ride in a `user` frame (the only shape
         # the transcript reducer harvests results from).
         user_results = [
@@ -2724,17 +2730,17 @@ class TestItemCompletedEdgeCases:
 
     @pytest.mark.asyncio
     async def test_mcp_tool_call_completed_emits_stop(self, tmp_path):
-        """mcpToolCall completion should close both use and result blocks."""
+        """mcpToolCall completion without a start closes only its result block."""
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
         await t._handle_item_completed({"type": "mcpToolCall", "id": "mcp-1", "tool": "read_file"})
 
         stops = _events_of_type(emit, "content_block_stop")
-        # 2 stops now: the tool_use block, plus the tool_result lifecycle every
-        # completed call emits. A completed tool ALWAYS produces a result — that is
-        # what pairs it and stamps its duration; silence left rows hanging open.
-        assert len(stops) == 2
+        # No tool input block was opened in this completion-only fixture. Close
+        # only the result, never an unrelated public text block. Silent completed
+        # tools still need a result to pair the call and stamp its duration.
+        assert len(stops) == 1
         # The durable half: a tool_result must ride in a `user` frame (the only shape
         # the transcript reducer harvests results from).
         user_results = [
@@ -2757,7 +2763,7 @@ class TestItemCompletedEdgeCases:
 
         events = _emitted_events(emit)
         stops = _events_of_type(emit, "content_block_stop")
-        assert len(stops) == 2
+        assert len(stops) == 1
         results = [
             event["content_block"]
             for event in _events_of_type(emit, "content_block_start")
@@ -2767,10 +2773,10 @@ class TestItemCompletedEdgeCases:
         ended_at = results[0].pop("ended_at")
         assert datetime.fromisoformat(ended_at).tzinfo is not None
         assert results == [{"type": "tool_result", "tool_use_id": "cmd-1", "content": ""}]
-        # 2 stops now: the tool_use block, plus the tool_result lifecycle every
-        # completed call emits. A completed tool ALWAYS produces a result — that is
-        # what pairs it and stamps its duration; silence left rows hanging open.
-        assert len(stops) == 2
+        # No tool input block was opened in this completion-only fixture. Close
+        # only the result, never an unrelated public text block. Silent completed
+        # tools still need a result to pair the call and stamp its duration.
+        assert len(stops) == 1
         # The durable half: a tool_result must ride in a `user` frame (the only shape
         # the transcript reducer harvests results from).
         user_results = [
@@ -2801,7 +2807,7 @@ class TestItemCompletedEdgeCases:
 
         events = _emitted_events(emit)
         stops = _events_of_type(emit, "content_block_stop")
-        assert len(stops) == 2
+        assert len(stops) == 1
         results = [
             event["content_block"]
             for event in _events_of_type(emit, "content_block_start")
@@ -2811,10 +2817,10 @@ class TestItemCompletedEdgeCases:
         ended_at = results[0].pop("ended_at")
         assert datetime.fromisoformat(ended_at).tzinfo is not None
         assert results == [{"type": "tool_result", "tool_use_id": "cmd-1", "content": ""}]
-        # 2 stops now: the tool_use block, plus the tool_result lifecycle every
-        # completed call emits. A completed tool ALWAYS produces a result — that is
-        # what pairs it and stamps its duration; silence left rows hanging open.
-        assert len(stops) == 2
+        # No tool input block was opened in this completion-only fixture. Close
+        # only the result, never an unrelated public text block. Silent completed
+        # tools still need a result to pair the call and stamp its duration.
+        assert len(stops) == 1
         # The durable half: a tool_result must ride in a `user` frame (the only shape
         # the transcript reducer harvests results from).
         user_results = [
