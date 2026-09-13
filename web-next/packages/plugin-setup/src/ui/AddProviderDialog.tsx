@@ -175,9 +175,9 @@ export function AddProviderDialog({
         label={existing.length > 0 ? 'Name for this account' : 'Name for this account (optional)'}
         hint={
           existing.length > 0
-            ? `Already connected: ${existing
-                .map((connection) => connectionLabel(connection, group))
-                .join(', ')}. Give this one its own name, like work or personal.`
+            ? `Already connected: ${[
+                ...new Set(existing.map((connection) => connectionLabel(connection, group))),
+              ].join(', ')}. Give this one its own name, like work or personal.`
             : 'Leave empty for the default. Handy when you add a second account later.'
         }
         error={taken ? 'That name is already in use for this provider.' : undefined}
