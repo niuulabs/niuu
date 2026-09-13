@@ -1876,8 +1876,8 @@ wheels = [
 
 [[package]]
 name = "openshell"
-version = "0.0.116"
-source = { registry = "https://pypi.org/simple" }
+version = "0.0.117.dev137+g5b9daab93"
+source = { url = "https://github.com/jve/OpenShell/releases/download/niuu-7bd0ed45e/openshell-0.0.117.dev137%2Bg5b9daab93-py3-none-any.whl" }
 dependencies = [
     { name = "cloudpickle" },
     { name = "grpcio" },
@@ -1885,7 +1885,15 @@ dependencies = [
     { name = "protobuf" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4d/53/f20551c4ae45e072215832362b73951abd17473ca20d56d8b7c0c7d58fdd/openshell-0.0.116-py3-none-any.whl", hash = "sha256:5a31eb4e38d7b5d746956404145b7335557f9060ac7a987c65ea5af4d708b3fc", size = 110131, upload-time = "2026-08-28T09:10:50.719Z" },
+    { url = "https://github.com/jve/OpenShell/releases/download/niuu-7bd0ed45e/openshell-0.0.117.dev137%2Bg5b9daab93-py3-none-any.whl", hash = "sha256:77c334fb24652a8767409f79b990af4bdde9f5c65e15b03ee4b599909d5749b3" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "cloudpickle", specifier = ">=3.0" },
+    { name = "grpcio", specifier = ">=1.60" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "protobuf", specifier = ">=4.25" },
 ]
 
 [[package]]
@@ -3422,7 +3430,6 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'test'", specifier = ">=3.14.3" },
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "cedarpy", specifier = "==4.8.7" },
-    { name = "grpcio", specifier = ">=1.78.0,<2" },
     { name = "claude-agent-sdk", specifier = "==0.2.152" },
     { name = "cryptography", specifier = ">=50.0.1" },
     { name = "cryptography", marker = "extra == 'dev'", specifier = ">=50.0.1" },
@@ -3431,6 +3438,7 @@ requires-dist = [
     { name = "docker", specifier = ">=7.2.0" },
     { name = "fastapi", specifier = ">=0.141.1" },
     { name = "gitpython", specifier = ">=3.1.61" },
+    { name = "grpcio", specifier = ">=1.78.0,<2" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "httpx2", marker = "extra == 'dev'", specifier = ">=2.12.0" },
     { name = "httpx2", marker = "extra == 'test'", specifier = ">=2.12.0" },
@@ -3441,7 +3449,7 @@ requires-dist = [
     { name = "nats-py", extras = ["nkeys"], marker = "extra == 'nats'", specifier = ">=2.15.0" },
     { name = "nemo-switchyard", marker = "extra == 'switchyard'", git = "https://github.com/NVIDIA-NeMo/Switchyard.git?rev=578e1b7cbd9db9577c4a9f14b0218ebc543b2049" },
     { name = "nuitka", extras = ["onefile"], marker = "extra == 'cli'", specifier = ">=4.2.1" },
-    { name = "openshell", marker = "python_full_version >= '3.12' and extra == 'openshell'", specifier = "==0.0.116" },
+    { name = "openshell", marker = "python_full_version >= '3.12' and extra == 'openshell'", url = "https://github.com/jve/OpenShell/releases/download/niuu-7bd0ed45e/openshell-0.0.117.dev137%2Bg5b9daab93-py3-none-any.whl" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.44.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'otel'", specifier = ">=1.44.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.44.0" },
@@ -3479,9 +3487,9 @@ requires-dist = [
     { name = "typer", marker = "extra == 'cli'", specifier = ">=0.27.2" },
     { name = "typer", marker = "extra == 'dev'", specifier = ">=0.27.2" },
     { name = "urllib3", specifier = ">=2.7.0" },
-    { name = "xds-protos", specifier = ">=1.78.0,<2" },
     { name = "uvicorn", specifier = ">=0.52.4" },
     { name = "websockets", specifier = ">=17.1" },
+    { name = "xds-protos", specifier = ">=1.78.0,<2" },
     { name = "zeroconf", specifier = ">=0.151.3" },
 ]
 provides-extras = ["switchyard", "openshell", "dsh", "nats", "embeddings", "test", "rabbitmq", "redis", "k8s", "otel", "encryption", "browser", "infra", "cli", "tui", "dev"]

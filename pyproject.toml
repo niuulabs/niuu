@@ -43,7 +43,7 @@ switchyard = [
     "nemo-switchyard @ git+https://github.com/NVIDIA-NeMo/Switchyard.git@578e1b7cbd9db9577c4a9f14b0218ebc543b2049",
 ]
 openshell = [
-    "openshell==0.0.116; python_version >= '3.12'",
+    "openshell @ https://github.com/jve/OpenShell/releases/download/niuu-7bd0ed45e/openshell-0.0.117.dev137%2Bg5b9daab93-py3-none-any.whl#sha256=77c334fb24652a8767409f79b990af4bdde9f5c65e15b03ee4b599909d5749b3 ; python_version >= '3.12'",
 ]
 # DeepSeek Harness runtime for DshJsonRpcTransport (Skuld and OpenShell images).
 # Exact pin: dsh is a developer preview with promised breaking changes.

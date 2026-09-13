@@ -109,6 +109,14 @@ commit tags and the matching chart uses `0.0.0-niuu.sha<commit>`. Niuu's existin
 `dev` workflow builds the application/runtime images. Deploy these through
 cluster-specific GitOps values.
 
+The adapter uses the upstream SDK for commit `5b9daab93`, pinned by wheel hash
+in `pyproject.toml` and `uv.lock`. The unchanged CI-built wheel is mirrored in
+the fork's `niuu-7bd0ed45e` release so upstream's rolling dev release cannot
+remove the dependency. This gateway API requires an explicit workspace selector
+and page tokens; the adapter selects the existing `default` workspace for all
+workspace-scoped calls. The released `0.0.116` SDK is not compatible with this
+gateway revision.
+
 ## Validate a target
 
 Create a session through the normal Forge launch flow on the intended target.

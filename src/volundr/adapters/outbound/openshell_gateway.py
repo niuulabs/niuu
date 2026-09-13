@@ -285,6 +285,7 @@ class OpenShellGatewayClient:
         )
         self._channel = channel
         self._stub = openshell_pb2_grpc.OpenShellStub(channel)
+        self._workspace_scope = datamodel_pb2.WorkspaceSelector(workspace="default")
 
     def close(self) -> None:
         self._channel.close()
@@ -318,7 +319,9 @@ class OpenShellGatewayClient:
             policy=policy,
             providers=list(providers),
         )
-        request = openshell_pb2.CreateSandboxRequest(spec=spec, name=name, labels=labels)
+        request = openshell_pb2.CreateSandboxRequest(
+            workspace_scope=self._workspace_scope, spec=spec, name=name, labels=labels
+        )
         response = self._stub.CreateSandbox(
             request,
             timeout=self._timeout,
@@ -329,7 +332,7 @@ class OpenShellGatewayClient:
     def get_sandbox(self, name: str) -> OpenShellSandbox | None:
         try:
             response = self._stub.GetSandbox(
-                openshell_pb2.GetSandboxRequest(name=name),
+                openshell_pb2.GetSandboxRequest(workspace_scope=self._workspace_scope, name=name),
                 timeout=self._timeout,
                 metadata=self._metadata(),
             )
@@ -340,23 +343,25 @@ class OpenShellGatewayClient:
         return _sandbox_from_proto(response.sandbox)
 
     def get_sandbox_by_id(self, sandbox_id: str) -> OpenShellSandbox | None:
-        offset = 0
+        page_token = ""
         while True:
             response = self._stub.ListSandboxes(
-                openshell_pb2.ListSandboxesRequest(limit=100, offset=offset),
+                openshell_pb2.ListSandboxesRequest(
+                    workspace_scope=self._workspace_scope, page_size=100, page_token=page_token
+                ),
                 timeout=self._timeout,
                 metadata=self._metadata(),
             )
             for sandbox in response.sandboxes:
                 if str(sandbox.metadata.id) == sandbox_id:
                     return _sandbox_from_proto(sandbox)
-            if len(response.sandboxes) < 100:
+            page_token = str(response.next_page_token)
+            if not page_token:
                 return None
-            offset += len(response.sandboxes)
 
     def stop_sandbox(self, name: str) -> OpenShellSandbox:
         response = self._stub.StopSandbox(
-            openshell_pb2.StopSandboxRequest(name=name),
+            openshell_pb2.StopSandboxRequest(workspace_scope=self._workspace_scope, name=name),
             timeout=self._timeout,
             metadata=self._metadata(),
         )
@@ -364,7 +369,7 @@ class OpenShellGatewayClient:
 
     def start_sandbox(self, name: str) -> OpenShellSandbox:
         response = self._stub.StartSandbox(
-            openshell_pb2.StartSandboxRequest(name=name),
+            openshell_pb2.StartSandboxRequest(workspace_scope=self._workspace_scope, name=name),
             timeout=self._timeout,
             metadata=self._metadata(),
         )
@@ -373,7 +378,9 @@ class OpenShellGatewayClient:
     def delete_sandbox(self, name: str) -> bool:
         try:
             response = self._stub.DeleteSandbox(
-                openshell_pb2.DeleteSandboxRequest(name=name),
+                openshell_pb2.DeleteSandboxRequest(
+                    workspace_scope=self._workspace_scope, name=name
+                ),
                 timeout=self._timeout,
                 metadata=self._metadata(),
             )
@@ -389,7 +396,9 @@ class OpenShellGatewayClient:
 
         try:
             response = self._stub.DeleteService(
-                openshell_pb2.DeleteServiceRequest(sandbox=sandbox_name, service=service),
+                openshell_pb2.DeleteServiceRequest(
+                    workspace_scope=self._workspace_scope, sandbox=sandbox_name, service=service
+                ),
                 timeout=self._timeout,
                 metadata=self._metadata(),
             )
@@ -413,7 +422,7 @@ class OpenShellGatewayClient:
     def get_provider(self, name: str) -> Any | None:
         try:
             response = self._stub.GetProvider(
-                openshell_pb2.GetProviderRequest(name=name),
+                openshell_pb2.GetProviderRequest(workspace_scope=self._workspace_scope, name=name),
                 timeout=self._timeout,
                 metadata=self._metadata(),
             )
@@ -478,12 +487,13 @@ class OpenShellGatewayClient:
         try:
             self._stub.CreateProvider(
                 openshell_pb2.CreateProviderRequest(
+                    workspace_scope=self._workspace_scope,
                     provider=datamodel_pb2.Provider(
                         metadata=datamodel_pb2.ObjectMeta(name=provider_name),
                         type=str(profile.id),
                         config=config,
                         credentials=_provider_credential_slots(profile),
-                    )
+                    ),
                 ),
                 timeout=self._timeout,
                 metadata=self._metadata(),
@@ -495,7 +505,9 @@ class OpenShellGatewayClient:
     def delete_provider_grant(self, grant: OpenShellProviderGrant) -> None:
         try:
             self._stub.DeleteProvider(
-                openshell_pb2.DeleteProviderRequest(name=grant.provider_name),
+                openshell_pb2.DeleteProviderRequest(
+                    workspace_scope=self._workspace_scope, name=grant.provider_name
+                ),
                 timeout=self._timeout,
                 metadata=self._metadata(),
             )
@@ -515,6 +527,7 @@ class OpenShellGatewayClient:
     def expose_service(self, *, sandbox_name: str, target_port: int, service: str = "") -> str:
         response = self._stub.ExposeService(
             openshell_pb2.ExposeServiceRequest(
+                workspace_scope=self._workspace_scope,
                 sandbox=sandbox_name,
                 service=service,
                 target_port=int(target_port),
@@ -622,6 +635,7 @@ class OpenShellGatewayClient:
     ) -> ResidentLogPage:
         response = self._stub.GetSandboxLogs(
             openshell_pb2.GetSandboxLogsRequest(
+                workspace_scope=self._workspace_scope,
                 sandbox_id=sandbox_id,
                 lines=lines,
                 sources=list(sources),

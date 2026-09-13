@@ -107,6 +107,7 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
     for name in (
         "Provider",
         "ObjectMeta",
+        "WorkspaceSelector",
     ):
         setattr(datamodel_pb2_mod, name, _Proto)
 
