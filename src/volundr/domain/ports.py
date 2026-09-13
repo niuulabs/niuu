@@ -401,6 +401,16 @@ class TimelineRepository(ABC):
 class PodManager(ABC):
     """Port for managing session pods (Skuld, code-server, terminal)."""
 
+    @property
+    def runtime_backend(self) -> str | None:
+        """Declare lifecycle semantics independently of adapter/config class names.
+
+        None retains legacy composition for existing external implementations.
+        Process adapters must declare their backend so Kubernetes orphan cleanup
+        never interprets an ordinary local gateway as a disposable cluster pod.
+        """
+        return None
+
     def initial_chat_endpoint(self, session: Session) -> str | None:
         """Return the deterministic chat endpoint before pods are ready, if known."""
         return None

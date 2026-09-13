@@ -140,7 +140,9 @@ def _create_resident_session_controllers(
     return session_controllers
 
 
-def _runtime_backend(settings: Settings) -> str:
+def _runtime_backend(settings: Settings, pod_manager: PodManager) -> str:
+    if isinstance(pod_manager.runtime_backend, str) and pod_manager.runtime_backend:
+        return pod_manager.runtime_backend
     adapter = settings.pod_manager.adapter.rsplit(".", 1)[-1].lower()
     if "openshell" in adapter:
         return "openshell"

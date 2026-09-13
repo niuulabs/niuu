@@ -740,7 +740,7 @@ def create_app(
                 public_origin=public_origin,
                 session_communication_port=session_room_port,
                 attention_notifier=attention_notifier,
-                runtime_backend=_runtime_backend(settings),
+                runtime_backend=_runtime_backend(settings, pod_manager),
                 span_repository=span_repository,
             )
             # Local-process brokers notify the session service when they exit so

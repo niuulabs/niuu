@@ -425,6 +425,10 @@ class LocalProcessPodManager(PodManager):
     endpoints, and event pipeline work unchanged.
     """
 
+    @property
+    def runtime_backend(self) -> str:
+        return "process"
+
     def __init__(
         self,
         *,
