@@ -304,6 +304,59 @@ async def _sync_persona_to_instance(
     _ensure_remote_success(synced)
 
 
+async def _find_runtime_owner(
+    service: InstanceService,
+    principal: Principal,
+    request: Request,
+    path: str,
+    not_found_detail: str,
+    *,
+    embedded_app: ASGIApp | None,
+    rebase_chat_endpoint: bool = True,
+) -> tuple[RegisteredInstance, dict[str, Any]]:
+    async def probe(instance: RegisteredInstance) -> tuple[RegisteredInstance, httpx.Response]:
+        response = await _request_remote(
+            instance, request, method="GET", path=path, embedded_app=embedded_app, timeout=5.0
+        )
+        return instance, response
+
+    tasks = [
+        asyncio.create_task(probe(instance))
+        for instance in await _visible_instances(service, principal)
+    ]
+    failure: HTTPException | None = None
+    try:
+        # Ownership is unknown until a visible instance returns the resource.
+        # An unrelated offline instance must not delay a healthy owner's reply.
+        for task in asyncio.as_completed(tasks):
+            try:
+                instance, response = await task
+            except httpx.RequestError:
+                failure = HTTPException(502, "An instance was unreachable during owner lookup")
+                continue
+            except HTTPException as exc:
+                failure = exc
+                continue
+            if response.status_code in {status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND}:
+                continue
+            if response.is_error:
+                failure = HTTPException(502, "An instance failed during owner lookup")
+                continue
+            payload = response.json()
+            if isinstance(payload, dict):
+                return instance, _with_instance(
+                    payload, instance, rebase_chat_endpoint=rebase_chat_endpoint
+                )
+        if failure is not None:
+            # A partial search cannot establish that the resource is absent.
+            raise failure
+        raise HTTPException(status_code=404, detail=not_found_detail)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def _find_session_owner(
     service: InstanceService,
     principal: Principal,
@@ -312,31 +365,13 @@ async def _find_session_owner(
     *,
     embedded_app: ASGIApp | None = None,
 ) -> tuple[RegisteredInstance, dict[str, Any]]:
-    for instance in await _visible_instances(service, principal):
-        response = await _request_remote(
-            instance,
-            request,
-            method="GET",
-            path=f"/sessions/{session_id}",
-            embedded_app=embedded_app,
-        )
-        if response.status_code == status.HTTP_404_NOT_FOUND:
-            continue
-        if response.status_code == status.HTTP_403_FORBIDDEN:
-            continue
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:  # pragma: no cover - defensive transport mapping
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=str(exc),
-            ) from exc
-        payload = response.json()
-        if isinstance(payload, dict):
-            return instance, _with_instance(payload, instance)
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Session not found: {session_id}",
+    return await _find_runtime_owner(
+        service,
+        principal,
+        request,
+        f"/sessions/{session_id}",
+        f"Session not found: {session_id}",
+        embedded_app=embedded_app,
     )
 
 
@@ -348,23 +383,14 @@ async def _find_resident_owner(
     *,
     embedded_app: ASGIApp | None = None,
 ) -> tuple[RegisteredInstance, dict[str, Any]]:
-    for instance in await _visible_instances(service, principal):
-        response = await _request_remote(
-            instance,
-            request,
-            method="GET",
-            path=f"/resident-runtimes/{runtime_id}",
-            embedded_app=embedded_app,
-        )
-        if response.status_code in {status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND}:
-            continue
-        _ensure_remote_success(response)
-        payload = response.json()
-        if isinstance(payload, dict):
-            return instance, _with_instance(payload, instance, rebase_chat_endpoint=False)
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Resident runtime not found: {runtime_id}",
+    return await _find_runtime_owner(
+        service,
+        principal,
+        request,
+        f"/resident-runtimes/{runtime_id}",
+        f"Resident runtime not found: {runtime_id}",
+        embedded_app=embedded_app,
+        rebase_chat_endpoint=False,
     )
 
 
