@@ -200,8 +200,12 @@ class DockerConfig(BaseModel):
     """Docker mode: the whole platform as containers on one Docker host."""
 
     data_dir: str = Field(
-        default="/var/lib/niuu",
-        description="Host directory for postgres data, workspaces, credentials and models.",
+        default="~/.niuu/data",
+        description=(
+            "Host directory for postgres data, workspaces, credentials and models. "
+            "Owned by the user who runs the platform; no root needed. Set a system "
+            "path such as /var/lib/niuu to share the install between users."
+        ),
     )
     compose_dir: str = Field(
         default="~/.niuu/docker",

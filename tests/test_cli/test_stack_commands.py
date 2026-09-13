@@ -329,7 +329,7 @@ class TestInit:
     def test_init_config_for_docker_round_trips(self) -> None:
         config = _build_init_config("docker")
         assert config["mode"] == "docker"
-        assert config["docker"]["data_dir"] == "/var/lib/niuu"
+        assert config["docker"]["data_dir"] == "~/.niuu/data"
         assert "vllm" not in config["docker"]
         loaded = CLISettings(**yaml.safe_load(yaml.safe_dump(config)))
         assert loaded.mode == "docker"

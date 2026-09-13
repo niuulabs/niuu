@@ -14,7 +14,7 @@
 #
 # Environment:
 #   NIUU_IMAGE_TAG     platform image tag for docker mode (default: latest)
-#   NIUU_DATA_DIR      docker mode data directory (default: /var/lib/niuu)
+#   NIUU_DATA_DIR      docker mode data directory (default: ~/.niuu/data, yours; no root)
 #   NIUU_VERSION       release tag for mini mode (default: latest)
 #   NIUU_INSTALL_DIR   where the `niuu` command goes (default: ~/.local/bin)
 #   NIUU_NO_UP=1       install only, do not start the platform
@@ -22,9 +22,10 @@
 #   NIUU_REPO          GitHub repo (default: niuulabs/niuu)
 #   NIUU_REGISTRY      image registry (default: ghcr.io/niuulabs)
 #
-# Nothing is asked in the terminal. When the host is not ready (no Docker,
-# not in the docker group, data directory not writable) the script stops and
-# prints the exact commands to run; it never runs sudo for you.
+# Nothing is asked in the terminal and nothing needs root: data lives under
+# your home unless NIUU_DATA_DIR says otherwise. When the host is not ready
+# (no Docker, not in the docker group, a chosen data directory not writable)
+# the script stops and prints the exact commands to run; it never runs sudo.
 set -eu
 
 REPO="${NIUU_REPO:-niuulabs/niuu}"
@@ -32,7 +33,7 @@ REGISTRY="${NIUU_REGISTRY:-ghcr.io/niuulabs}"
 INSTALL_DIR="${NIUU_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${NIUU_VERSION:-latest}"
 IMAGE_TAG="${NIUU_IMAGE_TAG:-latest}"
-DATA_DIR="${NIUU_DATA_DIR:-/var/lib/niuu}"
+DATA_DIR="${NIUU_DATA_DIR:-$HOME/.niuu/data}"
 MODE="${NIUU_MODE:-docker}"
 SOCKET="${DOCKER_HOST_SOCKET:-/var/run/docker.sock}"
 
@@ -80,7 +81,7 @@ install_docker_mode() {
 
   if ! mkdir -p "$DATA_DIR" 2>/dev/null || [ ! -w "$DATA_DIR" ]; then
     say "niuu: the data directory $DATA_DIR cannot be created or written by $(id -un)."
-    say "Create it once, then rerun (or set NIUU_DATA_DIR to a writable path):"
+    say "Either point NIUU_DATA_DIR at a directory you own and rerun, or create this one once:"
     say "  sudo mkdir -p $DATA_DIR && sudo chown $(id -u):$(id -g) $DATA_DIR"
     exit 1
   fi

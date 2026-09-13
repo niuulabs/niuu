@@ -29,11 +29,11 @@ through that wrapper. The image tag the installer pins is the one it pulled
 apart.
 
 It ends by printing a setup URL; open it to finish configuration in the browser.
-The script asks nothing in the terminal and never runs `sudo`: when the host
-is not ready (Docker missing, your user not in the `docker` group, the data
-directory `/var/lib/niuu` not writable) it stops and prints the exact command
-to run, then you rerun it. `NIUU_NO_UP=1` installs without starting;
-`NIUU_DATA_DIR` moves the data directory. See
+The script asks nothing in the terminal, needs no root, and never runs
+`sudo`: data lives under `~/.niuu/data` unless `NIUU_DATA_DIR` says otherwise.
+When the host is not ready (Docker missing, your user not in the `docker`
+group) it stops and prints the exact command to run, then you rerun it.
+`NIUU_NO_UP=1` installs without starting. See
 [Single-host Docker mode](../operations/docker-mode.md) for what runs, where
 data lives, and how `niuu up`, `niuu doctor`, and `niuu down` relate to the
 `niuu platform` commands.

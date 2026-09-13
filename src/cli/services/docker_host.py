@@ -40,7 +40,7 @@ NVIDIA_RUNTIME_REMEDY = (
 class DockerPreflightConfig:
     """Configuration for Docker-mode preflight checks."""
 
-    data_dir: str = "/var/lib/niuu"
+    data_dir: str = "~/.niuu/data"
     ports: list[int] = field(default_factory=lambda: [8080])
     min_disk_space_bytes: int = 50 * 1024**3
     require_gpu: bool = False
@@ -317,15 +317,15 @@ def check_data_dir(config: DockerPreflightConfig) -> PreflightResult:
             name="data dir",
             passed=False,
             message=f"Cannot create data directory '{data_dir}': {exc}. "
-            f"Create it with `sudo mkdir -p {data_dir} && sudo chown $USER {data_dir}` "
-            "or set `docker.data_dir` to a writable path.",
+            "Set `docker.data_dir` to a directory you own, or create this one once with "
+            f"`sudo mkdir -p {data_dir} && sudo chown $USER {data_dir}`.",
         )
     if not os.access(data_dir, os.W_OK):
         return PreflightResult(
             name="data dir",
             passed=False,
             message=f"Data directory '{data_dir}' is not writable. "
-            f"Run `sudo chown $USER {data_dir}` or set `docker.data_dir`.",
+            f"Set `docker.data_dir` to a directory you own, or run `sudo chown $USER {data_dir}`.",
         )
     return PreflightResult(
         name="data dir", passed=True, message=f"Data directory ready: {data_dir}"

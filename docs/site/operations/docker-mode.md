@@ -46,7 +46,8 @@ Under `docker.compose_dir` (default `~/.niuu/docker`):
 | `secrets.env` | Mode 0600. `NIUU_POSTGRES_PASSWORD` and `NIUU_CREDENTIAL_KEY`, generated on the first run. Back this file up: losing the credential key makes every stored credential unreadable. |
 | `host-facts.json` | Host facts shown on the wizard's welcome step. |
 
-Under `docker.data_dir` (default `/var/lib/niuu`): `postgres/`, `workspaces/`,
+Under `docker.data_dir` (default `~/.niuu/data`, owned by you; a system path
+such as `/var/lib/niuu` is a choice, not a requirement): `postgres/`, `workspaces/`,
 `home/`, `credentials/`, `session-secrets/`, `models/`, `residents/`, plus
 `config.yaml`, `host-facts.json`, `setup-state.json`, `stack.yaml` and the
 wizard's `stack-staged.yaml` / `stack-overrides.yaml`. The data directory is
@@ -81,7 +82,7 @@ Everything lives under `docker:` in `~/.niuu/config.yaml` (env prefix
 ```yaml
 mode: docker
 docker:
-  data_dir: /var/lib/niuu
+  data_dir: ~/.niuu/data   # or a system path such as /var/lib/niuu
   compose_dir: ~/.niuu/docker
   image: ghcr.io/niuulabs/niuu:dev
   skuld_image: ghcr.io/niuulabs/skuld:dev
