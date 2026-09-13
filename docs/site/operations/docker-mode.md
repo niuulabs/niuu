@@ -32,7 +32,10 @@ runtime, so the host checks below see the real host.
 Docker CLI and daemon (with the socket-permission remedy when the user is not
 in the `docker` group), Compose v2, the NVIDIA container runtime and a visible
 GPU (reported, never required unless `docker.require_gpu` is on), the data
-directory, free disk, the published port, registry reachability, and git.
+directory, free disk, the published port and registry reachability. Nothing
+about git: the platform image clones with its own git, and the session image
+carries `git`, `gh` and `glab` (signed in through the connected account's
+token as `GH_TOKEN` / `GITLAB_TOKEN`).
 Warnings do not block a start; failures do.
 
 ## What it writes
@@ -137,7 +140,7 @@ front door over the platform's existing APIs: every value it stores lands where
 | Step | What it shows | What it writes |
 | --- | --- | --- |
 | Welcome | Host facts recorded by `niuu up` (hostname, OS, memory, GPU, Docker version). | Nothing. |
-| System check | Every preflight result `niuu up` recorded (Docker, Compose, NVIDIA runtime, GPU, data directory, disk space, ports, outbound network to the registries and providers, git) plus live checks from inside the platform: database reachable, Docker socket present, git installed. A failed check blocks **Continue**; a warning does not. | Nothing. |
+| System check | Every preflight result `niuu up` recorded (Docker, Compose, NVIDIA runtime, GPU, data directory, disk space, ports, outbound network to the registries and providers) plus live checks from inside the platform: database reachable, Docker socket present, git installed. A failed check blocks **Continue**; a warning does not. | Nothing. |
 | Local model | Curated models (Nemotron 3 Nano 30B, gpt-oss-120b, Qwen3-Coder 30B) with a fit verdict against the host's accelerator memory and a memory meter, a custom Hugging Face id, **a model server you already run** (URL, model ids, optional key), or cloud-only. | A staged stack change (`vllm_enabled`, `vllm_model`, or `model_server_enabled`, `model_server_url`, `model_server_models`, `model_server_api_key`) through `PUT /api/v1/niuu/setup/stack`; applied on the finish step. |
 | AI providers | A list of what is connected, one row per account, empty at first, and an **Add provider** button. Adding walks three small steps in a dialog: which provider, sign in or API key, then the sign-in card or the key form; the dialog closes by itself once the connection exists. A provider can be added as often as there are accounts (work and personal GitHub, two Anthropic keys): each account gets a name, which becomes its credential name (`github-work`), and the platform refuses a name already in use rather than overwrite that account's secret. Providers: Anthropic · Claude (Claude Code sign-in, or a key), OpenAI · Codex (ChatGPT device sign-in, or a key), xAI · Grok (Grok Build device sign-in, or a key), DeepSeek (key). Sign-ins run the official CLI in a sealed helper container; the card shows the link and device code, polls until the provider confirms, and for Claude takes the authorization code the browser hands back. **Test connection** calls the provider's models endpoint with the key and reports how many models it can see. | An integration connection with an inline credential (`POST /api/v1/integrations`), or an enrollment (`POST /api/v1/integrations/enrollments`) whose credential the platform stores when the sign-in completes. Both encrypted with the key from `secrets.env`. |
 | Git | The same list and **Add Git host** dialog for GitHub and GitLab: **Sign in** (OAuth device flow through an application you own; the dialog asks for its client id the first time) or a personal access token. Right after a host is connected the wizard signs in as you and lists the repositories the credential can reach, so a wrong scope shows up here, not in a session; **Test connection** repeats that check. | Same. |

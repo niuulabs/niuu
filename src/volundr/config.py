@@ -1027,6 +1027,8 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                     "orgs": {"label": "Organizations", "type": "string[]"},
                 },
             },
+            # gh in the session image signs in with GH_TOKEN.
+            env_from_credentials={"GH_TOKEN": "token"},
             mcp_server={
                 "name": "github",
                 "command": "npx",
@@ -1076,6 +1078,8 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                     "groups": {"label": "Groups", "type": "string[]"},
                 },
             },
+            # glab in the session image signs in with GITLAB_TOKEN.
+            env_from_credentials={"GITLAB_TOKEN": "token"},
             mcp_server={
                 "name": "gitlab",
                 "command": "npx",

@@ -380,10 +380,11 @@ class TestRunAll:
             patch(f"{MOD}.check_disk_space", return_value=ok),
             patch(f"{MOD}.check_ports", return_value=[ok]),
             patch(f"{MOD}.check_registry_reachable", return_value=[ok]),
-            patch(f"{MOD}.check_git", return_value=ok),
         ):
             results = run_docker_preflight_checks(config)
-        assert len(results) == 10
+        # No host git check: the images carry git, gh and glab.
+        assert len(results) == 9
+        assert "git" not in [r.name for r in results]
         assert has_failures(results) is False
 
 

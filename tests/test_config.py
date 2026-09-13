@@ -1149,3 +1149,12 @@ def test_env_from_config_reaches_the_registry():
     )
     entry = next(d for d in loaded if d.slug == MODEL_SERVER_SLUG)
     assert entry.env_from_config == {MODEL_GATEWAY_URL_ENV: "gateway_url"}
+
+
+def test_git_hosts_sign_the_cli_tools_in():
+    """Sessions carry gh and glab; the connected account's token reaches them."""
+    from volundr.config import _default_integration_definitions
+
+    by_slug = {entry.slug: entry for entry in _default_integration_definitions()}
+    assert by_slug["github"].env_from_credentials == {"GH_TOKEN": "token"}
+    assert by_slug["gitlab"].env_from_credentials == {"GITLAB_TOKEN": "token"}

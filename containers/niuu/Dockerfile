@@ -107,6 +107,16 @@ RUN set -eu; \
     chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose; \
     docker --version; docker compose version
 
+# GitHub CLI (gh): the platform's git workflow reads PR status with it.
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod 0644 /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/* \
+    && gh --version
+
 LABEL org.opencontainers.image.title="niuu"
 LABEL org.opencontainers.image.description="Niuu — unified Python control plane services"
 LABEL org.opencontainers.image.vendor="Niuu Labs"

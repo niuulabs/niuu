@@ -24,7 +24,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from cli.services.preflight import PreflightResult, check_git, check_port_available
+from cli.services.preflight import PreflightResult, check_port_available
 
 DOCKER_PERMISSION_REMEDY = (
     "Your user cannot reach the Docker socket. Run "
@@ -471,7 +471,8 @@ def run_docker_preflight_checks(config: DockerPreflightConfig) -> list[Preflight
     ]
     results.extend(check_ports(config))
     results.append(check_outbound_network(config))
-    results.append(check_git())
+    # No git or gh check on the host: in docker mode the platform image clones
+    # and the session image carries git, gh and glab.
     return results
 
 
