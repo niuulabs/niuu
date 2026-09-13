@@ -218,8 +218,13 @@ export function useApplyStack() {
   });
 }
 
+/**
+ * True once an apply is over. `idle` counts: a platform that has no apply on
+ * record after one was started has finished it (the outcome is kept on the
+ * platform, but an older one forgot it after a single read).
+ */
 export function isApplySettled(state: string | undefined): boolean {
-  return state === 'applied' || state === 'failed';
+  return state === 'applied' || state === 'failed' || state === 'idle';
 }
 
 /** Keep polling while the apply runs, and after it while the local model is still coming up. */

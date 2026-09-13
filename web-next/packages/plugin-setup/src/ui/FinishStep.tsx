@@ -22,6 +22,8 @@ export interface FinishStepProps {
   newAddress: string | null;
   finishing: boolean;
   error: Error | null;
+  /** Finish setup by hand once the apply is over, should the automatic step not fire. */
+  onContinue?: () => void;
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -57,6 +59,7 @@ export function FinishStep({
   newAddress,
   finishing,
   error,
+  onContinue,
 }: FinishStepProps) {
   const rows = summarizeConnections(connections);
   const staged = describeStagedChanges(stack);
@@ -151,10 +154,22 @@ export function FinishStep({
             <div className="setup-error" role="alert" data-testid="setup-apply-failed">
               Applying the changes failed: {apply.detail}
             </div>
-          ) : apply?.state === 'applied' ? (
-            <div className="setup-note" data-testid="setup-apply-done">
-              <CheckIcon size={13} /> Changes applied.{' '}
-              {apply.vllm ? `Local model: ${apply.vllm.state}.` : ''}
+          ) : apply?.state === 'applied' || apply?.state === 'idle' ? (
+            <div className="setup-form__actions" data-testid="setup-apply-done">
+              <span className="setup-note">
+                <CheckIcon size={13} /> Changes applied.
+              </span>
+              {onContinue ? (
+                <button
+                  type="button"
+                  className="setup-btn"
+                  onClick={onContinue}
+                  disabled={finishing}
+                  data-testid="setup-open-niuu"
+                >
+                  {finishing ? 'Opening…' : 'Open Niuu'}
+                </button>
+              ) : null}
             </div>
           ) : (
             <div className="setup-progress" data-testid="setup-apply-progress">

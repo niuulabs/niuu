@@ -145,7 +145,7 @@ export function SetupPage({ onNavigate, origin }: SetupPageProps = {}) {
   // Once the apply reports applied (the platform is back), finish setup once.
   useEffect(() => {
     if (!applyStarted || finishedRef.current) return;
-    if (applyStatus?.state !== 'applied') return;
+    if (applyStatus?.state !== 'applied' && applyStatus?.state !== 'idle') return;
     finishedRef.current = true;
     complete();
     // `complete` is stable for the life of the page; the mutations are hooks.
@@ -272,6 +272,7 @@ export function SetupPage({ onNavigate, origin }: SetupPageProps = {}) {
                 newAddress={newAddress}
                 finishing={completeSetup.isPending}
                 error={completeSetup.error ?? applyStack.error}
+                onContinue={complete}
               />
             ) : null}
           </div>

@@ -331,7 +331,15 @@ async def test_apply_renders_bundle_runs_applier_and_reports(
     done = await controller.status()
     assert done.state == "applied"
     assert applier.removed is True
-    assert (await controller.status()).state == "idle"
+    # The outcome stays readable: the poll that would have seen it can fall
+    # into the platform restart. A new apply replaces it.
+    again = await controller.status()
+    assert again.state == "applied" and again.detail == "Applied."
+    assert again.changes == {"docker": {"bind_host": "0.0.0.0"}}
+    await controller.stage({"bind_host": "127.0.0.1"})
+    with patch.object(sc, "write_bundle"):
+        assert (await controller.apply()).state == "applying"
+    assert (await controller.status()).state == "applying"
 
 
 @pytest.mark.asyncio
@@ -349,7 +357,8 @@ async def test_apply_failure_keeps_logs(
     failed = await controller.status()
     assert failed.state == "failed"
     assert "port already allocated" in failed.detail
-    assert (await controller.status()).state == "idle"
+    kept = await controller.status()
+    assert kept.state == "failed" and "port already allocated" in kept.detail
 
     await controller.stage({"bind_host": "127.0.0.1"})
     with patch.object(sc, "write_bundle"):

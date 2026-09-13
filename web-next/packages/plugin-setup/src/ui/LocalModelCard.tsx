@@ -139,7 +139,7 @@ export function LocalModelCard({
             >
               {result.ok ? <CheckIcon size={13} /> : <AlertIcon size={13} />}{' '}
               {result.ok
-                ? `Answered "${result.reply}" in ${(result.latencyMs / 1000).toFixed(1)} s`
+                ? `Asked for one word, it answered "${result.reply.slice(0, 40)}" in ${(result.latencyMs / 1000).toFixed(1)} s`
                 : `No answer: ${result.detail}`}
             </span>
           ) : test.error ? (

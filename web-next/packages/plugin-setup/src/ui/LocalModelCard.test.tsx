@@ -97,7 +97,7 @@ describe('LocalModelCard', () => {
       'Local model is serving',
     );
     await waitFor(() =>
-      expect(screen.getByTestId('setup-local-model-result')).toHaveTextContent('Answered "OK"'),
+      expect(screen.getByTestId('setup-local-model-result')).toHaveTextContent('it answered "OK"'),
     );
     expect(testModel).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByTestId('setup-local-model-test-btn'));

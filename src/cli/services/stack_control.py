@@ -70,7 +70,7 @@ DEFAULT_LOG_TAIL = 40
 PROGRESS_LOG_TAIL = 400
 # The quick test sent to the local model once it serves.
 MODEL_TEST_PROMPT = "Reply with the single word OK."
-MODEL_TEST_MAX_TOKENS = 8
+MODEL_TEST_MAX_TOKENS = 32
 MODEL_TEST_TIMEOUT_SECONDS = 90.0
 GB = 1000**3
 
@@ -460,6 +460,16 @@ class DockerStackController(StackControlPort):
         if not self._apply_state_file.exists():
             return ApplyStatus(state="idle", vllm=vllm)
         state = json.loads(self._apply_state_file.read_text())
+        if state.get("state") in {"applied", "failed"}:
+            # The outcome is kept until the next apply: the platform restarts
+            # during an apply, so the poll that would have seen it can miss it.
+            return ApplyStatus(
+                state=str(state["state"]),
+                started_at=str(state.get("started_at", "")),
+                detail=str(state.get("detail", "")),
+                changes=dict(state.get("changes", {})),
+                vllm=vllm,
+            )
         container = await asyncio.to_thread(self._get_container, str(state.get("container", "")))
         if container is None:
             return ApplyStatus(
@@ -488,19 +498,27 @@ class DockerStackController(StackControlPort):
         logs = await asyncio.to_thread(container.logs, tail=self._log_tail)
         text = logs.decode("utf-8", errors="replace") if isinstance(logs, bytes) else str(logs)
         await asyncio.to_thread(container.remove, force=True)
-        self._apply_state_file.unlink()
-        if exit_code != 0:
-            return ApplyStatus(
-                state="failed",
-                started_at=str(state.get("started_at", "")),
-                detail=text.strip() or f"docker compose exited with code {exit_code}",
-                changes=dict(state.get("changes", {})),
-                vllm=vllm,
+        outcome = "failed" if exit_code != 0 else "applied"
+        detail = (
+            (text.strip() or f"docker compose exited with code {exit_code}")
+            if exit_code != 0
+            else "Applied."
+        )
+        self._apply_state_file.write_text(
+            json.dumps(
+                {
+                    "state": outcome,
+                    "started_at": state.get("started_at", ""),
+                    "finished_at": datetime.now(UTC).isoformat(),
+                    "detail": detail,
+                    "changes": state.get("changes", {}),
+                }
             )
+        )
         return ApplyStatus(
-            state="applied",
+            state=outcome,
             started_at=str(state.get("started_at", "")),
-            detail="Applied.",
+            detail=detail,
             changes=dict(state.get("changes", {})),
             vllm=vllm,
         )
@@ -565,6 +583,9 @@ class DockerStackController(StackControlPort):
             "messages": [{"role": "user", "content": MODEL_TEST_PROMPT}],
             "max_tokens": MODEL_TEST_MAX_TOKENS,
             "temperature": 0,
+            # Reasoning models think before they answer; the test wants the
+            # answer, not the deliberation (vLLM honours this for such models).
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         started = time.monotonic()
         try:
