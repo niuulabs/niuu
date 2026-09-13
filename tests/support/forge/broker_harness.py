@@ -70,6 +70,10 @@ class FakeWebSocket:
         self._disconnect = False
         # Headers are read pre-accept by _update_jwt_from_websocket.
         self.headers: dict[str, str] = {}
+        # Production reconnect reads the browser's history query preference.
+        # Model the empty default rather than terminating the fake connection
+        # with AttributeError before the reconnect behavior can be exercised.
+        self.query_params: dict[str, str] = {}
 
     async def accept(self) -> None:
         self.accepted = True
