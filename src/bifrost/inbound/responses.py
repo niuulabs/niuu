@@ -73,7 +73,15 @@ class ResponsesRequest(BaseModel):
 
 
 class UnsupportedResponsesInputError(ValueError):
-    """The request uses a Responses feature the gateway cannot honour."""
+    """The request uses a Responses feature the gateway cannot honour.
+
+    ``message`` is the sentence for the client; it names the feature, never
+    an internal state, so it is safe to return as the error body.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
 
 
 # ---------------------------------------------------------------------------

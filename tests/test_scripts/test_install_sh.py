@@ -243,7 +243,28 @@ class TestDockerMode:
         )
 
     def test_docker_is_required(self, tmp_path: Path) -> None:
-        result = _run(tmp_path)
+        # CI runners ship Docker in /usr/bin; the installer must see a PATH
+        # with everything else but no docker at all.
+        tools = tmp_path / "tools"
+        tools.mkdir()
+        for directory in ("/usr/bin", "/bin"):
+            for entry in Path(directory).iterdir():
+                if entry.name == "docker" or (tools / entry.name).exists():
+                    continue
+                (tools / entry.name).symlink_to(entry)
+        result = subprocess.run(
+            ["sh", str(INSTALLER)],
+            capture_output=True,
+            text=True,
+            env={
+                "PATH": str(tools),
+                "HOME": str(tmp_path / "home"),
+                "NIUU_DATA_DIR": str(tmp_path / "data"),
+                "NIUU_INSTALL_DIR": str(tmp_path / "home" / ".local" / "bin"),
+            },
+            cwd=tmp_path,
+            check=False,
+        )
         assert result.returncode == 1
         assert "'docker' is required" in result.stderr
 

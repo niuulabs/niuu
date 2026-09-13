@@ -1643,8 +1643,8 @@ def create_router(
         try:
             request = responses_request_to_anthropic(responses_request)
         except UnsupportedResponsesInputError as exc:
-            logger.warning("Rejected /v1/responses request: %s", exc)
-            return openai_error_response(400, str(exc), "invalid_request_error")
+            logger.warning("Rejected /v1/responses request: %s", exc.message)
+            return openai_error_response(400, exc.message, "invalid_request_error")
 
         # --- Model access control ---
         agent_perms = config.permissions_for_agent(identity.agent_id)

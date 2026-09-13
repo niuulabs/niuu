@@ -134,7 +134,7 @@ class CredentialEnrollmentService:
             )
             # The provider's answer (an unknown client id, a refused scope) is
             # the one thing the person needs to see; never hide it.
-            logger.error("Provider login for %s could not start: %s", slug, exc)
+            logger.error("Provider login for %r could not start: %s", slug, exc)
             raise CredentialEnrollmentError(f"Could not start provider login: {exc}") from exc
         return await self._repository.save(started)
 

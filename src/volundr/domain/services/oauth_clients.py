@@ -152,7 +152,7 @@ class OAuthClientRegistry:
             {"integration": slug, "app": app, "source": SOURCE_REGISTERED},
         )
         self._registered[(slug, app)] = client
-        logger.info("OAuth application %r registered for %s", app, slug)
+        logger.info("OAuth application %r registered for %r", app, slug)
         return client
 
     async def remove(self, slug: str, app: str = DEFAULT_APP) -> None:

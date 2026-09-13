@@ -167,7 +167,7 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
     @staticmethod
     def _synthetic_pid(session_id: str) -> int:
         """Stable positive int standing in for a PID in the shared state file."""
-        digest = hashlib.sha1(session_id.encode(), usedforsecurity=False).hexdigest()
+        digest = hashlib.sha256(session_id.encode(), usedforsecurity=False).hexdigest()
         return int(digest[:8], 16) or 1
 
     def _session_for_pid(self, pid: int) -> str | None:

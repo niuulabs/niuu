@@ -366,7 +366,7 @@ class TestPortsAndRegistry:
             results = check_registry_reachable(config)
         assert results[0].passed is True
         assert results[0].warn_only is True
-        assert "ghcr.io" in results[0].message
+        assert results[0].message.startswith("Cannot reach ghcr.io:")
 
 
 class TestRunAll:

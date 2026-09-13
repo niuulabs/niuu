@@ -629,7 +629,7 @@ function TokensResourceCard({
         onSubmit={(event) => {
           event.preventDefault();
           if (!name.trim() || !scope) return;
-          void createMutation.mutateAsync();
+          createMutation.mutate();
         }}
       >
         <label className="settings-resource__composer-field">
@@ -699,7 +699,7 @@ function TokensResourceCard({
                 className="settings-resource__row-action"
                 disabled={revokeMutation.isPending}
                 onClick={() => {
-                  void revokeMutation.mutateAsync(token.id);
+                  revokeMutation.mutate(token.id);
                 }}
               >
                 Revoke
@@ -872,7 +872,7 @@ function CredentialsResourceCard({
         onSubmit={(event) => {
           event.preventDefault();
           if (!name.trim()) return;
-          void createMutation.mutateAsync();
+          createMutation.mutate();
         }}
       >
         <div className="settings-resource__schema-fields">
@@ -968,7 +968,7 @@ function CredentialsResourceCard({
                 className="settings-resource__row-action"
                 disabled={deleteMutation.isPending}
                 onClick={() => {
-                  void deleteMutation.mutateAsync(credential.name);
+                  deleteMutation.mutate(credential.name);
                 }}
               >
                 Delete
@@ -1407,7 +1407,7 @@ function IntegrationsResourceCard({
             if (selectedIsDeviceCode || selectedIsOauth) return;
             if (!selectedIsOauth && createInlineCredential && !credentialName.trim()) return;
             if (!selectedIsOauth && !createInlineCredential && !selectedExistingCredential) return;
-            void createMutation.mutateAsync();
+            createMutation.mutate();
           }}
         >
           <div className="settings-resource__header">
@@ -1585,7 +1585,7 @@ function IntegrationsResourceCard({
                 className="settings-shell__save-button settings-shell__save-button--secondary"
                 disabled={oauthMutation.isPending || !!selectedConnection}
                 onClick={() => {
-                  void oauthMutation.mutateAsync(selectedEntry.slug ?? selectedEntry.id);
+                  oauthMutation.mutate(selectedEntry.slug ?? selectedEntry.id);
                 }}
               >
                 {oauthMutation.isPending ? 'Opening…' : 'Connect with OAuth'}
@@ -1733,7 +1733,7 @@ function IntegrationsResourceCard({
                   className="settings-resource__row-action"
                   disabled={testMutation.isPending}
                   onClick={() => {
-                    void testMutation.mutateAsync(integration.id);
+                    testMutation.mutate(integration.id);
                   }}
                 >
                   Test
@@ -1743,7 +1743,7 @@ function IntegrationsResourceCard({
                   className="settings-resource__row-action"
                   disabled={deleteMutation.isPending}
                   onClick={() => {
-                    void deleteMutation.mutateAsync({
+                    deleteMutation.mutate({
                       id: integration.id,
                       slug: integration.slug,
                       oauth: isOauthIntegration(
@@ -1897,7 +1897,7 @@ function SettingsSectionPanel({
           className="settings-shell__form"
           onSubmit={(event) => {
             event.preventDefault();
-            void saveMutation.mutateAsync(draft);
+            saveMutation.mutate(draft);
           }}
         >
           <div className="settings-shell__field-list">

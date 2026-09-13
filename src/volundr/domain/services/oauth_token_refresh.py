@@ -202,7 +202,7 @@ async def refresh_oauth_tokens_loop(
     interval_seconds: float = OAUTH_TOKEN_REFRESH_INTERVAL_SECONDS,
 ) -> None:
     """Refresh device-flow tokens on a timer, independently of any session."""
-    logger.info("OAuth token refresh started, interval=%.0fs", interval_seconds)
+    logger.info("OAuth refresh loop started, interval=%.0fs", interval_seconds)
     while True:
         try:
             report = await service.refresh_due()
