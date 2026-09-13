@@ -31,6 +31,16 @@ function buildInitialDraft(section: RemoteSettingsSectionSchema | null): Record<
   return Object.fromEntries(section.fields.map((field) => [field.key, field.value]));
 }
 
+/** The server's reason for a failed save, so the page never just says "failed". */
+function saveErrorText(error: unknown): string {
+  if (error && typeof error === 'object' && 'detail' in error) {
+    const detail = (error as { detail?: unknown }).detail;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+  }
+  if (error instanceof Error && error.message.trim()) return error.message;
+  return 'The server did not say why.';
+}
+
 type ProviderStatus = 'ready' | 'loading' | 'missing' | 'idle' | 'error';
 
 const CREDENTIAL_ENROLLMENT_STATUS_INTERVAL_MS = 2000;
@@ -619,7 +629,7 @@ function TokensResourceCard({
         onSubmit={(event) => {
           event.preventDefault();
           if (!name.trim() || !scope) return;
-          void createMutation.mutateAsync();
+          createMutation.mutate();
         }}
       >
         <label className="settings-resource__composer-field">
@@ -689,7 +699,7 @@ function TokensResourceCard({
                 className="settings-resource__row-action"
                 disabled={revokeMutation.isPending}
                 onClick={() => {
-                  void revokeMutation.mutateAsync(token.id);
+                  revokeMutation.mutate(token.id);
                 }}
               >
                 Revoke
@@ -862,7 +872,7 @@ function CredentialsResourceCard({
         onSubmit={(event) => {
           event.preventDefault();
           if (!name.trim()) return;
-          void createMutation.mutateAsync();
+          createMutation.mutate();
         }}
       >
         <div className="settings-resource__schema-fields">
@@ -958,7 +968,7 @@ function CredentialsResourceCard({
                 className="settings-resource__row-action"
                 disabled={deleteMutation.isPending}
                 onClick={() => {
-                  void deleteMutation.mutateAsync(credential.name);
+                  deleteMutation.mutate(credential.name);
                 }}
               >
                 Delete
@@ -1397,7 +1407,7 @@ function IntegrationsResourceCard({
             if (selectedIsDeviceCode || selectedIsOauth) return;
             if (!selectedIsOauth && createInlineCredential && !credentialName.trim()) return;
             if (!selectedIsOauth && !createInlineCredential && !selectedExistingCredential) return;
-            void createMutation.mutateAsync();
+            createMutation.mutate();
           }}
         >
           <div className="settings-resource__header">
@@ -1486,7 +1496,10 @@ function IntegrationsResourceCard({
                 </span>
               ) : null}
               {currentEnrollment?.state === 'pending' ? (
-                <span role="status">Preparing sign-in…</span>
+                <span role="status">
+                  Preparing sign-in… The first one on this host also pulls the session runtime
+                  image, which can take a few minutes.
+                </span>
               ) : null}
               {selectedEnrollmentSpec?.method === 'claude_setup' ? (
                 <p className="settings-resource__copy">
@@ -1572,7 +1585,7 @@ function IntegrationsResourceCard({
                 className="settings-shell__save-button settings-shell__save-button--secondary"
                 disabled={oauthMutation.isPending || !!selectedConnection}
                 onClick={() => {
-                  void oauthMutation.mutateAsync(selectedEntry.slug ?? selectedEntry.id);
+                  oauthMutation.mutate(selectedEntry.slug ?? selectedEntry.id);
                 }}
               >
                 {oauthMutation.isPending ? 'Opening…' : 'Connect with OAuth'}
@@ -1720,7 +1733,7 @@ function IntegrationsResourceCard({
                   className="settings-resource__row-action"
                   disabled={testMutation.isPending}
                   onClick={() => {
-                    void testMutation.mutateAsync(integration.id);
+                    testMutation.mutate(integration.id);
                   }}
                 >
                   Test
@@ -1730,7 +1743,7 @@ function IntegrationsResourceCard({
                   className="settings-resource__row-action"
                   disabled={deleteMutation.isPending}
                   onClick={() => {
-                    void deleteMutation.mutateAsync({
+                    deleteMutation.mutate({
                       id: integration.id,
                       slug: integration.slug,
                       oauth: isOauthIntegration(
@@ -1884,7 +1897,7 @@ function SettingsSectionPanel({
           className="settings-shell__form"
           onSubmit={(event) => {
             event.preventDefault();
-            void saveMutation.mutateAsync(draft);
+            saveMutation.mutate(draft);
           }}
         >
           <div className="settings-shell__field-list">
@@ -1909,8 +1922,11 @@ function SettingsSectionPanel({
                   </span>
                 ) : null}
                 {saveMutation.isError ? (
-                  <span className="settings-shell__status settings-shell__status--error">
-                    Failed to save this section.
+                  <span
+                    className="settings-shell__status settings-shell__status--error"
+                    data-testid="settings-save-error"
+                  >
+                    Failed to save this section: {saveErrorText(saveMutation.error)}
                   </span>
                 ) : null}
                 <button

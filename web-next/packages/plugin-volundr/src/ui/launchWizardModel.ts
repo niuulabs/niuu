@@ -1,4 +1,6 @@
 import type { BifrostModel } from '@niuulabs/plugin-bifrost';
+import type { RepoRecord } from '@niuulabs/ui';
+import { sourceControlIdsForRepo } from './launchEngines';
 import type {
   ClusterResourceInfo,
   IntegrationConnection,
@@ -321,10 +323,13 @@ export function formatModelOption(id: string, model?: RuntimeModelDescriptor): s
 export function withDefaultSourceControlIntegrations(
   selected: string[],
   integrations: IntegrationConnection[],
+  repos: readonly RepoRecord[] = [],
+  repoUrl = '',
 ): string[] {
   const sources = integrations.filter((item) => item.integrationType === 'source_control');
   if (sources.some((item) => selected.includes(item.id))) return selected;
-  return [...selected, ...sources.filter((item) => item.enabled).map((item) => item.id)];
+  // The account that listed the repository clones it; a pasted URL gets every account.
+  return [...selected, ...sourceControlIdsForRepo(integrations, repos, repoUrl)];
 }
 
 export function formatIntegrationLabel(integration: IntegrationConnection): string {

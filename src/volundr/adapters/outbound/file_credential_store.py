@@ -219,7 +219,7 @@ class FileCredentialStore(CredentialStorePort):
             # Write individual credential file for direct mounting
             self._write_individual_credential(owner_type, owner_id, name, data)
 
-        logger.debug("Stored credential %s for %s/%s", name, owner_type, owner_id)
+        logger.debug("Stored a credential for %r/%r", owner_type, owner_id)
         return credential
 
     async def get(
@@ -259,7 +259,7 @@ class FileCredentialStore(CredentialStorePort):
             self._write_file(path, file_data)
             self._delete_individual_credential(owner_type, owner_id, name)
 
-        logger.debug("Deleted credential %s for %s/%s", name, owner_type, owner_id)
+        logger.debug("Deleted a credential for %r/%r", owner_type, owner_id)
 
     async def list(
         self,

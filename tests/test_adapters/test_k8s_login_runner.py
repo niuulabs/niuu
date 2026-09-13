@@ -41,7 +41,7 @@ def runner():
     return value
 
 
-@pytest.mark.parametrize("method", ["codex_device", "claude_setup"])
+@pytest.mark.parametrize("method", ["codex_device", "claude_setup", "grok_device"])
 async def test_job_uses_only_temporary_storage_and_records_identity_immediately(runner, method):
     attempt = enrollment(method)
     batch = SimpleNamespace(create_namespaced_job=AsyncMock())
@@ -53,7 +53,7 @@ async def test_job_uses_only_temporary_storage_and_records_identity_immediately(
     assert started.runner_ref["job_name"] == job["metadata"]["name"]
     assert spec["automountServiceAccountToken"] is False
     assert spec["volumes"] == [
-        {"name": "temporary", "emptyDir": {"medium": "Memory", "sizeLimit": "32Mi"}}
+        {"name": "temporary", "emptyDir": {"medium": "Memory", "sizeLimit": "256Mi"}}
     ]
     assert spec["containers"][0]["securityContext"]["readOnlyRootFilesystem"] is True
     assert "env" not in spec["containers"][0]
@@ -61,6 +61,13 @@ async def test_job_uses_only_temporary_storage_and_records_identity_immediately(
     assert 0 < job["spec"]["activeDeadlineSeconds"] <= 900
     assert job["spec"]["ttlSecondsAfterFinished"] == 60
     compile(spec["containers"][0]["command"][2], "login-worker", "exec")
+    args = spec["containers"][0]["args"]
+    expected = {
+        "codex_device": "/usr/local/bin/codex",
+        "claude_setup": "/usr/local/bin/claude",
+        "grok_device": "/usr/local/bin/grok",
+    }[method]
+    assert args[args.index("--executable") + 1] == expected
 
 
 @pytest.mark.parametrize(

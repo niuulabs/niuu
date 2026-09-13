@@ -64,6 +64,10 @@ class LocalStorageAdapter(StoragePort):
     # StoragePort implementation
     # ------------------------------------------------------------------
 
+    @property
+    def supports_home_volumes(self) -> bool:
+        return True
+
     async def provision_user_storage(
         self,
         user_id: str,

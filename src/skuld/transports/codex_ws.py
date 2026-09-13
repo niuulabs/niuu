@@ -34,7 +34,6 @@ from niuu.adapters.cli.runtime import (
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.codex_auth import CodexAuthProviderError, CodexAuthProviderPort, HostCodexAuthProvider
 from skuld.transports.codex import (
-    CodexSubprocessTransport,
     _map_codex_tool,
     resolve_codex_cli,
 )
@@ -42,6 +41,28 @@ from skuld.transports.mcp_config import build_codex_mcp_overrides
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
+
+# Codex config for the platform's model gateway: a Responses-API provider (the
+# only wire format current Codex accepts) whose key comes from
+# CODEX_GATEWAY_TOKEN_ENV, selected with `model_provider`.
+CODEX_GATEWAY_PROVIDER = "niuu"
+CODEX_GATEWAY_TOKEN_ENV = "NIUU_MODEL_GATEWAY_TOKEN"
+
+
+def codex_gateway_overrides(gateway_url: str) -> list[tuple[str, str]]:
+    """``codex -c key=value`` pairs that point Codex at the model gateway."""
+    url = gateway_url.strip().rstrip("/")
+    if not url:
+        return []
+    base = f"model_providers.{CODEX_GATEWAY_PROVIDER}"
+    return [
+        ("model_provider", json.dumps(CODEX_GATEWAY_PROVIDER)),
+        (f"{base}.name", json.dumps("Niuu model gateway")),
+        (f"{base}.base_url", json.dumps(f"{url}/v1")),
+        (f"{base}.env_key", json.dumps(CODEX_GATEWAY_TOKEN_ENV)),
+        (f"{base}.wire_api", json.dumps("responses")),
+    ]
+
 
 _MAX_WS_FRAME_BYTES = 1024 * 1024
 _WS_FRAME_HEADROOM_BYTES = 8 * 1024
@@ -221,13 +242,22 @@ class CodexWebSocketTransport(CLITransport):
         reasoning_effort: str = "",
         max_ws_message_bytes: int = _DEFAULT_MAX_WS_MESSAGE_BYTES,
         codex_auth_provider: CodexAuthProviderPort | None = None,
+        model_gateway_url: str = "",
+        model_gateway_token: str = "",
         **_kwargs: object,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
         self._model = model
-        # Default every Codex model to high unless launch configuration overrides it.
-        self._reasoning_effort = reasoning_effort or _codex_effort_for_model(model)
+        self._model_gateway_url = model_gateway_url.strip()
+        self._model_gateway_token = model_gateway_token
+        self._gateway_overrides = codex_gateway_overrides(self._model_gateway_url)
+        # Default every OpenAI Codex model to high unless launch configuration
+        # overrides it. A model behind the gateway is whatever the operator
+        # serves; only an explicit session setting asks it for reasoning.
+        self._reasoning_effort = reasoning_effort or (
+            "" if self._model_gateway_url else _codex_effort_for_model(model)
+        )
         self._skip_permissions = skip_permissions
         self._approval_policy = approval_policy.strip()
         self._sandbox = sandbox.strip()
@@ -244,7 +274,6 @@ class CodexWebSocketTransport(CLITransport):
         self._process: asyncio.subprocess.Process | None = None
         self._ws: ClientConnection | None = None
         self._receive_task: asyncio.Task | None = None
-        self._fallback_transport: CodexSubprocessTransport | None = None
         self._thread_id: str | None = None
         self._current_turn_id: str | None = None
         self._last_result: dict | None = None
@@ -296,16 +325,16 @@ class CodexWebSocketTransport(CLITransport):
 
     @staticmethod
     def _ensure_codex_home(env: dict[str, str]) -> None:
-        """Make the user's Codex config path explicit for spawned app-server."""
-        if env.get("CODEX_HOME"):
-            return
+        """Make the user's Codex config path explicit for the spawned app-server.
 
-        home = env.get("HOME")
-        if home:
-            env["CODEX_HOME"] = str(Path(home).expanduser() / ".codex")
-            return
-
-        env["CODEX_HOME"] = str(Path.home() / ".codex")
+        The Codex CLI refuses to start when ``CODEX_HOME`` names a directory
+        that does not exist, and a fresh session sandbox has none, so the
+        directory is created here as well.
+        """
+        if not env.get("CODEX_HOME"):
+            home = env.get("HOME")
+            env["CODEX_HOME"] = str((Path(home).expanduser() if home else Path.home()) / ".codex")
+        Path(env["CODEX_HOME"]).mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -321,8 +350,11 @@ class CodexWebSocketTransport(CLITransport):
             await self.stop()
             raise
         except Exception as exc:
-            await self._start_fallback_transport(exc)
-            return
+            # No fallback: the session was configured for the app-server, and a
+            # subprocess Codex hides the real failure behind a silent turn.
+            await self._emit({"type": "error", "error": f"Codex app-server failed to start: {exc}"})
+            await self.stop()
+            raise
 
         # On resume the prior thread's history is reloaded, so don't replay
         # the initial prompt (it was already part of that conversation).
@@ -330,9 +362,6 @@ class CodexWebSocketTransport(CLITransport):
             await self.send_message(self._initial_prompt)
 
     async def stop(self) -> None:
-        if self._fallback_transport is not None:
-            await self._fallback_transport.stop()
-            self._fallback_transport = None
 
         self._alive = False
 
@@ -358,29 +387,6 @@ class CodexWebSocketTransport(CLITransport):
 
         logger.info("CodexWebSocketTransport stopped")
 
-    def on_event(self, callback) -> None:  # type: ignore[override]
-        super().on_event(callback)
-        if self._fallback_transport is not None:
-            self._fallback_transport.on_event(callback)
-
-    async def _start_fallback_transport(self, cause: Exception) -> None:
-        logger.warning(
-            "Codex app-server transport unavailable; falling back to subprocess transport: %s",
-            cause,
-            exc_info=True,
-        )
-        await self.stop()
-        fallback = CodexSubprocessTransport(
-            workspace_dir=self.workspace_dir,
-            model=self._model,
-            mcp_servers=self._mcp_servers,
-        )
-        fallback.on_event(self.event_callback)
-        self._fallback_transport = fallback
-        await fallback.start()
-        if self._initial_prompt:
-            await fallback.send_message(self._initial_prompt)
-
     # ------------------------------------------------------------------
     # Spawn & connect
     # ------------------------------------------------------------------
@@ -404,10 +410,16 @@ class CodexWebSocketTransport(CLITransport):
         ]
         for key, value in self._mcp_overrides:
             cmd.extend(["-c", f"{key}={value}"])
+        for key, value in self._gateway_overrides:
+            cmd.extend(["-c", f"{key}={value}"])
 
         env = dict(self._env)
         self._ensure_codex_home(env)
-        if "OPENAI_API_KEY" not in env:
+        if self._model_gateway_url:
+            # The provider block names this env var as its key source.
+            env[CODEX_GATEWAY_TOKEN_ENV] = self._model_gateway_token
+            logger.info("Codex routed through the model gateway at %s", self._model_gateway_url)
+        elif "OPENAI_API_KEY" not in env:
             logger.info(
                 "OPENAI_API_KEY not found — relying on Codex CLI auth state for app-server access"
             )
@@ -580,6 +592,9 @@ class CodexWebSocketTransport(CLITransport):
 
     async def _authenticate_codex(self) -> None:
         """Select host-managed or externally managed auth through the configured port."""
+        if self._model_gateway_url:
+            # The gateway provider authenticates with its own key; no ChatGPT login.
+            return
         tokens = await self._codex_auth_provider.get_tokens()
         if tokens is None:
             return
@@ -1658,12 +1673,6 @@ class CodexWebSocketTransport(CLITransport):
         request_id: str | None = None,
         record_correlation: bool = True,
     ) -> None:
-        if self._fallback_transport is not None:
-            await self._fallback_transport.send_message(
-                content, msg_id=msg_id, request_id=request_id
-            )
-            return
-
         if not self._thread_id:
             raise RuntimeError("No active thread — call start() first")
 
@@ -1701,10 +1710,6 @@ class CodexWebSocketTransport(CLITransport):
             raise
 
     async def send_control_response(self, request_id: str, response: dict) -> None:
-        if self._fallback_transport is not None:
-            await self._fallback_transport.send_control_response(request_id, response)
-            return
-
         """Respond to a Codex approval request."""
         pending = self._pending_approvals.pop(request_id, None)
         if pending is None:
@@ -1735,10 +1740,6 @@ class CodexWebSocketTransport(CLITransport):
         await self._send_rpc_response(rid, result)
 
     async def send_control(self, subtype: str, **kwargs: object) -> None:
-        if self._fallback_transport is not None:
-            await self._fallback_transport.send_control(subtype, **kwargs)
-            return
-
         """Handle control messages (interrupt, set_model, etc.)."""
         if subtype == "interrupt":
             if self._thread_id and self._current_turn_id:
@@ -1933,40 +1934,28 @@ class CodexWebSocketTransport(CLITransport):
         await self._emit({"type": "system", "subtype": "notice", "content": content})
 
     async def discover_slash_commands(self, *, refresh: bool = False) -> list[dict]:
-        if self._fallback_transport is not None:
-            return await self._fallback_transport.discover_slash_commands(refresh=refresh)
         if not self._thread_id:
             return []
         return [dict(command) for command in _CODEX_APP_SERVER_SLASH_COMMANDS]
 
     @property
     def session_id(self) -> str | None:
-        if self._fallback_transport is not None:
-            return self._fallback_transport.session_id
         return self._thread_id
 
     @property
     def last_result(self) -> dict | None:
-        if self._fallback_transport is not None:
-            return self._fallback_transport.last_result
         return self._last_result
 
     @property
     def is_alive(self) -> bool:
-        if self._fallback_transport is not None:
-            return self._fallback_transport.is_alive
         return self._alive
 
     @property
     def is_turn_active(self) -> bool:
-        if self._fallback_transport is not None:
-            return self._fallback_transport.is_turn_active
         return bool(self._thread_id and self._current_turn_id)
 
     @property
     def capabilities(self) -> TransportCapabilities:
-        if self._fallback_transport is not None:
-            return self._fallback_transport.capabilities
         return TransportCapabilities(
             cli_websocket=False,  # We don't expose a /ws/cli endpoint
             session_resume=True,

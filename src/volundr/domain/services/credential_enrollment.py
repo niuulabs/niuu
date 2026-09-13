@@ -23,11 +23,18 @@ from volundr.domain.ports import (
     IntegrationRepository,
 )
 from volundr.domain.services.integration_registry import IntegrationRegistry
+from volundr.domain.services.oauth_clients import DEFAULT_APP
 
 DEFAULT_CREDENTIAL_ENROLLMENT_TTL_SECONDS = 900
 CREDENTIAL_ENROLLMENT_RECONCILE_INTERVAL_SECONDS = 30
 
 logger = logging.getLogger(__name__)
+
+# Sign-ins whose token cannot be refreshed: the worker reports when it runs
+# out, and the wizard asks for a new sign-in then.
+METHODS_WITH_FIXED_LIFETIME = frozenset({"claude_setup", "grok_device"})
+# Sign-ins that run through an OAuth application the install owns.
+OAUTH_DEVICE_METHOD = "oauth_device"
 
 
 class CredentialEnrollmentError(ValueError):
@@ -61,6 +68,7 @@ class CredentialEnrollmentService:
         slug: str,
         credential_name: str = "",
         connection_id: str = "",
+        oauth_app: str = "",
     ) -> CredentialEnrollment:
         definition = self._integration_registry.get_definition(slug)
         spec = definition.credential_enrollment if definition is not None else None
@@ -68,18 +76,29 @@ class CredentialEnrollmentService:
             raise CredentialEnrollmentError("Integration does not support interactive enrollment")
         if not self._runner.supports_enrollment(spec.method):
             raise CredentialEnrollmentError("Interactive enrollment is unavailable on this runtime")
+        if not self._runner.available_for(slug, spec.method):
+            raise CredentialEnrollmentError(
+                f"Sign-in for {slug} is not configured on this install; use an API key or "
+                f"configure it (for OAuth device sign-in: oauth.clients.{slug}.client_id)"
+            )
 
         connection = await self._resolve_connection(
             principal=principal,
             slug=slug,
             connection_id=connection_id,
             credential_name=credential_name or spec.default_credential_name,
+            oauth_app=oauth_app,
         )
         active = await self._repository.find_active(connection.id)
         if active is not None:
             return active
 
         now = datetime.now(UTC)
+        # The account's own OAuth application (GitHub, GitLab) travels with the
+        # attempt so the runner never falls back to another account's app.
+        runner_ref: dict = {}
+        if spec.method == OAUTH_DEVICE_METHOD:
+            runner_ref["oauth_app"] = str(connection.config.get("oauth_app") or DEFAULT_APP)
         enrollment = CredentialEnrollment(
             id=uuid4(),
             connection_id=connection.id,
@@ -89,7 +108,7 @@ class CredentialEnrollmentService:
             credential_name=connection.credential_name,
             method=spec.method,
             state=CredentialEnrollmentState.PENDING,
-            runner_ref={},
+            runner_ref=runner_ref,
             verification_uri="",
             user_code="",
             expires_at=now + timedelta(seconds=self._ttl_seconds),
@@ -113,8 +132,22 @@ class CredentialEnrollmentService:
                 state="auth_required",
                 error_code="enrollment_failed",
             )
-            raise CredentialEnrollmentError("Could not start provider login") from exc
+            # The provider's answer (an unknown client id, a refused scope) is
+            # the one thing the person needs to see; never hide it.
+            # The slug comes from the request; the provider's answer is what matters.
+            logger.error("Provider login could not start: %s", exc)
+            raise CredentialEnrollmentError(f"Could not start provider login: {exc}") from exc
         return await self._repository.save(started)
+
+    def available(self, slug: str) -> bool:
+        """Whether the catalog entry *slug* can be signed into on this install."""
+        definition = self._integration_registry.get_definition(slug)
+        spec = definition.credential_enrollment if definition is not None else None
+        if spec is None:
+            return False
+        return self._runner.supports_enrollment(spec.method) and self._runner.available_for(
+            slug, spec.method
+        )
 
     async def get(self, enrollment_id: UUID, principal: Principal) -> CredentialEnrollment:
         enrollment = await self._repository.get(enrollment_id)
@@ -187,7 +220,7 @@ class CredentialEnrollmentService:
                     }
                 )
                 metadata.pop("auth_error_code", None)
-                if enrollment.method == "claude_setup":
+                if enrollment.method in METHODS_WITH_FIXED_LIFETIME:
                     metadata["auth_expires_at"] = poll.credential_data["expires_at"]
                 await self._credential_store.store(
                     "user",
@@ -302,6 +335,7 @@ class CredentialEnrollmentService:
         slug: str,
         connection_id: str,
         credential_name: str,
+        oauth_app: str = "",
     ) -> IntegrationConnection:
         if connection_id:
             connection = await self._integration_repository.get_connection(connection_id)
@@ -313,9 +347,23 @@ class CredentialEnrollmentService:
                 raise CredentialEnrollmentError("Integration connection not found")
             return connection
 
+        # One connection per account: the same slug with another credential
+        # name is a second account, never the first one signed in again.
         existing = await self._integration_repository.list_connections(principal.user_id)
-        matching = next((item for item in existing if item.slug == slug), None)
+        matching = next(
+            (
+                item
+                for item in existing
+                if item.slug == slug and item.credential_name == credential_name
+            ),
+            None,
+        )
         if matching is not None:
+            if oauth_app and matching.config.get("oauth_app") != oauth_app:
+                # The person picked another application for this account
+                # (a retry, or the first attempt went through the wrong one).
+                matching = replace(matching, config={**matching.config, "oauth_app": oauth_app})
+                await self._integration_repository.save_connection(matching)
             return matching
 
         definition = self._integration_registry.get_definition(slug)
@@ -328,7 +376,7 @@ class CredentialEnrollmentService:
             integration_type=definition.integration_type,
             adapter=definition.adapter,
             credential_name=credential_name,
-            config={},
+            config={"oauth_app": oauth_app} if oauth_app else {},
             enabled=True,
             created_at=now,
             updated_at=now,

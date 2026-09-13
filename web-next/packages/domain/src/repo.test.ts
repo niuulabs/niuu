@@ -26,6 +26,8 @@ describe('normalizeRepoCatalogResponse', () => {
         url: 'https://github.com/niuulabs/volundr',
         defaultBranch: 'main',
         branches: ['main', 'feat/workflows'],
+        // the group key is the account that listed the repository
+        account: 'GitHub',
       },
     ]);
   });

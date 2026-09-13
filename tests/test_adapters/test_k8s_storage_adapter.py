@@ -369,3 +369,8 @@ async def test_concurrent_session_home_expansion_is_idempotent(adapter, mock_cor
     )
     result = await adapter.provision_user_storage("user-1", StorageQuota())
     assert result.name == "volundr-user-user-1-home"
+
+
+class TestHomeVolumeCapability:
+    def test_pvcs_count_as_home_volumes(self, adapter: K8sStorageAdapter):
+        assert adapter.supports_home_volumes is True

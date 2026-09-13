@@ -13,6 +13,7 @@ import {
 } from './LaunchWizardSteps';
 export * from './LaunchWizardSteps';
 import { useLaunchWizard } from './useLaunchWizard';
+import { LinkedText } from './LinkedText';
 
 export function LaunchWizard(props: LaunchWizardProps) {
   const { open, onOpenChange } = props;
@@ -30,6 +31,7 @@ export function LaunchWizard(props: LaunchWizardProps) {
     handleBack,
     handleNext,
     handleSavePreset,
+    integrationCatalog,
     integrations,
     isLastStep,
     launchError,
@@ -39,6 +41,7 @@ export function LaunchWizard(props: LaunchWizardProps) {
     navigate,
     personas,
     presets,
+    providerError,
     repos,
     sessionDefinitions,
     step,
@@ -66,6 +69,7 @@ export function LaunchWizard(props: LaunchWizardProps) {
               form={form}
               update={update}
               repos={repos}
+              integrations={integrations}
               branchOptions={
                 repos.find((repo) => repo.cloneUrl === form.repo)?.branches.length
                   ? (repos.find((repo) => repo.cloneUrl === form.repo)?.branches ?? [])
@@ -94,6 +98,8 @@ export function LaunchWizard(props: LaunchWizardProps) {
               sessionDefinitions={
                 sessionDefinitions.length > 0 ? sessionDefinitions : FALLBACK_SESSION_DEFINITIONS
               }
+              integrationCatalog={integrationCatalog}
+              providerError={providerError}
               onApplyPreset={handleApplyPreset}
               onSavePreset={handleSavePreset}
             />
@@ -115,7 +121,7 @@ export function LaunchWizard(props: LaunchWizardProps) {
               className="niuu:rounded niuu:border niuu:border-danger niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-danger"
               data-testid="wizard-error"
             >
-              {launchError}
+              <LinkedText text={launchError} />
             </div>
           ) : null}
 

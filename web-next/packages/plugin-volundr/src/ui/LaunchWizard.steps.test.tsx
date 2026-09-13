@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type {
+  CatalogEntry,
   ClusterResourceInfo,
   IntegrationConnection,
   SessionDefinition,
@@ -38,6 +39,43 @@ const INTEGRATIONS: IntegrationConnection[] = [
     integrationType: 'source_control',
     adapter: 'github',
     status: 'connected',
+  },
+  {
+    id: 'int-anthropic',
+    slug: 'anthropic',
+    credentialName: 'anthropic-key',
+    integrationType: 'ai_provider',
+    credentialStatus: 'active',
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+  },
+  {
+    id: 'int-openai',
+    slug: 'openai',
+    credentialName: 'openai-key',
+    integrationType: 'ai_provider',
+    credentialStatus: 'active',
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+  },
+];
+
+const CATALOG: CatalogEntry[] = [
+  {
+    id: 'anthropic',
+    slug: 'anthropic',
+    name: 'Anthropic (Claude API)',
+    description: '',
+    integrationType: 'ai_provider',
+    modelVendor: 'anthropic',
+  },
+  {
+    id: 'openai',
+    slug: 'openai',
+    name: 'OpenAI',
+    description: '',
+    integrationType: 'ai_provider',
+    modelVendor: 'openai',
   },
 ];
 
@@ -299,6 +337,8 @@ describe('LaunchWizard step components', () => {
       repo: 'github.com/niuulabs/volundr',
       branch: 'main',
       workspaceId: '',
+      // no integrations were handed to the step, so nothing is attached for the clone
+      selectedIntegrations: [],
     });
     expect(update).toHaveBeenCalledWith({ branch: 'feat/coverage' });
     expect(update).toHaveBeenCalledWith({ sessionName: 'coverage-session' });
@@ -375,6 +415,7 @@ describe('LaunchWizard step components', () => {
         workspaces={WORKSPACES}
         credentials={CREDENTIALS}
         integrations={INTEGRATIONS}
+        integrationCatalog={CATALOG}
         clusterResources={CLUSTER_RESOURCES}
         presets={[PRESET]}
         selectedPreset={PRESET}
@@ -399,8 +440,13 @@ describe('LaunchWizard step components', () => {
     });
     expect(onApplyPreset).toHaveBeenCalledWith(PRESET.id);
 
-    fireEvent.click(screen.getByTestId('runtime-option-skuld-codex'));
-    expect(update).toHaveBeenCalledWith({ definition: 'skuld-codex', model: 'gpt-test' });
+    fireEvent.change(screen.getByTestId('runtime-engine'), { target: { value: 'skuld-codex' } });
+    // the engine's account (the OpenAI key) rides along with the engine choice
+    expect(update).toHaveBeenCalledWith({
+      definition: 'skuld-codex',
+      model: 'gpt-test',
+      selectedIntegrations: ['int-openai'],
+    });
 
     fireEvent.click(screen.getByText('show advanced'));
     fireEvent.click(screen.getByText('add env var'));
@@ -758,7 +804,14 @@ describe('LaunchWizard step components', () => {
         selectedPreset={null}
         availableMcpServers={[]}
         sessionDefinitions={[
-          { key: 'skuld-custom', displayName: 'Custom', description: 'custom runtime', labels: [] },
+          {
+            key: 'skuld-custom',
+            displayName: 'Custom',
+            description: 'custom runtime',
+            labels: [],
+            defaultModel: '',
+            compatibleProviders: [],
+          },
         ]}
         targets={[]}
         onApplyPreset={vi.fn()}
@@ -792,7 +845,14 @@ describe('LaunchWizard step components', () => {
         selectedPreset={null}
         availableMcpServers={[]}
         sessionDefinitions={[
-          { key: 'skuld-custom', displayName: 'Custom', description: 'custom runtime', labels: [] },
+          {
+            key: 'skuld-custom',
+            displayName: 'Custom',
+            description: 'custom runtime',
+            labels: [],
+            defaultModel: '',
+            compatibleProviders: [],
+          },
         ]}
         targets={[]}
         onApplyPreset={vi.fn()}

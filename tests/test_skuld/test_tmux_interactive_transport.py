@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -36,7 +37,9 @@ class FakeTmuxInteractiveTransport(TmuxInteractiveTransport):
         self.commands: list[tuple[tuple[str, ...], dict[str, str] | None]] = []
         self.loaded_buffers: list[str] = []
         self.session_exists = False
-        self.capture_stdout = ""
+        # A running REPL shows its input prompt; tests that model a booting or
+        # menu-showing pane override this.
+        self.capture_stdout = "❯ "
         self.pane_lines = ["%1\t0\tmain\t1\tclaude\t200\t50\t2\t47"]
         # SAFETY: redirect the socket dir + runtime root into the per-test workspace so the
         # periodic sweep loop started by start() can NEVER touch the real /tmp/skuld-tmux-* dir
@@ -135,6 +138,68 @@ async def test_start_creates_session_emits_init_and_pane(tmp_path: Path) -> None
     assert init["terminal"]["transport"] == "tmux_interactive"
     assert init["terminal"]["hook_endpoint"] == "http://127.0.0.1:8081/api/claude/hooks"
     assert any(command["name"] == "/compact" for command in init["slash_commands"])
+
+
+@pytest.mark.asyncio
+async def test_start_answers_the_cli_first_run_dialogs_in_its_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A fresh sandbox has no CLI state; the REPL would sit on the onboarding,
+    login, trust and bypass-permissions dialogs with nobody at the keyboard."""
+    config_dir = tmp_path / "claude-config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    transport = FakeTmuxInteractiveTransport(str(workspace), skip_permissions=True)
+    transport._socket_dir = tmp_path / "fake-sockets"
+    transport._socket_path = transport._socket_dir / f"{transport._session_name}.sock"
+
+    await transport.start()
+    await transport.stop()
+
+    config = json.loads((config_dir / ".claude.json").read_text(encoding="utf-8"))
+    assert config["hasCompletedOnboarding"] is True
+    assert config["theme"] == "dark"
+    assert config["projects"][str(workspace)]["hasTrustDialogAccepted"] is True
+    settings = json.loads((config_dir / "settings.json").read_text(encoding="utf-8"))
+    assert settings["skipDangerousModePermissionPrompt"] is True
+
+
+def test_prepare_claude_config_keeps_existing_state(tmp_path: Path) -> None:
+    """An existing config (a persisted home, a later restart) keeps everything
+    it had; only the dialog answers are added, and an unchanged file is left alone."""
+    config_path = tmp_path / ".claude.json"
+    config_path.write_text(
+        json.dumps({"theme": "light", "userID": "u-1", "projects": {"/other": {"x": 1}}}),
+        encoding="utf-8",
+    )
+    transport = FakeTmuxInteractiveTransport(str(tmp_path / "ws"), skip_permissions=False)
+    env = {"HOME": str(tmp_path)}
+
+    transport._prepare_claude_config(env)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert config["theme"] == "light"
+    assert config["userID"] == "u-1"
+    assert config["projects"]["/other"] == {"x": 1}
+    assert config["projects"][str(tmp_path / "ws")]["hasTrustDialogAccepted"] is True
+    assert config["hasCompletedOnboarding"] is True
+    # permissions are not bypassed, so no notice to acknowledge
+    assert not (tmp_path / ".claude" / "settings.json").exists()
+
+    stamp = config_path.stat().st_mtime_ns
+    transport._prepare_claude_config(env)
+    assert config_path.stat().st_mtime_ns == stamp
+
+
+def test_prepare_claude_config_keeps_other_user_settings(tmp_path: Path) -> None:
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(json.dumps({"model": "opus", "hooks": {}}), encoding="utf-8")
+    transport = FakeTmuxInteractiveTransport(str(tmp_path / "ws"), skip_permissions=True)
+
+    transport._prepare_claude_config({"HOME": str(tmp_path)})
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert settings == {"model": "opus", "hooks": {}, "skipDangerousModePermissionPrompt": True}
 
 
 @pytest.mark.asyncio
@@ -927,6 +992,36 @@ async def test_initial_prompt_waits_for_repl_ready_then_delivers(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_user_message_waits_for_repl_ready_before_pasting(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A message that arrives while the CLI is still booting used to be pasted at
+    once: the text landed in the input box, the Enter was swallowed by the
+    startup screen, and the message sat there unsent."""
+    monkeypatch.setenv("SKULD__TMUX_REPL_READY_TIMEOUT_SECONDS", "3")
+    monkeypatch.setenv("SKULD__TMUX_MENU_POLL_STEP_SECONDS", "0.02")
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    transport.capture_stdout = "Welcome to Claude Code\nstill booting"
+    await transport.start()
+
+    delivery = asyncio.create_task(transport.send_message("hello there"))
+    await asyncio.sleep(0.15)
+    assert not any("hello there" in buf for buf in transport.loaded_buffers), (
+        "nothing may be pasted before the REPL prompt has rendered"
+    )
+    transport.capture_stdout = "Welcome to Claude Code\n❯ "
+    await asyncio.wait_for(delivery, timeout=3)
+    assert any("hello there" in buf for buf in transport.loaded_buffers)
+
+    # once seen, later deliveries do not poll the pane again
+    before = len([args for args, _ in transport.commands if args[0] == "capture-pane"])
+    await transport.send_message("second")
+    after = len([args for args, _ in transport.commands if args[0] == "capture-pane"])
+    assert after == before
+    await transport.stop()
+
+
+@pytest.mark.asyncio
 async def test_initial_prompt_falls_through_if_repl_never_signals(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1192,3 +1287,16 @@ def _async_return(value: Any):
         return value
 
     return _coro()
+
+
+def test_spawn_env_routes_through_the_model_gateway(tmp_path):
+    transport = FakeTmuxInteractiveTransport(
+        str(tmp_path),
+        model_gateway_url="http://niuu:8080/api/v1/bifrost",
+        model_gateway_token="niuu-gateway",
+    )
+    with patch.dict("os.environ", {"PATH": "/usr/bin", "ANTHROPIC_API_KEY": "sk-p"}, clear=True):
+        env = transport._spawn_env()
+    assert env["ANTHROPIC_BASE_URL"] == "http://niuu:8080/api/v1/bifrost"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "niuu-gateway"
+    assert "ANTHROPIC_API_KEY" not in env

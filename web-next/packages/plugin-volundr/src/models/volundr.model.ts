@@ -101,6 +101,8 @@ export interface VolundrRepo {
   url: string;
   defaultBranch: string;
   branches: string[];
+  /** The Git account (connection credential name) that listed this repository. */
+  account?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -581,6 +583,10 @@ export interface IntegrationConnection {
   credentialName?: string;
   adapter?: string;
   enabled?: boolean;
+  /** Credential lifecycle state: configured, active, auth_required, enrolling, missing… */
+  credentialStatus?: string;
+  /** Non-secret connection settings, e.g. the Model server's `gateway_url` and `models`. */
+  config?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 }
@@ -592,8 +598,13 @@ export interface IntegrationTestResult {
 
 export interface CatalogEntry {
   id: string;
+  slug?: string;
   name: string;
   description: string;
+  /** ai_provider, source_control, issue_tracker, messaging… */
+  integrationType?: string;
+  /** Model vendor a connection of this AI provider unlocks (anthropic, openai, xai, deepseek). */
+  modelVendor?: string;
 }
 
 // ---------------------------------------------------------------------------

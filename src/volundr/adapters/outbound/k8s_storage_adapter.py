@@ -64,6 +64,10 @@ class K8sStorageAdapter(StoragePort):
     Constructor accepts plain kwargs (dynamic adapter pattern).
     """
 
+    @property
+    def supports_home_volumes(self) -> bool:
+        return True
+
     def __init__(
         self,
         *,

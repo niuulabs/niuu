@@ -1046,6 +1046,47 @@ def test_builtin_remote_control_definitions_present():
     assert "skuldCodexRemote" not in defs
 
 
+def test_every_builtin_engine_is_unlocked_by_a_catalog_provider():
+    """Each session definition's compatible vendors must be reachable through at
+    least one AI provider in the built-in catalog, and every AI provider must
+    say which vendor it unlocks; otherwise the launch dialogs could never offer
+    that engine no matter what the person connects."""
+    from niuu.config_models import default_session_definitions
+    from niuu.domain.model_runtime import normalize_model_vendor
+    from volundr.config import _default_integration_definitions
+
+    providers = [
+        entry
+        for entry in _default_integration_definitions()
+        if entry.integration_type == "ai_provider"
+    ]
+    assert providers, "the built-in catalog ships AI providers"
+    for entry in providers:
+        assert entry.model_vendor, f"{entry.slug} does not say which model vendor it unlocks"
+    for entry in _default_integration_definitions():
+        if entry.integration_type != "ai_provider":
+            assert entry.model_vendor == "", f"{entry.slug} is not an AI provider"
+
+    unlocked = {normalize_model_vendor(entry.model_vendor) for entry in providers}
+    for key, definition in default_session_definitions().items():
+        for vendor in definition.compatible_providers:
+            assert normalize_model_vendor(vendor) in unlocked, (
+                f"{key} accepts {vendor!r} but no catalog provider unlocks it"
+            )
+
+
+def test_builtin_engine_descriptions_read_as_plain_language():
+    """The engine picker shows these to people choosing what to launch; they
+    must say what the engine is for rather than which transport it speaks."""
+    from niuu.config_models import default_session_definitions
+
+    jargon = ("transport", "protocol", "stdio", "WebSocket", "JSON-RPC", "tmux-backed")
+    for key, definition in default_session_definitions().items():
+        assert definition.description, f"{key} has no description"
+        for word in jargon:
+            assert word not in definition.description, f"{key} description mentions {word!r}"
+
+
 def test_runtime_routing_legacy_aliases(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NIUU_SERVER_HOST", "10.0.0.8")
@@ -1066,3 +1107,54 @@ def test_runtime_routing_rejects_invalid_port(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError):
         Settings()
+
+
+def test_model_server_is_a_local_provider_configured_from_runtime_settings():
+    """The seeded "Model server" unlocks the local vendor and hands sessions the
+    gateway URL from its (non-secret) config rather than from a credential."""
+    from volundr.config import (
+        MODEL_GATEWAY_URL_ENV,
+        MODEL_SERVER_SLUG,
+        _default_integration_definitions,
+    )
+
+    entry = next(e for e in _default_integration_definitions() if e.slug == MODEL_SERVER_SLUG)
+    assert entry.integration_type == "ai_provider"
+    assert entry.model_vendor == "local"
+    assert entry.auth_type == "none"
+    assert entry.env_from_credentials == {}
+    assert entry.env_from_config == {MODEL_GATEWAY_URL_ENV: "gateway_url"}
+    assert "Settings → Runtime" in entry.description
+
+
+def test_local_models_unlock_the_claude_and_codex_engines():
+    from niuu.config_models import default_session_definitions
+
+    definitions = default_session_definitions()
+    for key in ("skuldClaude", "skuldClaudeInteractive", "skuldCodex"):
+        assert "local" in definitions[key].compatible_providers, key
+
+
+def test_env_from_config_reaches_the_registry():
+    """Definitions loaded from config keep env_from_config for the contributor."""
+    from volundr.config import (
+        MODEL_GATEWAY_URL_ENV,
+        MODEL_SERVER_SLUG,
+        _default_integration_definitions,
+    )
+    from volundr.domain.services.integration_registry import definitions_from_config
+
+    loaded = definitions_from_config(
+        [entry.model_dump() for entry in _default_integration_definitions()]
+    )
+    entry = next(d for d in loaded if d.slug == MODEL_SERVER_SLUG)
+    assert entry.env_from_config == {MODEL_GATEWAY_URL_ENV: "gateway_url"}
+
+
+def test_git_hosts_sign_the_cli_tools_in():
+    """Sessions carry gh and glab; the connected account's token reaches them."""
+    from volundr.config import _default_integration_definitions
+
+    by_slug = {entry.slug: entry for entry in _default_integration_definitions()}
+    assert by_slug["github"].env_from_credentials == {"GH_TOKEN": "token"}
+    assert by_slug["gitlab"].env_from_credentials == {"GITLAB_TOKEN": "token"}

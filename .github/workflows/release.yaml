@@ -656,7 +656,15 @@ jobs:
             cp "${dir}${binary}" "release-assets/${binary}"
             chmod +x "release-assets/${binary}"
           done
-          cd release-assets && sha256sum niuu-* ravn-* > checksums.txt
+          # The installer is a release asset like the binaries, so
+          # `releases/latest/download/install.sh` always matches the release.
+          # The released copy pins this release's platform image instead of
+          # `latest`, so the CLI wrapper and the platform never drift apart.
+          VERSION="${{ needs.version.outputs.version }}"
+          sed "s|NIUU_IMAGE_TAG:-latest|NIUU_IMAGE_TAG:-${VERSION}|" scripts/install.sh > release-assets/install.sh
+          grep -q "NIUU_IMAGE_TAG:-${VERSION}" release-assets/install.sh
+          chmod +x release-assets/install.sh
+          cd release-assets && sha256sum niuu-* ravn-* install.sh > checksums.txt
           ls -lh
 
       - name: Attest build provenance
@@ -665,6 +673,7 @@ jobs:
           subject-path: |
             release-assets/niuu-*
             release-assets/ravn-*
+            release-assets/install.sh
 
       - name: Create GitHub Release
         env:
@@ -675,4 +684,5 @@ jobs:
             --generate-notes \
             release-assets/niuu-* \
             release-assets/ravn-* \
+            release-assets/install.sh \
             release-assets/checksums.txt

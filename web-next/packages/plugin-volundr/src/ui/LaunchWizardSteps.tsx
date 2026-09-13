@@ -18,6 +18,7 @@ import {
   SectionCard,
   WizardSelect,
 } from './LaunchWizardPrimitives';
+import { withRepoSourceControl } from './launchEngines';
 import './LaunchWizard.css';
 
 export * from './LaunchWizardPrimitives';
@@ -30,6 +31,7 @@ export function SourceStep({
   branchOptions,
   trackerResults,
   trackerLoading,
+  integrations = [],
 }: {
   form: WizardForm;
   update: (patch: Partial<WizardForm>) => void;
@@ -37,6 +39,8 @@ export function SourceStep({
   branchOptions: string[];
   trackerResults: TrackerIssue[];
   trackerLoading: boolean;
+  /** The person's integrations; picking a repository attaches the account that listed it. */
+  integrations?: IntegrationConnection[];
 }) {
   const currentRepo = repos.find((repo) => repo.cloneUrl === form.repo);
 
@@ -75,6 +79,13 @@ export function SourceStep({
                       repo: value,
                       branch: repo?.defaultBranch ?? '',
                       workspaceId: '',
+                      // clone with the account that listed the repository
+                      selectedIntegrations: withRepoSourceControl(
+                        form.selectedIntegrations,
+                        integrations,
+                        repos,
+                        value,
+                      ),
                     });
                   }}
                   placeholder="Select repository"

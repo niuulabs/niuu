@@ -1,0 +1,438 @@
+import { describe, expect, it } from 'vitest';
+import { MOCK_CATALOG, MOCK_SYSTEM } from '../adapters/mock';
+import {
+  providerGroups,
+  oauthAppHelp,
+  signInNeedsApp,
+  signInOffered,
+  supportsSignIn,
+  availableModes,
+  groupConnections,
+  connectionLabel,
+  accountCredentialName,
+  connectionNeedsSignIn,
+  entryForMode,
+  errorMessage,
+  credentialExpiryLabel,
+  credentialProblemLabel,
+  accessMode,
+  accessUrls,
+  enrollmentFailureMessage,
+  isEnrollmentActive,
+  needsInteractiveSignIn,
+  WIZARD_STEPS,
+  backendStepId,
+  buildConfigPayload,
+  catalogForStep,
+  connectionForSlug,
+  credentialNameFor,
+  formatGib,
+  formatGpu,
+  hostChips,
+  hostFlavor,
+  localModelPending,
+  progressPercent,
+  isConnectableFromWizard,
+  isStepDone,
+  missingCredentialKeys,
+  nextStep,
+  previousStep,
+  requiredCredentialKeys,
+  stepIndex,
+  type CatalogEntry,
+  type SetupState,
+} from './setup';
+
+const github = MOCK_CATALOG.find((entry) => entry.slug === 'github')!;
+const claudeCode = MOCK_CATALOG.find((entry) => entry.slug === 'claude-code')!;
+
+function state(steps: string[]): SetupState {
+  return {
+    enabled: true,
+    mode: 'docker',
+    completed: false,
+    completedAt: null,
+    steps: [],
+    completedSteps: steps.map((step) => ({ step, completedAt: '2026-09-12T10:00:00Z', data: {} })),
+  };
+}
+
+describe('wizard steps', () => {
+  it('maps finish to the backend launch step', () => {
+    expect(backendStepId('finish')).toBe('launch');
+    expect(backendStepId('git')).toBe('git');
+  });
+
+  it('walks forward and backward', () => {
+    expect(stepIndex('welcome')).toBe(0);
+    expect(nextStep('welcome')).toBe('system');
+    expect(nextStep('finish')).toBeNull();
+    expect(previousStep('welcome')).toBeNull();
+    expect(previousStep('system')).toBe('welcome');
+    expect(WIZARD_STEPS.at(-1)?.id).toBe('finish');
+  });
+
+  it('reads completion from the backend records', () => {
+    expect(isStepDone(undefined, 'system')).toBe(false);
+    expect(isStepDone(state(['system', 'launch']), 'system')).toBe(true);
+    expect(isStepDone(state(['launch']), 'finish')).toBe(true);
+    expect(isStepDone(state([]), 'git')).toBe(false);
+  });
+});
+
+describe('catalog helpers', () => {
+  it('filters entries per step and skips non-integration steps', () => {
+    const providers = WIZARD_STEPS.find((step) => step.id === 'providers')!;
+    expect(catalogForStep(MOCK_CATALOG, providers).map((e) => e.slug)).toEqual([
+      'anthropic',
+      'openai',
+      'claude-code',
+      'codex',
+      'grok-build',
+      'xai',
+      'deepseek',
+    ]);
+    expect(catalogForStep(MOCK_CATALOG, WIZARD_STEPS[0]!)).toEqual([]);
+  });
+
+  it('knows which entries the wizard can connect', () => {
+    expect(isConnectableFromWizard(github)).toBe(true);
+    expect(isConnectableFromWizard(claudeCode)).toBe(false);
+    expect(isConnectableFromWizard({ ...github, credentialSchema: {} })).toBe(false);
+    expect(supportsSignIn(github)).toBe(true);
+    expect(supportsSignIn(claudeCode)).toBe(true);
+    expect(supportsSignIn({ ...github, credentialEnrollment: null })).toBe(false);
+    expect(signInOffered(github)).toBe(true);
+    expect(signInOffered({ ...github, signInAvailable: false })).toBe(false);
+    expect(signInOffered({ ...github, signInAvailable: false, signInNeedsApp: true })).toBe(true);
+    expect(signInOffered({ ...github, credentialEnrollment: null })).toBe(false);
+    expect(signInNeedsApp({ ...github, signInAvailable: false, signInNeedsApp: true })).toBe(true);
+    expect(signInNeedsApp(github)).toBe(false);
+    expect(signInNeedsApp(undefined)).toBe(false);
+    expect(oauthAppHelp('github').createUrl).toContain('github.com/settings/applications/new');
+    expect(oauthAppHelp('gitlab').secretHint).toBe('');
+    expect(oauthAppHelp('other').idLabel).toBe('Client ID');
+  });
+
+  it('finds enabled connections by slug', () => {
+    const connections = [
+      {
+        id: '1',
+        slug: 'github',
+        integrationType: 'source_control',
+        credentialName: 'c',
+        enabled: false,
+        config: {},
+        credentialStatus: 'valid',
+      },
+      {
+        id: '2',
+        slug: 'github',
+        integrationType: 'source_control',
+        credentialName: 'c',
+        enabled: true,
+        config: {},
+        credentialStatus: 'valid',
+      },
+    ];
+    expect(connectionForSlug(connections, 'github')?.id).toBe('2');
+    expect(connectionForSlug(connections, 'linear')).toBeUndefined();
+  });
+
+  it('derives required credential keys, falling back to properties', () => {
+    expect(requiredCredentialKeys(github)).toEqual(['token']);
+    const noRequired: CatalogEntry = {
+      ...github,
+      credentialSchema: { properties: { a: { label: 'A', type: 'password' } } },
+    };
+    expect(requiredCredentialKeys(noRequired)).toEqual(['a']);
+    expect(missingCredentialKeys(github, {})).toEqual(['token']);
+    expect(missingCredentialKeys(github, { token: '  ' })).toEqual(['token']);
+    expect(missingCredentialKeys(github, { token: 'x' })).toEqual([]);
+  });
+
+  it('builds config payloads with defaults and lists', () => {
+    expect(buildConfigPayload(github, { orgs: 'a, b ,, c', name: '' })).toEqual({
+      base_url: 'https://api.github.com',
+      orgs: ['a', 'b', 'c'],
+    });
+    expect(buildConfigPayload(github, { name: 'Work', base_url: 'https://ghe.example' })).toEqual({
+      name: 'Work',
+      base_url: 'https://ghe.example',
+    });
+    expect(buildConfigPayload(claudeCode, {})).toEqual({});
+  });
+
+  it('normalises credential names', () => {
+    expect(credentialNameFor('GitHub')).toBe('github-setup');
+    expect(credentialNameFor('claude code!')).toBe('claude-code--setup');
+  });
+});
+
+describe('host presentation', () => {
+  it('formats sizes', () => {
+    expect(formatGib(0)).toBe('0 GiB');
+    expect(formatGib(Number.NaN)).toBe('0 GiB');
+    expect(formatGib(128 * 1024 ** 3)).toBe('128 GiB');
+    expect(formatGpu({ name: 'GB10', memory_total_mib: 131072, driver_version: '1' })).toBe(
+      'GB10 · 128 GiB',
+    );
+    expect(formatGpu({ name: 'X', memory_total_mib: 0, driver_version: '1' })).toBe('X');
+  });
+
+  it('describes a GPU that shares the system memory by that memory', () => {
+    const spark = {
+      name: 'NVIDIA GB10',
+      memory_total_mib: 0,
+      driver_version: '580',
+      shares_system_memory: true,
+    };
+    expect(formatGpu(spark, 122 * 1024 ** 3)).toBe('NVIDIA GB10 · 122 GiB shared with the system');
+    expect(formatGpu(spark)).toBe('NVIDIA GB10 · shares system memory');
+    const chips = hostChips({
+      ...MOCK_SYSTEM.host!,
+      memory_total_bytes: 122 * 1024 ** 3,
+      gpus: [spark],
+    }).map((chip) => chip.label);
+    expect(chips).toContain('NVIDIA GB10 · 122 GiB shared with the system');
+  });
+
+  it('names the host flavor from the GPU', () => {
+    expect(hostFlavor(null)).toBe('this machine');
+    expect(hostFlavor(MOCK_SYSTEM.host)).toBe('this DGX Spark');
+    expect(
+      hostFlavor({
+        ...MOCK_SYSTEM.host!,
+        gpus: [{ name: 'RTX 5090', memory_total_mib: 32768, driver_version: '1' }],
+      }),
+    ).toBe('this GPU host');
+    expect(hostFlavor({ ...MOCK_SYSTEM.host!, gpus: [] })).toBe('this machine');
+  });
+
+  it('builds chips from facts', () => {
+    expect(hostChips(null)).toEqual([]);
+    const chips = hostChips(MOCK_SYSTEM.host).map((chip) => chip.label);
+    expect(chips[0]).toBe('spark');
+    expect(chips).toContain('128 GiB memory');
+    expect(chips).toContain('NVIDIA GB10 · 128 GiB');
+    expect(chips).toContain('Docker 27.3.1');
+    const bare = hostChips({ ...MOCK_SYSTEM.host!, memory_total_bytes: 0, docker_version: '' });
+    expect(bare.map((c) => c.label)).not.toContain('Docker ');
+  });
+});
+
+describe('local model progress helpers', () => {
+  it('turns bytes into a percent only when the total is known', () => {
+    expect(progressPercent(null)).toBeNull();
+    expect(
+      progressPercent({ phase: 'x', detail: '', completedBytes: 5, totalBytes: 0 }),
+    ).toBeNull();
+    expect(progressPercent({ phase: 'x', detail: '', completedBytes: 1, totalBytes: 4 })).toBe(25);
+    expect(progressPercent({ phase: 'x', detail: '', completedBytes: 9, totalBytes: 4 })).toBe(100);
+  });
+
+  it('knows when the local model is still worth polling for', () => {
+    const base = { state: 'applied' as const, startedAt: '', detail: '', changes: {} };
+    expect(localModelPending(undefined)).toBe(false);
+    expect(localModelPending({ ...base, vllm: null })).toBe(false);
+    expect(localModelPending({ ...base, vllm: { state: 'starting', detail: '' } })).toBe(true);
+    expect(localModelPending({ ...base, vllm: { state: 'absent', detail: '' } })).toBe(true);
+    expect(localModelPending({ ...base, vllm: { state: 'ready', detail: '' } })).toBe(false);
+    expect(localModelPending({ ...base, vllm: { state: 'failed', detail: '' } })).toBe(false);
+  });
+});
+
+describe('interactive sign-in helpers', () => {
+  const enrollment = {
+    id: 'e',
+    connectionId: 'c',
+    providerSlug: 'codex',
+    credentialName: 'n',
+    state: 'failed' as const,
+    verificationUri: '',
+    userCode: '',
+    expiresAt: '',
+    errorCode: '',
+    inputRequired: false,
+  };
+
+  it('knows which catalog entries sign in interactively', () => {
+    const claudeCode = MOCK_CATALOG.find((e) => e.slug === 'claude-code')!;
+    const github = MOCK_CATALOG.find((e) => e.slug === 'github')!;
+    expect(needsInteractiveSignIn(claudeCode)).toBe(true);
+    // GitHub can sign in but also takes a token, so it is not sign-in only.
+    expect(needsInteractiveSignIn(github)).toBe(false);
+    expect(needsInteractiveSignIn(MOCK_CATALOG[0]!)).toBe(false);
+  });
+
+  it('tracks active enrollments', () => {
+    expect(isEnrollmentActive(undefined)).toBe(false);
+    expect(isEnrollmentActive({ ...enrollment, state: 'pending' })).toBe(true);
+    expect(isEnrollmentActive({ ...enrollment, state: 'awaiting_user' })).toBe(true);
+    expect(isEnrollmentActive({ ...enrollment, state: 'complete' })).toBe(false);
+  });
+
+  it('explains failures in plain words', () => {
+    expect(enrollmentFailureMessage({ ...enrollment, state: 'expired' })).toMatch(/timed out/);
+    expect(enrollmentFailureMessage({ ...enrollment, state: 'cancelled' })).toBe(
+      'Sign-in cancelled.',
+    );
+    expect(enrollmentFailureMessage({ ...enrollment, errorCode: 'runner_start_failed' })).toMatch(
+      /could not be started/,
+    );
+    expect(enrollmentFailureMessage({ ...enrollment, errorCode: 'login_worker_missing' })).toMatch(
+      /could not be started/,
+    );
+    expect(
+      enrollmentFailureMessage({ ...enrollment, errorCode: 'provider_login_rejected' }),
+    ).toMatch(/rejected/);
+    expect(enrollmentFailureMessage({ ...enrollment, errorCode: 'login_worker_failed' })).toMatch(
+      /exited before finishing/,
+    );
+    expect(
+      enrollmentFailureMessage({ ...enrollment, errorCode: 'claude_token_not_found' }),
+    ).toMatch(/without handing back/);
+    expect(enrollmentFailureMessage({ ...enrollment, errorCode: 'unexpected_login_url' })).toMatch(
+      /unexpected address/,
+    );
+    expect(enrollmentFailureMessage({ ...enrollment, errorCode: 'other' })).toBe(
+      'Sign-in failed (other).',
+    );
+    expect(enrollmentFailureMessage(enrollment)).toBe('Sign-in failed.');
+  });
+});
+
+describe('access presentation', () => {
+  it('derives the access mode from the bind address', () => {
+    expect(accessMode(null)).toBe('unknown');
+    expect(accessMode({ ...MOCK_SYSTEM.host!, bind_host: '' })).toBe('unknown');
+    expect(accessMode({ ...MOCK_SYSTEM.host!, bind_host: '127.0.0.1' })).toBe('local');
+    expect(accessMode({ ...MOCK_SYSTEM.host!, bind_host: 'localhost' })).toBe('local');
+    expect(accessMode({ ...MOCK_SYSTEM.host!, bind_host: '0.0.0.0' })).toBe('lan');
+  });
+
+  it('lists the addresses the web app answers on', () => {
+    expect(accessUrls(null)).toEqual([]);
+    expect(accessUrls({ ...MOCK_SYSTEM.host!, port: 0 })).toEqual([]);
+    expect(accessUrls({ ...MOCK_SYSTEM.host!, bind_host: '127.0.0.1' })).toEqual([
+      'http://127.0.0.1:8080',
+    ]);
+    expect(accessUrls(MOCK_SYSTEM.host)).toEqual([
+      'http://127.0.0.1:8080',
+      'http://192.168.1.42:8080',
+    ]);
+    expect(accessUrls({ ...MOCK_SYSTEM.host!, external_host: '' })).toEqual([
+      'http://127.0.0.1:8080',
+    ]);
+  });
+});
+
+describe('connection credential state', () => {
+  const connection = {
+    id: 'c',
+    slug: 'claude-code',
+    integrationType: 'ai_provider',
+    credentialName: 'n',
+    enabled: true,
+    config: {},
+    credentialStatus: 'active',
+  };
+  it('knows when a connection still needs a sign-in', () => {
+    expect(connectionNeedsSignIn(connection)).toBe(false);
+    expect(connectionNeedsSignIn({ ...connection, credentialStatus: 'auth_required' })).toBe(true);
+    expect(connectionNeedsSignIn({ ...connection, credentialStatus: 'enrolling' })).toBe(true);
+  });
+
+  it('keeps every method open however many accounts exist', () => {
+    const step = WIZARD_STEPS.find((s) => s.id === 'providers')!;
+    const anthropic = providerGroups(MOCK_CATALOG, step).find((g) => g.key === 'anthropic')!;
+    const deepseek = providerGroups(MOCK_CATALOG, step).find((g) => g.key === 'deepseek')!;
+    expect(availableModes(anthropic)).toEqual(['signin', 'key']);
+    expect(availableModes(deepseek)).toEqual(['key']);
+    expect(entryForMode(anthropic, 'key')?.slug).toBe('anthropic');
+    expect(entryForMode(anthropic, 'signin')?.slug).toBe('claude-code');
+    expect(anthropic.keyHelpUrl).toContain('console.anthropic.com');
+    const second = { ...connection, id: 'k', slug: 'anthropic', credentialName: 'anthropic-work' };
+    expect(groupConnections(anthropic, [connection, second]).map((c) => c.id)).toEqual(['c', 'k']);
+    expect(groupConnections(anthropic, [{ ...second, enabled: false }])).toEqual([]);
+    expect(groupConnections(anthropic, undefined)).toEqual([]);
+    expect(connectionLabel(connection, anthropic)).toBe('n');
+    expect(connectionLabel(second, anthropic)).toBe('work');
+    expect(connectionLabel({ ...second, credentialName: 'anthropic-setup' }, anthropic)).toBe(
+      'default',
+    );
+    expect(connectionLabel({ ...second, credentialName: 'odd-name' }, anthropic)).toBe('odd name');
+  });
+
+  it('names each account its own credential', () => {
+    const claudeCode = MOCK_CATALOG.find((e) => e.slug === 'claude-code')!;
+    const anthropic = MOCK_CATALOG.find((e) => e.slug === 'anthropic')!;
+    expect(accountCredentialName(claudeCode, 'signin', '')).toBe('claude-code-credentials');
+    expect(accountCredentialName(anthropic, 'key', '')).toBe('anthropic-setup');
+    expect(accountCredentialName(anthropic, 'key', ' Work Account! ')).toBe(
+      'anthropic-work-account',
+    );
+    expect(accountCredentialName(claudeCode, 'signin', 'personal')).toBe('claude-code-personal');
+  });
+
+  it('says how long a token is still good for', () => {
+    const now = Date.parse('2026-09-12T10:00:00Z');
+    const at = (iso: string) => ({ ...connection, credentialExpiresAt: iso });
+    expect(credentialExpiryLabel(connection, now)).toBeNull();
+    expect(credentialExpiryLabel(at('garbage'), now)).toBeNull();
+    expect(credentialExpiryLabel(at('2026-09-12T11:50:00Z'), now)).toBe(
+      'Token valid for 1 h 50 min',
+    );
+    expect(credentialExpiryLabel(at('2026-09-12T13:00:00Z'), now)).toBe('Token valid for 3 h');
+    expect(credentialExpiryLabel(at('2026-09-12T10:07:00Z'), now)).toBe('Token valid for 7 min');
+    expect(credentialExpiryLabel(at('2026-09-20T10:00:00Z'), now)).toBe('Token valid for 8 days');
+    expect(credentialExpiryLabel(at('2026-09-12T09:00:00Z'), now)).toBe('Token expired');
+  });
+
+  it('explains a recorded credential problem in plain words', () => {
+    expect(credentialProblemLabel(connection)).toBeNull();
+    expect(credentialProblemLabel({ ...connection, credentialErrorCode: 'refresh_failed' })).toBe(
+      'The token could not be renewed automatically. Sign in again.',
+    );
+    expect(
+      credentialProblemLabel({ ...connection, credentialErrorCode: 'login_worker_failed' }),
+    ).toBe('The last sign-in did not finish. Start it again.');
+    expect(
+      credentialProblemLabel({ ...connection, credentialErrorCode: 'provider_login_rejected' }),
+    ).toBe('The provider rejected the last sign-in.');
+    expect(credentialProblemLabel({ ...connection, credentialErrorCode: 'grok_exit_1' })).toBe(
+      'Last sign-in problem: grok exit 1.',
+    );
+  });
+});
+
+describe('provider pane labels', () => {
+  it("speaks in each provider's own words", () => {
+    const providers = WIZARD_STEPS.find((s) => s.id === 'providers')!;
+    const git = WIZARD_STEPS.find((s) => s.id === 'git')!;
+    const byKey = (step: typeof providers) =>
+      Object.fromEntries(providerGroups(MOCK_CATALOG, step).map((g) => [g.key, g]));
+    expect(byKey(providers).anthropic!.signInLabel).toBe('Sign in with your Claude subscription');
+    expect(byKey(providers).anthropic!.keyLabel).toBe('Use an API key');
+    expect(byKey(git).github!.signInLabel).toBe('Sign in with GitHub');
+    expect(byKey(git).github!.keyLabel).toBe('Use a personal access token');
+    const other = providerGroups(
+      [{ ...MOCK_CATALOG[0]!, slug: 'other', name: 'Other', integrationType: 'source_control' }],
+      git,
+    )[0]!;
+    expect(other.keyLabel).toBe('Use a token');
+    expect(other.signInLabel).toBe('Sign in with Other');
+  });
+});
+
+describe('errorMessage', () => {
+  it("prefers the platform's detail over the generic status line", () => {
+    const apiError = Object.assign(new Error('API request failed: 422'), {
+      detail: 'Could not start provider login: github refused the device authorization request',
+    });
+    expect(errorMessage(apiError)).toMatch(/github refused/);
+    expect(errorMessage(new Error('boom'))).toBe('boom');
+    expect(errorMessage(Object.assign(new Error('boom'), { detail: '  ' }))).toBe('boom');
+    expect(errorMessage('plain')).toBe('plain');
+  });
+});

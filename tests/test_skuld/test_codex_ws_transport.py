@@ -15,6 +15,7 @@ from skuld.transports.codex_ws import (
     _pick_free_port,
     _rpc_notification,
     _rpc_request,
+    codex_gateway_overrides,
 )
 
 # ---------------------------------------------------------------------------
@@ -561,36 +562,53 @@ class TestSpawnAppServer:
         assert mock_exec.call_args.kwargs["env"]["CODEX_HOME"] == str(codex_home)
 
 
-class TestFallbackTransport:
+class TestAppServerStartupFailure:
     @pytest.mark.asyncio
-    async def test_start_falls_back_to_subprocess_when_app_server_startup_fails(self, tmp_path):
+    async def test_start_raises_and_reports_when_the_app_server_cannot_start(self, tmp_path):
+        """No subprocess fallback: a Codex that cannot start says so instead of
+        answering a turn with silence on a transport nobody configured."""
         t = _make_transport(tmp_path, initial_prompt="Investigate this")
         emit = AsyncMock()
         t.on_event(emit)
         t._spawn_app_server = AsyncMock()
-        t._connect_ws = AsyncMock(side_effect=RuntimeError("uds handshake failed"))
+        t._connect_ws = AsyncMock(side_effect=RuntimeError("Codex app-server exited with code 1"))
         t._handshake = AsyncMock()
+        t.stop = AsyncMock()
 
-        fallback = MagicMock()
-        fallback.start = AsyncMock()
-        fallback.send_message = AsyncMock()
-        fallback.stop = AsyncMock()
-        fallback.session_id = None
-        fallback.last_result = None
-        fallback.is_alive = True
-        fallback.is_turn_active = False
-
-        with patch(
-            "skuld.transports.codex_ws.CodexSubprocessTransport",
-            return_value=fallback,
-        ) as mock_fallback_cls:
+        with pytest.raises(RuntimeError, match="exited with code 1"):
             await t.start()
 
-        mock_fallback_cls.assert_called_once()
-        fallback.on_event.assert_called_once_with(emit)
-        fallback.start.assert_called_once()
-        fallback.send_message.assert_called_once_with("Investigate this")
-        assert t._fallback_transport is fallback
+        emit.assert_awaited_once()
+        error = emit.await_args.args[0]
+        assert error["type"] == "error"
+        assert "Codex app-server failed to start" in error["error"]
+        assert "exited with code 1" in error["error"]
+        t.stop.assert_awaited_once()
+        assert not hasattr(t, "_fallback_transport")
+
+    @pytest.mark.asyncio
+    async def test_spawn_app_server_creates_codex_home(self, tmp_path, monkeypatch):
+        """The Codex CLI refuses a CODEX_HOME that does not exist; a fresh
+        sandbox has none, so the transport creates it."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+        t = _make_transport(tmp_path)
+        proc = MagicMock()
+        proc.pid = 4242
+        proc.stdout = None
+        proc.stderr = None
+        with (
+            patch("skuld.transports.codex_ws.resolve_codex_cli", return_value="codex"),
+            patch(
+                "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
+                new=AsyncMock(return_value=proc),
+            ),
+            patch("skuld.transports.codex_ws._drain_stream", new=AsyncMock()),
+        ):
+            await t._spawn_app_server()
+        assert (home / ".codex").is_dir()
 
 
 # ---------------------------------------------------------------------------
@@ -3505,3 +3523,76 @@ class TestReasoningEffort:
         t = _make_transport(tmp_path, model="gpt-5.5", reasoning_effort="high")
         params = await _capture_thread_start_params(t)
         assert params["config"]["model_reasoning_effort"] == "high"
+
+
+class TestModelGateway:
+    """Sessions on a self-hosted model: Codex talks to the platform's gateway."""
+
+    def test_overrides_select_a_chat_provider_keyed_by_env(self):
+        overrides = dict(codex_gateway_overrides("http://niuu:8080/api/v1/bifrost/"))
+        assert overrides == {
+            "model_provider": '"niuu"',
+            "model_providers.niuu.name": '"Niuu model gateway"',
+            "model_providers.niuu.base_url": '"http://niuu:8080/api/v1/bifrost/v1"',
+            "model_providers.niuu.env_key": '"NIUU_MODEL_GATEWAY_TOKEN"',
+            "model_providers.niuu.wire_api": '"responses"',
+        }
+        assert codex_gateway_overrides("  ") == []
+
+    @pytest.mark.asyncio
+    async def test_spawn_passes_the_overrides_and_the_token(self, tmp_path):
+        t = _make_transport(
+            tmp_path,
+            model_gateway_url="http://niuu:8080/api/v1/bifrost",
+            model_gateway_token="niuu-gateway",
+        )
+        mock_process = MagicMock()
+        mock_process.stdout = None
+        mock_process.stderr = None
+        mock_process.pid = 12345
+        with (
+            patch(
+                "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+            ) as mock_exec,
+            patch("skuld.transports.codex_ws.resolve_codex_cli", return_value="/bin/codex"),
+            patch(
+                "skuld.transports.codex_ws.ensure_codex_tool_shims",
+                return_value=(tmp_path / ".skuld-tools" / "bin", {}),
+            ),
+        ):
+            mock_exec.return_value = mock_process
+            await t._spawn_app_server()
+        args = mock_exec.call_args[0]
+        assert 'model_provider="niuu"' in args
+        assert 'model_providers.niuu.base_url="http://niuu:8080/api/v1/bifrost/v1"' in args
+        assert 'model_providers.niuu.wire_api="responses"' in args
+        assert mock_exec.call_args.kwargs["env"]["NIUU_MODEL_GATEWAY_TOKEN"] == "niuu-gateway"
+
+    @pytest.mark.asyncio
+    async def test_no_chatgpt_login_when_routed_through_the_gateway(self, tmp_path):
+        provider = MagicMock()
+        provider.get_tokens = AsyncMock(return_value=None)
+        t = _make_transport(
+            tmp_path,
+            codex_auth_provider=provider,
+            model_gateway_url="http://niuu:8080/api/v1/bifrost",
+        )
+        t._send_rpc = AsyncMock()
+        await t._authenticate_codex()
+        provider.get_tokens.assert_not_awaited()
+        t._send_rpc.assert_not_awaited()
+
+
+class TestGatewayReasoningEffort:
+    def test_no_default_effort_behind_the_gateway(self, tmp_path):
+        """Codex asks OpenAI models for high reasoning by default; a served
+        model gets no reasoning request unless the session sets one."""
+        routed = _make_transport(tmp_path, model="llama3.1:8b", model_gateway_url="http://gw")
+        assert routed._reasoning_effort == ""
+        direct = _make_transport(tmp_path, model="gpt-5.6-sol")
+        assert direct._reasoning_effort == "high"
+        explicit = _make_transport(
+            tmp_path, model="deepseek-r1", model_gateway_url="http://gw", reasoning_effort="medium"
+        )
+        assert explicit._reasoning_effort == "medium"

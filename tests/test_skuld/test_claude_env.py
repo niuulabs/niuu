@@ -66,3 +66,28 @@ class TestClaudeSpawnEnv:
         with patch.dict("os.environ", fake, clear=True):
             env = claude_spawn_env()
         assert "ANTHROPIC_API_KEY" not in env
+
+
+class TestModelGateway:
+    def test_gateway_routes_the_cli_and_drops_the_platform_key(self):
+        fake = {
+            "PATH": "/usr/bin",
+            "ANTHROPIC_API_KEY": "sk-test",
+            "CLAUDE_CODE_OAUTH_TOKEN": "tok",
+            "CLAUDECODE": "1",
+        }
+        with patch.dict("os.environ", fake, clear=True):
+            env = claude_spawn_env(
+                gateway_url="http://niuu:8080/api/v1/bifrost/", gateway_token="niuu-gateway"
+            )
+        assert env["ANTHROPIC_BASE_URL"] == "http://niuu:8080/api/v1/bifrost"
+        assert env["ANTHROPIC_AUTH_TOKEN"] == "niuu-gateway"
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "CLAUDECODE" not in env
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "tok"
+        assert env["PATH"] == "/usr/bin"
+
+    def test_blank_gateway_means_the_vendor_api(self):
+        with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
+            env = claude_spawn_env(gateway_url="  ", gateway_token="x")
+        assert "ANTHROPIC_BASE_URL" not in env

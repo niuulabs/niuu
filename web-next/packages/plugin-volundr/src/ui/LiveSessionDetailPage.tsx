@@ -63,6 +63,8 @@ import { PermissionApprovalPanel } from './PermissionApprovalPanel';
 import { buildPermissionAutoApprovalRequest } from './permissionAutoApproval';
 import { SessionTerminalLive } from './SessionTerminalLive';
 import { StructuredLogViewer } from './components/StructuredLogViewer';
+import { LinkedText } from './LinkedText';
+import { errorText } from './errorText';
 import './LiveSessionDetailPage.css';
 
 export type LiveSessionTab =
@@ -3522,6 +3524,8 @@ function LiveSessionDetailPageInner({
   const [actionBusy, setActionBusy] = useState<
     'start' | 'stop' | 'archive' | 'restore' | 'delete' | null
   >(null);
+  // Why the last toolbar action was refused (a restart with no free slot, say).
+  const [actionError, setActionError] = useState<string | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [dismissedHumanGateIds, setDismissedHumanGateIds] = useState<Set<string>>(new Set());
   const [showInternalMessages, setShowInternalMessages] = useState(false);
@@ -3846,9 +3850,13 @@ function LiveSessionDetailPageInner({
   async function handleResumeSession() {
     if (!liveSession || actionBusy) return;
     setActionBusy('start');
+    setActionError(null);
     try {
       await volundr.resumeSession(liveSession.id);
       await refreshSessionData();
+    } catch (error) {
+      // The platform's answer says what stopped the start and where to fix it.
+      setActionError(errorText(error, 'The session could not be started'));
     } finally {
       setActionBusy(null);
     }
@@ -4100,6 +4108,24 @@ function LiveSessionDetailPageInner({
           </div>
         </div>
       </div>
+
+      {actionError ? (
+        <div
+          role="alert"
+          className="niuu:border-b niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-2 niuu:text-xs niuu:text-critical"
+          data-testid="session-action-error"
+        >
+          <LinkedText text={actionError} />
+        </div>
+      ) : liveSession?.error && (sessionStatus === 'failed' || sessionStatus === 'error') ? (
+        <div
+          role="alert"
+          className="niuu:border-b niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-2 niuu:text-xs niuu:text-critical"
+          data-testid="session-failure-reason"
+        >
+          Session failed: <LinkedText text={liveSession.error} />
+        </div>
+      ) : null}
 
       <div className="niuu:min-h-0 niuu:flex-1 niuu:overflow-hidden">
         {resolvedActiveTab === 'chat' && (

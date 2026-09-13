@@ -201,3 +201,9 @@ class TestResolveSessionWorkspacePath:
         direct.mkdir(parents=True)
 
         assert storage.resolve_session_workspace_path("sess-2") == str(direct)
+
+
+class TestHomeVolumeCapability:
+    def test_simulated_storage_has_no_home_volumes(self, storage: InMemoryStorageAdapter):
+        """Nothing real backs a home here, so the admin toggle must not be offered."""
+        assert storage.supports_home_volumes is False

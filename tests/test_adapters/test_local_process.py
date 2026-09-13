@@ -40,6 +40,7 @@ from volundr.domain.models import (
     SessionStatus,
 )
 from volundr.domain.ports import PodStartResult
+from volundr.domain.services.session import SessionCapacityError
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -1135,6 +1136,32 @@ class TestProcessSpawning:
         assert env["FOO"] == "bar"
         assert env["NUM"] == "42"
 
+    def test_build_env_applies_contributed_env_vars(self) -> None:
+        """The integrations contributor's envVars list (SKULD__CLAUDE_AUTH, the
+        model gateway URL) reaches single-host sessions, not only Helm ones."""
+        spec = SessionSpec(
+            values={
+                "env": {"FOO": "bar"},
+                "envVars": [
+                    {
+                        "name": "SKULD__MODEL_GATEWAY__URL",
+                        "value": "http://niuu:8080/api/v1/bifrost",
+                    },
+                    {"name": "SKULD__CLAUDE_AUTH", "value": "api_key"},
+                ],
+            },
+            pod_spec=PodSpecAdditions(),
+        )
+        env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
+        assert env["SKULD__MODEL_GATEWAY__URL"] == "http://niuu:8080/api/v1/bifrost"
+        assert env["SKULD__CLAUDE_AUTH"] == "api_key"
+        assert env["FOO"] == "bar"
+
+    def test_build_env_rejects_nameless_env_vars(self) -> None:
+        spec = SessionSpec(values={"envVars": [{"value": "x"}]}, pod_spec=PodSpecAdditions())
+        with pytest.raises(ValueError, match="need a name"):
+            LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
+
     def test_build_env_sets_structured_workspace_dir(self) -> None:
         """The Skuld workspace is set through structured broker config."""
         spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
@@ -2164,8 +2191,14 @@ class TestStartStop:
             _mock_spawn(mgr, pid=os.getpid()),
         ):
             await mgr.start(session1, spec)
-            with pytest.raises(RuntimeError, match="Max concurrent sessions"):
+            capacity = await mgr.capacity()
+            assert (capacity.limit, capacity.active, capacity.available) == (1, 1, 0)
+            assert "pod_manager.max_concurrent" in capacity.remedy
+            with pytest.raises(SessionCapacityError, match="1 of 1 sessions are running") as info:
                 await mgr.start(session2, spec)
+            # the refusal tells the person where the limit is raised
+            assert "pod_manager.max_concurrent" in str(info.value)
+            assert info.value.capacity.available == 0
 
     async def test_dead_process_frees_concurrent_slot(
         self,

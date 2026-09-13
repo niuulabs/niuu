@@ -78,6 +78,25 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     && apt-get update && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# GitHub CLI (gh) from GitHub's apt repository: sessions open and inspect PRs with it.
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod 0644 /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/* \
+    && gh --version
+
+# GitLab CLI (glab), pinned release .deb per architecture: the GitLab counterpart of gh.
+# ARG values do not cross stages; TARGETARCH must be declared again here.
+ARG TARGETARCH
+ARG GLAB_VERSION=1.117.0
+RUN curl -fsSL -o /tmp/glab.deb \
+    "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/packages/generic/glab/${GLAB_VERSION}/glab_${GLAB_VERSION}_linux_${TARGETARCH}.deb" \
+    && dpkg -i /tmp/glab.deb && rm -f /tmp/glab.deb \
+    && glab --version
+
 # Upgrade npm and install the CLI tools from checked-in lockfiles.
 COPY containers/node/npm-bootstrap/package.json containers/node/npm-bootstrap/package-lock.json /opt/npm-bootstrap/
 COPY containers/skuld/npm-tools/package.json containers/skuld/npm-tools/package-lock.json /opt/skuld-tools/
@@ -95,6 +114,10 @@ RUN cd /opt/npm-bootstrap \
     && ln -sf /opt/skuld-tools/node_modules/.bin/codex /usr/local/bin/codex \
     && ln -sf /opt/skuld-tools/node_modules/.bin/opencode /usr/local/bin/opencode \
     && ln -sf /opt/skuld-tools/node_modules/.bin/grok /usr/local/bin/grok
+
+# Grok Build CLI (ACP stdio transport and the xAI device sign-in) ships from the
+# @xai-official/grok npm package above. Sessions authenticate with XAI_API_KEY or
+# the ~/.grok/auth.json the platform mounts after a wizard sign-in.
 
 # Create app user with UID 1000 (matches helm chart runAsUser)
 RUN existing=$(getent passwd 1000 | cut -d: -f1) && \

@@ -2220,9 +2220,12 @@ class TestBroker:
             approval_policy="untrusted",
             sandbox="workspace-write",
             agent_teams=True,
+            model_gateway={"url": "http://niuu:8080/api/v1/bifrost", "token": "t"},
         )
         b = Broker(settings=settings)
         kwargs = b._build_transport_kwargs()
+        assert kwargs["model_gateway_url"] == "http://niuu:8080/api/v1/bifrost"
+        assert kwargs["model_gateway_token"] == "t"
         assert kwargs["workspace_dir"] == str(tmp_path)
         assert kwargs["model"] == "opus"
         assert kwargs["sdk_port"] == 9999

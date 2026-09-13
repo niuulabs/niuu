@@ -1,6 +1,7 @@
 {
   "theme": "ice",
   "plugins": {
+    "setup": { "enabled": true, "order": 0 },
     "login": { "enabled": true, "order": 0 },
     "credentials": { "enabled": true, "order": 1 },
     "integrations": { "enabled": true, "order": 2 },
@@ -14,6 +15,7 @@
     "settings": { "enabled": true, "order": 10 }
   },
   "services": {
+    "setup": { "mode": "http", "baseUrl": "/api/v1/niuu/setup" },
     "identity": { "mode": "http", "baseUrl": "/api/v1" },
     "credentials": { "mode": "http", "baseUrl": "/api/v1/credentials" },
     "integrations": { "mode": "http", "baseUrl": "/api/v1/integrations" },

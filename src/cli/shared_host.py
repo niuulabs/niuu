@@ -10,18 +10,21 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from niuu.adapters.file_setup_state import FileSetupStateStore
 from niuu.adapters.inbound.auth import extract_principal
 from niuu.adapters.inbound.rest_credentials_settings import create_credentials_settings_router
 from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
 from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.adapters.inbound.rest_repos import create_repos_router
+from niuu.adapters.inbound.rest_setup import create_setup_router
 from niuu.adapters.outbound.git_registry import create_git_registry
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.adapters.postgres_pats import PostgresPATRepository
-from niuu.config import GitConfig
+from niuu.config import GitConfig, NiuuSettings
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.repo import RepoService
+from niuu.domain.services.setup import SetupService
 from niuu.service_database import database_pool
 from niuu.service_databases import apply_service_database_settings
 from niuu.service_integrations import (
@@ -58,7 +61,12 @@ from volundr.adapters.outbound.postgres_credential_enrollments import (
 from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
-from volundr.composition_builders import _create_credential_enrollment_runner
+from volundr.composition_builders import (
+    _create_credential_enrollment_runner,
+    create_oauth_client_registry,
+    create_oauth_token_refresh_service,
+    with_oauth_device_runner,
+)
 from volundr.config import Settings
 from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.credential_enrollment import (
@@ -71,9 +79,11 @@ from volundr.domain.services.integration_registry import (
     definitions_from_config,
 )
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
+from volundr.domain.services.oauth_token_refresh import refresh_oauth_tokens_loop
 from volundr.domain.services.tenant import TenantService
 from volundr.domain.services.tracker import TrackerService
 from volundr.domain.services.tracker_factory import TrackerFactory
+from volundr.domain.services.user_integration import UserIntegrationService
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +123,6 @@ def create_app(
         git_registry = create_git_registry(cfg)
 
         async with database_pool(loaded_settings.database) as pool:
-            repo_service = RepoService(git_registry)
             user_repository = PostgresUserRepository(pool)
             tenant_repository = PostgresTenantRepository(pool)
             storage_adapter = create_storage_adapter(loaded_settings)
@@ -157,9 +166,28 @@ def create_app(
                 )
             )
             tracker_factory = TrackerFactory(credential_store)
+            # Repositories come from the person's own connections (the accounts
+            # added in the wizard), not only from git instances in config.
+            user_integration_service = UserIntegrationService(
+                shared_git_providers=git_registry.providers,
+                integration_repo=integration_repo,
+                integration_registry=integration_registry,
+                credential_store=credential_store,
+            )
+            repo_service = RepoService(git_registry, user_integration=user_integration_service)
+            oauth_clients = create_oauth_client_registry(
+                loaded_settings,
+                credential_store=credential_store,
+                integration_registry=integration_registry,
+            )
+            await oauth_clients.load()
             credential_enrollment_service = CredentialEnrollmentService(
                 repository=PostgresCredentialEnrollmentRepository(pool),
-                runner=_create_credential_enrollment_runner(loaded_settings),
+                runner=with_oauth_device_runner(
+                    _create_credential_enrollment_runner(loaded_settings),
+                    oauth_clients,
+                    integration_registry,
+                ),
                 integration_repository=integration_repo,
                 integration_registry=integration_registry,
                 credential_store=credential_store,
@@ -247,6 +275,7 @@ def create_app(
                     registry=integration_registry,
                     credential_store=credential_store,
                     credential_enrollment_service=credential_enrollment_service,
+                    oauth_clients=oauth_clients,
                 )
             )
             app.include_router(
@@ -257,6 +286,7 @@ def create_app(
                     registry=integration_registry,
                     credential_store=credential_store,
                     credential_enrollment_service=credential_enrollment_service,
+                    oauth_clients=oauth_clients,
                 )
             )
             app.include_router(
@@ -272,12 +302,45 @@ def create_app(
             app.include_router(create_features_router(feature_service))
             app.include_router(create_ravn_personas_router())
 
+            host_config = NiuuSettings().host
+
+            async def _database_probe() -> bool:
+                return await pool.fetchval("SELECT 1") == 1
+
+            setup_service = SetupService(
+                FileSetupStateStore(path=host_config.setup_state_file),
+                enabled=host_config.setup_enabled,
+                mode=host_config.setup_mode or host_config.platform_mode,
+                host_facts_file=host_config.host_facts_file,
+                database_probe=_database_probe,
+            )
+            app.state.setup_service = setup_service
+            stack_control = None
+            if host_config.stack_dir:
+                from cli.services.stack_control import DockerStackController
+
+                stack_control = DockerStackController(stack_dir=host_config.stack_dir)
+            app.include_router(create_setup_router(setup_service, stack=stack_control))
+
             enrollment_reconcile_task = asyncio.create_task(
                 reconcile_credential_enrollments_loop(credential_enrollment_service)
+            )
+            token_refresh_task = asyncio.create_task(
+                refresh_oauth_tokens_loop(
+                    create_oauth_token_refresh_service(
+                        integration_repository=integration_repo,
+                        integration_registry=integration_registry,
+                        credential_store=credential_store,
+                        oauth_clients=oauth_clients,
+                    )
+                )
             )
             try:
                 yield
             finally:
+                token_refresh_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await token_refresh_task
                 enrollment_reconcile_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await enrollment_reconcile_task

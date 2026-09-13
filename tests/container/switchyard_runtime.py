@@ -16,6 +16,9 @@ from switchyard.libsy import (
 
 
 async def main() -> None:
+    # Toolchains must not ship in the runtime image. The version control
+    # client is not one of them here: docker mode clones session workspaces
+    # from the platform container before a sandbox starts (containers/niuu/Dockerfile).
     for executable in (
         "rustc",
         "cargo",
@@ -24,12 +27,12 @@ async def main() -> None:
         "g++",
         "cc",
         "cmake",
-        "git",
         "uv",
         "pytest",
         "ruff",
     ):
         assert shutil.which(executable) is None, f"Unexpected build tool in runtime: {executable}"
+    assert shutil.which("git") is not None, "the runtime lost git: docker mode clones with it"
     assert not Path("/usr/local/rustup").exists()
     assert not Path("/usr/local/cargo").exists()
     provenance = json.loads(Path("/opt/venv/share/niuu/switchyard-build.json").read_text())

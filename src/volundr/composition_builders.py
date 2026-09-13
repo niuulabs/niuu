@@ -17,6 +17,7 @@ from volundr.domain.ports import (
     CredentialStorePort,
     ExternalSessionProvider,
     GatewayPort,
+    IntegrationRepository,
     PodManager,
     ResidentRuntimeController,
     ResidentSessionController,
@@ -24,6 +25,13 @@ from volundr.domain.ports import (
     SecretInjectionPort,
     SessionContributor,
 )
+from volundr.domain.services.integration_registry import IntegrationRegistry
+from volundr.domain.services.oauth_clients import (
+    SOURCE_CONFIGURED,
+    OAuthClient,
+    OAuthClientRegistry,
+)
+from volundr.domain.services.oauth_token_refresh import OAuthTokenRefreshService
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +85,59 @@ def _create_credential_enrollment_runner(settings: Settings) -> CredentialEnroll
         )
     logger.info("Credential enrollment runner: %s", config.adapter.rsplit(".", 1)[-1])
     return instance
+
+
+def create_oauth_client_registry(
+    settings: Settings,
+    *,
+    credential_store: CredentialStorePort,
+    integration_registry: IntegrationRegistry,
+) -> OAuthClientRegistry:
+    """The install's OAuth applications: ``oauth.clients`` plus those registered in the wizard."""
+    return OAuthClientRegistry(
+        credential_store=credential_store,
+        integration_registry=integration_registry,
+        configured={
+            slug: OAuthClient(
+                slug=slug,
+                client_id=client.client_id,
+                client_secret=client.client_secret,
+                source=SOURCE_CONFIGURED,
+            )
+            for slug, client in settings.oauth.clients.items()
+        },
+    )
+
+
+def create_oauth_token_refresh_service(
+    *,
+    integration_repository: IntegrationRepository,
+    integration_registry: IntegrationRegistry,
+    credential_store: CredentialStorePort,
+    oauth_clients: OAuthClientRegistry,
+) -> OAuthTokenRefreshService:
+    """Refresher for device-flow sign-in tokens (GitLab, GitHub)."""
+    return OAuthTokenRefreshService(
+        integration_repository=integration_repository,
+        integration_registry=integration_registry,
+        credential_store=credential_store,
+        clients=oauth_clients,
+    )
+
+
+def with_oauth_device_runner(
+    runner: CredentialEnrollmentRunnerPort,
+    oauth_clients: OAuthClientRegistry,
+    registry: IntegrationRegistry,
+) -> CredentialEnrollmentRunnerPort:
+    """Add the in-process OAuth device grant (GitHub, GitLab) next to the CLI runner."""
+    from volundr.adapters.outbound.oauth_device_runner import (
+        CompositeCredentialEnrollmentRunner,
+        OAuthDeviceFlowRunner,
+    )
+
+    device = OAuthDeviceFlowRunner(registry=registry, clients=oauth_clients)
+    return CompositeCredentialEnrollmentRunner([runner, device])
 
 
 def _create_pod_manager(settings: Settings) -> PodManager:
@@ -300,6 +361,16 @@ def _create_contributors(
     if not _has_contributor("workload_identity"):
         contributors.append(WorkloadIdentityContributor())
         logger.info("Session contributor: workload_identity (auto-wired)")
+
+    # The integrations a launch attaches carry more than credentials: the
+    # Claude auth mode, MCP servers, and the model gateway URL of a self-hosted
+    # model server. Wire the contributor whenever a catalog is present, so a
+    # docker or host install behaves like the Helm chart, which lists it.
+    if not _has_contributor("integrations") and ports.get("integration_registry") is not None:
+        from volundr.adapters.outbound.contributors.integrations import IntegrationContributor
+
+        contributors.append(IntegrationContributor(**ports))
+        logger.info("Session contributor: integrations (auto-wired)")
 
     # Auto-wire LocalMountContributor from local_mounts config
     lm = settings.local_mounts

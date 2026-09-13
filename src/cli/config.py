@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -115,6 +115,202 @@ class PodManagerConfig(BaseModel):
         return data
 
 
+class DockerVllmConfig(BaseModel):
+    """Optional local model served by vLLM inside the compose bundle."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Start a vLLM container serving `model` on the host GPU.",
+    )
+    model: str = Field(
+        default="",
+        description="Hugging Face model id to serve (e.g. nvidia/Nemotron-3-Nano-30B-A3B).",
+    )
+    image: str = Field(
+        default="",
+        description=(
+            "vLLM container image (must match the host architecture). The installer "
+            "writes it into ~/.niuu/config.yaml; required when `enabled` is true."
+        ),
+    )
+    port: int = Field(default=8000, description="Port vLLM listens on inside the compose network.")
+    max_model_len: int = Field(default=65536, description="Context length passed to vLLM.")
+    gpu_memory_utilization: float = Field(
+        default=0.6,
+        description="Fraction of GPU memory vLLM may reserve; leave room for sandboxes.",
+    )
+    hf_token: str = Field(
+        default="",
+        description="Hugging Face token for gated repositories (empty = anonymous).",
+    )
+    trust_remote_code: bool = Field(
+        default=False,
+        description=(
+            "Pass --trust-remote-code to vLLM for a custom model whose repository ships "
+            "model code. Curated models that need it are handled without this flag."
+        ),
+    )
+
+
+class DockerModelConfig(BaseModel):
+    """One model the setup wizard offers to serve locally with vLLM.
+
+    The installer writes the initial list into ``~/.niuu/config.yaml``; editing
+    that file and running ``niuu up`` again changes what the wizard offers and
+    how vLLM is started, without a new platform image.
+    """
+
+    id: str = Field(description="Short id the wizard uses (e.g. nemotron-3-nano-30b).")
+    model: str = Field(description="Hugging Face model id vLLM serves.")
+    name: str = Field(description="Name shown in the wizard.")
+    description: str = Field(default="", description="One line shown under the name.")
+    weight_gib: int = Field(
+        description="Memory vLLM reserves for the weights plus a 64k-token KV cache, rounded up."
+    )
+    recommended: bool = Field(default=False, description="Preselected in the wizard.")
+    trust_remote_code: bool = Field(
+        default=False,
+        description="The repository ships model code vLLM must run (--trust-remote-code).",
+    )
+    serve_args: list[str] = Field(
+        default_factory=list,
+        description="Extra `vllm serve` arguments from the model card (tool-call parser, ...).",
+    )
+
+
+class DockerModelServerConfig(BaseModel):
+    """A model server you already run (vLLM, sparkrun, Ollama, ...).
+
+    Registered as the ``local`` provider of the platform's model gateway
+    (Bifrost) and seeded as the "Model server" AI provider, so Claude Code,
+    Codex and Ravn sessions can use its models.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Route the `local` gateway provider and a session provider at this server.",
+    )
+    base_url: str = Field(
+        default="",
+        description=(
+            "OpenAI-compatible base URL without the /v1 suffix, as reachable from the "
+            "platform container (e.g. http://host.docker.internal:8000 for a server on "
+            "this host)."
+        ),
+    )
+    models: list[str] = Field(
+        default_factory=list,
+        description="Model ids the server serves; the first is what sessions pick by default.",
+    )
+    api_key: str = Field(
+        default="",
+        description="Bearer token the server expects, if it needs one.",
+    )
+
+    @field_validator("base_url")
+    @classmethod
+    def _normalize_base_url(cls, value: str) -> str:
+        url = value.strip().rstrip("/")
+        if url.endswith("/v1"):
+            url = url[: -len("/v1")]
+        return url
+
+    @model_validator(mode="after")
+    def _enabled_needs_a_server(self) -> DockerModelServerConfig:
+        if not self.enabled:
+            return self
+        if not self.base_url.startswith(("http://", "https://")):
+            raise ValueError(
+                "docker.model_server.base_url must be an http(s) URL when the model server "
+                "is enabled"
+            )
+        if not [m for m in self.models if m.strip()]:
+            raise ValueError(
+                "docker.model_server.models must name at least one model when the model "
+                "server is enabled"
+            )
+        return self
+
+
+class DockerConfig(BaseModel):
+    """Docker mode: the whole platform as containers on one Docker host."""
+
+    data_dir: str = Field(
+        default="~/.niuu/data",
+        description=(
+            "Host directory for postgres data, workspaces, credentials and models. "
+            "Owned by the user who runs the platform; no root needed. Set a system "
+            "path such as /var/lib/niuu to share the install between users."
+        ),
+    )
+    compose_dir: str = Field(
+        default="~/.niuu/docker",
+        description="Where the rendered compose bundle and env file are written.",
+    )
+    project_name: str = Field(default="niuu", description="Docker Compose project name.")
+    image: str = Field(
+        default="ghcr.io/niuulabs/niuu:dev",
+        description="All-in-one platform image (CI publishes multi-arch `dev` and version tags).",
+    )
+    postgres_image: str = Field(
+        default="pgvector/pgvector:pg17",
+        description="PostgreSQL image with pgvector.",
+    )
+    skuld_image: str = Field(
+        default="ghcr.io/niuulabs/skuld:dev",
+        description="Session broker image started once per Forge session.",
+    )
+    bind_host: str = Field(
+        default="0.0.0.0",
+        description="Host interface the platform port is published on "
+        "(0.0.0.0 = whole LAN, 127.0.0.1 = this machine only).",
+    )
+    postgres_password: str = Field(
+        default="",
+        description="Password for the postgres superuser; generated on first `niuu up` when empty.",
+    )
+    require_gpu: bool = Field(
+        default=False,
+        description="Fail preflight when no NVIDIA GPU or container runtime is present "
+        "(off by default: a GPU is detected and used when present, never required).",
+    )
+    min_disk_space_gib: int = Field(
+        default=50,
+        description="Warn when the data directory has less free space than this.",
+    )
+    startup_timeout_seconds: float = Field(
+        default=180.0,
+        description="How long `niuu up` waits for the platform health endpoint.",
+    )
+    vllm: DockerVllmConfig = Field(default_factory=DockerVllmConfig)
+    models: list[DockerModelConfig] = Field(
+        default_factory=list,
+        description="Models the wizard offers to serve locally; the installer writes this list.",
+    )
+    model_server: DockerModelServerConfig = Field(default_factory=DockerModelServerConfig)
+    sign_in_client_ids: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Public OAuth client ids for device-flow sign-in, keyed by integration slug "
+            "(github, gitlab). No secret is needed; the app must have the device flow enabled."
+        ),
+    )
+    sign_in_client_secrets: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Optional OAuth client secrets keyed by integration slug. GitHub only needs one to "
+            "refresh expiring user tokens; GitLab refreshes with the public client id alone."
+        ),
+    )
+    applier_image: str = Field(
+        default="docker:28-cli",
+        description=(
+            "Image that runs `docker compose up` when the wizard applies a stack change "
+            "(a sibling container, so the platform can be recreated underneath it)."
+        ),
+    )
+
+
 class ServerConfig(BaseModel):
     """Server configuration — single port for all services."""
 
@@ -186,11 +382,12 @@ class CLISettings(BaseSettings):
 
     mode: str = Field(
         default="mini",
-        description="Operating mode: 'mini', 'openshell', or 'cluster'.",
+        description="Operating mode: 'mini', 'openshell', 'cluster', or 'docker'.",
     )
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+    docker: DockerConfig = Field(default_factory=DockerConfig)
     plugins: PluginConfig = Field(default_factory=PluginConfig)
     services: ServiceConfig = Field(default_factory=ServiceConfig)
     bifrost: BifrostConfig = Field(default_factory=BifrostConfig)

@@ -1068,6 +1068,8 @@ class OAuthSpec:
     scopes: tuple[str, ...] = ()
     token_field_mapping: dict[str, str] = ()  # type: ignore[assignment]
     extra_authorize_params: dict[str, str] = ()  # type: ignore[assignment]
+    # RFC 8628 device authorization endpoint; empty when the provider has none.
+    device_authorization_url: str = ""
     extra_token_params: dict[str, str] = ()  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
@@ -1155,10 +1157,19 @@ class IntegrationDefinition:
     config_schema: dict = ()  # type: ignore[assignment]
     mcp_server: MCPServerSpec | None = None
     env_from_credentials: dict[str, str] = ()  # type: ignore[assignment]
+    # Session env taken from the connection's non-secret config: env var → config key.
+    env_from_config: dict[str, str] = ()  # type: ignore[assignment]
     auth_type: str = "api_key"
     oauth: OAuthSpec | None = None
     file_mounts: dict[str, str] = ()  # type: ignore[assignment]
     credential_enrollment: CredentialEnrollmentSpec | None = None
+    # Model vendor an AI provider connection unlocks ("anthropic", "openai", ...);
+    # matched against SessionDefinitionConfig.compatible_providers. Empty for
+    # anything that is not an AI provider.
+    model_vendor: str = ""
+    # How to check an API key works: {"url", "auth": "bearer" | "<header name>",
+    # "headers": {...}}. Empty when the provider offers no cheap probe.
+    key_probe: dict[str, Any] = ()  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if not isinstance(self.credential_schema, dict):
@@ -1167,6 +1178,8 @@ class IntegrationDefinition:
             object.__setattr__(self, "config_schema", dict(self.config_schema))
         if not isinstance(self.env_from_credentials, dict):
             object.__setattr__(self, "env_from_credentials", dict(self.env_from_credentials))
+        if not isinstance(self.env_from_config, dict):
+            object.__setattr__(self, "env_from_config", dict(self.env_from_config))
         if not isinstance(self.file_mounts, dict):
             object.__setattr__(self, "file_mounts", dict(self.file_mounts))
 

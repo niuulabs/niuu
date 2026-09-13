@@ -1,0 +1,46 @@
+{
+  "name": "@niuulabs/plugin-setup",
+  "version": "0.0.1",
+  "description": "First-launch setup wizard for a single-host Niuu install",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./styles.css": "./dist/styles.css"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsup --watch"
+  },
+  "peerDependencies": {
+    "@tanstack/react-query": "^5.102.8",
+    "@tanstack/react-router": "^1.170.33",
+    "react": "^19.2.8"
+  },
+  "dependencies": {
+    "@niuulabs/plugin-sdk": "workspace:*",
+    "@niuulabs/ui": "workspace:*"
+  },
+  "devDependencies": {
+    "@tanstack/react-query": "^5.102.8",
+    "@tanstack/react-router": "^1.170.33",
+    "@types/react": "^19.2.18",
+    "react": "^19.2.8",
+    "tsup": "^8.3.5",
+    "typescript": "^6.0.3",
+    "vite": "^8.2.2"
+  }
+}

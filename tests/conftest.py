@@ -545,7 +545,9 @@ class MockGitProvider(GitProvider):
 
     async def list_repos(self, org: str) -> list[RepoInfo]:
         self.list_repos_calls.append(org)
-        return [r for r in self._repos if r.org == org]
+        # An empty org means everything the credential can reach, as in the
+        # real providers.
+        return [r for r in self._repos if not org or r.org == org]
 
     async def list_branches(self, repo_url: str) -> list[str]:
         if not self.supports(repo_url):

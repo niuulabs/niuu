@@ -2,18 +2,33 @@ import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { useService } from '@niuulabs/plugin-sdk';
-import { Dialog, DialogContent, Field, Input, Textarea } from '@niuulabs/ui';
+import {
+  BranchSelect,
+  Dialog,
+  DialogContent,
+  Field,
+  Input,
+  RepoSelect,
+  Textarea,
+  type RepoRecord,
+} from '@niuulabs/ui';
 import type { IVolundrService } from '../ports/IVolundrService';
 import type { SessionSource } from '../models/volundr.model';
+import { definitionToTaskType, slugifySessionName, validateSessionName } from './launchWizardModel';
+import { EngineSelect } from './EngineSelect';
+import { LinkedText } from './LinkedText';
+import { errorText } from './errorText';
 import {
-  definitionToTaskType,
-  deriveCliTool,
-  getDefinitionRune,
-  slugifySessionName,
-  validateSessionName,
-} from './launchWizardModel';
+  availableEngines,
+  launchModel,
+  quickLaunchIntegrationIds,
+  selectedEngineProvider,
+} from './launchEngines';
 import { LaunchWizard } from './LaunchWizard';
 import { useFeatures } from './useFeatures';
+
+/** The shared repository catalog (`niuu.repos`), the same one the advanced launch reads. */
+type RepoCatalog = { getRepos(): Promise<RepoRecord[]> };
 
 export interface QuickLaunchProps {
   open: boolean;
@@ -25,11 +40,6 @@ const PRIMARY_BTN =
   'niuu:rounded-md niuu:border niuu:border-brand niuu:bg-brand niuu:px-4 niuu:py-2 niuu:text-xs niuu:font-mono niuu:text-bg-primary niuu:cursor-pointer niuu:disabled:opacity-50 niuu:disabled:cursor-not-allowed';
 const CANCEL_BTN =
   'niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-4 niuu:py-2 niuu:text-xs niuu:font-mono niuu:text-text-primary niuu:hover:bg-bg-tertiary';
-const ENGINE_BTN =
-  'niuu:flex niuu:items-center niuu:gap-1.5 niuu:rounded-md niuu:border niuu:px-3 niuu:py-2 niuu:text-xs niuu:font-mono niuu:cursor-pointer';
-const ENGINE_BTN_ACTIVE = 'niuu:border-brand niuu:bg-bg-tertiary niuu:text-text-primary';
-const ENGINE_BTN_IDLE =
-  'niuu:border-border-subtle niuu:bg-bg-primary niuu:text-text-muted niuu:hover:border-brand';
 
 /** Compact launch for local and remote Forge hosts; advanced configuration remains available. */
 export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickLaunchProps) {
@@ -48,7 +58,30 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
     queryFn: () => volundr.getTargets(),
     enabled: open,
   });
+  // Only engines a connected AI provider powers are offered; the join runs
+  // through the catalog, which says which model vendor each provider unlocks.
+  const integrationsQuery = useQuery({
+    queryKey: ['volundr', 'integrations'],
+    queryFn: () => volundr.getIntegrations(),
+    enabled: open,
+  });
+  const catalogQuery = useQuery({
+    queryKey: ['volundr', 'integration-catalog'],
+    queryFn: () => volundr.getIntegrationCatalog(),
+    enabled: open,
+  });
   const definitions = definitionsQuery.data ?? [];
+  const engines = useMemo(
+    () =>
+      availableEngines(
+        definitionsQuery.data ?? [],
+        integrationsQuery.data ?? [],
+        catalogQuery.data ?? [],
+      ),
+    [definitionsQuery.data, integrationsQuery.data, catalogQuery.data],
+  );
+  const providerError = integrationsQuery.error ?? catalogQuery.error ?? null;
+  const providersLoading = integrationsQuery.isPending || catalogQuery.isPending;
   const targets = (targetsQuery.data ?? []).filter((target) => target.enabled);
   const [targetId, setTargetId] = useState('');
   const [sourceType, setSourceType] = useState<'git' | 'local_mount' | null>(null);
@@ -63,13 +96,33 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
     'local_mount';
   const [name, setName] = useState('');
   const [folder, setFolder] = useState('');
+  // The same repository list the advanced launch offers: every repository
+  // the person's connected Git accounts can reach.
+  const repoCatalog = useService<RepoCatalog>('niuu.repos');
+  const reposQuery = useQuery({
+    queryKey: ['volundr', 'repos'],
+    queryFn: () => repoCatalog.getRepos(),
+    enabled: open && !local,
+  });
+  const repos: RepoRecord[] = reposQuery.data ?? [];
+  const [customRepo, setCustomRepo] = useState(false);
+  const selectedRepo = repos.find((repo) => repo.cloneUrl === folder);
+  const pickFromList = !local && repos.length > 0 && !customRepo && (!folder || !!selectedRepo);
   const [definitionKey, setDefinitionKey] = useState('skuldClaude');
   const [prompt, setPrompt] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const selectedDef =
-    definitions.find((definition) => definition.key === definitionKey) ?? definitions[0];
+  const selectedEngine =
+    engines.find((engine) => engine.definition.key === definitionKey) ?? engines[0];
+  const selectedDef = selectedEngine?.definition;
+  // Which account runs the engine when several could; the first otherwise.
+  const [providerId, setProviderId] = useState('');
+  const selectedProvider = selectedEngineProvider(selectedEngine, providerId ? [providerId] : []);
+  // The model: what the person picked among the ones a model server serves,
+  // otherwise the engine's own default.
+  const [model, setModel] = useState('');
+  const effectiveModel = launchModel(selectedEngine, selectedProvider, model);
 
   // Auto-derive the session name from the folder's last path segment when blank.
   const effectiveName = useMemo(() => {
@@ -82,7 +135,8 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
 
   const nameError = validateSessionName(effectiveName);
   const loadError = definitionsQuery.error ?? features.error ?? targetsQuery.error;
-  const loading = definitionsQuery.isPending || features.isPending || targetsQuery.isPending;
+  const loading =
+    definitionsQuery.isPending || features.isPending || targetsQuery.isPending || providersLoading;
   const canCreate =
     Boolean(folder.trim()) &&
     Boolean(selectedDef) &&
@@ -90,6 +144,7 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
     !creating &&
     !loading &&
     !loadError &&
+    !providerError &&
     (!local || Boolean(features.data?.localMountsEnabled));
 
   async function handleCreate() {
@@ -110,10 +165,20 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
         name: effectiveName,
         source,
         instanceId: selectedTarget,
-        model: def?.defaultModel ?? '',
+        model: effectiveModel,
         definition: def?.key,
         taskType: def ? definitionToTaskType(def.key) : undefined,
         initialPrompt: prompt.trim() || undefined,
+        // Exactly one AI credential (the chosen account), the Git account
+        // that listed the repository, and the rest of the person's
+        // integrations; never every AI account at once.
+        integrationIds: quickLaunchIntegrationIds({
+          provider: selectedProvider,
+          integrations: integrationsQuery.data ?? [],
+          repos,
+          repoUrl: path,
+          local,
+        }),
         terminalRestricted: false,
         workloadConfig: {},
       });
@@ -128,7 +193,7 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
         params: { sessionId: session.id },
       });
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to create session');
+      setError(errorText(e, 'Failed to create session'));
     } finally {
       setCreating(false);
     }
@@ -150,7 +215,7 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
                 instanceId: selectedTarget ?? '',
                 initialPrompt: prompt,
                 definition: selectedDef?.key ?? '',
-                model: selectedDef?.defaultModel ?? '',
+                model: effectiveModel,
               }
             : undefined
         }
@@ -184,23 +249,76 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
           </Field>
           <Field
             label={local ? 'Folder' : 'Repository'}
-            hint={local ? 'Absolute path on the Forge host; runs in place' : 'Repository clone URL'}
+            hint={
+              local
+                ? 'Absolute path on the Forge host; runs in place'
+                : reposQuery.error
+                  ? `Could not list your repositories (${reposQuery.error.message}); paste a clone URL`
+                  : pickFromList
+                    ? 'From your connected Git accounts'
+                    : 'Repository clone URL'
+            }
           >
-            <Input
-              value={folder}
-              onChange={(e) => setFolder(e.target.value)}
-              placeholder={local ? '/path/to/checkout' : 'https://github.com/owner/repository.git'}
-              data-testid="quick-launch-folder"
-            />
+            {pickFromList ? (
+              <RepoSelect
+                repos={repos}
+                value={folder}
+                onChange={(value: string) => {
+                  setFolder(value);
+                  setBranch(repos.find((repo) => repo.cloneUrl === value)?.defaultBranch ?? '');
+                }}
+                placeholder="Select repository"
+                testId="quick-launch-repo"
+              />
+            ) : (
+              <Input
+                value={folder}
+                onChange={(e) => setFolder(e.target.value)}
+                placeholder={
+                  local ? '/path/to/checkout' : 'https://github.com/owner/repository.git'
+                }
+                data-testid="quick-launch-folder"
+              />
+            )}
+            {!local && repos.length > 0 ? (
+              <button
+                type="button"
+                className="niuu:mt-1 niuu:self-start niuu:text-xs niuu:text-text-secondary niuu:hover:text-text-primary"
+                onClick={() => {
+                  setCustomRepo((value) => !value);
+                  setFolder('');
+                  setBranch('');
+                }}
+                data-testid="quick-launch-repo-toggle"
+              >
+                {pickFromList ? 'Paste a clone URL instead' : 'Choose from your repositories'}
+              </button>
+            ) : null}
           </Field>
 
           {!local && (
-            <Field label="Branch" hint="Optional — uses the repository default">
-              <Input
-                aria-label="Branch"
-                value={branch}
-                onChange={(event) => setBranch(event.target.value)}
-              />
+            <Field
+              label="Branch"
+              hint={
+                selectedRepo?.branches.length ? undefined : 'Optional — uses the repository default'
+              }
+            >
+              {selectedRepo?.branches.length ? (
+                <BranchSelect
+                  repos={repos}
+                  selectedRepos={folder}
+                  value={branch}
+                  onChange={(value: string) => setBranch(value)}
+                  placeholder="Select branch"
+                  testId="quick-launch-branch"
+                />
+              ) : (
+                <Input
+                  aria-label="Branch"
+                  value={branch}
+                  onChange={(event) => setBranch(event.target.value)}
+                />
+              )}
             </Field>
           )}
           {targets.length > 1 && (
@@ -211,7 +329,10 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
                 value={selectedTarget}
                 onChange={(event) => {
                   setTargetId(event.target.value);
-                  setSourceType(local ? null : 'git');
+                  // A source the person chose stays; a derived one is derived again
+                  // from the new target's capabilities (which may not allow local
+                  // folders), never pinned by whatever the mode was mid-load.
+                  setSourceType((current) => (current === 'local_mount' ? null : current));
                   if (local) setFolder('');
                 }}
               >
@@ -240,58 +361,20 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
             />
           </Field>
 
-          <Field label="Engine">
-            <div
-              className="niuu:flex niuu:flex-wrap niuu:gap-2"
-              role="radiogroup"
-              aria-label="Coding engine"
-            >
-              {definitions.map((def) => {
-                const active = def.key === selectedDef?.key;
-                return (
-                  <button
-                    key={def.key}
-                    type="button"
-                    role="radio"
-                    aria-checked={active}
-                    tabIndex={active ? 0 : -1}
-                    onKeyDown={(event) => {
-                      if (
-                        ![
-                          'ArrowLeft',
-                          'ArrowRight',
-                          'ArrowUp',
-                          'ArrowDown',
-                          'Home',
-                          'End',
-                        ].includes(event.key)
-                      )
-                        return;
-                      event.preventDefault();
-                      const current = definitions.indexOf(def);
-                      const next =
-                        event.key === 'Home'
-                          ? 0
-                          : event.key === 'End'
-                            ? definitions.length - 1
-                            : (current +
-                                (event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1) +
-                                definitions.length) %
-                              definitions.length;
-                      setDefinitionKey(definitions[next]!.key);
-                      event.currentTarget.parentElement?.querySelectorAll('button')[next]?.focus();
-                    }}
-                    onClick={() => setDefinitionKey(def.key)}
-                    data-testid={`quick-launch-engine-${deriveCliTool(def.key)}`}
-                    className={`${ENGINE_BTN} ${active ? ENGINE_BTN_ACTIVE : ENGINE_BTN_IDLE}`}
-                  >
-                    <span aria-hidden>{getDefinitionRune(def.key)}</span>
-                    {def.displayName}
-                  </button>
-                );
-              })}
-            </div>
-          </Field>
+          {definitions.length > 0 ? (
+            <EngineSelect
+              engines={engines}
+              value={selectedDef?.key ?? ''}
+              onChange={setDefinitionKey}
+              selectedIntegrationIds={providerId ? [providerId] : []}
+              onProviderChange={setProviderId}
+              model={effectiveModel}
+              onModelChange={setModel}
+              loading={providersLoading}
+              error={providerError}
+              testId="quick-launch-engine"
+            />
+          ) : null}
 
           <Field label="First instruction" hint="Optional — what should the agent start on?">
             <Textarea
@@ -314,7 +397,7 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
               className="niuu:text-xs niuu:text-danger"
               data-testid="quick-launch-error"
             >
-              {error}
+              <LinkedText text={error} />
             </p>
           ) : null}
 

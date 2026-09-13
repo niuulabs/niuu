@@ -38,12 +38,16 @@ class GitLabProvider(GitProvider, GitWorkflowProvider):
         name: str,
         base_url: str,
         token: str | None = None,
-        orgs: tuple[str, ...] = (),
+        orgs: tuple[str, ...] | list[str] | str = (),
+        **_extra: object,
     ):
         self._name = name
         self._base_url = base_url.rstrip("/")
         self._token = token
-        self._orgs = orgs
+        if isinstance(orgs, str):
+            self._orgs = tuple(o.strip() for o in orgs.split(",") if o.strip())
+        else:
+            self._orgs = tuple(orgs)
         self._client: httpx.AsyncClient | None = None
 
         # Extract host from base URL for matching
@@ -232,14 +236,24 @@ class GitLabProvider(GitProvider, GitWorkflowProvider):
         group_path = quote_plus(org)
 
         try:
-            # Try group endpoint first
             page = 1
-            url = f"/groups/{group_path}/projects"
-            params: dict[str, str | int | bool] = {
-                "per_page": 100,
-                "include_subgroups": True,
-                "page": page,
-            }
+            if org:
+                # Try group endpoint first
+                url = f"/groups/{group_path}/projects"
+                params: dict[str, str | int | bool] = {
+                    "per_page": 100,
+                    "include_subgroups": True,
+                    "page": page,
+                }
+            else:
+                # No group named: every project the token is a member of.
+                if not self._token:
+                    raise ValueError(
+                        f"GitLabProvider[{self._name}]: listing projects without a group "
+                        "needs a token"
+                    )
+                url = "/projects"
+                params = {"per_page": 100, "membership": True, "page": page}
 
             logger.info(
                 "GitLabProvider[%s]: listing repos for org=%s, url=%s, authenticated=%s",
@@ -252,7 +266,7 @@ class GitLabProvider(GitProvider, GitWorkflowProvider):
             response = await client.get(url, params=params)
 
             # Fall back to user projects if group not found
-            if response.status_code == 404:
+            if org and response.status_code == 404:
                 logger.debug(
                     "GitLabProvider[%s]: group endpoint 404 for %s, trying user endpoint",
                     self._name,

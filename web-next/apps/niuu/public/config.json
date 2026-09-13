@@ -2,6 +2,7 @@
   "demoMode": true,
   "theme": "ice",
   "plugins": {
+    "setup": { "enabled": true, "order": 0 },
     "login": { "enabled": true, "order": 0 },
     "volundr": { "enabled": true, "order": 1 },
     "ting": { "enabled": true, "order": 2 },
@@ -12,6 +13,7 @@
     "settings": { "enabled": true, "order": 7 }
   },
   "services": {
+    "setup": { "mode": "mock" },
     "identity": { "mode": "mock" },
     "features": { "mode": "mock" },
     "tracker": { "mode": "mock" },

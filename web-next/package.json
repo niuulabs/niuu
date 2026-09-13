@@ -46,6 +46,7 @@
     "@niuulabs/plugin-mimir": "workspace:*",
     "@niuulabs/plugin-observatory": "workspace:*",
     "@niuulabs/plugin-ravn": "workspace:*",
+    "@niuulabs/plugin-setup": "workspace:*",
     "@niuulabs/plugin-ting": "workspace:*",
     "@niuulabs/plugin-valkyrie": "workspace:*",
     "@niuulabs/plugin-volundr": "workspace:*",

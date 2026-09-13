@@ -395,6 +395,7 @@ class TestRouteDomainSelection:
             "ravn-trigger-api",
             "ravn-valkyrie-api",
             "catalog-api",
+            "forge-internal-api",
             "dispatch-api",
             "event-api",
             "review-api",
@@ -2111,13 +2112,14 @@ class TestRootServerStartEmbeddedDb:
         )
 
     @pytest.mark.asyncio
-    async def test_skips_when_database_mode_is_external(self) -> None:
+    async def test_external_mode_without_host_is_fatal(self) -> None:
         registry = PluginRegistry()
         server = RootServer(registry=registry)
 
         with (
             patch.dict(os.environ, {"NIUU_DATABASE_MODE": "external"}, clear=False),
             patch("niuu.adapters.embedded_postgres.EmbeddedPostgresDatabase") as mock_cls,
+            pytest.raises(RuntimeError, match="DATABASE__HOST"),
         ):
             await server._start_embedded_db()
 
@@ -2125,18 +2127,94 @@ class TestRootServerStartEmbeddedDb:
         assert server._embedded_db is None
 
     @pytest.mark.asyncio
-    async def test_skips_when_database_host_already_set(self) -> None:
+    async def test_external_host_provisions_databases_instead_of_embedded(self) -> None:
+        registry = PluginRegistry()
+        server = RootServer(registry=registry)
+        ensure = AsyncMock(return_value=("volundr",))
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "DATABASE__HOST": "db.internal",
+                    "DATABASE__PORT": "6543",
+                    "DATABASE__USER": "niuu",
+                    "DATABASE__PASSWORD": "pw",
+                },
+                clear=False,
+            ),
+            patch("niuu.adapters.embedded_postgres.EmbeddedPostgresDatabase") as mock_cls,
+            patch("niuu.root_server.ensure_databases", ensure),
+        ):
+            await server._start_embedded_db()
+            # patch.dict restores the environment on exit; inspect it inside.
+            assert os.environ["NIUU_DATABASE_NAME_NIUU_SHARED"] == "niuu_shared"
+            assert os.environ["DATABASE__NAME"] == "volundr"
+
+        mock_cls.assert_not_called()
+        assert server._embedded_db is None
+        assert server._external_db == ConnectionInfo(
+            host="db.internal", port=6543, dbname="volundr", user="niuu", password="pw"
+        )
+        ensure.assert_awaited_once()
+        assert ensure.await_args.kwargs["host"] == "db.internal"
+        assert ensure.await_args.kwargs["names"] == (
+            "volundr",
+            "niuu_shared",
+            "guild",
+            "observatory",
+            "ting",
+            "bifrost",
+            "ravn",
+            "mimir",
+        )
+        assert server._migration_connection_info() is server._external_db
+
+    @pytest.mark.asyncio
+    async def test_external_provisioning_failure_propagates(self) -> None:
         registry = PluginRegistry()
         server = RootServer(registry=registry)
 
         with (
             patch.dict(os.environ, {"DATABASE__HOST": "db.internal"}, clear=False),
-            patch("niuu.adapters.embedded_postgres.EmbeddedPostgresDatabase") as mock_cls,
+            patch("niuu.root_server.ensure_databases", AsyncMock(side_effect=OSError("refused"))),
+            pytest.raises(OSError, match="refused"),
         ):
             await server._start_embedded_db()
 
-        mock_cls.assert_not_called()
-        assert server._embedded_db is None
+    @pytest.mark.asyncio
+    async def test_run_migrations_uses_external_connection(self, tmp_path: Path) -> None:
+        registry = PluginRegistry()
+        server = RootServer(registry=registry)
+        server._external_db = ConnectionInfo(
+            host="db.internal", port=5432, dbname="volundr", user="niuu", password="pw"
+        )
+        mig_dir = tmp_path / "migrations"
+        mig_dir.mkdir()
+        (mig_dir / "000001_init.up.sql").write_text("CREATE TABLE IF NOT EXISTS t (id int);")
+        conn = AsyncMock()
+        connect = AsyncMock(return_value=conn)
+        bootstrap = AsyncMock()
+
+        with (
+            patch("asyncpg.connect", connect),
+            patch("cli.resources.migration_dir", return_value=mig_dir),
+            patch("niuu.root_server.bootstrap_database", bootstrap),
+        ):
+            await server._run_migrations()
+
+        assert connect.await_args.kwargs["host"] == "db.internal"
+        assert connect.await_args.kwargs["password"] == "pw"
+        conn.execute.assert_awaited()
+        assert bootstrap.await_count == 3
+        assert bootstrap.await_args.kwargs["password"] == "pw"
+
+    @pytest.mark.asyncio
+    async def test_run_migrations_noop_without_database(self) -> None:
+        server = RootServer(registry=PluginRegistry())
+        with patch("asyncpg.connect", AsyncMock()) as connect:
+            await server._run_migrations()
+        connect.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_respects_pgdata_env_override(self) -> None:
@@ -2278,3 +2356,30 @@ class TestPluginApiPrefixes:
         for name, prefixes in _PLUGIN_API_PREFIXES.items():
             for prefix in prefixes:
                 assert prefix.startswith("/api/v1/"), f"{name}: {prefix}"
+
+
+class TestWebUiCaching:
+    """A reload after an upgrade must fetch the new page, never a cached one."""
+
+    def test_spa_page_is_served_no_cache(self, tmp_path, monkeypatch) -> None:
+        import cli.resources
+
+        dist = tmp_path / "dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text("<!doctype html><script src=/assets/index-abc.js>")
+        (dist / "assets" / "index-abc.js").write_text("console.log('hi')")
+        monkeypatch.setattr(cli.resources, "web_dist_dir", lambda: dist)
+
+        app = build_root_app(
+            registry=PluginRegistry(),
+            host="127.0.0.1",
+            port=8080,
+            enabled_mounts={"web-ui"},
+        )
+
+        with TestClient(app) as client:
+            page = client.get("/setup")
+            assert page.status_code == 200
+            assert page.headers["cache-control"] == "no-cache"
+            assert "index-abc.js" in page.text
+            assert client.get("/api/v1/nothing").status_code == 404

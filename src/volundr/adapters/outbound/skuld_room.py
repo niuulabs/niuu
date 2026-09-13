@@ -36,9 +36,11 @@ class SkuldRoomAdapter(SessionRoomPort, SessionCommunicationPort):
         *,
         timeout: float = 10.0,
         openshell_internal_gateway_url: str | None = None,
+        internal_base_url: str = "",
     ) -> None:
         self._session_repository = session_repository
         self._timeout = timeout
+        self._internal_base_url = internal_base_url.rstrip("/")
         self._openshell_internal_gateway_url = (
             openshell_internal_gateway_url
             or os.environ.get("OPENSHELL_INTERNAL_GATEWAY_URL")
@@ -178,6 +180,11 @@ class SkuldRoomAdapter(SessionRoomPort, SessionCommunicationPort):
                     )
                 ),
                 headers={"Host": parsed.netloc},
+            )
+        if self._internal_base_url:
+            internal = urlparse(self._internal_base_url)
+            base_url = urlunparse(
+                (internal.scheme or "http", internal.netloc, parsed.path.rstrip("/"), "", "", "")
             )
         return _SkuldRequestTarget(base_url=base_url, headers={})
 

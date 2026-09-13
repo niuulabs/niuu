@@ -994,3 +994,51 @@ class TestGitHubBranchErrors:
 
         assert scopes == []
         await provider.close()
+
+
+class TestGitHubEverythingTheTokenReaches:
+    """An account added without organisations lists all it can reach."""
+
+    @pytest.fixture
+    def provider(self) -> GitHubProvider:
+        return GitHubProvider(name="github-work", base_url="https://api.github.com", token="t")
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_empty_org_lists_own_and_member_repositories(self, provider) -> None:
+        listing = respx.get("https://api.github.com/user/repos").mock(
+            return_value=Response(
+                200,
+                json=[
+                    {
+                        "name": "volundr",
+                        "owner": {"login": "niuulabs"},
+                        "html_url": "https://github.com/niuulabs/volundr",
+                        "default_branch": "dev",
+                    },
+                    {
+                        "name": "dotfiles",
+                        "owner": {"login": "jve"},
+                        "html_url": "https://github.com/jve/dotfiles",
+                        "default_branch": "main",
+                    },
+                ],
+            )
+        )
+        respx.get(url__regex=r"https://api\.github\.com/repos/.*/branches").mock(
+            return_value=Response(200, json=[{"name": "main"}])
+        )
+
+        repos = await provider.list_repos("")
+
+        sent = listing.calls.last.request.url.params
+        assert sent["affiliation"] == "owner,collaborator,organization_member"
+        assert [(r.org, r.name) for r in repos] == [("niuulabs", "volundr"), ("jve", "dotfiles")]
+        assert repos[0].clone_url == "https://github.com/niuulabs/volundr.git"
+        assert repos[1].branches == ("main",)
+
+    @pytest.mark.asyncio
+    async def test_empty_org_without_a_token_is_refused(self) -> None:
+        provider = GitHubProvider(name="anon", base_url="https://api.github.com", token="")
+        with pytest.raises(ValueError, match="needs a token"):
+            await provider.list_repos("")

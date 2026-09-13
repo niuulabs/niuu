@@ -91,6 +91,9 @@ class _Runner:
     def supports_enrollment(self, method: str) -> bool:
         return method == "codex_device"
 
+    def available_for(self, slug: str, method: str) -> bool:
+        return self.supports_enrollment(method)
+
     async def start_enrollment(self, enrollment):
         return replace(
             enrollment,
@@ -148,6 +151,53 @@ def _service():
     return service, enrollment_repository, integration_repository, credential_store, runner
 
 
+async def test_another_credential_name_is_another_account() -> None:
+    service, _, integration_repository, _, _ = _service()
+    principal = _principal("user-1")
+
+    first = await service.start(principal=principal, slug="codex")
+    second = await service.start(principal=principal, slug="codex", credential_name="codex-work")
+    again = await service.start(principal=principal, slug="codex", credential_name="codex-work")
+
+    assert first.credential_name == "codex-credentials"
+    assert second.credential_name == "codex-work"
+    assert first.connection_id != second.connection_id
+    assert again.id == second.id  # the running sign-in of that account, not a third one
+    connections = await integration_repository.list_connections("user-1")
+    assert sorted(c.credential_name for c in connections) == ["codex-credentials", "codex-work"]
+
+
+async def test_an_account_remembers_its_own_oauth_application() -> None:
+    service, _, integration_repository, _, _ = _service()
+    principal = _principal("user-1")
+
+    started = await service.start(
+        principal=principal, slug="codex", credential_name="codex-org", oauth_app="niuu-org"
+    )
+
+    connection = await integration_repository.get_connection(started.connection_id)
+    assert connection.config == {"oauth_app": "niuu-org"}
+    # codex signs in through its CLI, not an OAuth application: nothing to seed
+    assert "oauth_app" not in started.runner_ref
+
+
+async def test_a_retry_switches_the_account_to_the_application_chosen_now() -> None:
+    service, _, integration_repository, _, _ = _service()
+    principal = _principal("user-1")
+    first = await service.start(
+        principal=principal, slug="codex", credential_name="codex-org", oauth_app="default"
+    )
+    await service.cancel(first.id, principal)
+
+    again = await service.start(
+        principal=principal, slug="codex", credential_name="codex-org", oauth_app="niuulabs"
+    )
+
+    assert again.connection_id == first.connection_id
+    connection = await integration_repository.get_connection(again.connection_id)
+    assert connection.config["oauth_app"] == "niuulabs"
+
+
 async def test_same_credential_name_is_isolated_for_each_user() -> None:
     service, _, integration_repository, credential_store, _ = _service()
 
@@ -187,6 +237,41 @@ async def test_completed_login_persists_only_to_enrollment_owner() -> None:
     }
     assert stored["metadata"]["auth_state"] == "active"
     assert runner.cancelled == [enrollment.id]
+
+
+async def test_a_refused_start_shows_the_providers_answer(caplog) -> None:
+    service, repository, _, credential_store, runner = _service()
+    principal = _principal("user-1")
+
+    async def refused(enrollment):
+        raise ValueError("gitlab refused the device authorization request: invalid_client")
+
+    runner.start_enrollment = refused
+    with caplog.at_level("ERROR"):
+        with pytest.raises(CredentialEnrollmentError, match="invalid_client"):
+            await service.start(principal=principal, slug="codex")
+    assert "could not start: gitlab refused" in caplog.text
+    stored = credential_store.items[("user", "user-1", "codex-credentials")]
+    assert stored["metadata"]["auth_state"] == "auth_required"
+    assert stored["metadata"]["auth_error_code"] == "enrollment_failed"
+    assert all(row.state == CredentialEnrollmentState.FAILED for row in repository.items.values())
+
+
+async def test_fixed_lifetime_sign_ins_record_when_the_token_runs_out() -> None:
+    service, repository, _, credential_store, runner = _service()
+    principal = _principal("user-1")
+    enrollment = await service.start(principal=principal, slug="codex")
+    await repository.save(replace(enrollment, method="grok_device"))
+    runner.poll_result = CredentialEnrollmentPoll(
+        state=CredentialEnrollmentState.COMPLETE,
+        credential_data={"auth.json": "{}", "expires_at": "2026-09-19T10:00:00+00:00"},
+    )
+
+    completed = await service.get(enrollment.id, principal)
+
+    assert completed.state == CredentialEnrollmentState.COMPLETE
+    stored = credential_store.items[("user", "user-1", "codex-credentials")]
+    assert stored["metadata"]["auth_expires_at"] == "2026-09-19T10:00:00+00:00"
 
 
 async def test_other_user_cannot_read_or_complete_enrollment() -> None:

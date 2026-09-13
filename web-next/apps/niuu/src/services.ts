@@ -40,6 +40,11 @@ import {
 } from '@niuulabs/plugin-ting';
 import { createMimirMockAdapter, buildMimirHttpAdapter } from '@niuulabs/plugin-mimir';
 import {
+  buildSetupHttpAdapter,
+  createMockSetupService,
+  type ISetupService,
+} from '@niuulabs/plugin-setup';
+import {
   createMockAgentDirectory,
   createMockRegistryRepository,
   createMockTopologyStream,
@@ -327,6 +332,14 @@ function resolveVolundrServiceBase(config: Pick<NiuuConfig, 'services'>): string
   return sharedBase ? `${sharedBase}/volundr` : null;
 }
 
+function resolveForgeSettingsBase(config: Pick<NiuuConfig, 'services'>): string | null {
+  const explicitBase = resolveForgeServiceBase(config);
+  if (explicitBase) return explicitBase;
+
+  const sharedBase = resolveSharedApiBase(config);
+  return sharedBase ? `${sharedBase}/forge` : null;
+}
+
 function resolveBifrostServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
   const explicitBase = resolveDirectServiceBase(config, 'bifrost');
   if (explicitBase) return explicitBase;
@@ -341,6 +354,17 @@ function resolveCredentialsServiceBase(config: Pick<NiuuConfig, 'services'>): st
 
   const sharedBase = resolveSharedApiBase(config);
   return sharedBase ? `${sharedBase}/credentials` : null;
+}
+
+function resolveSetupServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
+  const setupSvc = config.services['setup'];
+  if (hasHttpBackend(setupSvc)) return setupSvc.baseUrl;
+  // An explicit non-http entry (mock) is a decision; only an absent key derives
+  // the setup API from the shared niuu base.
+  if (setupSvc) return null;
+
+  const niuuBase = resolveNiuuRegistryBase(config);
+  return niuuBase ? `${niuuBase}/setup` : null;
 }
 
 function resolveIntegrationsServiceBase(config: Pick<NiuuConfig, 'services'>): string | null {
@@ -531,9 +555,14 @@ export function resolveSettingsServiceBase(
     | 'mimir'
     | 'ravn'
     | 'observatory'
-    | 'bifrost',
+    | 'bifrost'
+    | 'runtime',
 ): string | null {
   switch (providerId) {
+    case 'runtime':
+      // This host's stack (sessions at once, access, local model): served by
+      // the setup API, the same controller the first-launch wizard uses.
+      return resolveSetupServiceBase(config);
     case 'identity': {
       const base = resolveCanonicalServiceBase(config, 'identity');
       if (!base) return null;
@@ -546,7 +575,10 @@ export function resolveSettingsServiceBase(
     case 'ting':
       return resolveTingServiceBase(config, 'ting.settings');
     case 'volundr':
-      return resolveVolundrServiceBase(config);
+      // Forge serves its settings schema and the Storage section under the
+      // forge prefix (/api/v1/forge/settings); the volundr prefix only carries
+      // the launch catalog and has no settings route.
+      return resolveForgeSettingsBase(config);
     case 'mimir':
       return resolveDirectServiceBase(config, 'mimir');
     case 'ravn':
@@ -1382,6 +1414,17 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     ? buildRavnWardenAdapter(createApiClient(ravnWardenBase))
     : demoService(config, 'ravn.wardens', createMockWardenStore);
 
+  // ── First-launch setup wizard ──
+  const setupBase = resolveSetupServiceBase(config);
+  const setupIntegrationsBase = resolveIntegrationsServiceBase(config);
+  const setup: ISetupService =
+    setupBase && setupIntegrationsBase
+      ? buildSetupHttpAdapter({
+          setup: createApiClient(setupBase),
+          integrations: createApiClient(setupIntegrationsBase),
+        })
+      : demoService(config, 'setup', createMockSetupService);
+
   // ── Mímir ──
   const knowledgeRegistryBase = resolveNiuuRegistryBase(config);
   const mimir = hasHttpBackend(mimirSvc)
@@ -1544,6 +1587,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'ravn.triggers': ravnTriggers,
     'ravn.budget': ravnBudget,
     'ravn.wardens': ravnWardens,
+    setup,
     mimir,
     bifrost,
     volundr,

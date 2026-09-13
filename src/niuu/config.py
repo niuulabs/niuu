@@ -349,6 +349,52 @@ class NiuuHostConfig(BaseSettings):
         default="",
         validation_alias=AliasChoices("external_database_host", "DATABASE__HOST"),
     )
+    external_database_port: int = Field(
+        default=5432,
+        validation_alias=AliasChoices("external_database_port", "DATABASE__PORT"),
+    )
+    external_database_user: str = Field(
+        default="postgres",
+        validation_alias=AliasChoices("external_database_user", "DATABASE__USER"),
+    )
+    external_database_password: str = Field(
+        default="",
+        validation_alias=AliasChoices("external_database_password", "DATABASE__PASSWORD"),
+    )
+    platform_mode: str = Field(
+        default="",
+        description="Operating mode of the host process (mini, openshell, cluster, docker).",
+        validation_alias=AliasChoices("platform_mode", "NIUU_MODE"),
+    )
+    setup_enabled: bool = Field(
+        default=False,
+        description="Serve the first-launch setup wizard (single-host installs).",
+        validation_alias=AliasChoices("setup_enabled", "NIUU_SETUP_ENABLED"),
+    )
+    setup_mode: str = Field(
+        default="",
+        description="Mode name the wizard reports (e.g. docker) when it differs from the "
+        "mode the host process runs in; empty = platform_mode.",
+        validation_alias=AliasChoices("setup_mode", "NIUU_SETUP_MODE"),
+    )
+    setup_state_file: str = Field(
+        default="~/.niuu/setup-state.json",
+        description="Where wizard progress is recorded.",
+        validation_alias=AliasChoices("setup_state_file", "NIUU_SETUP_STATE_FILE"),
+    )
+    host_facts_file: str = Field(
+        default="",
+        description="Host facts JSON written by `niuu up`; empty when not started that way.",
+        validation_alias=AliasChoices("host_facts_file", "NIUU_HOST_FACTS_FILE"),
+    )
+    stack_dir: str = Field(
+        default="",
+        description=(
+            "Directory with the bundle settings `niuu up` recorded (stack.yaml); enables the "
+            "wizard's runtime, access and local-model changes. Empty = not available."
+        ),
+        validation_alias=AliasChoices("stack_dir", "NIUU_STACK_DIR"),
+    )
 
     @field_validator("cors_origins", mode="before")
     @classmethod

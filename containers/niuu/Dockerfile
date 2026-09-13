@@ -37,14 +37,32 @@ COPY uv.lock /build/uv.lock
 COPY containers/niuu/build_switchyard.py containers/niuu/switchyard-build-constraints.txt /build/
 RUN python build_switchyard.py
 
+# Web UI assets are baked into the platform image so one container serves the
+# API and the SPA on a single port (spark mode). Same build as containers/niuu-web.
+FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS web-build
+WORKDIR /app
+RUN corepack enable
+COPY web-next/package.json web-next/pnpm-lock.yaml web-next/pnpm-workspace.yaml ./
+COPY web-next/tsconfig.base.json web-next/tsconfig.json ./
+COPY web-next/build ./build
+COPY web-next/apps ./apps
+COPY web-next/packages ./packages
+ARG APP_VERSION=dev
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+ENV VITE_APP_VERSION=${APP_VERSION}
+RUN pnpm install --frozen-lockfile
+RUN pnpm build
+
 FROM python-build AS builder
 WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
 COPY src/ /app/src/
-RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats --extra openshell --extra otel \
-    --extra switchyard --no-install-package nemo-switchyard \
+RUN uv sync --frozen --no-dev --no-editable --extra cli --extra k8s --extra nats --extra openshell \
+    --extra otel --extra switchyard --no-install-package nemo-switchyard \
     && mkdir -p /dist-root/data/mimir
+# cli.resources.web_dist_dir() falls back to the installed package data.
+COPY --from=web-build /app/apps/niuu/dist /opt/venv/lib/python3.14/site-packages/cli/web/dist
 # xds-protos also ships obsolete OpenTelemetry modules. Restore the locked
 # official package after installation so enabled OTLP exporters can start.
 RUN uv pip install --python /opt/venv/bin/python --no-deps --reinstall \
@@ -67,7 +85,41 @@ RUN --mount=type=bind,from=switchyard-wheel,source=/wheels,target=/wheels \
 FROM python:3.14-slim-trixie@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6
 
 
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+# git: the platform clones session workspaces before a sandbox container starts.
+# curl: fetches the docker CLI below.
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends git ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# docker CLI + compose plugin: in docker mode this image is also the host-side
+# CLI (`niuu up` runs from a container against the host's Docker socket, see
+# scripts/install.sh), and `niuu up` drives `docker compose`.
+ARG TARGETARCH
+ARG DOCKER_CLI_VERSION=29.8.0
+ARG COMPOSE_VERSION=v5.5.1
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      amd64) arch=x86_64 ;; \
+      arm64) arch=aarch64 ;; \
+      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://download.docker.com/linux/static/stable/${arch}/docker-${DOCKER_CLI_VERSION}.tgz" \
+      | tar -xz -C /usr/local/bin --strip-components=1 docker/docker; \
+    mkdir -p /usr/local/lib/docker/cli-plugins; \
+    curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+      "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-${arch}"; \
+    chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose; \
+    docker --version; docker compose version
+
+# GitHub CLI (gh): the platform's git workflow reads PR status with it.
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod 0644 /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/* \
+    && gh --version
 
 LABEL org.opencontainers.image.title="niuu"
 LABEL org.opencontainers.image.description="Niuu — unified Python control plane services"
