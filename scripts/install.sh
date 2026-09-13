@@ -119,7 +119,9 @@ docker:
     image: nvcr.io/nvidia/vllm:26.08-py3
   # Models the setup wizard offers to serve locally. Sizes are what vLLM
   # reserves for the weights plus a 64k-token KV cache. `serve_args` come
-  # from each model card (tool-call parser, sequence cap on unified memory).
+  # from each model card: the tool-call parser (agents get tool calls back),
+  # the reasoning parser (the model's thinking is separated from its answer
+  # instead of arriving inside it), a sequence cap on unified memory.
   models:
     - id: nemotron-3-nano-30b
       model: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
@@ -128,7 +130,7 @@ docker:
       weight_gib: 62
       recommended: true
       trust_remote_code: true
-      serve_args: ["--max-num-seqs", "8", "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"]
+      serve_args: ["--max-num-seqs", "8", "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder", "--reasoning-parser", "nemotron_v3"]
     - id: gpt-oss-120b
       model: openai/gpt-oss-120b
       name: OpenAI gpt-oss-120b

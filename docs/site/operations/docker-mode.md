@@ -109,7 +109,7 @@ docker:
       weight_gib: 62
       recommended: true
       trust_remote_code: true
-      serve_args: ["--max-num-seqs", "8", "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"]
+      serve_args: ["--max-num-seqs", "8", "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder", "--reasoning-parser", "nemotron_v3"]
 ```
 
 The installer writes `config.yaml` once, with the vLLM image and the model

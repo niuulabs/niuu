@@ -266,6 +266,9 @@ class TestDockerMode:
         assert nemotron["trust_remote_code"] is True
         assert nemotron["recommended"] is True
         assert "--tool-call-parser" in nemotron["serve_args"]
+        # The model thinks before it answers; vLLM's built-in parser keeps the
+        # thinking out of the reply the agent sees.
+        assert nemotron["serve_args"][-2:] == ["--reasoning-parser", "nemotron_v3"]
         assert models["qwen3-coder-30b"]["weight_gib"] == 24
 
         config.write_text("mode: docker\ndocker:\n  vllm:\n    image: mine:1\n")
