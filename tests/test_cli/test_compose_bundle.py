@@ -174,6 +174,11 @@ class TestRender:
         # made it run `exec --model`, which bash rejects.
         assert vllm["command"][:3] == ["vllm", "serve", settings.docker.vllm.model]
         assert "--port" in vllm["command"]
+        # Both stateful services run as the host user: their files in the data
+        # directory stay removable without sudo.
+        assert vllm["user"] == "${NIUU_UID}:${NIUU_GID}"
+        assert vllm["environment"]["HOME"] == "/models"
+        assert doc["services"]["postgres"]["user"] == "${NIUU_UID}:${NIUU_GID}"
         assert "--trust-remote-code" not in vllm["command"]
         # Nemotron ships model code; vLLM refuses it without the flag.
         settings.docker.vllm.model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"

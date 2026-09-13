@@ -447,6 +447,9 @@ def render_compose(settings: CLISettings) -> dict[str, Any]:
         "postgres": {
             "image": "${NIUU_POSTGRES_IMAGE}",
             "restart": "unless-stopped",
+            # As the host user, so the database files in the data directory
+            # belong to whoever installed and can be removed without sudo.
+            "user": "${NIUU_UID}:${NIUU_GID}",
             "environment": {
                 "POSTGRES_USER": POSTGRES_USER,
                 "POSTGRES_PASSWORD": "${NIUU_POSTGRES_PASSWORD}",
@@ -518,9 +521,14 @@ def render_compose(settings: CLISettings) -> dict[str, Any]:
             "restart": "unless-stopped",
             "ipc": "host",
             "command": vllm_command,
+            # As the host user: the model cache lands in the data directory and
+            # must stay removable without sudo. HOME goes there too so vLLM's
+            # own caches (torch compile, kernels) persist next to the weights.
+            "user": "${NIUU_UID}:${NIUU_GID}",
             "environment": {
                 "HF_TOKEN": "${NIUU_HF_TOKEN}",
                 "HF_HOME": "/models",
+                "HOME": "/models",
             },
             "volumes": [f"{sub['models']}:/models"],
             "deploy": {
