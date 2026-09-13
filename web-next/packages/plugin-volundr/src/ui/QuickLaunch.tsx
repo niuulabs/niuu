@@ -2,7 +2,16 @@ import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { useService } from '@niuulabs/plugin-sdk';
-import { Dialog, DialogContent, Field, Input, Textarea } from '@niuulabs/ui';
+import {
+  BranchSelect,
+  Dialog,
+  DialogContent,
+  Field,
+  Input,
+  RepoSelect,
+  Textarea,
+  type RepoRecord,
+} from '@niuulabs/ui';
 import type { IVolundrService } from '../ports/IVolundrService';
 import type { SessionSource } from '../models/volundr.model';
 import {
@@ -14,6 +23,9 @@ import {
 } from './launchWizardModel';
 import { LaunchWizard } from './LaunchWizard';
 import { useFeatures } from './useFeatures';
+
+/** The shared repository catalog (`niuu.repos`), the same one the advanced launch reads. */
+type RepoCatalog = { getRepos(): Promise<RepoRecord[]> };
 
 export interface QuickLaunchProps {
   open: boolean;
@@ -63,6 +75,18 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
     'local_mount';
   const [name, setName] = useState('');
   const [folder, setFolder] = useState('');
+  // The same repository list the advanced launch offers: every repository
+  // the person's connected Git accounts can reach.
+  const repoCatalog = useService<RepoCatalog>('niuu.repos');
+  const reposQuery = useQuery({
+    queryKey: ['volundr', 'repos'],
+    queryFn: () => repoCatalog.getRepos(),
+    enabled: open && !local,
+  });
+  const repos: RepoRecord[] = reposQuery.data ?? [];
+  const [customRepo, setCustomRepo] = useState(false);
+  const selectedRepo = repos.find((repo) => repo.cloneUrl === folder);
+  const pickFromList = !local && repos.length > 0 && !customRepo && (!folder || !!selectedRepo);
   const [definitionKey, setDefinitionKey] = useState('skuldClaude');
   const [prompt, setPrompt] = useState('');
   const [creating, setCreating] = useState(false);
@@ -184,23 +208,76 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
           </Field>
           <Field
             label={local ? 'Folder' : 'Repository'}
-            hint={local ? 'Absolute path on the Forge host; runs in place' : 'Repository clone URL'}
+            hint={
+              local
+                ? 'Absolute path on the Forge host; runs in place'
+                : reposQuery.error
+                  ? `Could not list your repositories (${reposQuery.error.message}); paste a clone URL`
+                  : pickFromList
+                    ? 'From your connected Git accounts'
+                    : 'Repository clone URL'
+            }
           >
-            <Input
-              value={folder}
-              onChange={(e) => setFolder(e.target.value)}
-              placeholder={local ? '/path/to/checkout' : 'https://github.com/owner/repository.git'}
-              data-testid="quick-launch-folder"
-            />
+            {pickFromList ? (
+              <RepoSelect
+                repos={repos}
+                value={folder}
+                onChange={(value: string) => {
+                  setFolder(value);
+                  setBranch(repos.find((repo) => repo.cloneUrl === value)?.defaultBranch ?? '');
+                }}
+                placeholder="Select repository"
+                testId="quick-launch-repo"
+              />
+            ) : (
+              <Input
+                value={folder}
+                onChange={(e) => setFolder(e.target.value)}
+                placeholder={
+                  local ? '/path/to/checkout' : 'https://github.com/owner/repository.git'
+                }
+                data-testid="quick-launch-folder"
+              />
+            )}
+            {!local && repos.length > 0 ? (
+              <button
+                type="button"
+                className="niuu:mt-1 niuu:self-start niuu:text-xs niuu:text-text-secondary niuu:hover:text-text-primary"
+                onClick={() => {
+                  setCustomRepo((value) => !value);
+                  setFolder('');
+                  setBranch('');
+                }}
+                data-testid="quick-launch-repo-toggle"
+              >
+                {pickFromList ? 'Paste a clone URL instead' : 'Choose from your repositories'}
+              </button>
+            ) : null}
           </Field>
 
           {!local && (
-            <Field label="Branch" hint="Optional — uses the repository default">
-              <Input
-                aria-label="Branch"
-                value={branch}
-                onChange={(event) => setBranch(event.target.value)}
-              />
+            <Field
+              label="Branch"
+              hint={
+                selectedRepo?.branches.length ? undefined : 'Optional — uses the repository default'
+              }
+            >
+              {selectedRepo?.branches.length ? (
+                <BranchSelect
+                  repos={repos}
+                  selectedRepos={folder}
+                  value={branch}
+                  onChange={(value: string) => setBranch(value)}
+                  placeholder="Select branch"
+                  testId="quick-launch-branch"
+                />
+              ) : (
+                <Input
+                  aria-label="Branch"
+                  value={branch}
+                  onChange={(event) => setBranch(event.target.value)}
+                />
+              )}
             </Field>
           )}
           {targets.length > 1 && (
@@ -211,7 +288,10 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
                 value={selectedTarget}
                 onChange={(event) => {
                   setTargetId(event.target.value);
-                  setSourceType(local ? null : 'git');
+                  // A source the person chose stays; a derived one is derived again
+                  // from the new target's capabilities (which may not allow local
+                  // folders), never pinned by whatever the mode was mid-load.
+                  setSourceType((current) => (current === 'local_mount' ? null : current));
                   if (local) setFolder('');
                 }}
               >

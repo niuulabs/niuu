@@ -83,7 +83,10 @@ describe('QuickLaunch', () => {
         expect(screen.queryByText('Loading launch options…')).not.toBeInTheDocument(),
       );
       const source = mini ? '/home/test/project' : 'https://github.com/custom/uncatalogued.git';
-      fireEvent.change(screen.getByTestId('quick-launch-folder'), { target: { value: source } });
+      if (!mini) fireEvent.click(await screen.findByTestId('quick-launch-repo-toggle'));
+      fireEvent.change(await screen.findByTestId('quick-launch-folder'), {
+        target: { value: source },
+      });
       fireEvent.change(screen.getByTestId('quick-launch-name'), {
         target: { value: 'keep-my-name' },
       });
@@ -115,7 +118,7 @@ describe('QuickLaunch', () => {
   it('offers a folder + name + Claude/Codex engines only (no repo/branch, no other engines)', async () => {
     renderQuickLaunch(mockVolundr());
     expect(await screen.findByTestId('quick-launch-engine-codex')).toBeInTheDocument();
-    expect(screen.getByTestId('quick-launch-folder')).toBeInTheDocument();
+    expect(await screen.findByTestId('quick-launch-folder')).toBeInTheDocument();
     expect(screen.getByTestId('quick-launch-name')).toBeInTheDocument();
     expect(screen.getByTestId('quick-launch-engine-claude')).toBeInTheDocument();
     expect(screen.getByTestId('quick-launch-engine-codex')).toBeInTheDocument();
@@ -133,7 +136,7 @@ describe('QuickLaunch', () => {
       expect(screen.queryByText('Loading launch options…')).not.toBeInTheDocument(),
     );
     expect(screen.getByTestId('quick-launch-go')).toBeDisabled();
-    fireEvent.change(screen.getByTestId('quick-launch-folder'), {
+    fireEvent.change(await screen.findByTestId('quick-launch-folder'), {
       target: { value: '/home/thor/repos/lexi-frontend' },
     });
     expect(screen.getByTestId('quick-launch-go')).toBeEnabled();
@@ -151,7 +154,7 @@ describe('QuickLaunch', () => {
       expect(screen.queryByText('Loading launch options…')).not.toBeInTheDocument(),
     );
 
-    fireEvent.change(screen.getByTestId('quick-launch-folder'), {
+    fireEvent.change(await screen.findByTestId('quick-launch-folder'), {
       target: { value: '/home/thor/repos/acme-api' },
     });
     fireEvent.change(screen.getByTestId('quick-launch-name'), { target: { value: 'fix-auth' } });
@@ -194,7 +197,7 @@ describe('QuickLaunch', () => {
       expect(screen.queryByText('Loading launch options…')).not.toBeInTheDocument(),
     );
 
-    fireEvent.change(screen.getByTestId('quick-launch-folder'), {
+    fireEvent.change(await screen.findByTestId('quick-launch-folder'), {
       target: { value: '/home/thor/repos/Billing-Service/' },
     });
     fireEvent.click(screen.getByTestId('quick-launch-go'));
@@ -213,7 +216,7 @@ describe('QuickLaunch', () => {
       expect(screen.queryByText('Loading launch options…')).not.toBeInTheDocument(),
     );
 
-    fireEvent.change(screen.getByTestId('quick-launch-folder'), {
+    fireEvent.change(await screen.findByTestId('quick-launch-folder'), {
       target: { value: '/home/thor/repos/x' },
     });
     fireEvent.click(screen.getByTestId('quick-launch-go'));
@@ -245,7 +248,10 @@ describe('QuickLaunch', () => {
       expect(screen.queryByText('Loading launch options…')).not.toBeInTheDocument(),
     );
     expect(screen.queryByRole('option', { name: 'Local folder' })).not.toBeInTheDocument();
-    fireEvent.change(screen.getByTestId('quick-launch-folder'), {
+    // the connected accounts' repositories are offered first; a URL is still allowed
+    await screen.findByTestId('quick-launch-repo');
+    fireEvent.click(screen.getByTestId('quick-launch-repo-toggle'));
+    fireEvent.change(await screen.findByTestId('quick-launch-folder'), {
       target: { value: 'https://github.com/acme/service.git' },
     });
     fireEvent.change(screen.getByRole('textbox', { name: 'Branch' }), { target: { value: 'dev' } });
@@ -260,6 +266,43 @@ describe('QuickLaunch', () => {
       ),
     );
     expect(volundr.getFeatures).toHaveBeenCalledWith('cluster-a');
+  });
+
+  it('launches a repository picked from the connected accounts with its default branch', async () => {
+    const volundr = mockVolundr();
+    volundr.getFeatures = vi
+      .fn()
+      .mockResolvedValue({ miniMode: false, localMountsEnabled: false, fileManagerEnabled: true });
+    volundr.getTargets = async () => [
+      {
+        id: 'cluster-a',
+        slug: 'a',
+        name: 'Cluster A',
+        baseUrl: 'https://forge.example',
+        enabled: true,
+        isDefault: true,
+        tags: [],
+      },
+    ];
+    volundr.startSession = vi.fn().mockResolvedValue({ id: 'picked-session' });
+    renderQuickLaunch(volundr);
+    await screen.findByTestId('quick-launch-engine-codex');
+    const picker = await screen.findByTestId('quick-launch-repo');
+    expect(screen.queryByTestId('quick-launch-folder')).not.toBeInTheDocument();
+    fireEvent.change(picker, { target: { value: 'github.com/niuulabs/volundr' } });
+    // the default branch follows, and the other branches are offered
+    const branches = await screen.findByTestId('quick-launch-branch');
+    expect(branches).toHaveValue('main');
+    fireEvent.change(branches, { target: { value: 'develop' } });
+    fireEvent.click(screen.getByTestId('quick-launch-go'));
+    await waitFor(() =>
+      expect(volundr.startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'volundr',
+          source: { type: 'git', repo: 'github.com/niuulabs/volundr', branch: 'develop' },
+        }),
+      ),
+    );
   });
 
   it('keeps launch disabled when capabilities cannot be loaded', async () => {
