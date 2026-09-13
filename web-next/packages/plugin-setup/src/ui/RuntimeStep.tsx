@@ -114,6 +114,39 @@ export function RuntimeStep({
             Session image {stack.effective.skuldImage}
           </div>
         ) : null}
+        {stack ? (
+          <div className="setup-field" data-testid="setup-runtime-capacity">
+            <label className="setup-field__label" htmlFor="setup-max-sessions">
+              Sessions at once
+            </label>
+            <p className="setup-card__desc">
+              A launch is refused once this many sessions are running; each one is a container with
+              its own agent process. Raise it when the host has the memory and your provider plans
+              allow the parallel work.
+            </p>
+            <input
+              id="setup-max-sessions"
+              className="setup-input"
+              type="number"
+              min={1}
+              step={1}
+              value={stack.effective.maxSessions}
+              disabled={staging}
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                if (!Number.isInteger(next) || next < 1) return;
+                onStage({ max_sessions: next });
+              }}
+              data-testid="setup-max-sessions"
+            />
+            {stack.current.maxSessions !== stack.effective.maxSessions ? (
+              <div className="setup-note" data-testid="setup-max-sessions-staged">
+                Was {stack.current.maxSessions}; applied when you finish setup, the platform
+                restarts for it.
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div className="setup-card" data-testid="setup-access">

@@ -68,6 +68,13 @@ const STEP_COPY: Record<WizardStepId, { title: string; lede: string }> = {
   },
 };
 
+/** The wizard step a `?step=<id>` query names, when it names one. */
+export function stepFromSearch(search: string): WizardStepId | null {
+  const raw = new URLSearchParams(search).get('step');
+  const match = WIZARD_STEPS.find((step) => step.id === raw);
+  return match ? match.id : null;
+}
+
 /** First unfinished step, so a reload resumes where the user left off. */
 export function initialStep(state: SetupState | undefined): WizardStepId {
   for (const step of WIZARD_STEPS) {
@@ -105,7 +112,10 @@ export function SetupPage({ onNavigate, origin }: SetupPageProps = {}) {
 
   // `current` is only set once the user navigates; until then the screen is
   // derived from the persisted progress so a reload resumes where they were.
-  const [current, setCurrent] = useState<WizardStepId | null>(null);
+  // A `?step=` in the address (a link from an error, say) opens that step.
+  const [current, setCurrent] = useState<WizardStepId | null>(() =>
+    stepFromSearch(typeof window !== 'undefined' ? window.location.search : ''),
+  );
   const [testResults, setTestResults] = useState<Record<string, IntegrationTestResult>>({});
   // Set once "Open Niuu" started an apply; the status poll runs until it settles.
   const [applyStarted, setApplyStarted] = useState(false);

@@ -35,6 +35,8 @@ class StackSettings:
     project_name: str
     skuld_image: str
     vllm: VllmSettings
+    # Sessions that may run at once (the platform's pod_manager.max_concurrent).
+    max_sessions: int = 4
 
     @property
     def access_urls(self) -> list[str]:
@@ -113,8 +115,13 @@ def validate_stack_changes(changes: dict[str, Any]) -> dict[str, Any]:
     """
     docker: dict[str, Any] = {}
     vllm: dict[str, Any] = {}
+    pod_manager: dict[str, Any] = {}
     for key, value in changes.items():
-        if key == "bind_host":
+        if key == "max_sessions":
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError("max_sessions must be a positive integer")
+            pod_manager["max_concurrent"] = value
+        elif key == "bind_host":
             if value not in ALLOWED_BIND_HOSTS:
                 raise ValueError(
                     f"bind_host must be one of {', '.join(ALLOWED_BIND_HOSTS)}; got {value!r}"
@@ -139,10 +146,16 @@ def validate_stack_changes(changes: dict[str, Any]) -> dict[str, Any]:
         else:
             raise ValueError(
                 f"Unknown stack setting {key!r}; the wizard can change bind_host, "
-                "vllm_enabled, vllm_model, vllm_max_model_len and vllm_gpu_memory_utilization"
+                "max_sessions, vllm_enabled, vllm_model, vllm_max_model_len and "
+                "vllm_gpu_memory_utilization"
             )
     if vllm.get("enabled") and not vllm.get("model", "") and "model" in vllm:
         raise ValueError("vllm_model is required when vllm_enabled is true")
     if vllm:
         docker["vllm"] = vllm
-    return {"docker": docker} if docker else {}
+    result: dict[str, Any] = {}
+    if docker:
+        result["docker"] = docker
+    if pod_manager:
+        result["pod_manager"] = pod_manager
+    return result

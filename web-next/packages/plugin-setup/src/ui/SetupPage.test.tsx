@@ -170,6 +170,27 @@ describe('SetupPage', () => {
     await waitFor(() => expect(screen.getByText('rejected key')).toBeInTheDocument());
   });
 
+  it('opens the step named in the address, so an error can link straight to it', async () => {
+    vi.stubGlobal('location', {
+      ...window.location,
+      assign: vi.fn(),
+      pathname: '/setup',
+      search: '?step=runtime',
+    });
+    const service = createMockSetupService({
+      latencyMs: 0,
+      initialState: {
+        ...stateWith(['welcome', 'system', 'model', 'providers', 'git', 'tracker', 'runtime']),
+        completed: true,
+      },
+    });
+    renderWithSetup(<SetupPage />, { service });
+    await waitFor(() => expect(screen.getByTestId('setup-runtime')).toBeInTheDocument());
+    // the stack loads a tick later; the session limit is on this step
+    await waitFor(() => expect(screen.getByTestId('setup-max-sessions')).toHaveValue(4));
+    vi.unstubAllGlobals();
+  });
+
   it('uses the browser location when no navigator is given', async () => {
     const assign = vi.fn();
     vi.stubGlobal('location', {

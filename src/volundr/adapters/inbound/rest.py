@@ -65,6 +65,7 @@ from volundr.domain.services import (
     RepoValidationError,
     SessionAccessDeniedError,
     SessionArchiveNotAvailableError,
+    SessionCapacityError,
     SessionNotFoundError,
     SessionNotRunningError,
     SessionService,
@@ -1779,6 +1780,11 @@ def create_router(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(e),
             )
+        except SessionCapacityError as e:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(e),
+            )
         except SessionStateError as e:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -1974,6 +1980,11 @@ def create_router(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
+            )
+        except SessionCapacityError as e:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(e),
             )
         except SessionStateError as e:
             raise HTTPException(

@@ -20,6 +20,7 @@ import type {
 } from '../models/volundr.model';
 
 import { availableEngines, withEngineProvider } from './launchEngines';
+import { errorText } from './errorText';
 import {
   buildPresetComparisonPayload,
   buildPresetPayload,
@@ -550,7 +551,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
         queryClient.invalidateQueries({ queryKey: ['volundr', 'domain-sessions'] }),
       ]);
     } catch (error) {
-      setLaunchError(error instanceof Error ? error.message : 'Failed to launch session');
+      setLaunchError(errorText(error, 'Failed to launch session'));
       setStep('confirm');
     } finally {
       setLaunching(false);

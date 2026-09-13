@@ -3,6 +3,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
+import { ApiClientError } from '@niuulabs/query';
 import { LiveSessionDetailPage, buildTelemetryTimelineRows } from './LiveSessionDetailPage';
 import * as chatHooks from './hooks/useSkuldChat';
 import {
@@ -1920,6 +1921,47 @@ describe('LiveSessionDetailPage', () => {
       await waitFor(() => {
         expect(service.resumeSession).toHaveBeenCalledWith('test-session-id-1234');
       });
+    });
+
+    it('shows why a start was refused, with the remedy as a link', async () => {
+      const failedSession: VolundrSession = { ...STOPPED_SESSION, status: 'failed' };
+      const service = buildVolundrService(failedSession);
+      service.resumeSession = vi
+        .fn()
+        .mockRejectedValue(
+          new ApiClientError(
+            'API request failed: 409',
+            409,
+            'No session slot is free: 4 of 4 sessions are running on this host. Stop or archive a session, or raise the session limit in Setup → Runtime & access (/setup?step=runtime).',
+          ),
+        );
+      service.getSession = vi.fn().mockResolvedValue(failedSession);
+      wrap('test-session-id-1234', { session: failedSession, volundr: service });
+
+      await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByTitle(/^Start session$/i));
+
+      const alert = await screen.findByTestId('session-action-error');
+      expect(alert).toHaveTextContent('4 of 4 sessions are running');
+      expect(screen.getByRole('link', { name: '/setup?step=runtime' })).toHaveAttribute(
+        'href',
+        '/setup?step=runtime',
+      );
+    });
+
+    it('shows why a session failed', async () => {
+      const failedSession: VolundrSession = {
+        ...STOPPED_SESSION,
+        status: 'failed',
+        error: 'Codex app-server failed to start: exited with code 1',
+      };
+      const service = buildVolundrService(failedSession);
+      service.getSession = vi.fn().mockResolvedValue(failedSession);
+      wrap('test-session-id-1234', { session: failedSession, volundr: service });
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.getByTestId('session-failure-reason')).toHaveTextContent(
+        'Codex app-server failed to start',
+      );
     });
 
     it('shows delete button', async () => {

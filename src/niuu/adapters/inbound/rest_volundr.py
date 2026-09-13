@@ -174,11 +174,26 @@ def _with_resource_type_aliases(item: dict[str, Any]) -> dict[str, Any]:
     return enriched
 
 
+def _upstream_detail(response: httpx.Response) -> str:
+    """The upstream's own message: the ``detail`` of a FastAPI error body,
+    otherwise the body text, otherwise the reason phrase. Forwarding the raw
+    JSON body used to wrap the message in a second ``{"detail": ...}`` layer,
+    which the clients then showed verbatim."""
+    text = response.text.strip()
+    if text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get("detail"), str):
+            return payload["detail"]
+    return text or response.reason_phrase
+
+
 def _ensure_remote_success(response: httpx.Response) -> None:
     if response.status_code < 400:
         return
-    detail = response.text.strip() or response.reason_phrase
-    raise HTTPException(status_code=response.status_code, detail=detail[:1000])
+    raise HTTPException(status_code=response.status_code, detail=_upstream_detail(response)[:1000])
 
 
 def _uses_embedded_transport(instance: RegisteredInstance) -> bool:

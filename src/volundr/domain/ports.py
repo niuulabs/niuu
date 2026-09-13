@@ -399,8 +399,30 @@ class TimelineRepository(ABC):
         """Delete all timeline events for a chronicle. Returns count deleted."""
 
 
+@dataclass(frozen=True)
+class SessionCapacity:
+    """How many sessions a runtime can hold and how many it holds right now.
+
+    ``remedy`` says, in the runtime's own terms, where the limit is raised
+    (a config key, a wizard step); it is shown to the person whose launch
+    was refused.
+    """
+
+    limit: int
+    active: int
+    remedy: str
+
+    @property
+    def available(self) -> int:
+        return max(self.limit - self.active, 0)
+
+
 class PodManager(ABC):
     """Port for managing session pods (Skuld, code-server, terminal)."""
+
+    async def capacity(self) -> SessionCapacity | None:
+        """The runtime's session capacity, or None when it has no fixed cap."""
+        return None
 
     def initial_chat_endpoint(self, session: Session) -> str | None:
         """Return the deterministic chat endpoint before pods are ready, if known."""

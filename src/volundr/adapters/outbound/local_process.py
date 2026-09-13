@@ -49,7 +49,8 @@ from volundr.domain.models import (
     SessionSpec,
     SessionStatus,
 )
-from volundr.domain.ports import PodManager, PodStartResult
+from volundr.domain.ports import PodManager, PodStartResult, SessionCapacity
+from volundr.domain.services.session import SessionCapacityError
 
 logger = logging.getLogger(__name__)
 
@@ -519,7 +520,7 @@ class LocalProcessPodManager(PodManager):
                 detail,
                 session_id[:8],
             )
-            raise RuntimeError(f"Max concurrent sessions ({self._max_concurrent}) reached")
+            raise SessionCapacityError(self._capacity_snapshot(active))
         logger.info(
             "Provisioning session %s (%d/%d concurrent slots in use)",
             session_id[:8],
@@ -1717,6 +1718,21 @@ class LocalProcessPodManager(PodManager):
             for sid, info in self._processes.items()
             if info.state in (ProcessState.RUNNING, ProcessState.STARTING)
         ]
+
+    def _capacity_remedy(self) -> str:
+        """Where this runtime's session limit is raised, for the refusal message."""
+        return "raise pod_manager.max_concurrent in this install's config.yaml and restart"
+
+    def _capacity_snapshot(self, active: list[str]) -> SessionCapacity:
+        return SessionCapacity(
+            limit=self._max_concurrent,
+            active=len(active),
+            remedy=self._capacity_remedy(),
+        )
+
+    async def capacity(self) -> SessionCapacity:
+        """The concurrent-session cap and how much of it is in use right now."""
+        return self._capacity_snapshot(self._reconcile_active())
 
     def _reconcile_active(self) -> list[str]:
         """Active session IDs, after reaping entries whose process is dead.

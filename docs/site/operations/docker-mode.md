@@ -135,7 +135,7 @@ front door over the platform's existing APIs: every value it stores lands where
 | AI providers | A list of what is connected, one row per account, empty at first, and an **Add provider** button. Adding walks three small steps in a dialog: which provider, sign in or API key, then the sign-in card or the key form; the dialog closes by itself once the connection exists. A provider can be added as often as there are accounts (work and personal GitHub, two Anthropic keys): each account gets a name, which becomes its credential name (`github-work`), and the platform refuses a name already in use rather than overwrite that account's secret. Providers: Anthropic · Claude (Claude Code sign-in, or a key), OpenAI · Codex (ChatGPT device sign-in, or a key), xAI · Grok (Grok Build device sign-in, or a key), DeepSeek (key). Sign-ins run the official CLI in a sealed helper container; the card shows the link and device code, polls until the provider confirms, and for Claude takes the authorization code the browser hands back. **Test connection** calls the provider's models endpoint with the key and reports how many models it can see. | An integration connection with an inline credential (`POST /api/v1/integrations`), or an enrollment (`POST /api/v1/integrations/enrollments`) whose credential the platform stores when the sign-in completes. Both encrypted with the key from `secrets.env`. |
 | Git | The same list and **Add Git host** dialog for GitHub and GitLab: **Sign in** (OAuth device flow through an application you own; the dialog asks for its client id the first time) or a personal access token. Right after a host is connected the wizard signs in as you and lists the repositories the credential can reach, so a wrong scope shows up here, not in a session; **Test connection** repeats that check. | Same. |
 | Tickets | `issue_tracker` entries (Linear). | Same. |
-| Runtime & access | Where sessions run (Docker container; OpenShell and host process shown as not offered here) and who can reach this Niuu: only this machine, your local network (with the LAN address and a warning while sign-in is off), or public behind sign-in (later, in Settings → Access). | A staged stack change (`bind_host`); applied on the finish step. |
+| Runtime & access | Where sessions run (Docker container; OpenShell and host process shown as not offered here), how many sessions may run at once (**Sessions at once**, default 4; a launch is refused once that many are running), and who can reach this Niuu: only this machine, your local network (with the LAN address and a warning while sign-in is off), or public behind sign-in (later, in Settings → Access). | Staged stack changes (`bind_host`, `max_sessions`); applied on the finish step. |
 | Finish | What was connected, the local model and access choice, and the staged changes about to be applied. **Apply and open Niuu** applies them (the platform restarts the services whose configuration changed, the page waits for it to answer again and warns when the current address stops being served), then marks setup complete and opens `/ready`. | `POST /api/v1/niuu/setup/stack/apply`, then `POST /api/v1/niuu/setup/complete`. |
 
 Progress is kept in `setup-state.json` under the data directory (each finished
@@ -151,8 +151,9 @@ changes go through a stack controller (`NIUU_STACK_DIR`, the data directory):
 1. `niuu up` records the effective bundle settings in `stack.yaml`, mounts the
    compose directory into the platform container and pre-pulls the applier
    image (`docker.applier_image`, default `docker:28-cli`).
-2. The wizard stages a whitelisted change set (`bind_host`, `vllm_enabled`,
-   `vllm_model`, `vllm_max_model_len`, `vllm_gpu_memory_utilization`) into
+2. The wizard stages a whitelisted change set (`bind_host`, `max_sessions`,
+   `vllm_enabled`, `vllm_model`, `vllm_max_model_len`,
+   `vllm_gpu_memory_utilization`) into
    `stack-staged.yaml`; `GET /api/v1/niuu/setup/stack` shows current, staged
    and effective settings plus the curated model list with fit verdicts.
 3. **Apply** folds the staged set into `stack-overrides.yaml`, re-renders the
@@ -248,6 +249,20 @@ the provider rejects the refresh. The wizard row shows how long the current
 token is still good for and why a sign-in is needed. Sessions never write
 credentials back: the platform is the only writer of the store, and a session
 only ever reads what the platform renders for it.
+
+### When there is no room for another session
+
+The bundle runs at most `max_sessions` sessions at once (default 4; the
+platform's `pod_manager.max_concurrent`). Launching or restarting a session
+beyond that is refused at once, before any session record is created, with a
+`409` whose message says how many are running and where the limit is raised:
+"No session slot is free: 4 of 4 sessions are running on this host. Stop or
+archive a session, or raise the session limit in Setup → Runtime & access
+(/setup?step=runtime)." The launch dialogs and the session page show that
+message with the path as a link; the wizard opens on the Runtime & access
+step, where **Sessions at once** stages the new value and **Apply and open
+Niuu** restarts the platform with it. On a host install without the bundle the
+same refusal names `pod_manager.max_concurrent` in `config.yaml` instead.
 
 ### Which engines a session can use
 

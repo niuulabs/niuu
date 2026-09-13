@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 import respx
 from fastapi import FastAPI
@@ -227,6 +228,32 @@ def test_resident_control_dispatches_through_embedded_target() -> None:
     )
     assert created_session.status_code == 201
     assert created_session.json()["instance_id"] == "local"
+
+
+def test_upstream_error_detail_is_forwarded_without_a_second_wrapper() -> None:
+    """A Forge 409 arrives as its own message, not as a JSON body inside detail."""
+    from fastapi import HTTPException
+
+    from niuu.adapters.inbound.rest_volundr import _ensure_remote_success
+
+    body = {"detail": "No session slot is free: 4 of 4 sessions are running on this host."}
+    response = httpx.Response(409, json=body, request=httpx.Request("POST", "http://forge/x"))
+    with pytest.raises(HTTPException) as info:
+        _ensure_remote_success(response)
+    assert info.value.status_code == 409
+    assert info.value.detail == body["detail"]
+
+    plain = httpx.Response(502, text="Bad Gateway", request=httpx.Request("GET", "http://f/y"))
+    with pytest.raises(HTTPException) as info:
+        _ensure_remote_success(plain)
+    assert info.value.detail == "Bad Gateway"
+
+    empty = httpx.Response(503, request=httpx.Request("GET", "http://f/z"))
+    with pytest.raises(HTTPException) as info:
+        _ensure_remote_success(empty)
+    assert info.value.detail == "Service Unavailable"
+
+    _ensure_remote_success(httpx.Response(200, request=httpx.Request("GET", "http://f/ok")))
 
 
 def test_embedded_target_fails_loud_without_local_app() -> None:

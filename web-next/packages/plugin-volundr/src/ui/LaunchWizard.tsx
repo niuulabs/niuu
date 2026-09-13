@@ -13,6 +13,7 @@ import {
 } from './LaunchWizardSteps';
 export * from './LaunchWizardSteps';
 import { useLaunchWizard } from './useLaunchWizard';
+import { LinkedText } from './LinkedText';
 
 export function LaunchWizard(props: LaunchWizardProps) {
   const { open, onOpenChange } = props;
@@ -120,7 +121,7 @@ export function LaunchWizard(props: LaunchWizardProps) {
               className="niuu:rounded niuu:border niuu:border-danger niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-danger"
               data-testid="wizard-error"
             >
-              {launchError}
+              <LinkedText text={launchError} />
             </div>
           ) : null}
 

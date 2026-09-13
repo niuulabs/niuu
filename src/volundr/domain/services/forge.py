@@ -93,6 +93,9 @@ class ForgeService:
         principal: Principal | None = None,
     ) -> Session:
         resolved_definition = self._resolve_session_definition(data.model, data.definition)
+        # No slot, no record: a session created only to fail would sit in the
+        # list as an error the person did not ask for.
+        await self._session_service.ensure_capacity()
         session = await self._session_service.create_session(
             name=data.name,
             model=data.model,

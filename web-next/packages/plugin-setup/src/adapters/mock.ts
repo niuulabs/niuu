@@ -304,6 +304,7 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
       maxModelLen: 65536,
       gpuMemoryUtilization: 0.6,
     },
+    maxSessions: 4,
     accessUrls: [],
     ...options.initialStack,
   };
@@ -332,6 +333,7 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
       ...base,
       bindHost,
       vllm,
+      maxSessions: changes.max_sessions ?? base.maxSessions,
       accessUrls: accessUrlsFor(bindHost, base.externalHost, base.port),
     };
   };
@@ -346,6 +348,9 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
     if (staged.vllm_model !== undefined) vllm.model = staged.vllm_model;
     if (Object.keys(vllm).length > 0) docker.vllm = vllm;
     if (Object.keys(docker).length > 0) stagedNested.docker = docker;
+    if (staged.max_sessions !== undefined) {
+      stagedNested.pod_manager = { max_concurrent: staged.max_sessions };
+    }
     return {
       current,
       staged: stagedNested,

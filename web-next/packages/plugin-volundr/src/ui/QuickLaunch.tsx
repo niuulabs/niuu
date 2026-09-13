@@ -16,6 +16,8 @@ import type { IVolundrService } from '../ports/IVolundrService';
 import type { SessionSource } from '../models/volundr.model';
 import { definitionToTaskType, slugifySessionName, validateSessionName } from './launchWizardModel';
 import { EngineSelect } from './EngineSelect';
+import { LinkedText } from './LinkedText';
+import { errorText } from './errorText';
 import {
   availableEngines,
   quickLaunchIntegrationIds,
@@ -186,7 +188,7 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
         params: { sessionId: session.id },
       });
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to create session');
+      setError(errorText(e, 'Failed to create session'));
     } finally {
       setCreating(false);
     }
@@ -388,7 +390,7 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
               className="niuu:text-xs niuu:text-danger"
               data-testid="quick-launch-error"
             >
-              {error}
+              <LinkedText text={error} />
             </p>
           ) : null}
 

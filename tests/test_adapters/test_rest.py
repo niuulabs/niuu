@@ -31,6 +31,7 @@ from volundr.adapters.inbound.rest import (
 )
 from volundr.config import LocalMountsConfig
 from volundr.domain.models import GitProviderType, GitSource, RepoInfo, Session, SessionStatus
+from volundr.domain.ports import SessionCapacity
 from volundr.domain.services import RepoService, SessionService, StatsService
 from volundr.domain.services.session import SessionAccessDeniedError
 
@@ -611,6 +612,50 @@ class TestStartSession:
         response = client.post(f"/api/v1/forge/sessions/{session.id}/start")
         assert response.status_code == 409
         assert "cannot start" in response.json()["detail"].lower()
+
+    async def test_start_session_without_a_free_slot_is_409_with_the_remedy(
+        self, client: TestClient, service: SessionService
+    ):
+        """A restart with no capacity is refused up front, and the answer says
+        where the limit is raised; the session is not flipped to starting."""
+        session = await service.create_session(
+            "Test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        full = SessionCapacity(
+            limit=4, active=4, remedy="raise it in Setup → Runtime & access (/setup?step=runtime)"
+        )
+        with patch.object(type(service._pod_manager), "capacity", AsyncMock(return_value=full)):
+            response = client.post(f"/api/v1/forge/sessions/{session.id}/start")
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert "4 of 4 sessions are running" in detail
+        assert "/setup?step=runtime" in detail
+        assert (await service.get_session(session.id)).status == session.status
+
+    def test_create_session_without_a_free_slot_is_409_and_creates_nothing(
+        self, client: TestClient, service: SessionService
+    ):
+        full = SessionCapacity(limit=2, active=2, remedy="raise pod_manager.max_concurrent")
+        with patch.object(type(service._pod_manager), "capacity", AsyncMock(return_value=full)):
+            response = client.post(
+                "/api/v1/forge/sessions",
+                json={
+                    "name": "no-room",
+                    "model": "claude-sonnet-4",
+                    "source": {
+                        "type": "git",
+                        "repo": "https://github.com/org/repo",
+                        "branch": "main",
+                    },
+                },
+            )
+        assert response.status_code == 409
+        assert "2 of 2 sessions are running" in response.json()["detail"]
+        listed = client.get("/api/v1/forge/sessions").json()
+        items = listed if isinstance(listed, list) else listed.get("items", [])
+        assert "no-room" not in [s["name"] for s in items]
 
 
 class TestStopSession:
@@ -1780,14 +1825,24 @@ class TestListRepos:
         registry = MockGitRegistry([gh])
         return RepoService(registry)
 
-    @pytest.fixture
-    def repos_client(self, repo_service: RepoService) -> TestClient:
-        """Create a test client with niuu repos router."""
+    @staticmethod
+    def _app(repo_service: RepoService | None) -> FastAPI:
+        """A niuu repos app with the caller resolved to a known person, the way
+        the platform's auth would."""
+        from niuu.adapters.inbound.auth import extract_principal
         from niuu.adapters.inbound.rest_repos import create_repos_router
 
         app = FastAPI()
         app.include_router(create_repos_router(repo_service))
-        client = TestClient(app)
+        app.dependency_overrides[extract_principal] = lambda: Principal(
+            user_id="dev-user", email="dev@example.com", tenant_id="default", roles=[]
+        )
+        return app
+
+    @pytest.fixture
+    def repos_client(self, repo_service: RepoService) -> TestClient:
+        """Create a test client with niuu repos router."""
+        client = TestClient(self._app(repo_service))
         yield client
         client.close()
 
@@ -1805,25 +1860,17 @@ class TestListRepos:
 
     def test_list_repos_without_service(self):
         """Returns 503 when repo service is not available."""
-        from niuu.adapters.inbound.rest_repos import create_repos_router
-
-        app = FastAPI()
-        app.include_router(create_repos_router(None))
-        with TestClient(app) as client:
+        with TestClient(self._app(None)) as client:
             response = client.get("/api/v1/niuu/repos")
         assert response.status_code == 503
         assert "not available" in response.json()["detail"].lower()
 
     def test_list_repos_empty_when_no_orgs(self):
         """Returns empty dict when no providers have orgs configured."""
-        from niuu.adapters.inbound.rest_repos import create_repos_router
-
         gh = MockGitProvider(name="GitHub")
         registry = MockGitRegistry([gh])
         repo_service = RepoService(registry)
-        app = FastAPI()
-        app.include_router(create_repos_router(repo_service))
-        with TestClient(app) as client:
+        with TestClient(self._app(repo_service)) as client:
             response = client.get("/api/v1/niuu/repos")
         assert response.status_code == 200
         assert response.json() == {}

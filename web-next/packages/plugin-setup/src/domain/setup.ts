@@ -68,6 +68,8 @@ export interface StackSettings {
   projectName: string;
   skuldImage: string;
   vllm: VllmSettings;
+  /** Sessions that may run at once on this host. */
+  maxSessions: number;
   accessUrls: string[];
 }
 
@@ -96,6 +98,7 @@ export interface StackView {
 /** Wizard-level keys accepted by `PUT /setup/stack`. */
 export interface StackChanges {
   bind_host?: string;
+  max_sessions?: number;
   vllm_enabled?: boolean;
   vllm_model?: string;
   vllm_max_model_len?: number;
@@ -167,6 +170,9 @@ export function describeStagedChanges(view: StackView | undefined): string[] {
     lines.push(
       after.enabled ? `Serve ${after.model} locally with vLLM` : 'Stop serving a local model',
     );
+  }
+  if (view.effective.maxSessions !== view.current.maxSessions) {
+    lines.push(`Run up to ${view.effective.maxSessions} sessions at once`);
   }
   return lines;
 }

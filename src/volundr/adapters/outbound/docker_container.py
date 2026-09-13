@@ -53,6 +53,8 @@ DEFAULT_SANDBOX_SESSIONS_DIR = "/volundr/sessions"
 DEFAULT_SANDBOX_HOME = "/home/skuld"
 DEFAULT_PLATFORM_URL = "http://host.docker.internal:8080"
 DEFAULT_CODEX_AUTH_ADAPTER = "skuld.codex_auth.VolundrCodexAuthProvider"
+# The wizard step where the session limit (stack setting max_sessions) is changed.
+DEFAULT_CAPACITY_SETTINGS_PATH = "/setup?step=runtime"
 DEFAULT_LOG_TAIL = 100
 DEFAULT_MONITOR_INTERVAL_SECONDS = 2.0
 DEFAULT_READY_POLL_SECONDS = 0.5
@@ -104,6 +106,7 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
         ready_probe_timeout_seconds: float = DEFAULT_READY_PROBE_TIMEOUT_SECONDS,
         codex_auth_adapter: str = DEFAULT_CODEX_AUTH_ADAPTER,
         codex_auth_kwargs: dict | None = None,
+        capacity_settings_path: str = DEFAULT_CAPACITY_SETTINGS_PATH,
         **kwargs: Any,
     ) -> None:
         # The base constructor recovers persisted sessions through
@@ -130,6 +133,10 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
         # synchronous base-class hooks so the event loop never waits on the
         # Docker API while serving requests.
         self._alive: dict[str, bool] = {}
+        # Where the concurrent-session cap is raised on a single-host install:
+        # the setup wizard's runtime step stages it and applies it through
+        # the stack controller (settings key max_sessions).
+        self._capacity_settings_path = str(capacity_settings_path)
         # Sessions whose broker has answered /health at least once.
         self._ready: set[str] = set()
         self._client = (
@@ -148,6 +155,11 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
     # ------------------------------------------------------------------
     # Naming and lookup
     # ------------------------------------------------------------------
+
+    def _capacity_remedy(self) -> str:
+        return (
+            f"raise the session limit in Setup → Runtime & access ({self._capacity_settings_path})"
+        )
 
     def container_name(self, session_id: str) -> str:
         return f"{self._container_prefix}{session_id}"

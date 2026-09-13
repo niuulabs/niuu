@@ -214,6 +214,7 @@ class TestStackRoutes:
         view = client.get("/api/v1/niuu/setup/stack", headers=HEADERS).json()
         assert view["current"]["bindHost"] == "127.0.0.1"
         assert view["current"]["accessUrls"] == ["http://127.0.0.1:8080"]
+        assert view["current"]["maxSessions"] == 4
         assert view["models"][0]["memoryNeededGib"] == 22
         assert view["acceleratorMemoryGib"] == 128
         assert view["hasStagedChanges"] is False

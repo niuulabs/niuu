@@ -143,7 +143,15 @@ def test_validate_stack_changes_whitelists_keys() -> None:
     assert validate_stack_changes(
         {"vllm_max_model_len": 4096, "vllm_gpu_memory_utilization": 0.5}
     ) == {"docker": {"vllm": {"max_model_len": 4096, "gpu_memory_utilization": 0.5}}}
+    # the session cap lands on the platform's pod manager, next to the docker keys
+    assert validate_stack_changes({"max_sessions": 8, "bind_host": "0.0.0.0"}) == {
+        "docker": {"bind_host": "0.0.0.0"},
+        "pod_manager": {"max_concurrent": 8},
+    }
     for bad in (
+        {"max_sessions": 0},
+        {"max_sessions": True},
+        {"max_sessions": "8"},
         {"bind_host": "10.0.0.1"},
         {"vllm_enabled": "yes"},
         {"vllm_model": 3},
@@ -171,13 +179,18 @@ async def test_view_reports_current_staged_effective_and_models(
     assert "nemotron-3-nano-30b" in names
     assert all(m.fits is True for m in view.models)
 
+    assert view.current.max_sessions == 4
+
     view = await controller.stage(
-        {"bind_host": "0.0.0.0", "vllm_enabled": True, "vllm_model": "org/m"}
+        {"bind_host": "0.0.0.0", "vllm_enabled": True, "vllm_model": "org/m", "max_sessions": 8}
     )
     assert view.staged == {
-        "docker": {"bind_host": "0.0.0.0", "vllm": {"enabled": True, "model": "org/m"}}
+        "docker": {"bind_host": "0.0.0.0", "vllm": {"enabled": True, "model": "org/m"}},
+        "pod_manager": {"max_concurrent": 8},
     }
     assert view.current.bind_host == "127.0.0.1"
+    assert view.current.max_sessions == 4
+    assert view.effective.max_sessions == 8
     assert view.effective.bind_host == "0.0.0.0"
     assert view.effective.access_urls == ["http://127.0.0.1:18080", "http://192.168.1.5:18080"]
     assert view.effective.vllm.model == "org/m"

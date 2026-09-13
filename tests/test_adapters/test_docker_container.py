@@ -879,3 +879,27 @@ class TestHelpers:
         import asyncio
 
         asyncio.run(manager._terminate_process(424242))
+
+
+@pytest.mark.asyncio
+async def test_capacity_remedy_points_at_the_wizard(manager: DockerContainerPodManager) -> None:
+    """On a single-host install the cap is raised in the wizard's runtime step,
+    and the refusal a person sees must say so."""
+    capacity = await manager.capacity()
+    assert (capacity.limit, capacity.active, capacity.available) == (4, 0, 4)
+    assert capacity.remedy == (
+        "raise the session limit in Setup → Runtime & access (/setup?step=runtime)"
+    )
+
+
+def test_capacity_settings_path_is_configurable(client: _Client, workspaces: Path, tmp_path: Path):
+    del client
+    manager = DockerContainerPodManager(
+        skuld_image="ghcr.io/niuulabs/skuld:test",
+        network="niuu_default",
+        platform_url="http://niuu:8080/",
+        workspaces_dir=str(workspaces),
+        state_file=str(tmp_path / "forge-state.json"),
+        capacity_settings_path="/settings/runtime",
+    )
+    assert "/settings/runtime" in manager._capacity_remedy()

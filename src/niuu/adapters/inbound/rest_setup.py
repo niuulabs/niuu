@@ -68,6 +68,7 @@ class StackSettingsResponse(BaseModel):
     project_name: str = Field(serialization_alias="projectName")
     skuld_image: str = Field(serialization_alias="skuldImage")
     vllm: VllmSettingsResponse
+    max_sessions: int = Field(serialization_alias="maxSessions")
     access_urls: list[str] = Field(serialization_alias="accessUrls")
 
 
@@ -94,8 +95,8 @@ class StackViewResponse(BaseModel):
 class StackChangesRequest(BaseModel):
     changes: dict[str, Any] = Field(
         description=(
-            "Wizard-level keys: bind_host, vllm_enabled, vllm_model, vllm_max_model_len, "
-            "vllm_gpu_memory_utilization."
+            "Wizard-level keys: bind_host, max_sessions, vllm_enabled, vllm_model, "
+            "vllm_max_model_len, vllm_gpu_memory_utilization."
         )
     )
 
@@ -127,6 +128,7 @@ def _stack_settings_response(settings: Any) -> StackSettingsResponse:
             max_model_len=settings.vllm.max_model_len,
             gpu_memory_utilization=settings.vllm.gpu_memory_utilization,
         ),
+        max_sessions=settings.max_sessions,
         access_urls=settings.access_urls,
     )
 

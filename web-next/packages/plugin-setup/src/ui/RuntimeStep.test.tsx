@@ -35,6 +35,44 @@ describe('RuntimeStep', () => {
     expect(onStage).toHaveBeenCalledWith({ bind_host: '127.0.0.1' });
   });
 
+  it('shows the session limit and stages a new one', async () => {
+    const onStage = vi.fn();
+    render(
+      <RuntimeStep
+        stack={await view()}
+        loading={false}
+        unavailable={null}
+        staging={false}
+        stageError={null}
+        onStage={onStage}
+      />,
+    );
+    const input = screen.getByTestId('setup-max-sessions');
+    expect(input).toHaveValue(4);
+    fireEvent.change(input, { target: { value: '8' } });
+    expect(onStage).toHaveBeenCalledWith({ max_sessions: 8 });
+    // nothing below one session is staged
+    fireEvent.change(input, { target: { value: '0' } });
+    expect(onStage).toHaveBeenCalledTimes(1);
+  });
+
+  it('explains a staged session limit', async () => {
+    const service = createMockSetupService({ latencyMs: 0 });
+    const staged = await service.stageStack({ max_sessions: 6 });
+    render(
+      <RuntimeStep
+        stack={staged}
+        loading={false}
+        unavailable={null}
+        staging={false}
+        stageError={null}
+        onStage={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('setup-max-sessions')).toHaveValue(6);
+    expect(screen.getByTestId('setup-max-sessions-staged')).toHaveTextContent('Was 4');
+  });
+
   it('shows a staged change and local-only access', async () => {
     const service = createMockSetupService({ latencyMs: 0 });
     const staged = await service.stageStack({ bind_host: '127.0.0.1' });

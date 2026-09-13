@@ -342,6 +342,9 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         "NIUU_POD_MANAGER__SKULD_IMAGE": "${NIUU_SKULD_IMAGE}",
         "NIUU_POD_MANAGER__NETWORK": "${COMPOSE_PROJECT_NAME}_default",
         "NIUU_POD_MANAGER__PLATFORM_URL": f"http://niuu:{settings.server.port}",
+        # Sessions that may run at once; the wizard's runtime step changes it
+        # (stack setting max_sessions) and the applier restarts the platform.
+        "NIUU_POD_MANAGER__MAX_CONCURRENT": str(settings.pod_manager.max_concurrent),
         "NIUU_DOCKER__DATA_DIR": str(data_root),
         "NIUU_SETUP_ENABLED": "true",
         "NIUU_SETUP_STATE_FILE": str(data_root / SETUP_STATE_FILE),

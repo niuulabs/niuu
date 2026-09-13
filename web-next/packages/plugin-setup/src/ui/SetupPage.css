@@ -498,6 +498,33 @@
 }
 
 /* ── Options, segments, meters ───────────────────────── */
+.setup-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+}
+.setup-field__label {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+.setup-input {
+  width: 8rem;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font: inherit;
+}
+.setup-input:focus {
+  outline: none;
+  border-color: var(--color-brand);
+}
+
 .setup-option {
   display: flex;
   align-items: flex-start;

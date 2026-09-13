@@ -41,6 +41,7 @@ from volundr.domain.ports import (
     LaunchSpecProvider,
     PodManager,
     Resource,
+    SessionCapacity,
     SessionCommunicationPort,
     SessionContext,
     SessionContribution,
@@ -68,6 +69,22 @@ class SessionNotFoundError(Exception):
     def __init__(self, session_id: UUID):
         self.session_id = session_id
         super().__init__(f"Session not found: {session_id}")
+
+
+class SessionCapacityError(Exception):
+    """Raised when the runtime has no free session slot.
+
+    The message carries the numbers and the runtime's own remedy (where the
+    limit is raised), because the person who sees it is the one who has to
+    decide between stopping a session and raising the cap.
+    """
+
+    def __init__(self, capacity: SessionCapacity):
+        self.capacity = capacity
+        super().__init__(
+            f"No session slot is free: {capacity.active} of {capacity.limit} sessions are "
+            f"running on this host. Stop or archive a session, or {capacity.remedy}."
+        )
 
 
 class SessionStateError(Exception):
@@ -741,6 +758,16 @@ class SessionService:
                 exc_info=True,
             )
 
+    async def ensure_capacity(self) -> None:
+        """Raise SessionCapacityError when the runtime has no free slot.
+
+        Runtimes without a fixed cap report no capacity and are never refused.
+        """
+        capacity = await self._pod_manager.capacity()
+        if capacity is None or capacity.available > 0:
+            return
+        raise SessionCapacityError(capacity)
+
     async def start_session(
         self,
         session_id: UUID,
@@ -797,6 +824,10 @@ class SessionService:
 
         # Set chat_endpoint eagerly — Flux/Gateway sessions know their public
         # route before the pod is ready; local mode falls back to the root proxy.
+        # Refuse here, before the session flips to STARTING, so the caller
+        # gets the answer instead of a session that fails a moment later.
+        await self.ensure_capacity()
+
         chat_endpoint = self._pod_manager.initial_chat_endpoint(session)
         if not chat_endpoint:
             chat_endpoint = f"{self._public_ws_origin}/s/{session_id}/session"

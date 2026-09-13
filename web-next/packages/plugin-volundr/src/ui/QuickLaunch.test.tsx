@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
+import { ApiClientError } from '@niuulabs/query';
 import { QuickLaunch } from './QuickLaunch';
 import { FALLBACK_SESSION_DEFINITIONS } from './launchWizardModel';
 import { createMockVolundrService } from '../adapters/mock';
@@ -328,6 +329,34 @@ describe('QuickLaunch', () => {
 
     await waitFor(() => expect(startSession).toHaveBeenCalledTimes(1));
     expect(startSession).toHaveBeenCalledWith(expect.objectContaining({ name: 'billing-service' }));
+  });
+
+  it('shows a capacity refusal with its remedy as a link', async () => {
+    const volundr = mockVolundr();
+    (volundr as IVolundrService).startSession = vi
+      .fn()
+      .mockRejectedValue(
+        new ApiClientError(
+          'API request failed: 409',
+          409,
+          'No session slot is free: 4 of 4 sessions are running on this host. Stop or archive a session, or raise the session limit in Setup → Runtime & access (/setup?step=runtime).',
+        ),
+      );
+    renderQuickLaunch(volundr);
+    await screen.findByTestId('quick-launch-engine');
+    await waitFor(() =>
+      expect(screen.queryByText('Loading launch options…')).not.toBeInTheDocument(),
+    );
+    fireEvent.change(await screen.findByTestId('quick-launch-folder'), {
+      target: { value: '/home/thor/repos/x' },
+    });
+    fireEvent.click(screen.getByTestId('quick-launch-go'));
+    const err = await screen.findByTestId('quick-launch-error');
+    expect(err).toHaveTextContent('4 of 4 sessions are running');
+    expect(screen.getByRole('link', { name: '/setup?step=runtime' })).toHaveAttribute(
+      'href',
+      '/setup?step=runtime',
+    );
   });
 
   it('surfaces an error and stays open when create fails', async () => {
