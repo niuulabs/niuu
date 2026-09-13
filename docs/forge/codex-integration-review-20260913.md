@@ -13,8 +13,11 @@ Native iOS UI and project instruction/provenance behavior remain separately owne
 - Coordinator scope confirmation: `c5d7dd4f-50f2-4ea5-b801-7db65574ad48`.
 - Fixed Project UX integration input: `11e9e0c668747fd0af1b97463f2c238e9fb40811`.
   Its live-steering fix is `a5acb7c02a3a5d6fc2be9732e0b11fe28660a87d`.
-- No shared runtime restart, deployment, production configuration edit, new Forge
-  session, or iOS release is part of this work.
+- The initial review excluded deployment. The user's subsequent direct instruction
+  authorizes server fixes and a Thor/Spark rollout, coordinated by receipt
+  `a99f3c1a-b310-4285-8a85-75f40e56d61b`. Slash expansion is now explicitly deferred;
+  iOS remains documentation/handoff only. The status below records pre-rollout
+  evidence, not a claim that either host has been upgraded.
 
 ## Current upstream evidence
 
@@ -240,3 +243,52 @@ Next acceptance gates remain: a user-identified missing-message session/client;
 authorized native steering/approval/cancellation/socket-loss/recovery cases; native
 to database to public-wire to rendered transcript comparison; and separately owned
 native command/form UX. This is an isolated candidate, not a rollout instruction.
+
+
+## Authorized core-alignment candidate
+
+The next source checkpoint adds indexed, concurrent tool lifecycles; no orphan
+stop closes public text and a repeated start upserts its input without appending
+another streaming JSON payload. Native failure/decline status and MCP error text
+survive normalization. Retrying native errors remain nonterminal notices; terminal
+results have scoped IDs and are idempotent. Zero per-turn usage never falls back
+to cumulative totals, and an effective rerouted model is separate from the
+requested next-turn model.
+
+The new harness-neutral runtime-options surface discovers the actual native
+paginated model catalog and validates model/effort/service-tier choices together.
+Native settings acknowledgement precedes state changes and durable broker save;
+connected controls never substitute a static catalog on failure. Existing model
+and effort controls stay compatible. Pre-start configuration is explicitly marked
+as launch configuration, and the native server validates it. The product default
+Astra/xhigh is preserved in owned acceptance tests; no model or paid speed tier is
+automatically substituted.
+
+- [Future command capabilities — explicitly deferred](codex-future-command-capabilities.md).
+- [iOS guidance — separate-session implementation only](codex-ios-runtime-handoff.md).
+- The new combined sweep: **2,629 passed, 22 skipped, 83 deselected, 1 expected
+  failure**, no failures or reported warnings, 73.43 seconds. Coverage scope now
+  includes all seven production files changed by this runner: **86.48%** aggregate
+  statement/branch, unchanged 85% gate. This is not whole-repository coverage;
+  transport-lifecycle's individual coverage is 68%, reported rather than hidden.
+- Authorized native Astra/xhigh proof: two separate shell commands with public
+  text before/between/after; same-turn steering accepted while the first command
+  ran; every public native item matched both normalized durable and default-channel
+  replay by ID and exact text. Native model catalog and settings update succeeded.
+  60 native notifications, 58 normalized frames, 30 public-channel frames retained.
+- Separate native recovery: two provider turns, owned process termination between
+  turns, identical resumed thread and exact synthetic-token recall, no tools.
+  All owned native test processes stopped in cleanup. These are actual provider
+  calls, not fixture-only proof or physical-iOS proof.
+- The first native alignment fixture failed before launching a native process
+  because the test omitted the WebSocket channel's required sink. It was corrected;
+  only the passing rerun is acceptance evidence. Recovery passed independently.
+- A bounded, provider-free OS probe verified that the existing PID-only asyncio
+  subprocess launch pattern leaves its child alive after graceful parent SIGTERM.
+  Source review found no local-session stop in API shutdown. Live preservation
+  still requires before/after identity checks, not inference from KillMode alone.
+
+Rollout preparation uses an immutable source/environment and Spark-first canary.
+Existing live Skuld gateways retain their old source until individually restarted
+at a safely coordinated boundary; root health is not evidence of their upgrade.
+No migration or dependency-lock change is in the candidate.
