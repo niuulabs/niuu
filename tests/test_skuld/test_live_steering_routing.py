@@ -87,6 +87,7 @@ async def test_turn_finished_before_adapter_delivery_starts_once_with_same_ident
         {
             "threadId": "thread",
             "input": [{"type": "text", "text": "Continue", "textElements": []}],
+            "model": "o4-mini",
             "effort": "high",
         },
     )
