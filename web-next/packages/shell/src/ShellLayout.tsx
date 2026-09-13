@@ -11,6 +11,8 @@ import {
   useCommandPaletteRegistry,
 } from '@niuulabs/ui';
 import { useShellContext } from './ShellContext';
+import { UiModeSwitch } from './UiModeSwitch';
+import { isVisibleInMode, tabsForMode, useUiMode } from './uiMode';
 import './Shell.css';
 
 function pathMatches(pathname: string, basePath: string): boolean {
@@ -56,15 +58,23 @@ export function ShellLayout() {
   const { register, unregister } = useCommandPaletteRegistry();
 
   // System plugins (e.g. login) register routes but stay out of the nav rail.
-  const navPlugins = useMemo(() => enabled.filter((p) => !p.system), [enabled]);
+  const allNavPlugins = useMemo(() => enabled.filter((p) => !p.system), [enabled]);
+  const mode = useUiMode();
+  const activeId = activePluginId(pathname, allNavPlugins);
+  // Simple mode hides plugins from the rail, never from the router: a plugin reached by
+  // deep link keeps its rail item while it is the active one.
+  const navPlugins = useMemo(
+    () => allNavPlugins.filter((p) => isVisibleInMode(p, mode) || p.id === activeId),
+    [activeId, allNavPlugins, mode],
+  );
   const topPlugins = useMemo(() => navPlugins.filter((p) => p.position !== 'bottom'), [navPlugins]);
   const bottomPlugins = useMemo(
     () => navPlugins.filter((p) => p.position === 'bottom'),
     [navPlugins],
   );
 
-  const activeId = activePluginId(pathname, navPlugins);
   const active = navPlugins.find((p) => p.id === activeId) ?? navPlugins[0] ?? null;
+  const activeTabs = active ? tabsForMode(active, mode) : undefined;
   const subnavCollapsed = active ? Boolean(ctx.tweaks[`${active.id}.subnavCollapsed`]) : false;
 
   // localStorage follows the router — not the other way around
@@ -164,9 +174,9 @@ export function ShellLayout() {
                 </>
               )}
             </div>
-            {active?.tabs && (
+            {active && activeTabs && (
               <div className="niuu-shell__tabs">
-                {active.tabs.map((t) => {
+                {activeTabs.map((t) => {
                   const tabPath = t.path ?? `/${active.id}/${t.id}`;
                   const isActive =
                     active.activeTab != null
@@ -200,6 +210,8 @@ export function ShellLayout() {
             )}
           </div>
           <div className="niuu-shell__topbar-right">
+            <UiModeSwitch plugins={allNavPlugins} />
+            <div className="niuu-shell__topbar-sep" />
             <PluginSlot render={active?.topbarRight ?? null} ctx={ctx} />
             <LiveBadge />
             <div className="niuu-shell__topbar-sep" />
