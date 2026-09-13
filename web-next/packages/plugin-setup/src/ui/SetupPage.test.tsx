@@ -70,8 +70,8 @@ describe('SetupPage', () => {
     fireEvent.click(screen.getByTestId('setup-connect-anthropic'));
     // the dialog closes by itself once the provider is connected
     await waitFor(() => expect(screen.queryByTestId('setup-add-dialog')).not.toBeInTheDocument());
-    await waitFor(() => expect(screen.getByTestId('setup-test-anthropic')).toBeInTheDocument());
-    fireEvent.click(screen.getByTestId('setup-test-anthropic'));
+    await waitFor(() => expect(screen.getByTestId(/^setup-test-mock-/)).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId(/^setup-test-mock-/));
     await waitFor(() => expect(screen.getByTestId('setup-test-ok-anthropic')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('setup-continue'));
 

@@ -24,6 +24,10 @@ export interface SignInCardProps {
   connection: IntegrationConnection | undefined;
   /** Render only the body; the enclosing pane shows the title and status. */
   headless?: boolean;
+  /** The credential this account signs in under; defaults to the entry's default name. */
+  credentialName?: string;
+  /** Hold the start button, e.g. while the account name clashes with an existing one. */
+  disabled?: boolean;
   testResult?: IntegrationTestResult;
   testing?: boolean;
   onTest?: (connectionId: string) => void;
@@ -40,6 +44,8 @@ export function SignInCard({
   entry,
   connection,
   headless = false,
+  credentialName: requestedName,
+  disabled = false,
   testResult,
   testing = false,
   onTest,
@@ -59,6 +65,7 @@ export function SignInCard({
     // Re-use the connection a previous attempt created so a retry never
     // leaves a second, unusable connection behind.
     const credentialName =
+      requestedName ??
       connection?.credentialName ??
       entry.credentialEnrollment?.defaultCredentialName ??
       credentialNameFor(entry.slug);
@@ -205,7 +212,7 @@ export function SignInCard({
             type="button"
             className="setup-btn"
             onClick={begin}
-            disabled={start.isPending}
+            disabled={start.isPending || disabled}
             data-testid={`setup-signin-start-${entry.slug}`}
           >
             {start.isPending ? 'Starting…' : `Sign in to ${entry.name}`}

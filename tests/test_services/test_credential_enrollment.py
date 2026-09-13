@@ -151,6 +151,22 @@ def _service():
     return service, enrollment_repository, integration_repository, credential_store, runner
 
 
+async def test_another_credential_name_is_another_account() -> None:
+    service, _, integration_repository, _, _ = _service()
+    principal = _principal("user-1")
+
+    first = await service.start(principal=principal, slug="codex")
+    second = await service.start(principal=principal, slug="codex", credential_name="codex-work")
+    again = await service.start(principal=principal, slug="codex", credential_name="codex-work")
+
+    assert first.credential_name == "codex-credentials"
+    assert second.credential_name == "codex-work"
+    assert first.connection_id != second.connection_id
+    assert again.id == second.id  # the running sign-in of that account, not a third one
+    connections = await integration_repository.list_connections("user-1")
+    assert sorted(c.credential_name for c in connections) == ["codex-credentials", "codex-work"]
+
+
 async def test_same_credential_name_is_isolated_for_each_user() -> None:
     service, _, integration_repository, credential_store, _ = _service()
 

@@ -335,8 +335,17 @@ class CredentialEnrollmentService:
                 raise CredentialEnrollmentError("Integration connection not found")
             return connection
 
+        # One connection per account: the same slug with another credential
+        # name is a second account, never the first one signed in again.
         existing = await self._integration_repository.list_connections(principal.user_id)
-        matching = next((item for item in existing if item.slug == slug), None)
+        matching = next(
+            (
+                item
+                for item in existing
+                if item.slug == slug and item.credential_name == credential_name
+            ),
+            None,
+        )
         if matching is not None:
             return matching
 

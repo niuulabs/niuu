@@ -236,14 +236,26 @@ describe('IntegrationsStep', () => {
         }}
       />,
     );
-    expect(screen.getByTestId('setup-provider-row-github')).toHaveTextContent('GitHub');
-    expect(screen.getByTestId('setup-provider-row-github')).toHaveTextContent(
-      'Personal access token',
-    );
+    expect(screen.getByTestId('setup-provider-row-c1')).toHaveTextContent('GitHub');
+    expect(screen.getByTestId('setup-provider-row-c1')).toHaveTextContent('Personal access token');
+    expect(screen.getByTestId('setup-provider-row-c1')).not.toHaveTextContent('· default');
     expect(screen.queryByTestId('setup-provider-empty')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('setup-test-github'));
+    fireEvent.click(screen.getByTestId('setup-test-c1'));
     expect(onTest).toHaveBeenCalledWith('c1');
     expect(screen.getByTestId('setup-test-ok-github')).toHaveTextContent('2 repositories');
+  });
+
+  it('lists every account of a provider as its own row', () => {
+    const work = { ...connection, id: 'c2', credentialName: 'github-work' };
+    renderWithSetup(
+      <IntegrationsStep {...props} catalog={MOCK_CATALOG} connections={[connection, work]} />,
+    );
+    expect(screen.getByTestId('setup-provider-row-c1')).toHaveTextContent('GitHub · default');
+    expect(screen.getByTestId('setup-provider-row-c2')).toHaveTextContent('GitHub · work');
+    expect(screen.getByTestId('setup-test-c2')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('setup-provider-add'));
+    expect(screen.getByTestId('setup-add-pick-github')).toHaveTextContent('2 accounts');
+    expect(screen.getByTestId('setup-add-pick-github')).not.toBeDisabled();
   });
 
   it('shows the empty state and opens the add dialog', () => {
@@ -270,8 +282,8 @@ describe('IntegrationsStep', () => {
         ]}
       />,
     );
-    expect(screen.getByTestId('setup-provider-expiry-github')).toHaveTextContent('Token expired');
-    expect(screen.getByTestId('setup-provider-problem-github')).toHaveTextContent(
+    expect(screen.getByTestId('setup-provider-expiry-c1')).toHaveTextContent('Token expired');
+    expect(screen.getByTestId('setup-provider-problem-c1')).toHaveTextContent(
       'could not be renewed automatically',
     );
   });
@@ -305,7 +317,7 @@ describe('IntegrationsStep', () => {
     expect(onTest).toHaveBeenCalledTimes(1);
     expect(onTest).toHaveBeenCalledWith('c1');
     expect(screen.queryByTestId('setup-add-dialog')).not.toBeInTheDocument();
-    expect(screen.getByTestId('setup-provider-row-github')).toBeInTheDocument();
+    expect(screen.getByTestId('setup-provider-row-c1')).toBeInTheDocument();
   });
 
   it('offers to finish a pending sign-in', () => {
@@ -316,8 +328,8 @@ describe('IntegrationsStep', () => {
         connections={[{ ...connection, credentialStatus: 'auth_required' }]}
       />,
     );
-    expect(screen.getByTestId('setup-provider-row-github')).toHaveTextContent('Sign-in needed');
-    fireEvent.click(screen.getByTestId('setup-provider-finish-github'));
+    expect(screen.getByTestId('setup-provider-row-c1')).toHaveTextContent('Sign-in needed');
+    fireEvent.click(screen.getByTestId('setup-provider-finish-c1'));
     expect(screen.getByTestId('setup-add-dialog')).toBeInTheDocument();
     expect(screen.getByTestId('setup-signin-start-github')).toBeInTheDocument();
   });

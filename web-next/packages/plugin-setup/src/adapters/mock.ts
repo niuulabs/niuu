@@ -466,7 +466,9 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
       }
       const existing = [...enrollments.values()].find(
         (row) =>
-          row.providerSlug === slug && (row.state === 'pending' || row.state === 'awaiting_user'),
+          row.providerSlug === slug &&
+          row.credentialName === credentialName &&
+          (row.state === 'pending' || row.state === 'awaiting_user'),
       );
       if (existing) return publicEnrollment(existing);
       sequence += 1;

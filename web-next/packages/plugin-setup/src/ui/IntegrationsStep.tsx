@@ -1,13 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  availableModes,
-  connectionForSlug,
-  entryConnected,
-  entryForMode,
+  connectionLabel,
   connectionNeedsSignIn,
   credentialExpiryLabel,
   credentialProblemLabel,
-  groupConnection,
+  groupConnections,
   providerGroups,
   type CatalogEntry,
   type ConnectIntegrationInput,
@@ -16,7 +13,11 @@ import {
   type ProviderGroup,
   type WizardStep,
 } from '../domain/setup';
-import { AddProviderDialog, type ConnectMode } from './AddProviderDialog';
+import {
+  AddProviderDialog,
+  type AddProviderSelection,
+  type ConnectMode,
+} from './AddProviderDialog';
 import { TestOutcome } from './TestOutcome';
 import { AlertIcon, CheckIcon } from './icons';
 
@@ -45,37 +46,27 @@ export function nounFor(step: WizardStep): { one: string; many: string } {
   return NOUNS[step.integrationType ?? ''] ?? { one: 'integration', many: 'integrations' };
 }
 
-/** The connection a row is about: the usable one, or the one waiting for sign-in. */
-function rowConnection(
-  group: ProviderGroup,
-  connections: IntegrationConnection[] | undefined,
-): { connection: IntegrationConnection; pending: boolean } | null {
-  const usable = groupConnection(group, connections);
-  if (usable) return { connection: usable, pending: false };
-  if (!connections) return null;
-  for (const entry of [group.signInEntry, group.keyEntry]) {
-    if (!entry) continue;
-    const connection = connectionForSlug(connections, entry.slug);
-    if (connection && connectionNeedsSignIn(connection)) return { connection, pending: true };
-  }
-  return null;
-}
-
 function methodLabel(group: ProviderGroup, connection: IntegrationConnection): string {
   const signIn = group.signInEntry;
   if (signIn) {
     const sharedSlug = group.keyEntry?.slug === signIn.slug;
     const signedIn = sharedSlug
-      ? connection.credentialName === signIn.credentialEnrollment?.defaultCredentialName
+      ? connection.credentialName === signIn.credentialEnrollment?.defaultCredentialName ||
+        connection.credentialName.endsWith('-signin')
       : connection.slug === signIn.slug;
     if (signedIn) return 'Signed in';
   }
   return group.keyLabel.replace(/^Use an? /, '').replace(/^./, (c) => c.toUpperCase());
 }
 
+interface Adding extends AddProviderSelection {
+  id: number;
+}
+
 /**
- * What is connected for this step, one row per provider, plus an "Add"
- * button that opens the provider → method → connect dialog.
+ * What is connected for this step, one row per account, plus an "Add"
+ * button that opens the provider → method → connect dialog. A provider
+ * can be added as often as there are accounts.
  */
 export function IntegrationsStep({
   step,
@@ -93,26 +84,27 @@ export function IntegrationsStep({
 }: IntegrationsStepProps) {
   const groups = catalog ? providerGroups(catalog, step) : [];
   const noun = nounFor(step);
-  const [adding, setAdding] = useState<{
-    id: number;
-    key: string | null;
-    mode: ConnectMode | null;
-  } | null>(null);
+  const [adding, setAdding] = useState<Adding | null>(null);
+  const nextAddingId = useRef(0);
 
-  const rows = groups
-    .map((group) => ({ group, row: rowConnection(group, connections) }))
-    .filter((item): item is { group: ProviderGroup; row: NonNullable<typeof item.row> } =>
-      Boolean(item.row),
-    );
-  const addable = groups.filter((group) => availableModes(group, connections).length > 0);
-  const addingGroup = adding?.key ? groups.find((g) => g.key === adding.key) : undefined;
-  // The dialog closes itself the moment the method being added becomes usable,
-  // and the new connection is checked right away so a wrong scope or a dead
-  // key shows up here, not in a session.
-  const target = addingGroup && adding?.mode ? entryForMode(addingGroup, adding.mode) : undefined;
+  const rows = groups.flatMap((group) =>
+    groupConnections(group, connections).map((connection) => ({
+      group,
+      connection,
+      pending: connectionNeedsSignIn(connection),
+    })),
+  );
+  // The dialog closes itself the moment the account being added becomes
+  // usable, and the new connection is checked right away so a wrong scope
+  // or a dead key shows up here, not in a session.
   const added =
-    target && connections && entryConnected(target, connections)
-      ? connectionForSlug(connections, target.slug)
+    adding?.credentialName && connections
+      ? connections.find(
+          (connection) =>
+            connection.enabled &&
+            connection.credentialName === adding.credentialName &&
+            !connectionNeedsSignIn(connection),
+        )
       : undefined;
   const dialogOpen = adding !== null && added === undefined;
   const addedId = added?.id ?? null;
@@ -122,6 +114,14 @@ export function IntegrationsStep({
     checkedRef.current = addedId;
     onTest(addedId);
   }, [addedId, onTest]);
+
+  const startAdding = (selection: Partial<AddProviderSelection>) =>
+    setAdding({
+      id: (nextAddingId.current += 1),
+      groupKey: selection.groupKey ?? null,
+      mode: selection.mode ?? null,
+      credentialName: selection.credentialName ?? null,
+    });
 
   return (
     <div className="setup-col" data-testid={`setup-step-${step.id}`}>
@@ -139,92 +139,101 @@ export function IntegrationsStep({
             <div className="setup-row__body">
               <span className="setup-row__title">No {noun.many} yet</span>
               <span className="setup-row__detail">
-                Add one to get started. You can add as many as you use, and change them later in
-                Settings.
+                Add one to get started. You can add as many accounts as you use, and change them
+                later in Settings.
               </span>
             </div>
           </div>
         ) : null}
-        {rows.map(({ group, row }) => (
-          <div
-            className="setup-row"
-            key={group.key}
-            data-testid={`setup-provider-row-${group.key}`}
-          >
-            <span
-              className={`setup-row__icon ${row.pending ? 'setup-row__icon--warn' : 'setup-row__icon--ok'}`}
+        {rows.map(({ group, connection, pending }) => {
+          const label = connectionLabel(connection, group);
+          const several = rows.filter((row) => row.group.key === group.key).length > 1;
+          return (
+            <div
+              className="setup-row"
+              key={connection.id}
+              data-testid={`setup-provider-row-${connection.id}`}
+              data-provider={group.key}
             >
-              {row.pending ? <AlertIcon /> : <CheckIcon />}
-            </span>
-            <div className="setup-row__body">
-              <span className="setup-row__title">
-                {group.title}
-                <span className="setup-chip setup-chip--inline">
-                  {row.pending ? 'Sign-in needed' : methodLabel(group, row.connection)}
-                </span>
+              <span
+                className={`setup-row__icon ${pending ? 'setup-row__icon--warn' : 'setup-row__icon--ok'}`}
+              >
+                {pending ? <AlertIcon /> : <CheckIcon />}
               </span>
-              <span className="setup-row__detail">
-                credential {row.connection.credentialName}
-                {credentialExpiryLabel(row.connection) ? (
-                  <>
-                    {' · '}
-                    <span data-testid={`setup-provider-expiry-${group.key}`}>
-                      {credentialExpiryLabel(row.connection)}
-                    </span>
-                  </>
-                ) : null}
-              </span>
-              {row.pending && credentialProblemLabel(row.connection) ? (
-                <span
-                  className="setup-row__detail setup-row__detail--warn"
-                  data-testid={`setup-provider-problem-${group.key}`}
-                >
-                  {credentialProblemLabel(row.connection)}
+              <div className="setup-row__body">
+                <span className="setup-row__title">
+                  {group.title}
+                  {several || label !== 'default' ? ` · ${label}` : ''}
+                  <span className="setup-chip setup-chip--inline">
+                    {pending ? 'Sign-in needed' : methodLabel(group, connection)}
+                  </span>
                 </span>
-              ) : null}
-              <div className="setup-form__actions">
-                {row.pending ? (
-                  <button
-                    type="button"
-                    className="setup-btn"
-                    onClick={() => setAdding({ id: Date.now(), key: group.key, mode: 'signin' })}
-                    data-testid={`setup-provider-finish-${group.key}`}
+                <span className="setup-row__detail">
+                  credential {connection.credentialName}
+                  {credentialExpiryLabel(connection) ? (
+                    <>
+                      {' · '}
+                      <span data-testid={`setup-provider-expiry-${connection.id}`}>
+                        {credentialExpiryLabel(connection)}
+                      </span>
+                    </>
+                  ) : null}
+                </span>
+                {pending && credentialProblemLabel(connection) ? (
+                  <span
+                    className="setup-row__detail setup-row__detail--warn"
+                    data-testid={`setup-provider-problem-${connection.id}`}
                   >
-                    Finish sign-in
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="setup-btn"
-                    onClick={() => onTest(row.connection.id)}
-                    disabled={testingId === row.connection.id}
-                    data-testid={`setup-test-${group.key}`}
-                  >
-                    {testingId === row.connection.id ? 'Testing…' : 'Test connection'}
-                  </button>
-                )}
-                {testResults[row.connection.id] ? (
-                  <TestOutcome slug={group.key} result={testResults[row.connection.id]!} />
+                    {credentialProblemLabel(connection)}
+                  </span>
                 ) : null}
+                <div className="setup-form__actions">
+                  {pending ? (
+                    <button
+                      type="button"
+                      className="setup-btn"
+                      onClick={() =>
+                        startAdding({
+                          groupKey: group.key,
+                          mode: 'signin',
+                          credentialName: connection.credentialName,
+                        })
+                      }
+                      data-testid={`setup-provider-finish-${connection.id}`}
+                    >
+                      Finish sign-in
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="setup-btn"
+                      onClick={() => onTest(connection.id)}
+                      disabled={testingId === connection.id}
+                      data-testid={`setup-test-${connection.id}`}
+                    >
+                      {testingId === connection.id ? 'Testing…' : 'Test connection'}
+                    </button>
+                  )}
+                  {testResults[connection.id] ? (
+                    <TestOutcome slug={group.key} result={testResults[connection.id]!} />
+                  ) : null}
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="setup-form__actions">
         <button
           type="button"
           className="setup-btn setup-btn--primary"
-          onClick={() => setAdding({ id: Date.now(), key: null, mode: null })}
+          onClick={() => startAdding({})}
           disabled={loading || groups.length === 0}
           data-testid="setup-provider-add"
         >
           + Add {noun.one}
         </button>
-        {!loading && groups.length > 0 && addable.length === 0 ? (
-          <span className="setup-note">Every {noun.one} in the catalog is connected.</span>
-        ) : null}
       </div>
 
       {adding ? (
@@ -234,11 +243,22 @@ export function IntegrationsStep({
           onOpenChange={(open) => {
             if (!open) setAdding(null);
           }}
-          onSelection={(key, mode) => setAdding((prev) => (prev ? { ...prev, key, mode } : prev))}
+          onSelection={(selection) =>
+            setAdding((prev) => (prev ? { ...prev, ...selection } : prev))
+          }
           noun={noun.one}
           groups={groups}
-          initialGroupKey={adding.key}
-          initialMode={adding.mode}
+          initialGroupKey={adding.groupKey}
+          initialMode={adding.mode as ConnectMode | null}
+          initialCredentialName={
+            adding.mode === 'signin' &&
+            adding.credentialName &&
+            rows.some(
+              (row) => row.pending && row.connection.credentialName === adding.credentialName,
+            )
+              ? adding.credentialName
+              : null
+          }
           connections={connections}
           connectingSlug={connectingSlug}
           connectErrorSlug={connectErrorSlug}

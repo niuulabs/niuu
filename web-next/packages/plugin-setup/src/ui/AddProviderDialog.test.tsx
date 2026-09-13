@@ -71,7 +71,9 @@ describe('AddProviderDialog', () => {
     await waitFor(() => expect(screen.getByTestId('setup-signin-code-codex')).toBeInTheDocument());
   });
 
-  it('still offers the other method for a provider that is already signed in', () => {
+  it('adds a second account under its own name', () => {
+    const onConnect = vi.fn();
+    const onSelection = vi.fn();
     const groups = providerGroups(MOCK_CATALOG, providers);
     const signedIn = {
       id: 'c1',
@@ -82,34 +84,66 @@ describe('AddProviderDialog', () => {
       config: {},
       credentialStatus: 'active',
     };
-    renderWithSetup(<AddProviderDialog {...base} groups={groups} connections={[signedIn]} />);
-    const row = screen.getByTestId('setup-add-pick-anthropic');
-    expect(row).toHaveTextContent('Signed in');
-    expect(row).toHaveTextContent('Use an API key');
-    expect(row).not.toBeDisabled();
-    fireEvent.click(row);
-    // Only the key is left, so the method question is skipped.
-    expect(screen.getByTestId('setup-add-intro-key').querySelector('a')).toHaveAttribute(
-      'href',
-      'https://console.anthropic.com/settings/keys',
+    const keyed = { ...signedIn, id: 'c2', slug: 'anthropic', credentialName: 'anthropic-setup' };
+    renderWithSetup(
+      <AddProviderDialog
+        {...base}
+        groups={groups}
+        connections={[signedIn, keyed]}
+        onConnect={onConnect}
+        onSelection={onSelection}
+      />,
     );
-    expect(screen.getByTestId('setup-input-anthropic-api_key')).toBeInTheDocument();
+    const row = screen.getByTestId('setup-add-pick-anthropic');
+    expect(row).toHaveTextContent('2 accounts');
+    expect(row).toHaveTextContent('Sign in');
+    expect(row).toHaveTextContent('Use an API key');
+    fireEvent.click(row);
+    fireEvent.click(screen.getByTestId('setup-add-mode-key'));
+    // The default name is taken by the existing key, so the form waits for a name.
+    expect(screen.getByTestId('setup-add-dialog')).toHaveTextContent('Already connected: default');
+    expect(screen.getByTestId('setup-add-dialog')).toHaveTextContent('already in use');
+    expect(screen.getByTestId('setup-connect-anthropic')).toBeDisabled();
+    fireEvent.change(screen.getByTestId('setup-add-account-name'), { target: { value: 'Work' } });
+    expect(screen.getByTestId('setup-add-dialog')).not.toHaveTextContent('already in use');
+    expect(onSelection).toHaveBeenLastCalledWith({
+      groupKey: 'anthropic',
+      mode: 'key',
+      credentialName: 'anthropic-work',
+    });
+    fireEvent.change(screen.getByTestId('setup-input-anthropic-api_key'), {
+      target: { value: 'sk-ant-2' },
+    });
+    fireEvent.click(screen.getByTestId('setup-connect-anthropic'));
+    expect(onConnect).toHaveBeenCalledWith(
+      expect.objectContaining({ slug: 'anthropic', credentialName: 'anthropic-work' }),
+    );
   });
 
-  it('disables a provider with nothing left to add', () => {
+  it('finishes a pending sign-in on the account that started it', () => {
     const groups = providerGroups(MOCK_CATALOG, providers);
-    const keyed = {
-      id: 'c2',
-      slug: 'deepseek',
+    const pending = {
+      id: 'c1',
+      slug: 'codex',
       integrationType: 'ai_provider',
-      credentialName: 'deepseek-setup',
+      credentialName: 'codex-work',
       enabled: true,
       config: {},
-      credentialStatus: 'valid',
+      credentialStatus: 'auth_required',
     };
-    renderWithSetup(<AddProviderDialog {...base} groups={groups} connections={[keyed]} />);
-    expect(screen.getByTestId('setup-add-pick-deepseek')).toBeDisabled();
-    expect(screen.getByTestId('setup-add-pick-deepseek')).toHaveTextContent('API key');
+    renderWithSetup(
+      <AddProviderDialog
+        {...base}
+        groups={groups}
+        connections={[pending]}
+        initialGroupKey="openai"
+        initialMode="signin"
+        initialCredentialName="codex-work"
+      />,
+    );
+    expect(screen.queryByTestId('setup-add-account-name')).not.toBeInTheDocument();
+    expect(screen.getByTestId('setup-signin-needed-codex')).toBeInTheDocument();
+    expect(screen.getByTestId('setup-signin-start-codex')).not.toBeDisabled();
   });
 
   it('introduces the sign-in before the button', () => {
@@ -171,11 +205,25 @@ describe('AddProviderDialog', () => {
     expect(screen.getByTestId('setup-add-dialog')).not.toHaveTextContent('oauth.clients');
   });
 
-  it('says when nothing is left to add and resets on close', () => {
+  it('resets on close', () => {
     const onOpenChange = vi.fn();
-    renderWithSetup(<AddProviderDialog {...base} groups={[]} onOpenChange={onOpenChange} />);
-    expect(screen.getByTestId('setup-add-none-left')).toBeInTheDocument();
+    const onSelection = vi.fn();
+    const groups = providerGroups(MOCK_CATALOG, providers);
+    renderWithSetup(
+      <AddProviderDialog
+        {...base}
+        groups={groups}
+        onOpenChange={onOpenChange}
+        onSelection={onSelection}
+        initialGroupKey="deepseek"
+      />,
+    );
     fireEvent.click(screen.getByLabelText('Close'));
     expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(onSelection).toHaveBeenLastCalledWith({
+      groupKey: null,
+      mode: null,
+      credentialName: null,
+    });
   });
 });

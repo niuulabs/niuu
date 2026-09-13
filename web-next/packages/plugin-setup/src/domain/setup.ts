@@ -340,18 +340,14 @@ export function entryForMode(group: ProviderGroup, mode: ConnectMode): CatalogEn
 }
 
 /**
- * Ways this provider can still be connected: every mode the catalog offers
- * that is not connected yet, with the one that can run here first. A
- * provider signed in through a subscription can still take an API key, and
- * the other way round.
+ * Ways this provider can be connected, sign-in first. Every mode stays open
+ * however many accounts exist: a second GitHub account or a second key is
+ * simply another connection with its own name.
  */
-export function availableModes(
-  group: ProviderGroup,
-  connections: IntegrationConnection[] | undefined,
-): ConnectMode[] {
+export function availableModes(group: ProviderGroup): ConnectMode[] {
   const modes: ConnectMode[] = [];
-  if (group.signInEntry && !entryConnected(group.signInEntry, connections)) modes.push('signin');
-  if (group.keyEntry && !entryConnected(group.keyEntry, connections)) modes.push('key');
+  if (group.signInEntry) modes.push('signin');
+  if (group.keyEntry) modes.push('key');
   return modes;
 }
 
@@ -770,6 +766,60 @@ export function hostChips(facts: HostFacts | null): HostChip[] {
 /** Default credential name for a connection made by the wizard. */
 export function credentialNameFor(slug: string): string {
   return `${slug}-setup`.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+}
+
+function slugifyAccount(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/**
+ * The credential a new account stores under: the method's default name for
+ * the first account, `<slug>-<name>` once the person names it. Names are
+ * what tells two GitHub or two Anthropic accounts apart.
+ */
+export function accountCredentialName(
+  entry: CatalogEntry,
+  mode: ConnectMode,
+  accountName: string,
+): string {
+  const suffix = slugifyAccount(accountName);
+  if (suffix) return `${entry.slug}-${suffix}`;
+  if (mode === 'signin') {
+    return entry.credentialEnrollment?.defaultCredentialName ?? credentialNameFor(entry.slug);
+  }
+  return credentialNameFor(entry.slug);
+}
+
+/** Every usable or pending connection a provider group has, one per account. */
+export function groupConnections(
+  group: ProviderGroup,
+  connections: IntegrationConnection[] | undefined,
+): IntegrationConnection[] {
+  if (!connections) return [];
+  const slugs = new Set(
+    [group.signInEntry?.slug, group.keyEntry?.slug].filter((slug): slug is string => !!slug),
+  );
+  return connections.filter((connection) => connection.enabled && slugs.has(connection.slug));
+}
+
+/** How a row names an account: the part after the provider slug, or "default". */
+export function connectionLabel(connection: IntegrationConnection, group: ProviderGroup): string {
+  const slugs = [group.signInEntry?.slug, group.keyEntry?.slug].filter(
+    (slug): slug is string => !!slug,
+  );
+  let rest = connection.credentialName;
+  for (const slug of slugs) {
+    if (rest.startsWith(`${slug}-`)) {
+      rest = rest.slice(slug.length + 1);
+      break;
+    }
+  }
+  if (!rest || rest === 'setup' || rest === 'signin' || rest === 'credentials') return 'default';
+  return rest.replace(/-/g, ' ');
 }
 
 export function requiredCredentialKeys(entry: CatalogEntry): string[] {

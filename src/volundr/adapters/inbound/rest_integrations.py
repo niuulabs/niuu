@@ -816,6 +816,17 @@ def _build_integrations_router(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=credential_errors,
                 )
+            # Storing under a name another connection of the same provider
+            # already uses would silently overwrite that account's secret.
+            for existing in await integration_repo.list_connections(principal.user_id):
+                if existing.slug == definition.slug and existing.credential_name == credential_name:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            f"{definition.name} is already connected as {credential_name!r}; "
+                            "give this account another name"
+                        ),
+                    )
 
             await credential_store.store(
                 owner_type="user",

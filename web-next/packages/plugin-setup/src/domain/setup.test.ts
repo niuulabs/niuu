@@ -7,6 +7,9 @@ import {
   signInOffered,
   supportsSignIn,
   availableModes,
+  groupConnections,
+  connectionLabel,
+  accountCredentialName,
   connectionNeedsSignIn,
   entryForMode,
   credentialExpiryLabel,
@@ -299,20 +302,36 @@ describe('connection credential state', () => {
     expect(connectionNeedsSignIn({ ...connection, credentialStatus: 'enrolling' })).toBe(true);
   });
 
-  it('offers only the methods that are not connected yet', () => {
+  it('keeps every method open however many accounts exist', () => {
     const step = WIZARD_STEPS.find((s) => s.id === 'providers')!;
     const anthropic = providerGroups(MOCK_CATALOG, step).find((g) => g.key === 'anthropic')!;
-    expect(availableModes(anthropic, undefined)).toEqual(['signin', 'key']);
-    expect(availableModes(anthropic, [connection])).toEqual(['key']);
-    expect(
-      availableModes(anthropic, [connection, { ...connection, id: 'k', slug: 'anthropic' }]),
-    ).toEqual([]);
-    expect(
-      availableModes(anthropic, [{ ...connection, credentialStatus: 'auth_required' }]),
-    ).toEqual(['signin', 'key']);
+    const deepseek = providerGroups(MOCK_CATALOG, step).find((g) => g.key === 'deepseek')!;
+    expect(availableModes(anthropic)).toEqual(['signin', 'key']);
+    expect(availableModes(deepseek)).toEqual(['key']);
     expect(entryForMode(anthropic, 'key')?.slug).toBe('anthropic');
     expect(entryForMode(anthropic, 'signin')?.slug).toBe('claude-code');
     expect(anthropic.keyHelpUrl).toContain('console.anthropic.com');
+    const second = { ...connection, id: 'k', slug: 'anthropic', credentialName: 'anthropic-work' };
+    expect(groupConnections(anthropic, [connection, second]).map((c) => c.id)).toEqual(['c', 'k']);
+    expect(groupConnections(anthropic, [{ ...second, enabled: false }])).toEqual([]);
+    expect(groupConnections(anthropic, undefined)).toEqual([]);
+    expect(connectionLabel(connection, anthropic)).toBe('n');
+    expect(connectionLabel(second, anthropic)).toBe('work');
+    expect(connectionLabel({ ...second, credentialName: 'anthropic-setup' }, anthropic)).toBe(
+      'default',
+    );
+    expect(connectionLabel({ ...second, credentialName: 'odd-name' }, anthropic)).toBe('odd name');
+  });
+
+  it('names each account its own credential', () => {
+    const claudeCode = MOCK_CATALOG.find((e) => e.slug === 'claude-code')!;
+    const anthropic = MOCK_CATALOG.find((e) => e.slug === 'anthropic')!;
+    expect(accountCredentialName(claudeCode, 'signin', '')).toBe('claude-code-credentials');
+    expect(accountCredentialName(anthropic, 'key', '')).toBe('anthropic-setup');
+    expect(accountCredentialName(anthropic, 'key', ' Work Account! ')).toBe(
+      'anthropic-work-account',
+    );
+    expect(accountCredentialName(claudeCode, 'signin', 'personal')).toBe('claude-code-personal');
   });
 
   it('says how long a token is still good for', () => {

@@ -1,10 +1,12 @@
 import { useState } from 'react';
-import { Dialog, DialogContent } from '@niuulabs/ui';
+import { Dialog, DialogContent, Field, Input } from '@niuulabs/ui';
 import {
+  accountCredentialName,
   availableModes,
-  connectionForSlug,
-  entryConnected,
+  connectionLabel,
+  groupConnections,
   signInNeedsApp,
+  type CatalogEntry,
   type ConnectIntegrationInput,
   type ConnectMode,
   type IntegrationConnection,
@@ -18,18 +20,27 @@ import { BackIcon, CheckIcon } from './icons';
 
 export type { ConnectMode } from '../domain/setup';
 
+export interface AddProviderSelection {
+  groupKey: string | null;
+  mode: ConnectMode | null;
+  /** The credential the connection being added will use; the parent watches for it. */
+  credentialName: string | null;
+}
+
 export interface AddProviderDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** What the user is adding, in the step's words: "provider", "Git host", "tracker". */
   noun: string;
-  /** Every provider of the step; the dialog works out what each can still add. */
+  /** Every provider of the step; each can be added as many times as there are accounts. */
   groups: ProviderGroup[];
   /** Pre-selected provider, e.g. when finishing a pending sign-in. */
   initialGroupKey?: string | null;
   initialMode?: ConnectMode | null;
-  /** Called whenever the chosen provider or method changes, so the parent knows what to watch. */
-  onSelection?: (groupKey: string | null, mode: ConnectMode | null) => void;
+  /** The existing connection to finish signing in; skips the account name. */
+  initialCredentialName?: string | null;
+  /** Called whenever the chosen provider, method or account changes. */
+  onSelection?: (selection: AddProviderSelection) => void;
   connections: IntegrationConnection[] | undefined;
   connectingSlug: string | null;
   connectErrorSlug: string | null;
@@ -40,12 +51,14 @@ export interface AddProviderDialogProps {
   onTest: (connectionId: string) => void;
 }
 
-/** Modes a provider still offers, sign-in first. */
-export function modesFor(
-  group: ProviderGroup,
-  connections: IntegrationConnection[] | undefined = undefined,
-): ConnectMode[] {
-  return availableModes(group, connections);
+/** Modes a provider offers, sign-in first. */
+export function modesFor(group: ProviderGroup): ConnectMode[] {
+  return availableModes(group);
+}
+
+function entryFor(group: ProviderGroup, mode: ConnectMode | null): CatalogEntry | undefined {
+  if (!mode) return undefined;
+  return mode === 'signin' ? group.signInEntry : group.keyEntry;
 }
 
 function modeIntro(group: ProviderGroup, mode: ConnectMode) {
@@ -86,9 +99,10 @@ function modeIntro(group: ProviderGroup, mode: ConnectMode) {
 }
 
 /**
- * Add one provider in three small steps: which one, how (sign in or key),
- * then the sign-in card or the key form. The parent closes the dialog once
- * the connection shows up, so the flow never needs to know it succeeded.
+ * Add one account in three small steps: which provider, how (sign in or key),
+ * then the sign-in card or the key form. A provider can be added as often
+ * as there are accounts; each one gets a name once the first exists. The
+ * parent closes the dialog once the new connection shows up.
  */
 export function AddProviderDialog({
   open,
@@ -97,6 +111,7 @@ export function AddProviderDialog({
   groups,
   initialGroupKey = null,
   initialMode = null,
+  initialCredentialName = null,
   onSelection,
   connections,
   connectingSlug,
@@ -107,27 +122,74 @@ export function AddProviderDialog({
 }: AddProviderDialogProps) {
   const [chosenKey, setChosenKey] = useState<string | null>(initialGroupKey);
   const [chosenMode, setChosenMode] = useState<ConnectMode | null>(initialMode);
+  const [accountName, setAccountName] = useState('');
   const group = groups.find((candidate) => candidate.key === chosenKey) ?? null;
-  const modes = group ? availableModes(group, connections) : [];
+  const modes = group ? availableModes(group) : [];
   const mode: ConnectMode | null = group
     ? modes.length === 1
       ? (modes[0] ?? null)
       : chosenMode
     : null;
-  const addable = groups.filter((candidate) => availableModes(candidate, connections).length > 0);
+  const entry = group ? entryFor(group, mode) : undefined;
+  const existing = group ? groupConnections(group, connections) : [];
+  const finishing = initialCredentialName !== null;
 
-  const select = (key: string | null, next: ConnectMode | null) => {
+  const nameFor = (candidate: CatalogEntry | undefined, next: ConnectMode | null, name: string) =>
+    candidate
+      ? finishing
+        ? initialCredentialName
+        : accountCredentialName(candidate, next ?? 'key', name)
+      : null;
+  const credentialName = nameFor(entry, mode, accountName);
+  const taken =
+    !finishing &&
+    credentialName !== null &&
+    existing.some((connection) => connection.credentialName === credentialName);
+  const finishingConnection = finishing
+    ? existing.find((connection) => connection.credentialName === initialCredentialName)
+    : undefined;
+
+  const select = (key: string | null, next: ConnectMode | null, name: string = accountName) => {
     setChosenKey(key);
     setChosenMode(next);
-    onSelection?.(key, next);
+    setAccountName(name);
+    const chosen = groups.find((candidate) => candidate.key === key);
+    const chosenModes = chosen ? availableModes(chosen) : [];
+    const effective = chosenModes.length === 1 ? (chosenModes[0] ?? null) : next;
+    onSelection?.({
+      groupKey: key,
+      mode: effective,
+      credentialName: nameFor(chosen ? entryFor(chosen, effective) : undefined, effective, name),
+    });
   };
-  const reset = () => select(null, null);
+  const reset = () => select(null, null, '');
   const handleOpenChange = (next: boolean) => {
     if (!next) reset();
     onOpenChange(next);
   };
 
   const title = !group ? `Add ${noun}` : mode ? group.title : `${group.title}: how?`;
+  const accountField =
+    group && entry && !finishing ? (
+      <Field
+        label={existing.length > 0 ? 'Name for this account' : 'Name for this account (optional)'}
+        hint={
+          existing.length > 0
+            ? `Already connected: ${existing
+                .map((connection) => connectionLabel(connection, group))
+                .join(', ')}. Give this one its own name, like work or personal.`
+            : 'Leave empty for the default. Handy when you add a second account later.'
+        }
+        error={taken ? 'That name is already in use for this provider.' : undefined}
+      >
+        <Input
+          autoComplete="off"
+          value={accountName}
+          onChange={(event) => select(group.key, mode, event.target.value)}
+          data-testid="setup-add-account-name"
+        />
+      </Field>
+    ) : null;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -144,23 +206,15 @@ export function AddProviderDialog({
             </button>
           ) : null}
 
-          {!group ? (
-            addable.length === 0 ? (
-              <div className="setup-note" data-testid="setup-add-none-left">
-                Everything in the catalog for this step is already connected.
-              </div>
-            ) : (
-              groups.map((candidate) => {
-                const open = availableModes(candidate, connections);
-                const signedIn = entryConnected(candidate.signInEntry, connections);
-                const keyed = entryConnected(candidate.keyEntry, connections);
+          {!group
+            ? groups.map((candidate) => {
+                const count = groupConnections(candidate, connections).length;
                 return (
                   <button
                     key={candidate.key}
                     type="button"
                     className="setup-option"
                     onClick={() => select(candidate.key, null)}
-                    disabled={open.length === 0}
                     data-testid={`setup-add-pick-${candidate.key}`}
                   >
                     <span className="setup-option__body">
@@ -168,30 +222,22 @@ export function AddProviderDialog({
                       <span className="setup-option__desc">{candidate.description}</span>
                     </span>
                     <span className="setup-option__aside setup-chips">
+                      {count > 0 ? (
+                        <span className="setup-chip setup-chip--ok">
+                          <CheckIcon size={12} /> {count === 1 ? '1 account' : `${count} accounts`}
+                        </span>
+                      ) : null}
                       {candidate.signInEntry ? (
-                        signedIn ? (
-                          <span className="setup-chip setup-chip--ok">
-                            <CheckIcon size={12} /> Signed in
-                          </span>
-                        ) : (
-                          <span className="setup-chip setup-chip--brand">Sign in</span>
-                        )
+                        <span className="setup-chip setup-chip--brand">Sign in</span>
                       ) : null}
                       {candidate.keyEntry ? (
-                        keyed ? (
-                          <span className="setup-chip setup-chip--ok">
-                            <CheckIcon size={12} /> {candidate.keyLabel.replace(/^Use an? /, '')}
-                          </span>
-                        ) : (
-                          <span className="setup-chip">{candidate.keyLabel}</span>
-                        )
+                        <span className="setup-chip">{candidate.keyLabel}</span>
                       ) : null}
                     </span>
                   </button>
                 );
               })
-            )
-          ) : null}
+            : null}
 
           {group && !mode
             ? modes.map((candidate) => (
@@ -222,11 +268,12 @@ export function AddProviderDialog({
             ) : (
               <div className="setup-pane">
                 {modeIntro(group, 'signin')}
+                {accountField}
                 <SignInCard
                   entry={group.signInEntry}
-                  connection={
-                    connections ? connectionForSlug(connections, group.signInEntry.slug) : undefined
-                  }
+                  connection={finishingConnection}
+                  credentialName={credentialName ?? undefined}
+                  disabled={taken}
                   headless
                 />
               </div>
@@ -236,15 +283,16 @@ export function AddProviderDialog({
           {group && mode === 'key' && group.keyEntry ? (
             <div className="setup-pane">
               {modeIntro(group, 'key')}
+              {accountField}
               <IntegrationCard
                 entry={group.keyEntry}
-                connection={
-                  connections ? connectionForSlug(connections, group.keyEntry.slug) : undefined
-                }
+                connection={undefined}
+                credentialName={credentialName ?? undefined}
                 connecting={connectingSlug === group.keyEntry.slug}
                 connectError={connectErrorSlug === group.keyEntry.slug ? connectError : null}
                 testResult={undefined}
                 testing={false}
+                disabled={taken}
                 onConnect={onConnect}
                 onTest={onTest}
                 headless

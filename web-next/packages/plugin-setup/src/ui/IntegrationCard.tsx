@@ -24,6 +24,10 @@ export interface IntegrationCardProps {
   onTest: (connectionId: string) => void;
   /** Render only the body; the enclosing pane shows the title and status. */
   headless?: boolean;
+  /** The credential this account stores under; defaults to `<slug>-setup`. */
+  credentialName?: string;
+  /** Hold the connect button, e.g. while the account name clashes with an existing one. */
+  disabled?: boolean;
 }
 
 function inputType(type: string): string {
@@ -43,6 +47,8 @@ export function IntegrationCard({
   onConnect,
   onTest,
   headless = false,
+  credentialName,
+  disabled = false,
 }: IntegrationCardProps) {
   const [credential, setCredential] = useState<Record<string, string>>({});
   const [config, setConfig] = useState<Record<string, string>>({});
@@ -56,7 +62,7 @@ export function IntegrationCard({
     if (missing.length > 0) return;
     onConnect({
       slug: entry.slug,
-      credentialName: credentialNameFor(entry.slug),
+      credentialName: credentialName ?? credentialNameFor(entry.slug),
       credential,
       config: buildConfigPayload(entry, config),
     });
@@ -139,7 +145,7 @@ export function IntegrationCard({
             <button
               type="submit"
               className="setup-btn"
-              disabled={connecting}
+              disabled={connecting || disabled}
               data-testid={`setup-connect-${entry.slug}`}
             >
               {connecting ? 'Connecting…' : `Connect ${entry.name}`}
