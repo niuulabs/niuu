@@ -3,7 +3,7 @@
 When workload_type == "ravn_flock", this contributor replaces the default
 single-CLI layout with:
   - Skuld container with mesh.enabled=true + nng ports + Sleipnir webhook
-  - N ravn daemon sidecar containers (one per persona in workload_config.personas)
+  - N regular ravn daemon containers (one per persona in workload_config.personas)
   - Per-sidecar initContainer that writes YAML config to an emptyDir volume
     mounted read-only at /etc/ravn/config.yaml (RAVN_CONFIG env var points here)
   - nng mesh ports allocated via the same scheme as ravn flock init
@@ -58,7 +58,8 @@ _RAVN_COMMAND = [
     (
         "import os, pathlib, subprocess, sys\n"
         "persona = os.environ.get('RAVN_PERSONA') or 'ravn'\n"
-        "log = pathlib.Path('/workspace/.flock/logs') / f'{persona}.log'\n"
+        "log = pathlib.Path(os.environ.get('RAVN_LOG_PATH', "
+        "f'/workspace/.flock/logs/{persona}.log'))\n"
         "log.parent.mkdir(parents=True, exist_ok=True)\n"
         "proc = subprocess.Popen(\n"
         "    [\n"
@@ -773,7 +774,7 @@ class RavnFlockContributor(SessionContributor):
     Resolves the launch spec from the session context, reads
     workload_config.personas + mesh/mimir/sleipnir settings, then:
       - Emits Skuld mesh env vars (SKULD__MESH__*, nng addresses)
-      - Emits one ravn sidecar container per persona with RAVN_CONFIG env
+      - Emits one regular ravn container per persona with RAVN_CONFIG env
       - Emits per-sidecar initContainer + emptyDir volume for mounted config
       - Emits a Mimir emptyDir volume
       - Emits Sleipnir webhook env vars for both skuld and ravn containers
@@ -1155,7 +1156,7 @@ class RavnFlockContributor(SessionContributor):
         extra_containers: list[dict] = []
         config_volumes: list[dict] = []
         init_containers: list[dict] = []
-        openshell_processes: list[dict[str, Any]] = []
+        openshell_workloads: list[dict[str, Any]] = []
 
         for i, persona_dict in enumerate(persona_dicts):
             persona = persona_dict["name"]
@@ -1274,7 +1275,7 @@ class RavnFlockContributor(SessionContributor):
             }
             extra_containers.append(container)
             if runtime_backend == "openshell":
-                config_path = f"/sandbox/.volundr/flock/{persona}.yaml"
+                config_path = f"/tmp/ravn/{persona}.yaml"
                 process_env = {
                     str(entry["name"]): str(entry.get("value") or "")
                     for entry in ravn_env
@@ -1285,25 +1286,40 @@ class RavnFlockContributor(SessionContributor):
                         "HOME": "/sandbox/workspace",
                         "RAVN_CONFIG": config_path,
                         "RAVN_STATE_DIR": "/sandbox/workspace/.ravn",
+                        "RAVN_LOG_PATH": f"/sandbox/workspace/.flock/logs/{persona}.log",
                     }
                 )
                 process_env.pop(self._workload_identity_token_file_env, None)
-                openshell_processes.append(
+                bootstrap = (
+                    "import os, pathlib, sys\n"
+                    "config = pathlib.Path(os.environ['RAVN_CONFIG'])\n"
+                    "config.parent.mkdir(parents=True, exist_ok=True)\n"
+                    "config.write_text(sys.argv[1], encoding='utf-8')\n"
+                )
+                openshell_workloads.append(
                     {
                         "name": f"ravn-{persona}",
-                        "command": [
-                            "/opt/niuu/bin/python",
-                            "-m",
-                            "ravn",
-                            "daemon",
-                            "--config",
-                            config_path,
-                            "--persona",
-                            persona,
+                        "image": self._ravn_image,
+                        "command": ["python", "-c", bootstrap + _RAVN_COMMAND[2], config_yaml],
+                        "environment": process_env,
+                        "volume_mounts": [
+                            {
+                                "name": "flock-ipc",
+                                "mount_path": "/tmp/niuu-mesh",
+                                "read_only": False,
+                            },
+                            *(
+                                [
+                                    {
+                                        "name": _MIMIR_VOLUME_NAME,
+                                        "mount_path": _MIMIR_MOUNT_PATH,
+                                        "read_only": False,
+                                    },
+                                ]
+                                if requires_local_mimir_mount
+                                else []
+                            ),
                         ],
-                        "env": process_env,
-                        "files": {config_path: config_yaml},
-                        "logPath": f"/sandbox/.volundr/flock/{persona}.log",
                     }
                 )
 
@@ -1343,8 +1359,33 @@ class RavnFlockContributor(SessionContributor):
             values["flock"]["daily_budget_usd"] = float(daily_budget_usd)
         if workflow:
             values["workflow"] = workflow
-        if openshell_processes:
-            values["openshell"] = {"processes": openshell_processes}
+        if openshell_workloads:
+            if persona_source_mode == _PERSONA_SOURCE_MOUNTED_VOLUME:
+                raise ValueError(
+                    "OpenShell flock personas require filesystem or HTTP sources, not ConfigMaps"
+                )
+            if requires_secret_mount:
+                raise ValueError(
+                    "OpenShell flock credentials require dynamic providers, "
+                    "not injected secret files"
+                )
+            volumes = [{"name": "flock-ipc", "empty_dir": {}}]
+            mounts = [{"name": "flock-ipc", "mount_path": "/tmp/niuu-mesh", "read_only": False}]
+            if requires_local_mimir_mount:
+                volumes.append({"name": _MIMIR_VOLUME_NAME, "empty_dir": {}})
+                mounts.append(
+                    {
+                        "name": _MIMIR_VOLUME_NAME,
+                        "mount_path": _MIMIR_MOUNT_PATH,
+                        "read_only": False,
+                    }
+                )
+            values["openshell"] = {
+                "workloads": openshell_workloads,
+                "volumes": volumes,
+                "volumeMounts": mounts,
+            }
+            pod_spec = PodSpecAdditions(env=tuple(skuld_env))
 
         if mimir_config:
             values["mimir"] = {

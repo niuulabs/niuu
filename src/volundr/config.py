@@ -1778,7 +1778,7 @@ class Settings(BaseSettings):
     ravn_flock_image: str = Field(
         default="",
         description=(
-            "Optional image used for auto-wired Ravn flock sidecars. "
+            "Optional image used for auto-wired regular Ravn flock containers. "
             "When empty, the contributor's built-in default is used."
         ),
     )

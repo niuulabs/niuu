@@ -2877,3 +2877,124 @@ def test_additional_runtime_credentials_use_scoped_inspected_routes(monkeypatch,
         "enforce",
     )
     assert all(binary.path != "**" for binary in profile.binaries)
+
+
+@pytest.mark.asyncio
+async def test_start_creates_peer_containers_and_releases_after_workspace(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+    values = {
+        "persistence": {"existingClaim": "workspace", "mountPath": "/sandbox/workspace"},
+        "openshell": {
+            "volumes": [{"name": "ipc", "empty_dir": {}}],
+            "volumeMounts": [{"name": "ipc", "mount_path": "/tmp/niuu-mesh"}],
+            "workloads": [
+                {
+                    "name": "ravn-reviewer",
+                    "image": "ravn:pinned",
+                    "command": ["python", "-m", "ravn", "daemon"],
+                    "environment": {"RAVN_PERSONA": "reviewer"},
+                    "volume_mounts": [{"name": "ipc", "mount_path": "/tmp/niuu-mesh"}],
+                }
+            ],
+        },
+    }
+    original = json.loads(json.dumps(values))
+    events = []
+    write_files = client.write_files
+
+    def write(**kwargs):
+        events.append("release")
+        write_files(**kwargs)
+
+    def bootstrap(**kwargs):
+        events.append("workspace")
+        return 0, "ready"
+
+    client.write_files = write
+    client.exec_script = bootstrap
+    await manager.start(_session(), SessionSpec(values=values, pod_spec=PodSpecAdditions()))
+    workload = client.created["driver_config"]["containers"]["workloads"][0]
+    assert workload["image"] == "ravn:pinned"
+    assert workload["environment"]["RAVN_PERSONA"] == "reviewer"
+    assert workload["volume_mounts"][0]["mount_path"] == "/sandbox/workspace"
+    assert workload["volume_mounts"][1]["mount_path"] == "/tmp/niuu-mesh"
+    marker = workload["command"][3]
+    assert client.written_files[-1]["files"] == {marker: b"ready"}
+    assert events == ["workspace", "release"]
+    assert len(client.execs) == 1  # Only Skuld is launched through primary exec.
+    assert values == original
+
+
+def test_workload_start_waits_for_marker_and_executes(monkeypatch, tmp_path):
+    import subprocess
+
+    adapter = _import_adapter(monkeypatch)
+    marker = tmp_path / "ready"
+    output = tmp_path / "started"
+    command = [
+        sys.executable,
+        "-c",
+        adapter._WORKLOAD_START_COMMAND,
+        str(marker),
+        "2",
+        sys.executable,
+        "-c",
+        "import pathlib,sys;pathlib.Path(sys.argv[1]).write_text('ok')",
+        str(output),
+    ]
+    with subprocess.Popen(command) as process:
+        time.sleep(0.1)
+        assert not output.exists()
+        marker.write_text("ready")
+        assert process.wait(timeout=5) == 0
+    assert output.read_text() == "ok"
+    marker.unlink()
+    command[4] = "0"
+    result = subprocess.run(command, capture_output=True, timeout=5)
+    assert result.returncode != 0
+    assert b"did not finish workload bootstrap" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("workload", "message"),
+    [
+        ({"command": []}, "explicit command"),
+        ({"command": ["python"], "readiness_port": 8000}, "cannot gate pod readiness"),
+    ],
+)
+def test_peer_container_rejects_invalid_startup(monkeypatch, workload, message):
+    adapter = _import_adapter(monkeypatch)
+    with pytest.raises(ValueError, match=message):
+        adapter._driver_config_from_values(
+            {"openshell": {"workloads": [workload]}}, workload_start_file="/workspace/ready"
+        )
+
+
+@pytest.mark.asyncio
+async def test_peer_containers_reject_materialized_credentials_before_create(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+    monkeypatch.setattr(
+        manager,
+        "_resolve_credential_context",
+        AsyncMock(
+            return_value=adapter.OpenShellCredentialContext(
+                files={},
+                providers=(),
+                environment={},
+                process_environment={"RAVN_NATS_PASSWORD": "must-not-reach-pod-spec"},
+            )
+        ),
+    )
+    with pytest.raises(ValueError, match="disable materializeEnvironment"):
+        await manager.start(
+            _session(),
+            SessionSpec(
+                values={"openshell": {"workloads": [{"command": ["python"]}]}},
+                pod_spec=PodSpecAdditions(),
+            ),
+        )
+    assert client.created is None

@@ -20,12 +20,13 @@ import tarfile
 import threading
 import time
 from collections.abc import Sequence
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlparse, urlunparse
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import grpc
 import httpx
@@ -1281,6 +1282,24 @@ class OpenShellGatewayPodManager(
             env.update(credential_context.environment)
             process_env = {**env, **credential_context.process_environment}
             runtime_processes = _runtime_processes_from_spec(spec)
+            workloads = (spec.values.get("openshell") or {}).get("workloads", [])
+            workload_start_file = ""
+            if workloads:
+                if runtime_processes:
+                    raise ValueError(
+                        "OpenShell flock workloads cannot also declare detached processes"
+                    )
+                if credential_context.process_environment:
+                    raise ValueError(
+                        "OpenShell workload containers require dynamic provider credentials; "
+                        "disable materializeEnvironment"
+                    )
+                workload_start_file = f"{self._sandbox_workspace}/.volundr/start-{uuid4().hex}"
+            driver_config = _driver_config_from_values(
+                spec.values,
+                workload_start_file=workload_start_file,
+                workload_environment=env,
+            )
             provider_names = (*platform_providers, *credential_context.providers)
             grants = tuple(
                 OpenShellProviderGrant(provider_name=name, profile_id=name)
@@ -1299,7 +1318,7 @@ class OpenShellGatewayPodManager(
                     labels=labels,
                     annotations=annotations,
                     resources=self._resources_from_spec(spec),
-                    driver_config=self._driver_config_from_spec(spec),
+                    driver_config=driver_config,
                     providers=provider_names,
                     policy=self._sandbox_policy,
                 )
@@ -1319,6 +1338,12 @@ class OpenShellGatewayPodManager(
                 spec,
                 env,
             )
+            if workload_start_file:
+                await asyncio.to_thread(
+                    self._client.write_files,
+                    sandbox_id=ready.id,
+                    files={workload_start_file: b"ready"},
+                )
             for process in runtime_processes:
                 process_exit = await asyncio.to_thread(
                     self._client.exec_detached,
@@ -3166,7 +3191,26 @@ def _image_from_values(values: dict[str, Any], *, default: str) -> str:
     return _shared_image_from_values(values, default=default)
 
 
-def _driver_config_from_values(values: dict[str, Any]) -> dict[str, Any]:
+# A regular container may be Running while its entry command waits here. Do not
+# use a Kubernetes readiness probe for this gate: the primary's exec channel is
+# needed to finish workspace/credential bootstrap and release the workloads.
+_WORKLOAD_START_COMMAND = """import os, pathlib, sys, time
+marker = pathlib.Path(sys.argv[1])
+deadline = time.monotonic() + float(sys.argv[2])
+while not marker.exists():
+    if time.monotonic() >= deadline:
+        raise TimeoutError('Völundr did not finish workload bootstrap')
+    time.sleep(0.1)
+os.execvp(sys.argv[3], sys.argv[3:])
+"""
+
+
+def _driver_config_from_values(
+    values: dict[str, Any],
+    *,
+    workload_start_file: str = "",
+    workload_environment: dict[str, str] | None = None,
+) -> dict[str, Any]:
     pod: dict[str, Any] = {}
     if isinstance(values.get("nodeSelector"), dict):
         pod["node_selector"] = _string_dict(values["nodeSelector"])
@@ -3198,9 +3242,43 @@ def _driver_config_from_values(values: dict[str, Any]) -> dict[str, Any]:
             }
         )
         mounts.append({"name": name, "mount_path": mount_path, "read_only": False})
+    openshell = values.get("openshell") or {}
+    workloads = deepcopy(openshell.get("workloads") or [])
+    if workloads:
+        if not workload_start_file:
+            raise ValueError("OpenShell workload containers require session workspace bootstrap")
+        volumes.extend(deepcopy(openshell.get("volumes") or []))
+        shared_mounts = deepcopy(openshell.get("volumeMounts") or [])
+        for workload in workloads:
+            command = workload.get("command")
+            if not isinstance(command, list) or not command:
+                raise ValueError("OpenShell workload containers require an explicit command")
+            if workload.get("readiness_port"):
+                raise ValueError(
+                    "OpenShell session workloads cannot gate pod readiness "
+                    "before workspace bootstrap"
+                )
+            environment = {
+                key: value
+                for key, value in (workload_environment or {}).items()
+                if key not in SECRET_ENV_KEYS and not key.startswith("OPENSHELL_")
+            }
+            environment.update(workload.get("environment") or {})
+            workload["environment"] = environment
+            workload["volume_mounts"] = [*deepcopy(mounts), *workload.get("volume_mounts", [])]
+            workload["command"] = [
+                "python",
+                "-c",
+                _WORKLOAD_START_COMMAND,
+                workload_start_file,
+                "300",
+                *command,
+            ]
+        mounts.extend(shared_mounts)
+        config["containers"] = {"workloads": workloads}
     if volumes:
         config["volumes"] = volumes
-        config["containers"] = {"agent": {"volume_mounts": mounts}}
+        config.setdefault("containers", {})["agent"] = {"volume_mounts": mounts}
     return config
 
 
