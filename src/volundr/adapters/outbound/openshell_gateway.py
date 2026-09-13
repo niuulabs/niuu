@@ -1422,6 +1422,8 @@ class OpenShellGatewayPodManager(
             if sandbox.ready or sandbox.phase == openshell_pb2.SANDBOX_PHASE_READY:
                 # Older bootstrap scripts copied CLI homes into /tmp. Save
                 # those files onto the retained volume before removing compute.
+                # Stage the merge to replace root-owned image defaults and
+                # read-only Git caches, retaining the previous home as a backup.
                 exit_code, _ = await asyncio.to_thread(
                     self._client.exec_script,
                     sandbox_id=sandbox.id,
@@ -1431,8 +1433,17 @@ class OpenShellGatewayPodManager(
                         "for cli in codex claude; do\n"
                         '  source="/tmp/$cli-home"\n'
                         '  if [ -d "$source" ]; then\n'
-                        '    mkdir -p "$HOME_ROOT/.$cli"\n'
-                        '    cp -af "$source/." "$HOME_ROOT/.$cli/"\n'
+                        '    target="$HOME_ROOT/.$cli"\n'
+                        '    saved=$(mktemp -d "$HOME_ROOT/.$cli-save.XXXXXX")\n'
+                        '    if [ -d "$target" ]; then cp -a "$target/." "$saved/"; fi\n'
+                        '    cp -af "$source/." "$saved/"\n'
+                        '    if [ -e "$target" ]; then mv "$target" "$saved.previous"; fi\n'
+                        '    if ! mv "$saved" "$target"; then\n'
+                        '      if [ -e "$saved.previous" ]; then\n'
+                        '        mv "$saved.previous" "$target"\n'
+                        "      fi\n"
+                        "      exit 1\n"
+                        "    fi\n"
                         "  fi\n"
                         "done\n"
                     ),

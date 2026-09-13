@@ -884,6 +884,7 @@ async def test_legacy_stop_preserves_sandbox_volume(monkeypatch, tmp_path):
     destination.mkdir(parents=True)
     (source / "cache.pack").write_text("updated cache")
     (destination / "cache.pack").write_text("old cache")
+    (destination / "history.jsonl").write_text("existing history")
     (destination / "cache.pack").chmod(0o444)
     script = (
         client.bootstrap_execs[0]["script"]
@@ -892,6 +893,9 @@ async def test_legacy_stop_preserves_sandbox_volume(monkeypatch, tmp_path):
     )
     subprocess.run(["sh", "-c", script], check=True, capture_output=True)
     assert (destination / "cache.pack").read_text() == "updated cache"
+    assert (destination / "history.jsonl").read_text() == "existing history"
+    backup = next(destination.parent.glob(".codex-save.*.previous"))
+    assert (backup / "cache.pack").read_text() == "old cache"
 
 
 @pytest.mark.asyncio
