@@ -112,7 +112,7 @@ async def test_native_process_loss_resumes_exact_thread_and_remembers_nonce(
     transport.on_event(capture)
     try:
         await asyncio.wait_for(transport.start(), timeout=120)
-        assert transport._fallback_transport is None, "Native app-server is required"
+        assert transport._process is not None and transport._ws is not None
         assert transport.is_alive and transport.session_id
         original_thread = transport.session_id
         original_process = transport._process

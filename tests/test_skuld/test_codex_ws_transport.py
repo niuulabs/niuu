@@ -564,9 +564,9 @@ class TestSpawnAppServer:
         assert mock_exec.call_args.kwargs["env"]["CODEX_HOME"] == str(codex_home)
 
 
-class TestFallbackTransport:
+class TestStartupFailure:
     @pytest.mark.asyncio
-    async def test_start_falls_back_to_subprocess_when_app_server_startup_fails(self, tmp_path):
+    async def test_start_rejects_app_server_failure_without_substitution(self, tmp_path):
         t = _make_transport(tmp_path, initial_prompt="Investigate this")
         emit = AsyncMock()
         t.on_event(emit)
@@ -574,26 +574,11 @@ class TestFallbackTransport:
         t._connect_ws = AsyncMock(side_effect=RuntimeError("uds handshake failed"))
         t._handshake = AsyncMock()
 
-        fallback = MagicMock()
-        fallback.start = AsyncMock()
-        fallback.send_message = AsyncMock()
-        fallback.stop = AsyncMock()
-        fallback.session_id = None
-        fallback.last_result = None
-        fallback.is_alive = True
-        fallback.is_turn_active = False
-
-        with patch(
-            "skuld.transports.codex_ws.CodexSubprocessTransport",
-            return_value=fallback,
-        ) as mock_fallback_cls:
+        t.send_message = AsyncMock()
+        with pytest.raises(RuntimeError, match="Codex app-server startup failed"):
             await t.start()
-
-        mock_fallback_cls.assert_called_once()
-        fallback.on_event.assert_called_once_with(emit)
-        fallback.start.assert_called_once()
-        fallback.send_message.assert_called_once_with("Investigate this")
-        assert t._fallback_transport is fallback
+        t.send_message.assert_not_awaited()
+        assert not t.is_alive
 
 
 # ---------------------------------------------------------------------------
@@ -1744,7 +1729,7 @@ class TestApprovals:
         assert sent["result"]["decision"] == "decline"
 
     @pytest.mark.asyncio
-    async def test_unknown_request_auto_approved(self, tmp_path):
+    async def test_unknown_request_rejected_with_method_not_found(self, tmp_path):
         t = _make_transport(tmp_path)
         t._ws = FakeWebSocket()
         _collect_emits(t)
@@ -1759,7 +1744,8 @@ class TestApprovals:
 
         sent = json.loads(t._ws.sent[0])
         assert sent["id"] == 77
-        assert sent["result"]["decision"] == "accept"
+        assert sent["error"]["code"] == -32601
+        assert "result" not in sent
 
     @pytest.mark.asyncio
     async def test_mcp_elicitation_is_auto_accepted_with_protocol_shape(self, tmp_path):
@@ -2981,13 +2967,14 @@ class TestSendRpcResponse:
         assert msg["result"]["decision"] == "accept"
 
     @pytest.mark.asyncio
-    async def test_send_rpc_response_ws_none_is_noop(self, tmp_path):
+    async def test_send_rpc_response_ws_none_is_explicit_failure(self, tmp_path):
         """If ws is None, _send_rpc_response should silently do nothing."""
         t = _make_transport(tmp_path)
         t._ws = None
 
         # Should not raise
-        await t._send_rpc_response(42, {"decision": "accept"})
+        with pytest.raises(RuntimeError, match="WebSocket is not connected"):
+            await t._send_rpc_response(42, {"decision": "accept"})
 
 
 # ---------------------------------------------------------------------------

@@ -43,11 +43,7 @@ from niuu.domain.reasoning import MODEL_EFFORTS, validate_effort
 from niuu.domain.transcript_reducer import TOOL_ENDED_AT
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.codex_auth import CodexAuthProviderError, CodexAuthProviderPort, HostCodexAuthProvider
-from skuld.transports.codex import (
-    CodexSubprocessTransport,
-    _map_codex_tool,
-    resolve_codex_cli,
-)
+from skuld.transports.codex import _map_codex_tool, resolve_codex_cli
 from skuld.transports.mcp_config import build_codex_mcp_overrides
 from skuld.transports.owned_codex_process import OwnedCodexProcess, OwnedProcessError
 from skuld.transports.tool_shims import ensure_codex_tool_shims
@@ -296,7 +292,6 @@ class CodexWebSocketTransport(CLITransport):
         self._compaction_task: asyncio.Task | None = None
         self._codex_socket_dir: str | None = None
         self._codex_socket_path: str | None = None
-        self._fallback_transport: CodexSubprocessTransport | None = None
         self._thread_id: str | None = None
         self._current_turn_id: str | None = None
         self._last_result: dict | None = None
@@ -403,7 +398,7 @@ class CodexWebSocketTransport(CLITransport):
             # transport was originally created without a resume_session_id.
             if self._thread_id:
                 self._resume_session_id = self._thread_id
-            if self._process or self._ws or self._receive_task or self._fallback_transport:
+            if self._process or self._ws or self._receive_task:
                 await self.stop()
             await self._start()
 
@@ -421,13 +416,14 @@ class CodexWebSocketTransport(CLITransport):
             # A competing or unverifiable writer must never trigger a fresh-thread fallback.
             raise
         except Exception as exc:
-            # The subprocess adapter cannot resume app-server history. Falling
-            # back here would silently replace the user's conversation.
+            # A different adapter cannot preserve app-server permissions,
+            # capabilities or conversation identity, even on a fresh launch.
+            await self.stop()
             if self._resume_session_id or self._thread_id:
-                await self.stop()
                 raise RuntimeError("Could not resume the existing Codex conversation") from exc
-            await self._start_fallback_transport(exc)
-            return
+            raise RuntimeError(
+                "Codex app-server startup failed; fix the configured runtime before retrying"
+            ) from exc
 
         # On resume the prior thread's history is reloaded, so don't replay
         # the initial prompt (it was already part of that conversation).
@@ -435,10 +431,6 @@ class CodexWebSocketTransport(CLITransport):
             await self.send_message(self._initial_prompt)
 
     async def stop(self) -> None:
-        if self._fallback_transport is not None:
-            await self._fallback_transport.stop()
-            self._fallback_transport = None
-
         self._alive = False
 
         await self._finalize_stranded_turn("cancelled", "Codex transport stopped")
@@ -481,29 +473,6 @@ class CodexWebSocketTransport(CLITransport):
         self._pending.clear()
 
         logger.info("CodexWebSocketTransport stopped")
-
-    def on_event(self, callback) -> None:  # type: ignore[override]
-        super().on_event(callback)
-        if self._fallback_transport is not None:
-            self._fallback_transport.on_event(callback)
-
-    async def _start_fallback_transport(self, cause: Exception) -> None:
-        logger.warning(
-            "Codex app-server transport unavailable; falling back to subprocess transport: %s",
-            cause,
-            exc_info=True,
-        )
-        await self.stop()
-        fallback = CodexSubprocessTransport(
-            workspace_dir=self.workspace_dir,
-            model=self._model,
-            mcp_servers=self._mcp_servers,
-        )
-        fallback.on_event(self.event_callback)
-        self._fallback_transport = fallback
-        await fallback.start()
-        if self._initial_prompt:
-            await fallback.send_message(self._initial_prompt)
 
     # ------------------------------------------------------------------
     # Spawn & connect
@@ -927,7 +896,7 @@ class CodexWebSocketTransport(CLITransport):
             return
 
         # --- Streaming text ---
-        if method == "item/agentMessage/delta":
+        if method in ("item/agentMessage/delta", "item/plan/delta"):
             await self._emit_text_delta(
                 params.get("delta", ""),
                 item_id=params.get("itemId"),
@@ -1373,14 +1342,15 @@ class CodexWebSocketTransport(CLITransport):
             self._pending_approvals[request_id] = (rid, "mcp_elicitation")
             return
 
-        # Default: auto-approve unknown requests
-        logger.debug("Auto-approving Codex server request: %s", method)
-        await self._send_rpc_response(rid, {"decision": "accept"})
+        # New methods have their own response/authorization semantics. Never
+        # fabricate an approval for a request this adapter does not implement.
+        logger.warning("Unsupported Codex server request: %s", method)
+        await self._send_rpc_error(rid, -32601, f"Unsupported Codex server request: {method}")
 
     async def _send_rpc_response(self, rid: int, result: dict) -> None:
         """Send a JSON-RPC response for a server-initiated request."""
         if not self._ws:
-            return
+            raise RuntimeError("Codex WebSocket is not connected; response was not sent")
         msg = {"jsonrpc": "2.0", "id": rid, "result": result}
         await self._ws.send(json.dumps(msg))
 
@@ -1860,7 +1830,7 @@ class CodexWebSocketTransport(CLITransport):
             await self._emit_tool_use(item_id, normalized, tool_input)
             return
 
-        if item_type == "agentMessage":
+        if item_type in ("agentMessage", "plan"):
             state = self._text_item(
                 item_id, phase=item.get("phase") or item.get("channel"), context=text_context
             )
@@ -1931,7 +1901,7 @@ class CodexWebSocketTransport(CLITransport):
             await self._emit_tool_result(item_id, prefix + output, is_error=exit_code != 0)
             return
 
-        if item_type == "agentMessage":
+        if item_type in ("agentMessage", "plan"):
             if not await self._complete_text_item(item, context=text_context):
                 return
             if item.get("delivery") == "async" and item.get("questions"):
@@ -2388,12 +2358,6 @@ class CodexWebSocketTransport(CLITransport):
         request_id: str | None = None,
         record_correlation: bool = True,
     ) -> None:
-        if self._fallback_transport is not None:
-            await self._fallback_transport.send_message(
-                content, msg_id=msg_id, request_id=request_id
-            )
-            return
-
         if not self._thread_id:
             raise RuntimeError("No active thread — call start() first")
 
@@ -2414,6 +2378,8 @@ class CodexWebSocketTransport(CLITransport):
             "threadId": self._thread_id,
             "input": [{"type": "text", "text": content, "textElements": []}],
         }
+        if self._model:
+            params["model"] = self._model
         if self._reasoning_effort:
             params["effort"] = _normalize_codex_effort(self._reasoning_effort, self._model)
 
@@ -2430,10 +2396,6 @@ class CodexWebSocketTransport(CLITransport):
             raise
 
     async def send_control_response(self, request_id: str, response: dict) -> None:
-        if self._fallback_transport is not None:
-            await self._fallback_transport.send_control_response(request_id, response)
-            return
-
         async with self._answer_lock:
             await self._send_approval_response(request_id, response)
 
@@ -2468,10 +2430,6 @@ class CodexWebSocketTransport(CLITransport):
         self._pending_approvals.pop(request_id, None)
 
     async def send_control(self, subtype: str, **kwargs: object) -> None:
-        if self._fallback_transport is not None:
-            await self._fallback_transport.send_control(subtype, **kwargs)
-            return
-
         """Handle control messages (interrupt, set_model, etc.)."""
         if subtype == "set_effort":
             self._reasoning_effort = validate_effort(
@@ -2676,8 +2634,6 @@ class CodexWebSocketTransport(CLITransport):
         await self._emit({"type": "system", "subtype": "notice", "content": content})
 
     async def get_effort(self) -> dict:
-        if self._fallback_transport is not None:
-            return await self._fallback_transport.get_effort()
         return {
             "current": self._reasoning_effort,
             "levels": list(MODEL_EFFORTS.get(self._model, ())),
@@ -2686,40 +2642,28 @@ class CodexWebSocketTransport(CLITransport):
         }
 
     async def discover_slash_commands(self, *, refresh: bool = False) -> list[dict]:
-        if self._fallback_transport is not None:
-            return await self._fallback_transport.discover_slash_commands(refresh=refresh)
         if not self._thread_id:
             return []
         return [dict(command) for command in _CODEX_APP_SERVER_SLASH_COMMANDS]
 
     @property
     def session_id(self) -> str | None:
-        if self._fallback_transport is not None:
-            return self._fallback_transport.session_id
         return self._thread_id
 
     @property
     def last_result(self) -> dict | None:
-        if self._fallback_transport is not None:
-            return self._fallback_transport.last_result
         return self._last_result
 
     @property
     def is_alive(self) -> bool:
-        if self._fallback_transport is not None:
-            return self._fallback_transport.is_alive
         return self._alive
 
     @property
     def is_turn_active(self) -> bool:
-        if self._fallback_transport is not None:
-            return self._fallback_transport.is_turn_active
         return bool(self._thread_id and self._current_turn_id)
 
     @property
     def capabilities(self) -> TransportCapabilities:
-        if self._fallback_transport is not None:
-            return self._fallback_transport.capabilities
         return TransportCapabilities(
             cli_websocket=False,  # We don't expose a /ws/cli endpoint
             session_resume=True,
