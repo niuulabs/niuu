@@ -122,7 +122,10 @@ class CredentialEnrollmentService:
                 state="auth_required",
                 error_code="enrollment_failed",
             )
-            raise CredentialEnrollmentError("Could not start provider login") from exc
+            # The provider's answer (an unknown client id, a refused scope) is
+            # the one thing the person needs to see; never hide it.
+            logger.error("Provider login for %s could not start: %s", slug, exc)
+            raise CredentialEnrollmentError(f"Could not start provider login: {exc}") from exc
         return await self._repository.save(started)
 
     def available(self, slug: str) -> bool:

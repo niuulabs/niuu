@@ -192,6 +192,24 @@ async def test_completed_login_persists_only_to_enrollment_owner() -> None:
     assert runner.cancelled == [enrollment.id]
 
 
+async def test_a_refused_start_shows_the_providers_answer(caplog) -> None:
+    service, repository, _, credential_store, runner = _service()
+    principal = _principal("user-1")
+
+    async def refused(enrollment):
+        raise ValueError("gitlab refused the device authorization request: invalid_client")
+
+    runner.start_enrollment = refused
+    with caplog.at_level("ERROR"):
+        with pytest.raises(CredentialEnrollmentError, match="invalid_client"):
+            await service.start(principal=principal, slug="codex")
+    assert "could not start: gitlab refused" in caplog.text
+    stored = credential_store.items[("user", "user-1", "codex-credentials")]
+    assert stored["metadata"]["auth_state"] == "auth_required"
+    assert stored["metadata"]["auth_error_code"] == "enrollment_failed"
+    assert all(row.state == CredentialEnrollmentState.FAILED for row in repository.items.values())
+
+
 async def test_fixed_lifetime_sign_ins_record_when_the_token_runs_out() -> None:
     service, repository, _, credential_store, runner = _service()
     principal = _principal("user-1")
