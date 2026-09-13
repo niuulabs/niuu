@@ -74,6 +74,22 @@ describe('UiModeSwitch', () => {
     await waitFor(() => expect(readUiMode()).toBe('advanced'));
   });
 
+  it('shows the error when the saved preference cannot be read on boot', async () => {
+    const service = {
+      ...fakeFeatures().service,
+      getUserFeaturePreferences: async () => {
+        throw new Error('preferences endpoint is down');
+      },
+    };
+    render(
+      <ServicesProvider services={{ features: service }}>
+        <UiModeSwitch plugins={plugins} />
+      </ServicesProvider>,
+    );
+    await screen.findByRole('alert');
+    expect(readUiMode()).toBe('simple');
+  });
+
   it('keeps the mode in the browser when the host wires no preferences service', async () => {
     const user = userEvent.setup();
     render(
