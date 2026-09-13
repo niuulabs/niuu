@@ -58,6 +58,11 @@ TUI parser. [App-server documentation](https://learn.chatgpt.com/docs/app-server
 | Raw tool ownership | Raw `shell_command` notifications and rollout function-call frames entered a second execution/output-injection path. | Normalize raw calls and native outputs observationally. Keep client execution on the explicit dynamic-tool server-request path. Both old paths fail new offline regressions. |
 | Slash-command correctness | Unknown commands were ignored; RPC failures became a notice followed by apparent success; arguments could be discarded. | Propagate errors into existing WebSocket control errors and HTTP 400/502 responses. Never automatically retry an uncertain command. |
 | Command semantics | Goal control words became replacement objectives; `/title` conflicted with current native TUI meaning; broker normalization discarded method/hint fields. | Real goal pause/resume/clear/edit operations, canonical `/rename`, explicit legacy alias, preserved capability/method/hint metadata. |
+| Approval wire variants | Modern session approvals were reduced to one-time approval; legacy patch/denial responses used incompatible enums; Telegram's `allowOnce` was declined. | Method-specific response mapping preserves one-time/session/deny/cancel semantics and checks native `availableDecisions` when present. Missing/unknown choices fail explicitly. |
+| Permission profiles | Permission requests were displayed as file edits and answered with a command decision, not granted permissions. | Preserve the exact requested profile and grant it only on explicit allow, scoped to turn/session; deny grants nothing. Do not accept client-supplied wider grants or silently discard input/policy edits. |
+| MCP elicitation | Disabling sandbox approvals could auto-submit an invented empty form; the broker discarded explicit form content. | Always require human consent/input, preserve structured content through the existing WebSocket control route, and never let generic permission auto-approval answer an elicitation. Native MCP validates its requested schema. |
+| Native control cleanup | `serverRequest/resolved` was ignored, leaving canceled or externally answered cards pending on reconnect. | Retire exact opaque RPC identities without inventing the decision, clear broker attention/persisted controls, and retain resolution frames for replay. Socket-reader cleanup never waits behind an answer awaiting that same reader. |
+| Resume identity / history parameters | Public resume could replace the requested conversation with a different returned ID or invent success from an empty response. Removed `persistExtendedHistory` flags were still sent. | Require an identified, matching resumed conversation; remove obsolete flags. Keep the upstream default legacy history contract, not unsupported paginated creation/resume. |
 
 Source anchors: `src/skuld/transports/codex_ws.py`, `src/skuld/channels.py`,
 `src/skuld/broker.py`, `src/skuld/broker_api.py`. Regression evidence is in
@@ -105,9 +110,9 @@ background terminals must retain their distinct consent and lifecycle semantics.
 | --- | --- |
 | Model/effort/tier catalogs | Wire fidelity corrected; availability/effort still relies partly on static model tables. Use native `model/list` and provider capabilities, distinguish requested next-turn settings from effective runtime state, and handle reroutes. |
 | Live input / queues | Pinned live-steering correction covers normal input. Native queue CRUD/reorder/start, client user-message IDs, mid-turn setting updates and explicit next-turn scheduling require separate contracts. |
-| Thread history | Forge has native import, durable event logs and a shared reducer. Audit native `historyMode`, paginated turns/items, startup hydration and thread status against 0.154; old `persistExtendedHistory` fields are absent from the generated request schemas. Do not silently claim they take effect. |
-| Approvals / questions | Existing sync/async questions and approvals need full variant coverage. `item/permissions/requestApproval` requires a permissions-shaped response, unlike command approvals; the baseline conflates them. Review legacy patch approvals, strict-review metadata, and `serverRequest/resolved` cancellation. |
-| MCP / plugins / hooks / apps | New read-only skill/MCP commands improve visibility. Refresh/invalidation, OAuth challenges, form elicitation, plugin consent, hooks and connected-app inputs remain incomplete. |
+| Thread history | Forge has native import, durable event logs and a shared reducer. Removed obsolete persistence flags and made resume identity fail closed. Upstream documents legacy as the default; paginated creation, full-history hydration and resume are not yet supported there. A schema method name alone does not make this usable. Large-history import/hydration and thread-status acceptance remain to be exercised on owned native sessions. |
+| Approvals / questions | Basic modern/legacy decisions, requested permission profiles and native cancellation are corrected. Partial-profile grants, policy amendments and strict-review controls still need explicit UI/API contracts; arbitrary rule/input edits are rejected, not silently applied. User-question timeout/async semantics need additional native acceptance. |
+| MCP / plugins / hooks / apps | Read-only skill/MCP commands and explicit elicitation response transport are implemented. Native form/URL UI, schema-aware form rendering, refresh/invalidation, OAuth challenges, plugin consent, hooks and connected-app inputs remain incomplete. No automatic URL visit or fabricated form submission is performed. |
 | Streaming / tool output | Public text/plan corrections are covered offline. Review plan/diff updates, MCP progress, terminal interactions, patch updates, artifact/image items and async tool output without changing native execution ownership. |
 | Recovery / lifecycle | Startup now fails closed and unsent approvals remain pending. Native event continuity, stale callbacks, socket-loss ambiguity, competing writers and process recovery still require authorized owned-provider proof. |
 | Session operations | Archive/unarchive/delete, rollback/revert, fork ancestry, side chats, worktrees and background terminal lifecycles must agree with Forge persistence and authorization; do not expose bare native mutations as complete Forge workflows. |
@@ -169,7 +174,7 @@ substantially changed transport/channel modules and retains the 85% gate; it is
 not a claim of repository-wide coverage. No dependency, coverage threshold, or
 production configuration was changed to obtain a passing result.
 
-Final combined sweep on Python **3.13.13** / pytest **9.1.1**:
+First-checkpoint combined sweep on Python **3.13.13** / pytest **9.1.1**:
 
 - **2,549 passed, 22 skipped, 82 deselected, 1 expected failure**, no test failures
   or reported warnings; elapsed 72.13 seconds. Skips/expected failures are not
@@ -188,3 +193,50 @@ Final combined sweep on Python **3.13.13** / pytest **9.1.1**:
 Validation must distinguish unit/fixture replay from native provider execution
 and physical-client proof. Complete integration, authorization of an owned live
 matrix, and rollout acceptance are separate gates. The mission remains open.
+
+## Approval and history-contract follow-up
+
+Runtime follow-ups are committed at `3cfa0e9c` (approval/control resolution) and
+`a75ba536` (history parameters/native resume identity), on the same fixed UX pin.
+The first follow-up produced 21 failing-before offline regressions, then 619
+passing targeted transport/broker/control-replay tests including the reader-lock
+edge case. Seven history/identity regressions failed before correction; the
+transport/identity/steering/project-context set then passed 331 tests, with four
+excluded by marker. Existing tests that invented a new ID on resume were corrected
+to return the requested native ID; a separate mismatch regression requires failure.
+
+Independently, **35 actual response variants** from the candidate were validated
+with `Draft7Validator` against the exact installed 0.154.0 generated response
+schemas. This covers modern command/file approvals, legacy exec/patch decisions,
+permission grants, and MCP form/URL actions. It is wire-shape validation, not proof
+that an external action ran or a native permission policy was changed.
+
+Native command/network/stdin/approval context now survives the control-request
+projection. A form is still a generic `control_request` for client compatibility;
+its `auto_approval_allowed: false` is enforced by the broker. Manual WebSocket
+`permission_response` accepts optional structured `content`; accepting a form
+without explicit content fails while retaining the pending request. Clients without
+a form editor can decline/cancel, but cannot pretend to submit a completed form.
+Legacy `allowForever` maps to the native **session** scope, not a promise of a
+persistent cross-session policy amendment.
+
+The launch environment prepends another checkout to `PYTHONPATH`. Pytest's existing
+`pythonpath = ["src"]` selected this checkout in earlier tests; the final follow-up
+sweep explicitly pins `PYTHONPATH` to the owned `src` and records loaded module
+paths. An initial standalone schema-validation import hit the other checkout and
+failed before validation; only the corrected owned-source run is counted above.
+
+The **final follow-up combined sweep** passed **2,595 tests**, with **22 skipped,
+82 deselected and one expected failure**, no failures or reported warnings, in
+72.99 seconds. Coverage scope was **expanded** to include all four production
+files edited by this runner: Codex transport, channels, broker and broker API.
+Aggregate statement/branch coverage is **86.66%**, above the unchanged 85% gate.
+Individual file values are recorded rather than implying every file exceeds 85%:
+90.09% transport, 90.82% channels, 84.37% broker and 79.43% broker API. This remains
+a scoped backend result, not repository-wide, frontend, or live-provider coverage.
+[Follow-up evidence and source-path audit](codex-review-followup-evidence-20260913.json).
+
+Next acceptance gates remain: a user-identified missing-message session/client;
+authorized native steering/approval/cancellation/socket-loss/recovery cases; native
+to database to public-wire to rendered transcript comparison; and separately owned
+native command/form UX. This is an isolated candidate, not a rollout instruction.
