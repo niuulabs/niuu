@@ -17,7 +17,9 @@ export function residentForRealm(
 ): ValkyrieResident | null {
   if (!dashboard) return null;
   return (
-    dashboard.valkyries.find((resident) => realmSlugForEnvironment(resident.environmentId) === slug) ??
+    dashboard.valkyries.find(
+      (resident) => realmSlugForEnvironment(resident.environmentId) === slug,
+    ) ??
     dashboard.valkyries.find((resident) => resident.name === residentNameFor(slug)) ??
     null
   );

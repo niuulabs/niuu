@@ -239,7 +239,11 @@ export function useCreateRealm() {
         while (Date.now() < deadline) {
           const mounts = await mimir.mounts.listMounts();
           if (mounts.some((mount) => mount.name === mountName)) {
-            await mimir.pages.upsertPage(charterPagePathFor(draft.slug), draft.charter.trim(), mountName);
+            await mimir.pages.upsertPage(
+              charterPagePathFor(draft.slug),
+              draft.charter.trim(),
+              mountName,
+            );
             return;
           }
           await new Promise((resolve) => setTimeout(resolve, MOUNT_DISCOVERY_INTERVAL_MS));

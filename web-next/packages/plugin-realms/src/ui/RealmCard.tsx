@@ -33,9 +33,19 @@ function Stat({ value, label, attention }: { value: number; label: string; atten
 }
 
 /** One realm on the home screen: who keeps it, what is moving, what needs you. */
-export function RealmCard({ realm, resident, ravn, pendingReviews, runningSessions }: RealmCardProps) {
+export function RealmCard({
+  realm,
+  resident,
+  ravn,
+  pendingReviews,
+  runningSessions,
+}: RealmCardProps) {
   const wakefulness = resident?.wakefulness ?? null;
-  const dot: DotState = wakefulness ? (WAKEFULNESS_DOT[wakefulness] ?? 'unknown') : ravn ? 'healthy' : 'unknown';
+  const dot: DotState = wakefulness
+    ? (WAKEFULNESS_DOT[wakefulness] ?? 'unknown')
+    : ravn
+      ? 'healthy'
+      : 'unknown';
   const stateLabel = wakefulness
     ? wakefulnessCopy(wakefulness).label
     : ravn
@@ -71,12 +81,18 @@ export function RealmCard({ realm, resident, ravn, pendingReviews, runningSessio
       </div>
       <div className="niuu:flex niuu:gap-5 niuu:border-t niuu:border-border-subtle niuu:pt-3">
         <Stat value={runningSessions} label="in sessions" />
-        <Stat value={pendingReviews.length} label="needs you" attention={pendingReviews.length > 0} />
+        <Stat
+          value={pendingReviews.length}
+          label="needs you"
+          attention={pendingReviews.length > 0}
+        />
         {resident ? <Stat value={resident.toolCount} label="tools" /> : null}
       </div>
       <div className="niuu:flex niuu:items-center niuu:justify-between">
         <span className="niuu:text-[11px] niuu:text-text-faint">
-          {resident?.lastActionAt ? `last acted ${resident.lastActionAt.slice(0, 16).replace('T', ' ')}` : realm.autonomy_profile}
+          {resident?.lastActionAt
+            ? `last acted ${resident.lastActionAt.slice(0, 16).replace('T', ' ')}`
+            : realm.autonomy_profile}
         </span>
         <Link
           to="/realms/$slug"

@@ -36,8 +36,8 @@ export function SentenceComposer() {
           data-testid="sentence-input"
         />
         <span className="niuu:text-xs niuu:text-text-muted">
-          One sentence is enough. The resident reads it, fills in what it can, and asks for the
-          rest before anything starts.
+          One sentence is enough. The resident reads it, fills in what it can, and asks for the rest
+          before anything starts.
         </span>
       </div>
       <button

@@ -24,7 +24,9 @@ export function readUiMode(): UiMode {
   if (typeof window === 'undefined') return DEFAULT_UI_MODE;
   try {
     const value = window.localStorage.getItem(UI_MODE_STORAGE_KEY);
-    return value && (MODES as readonly string[]).includes(value) ? (value as UiMode) : DEFAULT_UI_MODE;
+    return value && (MODES as readonly string[]).includes(value)
+      ? (value as UiMode)
+      : DEFAULT_UI_MODE;
   } catch {
     return DEFAULT_UI_MODE;
   }
@@ -70,7 +72,11 @@ export function preferencesForMode(
     visible: mode === 'advanced' || plugin.simple !== undefined,
     sortOrder: index,
   }));
-  rows.push({ featureKey: UI_MODE_PREFERENCE_KEY, visible: mode === 'advanced', sortOrder: plugins.length });
+  rows.push({
+    featureKey: UI_MODE_PREFERENCE_KEY,
+    visible: mode === 'advanced',
+    sortOrder: plugins.length,
+  });
   return rows;
 }
 

@@ -20,7 +20,11 @@ export const FIRST_REALM_WALKTHROUGH: Walkthrough = {
   steps: [
     { id: 'template', title: 'Pick a template', detail: 'Product resident fits most codebases.' },
     { id: 'connect', title: 'Connect repo, tracker, CI' },
-    { id: 'charter', title: 'Write the charter', detail: 'A few sentences. It is a seed, not a rulebook.' },
+    {
+      id: 'charter',
+      title: 'Write the charter',
+      detail: 'A few sentences. It is a seed, not a rulebook.',
+    },
     { id: 'trust', title: 'Set trust and where it runs' },
     {
       id: 'first-answer',
@@ -90,7 +94,10 @@ export function useWalkthrough(walkthrough: Walkthrough) {
     [walkthrough.id],
   );
 
-  const reset = useCallback(() => write(walkthrough.id, { done: [], hidden: false }), [walkthrough.id]);
+  const reset = useCallback(
+    () => write(walkthrough.id, { done: [], hidden: false }),
+    [walkthrough.id],
+  );
 
   const currentIndex = walkthrough.steps.findIndex((step) => !state.done.includes(step.id));
   return {

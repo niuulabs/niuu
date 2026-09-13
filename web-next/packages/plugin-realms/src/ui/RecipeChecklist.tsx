@@ -9,7 +9,10 @@ export function RecipeChecklist({ progress }: { progress: RecipeProgress }) {
   return (
     <div className="niuu:flex niuu:flex-col niuu:gap-3" data-testid="recipe-checklist">
       <div className="niuu:h-1.5 niuu:overflow-hidden niuu:rounded-full niuu:bg-bg-elevated">
-        <div className="niuu:h-full niuu:bg-brand niuu:transition-all" style={{ width: `${pct}%` }} />
+        <div
+          className="niuu:h-full niuu:bg-brand niuu:transition-all"
+          style={{ width: `${pct}%` }}
+        />
       </div>
       <ol className="niuu:m-0 niuu:flex niuu:list-none niuu:flex-col niuu:gap-1.5 niuu:p-0">
         {RECIPE_STEPS.map((step, index) => {

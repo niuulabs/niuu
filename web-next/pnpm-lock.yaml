@@ -662,6 +662,9 @@ importers:
       '@niuulabs/design-tokens':
         specifier: workspace:*
         version: link:../design-tokens
+      '@niuulabs/plugin-bifrost':
+        specifier: workspace:*
+        version: link:../plugin-bifrost
       '@tanstack/react-query':
         specifier: ^5.102.8
         version: 5.102.8(react@19.2.8)

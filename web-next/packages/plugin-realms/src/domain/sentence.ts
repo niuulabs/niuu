@@ -34,6 +34,6 @@ export function parseSentence(text: string): SentenceDraft {
   const askBefore = ASK_PATTERNS.filter(([pattern]) => pattern.test(charter)).map(
     ([, actionClass]) => actionClass,
   );
-  const name = repo ? repo.split('/')[1]?.replace(/[-_]+/g, ' ') ?? null : null;
+  const name = repo ? (repo.split('/')[1]?.replace(/[-_]+/g, ' ') ?? null) : null;
   return { charter, repo, boardKey, askBefore, name };
 }

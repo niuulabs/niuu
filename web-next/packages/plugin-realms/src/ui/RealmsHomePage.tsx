@@ -97,7 +97,10 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
     home.cards.find((card) => card.resident?.environmentId === environmentId)?.realm.name ?? null;
 
   return (
-    <div className="niuu:flex niuu:h-full niuu:flex-col niuu:gap-6 niuu:overflow-auto niuu:p-8" data-testid="realms-home">
+    <div
+      className="niuu:flex niuu:h-full niuu:flex-col niuu:gap-6 niuu:overflow-auto niuu:p-8"
+      data-testid="realms-home"
+    >
       <header className="niuu:flex niuu:items-end niuu:justify-between niuu:gap-6">
         <div className="niuu:flex niuu:max-w-3xl niuu:flex-col niuu:gap-1.5">
           <span className="niuu:font-mono niuu:text-[11px] niuu:uppercase niuu:tracking-[0.3em] niuu:text-brand-300">
@@ -110,8 +113,8 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
           </h1>
           <p className="niuu:m-0 niuu:text-[15px] niuu:text-text-secondary">
             A realm is an environment a resident keeps: it reads your tracker, works the tickets in
-            sessions, checks quality, watches health and keeps learning. You review what it asks
-            you to.
+            sessions, checks quality, watches health and keeps learning. You review what it asks you
+            to.
           </p>
         </div>
         <div className="niuu:flex niuu:gap-2">
@@ -135,10 +138,17 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
       ) : view === 'needs-you' ? (
         <SectionCard title="Needs you" description="Every open question from every resident.">
           {home.pendingReviews.length === 0 ? (
-            <EmptyState title="Nothing waiting on you" description="Residents ask here when a grant says so." />
+            <EmptyState
+              title="Nothing waiting on you"
+              description="Residents ask here when a grant says so."
+            />
           ) : (
             home.pendingReviews.map((item) => (
-              <NeedsYouRow key={item.itemId} item={item} realmName={realmNameFor(item.environmentId)} />
+              <NeedsYouRow
+                key={item.itemId}
+                item={item}
+                realmName={realmNameFor(item.environmentId)}
+              />
             ))
           )}
         </SectionCard>
@@ -176,14 +186,24 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
                 home.pendingReviews
                   .slice(0, 5)
                   .map((item) => (
-                    <NeedsYouRow key={item.itemId} item={item} realmName={realmNameFor(item.environmentId)} />
+                    <NeedsYouRow
+                      key={item.itemId}
+                      item={item}
+                      realmName={realmNameFor(item.environmentId)}
+                    />
                   ))
               )}
             </SectionCard>
             <SectionCard title="Walkthroughs">
               <div className="niuu:flex niuu:flex-col niuu:gap-2 niuu:text-sm">
                 <div className="niuu:flex niuu:items-center niuu:justify-between">
-                  <span className={walkthrough.complete ? 'niuu:text-text-secondary niuu:line-through' : 'niuu:text-text-primary'}>
+                  <span
+                    className={
+                      walkthrough.complete
+                        ? 'niuu:text-text-secondary niuu:line-through'
+                        : 'niuu:text-text-primary'
+                    }
+                  >
                     {FIRST_REALM_WALKTHROUGH.title}
                   </span>
                   <span className="niuu:font-mono niuu:text-xs niuu:text-text-faint">
@@ -191,7 +211,11 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
                   </span>
                 </div>
                 {walkthrough.hidden ? (
-                  <button type="button" className={`${BUTTON} niuu:self-start`} onClick={() => walkthrough.setHidden(false)}>
+                  <button
+                    type="button"
+                    className={`${BUTTON} niuu:self-start`}
+                    onClick={() => walkthrough.setHidden(false)}
+                  >
                     Show it again
                   </button>
                 ) : null}
@@ -222,7 +246,9 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
                 }}
               >
                 {card.realm.name}
-                <span className="niuu:ml-2 niuu:font-mono niuu:text-[11px] niuu:text-text-muted">{card.realm.slug}</span>
+                <span className="niuu:ml-2 niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
+                  {card.realm.slug}
+                </span>
               </button>
             ))
           )}

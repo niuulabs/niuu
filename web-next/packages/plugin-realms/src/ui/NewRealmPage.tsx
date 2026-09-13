@@ -12,7 +12,12 @@ import {
 } from '@niuulabs/plugin-ravn';
 import type { ITrackerBrowserService } from '@niuulabs/plugin-ting';
 import { useRealmTrustGrants } from '@niuulabs/plugin-valkyrie';
-import { ConfirmRow, SectionCard, StepIndicator, type IVolundrService } from '@niuulabs/plugin-volundr';
+import {
+  ConfirmRow,
+  SectionCard,
+  StepIndicator,
+  type IVolundrService,
+} from '@niuulabs/plugin-volundr';
 import {
   BranchSelect,
   Chip,
@@ -70,9 +75,15 @@ interface NewRealmSearch {
   template?: string;
 }
 
-function TemplateStep({ draft, onChange }: { draft: RealmDraft; onChange: (next: RealmDraft) => void }) {
+function TemplateStep({
+  draft,
+  onChange,
+}: {
+  draft: RealmDraft;
+  onChange: (next: RealmDraft) => void;
+}) {
   return (
-    <div className="niuu:flex niuu:flex-col niuu:gap-3" data-testid="step-template">
+    <div className="niuu:flex niuu:flex-col niuu:gap-3" data-testid="wizard-step-template">
       {REALM_TEMPLATES.map((template) => {
         const checked = template.id === draft.templateId;
         return (
@@ -95,7 +106,9 @@ function TemplateStep({ draft, onChange }: { draft: RealmDraft; onChange: (next:
             />
             <span className="niuu:flex niuu:flex-1 niuu:flex-col niuu:gap-2">
               <span className="niuu:flex niuu:items-center niuu:justify-between">
-                <span className="niuu:text-[15px] niuu:font-medium niuu:text-text-primary">{template.name}</span>
+                <span className="niuu:text-[15px] niuu:font-medium niuu:text-text-primary">
+                  {template.name}
+                </span>
                 {template.recommended ? <Chip tone="brand">Recommended</Chip> : null}
               </span>
               <span className="niuu:text-xs niuu:text-text-secondary">{template.blurb}</span>
@@ -131,16 +144,31 @@ function TemplateStep({ draft, onChange }: { draft: RealmDraft; onChange: (next:
   );
 }
 
-function ConnectStep({ draft, onChange }: { draft: RealmDraft; onChange: (next: RealmDraft) => void }) {
+function ConnectStep({
+  draft,
+  onChange,
+}: {
+  draft: RealmDraft;
+  onChange: (next: RealmDraft) => void;
+}) {
   const volundr = useService<IVolundrService>('volundr');
   const tracker = useService<ITrackerBrowserService>('ting.tracker');
   const mimir = useService<IMimirService>('mimir');
   const template = templateById(draft.templateId);
 
   const repos = useQuery({ queryKey: ['volundr', 'repos'], queryFn: () => volundr.getRepos() });
-  const boards = useQuery({ queryKey: ['ting', 'tracker', 'boards'], queryFn: () => tracker.listProjects() });
-  const integrations = useQuery({ queryKey: ['volundr', 'integrations'], queryFn: () => volundr.getIntegrations() });
-  const mcpServers = useQuery({ queryKey: ['volundr', 'mcp-servers'], queryFn: () => volundr.getAvailableMcpServers() });
+  const boards = useQuery({
+    queryKey: ['ting', 'tracker', 'boards'],
+    queryFn: () => tracker.listProjects(),
+  });
+  const integrations = useQuery({
+    queryKey: ['volundr', 'integrations'],
+    queryFn: () => volundr.getIntegrations(),
+  });
+  const mcpServers = useQuery({
+    queryKey: ['volundr', 'mcp-servers'],
+    queryFn: () => volundr.getAvailableMcpServers(),
+  });
   const deployments = useQuery({
     queryKey: ['mimir', 'deployments'],
     queryFn: () => {
@@ -170,8 +198,11 @@ function ConnectStep({ draft, onChange }: { draft: RealmDraft; onChange: (next: 
   }));
 
   return (
-    <div className="niuu:flex niuu:flex-col niuu:gap-4" data-testid="step-connect">
-      <SectionCard title="Repository" description="Where the resident works. Cloned into a sandbox for every session.">
+    <div className="niuu:flex niuu:flex-col niuu:gap-4" data-testid="wizard-step-connect">
+      <SectionCard
+        title="Repository"
+        description="Where the resident works. Cloned into a sandbox for every session."
+      >
         {repos.error ? (
           <ErrorState message={String(repos.error)} />
         ) : repos.isLoading ? (
@@ -231,7 +262,10 @@ function ConnectStep({ draft, onChange }: { draft: RealmDraft; onChange: (next: 
         )}
       </SectionCard>
 
-      <SectionCard title="Connections" description="Tested before launch. A failing one stops the launch; nothing is skipped.">
+      <SectionCard
+        title="Connections"
+        description="Tested before launch. A failing one stops the launch; nothing is skipped."
+      >
         <div className="niuu:flex niuu:flex-col niuu:gap-2">
           {(integrations.data ?? []).length === 0 ? (
             <span className="niuu:text-xs niuu:text-text-muted">
@@ -241,7 +275,10 @@ function ConnectStep({ draft, onChange }: { draft: RealmDraft; onChange: (next: 
             (integrations.data ?? []).map((integration) => {
               const checked = draft.integrationIds.includes(integration.id);
               return (
-                <label key={integration.id} className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-primary">
+                <label
+                  key={integration.id}
+                  className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-primary"
+                >
                   <input
                     type="checkbox"
                     checked={checked}
@@ -275,14 +312,19 @@ function ConnectStep({ draft, onChange }: { draft: RealmDraft; onChange: (next: 
         </div>
       </SectionCard>
 
-      <SectionCard title="Realm memory" description="A Mímir mount is created for this realm; the resident writes what it learns there.">
+      <SectionCard
+        title="Realm memory"
+        description="A Mímir mount is created for this realm; the resident writes what it learns there."
+      >
         {deployments.error ? (
           <ErrorState message={String(deployments.error)} />
         ) : (
           <Field label="Created on">
             <Select
               options={targets.map((target) => ({ value: target, label: target }))}
-              placeholder={deployments.isLoading ? 'Loading targets…' : 'No deployment target configured'}
+              placeholder={
+                deployments.isLoading ? 'Loading targets…' : 'No deployment target configured'
+              }
               value={draft.mountTarget}
               onValueChange={(mountTarget) => onChange({ ...draft, mountTarget })}
             />
@@ -293,7 +335,13 @@ function ConnectStep({ draft, onChange }: { draft: RealmDraft; onChange: (next: 
   );
 }
 
-function CharterStep({ draft, onChange }: { draft: RealmDraft; onChange: (next: RealmDraft) => void }) {
+function CharterStep({
+  draft,
+  onChange,
+}: {
+  draft: RealmDraft;
+  onChange: (next: RealmDraft) => void;
+}) {
   const profiles = useResidentProfiles(true);
   const memberDraft: ResidentMemberDraft = {
     name: draft.slug,
@@ -307,14 +355,22 @@ function CharterStep({ draft, onChange }: { draft: RealmDraft; onChange: (next: 
   useEffect(() => {
     if (draft.profileId || !profiles.data?.[0]) return;
     const first = profiles.data[0];
-    onChange({ ...draft, profileId: first.id, instanceId: first.instanceId, model: first.defaultModel });
+    onChange({
+      ...draft,
+      profileId: first.id,
+      instanceId: first.instanceId,
+      model: first.defaultModel,
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profiles.data]);
 
   return (
-    <div className="niuu:grid niuu:grid-cols-2 niuu:gap-4" data-testid="step-charter">
+    <div className="niuu:grid niuu:grid-cols-2 niuu:gap-4" data-testid="wizard-step-charter">
       <div className="niuu:flex niuu:flex-col niuu:gap-4">
-        <SectionCard title="Charter" description="A seed, not a rulebook. The resident builds its own understanding from the code, the tickets and what happens.">
+        <SectionCard
+          title="Charter"
+          description="A seed, not a rulebook. The resident builds its own understanding from the code, the tickets and what happens."
+        >
           <div className="niuu:flex niuu:flex-col niuu:gap-3">
             <Field label="What matters">
               <Textarea
@@ -330,9 +386,13 @@ function CharterStep({ draft, onChange }: { draft: RealmDraft; onChange: (next: 
                 <Input
                   value={draft.name}
                   onChange={(event) =>
-                    onChange({ ...draft, name: event.target.value, slug: slugify(event.target.value) })
+                    onChange({
+                      ...draft,
+                      name: event.target.value,
+                      slug: slugify(event.target.value),
+                    })
                   }
-                  data-testid="realm-name"
+                  data-testid="realm-title"
                 />
               </Field>
               <Field label="Slug" hint="Names the resident and its memory">
@@ -369,19 +429,28 @@ function CharterStep({ draft, onChange }: { draft: RealmDraft; onChange: (next: 
           )}
         </SectionCard>
       </div>
-      <SectionCard title="What it may do on its own" description="Starts cautious. Trust ratchets up as it proves itself; loosen any rung later from the realm page.">
+      <SectionCard
+        title="What it may do on its own"
+        description="Starts cautious. Trust ratchets up as it proves itself; loosen any rung later from the realm page."
+      >
         <div className="niuu:flex niuu:flex-col" data-testid="trust-ladder">
           {ACTION_CLASSES.map((actionClass) => (
             <div
               key={actionClass}
               className="niuu:flex niuu:items-center niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:py-2"
             >
-              <span className="niuu:w-16 niuu:font-mono niuu:text-xs niuu:text-text-primary">{actionClass}</span>
-              <span className="niuu:flex-1 niuu:text-xs niuu:text-text-muted">{ACTION_CLASS_COPY[actionClass]}</span>
+              <span className="niuu:w-16 niuu:font-mono niuu:text-xs niuu:text-text-primary">
+                {actionClass}
+              </span>
+              <span className="niuu:flex-1 niuu:text-xs niuu:text-text-muted">
+                {ACTION_CLASS_COPY[actionClass]}
+              </span>
               <SegmentedFilter<TrustSetting>
                 options={TRUST_OPTIONS}
                 value={draft.trust[actionClass]}
-                onChange={(value) => onChange({ ...draft, trust: { ...draft.trust, [actionClass]: value } })}
+                onChange={(value) =>
+                  onChange({ ...draft, trust: { ...draft.trust, [actionClass]: value } })
+                }
                 aria-label={`${actionClass} trust`}
               />
             </div>
@@ -409,23 +478,30 @@ function LaunchStep({
       <Chip tone="muted">{draft[key] ? 'default' : 'needs you'}</Chip>
     );
   return (
-    <div className="niuu:flex niuu:flex-col niuu:gap-4" data-testid="step-launch">
+    <div className="niuu:flex niuu:flex-col niuu:gap-4" data-testid="wizard-step-launch">
       {sentence ? (
         <SectionCard title="How I read that">
           <p className="niuu:m-0 niuu:text-sm niuu:text-text-secondary">
             I will be a <strong className="niuu:text-text-primary">{template.name}</strong> for{' '}
-            <strong className="niuu:text-text-primary">{draft.repo || 'a repository you still need to pick'}</strong>
+            <strong className="niuu:text-text-primary">
+              {draft.repo || 'a repository you still need to pick'}
+            </strong>
             {draft.trackerBoard ? (
               <>
-                , working board <strong className="niuu:text-text-primary">{draft.trackerBoard}</strong> in priority order
+                , working board{' '}
+                <strong className="niuu:text-text-primary">{draft.trackerBoard}</strong> in priority
+                order
               </>
             ) : null}
-            . {draft.trust.deploy === 'ask' ? 'Deploying will ask you first.' : ''}{' '}
-            Nothing starts until you say go.
+            . {draft.trust.deploy === 'ask' ? 'Deploying will ask you first.' : ''} Nothing starts
+            until you say go.
           </p>
         </SectionCard>
       ) : null}
-      <SectionCard title="Realm draft" description="Every row is the same field the step-by-step setup shows.">
+      <SectionCard
+        title="Realm draft"
+        description="Every row is the same field the step-by-step setup shows."
+      >
         <div className="niuu:flex niuu:flex-col">
           {(
             [
@@ -439,25 +515,55 @@ function LaunchStep({
               ['model', draft.model || 'profile default'],
             ] as Array<[keyof RealmDraft, string]>
           ).map(([key, value]) => (
-            <div key={key} className="niuu:flex niuu:items-center niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:py-2">
+            <div
+              key={key}
+              className="niuu:flex niuu:items-center niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:py-2"
+            >
               <div className="niuu:flex-1">
-                <ConfirmRow label={key === 'trackerBoard' ? 'board' : key === 'bugBoard' ? 'bug board' : key === 'mountTarget' ? 'memory' : key === 'profileId' ? 'runs on' : key} value={value || 'not set'} />
+                <ConfirmRow
+                  label={
+                    key === 'trackerBoard'
+                      ? 'board'
+                      : key === 'bugBoard'
+                        ? 'bug board'
+                        : key === 'mountTarget'
+                          ? 'memory'
+                          : key === 'profileId'
+                            ? 'runs on'
+                            : key
+                  }
+                  value={value || 'not set'}
+                />
               </div>
               {source(key)}
             </div>
           ))}
-          {ACTION_CLASSES.filter((actionClass) => draft.trust[actionClass] !== 'auto').map((actionClass) => (
-            <div key={actionClass} className="niuu:flex niuu:items-center niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:py-2">
-              <div className="niuu:flex-1">
-                <ConfirmRow label={actionClass} value={draft.trust[actionClass] === 'ask' ? 'asks first' : 'never'} />
+          {ACTION_CLASSES.filter((actionClass) => draft.trust[actionClass] !== 'auto').map(
+            (actionClass) => (
+              <div
+                key={actionClass}
+                className="niuu:flex niuu:items-center niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:py-2"
+              >
+                <div className="niuu:flex-1">
+                  <ConfirmRow
+                    label={actionClass}
+                    value={draft.trust[actionClass] === 'ask' ? 'asks first' : 'never'}
+                  />
+                </div>
+                {inferred.has('trust') ? (
+                  <Chip tone="brand">from your sentence</Chip>
+                ) : (
+                  <Chip tone="muted">default</Chip>
+                )}
               </div>
-              {inferred.has('trust') ? <Chip tone="brand">from your sentence</Chip> : <Chip tone="muted">default</Chip>}
-            </div>
-          ))}
+            ),
+          )}
         </div>
       </SectionCard>
       <SectionCard title="Charter">
-        <p className="niuu:m-0 niuu:whitespace-pre-wrap niuu:text-sm niuu:text-text-secondary">{draft.charter || 'not written yet'}</p>
+        <p className="niuu:m-0 niuu:whitespace-pre-wrap niuu:text-sm niuu:text-text-secondary">
+          {draft.charter || 'not written yet'}
+        </p>
       </SectionCard>
     </div>
   );
@@ -481,11 +587,15 @@ export function NewRealmPage() {
   });
 
   const [draft, setDraft] = useState<RealmDraft>(() => {
-    const templateId = search.template && REALM_TEMPLATES.some((t) => t.id === search.template) ? search.template : EMPTY_DRAFT.templateId;
+    const templateId =
+      search.template && REALM_TEMPLATES.some((t) => t.id === search.template)
+        ? search.template
+        : EMPTY_DRAFT.templateId;
     const base: RealmDraft = { ...EMPTY_DRAFT, templateId, trust: templateById(templateId).trust };
     if (!parsed) return base;
     const trust: TrustPreset = { ...base.trust };
-    for (const actionClass of parsed.askBefore) trust[actionClass] = actionClass === 'mutate' ? 'never' : 'ask';
+    for (const actionClass of parsed.askBefore)
+      trust[actionClass] = actionClass === 'mutate' ? 'never' : 'ask';
     return {
       ...base,
       charter: parsed.charter,
@@ -498,29 +608,37 @@ export function NewRealmPage() {
   const [step, setStep] = useState<Step>(parsed ? 'launch' : 'template');
   const [launching, setLaunching] = useState(false);
 
-  // Clone: fill from the source realm's grants and persona, leave the blanks empty.
-  useEffect(() => {
-    if (!fromSlug || !fromGrants.data || !fromPersona.data) return;
-    const binding = bindingFromGrants(fromGrants.data);
+  // Clone: once the source realm's grants and persona have loaded, fill the draft from
+  // them and leave the blanks empty. Applied once per source, as derived state.
+  const [appliedClone, setAppliedClone] = useState<string | null>(null);
+  if (fromSlug && fromGrants.data && fromPersona.data && appliedClone !== fromSlug) {
+    const sourceGrants = fromGrants.data;
+    const binding = bindingFromGrants(sourceGrants);
     const trust: TrustPreset = { ...EMPTY_DRAFT.trust };
-    for (const grant of latestGrants(fromGrants.data)) {
+    for (const grant of latestGrants(sourceGrants)) {
       if ((ACTION_CLASSES as readonly string[]).includes(grant.actionClass)) {
         trust[grant.actionClass as keyof TrustPreset] = trustSettingForLevel(grant.level);
       }
     }
     for (const actionClass of ACTION_CLASSES) {
-      if (!fromGrants.data.some((grant) => grant.action_class === actionClass)) trust[actionClass] = 'never';
+      if (!sourceGrants.some((grant) => grant.action_class === actionClass))
+        trust[actionClass] = 'never';
     }
     trust.observe = 'auto';
+    const description = fromPersona.data.description;
+    setAppliedClone(fromSlug);
     setDraft((current) => ({
       ...current,
-      templateId: binding?.template && REALM_TEMPLATES.some((t) => t.id === binding.template) ? binding.template : current.templateId,
-      charter: fromPersona.data.description,
+      templateId:
+        binding?.template && REALM_TEMPLATES.some((t) => t.id === binding.template)
+          ? binding.template
+          : current.templateId,
+      charter: description,
       mountTarget: binding?.mountTarget ?? current.mountTarget,
       trust,
     }));
     setStep('connect');
-  }, [fromGrants.data, fromPersona.data, fromSlug]);
+  }
 
   // The tracker board key from a sentence is matched against real boards once they load.
   const tracker = useService<ITrackerBrowserService>('ting.tracker');
@@ -529,15 +647,19 @@ export function NewRealmPage() {
     queryFn: () => tracker.listProjects(),
     enabled: parsed?.boardKey !== null && parsed?.boardKey !== undefined,
   });
-  useEffect(() => {
-    if (!parsed?.boardKey || !boards.data || draft.trackerBoard) return;
+  const [matchedBoardKey, setMatchedBoardKey] = useState<string | null>(null);
+  if (parsed?.boardKey && boards.data && matchedBoardKey !== parsed.boardKey) {
     const key = parsed.boardKey.toLowerCase();
     const match = boards.data.find(
-      (board) => board.slug?.toLowerCase() === key || board.name.toLowerCase() === key || board.id.toLowerCase() === key,
+      (board) =>
+        board.slug?.toLowerCase() === key ||
+        board.name.toLowerCase() === key ||
+        board.id.toLowerCase() === key,
     );
-    if (match) setDraft((current) => ({ ...current, trackerBoard: match.id }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [boards.data, parsed?.boardKey]);
+    setMatchedBoardKey(parsed.boardKey);
+    if (match && !draft.trackerBoard)
+      setDraft((current) => ({ ...current, trackerBoard: match.id }));
+  }
 
   const inferred = useMemo(() => {
     const keys = new Set<keyof RealmDraft>();
@@ -581,23 +703,41 @@ export function NewRealmPage() {
   })();
 
   const titles: Record<Step, [string, string]> = {
-    template: ['What kind of realm is this?', 'A template is a starting point, not a script. The resident learns the realm and adjusts.'],
-    connect: ['Connect the realm to its world.', 'Everything here is an integration you already have or add once. The resident reaches these through MCP; it never gets your raw credentials.'],
-    charter: ['Tell it what matters. Then say how far it may go.', 'The charter is a seed. A few sentences. The resident builds its own understanding from the code, the tickets and what happens.'],
-    launch: [sentence ? 'Here is how I read that.' : 'Ready to start.', 'Say go and the resident starts. Its first triage lands in a few minutes, and it touches nothing before you have seen it.'],
+    template: [
+      'What kind of realm is this?',
+      'A template is a starting point, not a script. The resident learns the realm and adjusts.',
+    ],
+    connect: [
+      'Connect the realm to its world.',
+      'Everything here is an integration you already have or add once. The resident reaches these through MCP; it never gets your raw credentials.',
+    ],
+    charter: [
+      'Tell it what matters. Then say how far it may go.',
+      'The charter is a seed. A few sentences. The resident builds its own understanding from the code, the tickets and what happens.',
+    ],
+    launch: [
+      sentence ? 'Here is how I read that.' : 'Ready to start.',
+      'Say go and the resident starts. Its first triage lands in a few minutes, and it touches nothing before you have seen it.',
+    ],
   };
 
   return (
     <div className="niuu:flex niuu:h-full" data-testid="new-realm">
       <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col">
         <div className="niuu:flex niuu:items-center niuu:justify-between niuu:border-b niuu:border-border-subtle niuu:px-8 niuu:py-3">
-          <span className="niuu:text-[15px] niuu:font-medium niuu:text-text-primary">New realm</span>
+          <span className="niuu:text-[15px] niuu:font-medium niuu:text-text-primary">
+            New realm
+          </span>
           <StepIndicator current={step} steps={STEPS} labels={STEP_LABELS} />
-          <span className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">{draft.slug || 'unnamed'}</span>
+          <span className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
+            {draft.slug || 'unnamed'}
+          </span>
         </div>
         <div className="niuu:flex niuu:flex-1 niuu:flex-col niuu:gap-5 niuu:overflow-auto niuu:px-8 niuu:py-6">
           <div className="niuu:flex niuu:max-w-3xl niuu:flex-col niuu:gap-1.5">
-            <h1 className="niuu:m-0 niuu:text-2xl niuu:font-bold niuu:tracking-tight niuu:text-text-primary">{titles[step][0]}</h1>
+            <h1 className="niuu:m-0 niuu:text-2xl niuu:font-bold niuu:tracking-tight niuu:text-text-primary">
+              {titles[step][0]}
+            </h1>
             <p className="niuu:m-0 niuu:text-[15px] niuu:text-text-secondary">{titles[step][1]}</p>
           </div>
           {content}
@@ -618,12 +758,23 @@ export function NewRealmPage() {
           </button>
           <div className="niuu:flex niuu:items-center niuu:gap-3">
             {step === 'launch' && sentence ? (
-              <button type="button" className={BUTTON} disabled={launching} onClick={() => setStep('connect')}>
+              <button
+                type="button"
+                className={BUTTON}
+                disabled={launching}
+                onClick={() => setStep('connect')}
+              >
                 Review step by step
               </button>
             ) : null}
             {step === 'launch' ? (
-              <button type="button" className={CTA} disabled={launching} onClick={() => void launch()} data-testid="realm-go">
+              <button
+                type="button"
+                className={CTA}
+                disabled={launching}
+                onClick={() => void launch()}
+                data-testid="realm-go"
+              >
                 {launching ? 'Starting…' : 'Go'}
               </button>
             ) : (

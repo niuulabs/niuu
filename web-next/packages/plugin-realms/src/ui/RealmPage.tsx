@@ -63,10 +63,33 @@ function IssueTable({ issues, emptyText }: { issues: TrackerIssue[]; emptyText: 
   return (
     <Table<TrackerIssue>
       columns={[
-        { key: 'identifier', header: 'id', render: (row) => <span className="niuu:font-mono niuu:text-xs">{row.identifier}</span>, width: '96px' },
-        { key: 'title', header: 'title', render: (row) => <a href={row.url} target="_blank" rel="noreferrer" className="niuu:text-text-primary">{row.title}</a> },
-        { key: 'status', header: 'status', render: (row) => <Chip tone="muted">{row.status}</Chip>, width: '120px' },
-        { key: 'priority', header: 'p', render: (row) => <span className="niuu:font-mono niuu:text-xs">P{row.priority}</span>, width: '48px' },
+        {
+          key: 'identifier',
+          header: 'id',
+          render: (row) => <span className="niuu:font-mono niuu:text-xs">{row.identifier}</span>,
+          width: '96px',
+        },
+        {
+          key: 'title',
+          header: 'title',
+          render: (row) => (
+            <a href={row.url} target="_blank" rel="noreferrer" className="niuu:text-text-primary">
+              {row.title}
+            </a>
+          ),
+        },
+        {
+          key: 'status',
+          header: 'status',
+          render: (row) => <Chip tone="muted">{row.status}</Chip>,
+          width: '120px',
+        },
+        {
+          key: 'priority',
+          header: 'p',
+          render: (row) => <span className="niuu:font-mono niuu:text-xs">P{row.priority}</span>,
+          width: '48px',
+        },
       ]}
       rows={issues.slice(0, 12)}
       aria-label="issues"
@@ -75,13 +98,43 @@ function IssueTable({ issues, emptyText }: { issues: TrackerIssue[]; emptyText: 
 }
 
 function SessionsTable({ sessions }: { sessions: VolundrSession[] }) {
-  if (sessions.length === 0) return <EmptyState title="No sessions yet" description="The resident starts one per ticket it picks up." />;
+  if (sessions.length === 0)
+    return (
+      <EmptyState
+        title="No sessions yet"
+        description="The resident starts one per ticket it picks up."
+      />
+    );
   return (
     <Table<VolundrSession>
       columns={[
-        { key: 'name', header: 'session', render: (row) => <Link to={'/volundr/session/$sessionId' as never} params={{ sessionId: row.id } as never} className="niuu:text-text-primary">{row.name}</Link> },
-        { key: 'status', header: 'state', render: (row) => <Chip tone={row.status === 'running' ? 'brand' : 'muted'}>{row.status}</Chip>, width: '140px' },
-        { key: 'model', header: 'model', render: (row) => <span className="niuu:font-mono niuu:text-xs">{row.model}</span>, width: '160px' },
+        {
+          key: 'name',
+          header: 'session',
+          render: (row) => (
+            <Link
+              to={'/volundr/session/$sessionId' as never}
+              params={{ sessionId: row.id } as never}
+              className="niuu:text-text-primary"
+            >
+              {row.name}
+            </Link>
+          ),
+        },
+        {
+          key: 'status',
+          header: 'state',
+          render: (row) => (
+            <Chip tone={row.status === 'running' ? 'brand' : 'muted'}>{row.status}</Chip>
+          ),
+          width: '140px',
+        },
+        {
+          key: 'model',
+          header: 'model',
+          render: (row) => <span className="niuu:font-mono niuu:text-xs">{row.model}</span>,
+          width: '160px',
+        },
       ]}
       rows={sessions.slice(0, 12)}
       aria-label="sessions"
@@ -96,34 +149,63 @@ function NeedsYou({ items }: { items: ReviewItem[] }) {
   return (
     <div className="niuu:flex niuu:flex-col">
       {pending.map((item) => (
-        <div key={item.itemId} className="niuu:flex niuu:items-center niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:py-2.5" data-testid={`realm-review-${item.itemId}`}>
+        <div
+          key={item.itemId}
+          className="niuu:flex niuu:items-center niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:py-2.5"
+          data-testid={`realm-review-${item.itemId}`}
+        >
           <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col">
             <span className="niuu:truncate niuu:text-sm niuu:text-text-primary">{item.title}</span>
             <span className="niuu:truncate niuu:text-xs niuu:text-text-muted">{item.summary}</span>
           </div>
           <Chip tone="muted">{reviewKindLabel(item.kind)}</Chip>
-          <button type="button" className={PRIMARY} disabled={decide.isPending} onClick={() => decide.mutate({ itemId: item.itemId, decision: 'approved' })}>
+          <button
+            type="button"
+            className={PRIMARY}
+            disabled={decide.isPending}
+            onClick={() => decide.mutate({ itemId: item.itemId, decision: 'approved' })}
+          >
             Approve
           </button>
-          <button type="button" className={BUTTON} disabled={decide.isPending} onClick={() => decide.mutate({ itemId: item.itemId, decision: 'rejected' })}>
+          <button
+            type="button"
+            className={BUTTON}
+            disabled={decide.isPending}
+            onClick={() => decide.mutate({ itemId: item.itemId, decision: 'rejected' })}
+          >
             Reject
           </button>
         </div>
       ))}
-      {decide.error ? <span className="niuu:pt-2 niuu:text-xs niuu:text-critical-fg">{String(decide.error)}</span> : null}
+      {decide.error ? (
+        <span className="niuu:pt-2 niuu:text-xs niuu:text-critical-fg">{String(decide.error)}</span>
+      ) : null}
     </div>
   );
 }
 
 function WhatItDid({ decisions }: { decisions: DecisionRecord[] }) {
-  if (decisions.length === 0) return <EmptyState title="Nothing yet" description="Decisions show here as the resident makes them." />;
+  if (decisions.length === 0)
+    return (
+      <EmptyState
+        title="Nothing yet"
+        description="Decisions show here as the resident makes them."
+      />
+    );
   return (
     <div className="niuu:flex niuu:flex-col">
       {decisions.slice(0, 10).map((decision) => (
-        <div key={decision.decisionId} className="niuu:flex niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:py-2">
-          <span className="niuu:w-12 niuu:shrink-0 niuu:font-mono niuu:text-[11px] niuu:text-text-faint">{decision.decidedAt.slice(11, 16)}</span>
+        <div
+          key={decision.decisionId}
+          className="niuu:flex niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:py-2"
+        >
+          <span className="niuu:w-12 niuu:shrink-0 niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
+            {decision.decidedAt.slice(11, 16)}
+          </span>
           <div className="niuu:flex niuu:min-w-0 niuu:flex-col">
-            <span className="niuu:text-xs niuu:text-text-primary">{decision.summary || decision.recommendedAction}</span>
+            <span className="niuu:text-xs niuu:text-text-primary">
+              {decision.summary || decision.recommendedAction}
+            </span>
             <span className="niuu:text-[11px] niuu:text-text-muted">
               {decisionStatusCopy(decision).label}
               {decision.actionAuthority ? ` · ${decision.actionAuthority}` : ''}
@@ -155,14 +237,19 @@ function TalkToIt({ ravn }: { ravn: Ravn }) {
           ))}
         </div>
       ) : (
-        <EmptyState title="No conversation yet" description="Start one and ask it anything about the realm." />
+        <EmptyState
+          title="No conversation yet"
+          description="Start one and ask it anything about the realm."
+        />
       )}
       <div className="niuu:flex niuu:items-center niuu:gap-2">
         <button
           type="button"
           className={PRIMARY}
           disabled={create.isPending}
-          onClick={() => create.mutate({ title: `Realm chat ${new Date().toISOString().slice(0, 10)}` })}
+          onClick={() =>
+            create.mutate({ title: `Realm chat ${new Date().toISOString().slice(0, 10)}` })
+          }
         >
           {latest ? 'New conversation' : 'Start a conversation'}
         </button>
@@ -170,7 +257,9 @@ function TalkToIt({ ravn }: { ravn: Ravn }) {
           Open in Ravn
         </Link>
       </div>
-      {create.error ? <span className="niuu:text-xs niuu:text-critical-fg">{String(create.error)}</span> : null}
+      {create.error ? (
+        <span className="niuu:text-xs niuu:text-critical-fg">{String(create.error)}</span>
+      ) : null}
     </div>
   );
 }
@@ -196,13 +285,26 @@ export function RealmPage() {
   });
 
   if (data.isLoading) return <LoadingState label="Loading realm…" />;
-  if (data.error) return <ErrorState title="Could not load the realm" message={String(data.error)} />;
+  if (data.error)
+    return <ErrorState title="Could not load the realm" message={String(data.error)} />;
   if (data.notFound || !data.realm || !data.view) {
-    return <ErrorState title="No such realm" message={`There is no realm called ${slug}.`} action={<Link to="/realms" className={BUTTON}>Back to realms</Link>} />;
+    return (
+      <ErrorState
+        title="No such realm"
+        message={`There is no realm called ${slug}.`}
+        action={
+          <Link to="/realms" className={BUTTON}>
+            Back to realms
+          </Link>
+        }
+      />
+    );
   }
 
   const view = data.view;
-  const dot: DotState = view.wakefulness ? (WAKEFULNESS_DOT[view.wakefulness] ?? 'unknown') : 'unknown';
+  const dot: DotState = view.wakefulness
+    ? (WAKEFULNESS_DOT[view.wakefulness] ?? 'unknown')
+    : 'unknown';
   const health = data.environment?.health ?? null;
   const unresolved = data.environment?.unresolvedSignalCount ?? 0;
 
@@ -219,9 +321,15 @@ export function RealmPage() {
                 {data.realm.name}
                 <Chip tone={view.wakefulness === 'wakeful' ? 'brand' : 'muted'}>
                   <StateDot state={dot} pulse={view.wakefulness === 'wakeful'} size={6} />
-                  {view.wakefulness ? wakefulnessCopy(view.wakefulness).label : ravn ? ravn.status : 'no resident'}
+                  {view.wakefulness
+                    ? wakefulnessCopy(view.wakefulness).label
+                    : ravn
+                      ? ravn.status
+                      : 'no resident'}
                 </Chip>
-                {view.autonomyMode ? <Chip tone="muted">{autonomyModeCopy(view.autonomyMode as never).label}</Chip> : null}
+                {view.autonomyMode ? (
+                  <Chip tone="muted">{autonomyModeCopy(view.autonomyMode as never).label}</Chip>
+                ) : null}
               </span>
               <span className="niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
                 {view.binding?.repo ?? 'no repository'}
@@ -231,14 +339,36 @@ export function RealmPage() {
             </div>
           </div>
           <div className="niuu:flex niuu:items-center niuu:gap-2">
-            {view.pendingReviews > 0 ? <Chip tone="critical">{view.pendingReviews} need you</Chip> : null}
-            <button type="button" className={BUTTON} onClick={() => setLaunchOpen(true)} data-testid="realm-launch-session">
+            {view.pendingReviews > 0 ? (
+              <Chip tone="critical">{view.pendingReviews} need you</Chip>
+            ) : null}
+            <button
+              type="button"
+              className={BUTTON}
+              onClick={() => setLaunchOpen(true)}
+              data-testid="realm-launch-session"
+            >
               Launch a session here
             </button>
-            <button type="button" className={BUTTON} onClick={() => setWorkflowOpen(true)} data-testid="realm-run-workflow">
+            <button
+              type="button"
+              className={BUTTON}
+              onClick={() => setWorkflowOpen(true)}
+              disabled={!workflows.data || workflows.data.length === 0}
+              title={
+                workflows.data && workflows.data.length === 0
+                  ? 'No workflows yet. Create one under Ting › Workflows.'
+                  : undefined
+              }
+              data-testid="realm-run-workflow"
+            >
               Run a workflow here
             </button>
-            <button type="button" className={BUTTON} onClick={() => void navigate({ to: '/realms/new', search: { from: slug } as never })}>
+            <button
+              type="button"
+              className={BUTTON}
+              onClick={() => void navigate({ to: '/realms/new', search: { from: slug } as never })}
+            >
               Clone
             </button>
             <Link to="/realms/$slug/settings" params={{ slug }} className={BUTTON}>
@@ -249,22 +379,33 @@ export function RealmPage() {
 
         <div className="niuu:grid niuu:grid-cols-4 niuu:gap-3">
           <SectionCard title={`Intake · ${data.intake.length}`}>
-            <IssueTable issues={data.intake} emptyText={view.binding?.trackerBoard ? 'Board is empty' : 'No board bound'} />
+            <IssueTable
+              issues={data.intake}
+              emptyText={view.binding?.trackerBoard ? 'Board is empty' : 'No board bound'}
+            />
           </SectionCard>
           <SectionCard title={`In sessions · ${view.runningSessions}`}>
             <SessionsTable sessions={data.realmSessions} />
           </SectionCard>
           <SectionCard title={`QA findings · ${data.findings.length}`}>
-            <IssueTable issues={data.findings} emptyText={view.binding?.bugBoard ? 'No findings' : 'No bug board bound'} />
+            <IssueTable
+              issues={data.findings}
+              emptyText={view.binding?.bugBoard ? 'No findings' : 'No bug board bound'}
+            />
           </SectionCard>
           <SectionCard title="Health">
             {health ? (
               <div className="niuu:flex niuu:flex-col niuu:gap-2 niuu:text-xs">
                 <Chip tone={health === 'healthy' ? 'brand' : 'critical'}>{health}</Chip>
-                <span className="niuu:text-text-muted">{unresolved} unresolved signal{unresolved === 1 ? '' : 's'}</span>
+                <span className="niuu:text-text-muted">
+                  {unresolved} unresolved signal{unresolved === 1 ? '' : 's'}
+                </span>
               </div>
             ) : (
-              <EmptyState title="No environment yet" description="Appears once the resident is online." />
+              <EmptyState
+                title="No environment yet"
+                description="Appears once the resident is online."
+              />
             )}
           </SectionCard>
         </div>
@@ -291,24 +432,45 @@ export function RealmPage() {
                     {grant.actionClass} · L{grant.level}
                   </Chip>
                 ))}
-                {view.grants.length === 0 ? <span className="niuu:text-xs niuu:text-text-muted">No grants yet.</span> : null}
+                {view.grants.length === 0 ? (
+                  <span className="niuu:text-xs niuu:text-text-muted">No grants yet.</span>
+                ) : null}
               </div>
               <ToolBuilderGrantCard realm={{ slug: data.realm.slug, name: data.realm.name }} />
             </SectionCard>
             <SectionCard title="Budget">
               {data.budget ? (
                 <div className="niuu:flex niuu:flex-col niuu:gap-3">
-                  <HeroCard spentUsd={data.budget.spentUsd} capUsd={data.budget.capUsd} projectedUsd={data.budget.spentUsd} />
-                  <BudgetBar spent={data.budget.spentUsd} cap={data.budget.capUsd} warnAt={Math.round(data.budget.warnAt * 100)} showLabel size="sm" />
+                  <HeroCard
+                    spentUsd={data.budget.spentUsd}
+                    capUsd={data.budget.capUsd}
+                    projectedUsd={data.budget.spentUsd}
+                  />
+                  <BudgetBar
+                    spent={data.budget.spentUsd}
+                    cap={data.budget.capUsd}
+                    warnAt={Math.round(data.budget.warnAt * 100)}
+                    showLabel
+                    size="sm"
+                  />
                 </div>
               ) : (
-                <EmptyState title="No budget yet" description="Shows once the resident has spent something." />
+                <EmptyState
+                  title="No budget yet"
+                  description="Shows once the resident has spent something."
+                />
               )}
             </SectionCard>
             <SectionCard title="Memory">
               <div className="niuu:flex niuu:flex-col niuu:gap-2 niuu:text-xs">
-                <span className="niuu:font-mono niuu:text-text-secondary">{data.mountName ?? 'no mount'}</span>
-                <span className="niuu:text-text-muted">{data.mount ? `${data.mount.pages} pages · ${data.mount.status}` : 'not discovered yet'}</span>
+                <span className="niuu:font-mono niuu:text-text-secondary">
+                  {data.mountName ?? 'no mount'}
+                </span>
+                <span className="niuu:text-text-muted">
+                  {data.mount
+                    ? `${data.mount.pages} pages · ${data.mount.status}`
+                    : 'not discovered yet'}
+                </span>
                 <button
                   type="button"
                   className={`${BUTTON} niuu:self-start`}
@@ -333,23 +495,29 @@ export function RealmPage() {
         walkthrough={FIRST_REALM_WALKTHROUGH}
         action={
           walkthrough.currentStepId === 'first-answer' ? (
-            <button type="button" className={PRIMARY} onClick={() => walkthrough.markDone('first-answer')}>
+            <button
+              type="button"
+              className={PRIMARY}
+              onClick={() => walkthrough.markDone('first-answer')}
+            >
               I answered its first question
             </button>
           ) : undefined
         }
       />
 
-      <LaunchWizard
-        open={launchOpen}
-        onOpenChange={setLaunchOpen}
-        initialForm={{
-          sourcetype: 'git',
-          repo: view.binding?.repo ?? '',
-          branch: view.binding?.branch ?? '',
-          personaName: view.personaName,
-        }}
-      />
+      {launchOpen ? (
+        <LaunchWizard
+          open={launchOpen}
+          onOpenChange={setLaunchOpen}
+          initialForm={{
+            sourcetype: 'git',
+            repo: view.binding?.repo ?? '',
+            branch: view.binding?.branch ?? '',
+            personaName: view.personaName,
+          }}
+        />
+      ) : null}
       <WorkflowLaunchModal
         open={workflowOpen}
         onOpenChange={(open) => {
@@ -363,7 +531,11 @@ export function RealmPage() {
           if (!target) throw new Error('No workflow to run. Create one under Ting › Workflows.');
           await launchWorkflow.mutateAsync({
             id: target.id,
-            request: { ...request, repo: request.repo ?? view.binding?.repo, branch: request.branch ?? view.binding?.branch },
+            request: {
+              ...request,
+              repo: request.repo ?? view.binding?.repo,
+              branch: request.branch ?? view.binding?.branch,
+            },
           });
           setWorkflowOpen(false);
         }}

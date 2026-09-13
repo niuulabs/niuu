@@ -11,7 +11,12 @@ import {
   useReviewList,
   useValkyrieDashboard,
 } from '@niuulabs/plugin-valkyrie';
-import { buildRealmView, reviewsForRealm, residentForRealm, sessionsForRealm } from '../domain/join';
+import {
+  buildRealmView,
+  reviewsForRealm,
+  residentForRealm,
+  sessionsForRealm,
+} from '../domain/join';
 import { mountNameFor } from '../domain/realm';
 import { useRavens, useVolundrSessions } from './useRealmsHome';
 
@@ -91,8 +96,7 @@ export function useRealmView(slug: string) {
     realm,
     view,
     resident,
-    environment:
-      dashboard.data?.environments.find((entry) => entry.id === environmentId) ?? null,
+    environment: dashboard.data?.environments.find((entry) => entry.id === environmentId) ?? null,
     realmSessions: sessionsForRealm(sessions.data, slug),
     realmReviews: reviewsForRealm(reviews.data, resident),
     decisions: decisions.data?.items ?? [],

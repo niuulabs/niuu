@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { useService, type IFeatureCatalogService, type PluginDescriptor } from '@niuulabs/plugin-sdk';
+import {
+  useOptionalService,
+  type IFeatureCatalogService,
+  type PluginDescriptor,
+} from '@niuulabs/plugin-sdk';
 import { SegmentedFilter } from '@niuulabs/ui';
 import {
   cacheUiMode,
@@ -17,9 +21,11 @@ const OPTIONS: Array<{ value: UiMode; label: string }> = [
 /**
  * Simple / Advanced control in the topbar. The mode flips only once the server has
  * stored the preference; on failure the control shows the error and stays put.
+ * A host that wires no `features` service (an embedded consumer) keeps the mode in
+ * the browser only; that is the host's decision, not a fallback taken here.
  */
 export function UiModeSwitch({ plugins }: { plugins: PluginDescriptor[] }) {
-  const features = useService<IFeatureCatalogService>('features');
+  const features = useOptionalService<IFeatureCatalogService>('features');
   const mode = useUiMode();
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -27,7 +33,7 @@ export function UiModeSwitch({ plugins }: { plugins: PluginDescriptor[] }) {
 
   // Boot: the saved preference wins over the local cache, once.
   useEffect(() => {
-    if (loaded.current) return;
+    if (loaded.current || !features) return;
     loaded.current = true;
     let cancelled = false;
     features
@@ -51,7 +57,7 @@ export function UiModeSwitch({ plugins }: { plugins: PluginDescriptor[] }) {
     setSaving(true);
     setError(null);
     try {
-      await features.updateUserFeaturePreferences(preferencesForMode(next, plugins));
+      if (features) await features.updateUserFeaturePreferences(preferencesForMode(next, plugins));
       cacheUiMode(next);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));

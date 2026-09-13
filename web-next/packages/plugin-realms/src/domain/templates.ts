@@ -120,7 +120,8 @@ export const REALM_TEMPLATES: RealmTemplate[] = [
   {
     id: 'blank-resident',
     name: 'Blank resident',
-    blurb: 'Only a charter. Good when the environment is not a codebase: a lab, a home, a shop floor.',
+    blurb:
+      'Only a charter. Good when the environment is not a codebase: a lab, a home, a shop floor.',
     keepsDoing: ['whatever the charter says'],
     needs: ['a charter'],
     needsBoard: false,

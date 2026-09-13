@@ -59,7 +59,11 @@ export function ShellLayout() {
 
   // System plugins (e.g. login) register routes but stay out of the nav rail.
   const allNavPlugins = useMemo(() => enabled.filter((p) => !p.system), [enabled]);
-  const mode = useUiMode();
+  const storedMode = useUiMode();
+  // Simple mode only exists when at least one plugin opted into it; a host whose
+  // plugins declare nothing gets the whole shell and no switch.
+  const simpleAvailable = useMemo(() => allNavPlugins.some((p) => p.simple), [allNavPlugins]);
+  const mode = simpleAvailable ? storedMode : 'advanced';
   const activeId = activePluginId(pathname, allNavPlugins);
   // Simple mode hides plugins from the rail, never from the router: a plugin reached by
   // deep link keeps its rail item while it is the active one.
@@ -210,8 +214,12 @@ export function ShellLayout() {
             )}
           </div>
           <div className="niuu-shell__topbar-right">
-            <UiModeSwitch plugins={allNavPlugins} />
-            <div className="niuu-shell__topbar-sep" />
+            {simpleAvailable && (
+              <>
+                <UiModeSwitch plugins={allNavPlugins} />
+                <div className="niuu-shell__topbar-sep" />
+              </>
+            )}
             <PluginSlot render={active?.topbarRight ?? null} ctx={ctx} />
             <LiveBadge />
             <div className="niuu-shell__topbar-sep" />

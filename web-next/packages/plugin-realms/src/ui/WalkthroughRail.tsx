@@ -31,9 +31,14 @@ export function WalkthroughRail({
             {doneCount} / {total}
           </span>
         </div>
-        <span className="niuu:text-base niuu:font-semibold niuu:text-text-primary">{walkthrough.title}</span>
+        <span className="niuu:text-base niuu:font-semibold niuu:text-text-primary">
+          {walkthrough.title}
+        </span>
         <div className="niuu:h-[3px] niuu:overflow-hidden niuu:rounded-full niuu:bg-bg-tertiary">
-          <div className="niuu:h-full niuu:bg-brand" style={{ width: `${(doneCount / total) * 100}%` }} />
+          <div
+            className="niuu:h-full niuu:bg-brand"
+            style={{ width: `${(doneCount / total) * 100}%` }}
+          />
         </div>
       </div>
       <ol className="niuu:m-0 niuu:flex niuu:list-none niuu:flex-col niuu:p-0">
