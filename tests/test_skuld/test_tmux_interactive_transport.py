@@ -138,6 +138,68 @@ async def test_start_creates_session_emits_init_and_pane(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_start_answers_the_cli_first_run_dialogs_in_its_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A fresh sandbox has no CLI state; the REPL would sit on the onboarding,
+    login, trust and bypass-permissions dialogs with nobody at the keyboard."""
+    config_dir = tmp_path / "claude-config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    transport = FakeTmuxInteractiveTransport(str(workspace), skip_permissions=True)
+    transport._socket_dir = tmp_path / "fake-sockets"
+    transport._socket_path = transport._socket_dir / f"{transport._session_name}.sock"
+
+    await transport.start()
+    await transport.stop()
+
+    config = json.loads((config_dir / ".claude.json").read_text(encoding="utf-8"))
+    assert config["hasCompletedOnboarding"] is True
+    assert config["theme"] == "dark"
+    assert config["projects"][str(workspace)]["hasTrustDialogAccepted"] is True
+    settings = json.loads((config_dir / "settings.json").read_text(encoding="utf-8"))
+    assert settings["skipDangerousModePermissionPrompt"] is True
+
+
+def test_prepare_claude_config_keeps_existing_state(tmp_path: Path) -> None:
+    """An existing config (a persisted home, a later restart) keeps everything
+    it had; only the dialog answers are added, and an unchanged file is left alone."""
+    config_path = tmp_path / ".claude.json"
+    config_path.write_text(
+        json.dumps({"theme": "light", "userID": "u-1", "projects": {"/other": {"x": 1}}}),
+        encoding="utf-8",
+    )
+    transport = FakeTmuxInteractiveTransport(str(tmp_path / "ws"), skip_permissions=False)
+    env = {"HOME": str(tmp_path)}
+
+    transport._prepare_claude_config(env)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert config["theme"] == "light"
+    assert config["userID"] == "u-1"
+    assert config["projects"]["/other"] == {"x": 1}
+    assert config["projects"][str(tmp_path / "ws")]["hasTrustDialogAccepted"] is True
+    assert config["hasCompletedOnboarding"] is True
+    # permissions are not bypassed, so no notice to acknowledge
+    assert not (tmp_path / ".claude" / "settings.json").exists()
+
+    stamp = config_path.stat().st_mtime_ns
+    transport._prepare_claude_config(env)
+    assert config_path.stat().st_mtime_ns == stamp
+
+
+def test_prepare_claude_config_keeps_other_user_settings(tmp_path: Path) -> None:
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(json.dumps({"model": "opus", "hooks": {}}), encoding="utf-8")
+    transport = FakeTmuxInteractiveTransport(str(tmp_path / "ws"), skip_permissions=True)
+
+    transport._prepare_claude_config({"HOME": str(tmp_path)})
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert settings == {"model": "opus", "hooks": {}, "skipDangerousModePermissionPrompt": True}
+
+
+@pytest.mark.asyncio
 async def test_send_message_pastes_text_and_streams_turn(tmp_path: Path) -> None:
     transport = FakeTmuxInteractiveTransport(str(tmp_path))
     events = await _collect_events(transport)

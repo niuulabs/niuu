@@ -561,36 +561,53 @@ class TestSpawnAppServer:
         assert mock_exec.call_args.kwargs["env"]["CODEX_HOME"] == str(codex_home)
 
 
-class TestFallbackTransport:
+class TestAppServerStartupFailure:
     @pytest.mark.asyncio
-    async def test_start_falls_back_to_subprocess_when_app_server_startup_fails(self, tmp_path):
+    async def test_start_raises_and_reports_when_the_app_server_cannot_start(self, tmp_path):
+        """No subprocess fallback: a Codex that cannot start says so instead of
+        answering a turn with silence on a transport nobody configured."""
         t = _make_transport(tmp_path, initial_prompt="Investigate this")
         emit = AsyncMock()
         t.on_event(emit)
         t._spawn_app_server = AsyncMock()
-        t._connect_ws = AsyncMock(side_effect=RuntimeError("uds handshake failed"))
+        t._connect_ws = AsyncMock(side_effect=RuntimeError("Codex app-server exited with code 1"))
         t._handshake = AsyncMock()
+        t.stop = AsyncMock()
 
-        fallback = MagicMock()
-        fallback.start = AsyncMock()
-        fallback.send_message = AsyncMock()
-        fallback.stop = AsyncMock()
-        fallback.session_id = None
-        fallback.last_result = None
-        fallback.is_alive = True
-        fallback.is_turn_active = False
-
-        with patch(
-            "skuld.transports.codex_ws.CodexSubprocessTransport",
-            return_value=fallback,
-        ) as mock_fallback_cls:
+        with pytest.raises(RuntimeError, match="exited with code 1"):
             await t.start()
 
-        mock_fallback_cls.assert_called_once()
-        fallback.on_event.assert_called_once_with(emit)
-        fallback.start.assert_called_once()
-        fallback.send_message.assert_called_once_with("Investigate this")
-        assert t._fallback_transport is fallback
+        emit.assert_awaited_once()
+        error = emit.await_args.args[0]
+        assert error["type"] == "error"
+        assert "Codex app-server failed to start" in error["error"]
+        assert "exited with code 1" in error["error"]
+        t.stop.assert_awaited_once()
+        assert not hasattr(t, "_fallback_transport")
+
+    @pytest.mark.asyncio
+    async def test_spawn_app_server_creates_codex_home(self, tmp_path, monkeypatch):
+        """The Codex CLI refuses a CODEX_HOME that does not exist; a fresh
+        sandbox has none, so the transport creates it."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+        t = _make_transport(tmp_path)
+        proc = MagicMock()
+        proc.pid = 4242
+        proc.stdout = None
+        proc.stderr = None
+        with (
+            patch("skuld.transports.codex_ws.resolve_codex_cli", return_value="codex"),
+            patch(
+                "skuld.transports.codex_ws.asyncio.create_subprocess_exec",
+                new=AsyncMock(return_value=proc),
+            ),
+            patch("skuld.transports.codex_ws._drain_stream", new=AsyncMock()),
+        ):
+            await t._spawn_app_server()
+        assert (home / ".codex").is_dir()
 
 
 # ---------------------------------------------------------------------------

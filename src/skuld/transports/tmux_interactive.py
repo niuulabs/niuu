@@ -1566,6 +1566,7 @@ class TmuxInteractiveTransport(CLITransport):
 
     async def _create_session(self) -> None:
         env = self._spawn_env()
+        self._prepare_claude_config(env)
         self._write_hook_settings()
         command = self._interactive_argv()
         logger.info("TmuxInteractiveTransport: starting %s", self._session_name)
@@ -1678,6 +1679,67 @@ class TmuxInteractiveTransport(CLITransport):
         if self._sdk_port:
             env["FORGE_PRESENT_FILE_URL"] = f"http://127.0.0.1:{self._sdk_port}/api/present-file"
         return env
+
+    @staticmethod
+    def _claude_config_path(env: dict[str, str]) -> Path:
+        """The CLI's user config file: ``$CLAUDE_CONFIG_DIR/.claude.json`` when the
+        directory is set (the session image sets it), else ``~/.claude.json``."""
+        config_dir = env.get("CLAUDE_CONFIG_DIR", "").strip()
+        if config_dir:
+            return Path(config_dir) / ".claude.json"
+        home = env.get("HOME", "").strip()
+        return (Path(home) if home else Path.home()) / ".claude.json"
+
+    def _prepare_claude_config(self, env: dict[str, str]) -> None:
+        """Answer the CLI's first-run dialogs ahead of time.
+
+        A session sandbox starts with no CLI state, and the interactive REPL
+        then walks through onboarding (theme, then a login picker that does
+        not count the OAuth token in the environment as a login), the
+        workspace trust question, and the bypass-permissions notice. Nobody
+        is at that keyboard; the broker is. So the answers a sandboxed session
+        implies are written into the config the CLI reads before it starts:
+        onboarding done, this workspace trusted, and the permission mode the
+        session was configured with acknowledged.
+        """
+        config_path = self._claude_config_path(env)
+        config: dict[str, Any] = {}
+        if config_path.exists():
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        before = json.dumps(config, sort_keys=True)
+        config["hasCompletedOnboarding"] = True
+        config.setdefault("theme", "dark")
+        projects = config.setdefault("projects", {})
+        project = projects.setdefault(self.workspace_dir, {})
+        project["hasTrustDialogAccepted"] = True
+        if json.dumps(config, sort_keys=True) != before:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+            logger.info("tmux: prepared Claude CLI config at %s (onboarding, trust)", config_path)
+        if not self._skip_permissions:
+            return
+        # The bypass-permissions notice is skipped through the user settings
+        # file, the same switch a person flips by hand for a sandbox.
+        settings_path = self._claude_settings_path(env)
+        settings: dict[str, Any] = {}
+        if settings_path.exists():
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        if settings.get("skipDangerousModePermissionPrompt") is True:
+            return
+        settings["skipDangerousModePermissionPrompt"] = True
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+        logger.info("tmux: acknowledged bypass-permissions mode in %s", settings_path)
+
+    @staticmethod
+    def _claude_settings_path(env: dict[str, str]) -> Path:
+        """The CLI's user settings file: ``$CLAUDE_CONFIG_DIR/settings.json``,
+        else ``~/.claude/settings.json``."""
+        config_dir = env.get("CLAUDE_CONFIG_DIR", "").strip()
+        if config_dir:
+            return Path(config_dir) / "settings.json"
+        home = env.get("HOME", "").strip()
+        return (Path(home) if home else Path.home()) / ".claude" / "settings.json"
 
     async def _emit_system_init(self) -> None:
         await self._emit(
