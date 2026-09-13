@@ -327,3 +327,47 @@ async def test_large_completion_only_or_mismatch_remains_exact_with_explicit_res
     assert sum(json.loads(frame).get("code") == "live_frame_too_large" for frame in sent) == 1
     await probe.send("turn/completed", turn={"id": probe.turn, "status": "completed"})
     assert probe.turns()[0]["parts"][0]["text"] == text
+
+
+@pytest.mark.parametrize("large", [False, True])
+async def test_hidden_tools_do_not_swallow_interleaved_public_text(tmp_path, large):
+    """Exercise the actual adapter -> default channel -> replay path, not only normalization."""
+    probe = Probe(tmp_path)
+    await probe.start_turn()
+    await probe.start("public-message")
+    await probe.send(
+        "item/started", item={"type": "commandExecution", "id": "tool-a", "command": "true"}
+    )
+    text = "Checking 東京🙂.\n" * (90_000 if large else 1)
+    for index in range(0, len(text), 20_000):
+        await probe.delta("public-message", text[index : index + 20_000])
+    await probe.complete("public-message", text)
+    await probe.send(
+        "item/completed",
+        item={"type": "commandExecution", "id": "tool-a", "exitCode": 0, "aggregatedOutput": ""},
+    )
+    await probe.send("turn/completed", turn={"id": probe.turn, "status": "completed"})
+    socket = SimpleNamespace(send_text=AsyncMock())
+    channel = WebSocketChannel(socket, max_frame_bytes=900 * 1024)
+    for event in probe.events:
+        await channel.send_event(event)
+    sent = [json.loads(call.args[0]) for call in socket.send_text.call_args_list]
+    assert "".join(event.get("delta", {}).get("text", "") for event in sent) == text
+    assert any(
+        event["type"] == "content_block_stop" and event.get("item_id") == "public-message"
+        for event in sent
+    )
+    frames = [
+        SimpleNamespace(
+            session_id="channel-test",
+            seq=i + 1,
+            kind=e["type"],
+            payload=e,
+            request_id=None,
+            ts=datetime.now(UTC),
+        )
+        for i, e in enumerate(sent)
+    ]
+    turn = reduce_frames(frames).turns[0]
+    assert turn["content"] == text
+    assert not any(part["type"] in {"tool_use", "tool_result"} for part in turn["parts"])

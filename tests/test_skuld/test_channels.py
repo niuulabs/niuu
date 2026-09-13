@@ -238,6 +238,76 @@ class TestWebSocketChannelInternalFilter:
         )
         assert mock_ws.send_text.call_count == 1
 
+    @pytest.mark.parametrize("initially_visible", [False, True])
+    async def test_indexed_tool_stays_hidden_while_text_is_open(self, mock_ws, initially_visible):
+        ch = WebSocketChannel(mock_ws, show_internal=initially_visible)
+        await ch.send_event(
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use"}}
+        )
+        await ch.send_event(
+            {"type": "content_block_start", "index": 1, "content_block": {"type": "text"}}
+        )
+        ch.set_show_internal(False)
+        mock_ws.send_text.reset_mock()
+        await ch.send_event(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": "PRIVATE_TOOL_ARGUMENTS"},
+            }
+        )
+        await ch.send_event({"type": "content_block_stop", "index": 0})
+        public_delta = {
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "text_delta", "text": "Public progress"},
+        }
+        await ch.send_event(public_delta)
+        await ch.send_event({"type": "content_block_stop", "index": 1})
+        sent = [json.loads(call.args[0]) for call in mock_ws.send_text.call_args_list]
+        assert sent == [public_delta, {"type": "content_block_stop", "index": 1}]
+        assert ch._open_blocks == {}
+
+    async def test_same_index_in_different_turns_does_not_hide_public_text(self, mock_ws):
+        ch = WebSocketChannel(mock_ws)
+        for turn, kind in [("old", "tool_use"), ("new", "text")]:
+            await ch.send_event(
+                {
+                    "type": "content_block_start",
+                    "thread_id": "thread",
+                    "turn_id": turn,
+                    "index": 0,
+                    "content_block": {"type": kind},
+                }
+            )
+        mock_ws.send_text.reset_mock()
+        await ch.send_event(
+            {"type": "content_block_stop", "thread_id": "thread", "turn_id": "old", "index": 0}
+        )
+        public_stop = {
+            "type": "content_block_stop",
+            "thread_id": "thread",
+            "turn_id": "new",
+            "index": 0,
+        }
+        await ch.send_event(public_stop)
+        assert [json.loads(call.args[0]) for call in mock_ws.send_text.call_args_list] == [
+            public_stop
+        ]
+
+    async def test_result_discards_unclosed_block_tracking(self, mock_ws):
+        ch = WebSocketChannel(mock_ws)
+        await ch.send_event(
+            {
+                "type": "content_block_start",
+                "item_id": "tool",
+                "content_block": {"type": "tool_use"},
+            }
+        )
+        await ch.send_event({"type": "result", "stop_reason": "cancelled"})
+        assert ch._open_blocks == {}
+        assert ch._open_block_type is None
+
 
 # ---------------------------------------------------------------------------
 # format_telegram_event

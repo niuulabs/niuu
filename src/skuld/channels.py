@@ -106,42 +106,85 @@ class MessageChannel(ABC):
 _INTERNAL_BLOCK_TYPES = ("tool_use", "tool_result")
 
 
+def _stream_block_key(event: dict) -> tuple[str, str, str, str] | None:
+    """Scope stream indexes to their native turn; keep ID-only producers supported."""
+    block = event.get("content_block")
+    block = block if isinstance(block, dict) else {}
+    scope = tuple(
+        str(event.get(field) or block.get(field) or "") for field in ("thread_id", "turn_id")
+    )
+    index = event.get("index", block.get("index"))
+    if isinstance(index, int) and not isinstance(index, bool):
+        return (*scope, "index", str(index))
+    item_id = event.get("item_id") or block.get("id")
+    if isinstance(item_id, str) and item_id:
+        return (*scope, "id", item_id)
+    return None
+
+
 def filter_internal_blocks(
     event: dict,
     *,
     open_block_type: str | None,
+    open_blocks: dict[tuple[str, str, str, str], str] | None = None,
 ) -> tuple[dict | None, str | None]:
     """Drop tool_use/tool_result content from an event for an "hide internal" channel.
 
     Returns ``(event_to_send_or_None, new_open_block_type)``.
 
-    For streaming content_block events, only one block is open at a time
-    in the current transports — track the open block's type sequentially so
-    we know whether the matching ``content_block_delta`` and
-    ``content_block_stop`` belong to an internal block.
+    Indexed producers can interleave text and tool blocks. Track those by
+    identity, not whichever block happened to start last. The sequential state
+    remains for legacy producers that do not carry indexes or item IDs.
 
     For ``assistant`` / ``user`` events that arrive with a content list
     (Anthropic SDK shape), strip internal blocks and drop the event when
     nothing meaningful remains.
     """
     et = event.get("type")
+    key = _stream_block_key(event)
+
+    if et == "result":
+        if open_blocks is not None:
+            open_blocks.clear()
+        return event, None
 
     if et == "content_block_start":
         block_type = event.get("content_block", {}).get("type")
+        if open_blocks is not None and key is not None and isinstance(block_type, str):
+            open_blocks[key] = block_type
         next_open = block_type
         if block_type in _INTERNAL_BLOCK_TYPES:
             return None, next_open
         return event, next_open
 
     if et == "content_block_delta":
-        if open_block_type in _INTERNAL_BLOCK_TYPES:
+        block_type = open_blocks.get(key) if open_blocks is not None and key else None
+        delta = event.get("delta")
+        delta_type = delta.get("type") if isinstance(delta, dict) else None
+        # A client can toggle visibility or attach after a block's start. The
+        # delta's explicit kind still distinguishes prose from tool arguments.
+        if block_type is None:
+            block_type = {
+                "text_delta": "text",
+                "thinking_delta": "thinking",
+                "input_json_delta": "tool_use",
+            }.get(delta_type, open_block_type)
+        if block_type in _INTERNAL_BLOCK_TYPES:
             return None, open_block_type
         return event, open_block_type
 
     if et == "content_block_stop":
-        if open_block_type in _INTERNAL_BLOCK_TYPES:
-            return None, None
-        return event, None
+        block_type = open_block_type
+        if open_blocks is not None:
+            if key is not None:
+                block_type = open_blocks.pop(key, None)
+            elif open_blocks:
+                # Legacy unindexed stops close the most recently opened block.
+                _, block_type = open_blocks.popitem()
+        next_open = next(reversed(open_blocks.values()), None) if open_blocks else None
+        if block_type in _INTERNAL_BLOCK_TYPES:
+            return None, next_open
+        return event, next_open
 
     if et in ("assistant", "user"):
         message = event.get("message")
@@ -200,13 +243,12 @@ class WebSocketChannel(MessageChannel):
         self._closed = False
         self._show_internal = show_internal
         self._open_block_type: str | None = None
+        self._open_blocks: dict[tuple[str, str, str, str], str] = {}
         self._max_frame_bytes = max_frame_bytes
 
     def set_show_internal(self, visible: bool) -> None:
         """Update the per-channel filter for tool_use / tool_result events."""
         self._show_internal = visible
-        if visible:
-            self._open_block_type = None
 
     @property
     def show_internal(self) -> bool:
@@ -216,10 +258,12 @@ class WebSocketChannel(MessageChannel):
         """Send a JSON-encoded CLI event over the WebSocket."""
         if self._closed:
             return
+        # Keep identities current even while showing tools so a mid-stream
+        # visibility toggle does not leak arguments or suppress public text.
+        filtered, self._open_block_type = filter_internal_blocks(
+            event, open_block_type=self._open_block_type, open_blocks=self._open_blocks
+        )
         if not self._show_internal:
-            filtered, self._open_block_type = filter_internal_blocks(
-                event, open_block_type=self._open_block_type
-            )
             if filtered is None:
                 return
             event = filtered
