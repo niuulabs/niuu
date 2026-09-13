@@ -29,16 +29,14 @@ through that wrapper. The image tag the installer pins is the one it pulled
 apart.
 
 It ends by printing a setup URL; open it to finish configuration in the browser.
-The script asks nothing in the terminal and needs no root, with one
-exception it announces: on a host with an NVIDIA GPU whose Docker has no
-NVIDIA runtime yet, it registers the runtime with `sudo nvidia-ctk runtime
-configure --runtime=docker` (installing the Container Toolkit first on apt
-systems), because otherwise no session or local model could use the GPU.
-Without a working `sudo` it stops and prints that command. Data lives under
-`~/.niuu/data` unless `NIUU_DATA_DIR` says otherwise. When the host is not
-ready (Docker missing, your user not in the `docker` group) it stops and
-prints the exact command to run, then you rerun it. `NIUU_NO_UP=1` installs
-without starting. See
+The script asks nothing in the terminal, needs no root, and never runs
+`sudo`. When the host is not ready it stops, explains what it found and
+prints the exact command for you to run, then you rerun it: Docker missing,
+your user not in the `docker` group, or an NVIDIA GPU that Docker cannot use
+yet because no NVIDIA runtime is registered (the fix is one `nvidia-ctk`
+command; `NIUU_SKIP_GPU=1` starts without the GPU on purpose). Data lives
+under `~/.niuu/data` unless `NIUU_DATA_DIR` says otherwise. `NIUU_NO_UP=1`
+installs without starting. See
 [Single-host Docker mode](../operations/docker-mode.md) for what runs, where
 data lives, and how `niuu up`, `niuu doctor`, and `niuu down` relate to the
 `niuu platform` commands.

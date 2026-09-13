@@ -19,16 +19,16 @@
 #   NIUU_INSTALL_DIR   where the `niuu` command goes (default: ~/.local/bin)
 #   NIUU_NO_UP=1       install only, do not start the platform
 #   NIUU_NO_PULL=1     docker mode: use the image already present, do not pull
+#   NIUU_SKIP_GPU=1    docker mode: start even though the GPU cannot reach Docker
 #   NIUU_REPO          GitHub repo (default: niuulabs/niuu)
 #   NIUU_REGISTRY      image registry (default: ghcr.io/niuulabs)
 #
-# Nothing is asked in the terminal and nothing needs root, with one exception:
-# on a host with an NVIDIA GPU whose Docker has no NVIDIA runtime yet, the
-# script registers the runtime (installing the Container Toolkit first on apt
-# systems), because without it no session or model can use the GPU. That step
-# runs sudo and says so; when sudo cannot run it stops and prints the command.
-# Every other host problem (no Docker, not in the docker group, a chosen data
-# directory not writable) stops the script with the exact command to run.
+# Nothing is asked in the terminal and nothing needs root: the script never
+# runs sudo. When the host is not ready it stops, explains what it found and
+# prints the exact commands for you to run, then you rerun it. That covers a
+# missing Docker, a user outside the docker group, a chosen data directory you
+# cannot write, and an NVIDIA GPU that Docker cannot use yet (no NVIDIA runtime
+# registered), since without that no session or local model could use the GPU.
 set -eu
 
 REPO="${NIUU_REPO:-niuulabs/niuu}"
@@ -62,11 +62,9 @@ case "$MODE" in
 esac
 
 # ---------------------------------------------------------------------------
-# GPU: a host with an NVIDIA GPU gets the NVIDIA runtime registered with Docker
+# GPU: a host with an NVIDIA GPU must have the NVIDIA runtime registered with Docker
 # ---------------------------------------------------------------------------
 NVIDIA_TOOLKIT_GUIDE="https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html"
-NVIDIA_KEYRING=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-NVIDIA_APT_LIST=/etc/apt/sources.list.d/nvidia-container-toolkit.list
 
 host_has_nvidia_gpu() {
   command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1
@@ -76,52 +74,25 @@ docker_has_nvidia_runtime() {
   docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"nvidia"'
 }
 
-# True when sudo can run: without a password, or with a terminal to ask on.
-can_sudo() {
-  command -v sudo >/dev/null 2>&1 || return 1
-  if sudo -n true 2>/dev/null; then return 0; fi
-  ( exec </dev/tty ) 2>/dev/null
-}
-
-install_nvidia_toolkit() {
-  command -v apt-get >/dev/null 2>&1 || return 1
-  say "Installing the NVIDIA Container Toolkit (needs sudo)…"
-  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor --yes -o "$NVIDIA_KEYRING" \
-    && curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
-      | sed "s#deb https://#deb [signed-by=${NVIDIA_KEYRING}] https://#g" \
-      | sudo tee "$NVIDIA_APT_LIST" >/dev/null \
-    && sudo apt-get update \
-    && sudo apt-get install -y nvidia-container-toolkit
-}
-
-ensure_nvidia_runtime() {
+check_nvidia_runtime() {
+  [ "${NIUU_SKIP_GPU:-0}" = "1" ] && return 0
   host_has_nvidia_gpu || return 0
   if docker_has_nvidia_runtime; then
     say "NVIDIA GPU found and Docker has the NVIDIA runtime."
     return 0
   fi
-  say "NVIDIA GPU found, but Docker has no NVIDIA runtime; sessions and local models could not use it."
-  if ! can_sudo; then
-    say "niuu: registering the runtime needs sudo, which cannot run here. Run once, then rerun this installer:"
-    if command -v nvidia-ctk >/dev/null 2>&1; then
-      say "  sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
-    else
-      say "  install the NVIDIA Container Toolkit (${NVIDIA_TOOLKIT_GUIDE}), then:"
-      say "  sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
-    fi
-    exit 1
+  say "niuu: this host has an NVIDIA GPU ($(nvidia-smi -L 2>/dev/null | head -1)), but Docker has no NVIDIA"
+  say "runtime registered, so no session or local model could use it. Niuu will not start half-blind."
+  if command -v nvidia-ctk >/dev/null 2>&1; then
+    say "The NVIDIA Container Toolkit is installed; it only needs registering with Docker. Run once:"
+    say "  sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
+  else
+    say "Install the NVIDIA Container Toolkit first: ${NVIDIA_TOOLKIT_GUIDE}"
+    say "then register it with Docker:"
+    say "  sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
   fi
-  if ! command -v nvidia-ctk >/dev/null 2>&1; then
-    install_nvidia_toolkit \
-      || fail "could not install the NVIDIA Container Toolkit; follow ${NVIDIA_TOOLKIT_GUIDE} and rerun."
-  fi
-  say "Registering the NVIDIA runtime with Docker (needs sudo)…"
-  sudo nvidia-ctk runtime configure --runtime=docker \
-    || fail "nvidia-ctk could not register the runtime; see ${NVIDIA_TOOLKIT_GUIDE}"
-  sudo systemctl restart docker \
-    || fail "Docker did not restart after registering the runtime; run 'sudo systemctl restart docker' and rerun."
-  docker_has_nvidia_runtime || fail "Docker still reports no NVIDIA runtime after registering it; see ${NVIDIA_TOOLKIT_GUIDE}"
-  say "NVIDIA runtime registered."
+  say "then rerun this installer. (To run without the GPU on purpose: NIUU_SKIP_GPU=1.)"
+  exit 1
 }
 
 # ---------------------------------------------------------------------------
@@ -144,7 +115,7 @@ install_docker_mode() {
   fi
   docker compose version >/dev/null 2>&1 \
     || fail "Docker Compose v2 is missing. Install the compose plugin: https://docs.docker.com/compose/install/linux/"
-  ensure_nvidia_runtime
+  check_nvidia_runtime
 
   if ! mkdir -p "$DATA_DIR" 2>/dev/null || [ ! -w "$DATA_DIR" ]; then
     say "niuu: the data directory $DATA_DIR cannot be created or written by $(id -un)."
