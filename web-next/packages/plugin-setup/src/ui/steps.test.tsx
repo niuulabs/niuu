@@ -67,6 +67,19 @@ describe('SystemStep', () => {
     expect(screen.queryByTestId('setup-host-checks')).not.toBeInTheDocument();
   });
 
+  it('says the GPU was not checked when Docker has no NVIDIA runtime', () => {
+    // From the installer container nvidia-smi is out of reach without the
+    // runtime, which is not the same as "no GPU" (a DGX Spark before setup).
+    const report = {
+      host: { ...MOCK_SYSTEM.host!, gpus: [], nvidia_runtime: false, checks: [] },
+      checks: [],
+      healthy: true,
+    };
+    render(<SystemStep report={report} loading={false} error={null} onRerun={vi.fn()} />);
+    expect(screen.getByText('GPU not checked (no NVIDIA runtime)')).toBeInTheDocument();
+    expect(screen.queryByText('No NVIDIA GPU')).not.toBeInTheDocument();
+  });
+
   it('shows failures, warnings, errors and re-runs', () => {
     const onRerun = vi.fn();
     const report = {
@@ -82,16 +95,6 @@ describe('SystemStep', () => {
     );
     expect(screen.getByText('No NVIDIA GPU')).toBeInTheDocument();
     expect(screen.getByText(/2 checks · 1 failed · 1 warnings/)).toBeInTheDocument();
-    // Without the NVIDIA runtime the installer could not look, which is not "no GPU".
-    render(
-      <SystemStep
-        report={{ ...report, host: { ...report.host, nvidia_runtime: false } }}
-        loading={false}
-        error={null}
-        onRerun={onRerun}
-      />,
-    );
-    expect(screen.getByText('GPU not checked (no NVIDIA runtime)')).toBeInTheDocument();
     expect(
       screen.getByTestId('setup-check-database').querySelector('.setup-row__icon--fail'),
     ).not.toBeNull();
