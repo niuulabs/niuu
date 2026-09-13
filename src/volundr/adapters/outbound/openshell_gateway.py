@@ -122,7 +122,6 @@ OAUTH_CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-s
 GRANT_AUDIENCE_PREFIX = "niuu:credential:"
 PLATFORM_GRANT_AUDIENCE_PREFIX = "niuu:platform:"
 PLATFORM_ACCESS_TOKEN_ENV = "NIUU_VOLUNDR_ACCESS_TOKEN"
-PROVIDERS_V2_SETTING = "providers_v2_enabled"
 DEFAULT_CREDENTIAL_TOKEN_ENDPOINT = (
     "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"
 )
@@ -407,17 +406,6 @@ class OpenShellGatewayClient:
                 return False
             raise
         return bool(response.deleted)
-
-    def ensure_providers_v2(self) -> None:
-        self._stub.UpdateConfig(
-            openshell_pb2.UpdateConfigRequest(
-                setting_key=PROVIDERS_V2_SETTING,
-                setting_value=sandbox_pb2.SettingValue(bool_value=True),
-                **{"global": True},
-            ),
-            timeout=self._timeout,
-            metadata=self._metadata(),
-        )
 
     def get_provider(self, name: str) -> Any | None:
         try:
@@ -944,7 +932,6 @@ class OpenShellGatewayPodManager(
             "NO_COLOR": "1",
         }
         try:
-            await asyncio.to_thread(self._client.ensure_providers_v2)
             await asyncio.to_thread(
                 self._client.create_provider_grant,
                 profile=profile,
@@ -1319,8 +1306,6 @@ class OpenShellGatewayPodManager(
                 OpenShellProviderGrant(provider_name=name, profile_id=name)
                 for name in provider_names
             )
-            if grants:
-                await asyncio.to_thread(self._client.ensure_providers_v2)
             if legacy is not None:
                 sandbox = await asyncio.to_thread(self._client.start_sandbox, sandbox_name)
             else:
@@ -1570,8 +1555,6 @@ class OpenShellGatewayPodManager(
                 OpenShellProviderGrant(provider_name=name, profile_id=name)
                 for name in provider_names
             )
-            if grants:
-                await asyncio.to_thread(self._client.ensure_providers_v2)
             env.update(credential_context.environment)
             mesh_labels, mesh_annotations = resident_mesh_pod_metadata(runtime)
             if not resumed_deployment:

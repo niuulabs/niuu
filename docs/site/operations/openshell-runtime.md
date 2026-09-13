@@ -114,7 +114,8 @@ in `pyproject.toml` and `uv.lock`. The unchanged CI-built wheel is mirrored in
 the fork's `niuu-7bd0ed45e` release so upstream's rolling dev release cannot
 remove the dependency. This gateway API requires an explicit workspace selector
 and page tokens; the adapter selects the existing `default` workspace for all
-workspace-scoped calls. The released `0.0.116` SDK is not compatible with this
+workspace-scoped calls. Provider profiles are always active in this gateway; the removed
+`providers_v2_enabled` setting must not be sent. The released `0.0.116` SDK is not compatible with this
 gateway revision.
 
 ## Validate a target

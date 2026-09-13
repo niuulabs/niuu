@@ -207,7 +207,6 @@ class _FakeOpenShellGatewayClient:
         self.delete_polls_remaining = 0
         self.cleanup_events: list[str] = []
         self.written_files: list[dict] = []
-        self.providers_v2_enabled = False
         self.service_url = "http://openshell.example/proxy/session-1"
         self.grant_sandbox = None
         self.grant_provider = None
@@ -278,9 +277,6 @@ class _FakeOpenShellGatewayClient:
     def delete_service(self, **kwargs) -> bool:
         self.deleted_services.append(kwargs)
         return True
-
-    def ensure_providers_v2(self) -> None:
-        self.providers_v2_enabled = True
 
     def create_provider_grant(self, **kwargs) -> None:
         self.provider_grants.append(kwargs)
@@ -1881,7 +1877,6 @@ async def test_start_creates_dynamic_openbao_providers_without_secret_environmen
     assert "OPENAI_API_KEY" not in client.execs[0]["env"]
     assert "GITHUB_PERSONAL_ACCESS_TOKEN" not in client.execs[0]["env"]
     assert "secret_env" not in client.execs[0]
-    assert client.providers_v2_enabled is True
     assert len(client.provider_grants) == 2
     assert {grant["profile"].credentials[0].env_vars[0] for grant in client.provider_grants} == {
         "OPENAI_API_KEY",
