@@ -10,7 +10,7 @@ export interface SentenceDraft {
 }
 
 const REPO_PATTERN = /\b([a-z0-9][a-z0-9-]{0,38}\/[a-z0-9._-]{1,100})\b/i;
-const BOARD_PATTERN = /\b([A-Z][A-Z0-9]{1,7})\b(?=\s+(?:board|tickets|issues|backlog|project))/;
+const BOARD_PATTERN = /\b([A-Z][A-Z0-9]{1,7})\b(?=\s+(?:board|tickets|issues|backlog))/;
 const BOARD_FALLBACK = /\bboard\s+([A-Z][A-Z0-9]{1,7})\b/;
 
 const ASK_PATTERNS: Array<[RegExp, ActionClass]> = [
