@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from cli.services.docker_host import DockerPreflightConfig, docker_socket_gid
+from cli.services.model_catalog import model_trusts_remote_code
 from niuu.service_databases import database_name_for_service, local_service_database_names
 
 if TYPE_CHECKING:
@@ -486,23 +487,29 @@ def render_compose(settings: CLISettings) -> dict[str, Any]:
     }
     vllm = settings.docker.vllm
     if vllm.enabled:
+        # The NVIDIA image's entrypoint execs whatever follows; it has no
+        # default command, so the server has to be named here.
+        vllm_command = [
+            "vllm",
+            "serve",
+            vllm.model,
+            "--port",
+            str(vllm.port),
+            "--max-model-len",
+            str(vllm.max_model_len),
+            "--gpu-memory-utilization",
+            str(vllm.gpu_memory_utilization),
+        ]
+        # Repositories that ship model code (Nemotron does) refuse to load
+        # without this; the catalog knows which, the operator can say so for
+        # a custom model.
+        if vllm.trust_remote_code or model_trusts_remote_code(vllm.model):
+            vllm_command.append("--trust-remote-code")
         services["vllm"] = {
             "image": "${NIUU_VLLM_IMAGE}",
             "restart": "unless-stopped",
             "ipc": "host",
-            # The NVIDIA image's entrypoint execs whatever follows; it has no
-            # default command, so the server has to be named here.
-            "command": [
-                "vllm",
-                "serve",
-                vllm.model,
-                "--port",
-                str(vllm.port),
-                "--max-model-len",
-                str(vllm.max_model_len),
-                "--gpu-memory-utilization",
-                str(vllm.gpu_memory_utilization),
-            ],
+            "command": vllm_command,
             "environment": {
                 "HF_TOKEN": "${NIUU_HF_TOKEN}",
                 "HF_HOME": "/models",

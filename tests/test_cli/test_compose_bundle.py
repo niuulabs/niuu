@@ -156,6 +156,18 @@ class TestRender:
         # made it run `exec --model`, which bash rejects.
         assert vllm["command"][:3] == ["vllm", "serve", settings.docker.vllm.model]
         assert "--port" in vllm["command"]
+        assert "--trust-remote-code" not in vllm["command"]
+        # Nemotron ships model code; vLLM refuses it without the flag.
+        settings.docker.vllm.model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+        curated = sc.render_compose(settings)["services"]["vllm"]["command"]
+        assert curated[-1] == "--trust-remote-code"
+        # A custom repository gets the flag from the setting.
+        settings.docker.vllm.model = "org/custom"
+        settings.docker.vllm.trust_remote_code = True
+        custom = sc.render_compose(settings)["services"]["vllm"]["command"]
+        assert custom[-1] == "--trust-remote-code"
+        settings.docker.vllm.model = "nvidia/Nemotron-3-Nano-30B-A3B"
+        settings.docker.vllm.trust_remote_code = False
         devices = vllm["deploy"]["resources"]["reservations"]["devices"]
         assert devices[0]["driver"] == "nvidia"
         assert doc["services"]["niuu"]["depends_on"]["vllm"] == {"condition": "service_started"}

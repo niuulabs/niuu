@@ -23,6 +23,8 @@ class CuratedModel:
     description: str
     weight_gib: int
     recommended: bool = False
+    # The repository ships model code vLLM must run (`--trust-remote-code`).
+    trust_remote_code: bool = False
 
 
 CURATED_MODELS: tuple[CuratedModel, ...] = (
@@ -33,6 +35,7 @@ CURATED_MODELS: tuple[CuratedModel, ...] = (
         description="Fast agentic coder tuned by NVIDIA. Best default for sessions and residents.",
         weight_gib=62,
         recommended=True,
+        trust_remote_code=True,
     ),
     CuratedModel(
         id="gpt-oss-120b",
@@ -49,6 +52,11 @@ CURATED_MODELS: tuple[CuratedModel, ...] = (
         weight_gib=24,
     ),
 )
+
+
+def model_trusts_remote_code(model: str) -> bool:
+    """True for a curated model whose repository ships code vLLM has to run."""
+    return any(entry.model == model and entry.trust_remote_code for entry in CURATED_MODELS)
 
 
 def expected_weight_bytes(model: str) -> int:

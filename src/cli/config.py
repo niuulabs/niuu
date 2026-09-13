@@ -140,6 +140,13 @@ class DockerVllmConfig(BaseModel):
         default="",
         description="Hugging Face token for gated repositories (empty = anonymous).",
     )
+    trust_remote_code: bool = Field(
+        default=False,
+        description=(
+            "Pass --trust-remote-code to vLLM for a custom model whose repository ships "
+            "model code. Curated models that need it are handled without this flag."
+        ),
+    )
 
 
 class DockerModelServerConfig(BaseModel):

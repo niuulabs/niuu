@@ -214,12 +214,16 @@ def validate_stack_changes(changes: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(value, int | float) or not 0 < float(value) <= 1:
                 raise ValueError("vllm_gpu_memory_utilization must be between 0 and 1")
             vllm["gpu_memory_utilization"] = float(value)
+        elif key == "vllm_trust_remote_code":
+            if not isinstance(value, bool):
+                raise ValueError("vllm_trust_remote_code must be true or false")
+            vllm["trust_remote_code"] = value
         else:
             raise ValueError(
                 f"Unknown stack setting {key!r}; the wizard can change bind_host, "
                 "max_sessions, vllm_enabled, vllm_model, vllm_max_model_len, "
-                "vllm_gpu_memory_utilization, model_server_enabled, model_server_url, "
-                "model_server_models and model_server_api_key"
+                "vllm_gpu_memory_utilization, vllm_trust_remote_code, model_server_enabled, "
+                "model_server_url, model_server_models and model_server_api_key"
             )
     if vllm.get("enabled") and not vllm.get("model", "") and "model" in vllm:
         raise ValueError("vllm_model is required when vllm_enabled is true")

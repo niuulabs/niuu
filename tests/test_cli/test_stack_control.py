@@ -151,6 +151,11 @@ def test_validate_stack_changes_whitelists_keys() -> None:
     assert validate_stack_changes(
         {"vllm_max_model_len": 4096, "vllm_gpu_memory_utilization": 0.5}
     ) == {"docker": {"vllm": {"max_model_len": 4096, "gpu_memory_utilization": 0.5}}}
+    assert validate_stack_changes({"vllm_trust_remote_code": True}) == {
+        "docker": {"vllm": {"trust_remote_code": True}}
+    }
+    with pytest.raises(ValueError, match="vllm_trust_remote_code"):
+        validate_stack_changes({"vllm_trust_remote_code": "yes"})
     # the session cap lands on the platform's pod manager, next to the docker keys
     assert validate_stack_changes({"max_sessions": 8, "bind_host": "0.0.0.0"}) == {
         "docker": {"bind_host": "0.0.0.0"},

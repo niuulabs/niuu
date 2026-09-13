@@ -115,6 +115,8 @@ export interface StackChanges {
   vllm_model?: string;
   vllm_max_model_len?: number;
   vllm_gpu_memory_utilization?: number;
+  /** For a custom repository that ships model code; curated models set it themselves. */
+  vllm_trust_remote_code?: boolean;
   model_server_enabled?: boolean;
   model_server_url?: string;
   model_server_models?: string[];
