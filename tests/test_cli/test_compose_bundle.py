@@ -412,3 +412,32 @@ class TestStackFiles:
             assert sc.pull_applier_image(settings) == ""
         with patch(f"{MOD}.shutil.which", return_value=None), pytest.raises(RuntimeError):
             sc.pull_applier_image(settings)
+
+    def test_pull_session_image_streams_a_missing_pull(self, settings: CLISettings) -> None:
+        """The skuld image is large and nothing in the bundle pulls it; `niuu up`
+        does, with progress on the terminal, so the first sign-in does not stall."""
+        present = MagicMock(returncode=0)
+        with (
+            patch(f"{MOD}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{MOD}.subprocess.run", return_value=present) as run,
+        ):
+            assert sc.pull_session_image(settings) == ""
+        assert run.call_count == 1
+        missing = MagicMock(returncode=1)
+        pulled = MagicMock(returncode=0)
+        with (
+            patch(f"{MOD}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{MOD}.subprocess.run", side_effect=[missing, pulled]) as run,
+        ):
+            assert sc.pull_session_image(settings) == ""
+        pull_call = run.call_args_list[1]
+        assert pull_call.args[0] == ["/usr/bin/docker", "pull", settings.docker.skuld_image]
+        assert "capture_output" not in pull_call.kwargs
+        failed = MagicMock(returncode=1)
+        with (
+            patch(f"{MOD}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{MOD}.subprocess.run", side_effect=[missing, failed]),
+        ):
+            assert sc.pull_session_image(settings) == "docker pull exited with 1"
+        with patch(f"{MOD}.shutil.which", return_value=None), pytest.raises(RuntimeError):
+            sc.pull_session_image(settings)

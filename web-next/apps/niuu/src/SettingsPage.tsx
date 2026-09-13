@@ -1496,7 +1496,10 @@ function IntegrationsResourceCard({
                 </span>
               ) : null}
               {currentEnrollment?.state === 'pending' ? (
-                <span role="status">Preparing sign-in…</span>
+                <span role="status">
+                  Preparing sign-in… The first one on this host also pulls the session runtime
+                  image, which can take a few minutes.
+                </span>
               ) : null}
               {selectedEnrollmentSpec?.method === 'claude_setup' ? (
                 <p className="settings-resource__copy">

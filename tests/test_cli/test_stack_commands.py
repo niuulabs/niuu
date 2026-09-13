@@ -61,6 +61,7 @@ class TestStackUp:
             patch(f"{MOD}.detect_lan_ip", return_value="10.0.0.5"),
             patch(f"{MOD}.write_bundle") as write_bundle,
             patch(f"{MOD}.pull_applier_image", return_value=""),
+            patch(f"{MOD}.pull_session_image", return_value=""),
             patch(f"{MOD}.run_compose", return_value=0) as run_compose,
             patch(f"{MOD}.wait_for_health", return_value=True),
         ):
@@ -82,6 +83,7 @@ class TestStackUp:
             patch(f"{MOD}.detect_lan_ip", return_value="10.0.0.5"),
             patch(f"{MOD}.write_bundle") as write_bundle,
             patch(f"{MOD}.pull_applier_image", return_value="pull failed"),
+            patch(f"{MOD}.pull_session_image", return_value="pull failed"),
             patch(f"{MOD}.run_compose", return_value=0),
             patch(f"{MOD}.wait_for_health", return_value=True),
         ):
@@ -106,6 +108,7 @@ class TestStackUp:
             patch(f"{MOD}.detect_lan_ip", return_value="10.0.0.5"),
             patch(f"{MOD}.write_bundle", return_value=MagicMock(compose_dir=tmp_path)),
             patch(f"{MOD}.pull_applier_image", return_value=""),
+            patch(f"{MOD}.pull_session_image", return_value=""),
             patch(f"{MOD}.run_compose", return_value=0),
             patch(f"{MOD}.wait_for_health", return_value=True),
         ):
@@ -134,6 +137,7 @@ class TestStackUp:
             patch(f"{MOD}.collect_host_facts", return_value=_facts(tmp_path)),
             patch(f"{MOD}.write_bundle", return_value=MagicMock(compose_dir=tmp_path)),
             patch(f"{MOD}.pull_applier_image", return_value=""),
+            patch(f"{MOD}.pull_session_image", return_value=""),
             patch(f"{MOD}.run_compose", return_value=0) as compose,
             patch(f"{MOD}.wait_for_health", return_value=True),
         ):
@@ -149,6 +153,7 @@ class TestStackUp:
             patch(f"{MOD}.collect_host_facts", return_value=_facts(tmp_path)),
             patch(f"{MOD}.write_bundle", return_value=MagicMock(compose_dir=tmp_path)),
             patch(f"{MOD}.pull_applier_image", return_value=""),
+            patch(f"{MOD}.pull_session_image", return_value=""),
             patch(f"{MOD}.run_compose", return_value=17),
             pytest.raises(typer.Exit) as exc,
         ):
@@ -162,6 +167,7 @@ class TestStackUp:
             patch(f"{MOD}.collect_host_facts", return_value=_facts(tmp_path)),
             patch(f"{MOD}.write_bundle", return_value=MagicMock(compose_dir=tmp_path)),
             patch(f"{MOD}.pull_applier_image", return_value=""),
+            patch(f"{MOD}.pull_session_image", return_value=""),
             patch(f"{MOD}.run_compose", return_value=0),
             patch(f"{MOD}.wait_for_health", return_value=False),
             pytest.raises(typer.Exit) as exc,

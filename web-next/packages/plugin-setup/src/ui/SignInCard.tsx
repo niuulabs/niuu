@@ -134,7 +134,10 @@ export function SignInCard({
       ) : active && enrollment ? (
         <div className="setup-col" data-testid={`setup-signin-${entry.slug}`}>
           {enrollment.state === 'pending' || !enrollment.verificationUri ? (
-            <div className="setup-note">Starting the sign-in helper…</div>
+            <div className="setup-note">
+              Starting the sign-in helper… The first one on this host also pulls the session runtime
+              image, which can take a few minutes.
+            </div>
           ) : (
             <>
               <div className="setup-row">

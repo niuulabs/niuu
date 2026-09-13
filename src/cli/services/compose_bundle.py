@@ -600,6 +600,13 @@ def stack_is_running(settings: CLISettings) -> bool:
     return completed.returncode == 0 and bool(completed.stdout.strip())
 
 
+def _image_present(docker: str, image: str) -> bool:
+    completed = subprocess.run(  # noqa: S603
+        [docker, "image", "inspect", image], capture_output=True, text=True, check=False
+    )
+    return completed.returncode == 0
+
+
 def pull_applier_image(settings: CLISettings) -> str:
     """Pre-pull the image the wizard uses to apply stack changes.
 
@@ -611,16 +618,34 @@ def pull_applier_image(settings: CLISettings) -> str:
     if not docker:
         raise RuntimeError("docker not found in PATH; run `niuu doctor`.")
     image = settings.docker.applier_image
-    completed = subprocess.run(  # noqa: S603
-        [docker, "image", "inspect", image], capture_output=True, text=True, check=False
-    )
-    if completed.returncode == 0:
+    if _image_present(docker, image):
         return ""
     completed = subprocess.run(  # noqa: S603
         [docker, "pull", "--quiet", image], capture_output=True, text=True, check=False
     )
     if completed.returncode != 0:
         return completed.stderr.strip() or f"docker pull exited with {completed.returncode}"
+    return ""
+
+
+def pull_session_image(settings: CLISettings) -> str:
+    """Pre-pull the skuld image that every session and CLI sign-in runs in.
+
+    Nothing in the compose bundle references it, so without this the first
+    sign-in or session on a fresh host sits in "starting" for the minutes the
+    pull takes. Progress streams to the terminal because the image is large.
+    Returns an empty string when the image is present, otherwise the reason;
+    the caller reports it and the platform pulls again on first use.
+    """
+    docker = shutil.which("docker")
+    if not docker:
+        raise RuntimeError("docker not found in PATH; run `niuu doctor`.")
+    image = settings.docker.skuld_image
+    if _image_present(docker, image):
+        return ""
+    completed = subprocess.run([docker, "pull", image], check=False)  # noqa: S603
+    if completed.returncode != 0:
+        return f"docker pull exited with {completed.returncode}"
     return ""
 
 

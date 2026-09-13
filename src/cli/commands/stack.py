@@ -15,6 +15,7 @@ from cli.services.compose_bundle import (
     detect_lan_ip,
     merge_settings,
     pull_applier_image,
+    pull_session_image,
     read_stack_overrides,
     remove_session_containers,
     run_compose,
@@ -157,6 +158,16 @@ def stack_up(settings: CLISettings, *, skip_preflight: bool = False) -> None:
         )
         raise typer.Exit(1)
     typer.echo(" ok")
+    typer.echo(
+        f"Pulling the session runtime image {settings.docker.skuld_image} "
+        "(sign-ins and sessions run in it)..."
+    )
+    pull_error = pull_session_image(settings)
+    if pull_error:
+        typer.echo(
+            f"Could not pull {settings.docker.skuld_image} ({pull_error}); the first sign-in "
+            "or session will pull it and take longer to start."
+        )
 
     typer.echo()
     typer.echo(f"Open {setup_url(settings, external_host)} to finish setup.")
