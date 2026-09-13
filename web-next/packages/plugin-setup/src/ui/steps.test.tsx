@@ -250,7 +250,7 @@ describe('IntegrationsStep', () => {
     renderWithSetup(
       <IntegrationsStep {...props} catalog={MOCK_CATALOG} connections={[connection, work]} />,
     );
-    expect(screen.getByTestId('setup-provider-row-c1')).toHaveTextContent('GitHub · default');
+    expect(screen.getByTestId('setup-provider-row-c1')).not.toHaveTextContent('· default');
     expect(screen.getByTestId('setup-provider-row-c2')).toHaveTextContent('GitHub · work');
     expect(screen.getByTestId('setup-test-c2')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('setup-provider-add'));

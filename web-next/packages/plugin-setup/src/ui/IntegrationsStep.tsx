@@ -146,8 +146,9 @@ export function IntegrationsStep({
           </div>
         ) : null}
         {rows.map(({ group, connection, pending }) => {
+          // The method chip already tells a signed-in account from a keyed one;
+          // only a name the person gave is worth repeating in the title.
           const label = connectionLabel(connection, group);
-          const several = rows.filter((row) => row.group.key === group.key).length > 1;
           return (
             <div
               className="setup-row"
@@ -163,7 +164,7 @@ export function IntegrationsStep({
               <div className="setup-row__body">
                 <span className="setup-row__title">
                   {group.title}
-                  {several || label !== 'default' ? ` · ${label}` : ''}
+                  {label !== 'default' ? ` · ${label}` : ''}
                   <span className="setup-chip setup-chip--inline">
                     {pending ? 'Sign-in needed' : methodLabel(group, connection)}
                   </span>
