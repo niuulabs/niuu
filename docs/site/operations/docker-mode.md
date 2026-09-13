@@ -257,12 +257,15 @@ platform's `pod_manager.max_concurrent`). Launching or restarting a session
 beyond that is refused at once, before any session record is created, with a
 `409` whose message says how many are running and where the limit is raised:
 "No session slot is free: 4 of 4 sessions are running on this host. Stop or
-archive a session, or raise the session limit in Setup → Runtime & access
-(/setup?step=runtime)." The launch dialogs and the session page show that
-message with the path as a link; the wizard opens on the Runtime & access
-step, where **Sessions at once** stages the new value and **Apply and open
-Niuu** restarts the platform with it. On a host install without the bundle the
-same refusal names `pod_manager.max_concurrent` in `config.yaml` instead.
+archive a session, or raise the session limit in Settings → Runtime
+(/settings/runtime/sessions)." The launch dialogs and the session page show
+that message with the path as a link. **Settings → Runtime → Sessions** shows
+**Sessions at once**; saving it applies the change through the stack
+controller and restarts the platform, which takes about a minute. The setup
+wizard's Runtime & access step edits the same setting (`/setup?step=runtime`
+opens it directly). On a host install without the bundle the field is
+read-only and the refusal names `pod_manager.max_concurrent` in `config.yaml`
+instead.
 
 ### Which engines a session can use
 

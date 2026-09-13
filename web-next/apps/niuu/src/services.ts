@@ -547,9 +547,14 @@ export function resolveSettingsServiceBase(
     | 'mimir'
     | 'ravn'
     | 'observatory'
-    | 'bifrost',
+    | 'bifrost'
+    | 'runtime',
 ): string | null {
   switch (providerId) {
+    case 'runtime':
+      // This host's stack (sessions at once, access, local model): served by
+      // the setup API, the same controller the first-launch wizard uses.
+      return resolveSetupServiceBase(config);
     case 'identity': {
       const base = resolveCanonicalServiceBase(config, 'identity');
       if (!base) return null;

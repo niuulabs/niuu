@@ -1,7 +1,7 @@
 import { Fragment, type ReactNode } from 'react';
 
 /**
- * Absolute in-app paths (`/setup?step=runtime`) and http(s) URLs inside a
+ * Absolute in-app paths (`/settings/runtime/sessions`) and http(s) URLs inside a
  * message. A trailing sentence character is left out of the link.
  */
 const LINK_RE = /(https?:\/\/[^\s)]+|(?<![\w/])\/[a-z][\w\-./]*(?:\?[\w=&\-.%]+)?)/gi;
@@ -25,8 +25,8 @@ export interface LinkedTextProps {
 
 /**
  * A message with its in-app paths and URLs rendered as links, so an error
- * that says where to fix something ("raise the limit in Setup → Runtime &
- * access (/setup?step=runtime)") can be followed with a click.
+ * that says where to fix something ("raise the limit in Settings → Runtime
+ * (/settings/runtime/sessions)") can be followed with a click.
  */
 export function LinkedText({ text, className }: LinkedTextProps) {
   const parts: ReactNode[] = [];

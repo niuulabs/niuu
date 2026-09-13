@@ -297,6 +297,29 @@ describe('resolveNiuuRegistryBase', () => {
 });
 
 describe('resolveSettingsServiceBase', () => {
+  it('resolves the host runtime settings from the setup API', () => {
+    expect(
+      resolveSettingsServiceBase(
+        {
+          services: {
+            niuu: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/niuu' },
+          },
+        } as any,
+        'runtime',
+      ),
+    ).toBe('http://localhost:8080/api/v1/niuu/setup');
+    expect(
+      resolveSettingsServiceBase(
+        {
+          services: {
+            setup: { mode: 'http', baseUrl: 'http://localhost:9090/api/v1/niuu/setup' },
+          },
+        } as any,
+        'runtime',
+      ),
+    ).toBe('http://localhost:9090/api/v1/niuu/setup');
+  });
+
   it('resolves identity settings from the canonical identity base', () => {
     expect(
       resolveSettingsServiceBase(

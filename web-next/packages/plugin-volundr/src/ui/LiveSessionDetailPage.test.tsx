@@ -1932,7 +1932,7 @@ describe('LiveSessionDetailPage', () => {
           new ApiClientError(
             'API request failed: 409',
             409,
-            'No session slot is free: 4 of 4 sessions are running on this host. Stop or archive a session, or raise the session limit in Setup → Runtime & access (/setup?step=runtime).',
+            'No session slot is free: 4 of 4 sessions are running on this host. Stop or archive a session, or raise the session limit in Settings → Runtime (/settings/runtime/sessions).',
           ),
         );
       service.getSession = vi.fn().mockResolvedValue(failedSession);
@@ -1943,9 +1943,9 @@ describe('LiveSessionDetailPage', () => {
 
       const alert = await screen.findByTestId('session-action-error');
       expect(alert).toHaveTextContent('4 of 4 sessions are running');
-      expect(screen.getByRole('link', { name: '/setup?step=runtime' })).toHaveAttribute(
+      expect(screen.getByRole('link', { name: '/settings/runtime/sessions' })).toHaveAttribute(
         'href',
-        '/setup?step=runtime',
+        '/settings/runtime/sessions',
       );
     });
 

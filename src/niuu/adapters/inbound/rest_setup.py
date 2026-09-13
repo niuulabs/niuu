@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from niuu.adapters.inbound.auth import extract_principal
 from niuu.domain.models import Principal
@@ -14,6 +14,11 @@ from niuu.domain.services.setup import SetupService
 from niuu.domain.setup import KNOWN_SETUP_STEPS, SetupState, SystemReport
 from niuu.domain.stack import ApplyStatus, StackView
 from niuu.ports.stack_control import StackControlPort
+from niuu.settings_schema import (
+    SettingsFieldSchema,
+    SettingsProviderSchema,
+    SettingsSectionSchema,
+)
 
 ADMIN_ROLE = "volundr:admin"
 
@@ -98,6 +103,26 @@ class StackChangesRequest(BaseModel):
             "Wizard-level keys: bind_host, max_sessions, vllm_enabled, vllm_model, "
             "vllm_max_model_len, vllm_gpu_memory_utilization."
         )
+    )
+
+
+class SessionsSettingsUpdate(BaseModel):
+    """The Settings → Runtime → Sessions form: how many sessions may run at once."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    max_sessions: int = Field(
+        ge=1,
+        validation_alias=AliasChoices("max_sessions", "maxSessions"),
+        description="Sessions that may run at once on this host.",
+    )
+
+
+class SessionsSettingsResponse(BaseModel):
+    max_sessions: int = Field(serialization_alias="maxSessions")
+    apply_state: str = Field(
+        serialization_alias="applyState",
+        description="State of the apply the save started; the platform restarts during it.",
     )
 
 
@@ -241,6 +266,82 @@ def create_setup_router(
             return _stack_view_response(await control.view())
         except (ValueError, FileNotFoundError) as exc:
             raise _stack_error(exc) from exc
+
+    def _runtime_settings_schema(view: StackView | None) -> SettingsProviderSchema:
+        """The Settings → Runtime page: the host stack the wizard also edits."""
+        if view is None:
+            field = SettingsFieldSchema(
+                key="maxSessions",
+                label="Sessions at once",
+                type="number",
+                value=None,
+                read_only=True,
+                description=(
+                    "Not changeable from here: this install was not started with `niuu up` "
+                    "(docker mode). Set pod_manager.max_concurrent in its config.yaml and "
+                    "restart the platform."
+                ),
+            )
+        else:
+            field = SettingsFieldSchema(
+                key="maxSessions",
+                label="Sessions at once",
+                type="number",
+                value=view.effective.max_sessions,
+                description=(
+                    "A launch is refused once this many sessions are running; each one is a "
+                    "container with its own agent process. Raise it when the host has the "
+                    "memory and your provider plans allow the parallel work. Saving applies "
+                    "the change and restarts the platform, which takes about a minute."
+                ),
+            )
+        return SettingsProviderSchema(
+            title="Runtime",
+            subtitle="this host: sessions at once, access, local model",
+            scope="admin",
+            sections=[
+                SettingsSectionSchema(
+                    id="sessions",
+                    label="Sessions",
+                    description="How many sessions may run at once on this host.",
+                    path="/settings/sessions",
+                    save_label="Save and restart the platform",
+                    fields=[field],
+                )
+            ],
+        )
+
+    @router.get("/settings", response_model=SettingsProviderSchema, response_model_by_alias=True)
+    async def get_runtime_settings(
+        principal: Principal = Depends(extract_principal),
+    ) -> SettingsProviderSchema:
+        """Schema for the Settings → Runtime page."""
+        del principal
+        if stack is None:
+            return _runtime_settings_schema(None)
+        try:
+            return _runtime_settings_schema(await stack.view())
+        except (ValueError, FileNotFoundError) as exc:
+            raise _stack_error(exc) from exc
+
+    @router.patch(
+        "/settings/sessions",
+        response_model=SessionsSettingsResponse,
+        response_model_by_alias=True,
+    )
+    async def update_sessions_settings(
+        body: SessionsSettingsUpdate,
+        principal: Principal = Depends(extract_principal),
+    ) -> SessionsSettingsResponse:
+        """Stage the new session limit and apply it: the platform restarts with it."""
+        _require_admin(principal)
+        control = _require_stack()
+        try:
+            await control.stage({"max_sessions": body.max_sessions})
+            applied = await control.apply()
+        except (ValueError, FileNotFoundError) as exc:
+            raise _stack_error(exc) from exc
+        return SessionsSettingsResponse(max_sessions=body.max_sessions, apply_state=applied.state)
 
     @router.put("/stack", response_model=StackViewResponse, response_model_by_alias=True)
     async def stage_stack(

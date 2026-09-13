@@ -888,7 +888,7 @@ async def test_capacity_remedy_points_at_the_wizard(manager: DockerContainerPodM
     capacity = await manager.capacity()
     assert (capacity.limit, capacity.active, capacity.available) == (4, 0, 4)
     assert capacity.remedy == (
-        "raise the session limit in Setup → Runtime & access (/setup?step=runtime)"
+        "raise the session limit in Settings → Runtime (/settings/runtime/sessions)"
     )
 
 

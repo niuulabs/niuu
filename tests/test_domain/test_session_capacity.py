@@ -21,7 +21,7 @@ class FullPodManager(MockPodManager):
         self._capacity = SessionCapacity(
             limit=limit,
             active=active,
-            remedy="raise the session limit in Setup → Runtime & access (/setup?step=runtime)",
+            remedy="raise the session limit in Settings → Runtime (/settings/runtime/sessions)",
         )
 
     async def capacity(self) -> SessionCapacity:
@@ -44,7 +44,7 @@ async def test_refusal_names_the_numbers_and_the_remedy() -> None:
     message = str(info.value)
     assert "4 of 4 sessions are running" in message
     assert "Stop or archive a session" in message
-    assert "/setup?step=runtime" in message
+    assert "/settings/runtime/sessions" in message
     assert info.value.capacity.available == 0
 
 

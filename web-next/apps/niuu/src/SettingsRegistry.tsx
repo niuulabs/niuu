@@ -148,6 +148,14 @@ const REMOTE_PROVIDER_DEFS = [
     resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'integrations'),
   },
   {
+    id: 'runtime',
+    pluginId: 'setup',
+    title: 'Runtime',
+    subtitle: 'this host: sessions at once, access, local model',
+    scope: 'admin' as const,
+    resolver: (config: NiuuConfig) => resolveSettingsServiceBase(config, 'runtime'),
+  },
+  {
     id: 'volundr',
     pluginId: 'volundr',
     title: 'Volundr',

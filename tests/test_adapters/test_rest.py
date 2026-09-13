@@ -624,14 +624,14 @@ class TestStartSession:
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
         full = SessionCapacity(
-            limit=4, active=4, remedy="raise it in Setup → Runtime & access (/setup?step=runtime)"
+            limit=4, active=4, remedy="raise it in Settings → Runtime (/settings/runtime/sessions)"
         )
         with patch.object(type(service._pod_manager), "capacity", AsyncMock(return_value=full)):
             response = client.post(f"/api/v1/forge/sessions/{session.id}/start")
         assert response.status_code == 409
         detail = response.json()["detail"]
         assert "4 of 4 sessions are running" in detail
-        assert "/setup?step=runtime" in detail
+        assert "/settings/runtime/sessions" in detail
         assert (await service.get_session(session.id)).status == session.status
 
     def test_create_session_without_a_free_slot_is_409_and_creates_nothing(

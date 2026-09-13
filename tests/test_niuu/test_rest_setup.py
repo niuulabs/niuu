@@ -203,6 +203,63 @@ class TestSystem:
         assert body["healthy"] is True
 
 
+class TestRuntimeSettings:
+    """Settings → Runtime: the same stack the wizard edits, from the settings shell."""
+
+    def test_schema_shows_the_session_limit_and_saving_applies_it(self, tmp_path: Path) -> None:
+        stack = _FakeStack()
+        client = _client(tmp_path, roles=["volundr:admin"], stack=stack)
+        schema = client.get("/api/v1/niuu/setup/settings", headers=HEADERS).json()
+        assert schema["title"] == "Runtime"
+        assert schema["scope"] == "admin"
+        section = schema["sections"][0]
+        assert section["id"] == "sessions"
+        assert section["path"] == "/settings/sessions"
+        field = section["fields"][0]
+        assert (field["key"], field["type"], field["value"], field["readOnly"]) == (
+            "maxSessions",
+            "number",
+            4,
+            False,
+        )
+
+        saved = client.patch(
+            "/api/v1/niuu/setup/settings/sessions",
+            json={"maxSessions": 6},
+            headers=HEADERS,
+        )
+        assert saved.status_code == 200
+        assert saved.json() == {"maxSessions": 6, "applyState": "applying"}
+        assert stack.staged == {"docker": {"max_sessions": 6}}
+        assert stack.applied == 1
+
+        bad = client.patch(
+            "/api/v1/niuu/setup/settings/sessions", json={"maxSessions": 0}, headers=HEADERS
+        )
+        assert bad.status_code == 422
+
+    def test_saving_needs_the_admin_role(self, tmp_path: Path) -> None:
+        stack = _FakeStack()
+        client = _client(tmp_path, roles=[], stack=stack)
+        assert client.get("/api/v1/niuu/setup/settings", headers=HEADERS).status_code == 200
+        denied = client.patch(
+            "/api/v1/niuu/setup/settings/sessions", json={"maxSessions": 6}, headers=HEADERS
+        )
+        assert denied.status_code == 403
+        assert stack.applied == 0
+
+    def test_without_a_controller_the_limit_is_read_only(self, admin: TestClient) -> None:
+        schema = admin.get("/api/v1/niuu/setup/settings", headers=HEADERS).json()
+        field = schema["sections"][0]["fields"][0]
+        assert field["readOnly"] is True
+        assert field["value"] is None
+        assert "pod_manager.max_concurrent" in field["description"]
+        refused = admin.patch(
+            "/api/v1/niuu/setup/settings/sessions", json={"maxSessions": 6}, headers=HEADERS
+        )
+        assert refused.status_code == 503
+
+
 class TestStackRoutes:
     def test_unavailable_without_a_controller(self, admin: TestClient) -> None:
         assert admin.get("/api/v1/niuu/setup/stack", headers=HEADERS).status_code == 503
