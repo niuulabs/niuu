@@ -623,6 +623,37 @@
   background: var(--brand-300);
   opacity: 0.6;
 }
+.setup-meter__fill {
+  background: var(--color-brand);
+  transition: width 400ms ease;
+}
+/* Size unknown: a short bar that sweeps until numbers arrive. */
+.setup-meter--busy {
+  position: relative;
+}
+.setup-meter--busy .setup-meter__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  animation: setup-meter-sweep 1.6s ease-in-out infinite;
+}
+@keyframes setup-meter-sweep {
+  0% {
+    left: 0;
+  }
+  100% {
+    left: 70%;
+  }
+}
+.setup-col--narrow {
+  width: min(560px, 100%);
+  margin: 0 auto;
+  text-align: left;
+}
+.setup-chip--fail {
+  color: var(--color-critical-fg);
+  border-color: color-mix(in srgb, var(--color-critical) 40%, transparent);
+  background: color-mix(in srgb, var(--color-critical) 10%, transparent);
+}
 .setup-legend {
   display: flex;
   flex-direction: column;

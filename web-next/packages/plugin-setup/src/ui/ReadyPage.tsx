@@ -1,6 +1,7 @@
-import { useIntegrations, useSetupState } from './hooks';
+import { useIntegrations, useSetupState, useStackStatus } from './hooks';
 import { NiuuMark } from './icons';
 import { summarizeConnections } from './FinishStep';
+import { LocalModelCard } from './LocalModelCard';
 import './SetupPage.css';
 
 export interface Walkthrough {
@@ -47,6 +48,11 @@ export const WALKTHROUGHS: readonly Walkthrough[] = [
 export function ReadyPage() {
   const stateQuery = useSetupState();
   const integrationsQuery = useIntegrations();
+  // The local model keeps downloading and loading after setup finishes; keep
+  // showing it here until it serves. Installs without a stack controller
+  // (no `niuu up`) answer 503 and show nothing.
+  const statusQuery = useStackStatus(true);
+  const localModel = statusQuery.data?.vllm ? statusQuery.data : undefined;
   const rows = summarizeConnections(integrationsQuery.data);
   return (
     <div className="setup-page setup-page--hero" data-testid="ready-page">
@@ -60,6 +66,11 @@ export function ReadyPage() {
           {stateQuery.data?.mode ? `${stateQuery.data.mode} mode. ` : ''}
           Here are three good first things to do.
         </p>
+        {localModel ? (
+          <div className="setup-col setup-col--narrow" data-testid="ready-local-model">
+            <LocalModelCard status={localModel} />
+          </div>
+        ) : null}
         <div className="setup-chips" data-testid="ready-summary">
           {rows.map((row) => (
             <span

@@ -12,7 +12,7 @@ from niuu.adapters.inbound.auth import extract_principal
 from niuu.domain.models import Principal
 from niuu.domain.services.setup import SetupService
 from niuu.domain.setup import KNOWN_SETUP_STEPS, SetupState, SystemReport
-from niuu.domain.stack import ApplyStatus, StackView
+from niuu.domain.stack import ApplyStatus, ModelTestResult, Progress, StackView
 from niuu.ports.stack_control import StackControlPort
 from niuu.settings_schema import (
     SettingsFieldSchema,
@@ -165,9 +165,17 @@ class ModelServerSettingsResponseWithApply(ModelServerSettingsResponse):
     apply_state: str = Field(serialization_alias="applyState")
 
 
+class ProgressResponse(BaseModel):
+    phase: str
+    detail: str
+    completed_bytes: int = Field(serialization_alias="completedBytes")
+    total_bytes: int = Field(serialization_alias="totalBytes")
+
+
 class VllmStatusResponse(BaseModel):
     state: str
     detail: str
+    progress: ProgressResponse | None = None
 
 
 class ApplyStatusResponse(BaseModel):
@@ -176,6 +184,15 @@ class ApplyStatusResponse(BaseModel):
     detail: str
     changes: dict[str, Any]
     vllm: VllmStatusResponse | None
+    progress: ProgressResponse | None = None
+
+
+class ModelTestResponse(BaseModel):
+    ok: bool
+    model: str
+    reply: str
+    latency_ms: int = Field(serialization_alias="latencyMs")
+    detail: str
 
 
 def _stack_settings_response(settings: Any) -> StackSettingsResponse:
@@ -226,6 +243,17 @@ def _stack_view_response(view: StackView) -> StackViewResponse:
     )
 
 
+def _progress_response(progress: Progress | None) -> ProgressResponse | None:
+    if progress is None:
+        return None
+    return ProgressResponse(
+        phase=progress.phase,
+        detail=progress.detail,
+        completed_bytes=progress.completed_bytes,
+        total_bytes=progress.total_bytes,
+    )
+
+
 def _apply_status_response(status: ApplyStatus) -> ApplyStatusResponse:
     return ApplyStatusResponse(
         state=status.state,
@@ -233,10 +261,25 @@ def _apply_status_response(status: ApplyStatus) -> ApplyStatusResponse:
         detail=status.detail,
         changes=status.changes,
         vllm=(
-            VllmStatusResponse(state=status.vllm.state, detail=status.vllm.detail)
+            VllmStatusResponse(
+                state=status.vllm.state,
+                detail=status.vllm.detail,
+                progress=_progress_response(status.vllm.progress),
+            )
             if status.vllm is not None
             else None
         ),
+        progress=_progress_response(status.progress),
+    )
+
+
+def _model_test_response(result: ModelTestResult) -> ModelTestResponse:
+    return ModelTestResponse(
+        ok=result.ok,
+        model=result.model,
+        reply=result.reply,
+        latency_ms=result.latency_ms,
+        detail=result.detail,
     )
 
 
@@ -532,6 +575,20 @@ def create_setup_router(
         control = _require_stack()
         try:
             return _apply_status_response(await control.status())
+        except (ValueError, FileNotFoundError) as exc:
+            raise _stack_error(exc) from exc
+
+    @router.post(
+        "/stack/test-model", response_model=ModelTestResponse, response_model_by_alias=True
+    )
+    async def test_model(
+        principal: Principal = Depends(extract_principal),
+    ) -> ModelTestResponse:
+        """Send one short completion to the local model and report what came back."""
+        _require_admin(principal)
+        control = _require_stack()
+        try:
+            return _model_test_response(await control.test_model())
         except (ValueError, FileNotFoundError) as exc:
             raise _stack_error(exc) from exc
 

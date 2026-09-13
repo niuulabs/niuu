@@ -1,5 +1,6 @@
 import type {
   ApplyStatus,
+  ModelTestResult,
   CatalogEntry,
   ConnectIntegrationInput,
   Enrollment,
@@ -220,6 +221,8 @@ export interface MockSetupOptions {
   stackAvailable?: boolean;
   /** How many status reads an apply stays "applying" before it reports applied. */
   applyPolls?: number;
+  /** How many status reads after the apply the local model keeps "starting" before it serves. */
+  modelPolls?: number;
   initialStack?: Partial<StackSettings>;
 }
 
@@ -291,6 +294,8 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
   const enrollmentPolls = options.enrollmentPolls ?? 2;
   const stackAvailable = options.stackAvailable ?? true;
   const applyPolls = options.applyPolls ?? 2;
+  const modelPollsUntilReady = options.modelPolls ?? 3;
+  let modelPolls = 0;
   let stackCurrent: StackSettings = {
     bindHost: '0.0.0.0',
     externalHost: '192.168.1.42',
@@ -616,26 +621,64 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
     async stackStatus(): Promise<ApplyStatus> {
       await wait();
       requireStack();
+      // The local model keeps coming up for a few polls after the apply is done.
+      modelPolls += apply ? 0 : 1;
+      const modelReady = modelPolls >= modelPollsUntilReady;
       const vllm = stackCurrent.vllm.enabled
         ? {
-            state: apply ? 'starting' : 'ready',
-            detail: apply ? 'Downloading shards: 40%' : `Serving ${stackCurrent.vllm.model}.`,
+            state: apply || !modelReady ? 'starting' : 'ready',
+            detail:
+              apply || !modelReady
+                ? `Downloading ${stackCurrent.vllm.model} · 12.4 of ~62 GB`
+                : `Serving ${stackCurrent.vllm.model}.`,
+            progress:
+              apply || !modelReady
+                ? {
+                    phase: 'downloading',
+                    detail: `Downloading ${stackCurrent.vllm.model} · 12.4 of ~62 GB`,
+                    completedBytes: 12.4 * 1000 ** 3,
+                    totalBytes: 62 * 1000 ** 3,
+                  }
+                : null,
           }
         : null;
-      if (!apply) return { state: 'idle', startedAt: '', detail: '', changes: {}, vllm };
+      if (!apply)
+        return { state: 'idle', startedAt: '', detail: '', changes: {}, vllm, progress: null };
       apply.polls += 1;
       if (apply.polls < applyPolls) {
+        const progress = {
+          phase: 'pulling',
+          detail: 'Pulling the vllm image · 2.1 of 7.3 GB · 4 of 12 layers done',
+          completedBytes: 2.1 * 1000 ** 3,
+          totalBytes: 7.3 * 1000 ** 3,
+        };
         return {
           state: 'applying',
           startedAt: 'now',
-          detail: 'Restarting…',
+          detail: progress.detail,
           changes: apply.changes,
           vllm,
+          progress,
         };
       }
       const done = apply.changes;
       apply = null;
-      return { state: 'applied', startedAt: 'now', detail: 'Applied.', changes: done, vllm };
+      return {
+        state: 'applied',
+        startedAt: 'now',
+        detail: 'Applied.',
+        changes: done,
+        vllm,
+        progress: null,
+      };
+    },
+    async testModel(): Promise<ModelTestResult> {
+      await wait();
+      requireStack();
+      if (!stackCurrent.vllm.enabled) throw new Error('No local model is configured');
+      if (modelPolls < modelPollsUntilReady)
+        throw new Error('The local model is not serving yet; wait for it to become ready');
+      return { ok: true, model: stackCurrent.vllm.model, reply: 'OK', latencyMs: 840, detail: '' };
     },
     async submitEnrollmentCode(enrollmentId, code) {
       await wait();

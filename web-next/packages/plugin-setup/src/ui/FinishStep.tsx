@@ -7,6 +7,7 @@ import {
   type StackView,
 } from '../domain/setup';
 import { AlertIcon, CheckIcon } from './icons';
+import { LocalModelCard } from './LocalModelCard';
 
 export interface FinishStepProps {
   state: SetupState | undefined;
@@ -161,18 +162,15 @@ export function FinishStep({
               <span>
                 {reconnecting
                   ? 'Restarting the platform… waiting for it to answer again.'
-                  : 'Applying your changes…'}
+                  : apply?.progress
+                    ? apply.progress.detail
+                    : 'Applying your changes…'}
               </span>
             </div>
           )}
-          {apply?.vllm && apply.state !== 'applied' ? (
-            <div className="setup-note" data-testid="setup-apply-vllm">
-              Local model: {apply.vllm.state}
-              {apply.vllm.detail ? ` · ${apply.vllm.detail}` : ''}
-            </div>
-          ) : null}
         </div>
       ) : null}
+      {apply?.vllm ? <LocalModelCard status={apply} reconnecting={reconnecting} /> : null}
 
       {finishing && !applying ? <div className="setup-note">Saving…</div> : null}
       {error ? (

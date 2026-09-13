@@ -18,6 +18,8 @@ from niuu.domain.stack import (
     ApplyStatus,
     ModelOption,
     ModelServerSettings,
+    ModelTestResult,
+    Progress,
     StackSettings,
     StackView,
     VllmSettings,
@@ -119,7 +121,22 @@ class _FakeStack(StackControlPort):
         return ApplyStatus(state="applying", started_at="now", detail="d", changes=self.staged)
 
     async def status(self) -> ApplyStatus:
-        return ApplyStatus(state="idle", vllm=VllmStatus(state="ready", detail="ok"))
+        return ApplyStatus(
+            state="idle",
+            vllm=VllmStatus(
+                state="ready",
+                detail="ok",
+                progress=Progress(
+                    phase="downloading", detail="12 of 62 GB", completed_bytes=12, total_bytes=62
+                ),
+            ),
+            progress=Progress(phase="pulling", detail="pulling", completed_bytes=1, total_bytes=2),
+        )
+
+    async def test_model(self) -> ModelTestResult:
+        if self.fail_with is not None:
+            raise self.fail_with
+        return ModelTestResult(ok=True, model="org/m", reply="OK", latency_ms=1200)
 
 
 def _client(
@@ -314,7 +331,37 @@ class TestStackRoutes:
         assert applied["changes"] == {"docker": {"bind_host": "0.0.0.0"}}
         status = client.get("/api/v1/niuu/setup/stack/status", headers=HEADERS).json()
         assert status["state"] == "idle"
-        assert status["vllm"] == {"state": "ready", "detail": "ok"}
+        assert status["vllm"] == {
+            "state": "ready",
+            "detail": "ok",
+            "progress": {
+                "phase": "downloading",
+                "detail": "12 of 62 GB",
+                "completedBytes": 12,
+                "totalBytes": 62,
+            },
+        }
+        assert status["progress"] == {
+            "phase": "pulling",
+            "detail": "pulling",
+            "completedBytes": 1,
+            "totalBytes": 2,
+        }
+
+        tested = client.post("/api/v1/niuu/setup/stack/test-model", headers=HEADERS)
+        assert tested.status_code == 200
+        assert tested.json() == {
+            "ok": True,
+            "model": "org/m",
+            "reply": "OK",
+            "latencyMs": 1200,
+            "detail": "",
+        }
+        stack.fail_with = ValueError("The local model is not serving yet")
+        not_ready = client.post("/api/v1/niuu/setup/stack/test-model", headers=HEADERS)
+        assert not_ready.status_code == 422
+        assert "not serving" in not_ready.json()["detail"]
+        stack.fail_with = None
 
         assert (
             client.delete("/api/v1/niuu/setup/stack", headers=HEADERS).json()["hasStagedChanges"]

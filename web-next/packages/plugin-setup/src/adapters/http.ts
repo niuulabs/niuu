@@ -9,6 +9,7 @@
 
 import type {
   ApplyStatus,
+  ModelTestResult,
   CatalogEntry,
   CatalogSchema,
   ConnectIntegrationInput,
@@ -261,6 +262,9 @@ export function buildSetupHttpAdapter(clients: SetupHttpClients): ISetupService 
     },
     stackStatus(): Promise<ApplyStatus> {
       return clients.setup.get<ApplyStatus>('/stack/status');
+    },
+    testModel(): Promise<ModelTestResult> {
+      return clients.setup.post<ModelTestResult>('/stack/test-model');
     },
   };
 }

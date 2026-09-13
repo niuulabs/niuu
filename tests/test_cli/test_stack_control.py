@@ -20,7 +20,12 @@ from cli.services.compose_bundle import (
     write_stack_file,
 )
 from cli.services.docker_host import GpuFacts, HostFacts
-from cli.services.stack_control import DockerStackController
+from cli.services.stack_control import (
+    DockerStackController,
+    hf_cache_dir,
+    parse_pull_progress,
+    vllm_progress,
+)
 from niuu.domain.stack import validate_stack_changes
 
 
@@ -125,6 +130,9 @@ def stack_dir(tmp_path: Path) -> Path:
     (data / "host-facts.json").write_text(facts.to_json())
     (tmp_path / "bundle").mkdir()
     (tmp_path / "bundle" / ".env").write_text("NIUU_EXTERNAL_HOST=192.168.1.5\n")
+    (tmp_path / "bundle" / "secrets.env").write_text(
+        "NIUU_POSTGRES_PASSWORD=p\nNIUU_CREDENTIAL_KEY=k\n"
+    )
     return data
 
 
@@ -247,7 +255,9 @@ async def test_missing_stack_file_is_explicit(client: _Client, tmp_path: Path) -
     controller = DockerStackController(stack_dir=str(tmp_path))
     with pytest.raises(FileNotFoundError, match="niuu up"):
         await controller.view()
-    (tmp_path / "stack.yaml").write_text("docker: {}\n")
+    (tmp_path / "stack.yaml").write_text(
+        f"docker:\n  compose_dir: {tmp_path / 'bundle'}\n  data_dir: {tmp_path}\n"
+    )
     with pytest.raises(FileNotFoundError, match="host-facts"):
         await controller.view()
 
@@ -406,3 +416,219 @@ async def test_view_judges_fit_by_host_memory_on_a_unified_memory_gpu(
     view = await controller.view()
     assert view.accelerator_memory_gib == 128
     assert all(m.fits is True for m in view.models)
+
+
+PULL_OUTPUT = """\
+ vllm Pulling
+ 9b37ee547aa6 Pulling fs layer
+ 0743781e50d5 Pulling fs layer
+ f5cceb5df98d Pulling fs layer
+ 9b37ee547aa6 Downloading [==>                                                ]  207.6MB/4.311GB
+ 0743781e50d5 Downloading [===========================================>       ]  404.8MB/463MB
+ f5cceb5df98d Downloading [============================================>      ]  232.8MB/263.9MB
+ 0743781e50d5 Download complete
+ f5cceb5df98d Extracting 14 s
+ 9b37ee547aa6 Downloading [=====>                                             ]  500MB/4.311GB
+"""
+
+
+class TestPullProgress:
+    def test_sums_layers_with_the_last_line_per_layer(self) -> None:
+        progress = parse_pull_progress(PULL_OUTPUT)
+        assert progress is not None
+        assert progress.phase == "pulling"
+        assert progress.total_bytes == 4_311_000_000 + 463_000_000 + 263_900_000
+        # 500 MB in flight + the two layers whose download finished
+        assert progress.completed_bytes == 500_000_000 + 463_000_000 + 263_900_000
+        assert (
+            progress.detail
+            == "Pulling the vllm image · 1.2 of 5.0 GB · 1 of 3 layers done · extracting 1"
+        )
+
+    def test_all_layers_done_means_starting(self) -> None:
+        text = (
+            PULL_OUTPUT + " 9b37ee547aa6 Pull complete\n f5cceb5df98d Pull complete\n vllm Pulled\n"
+        )
+        progress = parse_pull_progress(text)
+        assert progress is not None
+        assert progress.phase == "starting"
+        assert progress.completed_bytes == progress.total_bytes
+
+    def test_nothing_pulled_is_none_and_service_only_is_a_sentence(self) -> None:
+        assert parse_pull_progress(" niuu Recreate\n niuu Recreated\n") is None
+        early = parse_pull_progress(" vllm Pulling\n")
+        assert early is not None and early.detail == "Pulling the vllm image…"
+
+
+class TestVllmProgress:
+    MODEL = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+
+    def test_download_measured_on_disk(self, tmp_path: Path) -> None:
+        cache = hf_cache_dir(tmp_path / "models", self.MODEL)
+        assert (
+            cache
+            == tmp_path / "models" / "hub" / "models--nvidia--NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+        )
+        (cache / "blobs").mkdir(parents=True)
+        (cache / "blobs" / "abc.incomplete").write_bytes(b"x" * 3_000)
+        progress = vllm_progress(
+            "INFO Starting to load model nvidia/...\n",
+            model=self.MODEL,
+            cache_dir=cache,
+            expected_bytes=62 * 1024**3,
+        )
+        assert progress.phase == "downloading"
+        assert progress.completed_bytes == 3_000
+        assert progress.total_bytes == 62 * 1024**3
+        assert "of ~67 GB" in progress.detail
+
+    def test_download_complete_then_loading(self, tmp_path: Path) -> None:
+        cache = hf_cache_dir(tmp_path / "models", self.MODEL)
+        (cache / "blobs").mkdir(parents=True)
+        (cache / "blobs" / "abc").write_bytes(b"x" * 10)
+        progress = vllm_progress(
+            "INFO Starting to load model nvidia/...\n",
+            model=self.MODEL,
+            cache_dir=cache,
+            expected_bytes=0,
+        )
+        assert progress.phase == "loading"
+
+    def test_log_markers_win_in_order(self, tmp_path: Path) -> None:
+        cache = tmp_path / "missing"
+        shards = vllm_progress(
+            "x\rLoading safetensors checkpoint shards:  23% Completed | 3/13 [00:10<00:40]\r",
+            model="org/m",
+            cache_dir=cache,
+            expected_bytes=0,
+        )
+        assert shards.phase == "loading"
+        assert shards.completed_bytes == 3 and shards.total_bytes == 13
+        assert "shard 3 of 13" in shards.detail
+        warm = vllm_progress(
+            "Loading safetensors checkpoint shards: 100% Completed | 13/13\n"
+            "INFO Capturing CUDA graph shapes\n",
+            model="org/m",
+            cache_dir=cache,
+            expected_bytes=0,
+        )
+        assert warm.phase == "warming"
+        serving = vllm_progress(
+            "INFO Capturing CUDA graph\nINFO: Application startup complete.\n",
+            model="org/m",
+            cache_dir=cache,
+            expected_bytes=0,
+        )
+        assert serving.phase == "serving"
+        blank = vllm_progress("", model="org/m", cache_dir=cache, expected_bytes=0)
+        assert blank.phase == "starting" and "Starting" in blank.detail
+
+
+@pytest.mark.asyncio
+async def test_status_carries_pull_progress_while_applying(
+    controller: DockerStackController, client: _Client
+) -> None:
+    await controller.stage({"vllm_enabled": True, "vllm_model": "org/m"})
+    with patch.object(sc, "write_bundle"):
+        await controller.apply()
+    applier = client.containers.by_name[client.containers.run_kwargs[0]["name"]]
+    applier.log_text = PULL_OUTPUT.encode()
+    status = await controller.status()
+    assert status.state == "applying"
+    assert status.progress is not None and status.progress.phase == "pulling"
+    assert status.detail.startswith("Pulling the vllm image")
+
+    vllm = _Container("niuu-test-vllm-1")
+    vllm.log_text = b"Loading safetensors checkpoint shards:  50% Completed | 2/4\n"
+    client.containers.by_name[vllm.name] = vllm
+    status = await controller.status()
+    assert status.vllm is not None
+    assert status.vllm.state == "starting"
+    assert status.vllm.progress is not None and status.vllm.progress.phase == "loading"
+    assert status.vllm.detail == status.vllm.progress.detail
+
+
+@pytest.mark.asyncio
+async def test_test_model_talks_to_vllm_once_ready(
+    controller: DockerStackController, client: _Client
+) -> None:
+    with pytest.raises(ValueError, match="No local model"):
+        await controller.test_model()
+    await controller.stage({"vllm_enabled": True, "vllm_model": "org/m"})
+    with pytest.raises(ValueError, match="not serving yet"):
+        await controller.test_model()
+
+    vllm = _Container("niuu-test-vllm-1")
+    vllm.attrs["State"]["Health"] = {"Status": "healthy"}
+    client.containers.by_name[vllm.name] = vllm
+
+    class _Response:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json() -> dict[str, Any]:
+            return {"choices": [{"message": {"content": " OK \n"}}]}
+
+    posted: list[tuple[str, dict[str, Any]]] = []
+
+    class _AsyncClient:
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+
+        async def __aenter__(self) -> _AsyncClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, json: dict[str, Any]) -> _Response:
+            posted.append((url, json))
+            return _Response()
+
+    with patch.object(sc.httpx, "AsyncClient", _AsyncClient):
+        result = await controller.test_model()
+    assert result.ok is True and result.reply == "OK" and result.model == "org/m"
+    assert posted[0][0] == "http://vllm:8000/v1/chat/completions"
+    assert posted[0][1]["model"] == "org/m"
+    assert posted[0][1]["max_tokens"] == sc.MODEL_TEST_MAX_TOKENS
+
+    class _Failing(_AsyncClient):
+        async def post(self, url: str, json: dict[str, Any]) -> _Response:
+            raise sc.httpx.ConnectError("refused")
+
+    with patch.object(sc.httpx, "AsyncClient", _Failing):
+        failed = await controller.test_model()
+    assert failed.ok is False and "refused" in failed.detail
+
+
+@pytest.mark.asyncio
+async def test_apply_refuses_a_bundle_it_cannot_see(
+    controller: DockerStackController, client: _Client, stack_dir: Path, tmp_path: Path
+) -> None:
+    """Without the secrets file the controller is not looking at the bundle
+    `niuu up` wrote; rendering there would give Postgres a new password."""
+    del stack_dir
+    (tmp_path / "bundle" / "secrets.env").unlink()
+    await controller.stage({"bind_host": "0.0.0.0"})
+    with patch.object(sc, "write_bundle") as write_bundle, pytest.raises(FileNotFoundError):
+        await controller.apply()
+    write_bundle.assert_not_called()
+    assert client.containers.run_kwargs == []
+
+
+@pytest.mark.asyncio
+async def test_vllm_created_is_starting_not_failed(
+    controller: DockerStackController, client: _Client
+) -> None:
+    await controller.stage({"vllm_enabled": True, "vllm_model": "org/m"})
+    vllm = _Container("niuu-test-vllm-1", status="created")
+    client.containers.by_name[vllm.name] = vllm
+    status = (await controller.status()).vllm
+    assert status is not None and status.state == "starting"
+    assert status.progress is not None and status.progress.phase == "starting"
+    vllm.status = "restarting"
+    vllm.log_text = b"exec: --: invalid option\n"
+    crashed = (await controller.status()).vllm
+    assert crashed is not None and crashed.state == "failed"
+    assert "invalid option" in crashed.detail

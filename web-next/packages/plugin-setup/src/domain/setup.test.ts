@@ -30,6 +30,8 @@ import {
   formatGpu,
   hostChips,
   hostFlavor,
+  localModelPending,
+  progressPercent,
   isConnectableFromWizard,
   isStepDone,
   missingCredentialKeys,
@@ -216,6 +218,27 @@ describe('host presentation', () => {
     expect(chips).toContain('Docker 27.3.1');
     const bare = hostChips({ ...MOCK_SYSTEM.host!, memory_total_bytes: 0, docker_version: '' });
     expect(bare.map((c) => c.label)).not.toContain('Docker ');
+  });
+});
+
+describe('local model progress helpers', () => {
+  it('turns bytes into a percent only when the total is known', () => {
+    expect(progressPercent(null)).toBeNull();
+    expect(
+      progressPercent({ phase: 'x', detail: '', completedBytes: 5, totalBytes: 0 }),
+    ).toBeNull();
+    expect(progressPercent({ phase: 'x', detail: '', completedBytes: 1, totalBytes: 4 })).toBe(25);
+    expect(progressPercent({ phase: 'x', detail: '', completedBytes: 9, totalBytes: 4 })).toBe(100);
+  });
+
+  it('knows when the local model is still worth polling for', () => {
+    const base = { state: 'applied' as const, startedAt: '', detail: '', changes: {} };
+    expect(localModelPending(undefined)).toBe(false);
+    expect(localModelPending({ ...base, vllm: null })).toBe(false);
+    expect(localModelPending({ ...base, vllm: { state: 'starting', detail: '' } })).toBe(true);
+    expect(localModelPending({ ...base, vllm: { state: 'absent', detail: '' } })).toBe(true);
+    expect(localModelPending({ ...base, vllm: { state: 'ready', detail: '' } })).toBe(false);
+    expect(localModelPending({ ...base, vllm: { state: 'failed', detail: '' } })).toBe(false);
   });
 });
 

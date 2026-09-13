@@ -175,10 +175,18 @@ def detect_lan_ip() -> str:
 
 
 def stack_settings_dict(settings: CLISettings) -> dict[str, Any]:
-    """The bundle-relevant sections of the CLI settings, as plain data."""
+    """The bundle-relevant sections of the CLI settings, as plain data.
+
+    Paths are recorded absolute: the platform container reads this file with a
+    different ``HOME``, so a ``~`` would resolve to a directory nothing mounted
+    and the apply would silently build a second bundle with fresh secrets.
+    """
+    docker_section = settings.docker.model_dump(mode="json")
+    docker_section["compose_dir"] = str(compose_dir(settings))
+    docker_section["data_dir"] = str(data_dir(settings))
     return {
         "server": settings.server.model_dump(mode="json"),
-        "docker": settings.docker.model_dump(mode="json"),
+        "docker": docker_section,
     }
 
 
@@ -245,6 +253,15 @@ def load_stack_settings(stack_file: Path, overrides_file: Path) -> CLISettings:
     if not isinstance(base, dict):
         raise ValueError(f"{stack_file} must contain a mapping")
     base.setdefault("mode", "docker")
+    docker_section = base.get("docker") or {}
+    for key in ("compose_dir", "data_dir"):
+        value = str(docker_section.get(key, ""))
+        if not value or value.startswith("~") or not Path(value).is_absolute():
+            raise ValueError(
+                f"{stack_file} records docker.{key}={value!r}; it must be an absolute path "
+                "because the platform container resolves `~` elsewhere. Run `niuu up` on "
+                "the host again to rewrite it."
+            )
     return merge_settings(CLISettings.model_validate(base), read_stack_overrides(overrides_file))
 
 
@@ -373,6 +390,11 @@ VLLM_PROVIDER = "vllm"
 MODEL_SERVER_PROVIDERS = frozenset({MODEL_SERVER_PROVIDER, VLLM_PROVIDER, "ollama"})
 
 
+def vllm_base_url(settings: CLISettings) -> str:
+    """Where the bundle's vLLM container answers on the compose network (no ``/v1``)."""
+    return f"http://vllm:{settings.docker.vllm.port}"
+
+
 def model_gateway_providers(settings: CLISettings) -> dict[str, dict[str, Any]]:
     """The model servers the bundle routes through the gateway, keyed by provider.
 
@@ -384,7 +406,7 @@ def model_gateway_providers(settings: CLISettings) -> dict[str, dict[str, Any]]:
     vllm = settings.docker.vllm
     if vllm.enabled:
         providers[VLLM_PROVIDER] = {
-            "base_url": f"http://vllm:{vllm.port}",
+            "base_url": vllm_base_url(settings),
             "models": [vllm.model],
             "cost_per_token": 0.0,
         }
@@ -468,8 +490,11 @@ def render_compose(settings: CLISettings) -> dict[str, Any]:
             "image": "${NIUU_VLLM_IMAGE}",
             "restart": "unless-stopped",
             "ipc": "host",
+            # The NVIDIA image's entrypoint execs whatever follows; it has no
+            # default command, so the server has to be named here.
             "command": [
-                "--model",
+                "vllm",
+                "serve",
                 vllm.model,
                 "--port",
                 str(vllm.port),

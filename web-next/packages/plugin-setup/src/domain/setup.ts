@@ -123,9 +123,18 @@ export interface StackChanges {
 
 export type ApplyState = 'idle' | 'applying' | 'applied' | 'failed';
 
+/** How far a long step is; totalBytes is 0 when the size is unknown. */
+export interface Progress {
+  phase: 'pulling' | 'starting' | 'downloading' | 'loading' | 'warming' | 'serving' | string;
+  detail: string;
+  completedBytes: number;
+  totalBytes: number;
+}
+
 export interface VllmStatus {
   state: 'absent' | 'starting' | 'ready' | 'failed' | string;
   detail: string;
+  progress?: Progress | null;
 }
 
 export interface ApplyStatus {
@@ -134,6 +143,31 @@ export interface ApplyStatus {
   detail: string;
   changes: Record<string, unknown>;
   vllm: VllmStatus | null;
+  progress?: Progress | null;
+}
+
+/** One short completion sent to the local model, and what came back. */
+export interface ModelTestResult {
+  ok: boolean;
+  model: string;
+  reply: string;
+  latencyMs: number;
+  detail: string;
+}
+
+/** Percent for a progress bar, or null when the total is unknown. */
+export function progressPercent(progress: Progress | null | undefined): number | null {
+  if (!progress || progress.totalBytes <= 0) return null;
+  return Math.max(
+    0,
+    Math.min(100, Math.round((progress.completedBytes / progress.totalBytes) * 100)),
+  );
+}
+
+/** True while the local model is still on its way up and worth polling for. */
+export function localModelPending(status: ApplyStatus | undefined): boolean {
+  const state = status?.vllm?.state;
+  return state === 'starting' || state === 'absent';
 }
 
 export const LOCAL_BIND_HOST = '127.0.0.1';

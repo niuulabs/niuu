@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useOptionalService, useService } from '@niuulabs/plugin-sdk';
 import {
   isEnrollmentActive,
+  localModelPending,
+  type ApplyStatus,
   type ConnectIntegrationInput,
   type OAuthClientInput,
   type StackChanges,
@@ -220,10 +222,16 @@ export function isApplySettled(state: string | undefined): boolean {
   return state === 'applied' || state === 'failed';
 }
 
+/** Keep polling while the apply runs, and after it while the local model is still coming up. */
+export function shouldPollStack(status: ApplyStatus | undefined): boolean {
+  if (!isApplySettled(status?.state)) return true;
+  return localModelPending(status);
+}
+
 /**
- * Polls the apply status once *started*, until it settles. The platform
- * restarts during an apply, so failed reads are expected for a while and
- * never stop the poll.
+ * Polls the apply status once *started*, until it settles and the local
+ * model (when there is one) serves. The platform restarts during an apply,
+ * so failed reads are expected for a while and never stop the poll.
  */
 export function useStackStatus(started: boolean) {
   const service = useSetupService();
@@ -234,7 +242,13 @@ export function useStackStatus(started: boolean) {
     retry: false,
     staleTime: 0,
     refetchInterval: (query) =>
-      started && !isApplySettled(query.state.data?.state) ? APPLY_POLL_MS : false,
+      started && shouldPollStack(query.state.data) ? APPLY_POLL_MS : false,
     refetchIntervalInBackground: true,
   });
+}
+
+/** One short completion to the local model; the result is kept until the next run. */
+export function useTestModel() {
+  const service = useSetupService();
+  return useMutation({ mutationFn: () => service.testModel() });
 }

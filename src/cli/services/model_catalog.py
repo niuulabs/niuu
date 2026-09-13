@@ -51,6 +51,14 @@ CURATED_MODELS: tuple[CuratedModel, ...] = (
 )
 
 
+def expected_weight_bytes(model: str) -> int:
+    """Size of a curated model's weights on disk, 0 for a model not in the catalog."""
+    for entry in CURATED_MODELS:
+        if entry.model == model:
+            return entry.weight_gib * 1024**3
+    return 0
+
+
 def model_options(accelerator_memory_gib: int) -> list[ModelOption]:
     """Curated models with a fit verdict for *accelerator_memory_gib* (0 = unknown)."""
     options: list[ModelOption] = []

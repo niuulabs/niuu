@@ -152,8 +152,10 @@ class TestRender:
         settings.docker.vllm.model = "nvidia/Nemotron-3-Nano-30B-A3B"
         doc = sc.render_compose(settings)
         vllm = doc["services"]["vllm"]
-        assert "--model" in vllm["command"]
-        assert vllm["command"][vllm["command"].index("--model") + 1] == settings.docker.vllm.model
+        # The NVIDIA image's entrypoint execs the command; bare `--model` flags
+        # made it run `exec --model`, which bash rejects.
+        assert vllm["command"][:3] == ["vllm", "serve", settings.docker.vllm.model]
+        assert "--port" in vllm["command"]
         devices = vllm["deploy"]["resources"]["reservations"]["devices"]
         assert devices[0]["driver"] == "nvidia"
         assert doc["services"]["niuu"]["depends_on"]["vllm"] == {"condition": "service_started"}
@@ -364,6 +366,30 @@ class TestStackFiles:
             sc.read_stack_overrides(bad)
         with pytest.raises(ValueError, match="mapping"):
             sc.load_stack_settings(bad, tmp_path / "none.yaml")
+
+    def test_stack_file_records_absolute_paths_and_rejects_home_relative_ones(
+        self, settings: CLISettings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The platform container has another HOME: a `~` in stack.yaml sent the
+        apply to a directory nothing mounted, where it rendered a second bundle
+        with a fresh Postgres password against the existing data directory."""
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        settings.docker.compose_dir = "~/.niuu/docker"
+        data = tmp_path / "data"
+        path = sc.write_stack_file(settings, data)
+        recorded = yaml.safe_load(path.read_text())
+        assert recorded["docker"]["compose_dir"] == str(tmp_path / "home" / ".niuu" / "docker")
+        assert recorded["docker"]["data_dir"] == str(data)
+        assert sc.load_stack_settings(path, data / "none.yaml").docker.compose_dir == str(
+            tmp_path / "home" / ".niuu" / "docker"
+        )
+
+        stale = tmp_path / "stale.yaml"
+        stale.write_text(
+            yaml.safe_dump({"docker": {"compose_dir": "~/.niuu/docker", "data_dir": str(data)}})
+        )
+        with pytest.raises(ValueError, match="absolute path"):
+            sc.load_stack_settings(stale, data / "none.yaml")
 
     def test_compose_args_and_command(self, settings: CLISettings) -> None:
         args = sc.compose_args(settings)

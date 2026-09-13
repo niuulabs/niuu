@@ -1,5 +1,6 @@
 import type {
   ApplyStatus,
+  ModelTestResult,
   CatalogEntry,
   ConnectIntegrationInput,
   Enrollment,
@@ -51,4 +52,6 @@ export interface ISetupService {
   /** Re-render the bundle with the staged changes and restart what changed. */
   applyStack(): Promise<ApplyStatus>;
   stackStatus(): Promise<ApplyStatus>;
+  /** One short completion to the local model; rejects while it is not serving. */
+  testModel(): Promise<ModelTestResult>;
 }

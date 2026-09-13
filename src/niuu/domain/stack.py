@@ -88,11 +88,27 @@ class StackView:
 
 
 @dataclass(frozen=True)
+class Progress:
+    """How far a long step is: a phase, a sentence, and bytes when they are known.
+
+    ``total_bytes`` is 0 when the size is unknown; ``completed_bytes`` still
+    counts what has arrived so the UI can show movement without a bar.
+    """
+
+    phase: str
+    detail: str
+    completed_bytes: int = 0
+    total_bytes: int = 0
+
+
+@dataclass(frozen=True)
 class VllmStatus:
     """Where the local model container is: absent, starting, ready or failed."""
 
     state: str
     detail: str = ""
+    # What "starting" is doing right now: downloading, loading or warming up.
+    progress: Progress | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +120,19 @@ class ApplyStatus:
     detail: str = ""
     changes: dict[str, Any] = field(default_factory=dict)
     vllm: VllmStatus | None = None
+    # While applying: what `docker compose up` is doing (image pulls mostly).
+    progress: Progress | None = None
+
+
+@dataclass(frozen=True)
+class ModelTestResult:
+    """One short completion sent to the local model, and what came back."""
+
+    ok: bool
+    model: str
+    reply: str
+    latency_ms: int
+    detail: str = ""
 
 
 def deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
