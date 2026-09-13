@@ -685,7 +685,9 @@ body:has(.setup-page) .niuu-dialog-content {
 }
 .setup-dialog__back {
   align-self: flex-start;
-  padding-left: 0;
+  gap: 10px;
+  padding: 8px 14px 8px 10px;
+  margin: -4px 0 -4px -10px;
 }
 .setup-chip--inline {
   margin-left: 8px;
