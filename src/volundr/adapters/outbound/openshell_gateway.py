@@ -1432,7 +1432,7 @@ class OpenShellGatewayPodManager(
                         '  source="/tmp/$cli-home"\n'
                         '  if [ -d "$source" ]; then\n'
                         '    mkdir -p "$HOME_ROOT/.$cli"\n'
-                        '    cp -a "$source/." "$HOME_ROOT/.$cli/"\n'
+                        '    cp -af "$source/." "$HOME_ROOT/.$cli/"\n'
                         "  fi\n"
                         "done\n"
                     ),

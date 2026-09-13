@@ -853,7 +853,9 @@ def test_native_lifecycle_calls_authenticated_gateway(monkeypatch, method, rpc):
 
 
 @pytest.mark.asyncio
-async def test_legacy_stop_preserves_sandbox_volume(monkeypatch):
+async def test_legacy_stop_preserves_sandbox_volume(monkeypatch, tmp_path):
+    import subprocess
+
     adapter = _import_adapter(monkeypatch)
     client = _FakeOpenShellGatewayClient(adapter)
     session = _session()
@@ -873,6 +875,23 @@ async def test_legacy_stop_preserves_sandbox_volume(monkeypatch):
     assert client.deleted == []
     assert 'source="/tmp/$cli-home"' in client.bootstrap_execs[0]["script"]
     assert adapter._status_from_sandbox(stopped) == SessionStatus.STOPPED
+
+    # Git plugin caches contain read-only pack files even for the owning user.
+    source_root = tmp_path / "tmp"
+    source = source_root / "codex-home"
+    destination = tmp_path / "home" / ".codex"
+    source.mkdir(parents=True)
+    destination.mkdir(parents=True)
+    (source / "cache.pack").write_text("updated cache")
+    (destination / "cache.pack").write_text("old cache")
+    (destination / "cache.pack").chmod(0o444)
+    script = (
+        client.bootstrap_execs[0]["script"]
+        .replace("HOME_ROOT=/sandbox", f"HOME_ROOT={tmp_path / 'home'}")
+        .replace('source="/tmp/$cli-home"', f'source="{source_root}/$cli-home"')
+    )
+    subprocess.run(["sh", "-c", script], check=True, capture_output=True)
+    assert (destination / "cache.pack").read_text() == "updated cache"
 
 
 @pytest.mark.asyncio
