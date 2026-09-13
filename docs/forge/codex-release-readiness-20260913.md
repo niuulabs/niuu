@@ -1,10 +1,14 @@
 # Codex / local Forge release readiness
 
-**Prepared and staged; not activated.** September 13, 2026, 21:33 UTC checkpoint.
-The remaining operational step is a newly coordinated maintenance window with
-fresh preservation checks, Spark first. No shared API, owner gateway/native
-session, database, Voice/Live/dictation service or web preview was restarted during
-this preparation. No owner prompt or approval was resent.
+**Spark activated; Thor not deployed.** The frozen candidate was activated on
+Spark at 22:00 UTC on September 13, 2026, following fresh preservation checks and
+a newly announced Spark-only window. See the [Spark deployment checkpoint](codex-spark-deployment-20260913.md)
+for observed results and limits. No session gateway/native owner, database,
+Voice/Live/dictation service or web preview was restarted; no prompt was resent.
+
+The preparation evidence below is the historical **21:33 UTC** checkpoint, not a
+claim that those older snapshots authorized the later cutover. Thor remains on
+its restored baseline and needs separate operational review before any deployment.
 
 ## Frozen release pair
 
@@ -95,8 +99,9 @@ Postmaster identities are explicitly protected, distinct from transient database
 connection children. Trusted TLS health on port 9501, HTTP health on 9500 and
 unchanged static preview content on 5300 passed. No TLS exception was used.
 
-**Still live:** Thor is the healthy restored old API (documentation `c6d80980` over
-the original `44f85dc3` code); Spark retains the earlier `72f8fdbe` canary. The three
+**At preparation time:** Thor was the healthy restored old API (documentation
+`c6d80980` over the original `44f85dc3` code); Spark retained the earlier `72f8fdbe`
+canary. The later Spark deployment is recorded separately above. The three
 older sessions terminated in the incident were not automatically resumed. Their
 saved history remains separate from unprovable prior unflushed state.
 

@@ -55,9 +55,13 @@ remains intact; later test success does not erase its impact.
 
 ## Current release status
 
-The repaired candidate and safety-only rollback are **prepared and staged on both
-hosts**, with validation and current preservation checks recorded in the
-[release-readiness checkpoint](codex-release-readiness-20260913.md). Thor remains
-on its restored old API; Spark retains the earlier API canary. A new coordinated
-maintenance window and fresh guards are still required before activation. No
-successful Thor deployment is claimed by these release notes.
+The repaired candidate is **deployed on Spark**, following the user's Spark-first
+instruction and fresh guards in the September 13, 22:00–22:15 UTC window. The
+[deployment checkpoint](codex-spark-deployment-20260913.md) records preservation
+results, the old API's forced shutdown, and the important absence of live Spark
+gateways during this canary. No active-user-turn cutover proof is inferred.
+
+Thor remains on its restored old API, untouched by this rollout. Both frozen
+artifacts remain staged on both hosts; preparation tests are in the
+[release-readiness checkpoint](codex-release-readiness-20260913.md). No successful
+Thor deployment or existing-gateway adoption is claimed.
