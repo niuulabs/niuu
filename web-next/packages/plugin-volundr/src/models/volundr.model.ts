@@ -101,6 +101,8 @@ export interface VolundrRepo {
   url: string;
   defaultBranch: string;
   branches: string[];
+  /** The Git account (connection credential name) that listed this repository. */
+  account?: string;
 }
 
 // ---------------------------------------------------------------------------

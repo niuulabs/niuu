@@ -337,6 +337,8 @@ describe('LaunchWizard step components', () => {
       repo: 'github.com/niuulabs/volundr',
       branch: 'main',
       workspaceId: '',
+      // no integrations were handed to the step, so nothing is attached for the clone
+      selectedIntegrations: [],
     });
     expect(update).toHaveBeenCalledWith({ branch: 'feat/coverage' });
     expect(update).toHaveBeenCalledWith({ sessionName: 'coverage-session' });
@@ -439,7 +441,12 @@ describe('LaunchWizard step components', () => {
     expect(onApplyPreset).toHaveBeenCalledWith(PRESET.id);
 
     fireEvent.change(screen.getByTestId('runtime-engine'), { target: { value: 'skuld-codex' } });
-    expect(update).toHaveBeenCalledWith({ definition: 'skuld-codex', model: 'gpt-test' });
+    // the engine's account (the OpenAI key) rides along with the engine choice
+    expect(update).toHaveBeenCalledWith({
+      definition: 'skuld-codex',
+      model: 'gpt-test',
+      selectedIntegrations: ['int-openai'],
+    });
 
     fireEvent.click(screen.getByText('show advanced'));
     fireEvent.click(screen.getByText('add env var'));

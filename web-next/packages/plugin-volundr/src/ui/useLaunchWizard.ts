@@ -19,6 +19,7 @@ import type {
   VolundrWorkspace,
 } from '../models/volundr.model';
 
+import { availableEngines, withEngineProvider } from './launchEngines';
 import {
   buildPresetComparisonPayload,
   buildPresetPayload,
@@ -171,13 +172,25 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
         setIntegrations(nextIntegrations);
         setIntegrationCatalog(nextIntegrationCatalog);
         setProviderError(providerFailure);
-        setForm((current) => ({
-          ...current,
-          selectedIntegrations:
+        setForm((current) => {
+          // Attach the Git account that listed the repository and exactly one
+          // AI account for the engine, so a plain "next, next, launch" works.
+          const withSources =
             current.sourcetype === 'git'
-              ? withDefaultSourceControlIntegrations(current.selectedIntegrations, nextIntegrations)
-              : current.selectedIntegrations,
-        }));
+              ? withDefaultSourceControlIntegrations(
+                  current.selectedIntegrations,
+                  nextIntegrations,
+                  nextRepos,
+                  current.repo,
+                )
+              : current.selectedIntegrations;
+          const engine = availableEngines(
+            nextSessionDefinitions.length ? nextSessionDefinitions : FALLBACK_SESSION_DEFINITIONS,
+            nextIntegrations,
+            nextIntegrationCatalog,
+          ).find((candidate) => candidate.definition.key === current.definition);
+          return { ...current, selectedIntegrations: withEngineProvider(withSources, engine) };
+        });
         setClusterResources(nextClusterResources);
         setPresets(nextPresets);
         setTargets(nextTargets);
@@ -319,20 +332,34 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
       const preset = presets.find((item) => launchSpecRef(item) === ref);
       if (!preset) return;
 
+      const presetDefinition = normalizeDefinitionKey(
+        preset.workloadType || `skuld-${preset.cliTool}`,
+      );
       setForm((current) => ({
         ...current,
         presetId: ref,
-        definition: normalizeDefinitionKey(preset.workloadType || `skuld-${preset.cliTool}`),
+        definition: presetDefinition,
         model: preset.model ?? current.model,
         systemPrompt: preset.systemPrompt ?? '',
         personaName:
           typeof preset.workloadConfig.persona === 'string' ? preset.workloadConfig.persona : '',
         workloadConfig: { ...preset.workloadConfig },
         selectedCredentials: [...preset.envSecretRefs],
-        selectedIntegrations:
+        selectedIntegrations: withEngineProvider(
           preset.source?.type === 'git' || (!preset.source && current.sourcetype === 'git')
-            ? withDefaultSourceControlIntegrations(preset.integrationIds, integrations)
+            ? withDefaultSourceControlIntegrations(
+                preset.integrationIds,
+                integrations,
+                repos,
+                preset.source?.type === 'git' ? preset.source.repo : current.repo,
+              )
             : [...preset.integrationIds],
+          availableEngines(
+            sessionDefinitions.length ? sessionDefinitions : FALLBACK_SESSION_DEFINITIONS,
+            integrations,
+            integrationCatalog,
+          ).find((candidate) => candidate.definition.key === presetDefinition),
+        ),
         mcpServers: [...preset.mcpServers],
         envVars: Object.entries(preset.envVars).map(([key, value]) => ({ key, value })),
         setupScripts: [...preset.setupScripts],
@@ -355,7 +382,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
         yamlContent: '',
       }));
     },
-    [presets, integrations],
+    [presets, integrations, integrationCatalog, repos, sessionDefinitions],
   );
 
   useEffect(() => {

@@ -41,7 +41,7 @@ import {
 } from './LaunchWizardPrimitives';
 import { AdvancedRuntimeSection } from './LaunchWizardAdvancedRuntime';
 import { EngineSelect } from './EngineSelect';
-import { availableEngines } from './launchEngines';
+import { availableEngines, withEngineProvider } from './launchEngines';
 import './LaunchWizard.css';
 
 export function RuntimeStep({
@@ -184,8 +184,25 @@ export function RuntimeStep({
             unavailableName={selectedDefinition}
             error={providerError}
             testId="runtime-engine"
+            selectedIntegrationIds={form.selectedIntegrations}
+            onProviderChange={(connectionId) =>
+              update({
+                selectedIntegrations: withEngineProvider(
+                  form.selectedIntegrations,
+                  engines.find((engine) => engine.definition.key === form.definition),
+                  connectionId,
+                ),
+              })
+            }
             onChange={(definitionKey) => {
-              const patch: Partial<WizardForm> = { definition: definitionKey };
+              const patch: Partial<WizardForm> = {
+                definition: definitionKey,
+                // the new engine's account rides along in the attached integrations
+                selectedIntegrations: withEngineProvider(
+                  form.selectedIntegrations,
+                  engines.find((engine) => engine.definition.key === definitionKey),
+                ),
+              };
               const defaultModel = pickDefaultModelForDefinition(
                 models,
                 definitionKey,

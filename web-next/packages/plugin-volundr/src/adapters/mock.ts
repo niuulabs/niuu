@@ -193,6 +193,7 @@ const SEED_REPOS: VolundrRepo[] = [
     url: 'https://github.com/niuulabs/volundr',
     defaultBranch: 'main',
     branches: ['main', 'develop', 'feat/host-profiles'],
+    account: 'github-primary',
   },
   {
     provider: 'github',

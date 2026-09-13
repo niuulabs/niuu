@@ -172,6 +172,70 @@ describe('QuickLaunch', () => {
     expect(screen.getByTestId('quick-launch-go')).toBeDisabled();
   });
 
+  it('attaches the chosen AI account and the Git account that listed the repository', async () => {
+    const volundr = mockVolundr();
+    volundr.getFeatures = vi
+      .fn()
+      .mockResolvedValue({ miniMode: false, localMountsEnabled: false, fileManagerEnabled: true });
+    volundr.getTargets = async () => [
+      {
+        id: 'cluster-a',
+        slug: 'a',
+        name: 'Cluster A',
+        baseUrl: 'https://forge.example',
+        enabled: true,
+        isDefault: true,
+        tags: [],
+      },
+    ];
+    const connections = await volundr.getIntegrations();
+    volundr.getIntegrations = async () => [
+      ...connections,
+      {
+        id: 'anthropic-work',
+        slug: 'anthropic',
+        integrationType: 'ai_provider',
+        credentialName: 'anthropic-work',
+        enabled: true,
+        credentialStatus: 'active',
+        createdAt: '',
+        updatedAt: '',
+      },
+      {
+        id: 'github-other',
+        slug: 'github',
+        integrationType: 'source_control',
+        credentialName: 'github-other',
+        enabled: true,
+        credentialStatus: 'active',
+        createdAt: '',
+        updatedAt: '',
+      },
+    ];
+    volundr.startSession = vi.fn().mockResolvedValue({ id: 'picked-session' });
+    renderQuickLaunch(volundr);
+    await screen.findByTestId('quick-launch-engine');
+    // two Anthropic accounts power Claude Code: the person picks the key
+    const account = await screen.findByTestId('quick-launch-engine-account');
+    fireEvent.change(account, { target: { value: 'anthropic-work' } });
+    expect(screen.getByTestId('quick-launch-engine-hint')).toHaveTextContent(
+      'Uses Anthropic (Claude API) · anthropic-work',
+    );
+    fireEvent.change(await screen.findByTestId('quick-launch-repo'), {
+      target: { value: 'github.com/niuulabs/volundr' },
+    });
+    fireEvent.click(screen.getByTestId('quick-launch-go'));
+    await waitFor(() =>
+      expect(volundr.startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          definition: 'skuldClaude',
+          // the key, the account that listed the repository (not github-other), Linear
+          integrationIds: ['anthropic-work', 'github-primary', 'linear-main'],
+        }),
+      ),
+    );
+  });
+
   it('reports a provider lookup failure instead of offering nothing', async () => {
     const volundr = mockVolundr();
     volundr.getIntegrationCatalog = async () => {

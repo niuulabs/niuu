@@ -54,7 +54,8 @@ describe('EngineSelect', () => {
         .getAllByRole('option')
         .map((option) => option.textContent),
     ).toEqual(['Claude Code', 'Codex']);
-    expect(screen.getByTestId('engine-hint')).toHaveTextContent('The usual choice.');
+    // the definition's description is not repeated here; the account line is what matters
+    expect(screen.getByTestId('engine-hint')).not.toHaveTextContent('The usual choice.');
     expect(screen.getByTestId('engine-hint')).toHaveTextContent(
       'Uses Claude Code (subscription) · claude-code-setup',
     );
@@ -111,6 +112,69 @@ describe('EngineSelect', () => {
       'Could not load your providers: offline',
     );
     expect(screen.queryByTestId('engine-empty')).not.toBeInTheDocument();
+  });
+
+  it('offers the account when more than one powers the engine', () => {
+    const onProviderChange = vi.fn();
+    const two = engine('skuldClaude', 'Claude Code');
+    two.providers = [
+      two.providers[0]!,
+      {
+        connection: {
+          id: 'key-conn',
+          slug: 'anthropic',
+          credentialName: 'anthropic-work',
+          createdAt: '',
+          updatedAt: '',
+        },
+        entry: {
+          id: 'anthropic',
+          slug: 'anthropic',
+          name: 'Anthropic (Claude API)',
+          description: '',
+          integrationType: 'ai_provider',
+          modelVendor: 'anthropic',
+        },
+        vendor: 'anthropic',
+      },
+    ];
+    render(
+      <EngineSelect
+        engines={[two]}
+        value="skuldClaude"
+        onChange={vi.fn()}
+        selectedIntegrationIds={['git-1', 'key-conn']}
+        onProviderChange={onProviderChange}
+        testId="engine"
+      />,
+    );
+    const account = screen.getByTestId('engine-account');
+    expect(
+      within(account)
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual([
+      'Claude Code (subscription) · claude-code-setup',
+      'Anthropic (Claude API) · anthropic-work',
+    ]);
+    expect(account).toHaveValue('key-conn');
+    expect(screen.getByTestId('engine-hint')).toHaveTextContent(
+      'Uses Anthropic (Claude API) · anthropic-work',
+    );
+    fireEvent.change(account, { target: { value: 'skuldClaude-conn' } });
+    expect(onProviderChange).toHaveBeenCalledWith('skuldClaude-conn');
+  });
+
+  it('shows no account picker for a single provider', () => {
+    render(
+      <EngineSelect
+        engines={[engine('skuldClaude', 'Claude Code')]}
+        value="skuldClaude"
+        onChange={vi.fn()}
+        testId="engine"
+      />,
+    );
+    expect(screen.queryByTestId('engine-account')).not.toBeInTheDocument();
   });
 
   it('waits while providers load instead of claiming none is connected', () => {

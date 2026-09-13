@@ -868,7 +868,12 @@ function normalizeRepoList(
     );
   }
 
-  return Object.values(payload).flat().map(normalizeRepo);
+  // The platform groups repositories by the account that listed them (the
+  // connection's credential name); keeping it lets a launch clone with that
+  // account's token rather than whichever Git account happens to win.
+  return Object.entries(payload).flatMap(([account, repos]) =>
+    repos.map((repo) => ({ ...normalizeRepo(repo), account })),
+  );
 }
 
 type SubscriberSet<T> = Set<(item: T) => void>;

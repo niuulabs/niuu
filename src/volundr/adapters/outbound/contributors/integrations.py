@@ -100,6 +100,13 @@ class IntegrationContributor(SessionContributor):
                     "file": conn.credential_name,
                 }
 
+        # The Claude transports default to the subscription login and strip
+        # API-key variables from the spawn environment; a session whose only
+        # Claude credential is an API key must say so or it starts with none.
+        subscription = any(var["name"] == "SKULD__CLAUDE_AUTH" for var in env_vars)
+        if not subscription and "ANTHROPIC_API_KEY" in manifest["env"]:
+            env_vars.append({"name": "SKULD__CLAUDE_AUTH", "value": "api_key"})
+
         values: dict[str, Any] = {}
         if env_vars:
             values["envVars"] = env_vars

@@ -68,6 +68,7 @@ export function LaunchWizard(props: LaunchWizardProps) {
               form={form}
               update={update}
               repos={repos}
+              integrations={integrations}
               branchOptions={
                 repos.find((repo) => repo.cloneUrl === form.repo)?.branches.length
                   ? (repos.find((repo) => repo.cloneUrl === form.repo)?.branches ?? [])

@@ -16,7 +16,11 @@ import type { IVolundrService } from '../ports/IVolundrService';
 import type { SessionSource } from '../models/volundr.model';
 import { definitionToTaskType, slugifySessionName, validateSessionName } from './launchWizardModel';
 import { EngineSelect } from './EngineSelect';
-import { availableEngines } from './launchEngines';
+import {
+  availableEngines,
+  quickLaunchIntegrationIds,
+  selectedEngineProvider,
+} from './launchEngines';
 import { LaunchWizard } from './LaunchWizard';
 import { useFeatures } from './useFeatures';
 
@@ -106,9 +110,12 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const selectedDef =
-    engines.find((engine) => engine.definition.key === definitionKey)?.definition ??
-    engines[0]?.definition;
+  const selectedEngine =
+    engines.find((engine) => engine.definition.key === definitionKey) ?? engines[0];
+  const selectedDef = selectedEngine?.definition;
+  // Which account runs the engine when several could; the first otherwise.
+  const [providerId, setProviderId] = useState('');
+  const selectedProvider = selectedEngineProvider(selectedEngine, providerId ? [providerId] : []);
 
   // Auto-derive the session name from the folder's last path segment when blank.
   const effectiveName = useMemo(() => {
@@ -155,6 +162,16 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
         definition: def?.key,
         taskType: def ? definitionToTaskType(def.key) : undefined,
         initialPrompt: prompt.trim() || undefined,
+        // Exactly one AI credential (the chosen account), the Git account
+        // that listed the repository, and the rest of the person's
+        // integrations; never every AI account at once.
+        integrationIds: quickLaunchIntegrationIds({
+          provider: selectedProvider,
+          integrations: integrationsQuery.data ?? [],
+          repos,
+          repoUrl: path,
+          local,
+        }),
         terminalRestricted: false,
         workloadConfig: {},
       });
@@ -342,6 +359,8 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
               engines={engines}
               value={selectedDef?.key ?? ''}
               onChange={setDefinitionKey}
+              selectedIntegrationIds={providerId ? [providerId] : []}
+              onProviderChange={setProviderId}
               loading={providersLoading}
               error={providerError}
               testId="quick-launch-engine"

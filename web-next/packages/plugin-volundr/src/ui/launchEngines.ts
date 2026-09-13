@@ -1,3 +1,4 @@
+import type { RepoRecord } from '@niuulabs/ui';
 import type {
   CatalogEntry,
   IntegrationConnection,
@@ -33,6 +34,13 @@ export interface EngineOption {
 
 /** Statuses under which a stored credential cannot run a session right now. */
 const UNUSABLE_CREDENTIAL_STATUSES = new Set(['missing', 'enrolling']);
+
+/**
+ * Session-definition labels that keep an engine out of the launch dialogs:
+ * `batch` engines exist for Ting workflows, `remote-control` ones are driven
+ * from the Claude app rather than launched here.
+ */
+export const HIDDEN_ENGINE_LABELS: ReadonlySet<string> = new Set(['batch', 'remote-control']);
 
 /** Vendor aliases, kept in step with `niuu.domain.model_runtime.normalize_model_vendor`. */
 const VENDOR_ALIASES: Record<string, string> = {
@@ -82,6 +90,7 @@ export function availableEngines(
   const providers = connectedProviders(integrations, catalog);
   const engines: EngineOption[] = [];
   for (const definition of definitions) {
+    if (definition.labels.some((label) => HIDDEN_ENGINE_LABELS.has(label))) continue;
     const vendors = definition.compatibleProviders.map(normalizeVendor);
     const powering =
       vendors.length === 0
@@ -93,14 +102,115 @@ export function availableEngines(
   return engines;
 }
 
-/** "Claude Code (subscription) · claude-code-setup" style summary of what powers an engine. */
+/** "Claude Code (subscription) · claude-code-setup" style label for one connected provider. */
+export function describeProvider(provider: ConnectedProvider): string {
+  const name = provider.entry.name || provider.entry.slug || provider.connection.id;
+  const account = provider.connection.credentialName;
+  const expired = provider.connection.credentialStatus === 'auth_required';
+  const label = account && account !== name ? `${name} · ${account}` : name;
+  return expired ? `${label} (sign-in expired)` : label;
+}
+
+/** Every provider that powers an engine, comma-separated. */
 export function describeEngineProviders(option: EngineOption): string {
-  const parts = option.providers.map((provider) => {
-    const name = provider.entry.name || provider.entry.slug || provider.connection.id;
-    const account = provider.connection.credentialName;
-    const expired = provider.connection.credentialStatus === 'auth_required';
-    const label = account && account !== name ? `${name} · ${account}` : name;
-    return expired ? `${label} (sign-in expired)` : label;
-  });
-  return Array.from(new Set(parts)).join(', ');
+  return Array.from(new Set(option.providers.map(describeProvider))).join(', ');
+}
+
+/**
+ * The provider a launch will use for an engine: the one already chosen among
+ * `selectedIntegrationIds`, otherwise the first that powers the engine.
+ */
+export function selectedEngineProvider(
+  engine: EngineOption | undefined,
+  selectedIntegrationIds: readonly string[],
+): ConnectedProvider | undefined {
+  if (!engine) return undefined;
+  return (
+    engine.providers.find((provider) => selectedIntegrationIds.includes(provider.connection.id)) ??
+    engine.providers[0]
+  );
+}
+
+/**
+ * The integration selection with exactly one of the engine's providers in it:
+ * `providerId` when given, otherwise whichever is already selected, otherwise
+ * the first. Providers of other engines the person chose explicitly stay.
+ */
+export function withEngineProvider(
+  selectedIntegrationIds: readonly string[],
+  engine: EngineOption | undefined,
+  providerId?: string,
+): string[] {
+  if (!engine || engine.providers.length === 0) return [...selectedIntegrationIds];
+  const chosen =
+    (providerId && engine.providers.find((provider) => provider.connection.id === providerId)) ||
+    selectedEngineProvider(engine, selectedIntegrationIds);
+  if (!chosen) return [...selectedIntegrationIds];
+  const others = new Set(engine.providers.map((provider) => provider.connection.id));
+  return [...selectedIntegrationIds.filter((id) => !others.has(id)), chosen.connection.id];
+}
+
+/**
+ * The source-control connections a repository should be cloned with: the
+ * account that listed it when the catalog knows, otherwise every enabled
+ * Git account (a pasted URL could belong to any of them).
+ */
+export function sourceControlIdsForRepo(
+  integrations: IntegrationConnection[],
+  repos: readonly RepoRecord[],
+  repoUrl: string,
+): string[] {
+  const sources = integrations.filter(
+    (connection) => connection.integrationType === 'source_control' && connection.enabled !== false,
+  );
+  const account = repos.find((repo) => repo.cloneUrl === repoUrl)?.account;
+  const owner = account && sources.find((connection) => connection.credentialName === account);
+  if (owner) return [owner.id];
+  return sources.map((connection) => connection.id);
+}
+
+/**
+ * The integration selection with its source-control part replaced by the
+ * accounts that should clone `repoUrl` (see `sourceControlIdsForRepo`).
+ */
+export function withRepoSourceControl(
+  selectedIntegrationIds: readonly string[],
+  integrations: IntegrationConnection[],
+  repos: readonly RepoRecord[],
+  repoUrl: string,
+): string[] {
+  const sources = new Set(
+    integrations
+      .filter((connection) => connection.integrationType === 'source_control')
+      .map((connection) => connection.id),
+  );
+  return [
+    ...selectedIntegrationIds.filter((id) => !sources.has(id)),
+    ...sourceControlIdsForRepo(integrations, repos, repoUrl),
+  ];
+}
+
+/**
+ * What the quick launch attaches to a session: the chosen AI provider, the
+ * Git account that owns the repository (none for a local folder), and every
+ * other enabled non-AI integration (trackers, messaging) the person has.
+ */
+export function quickLaunchIntegrationIds(input: {
+  provider: ConnectedProvider | undefined;
+  integrations: IntegrationConnection[];
+  repos: readonly RepoRecord[];
+  repoUrl: string;
+  local: boolean;
+}): string[] {
+  const ids: string[] = [];
+  if (input.provider) ids.push(input.provider.connection.id);
+  if (!input.local)
+    ids.push(...sourceControlIdsForRepo(input.integrations, input.repos, input.repoUrl));
+  for (const connection of input.integrations) {
+    if (connection.enabled === false) continue;
+    if (connection.integrationType === 'ai_provider') continue;
+    if (connection.integrationType === 'source_control') continue;
+    ids.push(connection.id);
+  }
+  return Array.from(new Set(ids));
 }

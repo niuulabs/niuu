@@ -9,6 +9,11 @@ import {
   connectedProviders,
   describeEngineProviders,
   normalizeVendor,
+  quickLaunchIntegrationIds,
+  selectedEngineProvider,
+  sourceControlIdsForRepo,
+  withEngineProvider,
+  withRepoSourceControl,
 } from './launchEngines';
 
 const definition = (
@@ -161,5 +166,138 @@ describe('describeEngineProviders', () => {
       CATALOG,
     );
     expect(describeEngineProviders(engine!)).toBe('OpenAI Codex (ChatGPT)');
+  });
+});
+
+describe('hidden engines', () => {
+  it('keeps batch and remote-control definitions out of the launch dialogs', () => {
+    const batch = { ...definition('skuldCodexExec', ['openai']), labels: ['session', 'batch'] };
+    const remote = {
+      ...definition('skuldClaudeRemote', ['anthropic']),
+      labels: ['session', 'remote-control'],
+    };
+    const engines = availableEngines(
+      [...DEFINITIONS, batch, remote],
+      [connection('claude-code'), connection('codex')],
+      CATALOG,
+    );
+    expect(engines.map((engine) => engine.definition.key)).toEqual([
+      'skuldClaude',
+      'skuldCodex',
+      'skuldOpenCode',
+    ]);
+  });
+});
+
+describe('account selection', () => {
+  const engines = () =>
+    availableEngines(
+      [definition('skuldClaude', ['anthropic'], 'Claude Code')],
+      [
+        connection('anthropic', { id: 'key' }),
+        connection('claude-code', { id: 'login' }),
+        connection('github', { id: 'git', integrationType: 'source_control' }),
+      ],
+      CATALOG,
+    );
+
+  it('reports the selected account, falling back to the first', () => {
+    const [engine] = engines();
+    expect(selectedEngineProvider(engine, [])?.connection.id).toBe('key');
+    expect(selectedEngineProvider(engine, ['git', 'login'])?.connection.id).toBe('login');
+    expect(selectedEngineProvider(undefined, ['login'])).toBeUndefined();
+  });
+
+  it('keeps exactly one of the engine accounts in the selection', () => {
+    const [engine] = engines();
+    expect(withEngineProvider(['git'], engine)).toEqual(['git', 'key']);
+    expect(withEngineProvider(['git', 'key'], engine, 'login')).toEqual(['git', 'login']);
+    expect(withEngineProvider(['git', 'login'], engine)).toEqual(['git', 'login']);
+    expect(withEngineProvider(['git', 'login'], engine, 'nope')).toEqual(['git', 'login']);
+    expect(withEngineProvider(['git'], undefined)).toEqual(['git']);
+  });
+});
+
+describe('source control for a repository', () => {
+  const integrations = [
+    connection('github', {
+      id: 'work',
+      credentialName: 'github-work',
+      integrationType: 'source_control',
+    }),
+    connection('github', {
+      id: 'home',
+      credentialName: 'github-home',
+      integrationType: 'source_control',
+    }),
+    connection('github', {
+      id: 'off',
+      credentialName: 'github-off',
+      integrationType: 'source_control',
+      enabled: false,
+    }),
+    connection('linear', { id: 'tracker', integrationType: 'issue_tracker' }),
+    connection('claude-code', { id: 'login' }),
+  ];
+  const repos = [
+    {
+      provider: 'github',
+      org: 'acme',
+      name: 'api',
+      cloneUrl: 'https://github.com/acme/api.git',
+      defaultBranch: 'main',
+      branches: ['main'],
+      account: 'github-work',
+    },
+  ];
+
+  it('clones with the account that listed the repository', () => {
+    expect(sourceControlIdsForRepo(integrations, repos, 'https://github.com/acme/api.git')).toEqual(
+      ['work'],
+    );
+  });
+
+  it('offers every enabled account for a pasted URL', () => {
+    expect(sourceControlIdsForRepo(integrations, repos, 'https://github.com/x/y.git')).toEqual([
+      'work',
+      'home',
+    ]);
+  });
+
+  it('swaps the source-control part of a selection', () => {
+    expect(
+      withRepoSourceControl(
+        ['home', 'login'],
+        integrations,
+        repos,
+        'https://github.com/acme/api.git',
+      ),
+    ).toEqual(['login', 'work']);
+  });
+
+  it('assembles what the quick launch attaches', () => {
+    const [engine] = availableEngines(
+      [definition('skuldClaude', ['anthropic'])],
+      integrations,
+      CATALOG,
+    );
+    expect(
+      quickLaunchIntegrationIds({
+        provider: engine!.providers[0],
+        integrations,
+        repos,
+        repoUrl: 'https://github.com/acme/api.git',
+        local: false,
+      }),
+    ).toEqual(['login', 'work', 'tracker']);
+    expect(
+      quickLaunchIntegrationIds({
+        provider: engine!.providers[0],
+        integrations,
+        repos,
+        repoUrl: '/home/me/code',
+        local: true,
+      }),
+    ).toEqual(['login', 'tracker']);
   });
 });

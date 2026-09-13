@@ -285,3 +285,40 @@ async def test_claude_subscription_selects_subscription_auth(session, principal)
         "file": "claude-code-credentials",
         "key": "token",
     }
+
+
+async def test_anthropic_api_key_alone_selects_api_key_auth(session, principal):
+    """The Claude transports strip API-key variables unless told otherwise, so a
+    session whose only Claude credential is a key must be told to keep it."""
+    from dataclasses import replace
+
+    registry = IntegrationRegistry(
+        definitions_from_config([d.model_dump() for d in Settings().integrations.definitions])
+    )
+    connection = replace(_linear_connection(), slug="anthropic", credential_name="anthropic-work")
+    result = await IntegrationContributor(integration_registry=registry).contribute(
+        session, SessionContext(principal=principal, integration_connections=(connection,))
+    )
+    assert result.values["envVars"] == [{"name": "SKULD__CLAUDE_AUTH", "value": "api_key"}]
+    assert result.values["secretManifest"]["env"]["ANTHROPIC_API_KEY"] == {
+        "file": "anthropic-work",
+        "key": "api_key",
+    }
+
+
+async def test_subscription_wins_when_both_claude_credentials_are_attached(session, principal):
+    from dataclasses import replace
+
+    registry = IntegrationRegistry(
+        definitions_from_config([d.model_dump() for d in Settings().integrations.definitions])
+    )
+    key = replace(_linear_connection(), slug="anthropic", credential_name="anthropic-work")
+    login = replace(
+        _linear_connection(conn_id="conn-claude"),
+        slug="claude-code",
+        credential_name="claude-code-credentials",
+    )
+    result = await IntegrationContributor(integration_registry=registry).contribute(
+        session, SessionContext(principal=principal, integration_connections=(key, login))
+    )
+    assert result.values["envVars"] == [{"name": "SKULD__CLAUDE_AUTH", "value": "subscription"}]

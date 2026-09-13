@@ -264,7 +264,29 @@ dropdown the launch dialog says what the selected engine is for and which of
 your accounts it will use; **Manage providers** opens **Settings →
 Integrations**, where accounts are added, tested and signed in again. With no
 AI provider connected the dialog says so and links there instead of offering
-an engine that could not start.
+an engine that could not start. Engines meant for other callers stay out of
+the list: the `batch` Codex definition is Ting's, and Remote Control sessions
+are driven from the Claude app.
+
+When more than one account could run the engine (a Claude subscription and
+an Anthropic API key, two ChatGPT logins) an **Account** dropdown appears and
+the launch attaches exactly that one; nothing else about the choice is
+implicit. A session gets one AI credential, the Git account that listed the
+repository it clones (a pasted URL gets every Git account, since any of them
+might own it), and the rest of your integrations such as a tracker. The
+advanced launch shows the same selection under **Access**, where it can be
+changed by hand. With only an Anthropic API key attached the session is told
+to use it (`SKULD__CLAUDE_AUTH=api_key`); with a subscription attached, that
+wins.
+
+Two things a fresh sandbox needs are handled by the session itself: the Codex
+app-server refuses to start until its `CODEX_HOME` directory exists, so the
+transport creates it, and if the app-server still cannot start the session
+reports that error rather than quietly running a different Codex. The
+interactive Claude engine answers the CLI's first-run questions (onboarding,
+workspace trust, the bypass-permissions notice) in the CLI's own config
+before it starts, because nobody is at that keyboard and the OAuth token in
+the environment does not count as a login for the onboarding screen.
 
 ## Updating
 
