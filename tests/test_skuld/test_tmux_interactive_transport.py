@@ -36,7 +36,9 @@ class FakeTmuxInteractiveTransport(TmuxInteractiveTransport):
         self.commands: list[tuple[tuple[str, ...], dict[str, str] | None]] = []
         self.loaded_buffers: list[str] = []
         self.session_exists = False
-        self.capture_stdout = ""
+        # A running REPL shows its input prompt; tests that model a booting or
+        # menu-showing pane override this.
+        self.capture_stdout = "❯ "
         self.pane_lines = ["%1\t0\tmain\t1\tclaude\t200\t50\t2\t47"]
         # SAFETY: redirect the socket dir + runtime root into the per-test workspace so the
         # periodic sweep loop started by start() can NEVER touch the real /tmp/skuld-tmux-* dir
@@ -986,6 +988,36 @@ async def test_initial_prompt_waits_for_repl_ready_then_delivers(tmp_path: Path)
     assert any("seed prompt here" in buf for buf in transport.loaded_buffers), (
         "the seed prompt must be delivered after the REPL prompt rendered"
     )
+
+
+@pytest.mark.asyncio
+async def test_user_message_waits_for_repl_ready_before_pasting(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A message that arrives while the CLI is still booting used to be pasted at
+    once: the text landed in the input box, the Enter was swallowed by the
+    startup screen, and the message sat there unsent."""
+    monkeypatch.setenv("SKULD__TMUX_REPL_READY_TIMEOUT_SECONDS", "3")
+    monkeypatch.setenv("SKULD__TMUX_MENU_POLL_STEP_SECONDS", "0.02")
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    transport.capture_stdout = "Welcome to Claude Code\nstill booting"
+    await transport.start()
+
+    delivery = asyncio.create_task(transport.send_message("hello there"))
+    await asyncio.sleep(0.15)
+    assert not any("hello there" in buf for buf in transport.loaded_buffers), (
+        "nothing may be pasted before the REPL prompt has rendered"
+    )
+    transport.capture_stdout = "Welcome to Claude Code\n❯ "
+    await asyncio.wait_for(delivery, timeout=3)
+    assert any("hello there" in buf for buf in transport.loaded_buffers)
+
+    # once seen, later deliveries do not poll the pane again
+    before = len([args for args, _ in transport.commands if args[0] == "capture-pane"])
+    await transport.send_message("second")
+    after = len([args for args, _ in transport.commands if args[0] == "capture-pane"])
+    assert after == before
+    await transport.stop()
 
 
 @pytest.mark.asyncio

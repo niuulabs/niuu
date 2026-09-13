@@ -315,6 +315,11 @@ class TmuxInteractiveTransport(CLITransport):
 
         self._alive = False
         self._initial_prompt_sent = False
+        # Set once the CLI's input prompt has been seen in the pane. Until then
+        # every delivery waits for it: text pasted into a still-booting REPL
+        # lands in the input box while the Enter is swallowed by the startup
+        # screen, and the message sits there unsent.
+        self._repl_ready_seen = False
         self._lifecycle_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
         # Correlation FIFO of (msg_id, request_id, normalized_text) for each user
@@ -430,11 +435,18 @@ class TmuxInteractiveTransport(CLITransport):
         """Bound-poll the pane until the CLI's input prompt has rendered, so the seed
         prompt isn't pasted into a still-booting REPL. Best-effort: returns after the
         timeout even if no marker appears, so a marker change never wedges startup."""
+        if self._repl_ready_seen:
+            return
         deadline = time.monotonic() + max(self._repl_ready_timeout_s, 0.0)
         while time.monotonic() < deadline:
             if self._repl_looks_ready(await self._capture_pane_text()):
+                self._repl_ready_seen = True
                 return
             await asyncio.sleep(self._menu_poll_step_s)
+        logger.warning(
+            "tmux: REPL prompt not seen within %.0fs; delivering anyway",
+            self._repl_ready_timeout_s,
+        )
 
     async def _ensure_started(self) -> None:
         async with self._lifecycle_lock:
@@ -701,6 +713,9 @@ class TmuxInteractiveTransport(CLITransport):
         try:
             if not self.is_alive:
                 await self._ensure_started()
+            # A message that arrives while the REPL is still booting must wait
+            # for its prompt, exactly like the seed prompt does.
+            await self._wait_for_repl_ready()
             if self._turn_active:
                 # Mid-turn steer: keep the SAME turn alive. Refresh the idle
                 # clock so the completion watchdog doesn't fire in the gap
@@ -1565,6 +1580,7 @@ class TmuxInteractiveTransport(CLITransport):
             return str(value)
 
     async def _create_session(self) -> None:
+        self._repl_ready_seen = False
         env = self._spawn_env()
         self._prepare_claude_config(env)
         self._write_hook_settings()
