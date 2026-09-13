@@ -527,7 +527,7 @@ async def get_slash_commands(refresh: bool = Query(True)) -> dict[str, Any]:
 
 @app.post("/api/slash-commands/send")
 async def send_slash_command(body: _SlashCommandRequest) -> dict[str, str]:
-    """Send a slash command to the active CLI session as terminal input."""
+    """Dispatch a supported native action; `sent` is acceptance, not turn completion."""
     if not broker._transport:
         raise HTTPException(status_code=503, detail="Transport not initialized")
     command_text = "/" + body.command.strip().lstrip("/") + " " + body.arguments
@@ -545,12 +545,19 @@ async def send_slash_command(body: _SlashCommandRequest) -> dict[str, str]:
     command = body.command.strip()
     if not command:
         raise HTTPException(status_code=400, detail="Command is required")
-    await broker._transport.send_control(
-        "slash_command",
-        command=command,
-        arguments=body.arguments,
-        pane_id=body.pane_id,
-    )
+    try:
+        await broker._transport.send_control(
+            "slash_command",
+            command=command,
+            arguments=body.arguments,
+            pane_id=body.pane_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (RuntimeError, TimeoutError) as exc:
+        # A timeout may have crossed the native boundary. Never retry a command
+        # automatically (fork/review/compact may already have been accepted).
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     name = command.split(maxsplit=1)[0]
     if not name.startswith("/"):
         name = f"/{name}"

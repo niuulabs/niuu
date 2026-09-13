@@ -89,14 +89,15 @@ _CODEX_APP_SERVER_SLASH_COMMANDS = [
     },
     {
         "name": "/goal",
-        "description": "Show or set the current Codex thread goal.",
+        "description": "Show, set, edit, pause, resume, or clear the current Codex goal.",
+        "argument_hint": "[objective | set/edit <objective> | pause | resume | clear]",
         "source": "codex-app-server",
         "method": "thread/goal",
         "capability": "thread.goal",
     },
     {
         "name": "/title",
-        "description": "Rename the current Codex thread.",
+        "description": "Legacy Forge alias for /rename, not the Codex TUI title-settings menu.",
         "source": "codex-app-server",
         "method": "thread/name/set",
         "capability": "thread.name.set",
@@ -107,6 +108,35 @@ _CODEX_APP_SERVER_SLASH_COMMANDS = [
         "source": "codex-app-server",
         "method": "thread/fork",
         "capability": "thread.fork",
+    },
+    {
+        "name": "/rename",
+        "description": "Rename the current Codex thread.",
+        "argument_hint": "<name>",
+        "source": "codex-app-server",
+        "method": "thread/name/set",
+        "capability": "thread.name.set",
+    },
+    {
+        "name": "/status",
+        "description": "Read native thread status and Forge's requested next-turn settings.",
+        "source": "codex-app-server",
+        "method": "thread/read",
+        "capability": "thread.read",
+    },
+    {
+        "name": "/skills",
+        "description": "List Codex skills for this workspace (not Claude filesystem commands).",
+        "source": "codex-app-server",
+        "method": "skills/list",
+        "capability": "skills.list",
+    },
+    {
+        "name": "/mcp",
+        "description": "List this Codex thread's MCP servers and tool counts.",
+        "source": "codex-app-server",
+        "method": "mcpServerStatus/list",
+        "capability": "mcp.status",
     },
 ]
 _CODEX_APP_SERVER_SLASH_BY_NAME = {
@@ -2543,14 +2573,12 @@ class CodexWebSocketTransport(CLITransport):
             if not arguments and len(command_parts) > 1:
                 arguments = command_parts[1]
             if not command:
-                return
+                raise ValueError("Command is required")
             if not command.startswith("/"):
                 command = f"/{command}"
-            try:
-                await self._dispatch_slash_action(command, arguments)
-            except Exception as exc:
-                logger.warning("Codex slash command failed: %s", command, exc_info=True)
-                await self._emit_system_notice(f"{command} failed: {exc}")
+            # Let the broker's correlated control-error / HTTP error path report
+            # rejection. A notice followed by a successful return is a false ACK.
+            await self._dispatch_slash_action(command, arguments)
             return
 
         logger.debug("Codex WS: unhandled control subtype=%s", subtype)
@@ -2558,11 +2586,12 @@ class CodexWebSocketTransport(CLITransport):
     async def _dispatch_slash_action(self, command: str, arguments: str = "") -> None:
         """Dispatch a UI slash command to its backing Codex app-server action."""
         if command not in _CODEX_APP_SERVER_SLASH_BY_NAME:
-            logger.debug("Codex WS: unknown slash command=%s", command)
-            return
+            raise ValueError(f"{command} is not supported by the Codex app-server adapter")
         if not self._thread_id:
-            logger.info("Codex %s ignored without an active thread", command)
-            return
+            raise RuntimeError("No active Codex thread")
+
+        if arguments and command in {"/compact", "/fork", "/status", "/skills", "/mcp"}:
+            raise ValueError(f"{command} does not accept arguments in Forge")
 
         if command == "/compact":
             await self._send_rpc("thread/compact/start", {"threadId": self._thread_id})
@@ -2585,16 +2614,34 @@ class CodexWebSocketTransport(CLITransport):
             return
 
         if command == "/goal":
+            parts = arguments.split(maxsplit=1)
+            action = parts[0] if parts else ""
+            objective = parts[1].strip() if len(parts) > 1 else ""
+            if action in {"pause", "resume", "clear"}:
+                if objective:
+                    raise ValueError(f"Usage: /goal {action}")
+                if action == "clear":
+                    await self._send_rpc("thread/goal/clear", {"threadId": self._thread_id})
+                else:
+                    await self._send_rpc(
+                        "thread/goal/set",
+                        {
+                            "threadId": self._thread_id,
+                            "status": "paused" if action == "pause" else "active",
+                        },
+                    )
+                outcome = {"pause": "paused", "resume": "resumed", "clear": "cleared"}[action]
+                await self._emit_system_notice(f"Goal {outcome}.")
+                return
+            if action in {"set", "edit"} and not objective:
+                raise ValueError(f"Usage: /goal {action} <objective>")
             if arguments:
-                await self._send_rpc(
-                    "thread/goal/set",
-                    {
-                        "threadId": self._thread_id,
-                        "objective": arguments,
-                        "status": "active",
-                    },
-                )
-                await self._emit_system_notice(f"Goal set: {arguments}")
+                objective = objective if action in {"set", "edit"} else arguments
+                goal_params = {"threadId": self._thread_id, "objective": objective}
+                if action != "edit":
+                    goal_params["status"] = "active"
+                await self._send_rpc("thread/goal/set", goal_params)
+                await self._emit_system_notice(f"Goal set: {objective}")
                 return
             result = await self._send_rpc("thread/goal/get", {"threadId": self._thread_id})
             goal = result.get("goal") if isinstance(result, dict) else None
@@ -2608,15 +2655,66 @@ class CodexWebSocketTransport(CLITransport):
             await self._emit_system_notice("No Codex goal is set.")
             return
 
-        if command == "/title":
+        if command in {"/title", "/rename"}:
             if not arguments:
-                await self._emit_system_notice("Usage: /title <new thread title>")
-                return
+                raise ValueError("Usage: /rename <new thread title>")
             await self._send_rpc(
                 "thread/name/set",
                 {"threadId": self._thread_id, "name": arguments},
             )
             await self._emit_system_notice(f"Thread renamed: {arguments}")
+            return
+
+        if command == "/status":
+            result = await self._send_rpc(
+                "thread/read", {"threadId": self._thread_id, "includeTurns": False}
+            )
+            thread = result["thread"]
+            await self._emit_system_notice(
+                f"Codex thread: {thread['id']}\nNative status: {json.dumps(thread.get('status'))}\n"
+                f"Requested next-turn model: {self._model}\n"
+                f"Requested effort: {self._reasoning_effort}"
+            )
+            return
+
+        if command == "/skills":
+            result = await self._send_rpc(
+                "skills/list", {"cwds": [self.workspace_dir], "forceReload": True}
+            )
+            lines = []
+            for entry in result["data"]:
+                lines.extend(f"Skill discovery error: {error}" for error in entry.get("errors", []))
+                for skill in entry.get("skills", []):
+                    state = "enabled" if skill.get("enabled", True) else "disabled"
+                    lines.append(f"${skill['name']} ({state}): {skill.get('description', '')}")
+            await self._emit_system_notice(
+                "\n".join(lines) or "No Codex skills reported for this workspace."
+            )
+            return
+
+        if command == "/mcp":
+            lines = []
+            cursor = None
+            seen = set()
+            while True:
+                params = {"threadId": self._thread_id}
+                if cursor is not None:
+                    params["cursor"] = cursor
+                result = await self._send_rpc("mcpServerStatus/list", params)
+                for server in result["data"]:
+                    lines.append(
+                        f"{server['name']}: {len(server.get('tools', {}))} tools; "
+                        f"auth {server.get('authStatus', 'unknown')}"
+                    )
+                cursor = result.get("nextCursor")
+                if cursor is None:
+                    break
+                if not isinstance(cursor, str) or cursor in seen:
+                    raise RuntimeError("Codex returned an invalid or repeated MCP cursor")
+                seen.add(cursor)
+            await self._emit_system_notice(
+                "\n".join(lines) or "No MCP servers reported for this thread."
+            )
             return
 
         if command == "/fork":

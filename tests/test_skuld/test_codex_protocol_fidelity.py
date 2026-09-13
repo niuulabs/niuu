@@ -4,6 +4,7 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi.testclient import TestClient
 
 from skuld.transports.codex_ws import CodexWebSocketTransport
 
@@ -103,3 +104,162 @@ async def test_plan_items_keep_authoritative_public_text(tmp_path):
     assert completed[0]["id"] == "plan"
     assert completed[0]["text"] == "Corrected plan"
     assert completed[0]["complete"] is True
+
+
+@pytest.mark.parametrize(
+    "arguments, method, params",
+    [
+        ("pause", "thread/goal/set", {"status": "paused"}),
+        ("resume", "thread/goal/set", {"status": "active"}),
+        ("clear", "thread/goal/clear", {}),
+        ("edit Keep investigating", "thread/goal/set", {"objective": "Keep investigating"}),
+        ("set pause", "thread/goal/set", {"objective": "pause", "status": "active"}),
+    ],
+)
+async def test_goal_controls_are_not_replacement_objectives(tmp_path, arguments, method, params):
+    transport = CodexWebSocketTransport(str(tmp_path))
+    transport._thread_id = "thread"
+    transport._send_rpc = AsyncMock(return_value={})
+    await transport.send_control("slash_command", command="/goal", arguments=arguments)
+    transport._send_rpc.assert_awaited_once_with(method, {"threadId": "thread", **params})
+
+
+@pytest.mark.parametrize(
+    "command, arguments",
+    [
+        ("/not-real", ""),
+        ("/rename", ""),
+        ("/compact", "ignored"),
+        ("/goal", "edit"),
+        ("/goal", "pause ignored"),
+        ("/skills", "not-an-invocation"),
+    ],
+)
+async def test_unsupported_command_semantics_reject_before_rpc(tmp_path, command, arguments):
+    transport = CodexWebSocketTransport(str(tmp_path))
+    transport._thread_id = "thread"
+    transport._send_rpc = AsyncMock()
+    with pytest.raises(ValueError):
+        await transport.send_control("slash_command", command=command, arguments=arguments)
+    transport._send_rpc.assert_not_awaited()
+
+
+async def test_skills_come_from_codex_workspace_discovery(tmp_path):
+    transport = CodexWebSocketTransport(str(tmp_path))
+    transport._thread_id = "thread"
+    transport._send_rpc = AsyncMock(
+        return_value={
+            "data": [
+                {
+                    "cwd": str(tmp_path),
+                    "skills": [{"name": "triage", "description": "Triage issues", "enabled": True}],
+                    "errors": [],
+                }
+            ]
+        }
+    )
+    transport._emit = AsyncMock()
+    await transport.send_control("slash_command", command="/skills")
+    transport._send_rpc.assert_awaited_once_with(
+        "skills/list", {"cwds": [str(tmp_path)], "forceReload": True}
+    )
+    assert "$triage (enabled): Triage issues" in transport._emit.await_args.args[0]["content"]
+
+
+async def test_mcp_discovery_consumes_pages_and_uses_native_thread(tmp_path):
+    transport = CodexWebSocketTransport(str(tmp_path))
+    transport._thread_id = "thread"
+    transport._send_rpc = AsyncMock(
+        side_effect=[
+            {
+                "data": [{"name": "one", "tools": {"read": {}}, "authStatus": "oAuth"}],
+                "nextCursor": "next",
+            },
+            {
+                "data": [{"name": "two", "tools": {}, "authStatus": "notLoggedIn"}],
+                "nextCursor": None,
+            },
+        ]
+    )
+    transport._emit = AsyncMock()
+    await transport.send_control("slash_command", command="/mcp")
+    assert [call.args[1] for call in transport._send_rpc.await_args_list] == [
+        {"threadId": "thread"},
+        {"threadId": "thread", "cursor": "next"},
+    ]
+    content = transport._emit.await_args.args[0]["content"]
+    assert "one: 1 tools" in content and "two: 0 tools" in content
+
+
+async def test_mcp_repeated_cursor_is_not_an_infinite_loop(tmp_path):
+    transport = CodexWebSocketTransport(str(tmp_path))
+    transport._thread_id = "thread"
+    transport._send_rpc = AsyncMock(return_value={"data": [], "nextCursor": "repeated"})
+    with pytest.raises(RuntimeError, match="repeated MCP cursor"):
+        await transport.send_control("slash_command", command="/mcp")
+    assert transport._send_rpc.await_count == 2
+
+
+@pytest.mark.parametrize("command", ["/rename", "/title"])
+async def test_rename_and_legacy_alias_share_native_action(tmp_path, command):
+    transport = CodexWebSocketTransport(str(tmp_path))
+    transport._thread_id = "thread"
+    transport._send_rpc = AsyncMock(return_value={})
+    await transport.send_control("slash_command", command=command, arguments="Review work")
+    transport._send_rpc.assert_awaited_once_with(
+        "thread/name/set", {"threadId": "thread", "name": "Review work"}
+    )
+
+
+async def test_status_reads_native_metadata_without_hydrating_all_turns(tmp_path):
+    transport = CodexWebSocketTransport(
+        str(tmp_path), model="gpt-6-astra", reasoning_effort="xhigh"
+    )
+    transport._thread_id = "thread"
+    transport._send_rpc = AsyncMock(
+        return_value={"thread": {"id": "thread", "status": {"type": "idle"}}}
+    )
+    transport._emit = AsyncMock()
+    await transport.send_control("slash_command", command="/status")
+    transport._send_rpc.assert_awaited_once_with(
+        "thread/read", {"threadId": "thread", "includeTurns": False}
+    )
+    assert "Requested next-turn model: gpt-6-astra" in transport._emit.await_args.args[0]["content"]
+
+
+def test_broker_keeps_native_command_hints_and_method_metadata():
+    from skuld.broker import Broker
+
+    entries = Broker._normalize_slash_commands(
+        [
+            {
+                "name": "/rename",
+                "description": "Rename",
+                "source": "codex-app-server",
+                "argument_hint": "<name>",
+                "method": "thread/name/set",
+                "capability": "thread.name.set",
+            }
+        ]
+    )
+    assert entries[0]["method"] == "thread/name/set"
+    assert entries[0]["argument_hint"] == "<name>"
+
+
+@pytest.mark.parametrize(
+    "error, status", [(ValueError("unsupported"), 400), (RuntimeError("native failure"), 502)]
+)
+def test_command_http_rejection_is_not_reported_as_sent(tmp_path, monkeypatch, error, status):
+    from types import SimpleNamespace
+
+    from skuld import broker_api
+
+    transport = CodexWebSocketTransport(str(tmp_path))
+    transport.send_control = AsyncMock(side_effect=error)
+    monkeypatch.setattr(broker_api, "_broker_getter", lambda: SimpleNamespace(_transport=transport))
+    # No lifespan context: this test must never initialize the application runtime.
+    response = TestClient(broker_api.app).post(
+        "/api/slash-commands/send", json={"command": "/review"}
+    )
+    assert response.status_code == status
+    assert response.json()["detail"] == str(error)

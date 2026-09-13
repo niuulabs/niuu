@@ -4461,6 +4461,11 @@ class Broker(
                     "description": description.strip(),
                     "kind": kind,
                     "source": source,
+                    **{
+                        key: item[key]
+                        for key in ("argument_hint", "method", "capability", "applies_to")
+                        if isinstance(item, dict) and isinstance(item.get(key), str)
+                    },
                 }
             )
         return normalized

@@ -1296,7 +1296,17 @@ class TestControl:
 
         commands = await t.discover_slash_commands(refresh=True)
         command_names = [command["name"] for command in commands]
-        assert command_names == ["/compact", "/review", "/goal", "/title", "/fork"]
+        assert command_names == [
+            "/compact",
+            "/review",
+            "/goal",
+            "/title",
+            "/fork",
+            "/rename",
+            "/status",
+            "/skills",
+            "/mcp",
+        ]
         compact = commands[0]
         assert compact["method"] == "thread/compact/start"
         assert compact["capability"] == "thread.compact"
@@ -1421,25 +1431,23 @@ class TestControl:
         t._thread_id = "thread-1"
         t._send_rpc = AsyncMock(return_value={})
 
-        await t.send_control("slash_command", command="/not-real")
+        with pytest.raises(ValueError, match="not supported"):
+            await t.send_control("slash_command", command="/not-real")
 
         t._send_rpc.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_slash_command_rpc_failure_emits_notice(self, tmp_path):
+    async def test_slash_command_rpc_failure_reaches_caller(self, tmp_path):
         t = _make_transport(tmp_path)
         t._thread_id = "thread-1"
         t._send_rpc = AsyncMock(side_effect=RuntimeError("method not found"))
         emit = _collect_emits(t)
 
-        await t.send_control("slash_command", command="/review")
+        with pytest.raises(RuntimeError, match="method not found"):
+            await t.send_control("slash_command", command="/review")
 
         t._send_rpc.assert_awaited_once()
-        assert emit.await_args.args[0] == {
-            "type": "system",
-            "subtype": "notice",
-            "content": "/review failed: method not found",
-        }
+        emit.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_steer_sends_turn_steer(self, tmp_path):
