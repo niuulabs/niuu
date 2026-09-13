@@ -10,6 +10,8 @@ A project can select the ordered files included in its bounded launch snapshot:
 }
 ```
 
+The Claude tmux appended capability hint also no longer prescribes TodoWrite, exactly one active task, or preferred subagent delegation. Existing input hooks and file-delivery capability help remain; planning and parallelism policy belongs to session/repository instructions.
+
 This augments the existing `project.json` identity manifest. Forge does not interpret role instructions, select a manager workflow, or require a coordinator-specific skill. The repository owns those policies. `AGENTS.md` can carry a compact shared working agreement and reference detailed skills; a Claude `CLAUDE.md` import can point to the same canonical instructions without duplicating their text.
 
 ## Contract

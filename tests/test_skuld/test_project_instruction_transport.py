@@ -28,7 +28,12 @@ async def test_codex_base_instructions_include_project_owned_guidance(tmp_path):
 
 def test_claude_tmux_appended_prompt_retains_project_bytes(tmp_path):
     transport = TmuxInteractiveTransport(str(tmp_path), system_prompt=INSTRUCTIONS)
-    assert transport._composed_system_prompt().endswith(INSTRUCTIONS)
+    prompt = transport._composed_system_prompt()
+    assert prompt.endswith(INSTRUCTIONS)
+    assert "exactly one in_progress" not in prompt
+    assert "Prefer subagents" not in prompt
+    assert "Use the TodoWrite tool" not in prompt
+    assert "present-file" in prompt
 
 
 async def test_grok_forwards_project_bytes_in_existing_extension(tmp_path):
