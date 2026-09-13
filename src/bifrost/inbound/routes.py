@@ -89,7 +89,10 @@ def _validation_summary(exc: Exception) -> str:
             parts.append(f"{location}: {error.get('msg', 'invalid')} (got {got})")
         more = exc.error_count() - len(parts)
         return "; ".join(parts) + (f" (+{more} more)" if more > 0 else "")
-    return str(exc)[:200] or exc.__class__.__name__
+    # Anything else here is the body failing to parse before validation. The
+    # exception text is not returned: it can carry internals, and the client
+    # only needs to know the body was not JSON.
+    return "the body is not valid JSON"
 
 
 # Header injected on responses when the agent's budget is approaching or at the
