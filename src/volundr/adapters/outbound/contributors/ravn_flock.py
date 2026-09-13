@@ -536,8 +536,10 @@ def _build_ravn_config(
 
     max_tasks = persona_override.get("max_concurrent_tasks") or global_max_concurrent_tasks
 
+    state_root = f"{workspace_root}/.ravn/{persona}"
     config: dict[str, Any] = {
         "persona": persona,
+        "memory": {"path": f"{state_root}/memory.db"},
         "mesh": {
             "enabled": True,
             "adapter": "nng",
@@ -568,10 +570,8 @@ def _build_ravn_config(
         "initiative": {
             "enabled": True,
             "max_concurrent_tasks": max_tasks,
-            # All personas share /workspace, but each daemon owns its queue.
-            # Sharing the default journal makes every sidecar restore the same
-            # interrupted task after a pod restart.
-            "queue_journal_path": f"{workspace_root}/.ravn/daemon/{persona}-queue.json",
+            # Each daemon owns its queue, cron store and local memory.
+            "queue_journal_path": f"{state_root}/daemon/queue.json",
         },
         "mimir": {
             "enabled": True,
@@ -1218,7 +1218,7 @@ class RavnFlockContributor(SessionContributor):
                 {"name": "RAVN_PEER_ID", "value": peer_id},
                 {"name": "RAVN_CONFIG", "value": _RAVN_CONFIG_MOUNT_PATH},
                 {"name": "HOME", "value": _WORKSPACE_MOUNT_PATH},
-                {"name": "RAVN_STATE_DIR", "value": f"{_WORKSPACE_MOUNT_PATH}/.ravn"},
+                {"name": "RAVN_STATE_DIR", "value": f"{_WORKSPACE_MOUNT_PATH}/.ravn/{persona}"},
                 {"name": "HOST", "value": self._mesh_host},
                 {"name": "PORT", "value": str(gw)},
                 {
@@ -1287,7 +1287,7 @@ class RavnFlockContributor(SessionContributor):
                     {
                         "HOME": "/sandbox/workspace",
                         "RAVN_CONFIG": config_path,
-                        "RAVN_STATE_DIR": "/sandbox/workspace/.ravn",
+                        "RAVN_STATE_DIR": f"/sandbox/workspace/.ravn/{persona}",
                         "RAVN_LOG_PATH": f"/sandbox/workspace/.flock/logs/{persona}.log",
                     }
                 )

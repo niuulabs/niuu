@@ -238,6 +238,17 @@ class TestContributorOutput:
         config_text = result.values["openshell"]["files"][workload["environment"]["RAVN_CONFIG"]]
         config = yaml.safe_load(config_text)
         assert config["persona"] == "coordinator"
+        state_dirs = set()
+        memory_paths = set()
+        for peer in workloads:
+            peer_env = peer["environment"]
+            peer_config = yaml.safe_load(
+                result.values["openshell"]["files"][peer_env["RAVN_CONFIG"]]
+            )
+            state_dirs.add(peer_env["RAVN_STATE_DIR"])
+            memory_paths.add(peer_config["memory"]["path"])
+            assert peer_config["memory"]["path"].startswith(peer_env["RAVN_STATE_DIR"] + "/")
+        assert len(state_dirs) == len(memory_paths) == len(workloads)
         assert config["permission"]["workspace_root"] == "/sandbox/workspace"
         assert config["initiative"]["queue_journal_path"].startswith("/sandbox/workspace/")
         assert "tcp://127.0.0.1:" in config_text
@@ -691,7 +702,7 @@ class TestMountedConfig:
         for ctr in result.pod_spec.extra_containers:
             env = {e["name"]: e["value"] for e in ctr["env"]}
             assert env["HOME"] == "/workspace"
-            assert env["RAVN_STATE_DIR"] == "/workspace/.ravn"
+            assert env["RAVN_STATE_DIR"] == f"/workspace/.ravn/{env['RAVN_PERSONA']}"
 
         journals = {
             yaml.safe_load(_extract_mounted_config(result.pod_spec, persona))["initiative"][
@@ -700,8 +711,8 @@ class TestMountedConfig:
             for persona in ("coordinator", "reviewer")
         }
         assert journals == {
-            "/workspace/.ravn/daemon/coordinator-queue.json",
-            "/workspace/.ravn/daemon/reviewer-queue.json",
+            "/workspace/.ravn/coordinator/daemon/queue.json",
+            "/workspace/.ravn/reviewer/daemon/queue.json",
         }
 
     async def test_ravn_config_uses_workspace_mount_root(self, session, flock_template):
