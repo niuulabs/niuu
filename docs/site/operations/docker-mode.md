@@ -194,7 +194,12 @@ An install never depends on an application someone else owns. The first time
 someone picks **Sign in** for GitHub or GitLab, the dialog asks for the client
 id of an application they create themselves, with a link to the right page:
 a GitHub *OAuth App* with *Enable Device Flow* ticked (its device-flow tokens
-do not expire; a secret is optional), or a GitLab application with the device
+do not expire and a secret is optional; they are requested with the `repo`,
+`read:org` and `workflow` scopes, so one sign-in reaches every repository the
+account can reach, and for an organisation that restricts third-party access
+you register an app the organisation owns, or approve the app in its
+settings, and the same token then covers the organisation and the personal
+repositories alike), or a GitLab application with the device
 grant enabled and the `api` and `read_user` scopes. The id is kept in the
 encrypted credential store (`PUT /api/v1/integrations/oauth-clients/{slug}`)
 and sign-in starts right after. A provider can carry several applications,

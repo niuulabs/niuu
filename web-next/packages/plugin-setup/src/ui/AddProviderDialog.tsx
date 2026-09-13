@@ -163,7 +163,7 @@ function SignInPane({
     <div className="setup-pane">
       {modeIntro(group, 'signin')}
       {accountField}
-      {usesApp && !connection ? (
+      {usesApp ? (
         <div className="setup-col" data-testid={`setup-oauth-app-choice-${entry.slug}`}>
           <span className="setup-row__title">Sign in through</span>
           {apps.map((app) => (

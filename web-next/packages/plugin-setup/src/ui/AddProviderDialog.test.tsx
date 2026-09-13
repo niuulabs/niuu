@@ -143,6 +143,8 @@ describe('AddProviderDialog', () => {
     );
     expect(screen.queryByTestId('setup-add-account-name')).not.toBeInTheDocument();
     expect(screen.getByTestId('setup-signin-needed-codex')).toBeInTheDocument();
+    // Codex signs in through its CLI: no application to choose
+    expect(screen.queryByTestId('setup-oauth-app-choice-codex')).not.toBeInTheDocument();
     expect(screen.getByTestId('setup-signin-start-codex')).not.toBeDisabled();
   });
 
@@ -248,6 +250,44 @@ describe('AddProviderDialog', () => {
     );
     // registering swapped the form back for the chooser, new application selected
     expect(screen.queryByTestId('setup-oauth-app-cancel-github')).not.toBeInTheDocument();
+  });
+
+  it('finishing a GitHub sign-in keeps the account on its own application', async () => {
+    const service = createMockSetupService({ latencyMs: 0 });
+    await service.registerOAuthClient('github', { app: 'niuulabs', clientId: 'Iv1.org' });
+    const groups = providerGroups(MOCK_CATALOG, git);
+    const pending = {
+      id: 'c1',
+      slug: 'github',
+      integrationType: 'source_control',
+      credentialName: 'github-niuulabs',
+      enabled: true,
+      config: { oauth_app: 'niuulabs' },
+      credentialStatus: 'auth_required',
+    };
+    renderWithSetup(
+      <AddProviderDialog
+        {...base}
+        noun="Git host"
+        groups={groups}
+        connections={[pending]}
+        initialGroupKey="github"
+        initialMode="signin"
+        initialCredentialName="github-niuulabs"
+      />,
+      { service },
+    );
+    const choice = await screen.findByTestId('setup-oauth-app-choice-github');
+    expect(choice).toBeInTheDocument();
+    expect(screen.getByTestId('setup-oauth-app-pick-github-niuulabs')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    const startSpy = vi.spyOn(service, 'startEnrollment');
+    fireEvent.click(screen.getByTestId('setup-signin-start-github'));
+    await waitFor(() =>
+      expect(startSpy).toHaveBeenCalledWith('github', 'github-niuulabs', 'niuulabs'),
+    );
   });
 
   it('goes straight to the token form when this install cannot run the sign-in', () => {

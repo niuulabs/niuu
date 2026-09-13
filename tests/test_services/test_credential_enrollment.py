@@ -181,6 +181,23 @@ async def test_an_account_remembers_its_own_oauth_application() -> None:
     assert "oauth_app" not in started.runner_ref
 
 
+async def test_a_retry_switches_the_account_to_the_application_chosen_now() -> None:
+    service, _, integration_repository, _, _ = _service()
+    principal = _principal("user-1")
+    first = await service.start(
+        principal=principal, slug="codex", credential_name="codex-org", oauth_app="default"
+    )
+    await service.cancel(first.id, principal)
+
+    again = await service.start(
+        principal=principal, slug="codex", credential_name="codex-org", oauth_app="niuulabs"
+    )
+
+    assert again.connection_id == first.connection_id
+    connection = await integration_repository.get_connection(again.connection_id)
+    assert connection.config["oauth_app"] == "niuulabs"
+
+
 async def test_same_credential_name_is_isolated_for_each_user() -> None:
     service, _, integration_repository, credential_store, _ = _service()
 

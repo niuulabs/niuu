@@ -123,6 +123,7 @@ async def test_an_account_signs_in_through_its_own_application() -> None:
 
     sent = dict(httpx.QueryParams(start.calls.last.request.content.decode()))
     assert sent["client_id"] == "Iv1.org"
+    assert sent["scope"] == "repo read:org workflow"
     assert started.runner_ref == {"runner": "oauth_device", "oauth_app": "niuu-org"}
     with pytest.raises(ValueError, match="No OAuth application 'other'"):
         await runner.start_enrollment(replace(enrollment(), runner_ref={"oauth_app": "other"}))
@@ -148,7 +149,8 @@ async def test_device_flow_end_to_end(runner: OAuthDeviceFlowRunner) -> None:
     assert started.state == CredentialEnrollmentState.AWAITING_USER
     assert started.verification_uri == "https://github.com/login/device"
     assert started.user_code == "ABCD-1234"
-    assert start.calls[0].request.content == b"client_id=Iv1.public"
+    sent = dict(httpx.QueryParams(start.calls[0].request.content.decode()))
+    assert sent == {"client_id": "Iv1.public", "scope": "repo read:org workflow"}
 
     token = respx.post(TOKEN_URL).mock(
         side_effect=[

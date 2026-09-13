@@ -348,8 +348,8 @@ describe('IntegrationsStep', () => {
     fireEvent.click(screen.getByTestId('setup-provider-finish-c1'));
     expect(screen.getByTestId('setup-add-dialog')).toBeInTheDocument();
     expect(await screen.findByTestId('setup-signin-start-github')).toBeInTheDocument();
-    // finishing an existing account: no application choice, it keeps its own
-    expect(screen.queryByTestId('setup-oauth-app-choice-github')).not.toBeInTheDocument();
+    // finishing an existing account still lets the person pick the application
+    expect(screen.getByTestId('setup-oauth-app-choice-github')).toBeInTheDocument();
   });
 
   it('shows loading, error and empty catalog states', () => {

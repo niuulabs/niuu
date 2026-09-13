@@ -358,6 +358,11 @@ class CredentialEnrollmentService:
             None,
         )
         if matching is not None:
+            if oauth_app and matching.config.get("oauth_app") != oauth_app:
+                # The person picked another application for this account
+                # (a retry, or the first attempt went through the wrong one).
+                matching = replace(matching, config={**matching.config, "oauth_app": oauth_app})
+                await self._integration_repository.save_connection(matching)
             return matching
 
         definition = self._integration_registry.get_definition(slug)

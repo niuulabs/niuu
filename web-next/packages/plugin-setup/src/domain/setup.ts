@@ -492,7 +492,8 @@ const OAUTH_APP_HELP: Record<string, OAuthAppHelp> = {
   github: {
     createUrl: 'https://github.com/settings/applications/new',
     createLabel: 'Create an OAuth App on GitHub',
-    createHint: 'Any name and URLs will do; the callback URL is not used.',
+    createHint:
+      'Any name and URLs will do; the callback URL is not used. For an organisation that restricts third-party apps, create it under that organisation or approve it there.',
     steps: ['Tick "Enable Device Flow" and save.'],
     idLabel: 'Client ID',
     secretLabel: 'Client secret',

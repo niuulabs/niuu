@@ -1011,12 +1011,18 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "args": ["-y", "@modelcontextprotocol/server-github"],
                 "env_from_credentials": {"GITHUB_PERSONAL_ACCESS_TOKEN": "token"},
             },
-            # Sign in with GitHub: device flow of a GitHub App whose public client
-            # id is configured under oauth.clients.github (no secret, no callback).
+            # Sign in with GitHub: device flow of an OAuth App the person owns
+            # (client id registered from the wizard or under oauth.clients.github;
+            # no secret, no callback). Without scopes GitHub hands out a token
+            # that only reads public data, so sessions could neither see private
+            # or organisation repositories nor push: `repo` covers code and pull
+            # requests everywhere the account can reach, `read:org` the
+            # organisation membership, `workflow` files under .github/workflows.
             oauth=OAuthSpecConfig(
                 authorize_url="https://github.com/login/oauth/authorize",
                 token_url=GITHUB_TOKEN_URL,
                 device_authorization_url=GITHUB_DEVICE_AUTHORIZATION_URL,
+                scopes=["repo", "read:org", "workflow"],
             ),
             credential_enrollment={
                 "method": "oauth_device",
