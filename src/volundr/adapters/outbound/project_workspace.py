@@ -136,22 +136,82 @@ class GitProjectWorkspace(ProjectWorkspace):
         await self.context(project)
         return project
 
+    def _read_bounded(self, path: Path) -> bytes:
+        # Bound the read itself, even if a file grows after the initial size check.
+        with path.open("rb") as stream:
+            return stream.read(self._context_bytes + 1)
+
+    async def _context_files(self, root: Path) -> tuple[tuple[str, ...], bool]:
+        """Repository-selected instructions, not a Forge role/workflow template.
+
+        Legacy repositories retain the optional PROJECT/CURRENT snapshot. An explicit
+        list is required in full: silently omitting a declared instruction is unsafe.
+        """
+        defaults = ("PROJECT.md", "context/CURRENT.md")
+        manifest = (root / "project.json").resolve()
+        if not manifest.is_relative_to(root):
+            raise ValueError("Project metadata cannot escape its checkout")
+        if not manifest.exists():
+            return defaults, False
+        if not manifest.is_file() or manifest.stat().st_size > self._context_bytes:
+            raise ValueError("project.json exceeds the configured context budget")
+        try:
+            raw = await asyncio.to_thread(self._read_bounded, manifest)
+            if len(raw) > self._context_bytes:
+                raise ValueError("manifest budget")
+            metadata = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeError):
+            raise ValueError("project.json must contain bounded UTF-8 JSON") from None
+        if not isinstance(metadata, dict):
+            raise ValueError("project.json must contain a JSON object")
+        if "context_files" not in metadata:
+            return defaults, False
+        names = metadata["context_files"]
+        if not isinstance(names, list) or not 1 <= len(names) <= 16:
+            raise ValueError("context_files must contain between 1 and 16 relative file paths")
+        for name in names:
+            if (
+                not isinstance(name, str)
+                or not name
+                or len(name) > 255
+                or "\\" in name
+                or any(ord(char) < 32 for char in name)
+                or Path(name).is_absolute()
+                or any(part in ("", ".", "..", ".git") for part in name.split("/"))
+            ):
+                raise ValueError("context_files must contain safe checkout-relative file paths")
+        if len(set(names)) != len(names):
+            raise ValueError("context_files cannot contain duplicate paths")
+        return tuple(names), True
+
     async def context(self, project: ForgeProject) -> tuple[str, str]:
         root = self._root(project)
-        files = ("PROJECT.md", "context/CURRENT.md")
+        files, required = await self._context_files(root)
         chunks = []
         for name in files:
             path = (root / name).resolve()
             if not path.is_relative_to(root):
                 raise ValueError("Project context cannot escape its checkout")
-            if path.is_file():
-                if path.stat().st_size > self._context_bytes:
-                    raise ValueError(
-                        f"{name} exceeds the project context budget; shorten the checkpoint"
-                    )
-                chunks.append(
-                    f"## {name}\n{await asyncio.to_thread(path.read_text, encoding='utf-8')}"
+            if ".git" in path.relative_to(root).parts:
+                raise ValueError("Project context cannot include Git metadata")
+            if not path.is_file():
+                if required:
+                    raise ValueError(f"Required project context file is missing: {name}")
+                continue
+            if path.stat().st_size > self._context_bytes:
+                raise ValueError(
+                    f"{name} exceeds the project context budget; shorten the checkpoint"
                 )
+            raw = await asyncio.to_thread(self._read_bounded, path)
+            if len(raw) > self._context_bytes:
+                raise ValueError(
+                    f"{name} exceeds the project context budget; shorten the checkpoint"
+                )
+            try:
+                content = raw.decode("utf-8")
+            except UnicodeError:
+                raise ValueError(f"Project context must be UTF-8 text: {name}") from None
+            chunks.append(f"## {name}\n{content}")
         context = "\n\n".join(chunks)
         if len(context.encode()) > self._context_bytes:
             raise ValueError("Project context exceeds its budget; shorten the checkpoint")

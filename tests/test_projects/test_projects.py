@@ -199,3 +199,22 @@ async def test_public_api_project_filter_and_legacy_sessions(rig):
         assert no_workers.json() == []
         conflict = await client.post("/api/v1/forge/sessions", json={**data, "name": "changed"})
         assert conflict.status_code == 409
+
+
+@pytest.mark.parametrize("role", ["coordinator", "worker", "reviewer", "researcher"])
+async def test_project_instructions_flow_without_forge_role_policy(rig, role):
+    service, forge, project, _, pods = rig
+    source = (
+        "## AGENTS.md\nPreserve all active objectives.\n## instructions/work.md\nUse our workflow."
+    )
+    service.workspace.context.return_value = (source, "instruction-revision")
+    await forge.create_and_start_session(
+        launch(project, role=role, objective="Review project navigation")
+    )
+    await asyncio.gather(*service.sessions._provisioning_tasks.values())
+    prompt = pods.start_calls[-1][1].values["session"]["systemPrompt"]
+    assert source in prompt
+    assert f"Project role: {role}" in prompt
+    assert "Review project navigation" in prompt
+    assert "Read the project's coordinator skill" not in prompt
+    assert "Tool delivery is not task completion" not in prompt

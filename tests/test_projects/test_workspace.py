@@ -105,3 +105,97 @@ async def test_history_symlink_is_rejected_before_creating_external_directories(
     with pytest.raises(ValueError, match="escape"):
         await GitProjectWorkspace().archive_receipt(project, receipt)
     assert not (outside / "handoffs").exists()
+
+
+async def test_manifest_snapshots_ordered_project_instructions_without_role_policy(checkout):
+    root, project = checkout
+    (root / "AGENTS.md").write_text("Read the skill appropriate to the assigned role.\n")
+    (root / "instructions").mkdir()
+    (root / "instructions" / "session.md").write_text(
+        "Keep additions to the original assignment.\n"
+    )
+    (root / "project.json").write_text(
+        json.dumps({"context_files": ["AGENTS.md", "instructions/session.md", "PROJECT.md"]})
+    )
+    workspace = GitProjectWorkspace()
+    text, revision = await workspace.context(project)
+    assert (
+        text.index("## AGENTS.md")
+        < text.index("## instructions/session.md")
+        < text.index("## PROJECT.md")
+    )
+    assert "Keep additions" in text
+    assert "context/CURRENT.md" not in text
+    (root / "instructions" / "session.md").write_text("Changed workflow.\n")
+    changed, changed_revision = await workspace.context(project)
+    assert changed != text and changed_revision != revision
+    assert changed_revision.split("@")[0] == revision.split("@")[0]
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        [],
+        "AGENTS.md",
+        None,
+        ["../secret"],
+        ["/etc/passwd"],
+        [".git/config"],
+        ["a/../secret"],
+        ["a\\b"],
+        ["a\nb"],
+        ["a//b"],
+        ["./a"],
+        ["PROJECT.md", "PROJECT.md"],
+        [1],
+        ["a"] * 17,
+    ],
+)
+async def test_declared_context_rejects_invalid_paths_and_lists(checkout, paths):
+    root, project = checkout
+    (root / "project.json").write_text(json.dumps({"context_files": paths}))
+    with pytest.raises(ValueError, match="context_files"):
+        await GitProjectWorkspace().context(project)
+
+
+async def test_declared_context_never_silently_omits_missing_instruction(checkout):
+    root, project = checkout
+    (root / "project.json").write_text(json.dumps({"context_files": ["AGENTS.md"]}))
+    with pytest.raises(ValueError, match="Required project context file is missing"):
+        await GitProjectWorkspace().context(project)
+
+
+async def test_declared_context_symlink_escape_utf8_and_combined_budget(checkout, tmp_path):
+    root, project = checkout
+    manifest = root / "project.json"
+    manifest.write_text(json.dumps({"context_files": ["AGENTS.md"]}))
+    secret = tmp_path / "private.md"
+    secret.write_text("private")
+    instruction = root / "AGENTS.md"
+    instruction.symlink_to(secret)
+    with pytest.raises(ValueError, match="escape"):
+        await GitProjectWorkspace().context(project)
+    instruction.unlink()
+    instruction.write_bytes(b"\xff")
+    with pytest.raises(ValueError, match="UTF-8"):
+        await GitProjectWorkspace().context(project)
+    instruction.write_text("x" * 80)
+    manifest.write_text(json.dumps({"context_files": ["PROJECT.md", "AGENTS.md"]}))
+    with pytest.raises(ValueError, match="budget"):
+        await GitProjectWorkspace(context_bytes=125).context(project)
+
+
+@pytest.mark.parametrize("contents", ["[]", "not JSON", '{"context_files":'])
+async def test_invalid_manifest_fails_context_instead_of_dropping_instructions(checkout, contents):
+    root, project = checkout
+    (root / "project.json").write_text(contents)
+    with pytest.raises(ValueError, match="project.json"):
+        await GitProjectWorkspace().context(project)
+
+
+async def test_context_rejects_symlink_to_git_metadata(checkout):
+    root, project = checkout
+    (root / "project.json").write_text(json.dumps({"context_files": ["AGENTS.md"]}))
+    (root / "AGENTS.md").symlink_to(root / ".git" / "config")
+    with pytest.raises(ValueError, match="Git metadata"):
+        await GitProjectWorkspace().context(project)
