@@ -200,7 +200,7 @@ class TestDockerMode:
         _fake_docker(bin_dir, info_ok=False)
         result = _run(tmp_path)
         assert result.returncode == 1
-        assert "daemon is not reachable" in result.stderr or "docker group" in result.stderr
+        assert "daemon is not reachable" in result.stderr or "usermod -aG docker" in result.stderr
         assert not (tmp_path / "home" / ".local" / "bin" / "niuu").exists()
 
     def test_says_how_to_create_the_data_dir(self, tmp_path: Path) -> None:
@@ -219,6 +219,27 @@ class TestDockerMode:
         assert result.returncode == 1
         assert "sudo mkdir -p" in result.stderr
         assert "NIUU_DATA_DIR" in result.stderr
+
+    def test_tells_a_linux_user_outside_the_docker_group_the_steps_in_order(
+        self, tmp_path: Path
+    ) -> None:
+        if os.uname().sysname != "Linux":
+            pytest.skip("the group check only applies on Linux")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _fake_docker(bin_dir, info_ok=False)
+        fake_id = bin_dir / "id"
+        fake_id.write_text(
+            '#!/bin/sh\ncase "$1" in -nG) echo users;; -un) echo me;; *) exit 1;; esac\n'
+        )
+        fake_id.chmod(fake_id.stat().st_mode | stat.S_IEXEC)
+        result = _run(tmp_path)
+        assert result.returncode == 1
+        lines = result.stderr.splitlines()
+        assert "  1. sudo usermod -aG docker me" in lines
+        assert lines.index("  1. sudo usermod -aG docker me") < lines.index(
+            "  3. run this installer again"
+        )
 
     def test_docker_is_required(self, tmp_path: Path) -> None:
         result = _run(tmp_path)

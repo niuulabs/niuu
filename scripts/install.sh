@@ -66,9 +66,11 @@ install_docker_mode() {
 
   if ! docker info >/dev/null 2>&1; then
     if [ "$(uname -s)" = "Linux" ] && ! id -nG 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
-      say "niuu: Docker is installed but this user ($(id -un)) cannot talk to it."
-      say "Add yourself to the docker group, then sign in again (or run 'newgrp docker') and rerun:"
-      say "  sudo usermod -aG docker $(id -un)"
+      say "niuu: Docker is installed but this user ($(id -un)) is not allowed to use it."
+      say "Fix it in three steps:"
+      say "  1. sudo usermod -aG docker $(id -un)"
+      say "  2. sign out and back in (or run: newgrp docker) so the group applies"
+      say "  3. run this installer again"
       exit 1
     fi
     fail "Docker is installed but the daemon is not reachable. Start it (e.g. 'sudo systemctl start docker') and rerun."
