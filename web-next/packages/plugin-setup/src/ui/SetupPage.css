@@ -210,20 +210,25 @@
   box-sizing: border-box;
   border-radius: var(--radius-full);
   border: 1px solid var(--color-border);
-  color: var(--color-bg-primary);
+  /* A plain step number reads in the text colour; only the filled states invert. */
+  color: var(--color-text-primary);
+  font-size: var(--text-xs);
   flex-shrink: 0;
 }
 .setup-row__icon--ok {
   background: var(--state-ok);
   border-color: var(--state-ok);
+  color: var(--color-bg-primary);
 }
 .setup-row__icon--warn {
   background: var(--state-warn);
   border-color: var(--state-warn);
+  color: var(--color-bg-primary);
 }
 .setup-row__icon--fail {
   background: var(--color-critical);
   border-color: var(--color-critical);
+  color: var(--color-bg-primary);
 }
 .setup-row__body {
   display: flex;
@@ -235,6 +240,7 @@
 .setup-row__title {
   font-size: var(--text-sm);
   font-weight: 500;
+  color: var(--color-text-primary);
 }
 .setup-row__detail {
   font-size: var(--text-xs);
