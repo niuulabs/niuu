@@ -18,6 +18,26 @@ describe('createMockSetupService', () => {
     expect(done.completedAt).toBeTruthy();
   });
 
+  it('turns a sign-in on once the person registers their own application', async () => {
+    const catalog = MOCK_CATALOG.map((e) =>
+      e.slug === 'github' ? { ...e, signInAvailable: false, signInNeedsApp: true } : e,
+    );
+    const service = createMockSetupService({ latencyMs: 0, catalog });
+    await expect(service.startEnrollment('github', 'github-signin')).rejects.toThrow(
+      'not configured',
+    );
+    await expect(service.registerOAuthClient('github', { clientId: ' ' })).rejects.toThrow(
+      'client id is required',
+    );
+    await expect(service.registerOAuthClient('anthropic', { clientId: 'x' })).rejects.toThrow(
+      'does not sign in through',
+    );
+    await service.registerOAuthClient('github', { clientId: 'Iv1.mine' });
+    const github = (await service.listCatalog()).find((e) => e.slug === 'github');
+    expect(github).toMatchObject({ signInAvailable: true, signInNeedsApp: false });
+    expect((await service.startEnrollment('github', 'github-signin')).state).toBe('pending');
+  });
+
   it('accepts initial state and custom catalog', async () => {
     const service = createMockSetupService({
       latencyMs: 0,

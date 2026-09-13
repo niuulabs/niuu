@@ -115,6 +115,7 @@ from volundr.composition_builders import (  # noqa: F401
     _create_resource_provider,
     _create_secret_injection_adapter,
     _runtime_backend,
+    create_oauth_client_registry,
     integration_database_pool,
     with_oauth_device_runner,
 )
@@ -655,10 +656,16 @@ def create_app(
                 integration_repo = PostgresIntegrationRepository(integration_pool)
             mapping_repository = PostgresMappingRepository(pool)
             tracker_factory = TrackerFactory(credential_store)
+            oauth_clients = create_oauth_client_registry(
+                settings,
+                credential_store=credential_store,
+                integration_registry=integration_registry,
+            )
+            await oauth_clients.load()
             credential_enrollment_service = CredentialEnrollmentService(
                 repository=PostgresCredentialEnrollmentRepository(integration_pool),
                 runner=with_oauth_device_runner(
-                    credential_enrollment_runner, settings, integration_registry
+                    credential_enrollment_runner, oauth_clients, integration_registry
                 ),
                 integration_repository=integration_repo,
                 integration_registry=integration_registry,
@@ -971,6 +978,7 @@ def create_app(
                     registry=integration_registry,
                     credential_store=credential_store,
                     credential_enrollment_service=credential_enrollment_service,
+                    oauth_clients=oauth_clients,
                 )
             )
             app.include_router(

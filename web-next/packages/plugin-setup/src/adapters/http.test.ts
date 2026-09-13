@@ -59,6 +59,7 @@ describe('buildSetupHttpAdapter', () => {
       configSchema: {},
       credentialEnrollment: null,
       signInAvailable: false,
+      signInNeedsApp: false,
     });
     const [connection] = await adapter.listIntegrations();
     expect(connection).toEqual({

@@ -21,6 +21,7 @@ import httpx
 from volundr.domain.models import IntegrationConnection, SecretType
 from volundr.domain.ports import CredentialStorePort, IntegrationRepository
 from volundr.domain.services.integration_registry import IntegrationRegistry
+from volundr.domain.services.oauth_clients import OAuthClientRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -46,18 +47,14 @@ class OAuthTokenRefreshService:
         integration_repository: IntegrationRepository,
         integration_registry: IntegrationRegistry,
         credential_store: CredentialStorePort,
-        client_ids: dict[str, str],
-        client_secrets: dict[str, str] | None = None,
+        clients: OAuthClientRegistry,
         refresh_skew_seconds: int = DEFAULT_REFRESH_SKEW_SECONDS,
         request_timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     ) -> None:
         self._repository = integration_repository
         self._registry = integration_registry
         self._store = credential_store
-        self._client_ids = {slug: cid for slug, cid in client_ids.items() if cid}
-        self._client_secrets = {
-            slug: secret for slug, secret in (client_secrets or {}).items() if secret
-        }
+        self._clients = clients
         self._skew = timedelta(seconds=int(refresh_skew_seconds))
         self._timeout = float(request_timeout)
 
@@ -65,6 +62,9 @@ class OAuthTokenRefreshService:
         """Refresh every device-flow token that expires within the skew window."""
         now = now or datetime.now(UTC)
         report = RefreshReport()
+        # Applications registered from the wizard land in the store; another
+        # process (the integrations API) may have written them since last time.
+        await self._clients.load()
         for connection in await self._repository.list_connections_global(enabled_only=True):
             definition = self._registry.get_definition(connection.slug)
             spec = definition.credential_enrollment if definition is not None else None
@@ -103,20 +103,19 @@ class OAuthTokenRefreshService:
         values: dict[str, str],
         now: datetime,
     ) -> None:
-        client_id = self._client_ids.get(connection.slug, "")
-        if not client_id:
+        client = self._clients.get(connection.slug)
+        if client is None:
             raise ValueError(
-                f"no client id configured for {connection.slug}; set "
-                f"oauth.clients.{connection.slug}.client_id"
+                f"no OAuth application is registered for {connection.slug}; register one from "
+                "the setup wizard or set oauth.clients"
             )
         form = {
             "grant_type": "refresh_token",
             "refresh_token": values["refresh_token"],
-            "client_id": client_id,
+            "client_id": client.client_id,
         }
-        secret = self._client_secrets.get(connection.slug, "")
-        if secret:
-            form["client_secret"] = secret
+        if client.client_secret:
+            form["client_secret"] = client.client_secret
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(
                 token_url, data=form, headers={"Accept": "application/json"}

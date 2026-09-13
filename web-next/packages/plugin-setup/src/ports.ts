@@ -7,6 +7,7 @@ import type {
   StackChanges,
   StackView,
   IntegrationTestResult,
+  OAuthClientInput,
   SetupState,
   SystemReport,
 } from './domain/setup';
@@ -34,6 +35,8 @@ export interface ISetupService {
   cancelEnrollment(enrollmentId: string): Promise<Enrollment>;
   /** Hand a browser authorization code back to a sign-in that asked for one. */
   submitEnrollmentCode(enrollmentId: string, code: string): Promise<Enrollment>;
+  /** Register the person's own OAuth application for a provider's sign-in (GitHub, GitLab). */
+  registerOAuthClient(slug: string, input: OAuthClientInput): Promise<void>;
   /** Bundle settings the wizard may change (docker mode); rejects when unavailable. */
   getStack(): Promise<StackView>;
   stageStack(changes: StackChanges): Promise<StackView>;

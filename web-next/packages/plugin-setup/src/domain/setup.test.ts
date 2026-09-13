@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { MOCK_CATALOG, MOCK_SYSTEM } from '../adapters/mock';
 import {
   providerGroups,
+  oauthAppHelp,
+  signInNeedsApp,
   signInOffered,
   supportsSignIn,
   availableModes,
@@ -96,7 +98,14 @@ describe('catalog helpers', () => {
     expect(supportsSignIn({ ...github, credentialEnrollment: null })).toBe(false);
     expect(signInOffered(github)).toBe(true);
     expect(signInOffered({ ...github, signInAvailable: false })).toBe(false);
+    expect(signInOffered({ ...github, signInAvailable: false, signInNeedsApp: true })).toBe(true);
     expect(signInOffered({ ...github, credentialEnrollment: null })).toBe(false);
+    expect(signInNeedsApp({ ...github, signInAvailable: false, signInNeedsApp: true })).toBe(true);
+    expect(signInNeedsApp(github)).toBe(false);
+    expect(signInNeedsApp(undefined)).toBe(false);
+    expect(oauthAppHelp('github').createUrl).toContain('github.com/settings/applications/new');
+    expect(oauthAppHelp('gitlab').secretHint).toBe('');
+    expect(oauthAppHelp('other').idLabel).toBe('Client ID');
   });
 
   it('finds enabled connections by slug', () => {

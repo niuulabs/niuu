@@ -448,6 +448,66 @@ export interface CatalogEntry {
   credentialEnrollment?: CredentialEnrollmentSpec | null;
   /** Whether that sign-in can actually run on this install (client id configured, CLI present). */
   signInAvailable?: boolean;
+  /** The sign-in runs through an OAuth application the install owns, and none is registered yet. */
+  signInNeedsApp?: boolean;
+}
+
+/** The OAuth application a person registers for GitHub or GitLab sign-in. */
+export interface OAuthClientInput {
+  clientId: string;
+  clientSecret?: string;
+}
+
+export interface OAuthAppHelp {
+  createUrl: string;
+  createLabel: string;
+  createHint: string;
+  steps: string[];
+  idLabel: string;
+  secretLabel: string;
+  /** Empty when the provider's device flow never needs a secret. */
+  secretHint: string;
+}
+
+const OAUTH_APP_HELP: Record<string, OAuthAppHelp> = {
+  github: {
+    createUrl: 'https://github.com/settings/applications/new',
+    createLabel: 'Create an OAuth App on GitHub',
+    createHint: 'Any name and URLs will do; the callback URL is not used.',
+    steps: ['Tick "Enable Device Flow" and save.'],
+    idLabel: 'Client ID',
+    secretLabel: 'Client secret',
+    secretHint: 'Optional. Only needed when the app issues expiring tokens; leave empty otherwise.',
+  },
+  gitlab: {
+    createUrl: 'https://gitlab.com/-/user_settings/applications',
+    createLabel: 'Add an application on GitLab',
+    createHint: 'Any name and redirect URI will do; the redirect URI is not used.',
+    steps: ['Give it the "api" and "read_user" scopes and save.'],
+    idLabel: 'Application ID',
+    secretLabel: 'Secret',
+    secretHint: '',
+  },
+};
+
+const GENERIC_APP_HELP: OAuthAppHelp = {
+  createUrl: '',
+  createLabel: 'Create an application with the provider',
+  createHint: 'Enable its device flow.',
+  steps: [],
+  idLabel: 'Client ID',
+  secretLabel: 'Client secret',
+  secretHint: '',
+};
+
+/** Where and how to create the application a provider's sign-in runs through. */
+export function oauthAppHelp(slug: string): OAuthAppHelp {
+  return OAUTH_APP_HELP[slug] ?? GENERIC_APP_HELP;
+}
+
+/** True when the sign-in first needs the person's own OAuth application registered. */
+export function signInNeedsApp(entry: CatalogEntry | undefined): boolean {
+  return entry?.signInNeedsApp === true && entry.signInAvailable !== true;
 }
 
 export interface IntegrationConnection {
@@ -598,7 +658,7 @@ export function needsInteractiveSignIn(entry: CatalogEntry): boolean {
  * offered: the person at the keyboard is never asked to configure anything.
  */
 export function signInOffered(entry: CatalogEntry): boolean {
-  return supportsSignIn(entry) && entry.signInAvailable !== false;
+  return supportsSignIn(entry) && (entry.signInAvailable !== false || signInNeedsApp(entry));
 }
 
 export function catalogForStep(entries: CatalogEntry[], step: WizardStep): CatalogEntry[] {

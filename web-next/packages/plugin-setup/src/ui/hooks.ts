@@ -3,6 +3,7 @@ import { useOptionalService, useService } from '@niuulabs/plugin-sdk';
 import {
   isEnrollmentActive,
   type ConnectIntegrationInput,
+  type OAuthClientInput,
   type StackChanges,
 } from '../domain/setup';
 import type { ISetupService } from '../ports';
@@ -80,6 +81,17 @@ export function useConnectIntegration() {
   return useMutation({
     mutationFn: (input: ConnectIntegrationInput) => service.connectIntegration(input),
     onSuccess: () => client.invalidateQueries({ queryKey: setupKeys.integrations }),
+  });
+}
+
+/** Registers the person's own OAuth application; the catalog then says the sign-in can run. */
+export function useRegisterOAuthClient() {
+  const service = useSetupService();
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug, input }: { slug: string; input: OAuthClientInput }) =>
+      service.registerOAuthClient(slug, input),
+    onSuccess: () => client.invalidateQueries({ queryKey: setupKeys.catalog }),
   });
 }
 

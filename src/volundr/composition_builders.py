@@ -26,6 +26,11 @@ from volundr.domain.ports import (
     SessionContributor,
 )
 from volundr.domain.services.integration_registry import IntegrationRegistry
+from volundr.domain.services.oauth_clients import (
+    SOURCE_CONFIGURED,
+    OAuthClient,
+    OAuthClientRegistry,
+)
 from volundr.domain.services.oauth_token_refresh import OAuthTokenRefreshService
 
 logger = logging.getLogger(__name__)
@@ -82,28 +87,47 @@ def _create_credential_enrollment_runner(settings: Settings) -> CredentialEnroll
     return instance
 
 
-def create_oauth_token_refresh_service(
+def create_oauth_client_registry(
     settings: Settings,
+    *,
+    credential_store: CredentialStorePort,
+    integration_registry: IntegrationRegistry,
+) -> OAuthClientRegistry:
+    """The install's OAuth applications: ``oauth.clients`` plus those registered in the wizard."""
+    return OAuthClientRegistry(
+        credential_store=credential_store,
+        integration_registry=integration_registry,
+        configured={
+            slug: OAuthClient(
+                slug=slug,
+                client_id=client.client_id,
+                client_secret=client.client_secret,
+                source=SOURCE_CONFIGURED,
+            )
+            for slug, client in settings.oauth.clients.items()
+        },
+    )
+
+
+def create_oauth_token_refresh_service(
     *,
     integration_repository: IntegrationRepository,
     integration_registry: IntegrationRegistry,
     credential_store: CredentialStorePort,
+    oauth_clients: OAuthClientRegistry,
 ) -> OAuthTokenRefreshService:
     """Refresher for device-flow sign-in tokens (GitLab, GitHub)."""
     return OAuthTokenRefreshService(
         integration_repository=integration_repository,
         integration_registry=integration_registry,
         credential_store=credential_store,
-        client_ids={slug: client.client_id for slug, client in settings.oauth.clients.items()},
-        client_secrets={
-            slug: client.client_secret for slug, client in settings.oauth.clients.items()
-        },
+        clients=oauth_clients,
     )
 
 
 def with_oauth_device_runner(
     runner: CredentialEnrollmentRunnerPort,
-    settings: Settings,
+    oauth_clients: OAuthClientRegistry,
     registry: IntegrationRegistry,
 ) -> CredentialEnrollmentRunnerPort:
     """Add the in-process OAuth device grant (GitHub, GitLab) next to the CLI runner."""
@@ -112,10 +136,7 @@ def with_oauth_device_runner(
         OAuthDeviceFlowRunner,
     )
 
-    device = OAuthDeviceFlowRunner(
-        registry=registry,
-        client_ids={slug: client.client_id for slug, client in settings.oauth.clients.items()},
-    )
+    device = OAuthDeviceFlowRunner(registry=registry, clients=oauth_clients)
     return CompositeCredentialEnrollmentRunner([runner, device])
 
 

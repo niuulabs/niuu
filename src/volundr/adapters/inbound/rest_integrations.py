@@ -29,6 +29,11 @@ from volundr.domain.services.credential_enrollment import (
     CredentialEnrollmentService,
 )
 from volundr.domain.services.integration_registry import IntegrationRegistry
+from volundr.domain.services.oauth_clients import (
+    OAuthClient,
+    OAuthClientError,
+    OAuthClientRegistry,
+)
 from volundr.domain.services.tracker_factory import TrackerFactory
 
 logger = logging.getLogger(__name__)
@@ -156,6 +161,20 @@ class MCPServerSpecResponse(BaseModel):
     )
 
 
+class OAuthClientResponse(BaseModel):
+    """An OAuth application this install signs in through (never the secret)."""
+
+    slug: str
+    client_id: str
+    has_secret: bool
+    source: str = Field(description="configured (oauth.clients) or registered (from the wizard)")
+
+
+class OAuthClientRegisterRequest(BaseModel):
+    client_id: str = Field(min_length=1, max_length=512)
+    client_secret: str = Field(default="", max_length=1024)
+
+
 class CatalogEntryResponse(BaseModel):
     """Response model for a single catalog entry."""
 
@@ -200,6 +219,13 @@ class CatalogEntryResponse(BaseModel):
     sign_in_available: bool = Field(
         default=False,
         description="Whether the interactive sign-in can actually run on this install",
+    )
+    sign_in_needs_app: bool = Field(
+        default=False,
+        description=(
+            "The sign-in works through an OAuth application the install owns and none is "
+            "registered yet; PUT /oauth-clients/{slug} registers one"
+        ),
     )
 
     @classmethod
@@ -457,6 +483,7 @@ def _build_integrations_router(
     registry: IntegrationRegistry | None = None,
     credential_store: CredentialStorePort | None = None,
     credential_enrollment_service: CredentialEnrollmentService | None = None,
+    oauth_clients: OAuthClientRegistry | None = None,
 ) -> APIRouter:
     """Create FastAPI router for integration management endpoints."""
     router = APIRouter(
@@ -522,8 +549,67 @@ def _build_integrations_router(
             entry = CatalogEntryResponse.from_definition(definition)
             if credential_enrollment_service is not None:
                 entry.sign_in_available = credential_enrollment_service.available(definition.slug)
+            if oauth_clients is not None and not entry.sign_in_available:
+                entry.sign_in_needs_app = (
+                    oauth_clients.supports(definition.slug)
+                    and oauth_clients.get(definition.slug) is None
+                )
             entries.append(entry)
         return entries
+
+    def _require_oauth_clients() -> OAuthClientRegistry:
+        if oauth_clients is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="OAuth applications cannot be registered on this install",
+            )
+        return oauth_clients
+
+    def _client_response(client: OAuthClient) -> OAuthClientResponse:
+        return OAuthClientResponse(
+            slug=client.slug,
+            client_id=client.client_id,
+            has_secret=bool(client.client_secret),
+            source=client.source,
+        )
+
+    @router.get("/oauth-clients", response_model=list[OAuthClientResponse])
+    async def list_oauth_clients(
+        principal: Principal = Depends(extract_principal),
+    ) -> list[OAuthClientResponse]:
+        """The OAuth applications this install signs in through."""
+        del principal
+        return [_client_response(client) for client in _require_oauth_clients().list()]
+
+    @router.put("/oauth-clients/{slug}", response_model=OAuthClientResponse)
+    async def register_oauth_client(
+        data: OAuthClientRegisterRequest,
+        slug: str = Path(description="Integration slug, e.g. github"),
+        principal: Principal = Depends(extract_principal),
+    ) -> OAuthClientResponse:
+        """Register the application (client id, optional secret) this install signs in through."""
+        clients = _require_oauth_clients()
+        try:
+            client = await clients.register(slug, data.client_id, data.client_secret)
+        except OAuthClientError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+        logger.info("OAuth application for %s registered by %s", slug, principal.user_id)
+        return _client_response(client)
+
+    @router.delete("/oauth-clients/{slug}", status_code=status.HTTP_204_NO_CONTENT)
+    async def remove_oauth_client(
+        slug: str = Path(description="Integration slug, e.g. github"),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Forget a registered application; a configured one cannot be removed here."""
+        del principal
+        try:
+            await _require_oauth_clients().remove(slug)
+        except OAuthClientError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @router.post(
         "/enrollments",
@@ -949,6 +1035,7 @@ def create_integrations_router(
     registry: IntegrationRegistry | None = None,
     credential_store: CredentialStorePort | None = None,
     credential_enrollment_service: CredentialEnrollmentService | None = None,
+    oauth_clients: OAuthClientRegistry | None = None,
 ) -> APIRouter:
     """Create the canonical shared integrations router."""
     return _build_integrations_router(
@@ -958,6 +1045,7 @@ def create_integrations_router(
         registry=registry,
         credential_store=credential_store,
         credential_enrollment_service=credential_enrollment_service,
+        oauth_clients=oauth_clients,
     )
 
 
@@ -968,6 +1056,7 @@ def create_canonical_integrations_router(
     registry: IntegrationRegistry | None = None,
     credential_store: CredentialStorePort | None = None,
     credential_enrollment_service: CredentialEnrollmentService | None = None,
+    oauth_clients: OAuthClientRegistry | None = None,
 ) -> APIRouter:
     """Backward-compatible alias for the canonical shared integrations router."""
     return create_integrations_router(
@@ -977,4 +1066,5 @@ def create_canonical_integrations_router(
         registry=registry,
         credential_store=credential_store,
         credential_enrollment_service=credential_enrollment_service,
+        oauth_clients=oauth_clients,
     )

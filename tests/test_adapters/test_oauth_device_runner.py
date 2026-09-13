@@ -9,6 +9,7 @@ import httpx
 import pytest
 import respx
 
+from niuu.adapters.memory_credential_store import MemoryCredentialStore
 from volundr.adapters.outbound.oauth_device_runner import (
     DEVICE_GRANT_TYPE,
     CompositeCredentialEnrollmentRunner,
@@ -24,6 +25,11 @@ from volundr.domain.ports import CredentialEnrollmentRunnerPort
 from volundr.domain.services.integration_registry import (
     IntegrationRegistry,
     definitions_from_config,
+)
+from volundr.domain.services.oauth_clients import (
+    SOURCE_CONFIGURED,
+    OAuthClient,
+    OAuthClientRegistry,
 )
 
 DEVICE_URL = "https://github.com/login/device/code"
@@ -57,10 +63,22 @@ def enrollment(slug: str = "github", method: str = "oauth_device") -> Credential
     )
 
 
+def clients(**ids: str) -> OAuthClientRegistry:
+    integrations = registry()
+    return OAuthClientRegistry(
+        credential_store=MemoryCredentialStore(),
+        integration_registry=integrations,
+        configured={
+            slug: OAuthClient(slug=slug, client_id=client_id, source=SOURCE_CONFIGURED)
+            for slug, client_id in ids.items()
+        },
+    )
+
+
 @pytest.fixture
 def runner() -> OAuthDeviceFlowRunner:
     return OAuthDeviceFlowRunner(
-        registry=registry(), client_ids={"github": "Iv1.public", "gitlab": ""}
+        registry=registry(), clients=clients(github="Iv1.public", gitlab="")
     )
 
 
@@ -77,7 +95,7 @@ def test_availability_needs_a_client_id_and_a_device_url(runner: OAuthDeviceFlow
 async def test_start_requires_configuration(runner: OAuthDeviceFlowRunner) -> None:
     with pytest.raises(ValueError, match="Unsupported"):
         await runner.start_enrollment(enrollment(method="codex_device"))
-    with pytest.raises(ValueError, match="oauth.clients.gitlab.client_id"):
+    with pytest.raises(ValueError, match="No OAuth application is registered for 'gitlab'"):
         await runner.start_enrollment(enrollment("gitlab"))
     with pytest.raises(ValueError, match="no OAuth specification"):
         await runner.start_enrollment(enrollment("anthropic"))

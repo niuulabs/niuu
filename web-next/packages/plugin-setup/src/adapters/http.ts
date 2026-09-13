@@ -18,6 +18,7 @@ import type {
   StackChanges,
   StackView,
   IntegrationTestResult,
+  OAuthClientInput,
   SetupState,
   SystemReport,
 } from '../domain/setup';
@@ -50,6 +51,7 @@ export interface CatalogEntryWire {
     default_credential_name: string;
   } | null;
   sign_in_available?: boolean;
+  sign_in_needs_app?: boolean;
 }
 
 /** Wire shape of `GET /api/v1/integrations` rows (snake_case). */
@@ -121,6 +123,7 @@ export function mapCatalogEntry(entry: CatalogEntryWire): CatalogEntry {
         }
       : null,
     signInAvailable: entry.sign_in_available ?? false,
+    signInNeedsApp: entry.sign_in_needs_app ?? false,
   };
 }
 
@@ -211,6 +214,12 @@ export function buildSetupHttpAdapter(clients: SetupHttpClients): ISetupService 
         { code },
       );
       return mapEnrollment(row);
+    },
+    async registerOAuthClient(slug: string, input: OAuthClientInput): Promise<void> {
+      await clients.integrations.put(`/oauth-clients/${encodeURIComponent(slug)}`, {
+        client_id: input.clientId,
+        client_secret: input.clientSecret ?? '',
+      });
     },
     getStack(): Promise<StackView> {
       return clients.setup.get<StackView>('/stack');

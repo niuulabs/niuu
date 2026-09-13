@@ -33,7 +33,11 @@ from volundr.adapters.outbound.postgres_credential_enrollments import (
     PostgresCredentialEnrollmentRepository,
 )
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
-from volundr.composition_builders import _create_credential_enrollment_runner
+from volundr.composition_builders import (
+    _create_credential_enrollment_runner,
+    create_oauth_client_registry,
+    with_oauth_device_runner,
+)
 from volundr.config import Settings
 from volundr.domain.services.credential_enrollment import CredentialEnrollmentService
 from volundr.domain.services.integration_registry import (
@@ -79,9 +83,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             )
             tracker_factory = TrackerFactory(credential_store)
+            oauth_clients = create_oauth_client_registry(
+                settings,
+                credential_store=credential_store,
+                integration_registry=integration_registry,
+            )
+            await oauth_clients.load()
             credential_enrollment_service = CredentialEnrollmentService(
                 repository=PostgresCredentialEnrollmentRepository(pool),
-                runner=_create_credential_enrollment_runner(settings),
+                runner=with_oauth_device_runner(
+                    _create_credential_enrollment_runner(settings),
+                    oauth_clients,
+                    integration_registry,
+                ),
                 integration_repository=integration_repo,
                 integration_registry=integration_registry,
                 credential_store=credential_store,
@@ -120,6 +134,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     registry=integration_registry,
                     credential_store=credential_store,
                     credential_enrollment_service=credential_enrollment_service,
+                    oauth_clients=oauth_clients,
                 )
             )
             app.include_router(

@@ -4,6 +4,7 @@ import {
   availableModes,
   connectionForSlug,
   entryConnected,
+  signInNeedsApp,
   type ConnectIntegrationInput,
   type ConnectMode,
   type IntegrationConnection,
@@ -11,6 +12,7 @@ import {
   type ProviderGroup,
 } from '../domain/setup';
 import { IntegrationCard } from './IntegrationCard';
+import { OAuthAppForm } from './OAuthAppForm';
 import { SignInCard } from './SignInCard';
 import { BackIcon, CheckIcon } from './icons';
 
@@ -215,16 +217,20 @@ export function AddProviderDialog({
             : null}
 
           {group && mode === 'signin' && group.signInEntry ? (
-            <div className="setup-pane">
-              {modeIntro(group, 'signin')}
-              <SignInCard
-                entry={group.signInEntry}
-                connection={
-                  connections ? connectionForSlug(connections, group.signInEntry.slug) : undefined
-                }
-                headless
-              />
-            </div>
+            signInNeedsApp(group.signInEntry) ? (
+              <OAuthAppForm entry={group.signInEntry} />
+            ) : (
+              <div className="setup-pane">
+                {modeIntro(group, 'signin')}
+                <SignInCard
+                  entry={group.signInEntry}
+                  connection={
+                    connections ? connectionForSlug(connections, group.signInEntry.slug) : undefined
+                  }
+                  headless
+                />
+              </div>
+            )
           ) : null}
 
           {group && mode === 'key' && group.keyEntry ? (

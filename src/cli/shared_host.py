@@ -63,6 +63,7 @@ from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.composition_builders import (
     _create_credential_enrollment_runner,
+    create_oauth_client_registry,
     create_oauth_token_refresh_service,
     with_oauth_device_runner,
 )
@@ -165,11 +166,17 @@ def create_app(
                 )
             )
             tracker_factory = TrackerFactory(credential_store)
+            oauth_clients = create_oauth_client_registry(
+                loaded_settings,
+                credential_store=credential_store,
+                integration_registry=integration_registry,
+            )
+            await oauth_clients.load()
             credential_enrollment_service = CredentialEnrollmentService(
                 repository=PostgresCredentialEnrollmentRepository(pool),
                 runner=with_oauth_device_runner(
                     _create_credential_enrollment_runner(loaded_settings),
-                    loaded_settings,
+                    oauth_clients,
                     integration_registry,
                 ),
                 integration_repository=integration_repo,
@@ -259,6 +266,7 @@ def create_app(
                     registry=integration_registry,
                     credential_store=credential_store,
                     credential_enrollment_service=credential_enrollment_service,
+                    oauth_clients=oauth_clients,
                 )
             )
             app.include_router(
@@ -269,6 +277,7 @@ def create_app(
                     registry=integration_registry,
                     credential_store=credential_store,
                     credential_enrollment_service=credential_enrollment_service,
+                    oauth_clients=oauth_clients,
                 )
             )
             app.include_router(
@@ -310,10 +319,10 @@ def create_app(
             token_refresh_task = asyncio.create_task(
                 refresh_oauth_tokens_loop(
                     create_oauth_token_refresh_service(
-                        loaded_settings,
                         integration_repository=integration_repo,
                         integration_registry=integration_registry,
                         credential_store=credential_store,
+                        oauth_clients=oauth_clients,
                     )
                 )
             )

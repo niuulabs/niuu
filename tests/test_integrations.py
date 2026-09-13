@@ -692,6 +692,7 @@ class TestIntegrationEndpoints:
                 "oauth_scopes": ["read", "write"],
                 "credential_enrollment": None,
                 "sign_in_available": False,
+                "sign_in_needs_app": False,
             }
         ]
 

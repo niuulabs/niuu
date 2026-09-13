@@ -337,6 +337,20 @@ def test_integrations_service_app_seeds_connections_and_linear(monkeypatch) -> N
         "_create_credential_enrollment_runner",
         lambda _settings: SimpleNamespace(supports_enrollment=lambda _method: False),
     )
+
+    async def _no_registered_clients() -> None:
+        return None
+
+    monkeypatch.setattr(
+        integrations_app,
+        "create_oauth_client_registry",
+        lambda _settings, **kwargs: SimpleNamespace(load=_no_registered_clients),
+    )
+    monkeypatch.setattr(
+        integrations_app,
+        "with_oauth_device_runner",
+        lambda runner, _clients, _registry: runner,
+    )
     monkeypatch.setattr(
         integrations_app,
         "CredentialEnrollmentService",
@@ -352,7 +366,9 @@ def test_integrations_service_app_seeds_connections_and_linear(monkeypatch) -> N
         registry: object,
         credential_store: object,
         credential_enrollment_service: object,
+        oauth_clients: object,
     ) -> APIRouter:
+        captured["integrations_router_oauth_clients"] = oauth_clients
         captured["integrations_router_repo"] = integration_repo
         captured["integrations_router_registry"] = registry
         captured["integrations_router_enrollment_service"] = credential_enrollment_service

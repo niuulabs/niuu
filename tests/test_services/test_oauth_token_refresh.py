@@ -18,6 +18,11 @@ from volundr.domain.services.integration_registry import (
     IntegrationRegistry,
     definitions_from_config,
 )
+from volundr.domain.services.oauth_clients import (
+    SOURCE_CONFIGURED,
+    OAuthClient,
+    OAuthClientRegistry,
+)
 from volundr.domain.services.oauth_token_refresh import (
     REFRESH_FAILED_ERROR_CODE,
     OAuthTokenRefreshService,
@@ -41,6 +46,13 @@ class _CredentialStore:
     async def get_value(self, owner_type, owner_id, name):
         item = self.items.get((owner_type, owner_id, name))
         return dict(item["data"]) if item is not None else None
+
+    async def list(self, owner_type, owner_id, secret_type=None):
+        return [
+            SimpleNamespace(name=name, secret_type=item["secret_type"], metadata=item["metadata"])
+            for (kind, owner, name), item in self.items.items()
+            if kind == owner_type and owner == owner_id
+        ]
 
     async def store(self, owner_type, owner_id, name, secret_type, data, metadata=None):
         self.items[(owner_type, owner_id, name)] = {
@@ -85,12 +97,30 @@ def repo() -> InMemoryIntegrationRepository:
     return InMemoryIntegrationRepository()
 
 
+def _clients(store, ids: dict[str, str], secrets: dict[str, str]) -> OAuthClientRegistry:
+    return OAuthClientRegistry(
+        credential_store=store,
+        integration_registry=_registry(),
+        configured={
+            slug: OAuthClient(
+                slug=slug,
+                client_id=client_id,
+                client_secret=secrets.get(slug, ""),
+                source=SOURCE_CONFIGURED,
+            )
+            for slug, client_id in ids.items()
+        },
+    )
+
+
 def _service(repo, store, **kwargs) -> OAuthTokenRefreshService:
+    ids = kwargs.pop("client_ids", {"github": "Iv1.app", "gitlab": "glpub"})
+    secrets = kwargs.pop("client_secrets", {})
     return OAuthTokenRefreshService(
         integration_repository=repo,
         integration_registry=_registry(),
         credential_store=store,
-        client_ids=kwargs.pop("client_ids", {"github": "Iv1.app", "gitlab": "glpub"}),
+        clients=_clients(store, ids, secrets),
         **kwargs,
     )
 

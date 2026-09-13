@@ -121,6 +121,41 @@ describe('AddProviderDialog', () => {
     expect(screen.getByTestId('setup-signin-start-codex')).toBeInTheDocument();
   });
 
+  it('asks for the person’s own application before a GitHub sign-in', async () => {
+    const catalog = MOCK_CATALOG.map((e) =>
+      e.slug === 'github' ? { ...e, signInAvailable: false, signInNeedsApp: true } : e,
+    );
+    const service = createMockSetupService({ latencyMs: 0, catalog });
+    const groups = providerGroups(catalog, git);
+    renderWithSetup(
+      <AddProviderDialog
+        {...base}
+        noun="Git host"
+        groups={groups}
+        initialGroupKey="github"
+        initialMode="signin"
+      />,
+      { service },
+    );
+    const form = screen.getByTestId('setup-oauth-app-github');
+    expect(form).toHaveTextContent('Enable Device Flow');
+    expect(form.querySelector('a')).toHaveAttribute(
+      'href',
+      'https://github.com/settings/applications/new',
+    );
+    expect(form).not.toHaveTextContent('oauth.clients');
+    fireEvent.click(screen.getByTestId('setup-oauth-app-save-github'));
+    expect(form).toHaveTextContent('Client ID is required');
+    fireEvent.change(screen.getByTestId('setup-oauth-app-id-github'), {
+      target: { value: ' Iv1.mine ' },
+    });
+    fireEvent.click(screen.getByTestId('setup-oauth-app-save-github'));
+    await waitFor(async () => {
+      const [entry] = (await service.listCatalog()).filter((e) => e.slug === 'github');
+      expect(entry?.signInAvailable).toBe(true);
+    });
+  });
+
   it('goes straight to the token form when this install cannot run the sign-in', () => {
     const catalog = MOCK_CATALOG.map((e) =>
       e.slug === 'github' ? { ...e, signInAvailable: false } : e,

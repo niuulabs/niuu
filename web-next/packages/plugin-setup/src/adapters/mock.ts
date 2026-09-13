@@ -275,6 +275,16 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
     ...options.initialState,
   };
   const catalog = options.catalog ?? MOCK_CATALOG;
+  // Providers whose own OAuth application was registered from the wizard.
+  const registeredApps = new Set<string>();
+  const effectiveCatalog = (): CatalogEntry[] =>
+    registeredApps.size === 0
+      ? catalog
+      : catalog.map((entry) =>
+          registeredApps.has(entry.slug)
+            ? { ...entry, signInAvailable: true, signInNeedsApp: false }
+            : entry,
+        );
   const system = options.system ?? MOCK_SYSTEM;
   const connections: IntegrationConnection[] = [];
   const enrollments = new Map<string, Enrollment & { polls: number }>();
@@ -398,7 +408,16 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
     },
     async listCatalog() {
       await wait();
-      return catalog;
+      return effectiveCatalog();
+    },
+    async registerOAuthClient(slug, input) {
+      await wait();
+      const entry = catalog.find((candidate) => candidate.slug === slug);
+      if (!entry || entry.credentialEnrollment?.method !== 'oauth_device') {
+        throw new Error(`${slug} does not sign in through an OAuth application`);
+      }
+      if (!input.clientId.trim()) throw new Error('A client id is required');
+      registeredApps.add(slug);
     },
     async listIntegrations() {
       await wait();
@@ -442,7 +461,7 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
       if (!entry.credentialEnrollment) {
         throw new Error('Integration does not support interactive enrollment');
       }
-      if (entry.signInAvailable === false) {
+      if (entry.signInAvailable === false && !registeredApps.has(slug)) {
         throw new Error(`Sign-in for ${slug} is not configured on this install`);
       }
       const existing = [...enrollments.values()].find(

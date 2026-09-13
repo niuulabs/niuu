@@ -29,6 +29,7 @@ from volundr.domain.models import (
 )
 from volundr.domain.ports import CredentialEnrollmentRunnerPort
 from volundr.domain.services.integration_registry import IntegrationRegistry
+from volundr.domain.services.oauth_clients import OAuthClientRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ class OAuthDeviceFlowRunner(CredentialEnrollmentRunnerPort):
 
     Args:
         registry: Integration catalog (device URL, token URL, scopes per slug).
-        client_ids: ``{slug: client_id}`` from ``oauth.clients``.
+        clients: The install's OAuth applications (configured or registered).
         request_timeout: Seconds per HTTP call to the provider.
     """
 
@@ -79,12 +80,12 @@ class OAuthDeviceFlowRunner(CredentialEnrollmentRunnerPort):
         self,
         *,
         registry: IntegrationRegistry,
-        client_ids: dict[str, str],
+        clients: OAuthClientRegistry,
         request_timeout: float = DEFAULT_TIMEOUT_SECONDS,
         **_extra: object,
     ) -> None:
         self._registry = registry
-        self._client_ids = {slug: cid for slug, cid in client_ids.items() if cid}
+        self._clients = clients
         self._timeout = float(request_timeout)
         self._sessions: dict[UUID, _DeviceSession] = {}
 
@@ -101,7 +102,9 @@ class OAuthDeviceFlowRunner(CredentialEnrollmentRunnerPort):
         definition = self._registry.get_definition(slug)
         if definition is None or definition.oauth is None:
             return False
-        return bool(definition.oauth.device_authorization_url) and slug in self._client_ids
+        return (
+            bool(definition.oauth.device_authorization_url) and self._clients.get(slug) is not None
+        )
 
     def _config(self, slug: str) -> tuple[str, str, str, tuple[str, ...]]:
         definition = self._registry.get_definition(slug)
@@ -109,16 +112,16 @@ class OAuthDeviceFlowRunner(CredentialEnrollmentRunnerPort):
             raise ValueError(f"Integration {slug!r} has no OAuth specification")
         if not definition.oauth.device_authorization_url:
             raise ValueError(f"Integration {slug!r} does not declare a device authorization URL")
-        client_id = self._client_ids.get(slug, "")
-        if not client_id:
+        client = self._clients.get(slug)
+        if client is None:
             raise ValueError(
-                f"No OAuth client id configured for {slug!r}; set oauth.clients.{slug}.client_id "
-                "(a public client id with the device flow enabled) or use an API key instead"
+                f"No OAuth application is registered for {slug!r}; register one from the setup "
+                "wizard (a client id with the device flow enabled) or use a token instead"
             )
         return (
             definition.oauth.device_authorization_url,
             definition.oauth.token_url,
-            client_id,
+            client.client_id,
             definition.oauth.scopes,
         )
 

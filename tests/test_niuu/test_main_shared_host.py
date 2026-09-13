@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
@@ -56,6 +57,20 @@ def test_create_app_mounts_shared_identity_features_and_personas(monkeypatch) ->
         lambda *_args, **_kwargs: _DummyPATValidator(),
     )
     monkeypatch.setattr(niuu_main, "create_credential_store", lambda _settings: object())
+
+    async def _no_registered_clients() -> None:
+        return None
+
+    monkeypatch.setattr(
+        niuu_main,
+        "create_oauth_client_registry",
+        lambda _settings, **kwargs: SimpleNamespace(
+            load=_no_registered_clients, get=lambda _s: None
+        ),
+    )
+    monkeypatch.setattr(
+        niuu_main, "with_oauth_device_runner", lambda runner, _clients, _registry: runner
+    )
     monkeypatch.setattr(niuu_main, "release_credential_store", lambda _settings: None)
     monkeypatch.setattr(niuu_main, "TenantService", _DummyTenantService)
     monkeypatch.setattr(
