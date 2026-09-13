@@ -19,6 +19,22 @@ from cli.services.docker_host import GpuFacts, HostFacts
 MOD = "cli.services.compose_bundle"
 
 
+# What the installer writes into ~/.niuu/config.yaml: the vLLM image and the
+# models the wizard offers, with the flags their model cards prescribe.
+MODELS = [
+    {
+        "id": "nemotron-3-nano-30b",
+        "model": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+        "name": "NVIDIA Nemotron 3 Nano 30B",
+        "weight_gib": 62,
+        "recommended": True,
+        "trust_remote_code": True,
+        "serve_args": ["--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"],
+    },
+    {"id": "gpt-oss-120b", "model": "openai/gpt-oss-120b", "name": "gpt-oss", "weight_gib": 78},
+]
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> CLISettings:
     return CLISettings(
@@ -27,6 +43,8 @@ def settings(tmp_path: Path) -> CLISettings:
             "data_dir": str(tmp_path / "data"),
             "compose_dir": str(tmp_path / "bundle"),
             "image": "ghcr.io/niuulabs/niuu:test",
+            "vllm": {"image": "nvcr.io/nvidia/vllm:test"},
+            "models": MODELS,
         },
     )
 
@@ -170,6 +188,12 @@ class TestRender:
         assert custom[-1] == "--trust-remote-code"
         settings.docker.vllm.model = "nvidia/Nemotron-3-Nano-30B-A3B"
         settings.docker.vllm.trust_remote_code = False
+        # The image is configuration the installer writes; without it the
+        # bundle refuses to render rather than start an unnamed container.
+        settings.docker.vllm.image = ""
+        with pytest.raises(ValueError, match="docker.vllm.image"):
+            sc.render_compose(settings)
+        settings.docker.vllm.image = "nvcr.io/nvidia/vllm:test"
         devices = vllm["deploy"]["resources"]["reservations"]["devices"]
         assert devices[0]["driver"] == "nvidia"
         assert doc["services"]["niuu"]["depends_on"]["vllm"] == {"condition": "service_started"}

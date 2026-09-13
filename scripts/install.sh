@@ -98,6 +98,52 @@ check_nvidia_runtime() {
 # ---------------------------------------------------------------------------
 # docker mode: the image is the CLI
 # ---------------------------------------------------------------------------
+# Initial configuration: written once into ~/.niuu/config.yaml, which the CLI
+# container mounts and `niuu up` reads. The vLLM image and the models the
+# wizard offers live here, not in the platform image, so changing them is an
+# edit to this file and `niuu up`, never a new build. An existing file is
+# yours and is left alone.
+# ---------------------------------------------------------------------------
+write_initial_config() {
+  config="$HOME/.niuu/config.yaml"
+  if [ -f "$config" ]; then
+    say "Keeping your existing ${config}."
+    return 0
+  fi
+  cat > "$config" <<'EOF'
+# Niuu configuration, written by the installer. Edit and run `niuu up` to apply.
+mode: docker
+docker:
+  vllm:
+    # NVIDIA's vLLM container (arm64 and amd64); its release notes list DGX Spark.
+    image: nvcr.io/nvidia/vllm:26.08-py3
+  # Models the setup wizard offers to serve locally. Sizes are what vLLM
+  # reserves for the weights plus a 64k-token KV cache. `serve_args` come
+  # from each model card (tool-call parser, sequence cap on unified memory).
+  models:
+    - id: nemotron-3-nano-30b
+      model: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+      name: NVIDIA Nemotron 3 Nano 30B
+      description: Fast agentic coder tuned by NVIDIA. Best default for sessions and residents.
+      weight_gib: 62
+      recommended: true
+      trust_remote_code: true
+      serve_args: ["--max-num-seqs", "8", "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"]
+    - id: gpt-oss-120b
+      model: openai/gpt-oss-120b
+      name: OpenAI gpt-oss-120b
+      description: Larger reasoning model. Slower per token, stronger on planning.
+      weight_gib: 78
+    - id: qwen3-coder-30b
+      model: Qwen/Qwen3-Coder-30B-A3B-Instruct
+      name: Qwen3-Coder 30B-A3B
+      description: Lean coding model with generous headroom for long contexts.
+      weight_gib: 24
+      serve_args: ["--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"]
+EOF
+  say "Wrote ${config}."
+}
+
 install_docker_mode() {
   need docker
   need hostname
@@ -124,6 +170,7 @@ install_docker_mode() {
     exit 1
   fi
   mkdir -p "$HOME/.niuu" "$INSTALL_DIR"
+  write_initial_config
 
   image="${REGISTRY}/niuu:${IMAGE_TAG}"
   skuld_image="${REGISTRY}/skuld:${IMAGE_TAG}"

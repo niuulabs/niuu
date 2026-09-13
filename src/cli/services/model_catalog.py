@@ -1,97 +1,55 @@
-"""Curated local models the wizard offers for vLLM on a single GPU host.
+"""The local models the wizard offers, read from ``docker.models`` in the CLI config.
 
 Sizes are what vLLM reserves for weights plus a 64k-token KV cache, rounded
 up, so a "fits" verdict leaves room for session sandboxes. Anything not
-listed can still be entered as a custom Hugging Face id.
+listed can still be entered as a custom Hugging Face id. The list itself is
+configuration (the installer writes it into ``~/.niuu/config.yaml``), so a
+new model, image tag or serve flag never needs a new platform image.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Sequence
 
+from cli.config import DockerModelConfig
 from niuu.domain.stack import ModelOption
 
 # Memory kept free for the platform and session sandboxes when judging fit.
 SANDBOX_HEADROOM_GIB = 12
 
 
-@dataclass(frozen=True)
-class CuratedModel:
-    id: str
-    model: str
-    name: str
-    description: str
-    weight_gib: int
-    recommended: bool = False
-    # The repository ships model code vLLM must run (`--trust-remote-code`).
-    trust_remote_code: bool = False
-    # Extra `vllm serve` arguments the model card prescribes, e.g. the tool-call
-    # parser without which agent sessions get no tool calls back.
-    serve_args: tuple[str, ...] = ()
-
-
-CURATED_MODELS: tuple[CuratedModel, ...] = (
-    CuratedModel(
-        id="nemotron-3-nano-30b",
-        model="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
-        name="NVIDIA Nemotron 3 Nano 30B",
-        description="Fast agentic coder tuned by NVIDIA. Best default for sessions and residents.",
-        weight_gib=62,
-        recommended=True,
-        trust_remote_code=True,
-        # The model card's serve command for DGX Spark: a sequence cap for the
-        # unified memory, and the tool-call parser agents need.
-        serve_args=(
-            "--max-num-seqs",
-            "8",
-            "--enable-auto-tool-choice",
-            "--tool-call-parser",
-            "qwen3_coder",
-        ),
-    ),
-    CuratedModel(
-        id="gpt-oss-120b",
-        model="openai/gpt-oss-120b",
-        name="OpenAI gpt-oss-120b",
-        description="Larger reasoning model. Slower per token, stronger on planning.",
-        weight_gib=78,
-    ),
-    CuratedModel(
-        id="qwen3-coder-30b",
-        model="Qwen/Qwen3-Coder-30B-A3B-Instruct",
-        name="Qwen3-Coder 30B-A3B",
-        description="Lean coding model with generous headroom for long contexts.",
-        weight_gib=24,
-        serve_args=("--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"),
-    ),
-)
-
-
-def model_trusts_remote_code(model: str) -> bool:
-    """True for a curated model whose repository ships code vLLM has to run."""
-    return any(entry.model == model and entry.trust_remote_code for entry in CURATED_MODELS)
-
-
-def model_serve_args(model: str) -> list[str]:
-    """Extra `vllm serve` arguments the catalog prescribes for *model* (none for custom ids)."""
-    for entry in CURATED_MODELS:
+def find_model(models: Sequence[DockerModelConfig], model: str) -> DockerModelConfig | None:
+    """The configured entry serving *model*, or None for a custom id."""
+    for entry in models:
         if entry.model == model:
-            return list(entry.serve_args)
-    return []
+            return entry
+    return None
 
 
-def expected_weight_bytes(model: str) -> int:
-    """Size of a curated model's weights on disk, 0 for a model not in the catalog."""
-    for entry in CURATED_MODELS:
-        if entry.model == model:
-            return entry.weight_gib * 1024**3
-    return 0
+def model_trusts_remote_code(models: Sequence[DockerModelConfig], model: str) -> bool:
+    """True for a configured model whose repository ships code vLLM has to run."""
+    entry = find_model(models, model)
+    return entry is not None and entry.trust_remote_code
 
 
-def model_options(accelerator_memory_gib: int) -> list[ModelOption]:
-    """Curated models with a fit verdict for *accelerator_memory_gib* (0 = unknown)."""
+def model_serve_args(models: Sequence[DockerModelConfig], model: str) -> list[str]:
+    """Extra `vllm serve` arguments configured for *model* (none for a custom id)."""
+    entry = find_model(models, model)
+    return list(entry.serve_args) if entry is not None else []
+
+
+def expected_weight_bytes(models: Sequence[DockerModelConfig], model: str) -> int:
+    """Size of a configured model's weights on disk, 0 for a model not in the list."""
+    entry = find_model(models, model)
+    return entry.weight_gib * 1024**3 if entry is not None else 0
+
+
+def model_options(
+    models: Sequence[DockerModelConfig], accelerator_memory_gib: int
+) -> list[ModelOption]:
+    """Configured models with a fit verdict for *accelerator_memory_gib* (0 = unknown)."""
     options: list[ModelOption] = []
-    for entry in CURATED_MODELS:
+    for entry in models:
         needed = entry.weight_gib + SANDBOX_HEADROOM_GIB
         fits = None if accelerator_memory_gib <= 0 else needed <= accelerator_memory_gib
         options.append(

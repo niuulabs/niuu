@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = ROOT / "scripts" / "install.sh"
@@ -245,3 +246,30 @@ class TestDockerMode:
         result = _run(tmp_path)
         assert result.returncode == 1
         assert "'docker' is required" in result.stderr
+
+    def test_writes_the_initial_config_once(self, tmp_path: Path) -> None:
+        """The vLLM image and the wizard's model list are configuration the installer
+        writes into ~/.niuu/config.yaml, never something baked into the platform image;
+        a file that already exists is the user's and stays."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _fake_docker(bin_dir)
+        result = _run(tmp_path, env={"NIUU_NO_UP": "1"})
+        assert result.returncode == 0, result.stderr
+        config = tmp_path / "home" / ".niuu" / "config.yaml"
+        assert f"Wrote {config}." in result.stderr
+        data = yaml.safe_load(config.read_text())
+        assert data["mode"] == "docker"
+        assert data["docker"]["vllm"]["image"].startswith("nvcr.io/nvidia/vllm:")
+        models = {entry["id"]: entry for entry in data["docker"]["models"]}
+        nemotron = models["nemotron-3-nano-30b"]
+        assert nemotron["trust_remote_code"] is True
+        assert nemotron["recommended"] is True
+        assert "--tool-call-parser" in nemotron["serve_args"]
+        assert models["qwen3-coder-30b"]["weight_gib"] == 24
+
+        config.write_text("mode: docker\ndocker:\n  vllm:\n    image: mine:1\n")
+        again = _run(tmp_path, env={"NIUU_NO_UP": "1"})
+        assert again.returncode == 0, again.stderr
+        assert f"Keeping your existing {config}." in again.stderr
+        assert yaml.safe_load(config.read_text())["docker"]["vllm"]["image"] == "mine:1"

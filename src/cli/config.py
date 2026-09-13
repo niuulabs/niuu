@@ -127,12 +127,11 @@ class DockerVllmConfig(BaseModel):
         description="Hugging Face model id to serve (e.g. nvidia/Nemotron-3-Nano-30B-A3B).",
     )
     image: str = Field(
-        # NVIDIA's monthly vLLM container, built for arm64 and amd64; its
-        # release notes list DGX Spark (GB10) and Nemotron 3 Nano. 26.08 carries
-        # vLLM 0.27 on CUDA 13.4; 25.09 shipped vLLM 0.10, which cannot load
-        # Nemotron 3 Nano at all.
-        default="nvcr.io/nvidia/vllm:26.08-py3",
-        description="vLLM container image (must match the host architecture).",
+        default="",
+        description=(
+            "vLLM container image (must match the host architecture). The installer "
+            "writes it into ~/.niuu/config.yaml; required when `enabled` is true."
+        ),
     )
     port: int = Field(default=8000, description="Port vLLM listens on inside the compose network.")
     max_model_len: int = Field(default=65536, description="Context length passed to vLLM.")
@@ -150,6 +149,32 @@ class DockerVllmConfig(BaseModel):
             "Pass --trust-remote-code to vLLM for a custom model whose repository ships "
             "model code. Curated models that need it are handled without this flag."
         ),
+    )
+
+
+class DockerModelConfig(BaseModel):
+    """One model the setup wizard offers to serve locally with vLLM.
+
+    The installer writes the initial list into ``~/.niuu/config.yaml``; editing
+    that file and running ``niuu up`` again changes what the wizard offers and
+    how vLLM is started, without a new platform image.
+    """
+
+    id: str = Field(description="Short id the wizard uses (e.g. nemotron-3-nano-30b).")
+    model: str = Field(description="Hugging Face model id vLLM serves.")
+    name: str = Field(description="Name shown in the wizard.")
+    description: str = Field(default="", description="One line shown under the name.")
+    weight_gib: int = Field(
+        description="Memory vLLM reserves for the weights plus a 64k-token KV cache, rounded up."
+    )
+    recommended: bool = Field(default=False, description="Preselected in the wizard.")
+    trust_remote_code: bool = Field(
+        default=False,
+        description="The repository ships model code vLLM must run (--trust-remote-code).",
+    )
+    serve_args: list[str] = Field(
+        default_factory=list,
+        description="Extra `vllm serve` arguments from the model card (tool-call parser, ...).",
     )
 
 
@@ -258,6 +283,10 @@ class DockerConfig(BaseModel):
         description="How long `niuu up` waits for the platform health endpoint.",
     )
     vllm: DockerVllmConfig = Field(default_factory=DockerVllmConfig)
+    models: list[DockerModelConfig] = Field(
+        default_factory=list,
+        description="Models the wizard offers to serve locally; the installer writes this list.",
+    )
     model_server: DockerModelServerConfig = Field(default_factory=DockerModelServerConfig)
     sign_in_client_ids: dict[str, str] = Field(
         default_factory=dict,

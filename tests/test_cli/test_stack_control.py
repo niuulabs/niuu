@@ -105,6 +105,23 @@ def stack_dir(tmp_path: Path) -> Path:
             "compose_dir": str(tmp_path / "bundle"),
             "bind_host": "127.0.0.1",
             "project_name": "niuu-test",
+            "vllm": {"image": "nvcr.io/nvidia/vllm:test"},
+            "models": [
+                {
+                    "id": "nemotron-3-nano-30b",
+                    "model": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+                    "name": "NVIDIA Nemotron 3 Nano 30B",
+                    "weight_gib": 62,
+                    "recommended": True,
+                    "trust_remote_code": True,
+                },
+                {
+                    "id": "qwen3-coder-30b",
+                    "model": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+                    "name": "Qwen",
+                    "weight_gib": 24,
+                },
+            ],
         },
     )
     write_stack_file(settings, data)

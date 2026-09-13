@@ -97,10 +97,26 @@ docker:
   startup_timeout_seconds: 180
   vllm:
     enabled: false
-    model: ""               # e.g. nvidia/Nemotron-3-Nano-30B-A3B
+    model: ""               # e.g. nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+    image: nvcr.io/nvidia/vllm:26.08-py3   # written by the installer; required when enabled
     max_model_len: 65536
     gpu_memory_utilization: 0.6
+    trust_remote_code: false   # for a custom repository that ships model code
+  models:                   # what the wizard's Local model step offers
+    - id: nemotron-3-nano-30b
+      model: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+      name: NVIDIA Nemotron 3 Nano 30B
+      weight_gib: 62
+      recommended: true
+      trust_remote_code: true
+      serve_args: ["--max-num-seqs", "8", "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"]
 ```
+
+The installer writes `config.yaml` once, with the vLLM image and the model
+list above (three models), and leaves an existing file alone. The vLLM image
+tag, the models the wizard offers and their `serve_args` are configuration,
+not code: edit the file and run `niuu up` again. The platform image never has
+to be rebuilt for them.
 
 `server.port` stays the single published port (8080). `server.external_host`
 sets the host in the printed setup URL; when empty the LAN address is detected.

@@ -361,7 +361,7 @@ class DockerStackController(StackControlPort):
             current=stack_settings_view(current, external_host),
             staged=self._staged(),
             effective=stack_settings_view(effective, external_host),
-            models=model_options(memory_gib),
+            models=model_options(effective.docker.models, memory_gib),
             accelerator_memory_gib=memory_gib,
         )
 
@@ -547,7 +547,7 @@ class DockerStackController(StackControlPort):
             text,
             model=model,
             cache_dir=hf_cache_dir(self._dir / "models", model),
-            expected_bytes=expected_weight_bytes(model),
+            expected_bytes=expected_weight_bytes(settings.docker.models, model),
         )
         return VllmStatus(state="starting", detail=progress.detail, progress=progress)
 

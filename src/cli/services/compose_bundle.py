@@ -487,6 +487,11 @@ def render_compose(settings: CLISettings) -> dict[str, Any]:
     }
     vllm = settings.docker.vllm
     if vllm.enabled:
+        if not vllm.image.strip():
+            raise ValueError(
+                "docker.vllm.image is empty but docker.vllm.enabled is true; set the vLLM "
+                "image in ~/.niuu/config.yaml (the installer writes one) and run `niuu up` again"
+            )
         # The NVIDIA image's entrypoint execs whatever follows; it has no
         # default command, so the server has to be named here.
         vllm_command = [
@@ -503,10 +508,11 @@ def render_compose(settings: CLISettings) -> dict[str, Any]:
         # Repositories that ship model code (Nemotron does) refuse to load
         # without this; the catalog knows which, the operator can say so for
         # a custom model.
-        if vllm.trust_remote_code or model_trusts_remote_code(vllm.model):
+        models = settings.docker.models
+        if vllm.trust_remote_code or model_trusts_remote_code(models, vllm.model):
             vllm_command.append("--trust-remote-code")
-        # Tool-call parsers and the like, from the model card via the catalog.
-        vllm_command.extend(model_serve_args(vllm.model))
+        # Tool-call parsers and the like, from the model card via the config.
+        vllm_command.extend(model_serve_args(models, vllm.model))
         services["vllm"] = {
             "image": "${NIUU_VLLM_IMAGE}",
             "restart": "unless-stopped",
