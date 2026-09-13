@@ -3088,6 +3088,57 @@ class TestServerMessageWithId:
 
 class TestThreadStartedNotification:
     @pytest.mark.asyncio
+    async def test_nested_agent_cannot_complete_parent_turn(self, tmp_path):
+        t = _make_transport(tmp_path)
+        t._alive = True
+        emit = _collect_emits(t)
+        await t._handle_server_message(
+            {"method": "thread/started", "params": {"thread": {"id": "parent"}}}
+        )
+        await t._handle_server_message(
+            {
+                "method": "turn/started",
+                "params": {"threadId": "parent", "turn": {"id": "parent-turn"}},
+            }
+        )
+        emit.reset_mock()
+
+        for method, params in (
+            ("thread/started", {"thread": {"id": "child"}}),
+            ("turn/started", {"turn": {"id": "child-turn"}}),
+            ("item/agentMessage/delta", {"delta": "Child final answer"}),
+            ("turn/completed", {"turn": {"id": "child-turn"}}),
+            ("thread/closed", {}),
+        ):
+            await t._handle_server_message(
+                {"method": method, "params": {"threadId": "child", **params}}
+            )
+
+        assert t._thread_id == "parent"
+        assert t._current_turn_id == "parent-turn"
+        assert t._alive
+        emit.assert_not_called()
+
+        t._handle_server_request = AsyncMock()
+        request = {
+            "id": 42,
+            "method": "item/tool/call",
+            "params": {"threadId": "child"},
+        }
+        await t._handle_server_message(request)
+        t._handle_server_request.assert_awaited_once_with(request)
+
+        await t._handle_server_message(
+            {
+                "method": "turn/completed",
+                "params": {"threadId": "parent", "turn": {"id": "parent-turn"}},
+            }
+        )
+        assert t._current_turn_id is None
+        assert len(_events_of_type(emit, "result")) == 1
+        assert _events_of_type(emit, "result")[0]["stop_reason"] == "end_turn"
+
+    @pytest.mark.asyncio
     async def test_thread_started_sets_thread_id(self, tmp_path):
         t = _make_transport(tmp_path)
         _collect_emits(t)

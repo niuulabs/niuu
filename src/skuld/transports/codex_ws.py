@@ -671,6 +671,14 @@ class CodexWebSocketTransport(CLITransport):
             await self._handle_server_request(data)
             return
 
+        # Nested Codex agents share this connection. Their notifications must
+        # not replace the primary thread or complete its in-progress turn.
+        thread_id = params.get("threadId")
+        if method == "thread/started":
+            thread_id = params.get("thread", {}).get("id")
+        if self._thread_id and thread_id and thread_id != self._thread_id:
+            return
+
         # --- Streaming text ---
         if method == "item/agentMessage/delta":
             await self._emit_text_delta(params.get("delta", ""))
