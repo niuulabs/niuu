@@ -36,6 +36,10 @@ COPY src/ /app/src/
 # --extra dsh bundles the DeepSeek Harness runtime (single-file exe, exact-pinned)
 # for DshJsonRpcTransport; the binary needs no Node at runtime.
 RUN uv sync --frozen --no-dev --no-editable --extra otel --extra dsh
+# xds-protos also ships obsolete OpenTelemetry modules. Restore the locked
+# official package after installation so enabled OTLP exporters can start.
+RUN uv pip install --python /opt/venv/bin/python --no-deps --reinstall \
+    "opentelemetry-proto==$(/opt/venv/bin/python -c 'from importlib.metadata import version; print(version("opentelemetry-proto"))')"
 
 # ---------------------------------------------------------------------------
 # Runtime — Node.js stays (needed for claude-code/codex CLI at runtime)
@@ -44,7 +48,7 @@ FROM ubuntu:26.04@sha256:513c074113a871b51a8d16ab445c88779d6452d937a164fb5cc479f
 
 
 LABEL org.opencontainers.image.title="skuld"
-LABEL org.opencontainers.image.description="Skuld — remote AI coding session broker (Claude Code, Codex, OpenCode, DeepSeek Harness)"
+LABEL org.opencontainers.image.description="Skuld — remote AI coding session broker (Claude Code, Codex, Grok, OpenCode, DeepSeek Harness)"
 LABEL org.opencontainers.image.vendor="Niuu Labs"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.source="https://github.com/niuulabs/volundr"
@@ -97,13 +101,15 @@ RUN curl -fsSL -o /tmp/glab.deb \
 COPY containers/node/npm-bootstrap/package.json containers/node/npm-bootstrap/package-lock.json /opt/npm-bootstrap/
 COPY containers/skuld/npm-tools/package.json containers/skuld/npm-tools/package-lock.json /opt/skuld-tools/
 RUN cd /opt/npm-bootstrap \
-    && npm ci --omit=dev \
+    && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
+    && rm -rf /tmp/npm-cache /tmp/grok-install \
     && rm -rf /usr/lib/node_modules/npm \
     && ln -s /opt/npm-bootstrap/node_modules/npm /usr/lib/node_modules/npm \
     && ln -sf /usr/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -sf /usr/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && cd /opt/skuld-tools \
-    && npm ci --omit=dev \
+    && GROK_HOME=/tmp/grok-install npm ci --omit=dev --libc=glibc --cache /tmp/npm-cache \
+    && rm -rf /tmp/npm-cache /tmp/grok-install \
     && ln -sf /opt/skuld-tools/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -sf /opt/skuld-tools/node_modules/.bin/codex /usr/local/bin/codex \
     && ln -sf /opt/skuld-tools/node_modules/.bin/opencode /usr/local/bin/opencode \
@@ -141,8 +147,13 @@ RUN chmod +x /usr/local/bin/openshell-run-installed-skuld
 # Set working directory
 WORKDIR /app
 
+# Fail the image build if an advertised CLI is missing or cannot execute.
+RUN claude --version && codex --version && opencode --version && grok --version
+
 # Switch to non-root user
 USER skuld
+RUN --network=none --mount=type=bind,source=tests/container/observability_runtime.py,target=/tmp/verify_observability.py \
+    python /tmp/verify_observability.py
 
 # Expose broker port (nginx is the entry point at 8080)
 EXPOSE 8081

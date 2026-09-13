@@ -20,12 +20,13 @@ import tarfile
 import threading
 import time
 from collections.abc import Sequence
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlparse, urlunparse
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import grpc
 import httpx
@@ -121,7 +122,6 @@ OAUTH_CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-s
 GRANT_AUDIENCE_PREFIX = "niuu:credential:"
 PLATFORM_GRANT_AUDIENCE_PREFIX = "niuu:platform:"
 PLATFORM_ACCESS_TOKEN_ENV = "NIUU_VOLUNDR_ACCESS_TOKEN"
-PROVIDERS_V2_SETTING = "providers_v2_enabled"
 DEFAULT_CREDENTIAL_TOKEN_ENDPOINT = (
     "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"
 )
@@ -143,6 +143,8 @@ HERMES_API_SERVER_KEY_ENV = "API_SERVER_KEY"
 HERMES_API_SERVER_DEFAULT_PORT = 8642
 HERMES_INTERNAL_SERVICE_URL = "http://hermes-api.internal"
 SECRET_ENV_KEYS = {
+    "XAI_API_KEY",
+    "DEEPSEEK_API_KEY",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
     "GIT_TOKEN",
@@ -282,6 +284,7 @@ class OpenShellGatewayClient:
         )
         self._channel = channel
         self._stub = openshell_pb2_grpc.OpenShellStub(channel)
+        self._workspace_scope = datamodel_pb2.WorkspaceSelector(workspace="default")
 
     def close(self) -> None:
         self._channel.close()
@@ -315,7 +318,9 @@ class OpenShellGatewayClient:
             policy=policy,
             providers=list(providers),
         )
-        request = openshell_pb2.CreateSandboxRequest(spec=spec, name=name, labels=labels)
+        request = openshell_pb2.CreateSandboxRequest(
+            workspace_scope=self._workspace_scope, spec=spec, name=name, labels=labels
+        )
         response = self._stub.CreateSandbox(
             request,
             timeout=self._timeout,
@@ -326,7 +331,7 @@ class OpenShellGatewayClient:
     def get_sandbox(self, name: str) -> OpenShellSandbox | None:
         try:
             response = self._stub.GetSandbox(
-                openshell_pb2.GetSandboxRequest(name=name),
+                openshell_pb2.GetSandboxRequest(workspace_scope=self._workspace_scope, name=name),
                 timeout=self._timeout,
                 metadata=self._metadata(),
             )
@@ -337,23 +342,25 @@ class OpenShellGatewayClient:
         return _sandbox_from_proto(response.sandbox)
 
     def get_sandbox_by_id(self, sandbox_id: str) -> OpenShellSandbox | None:
-        offset = 0
+        page_token = ""
         while True:
             response = self._stub.ListSandboxes(
-                openshell_pb2.ListSandboxesRequest(limit=100, offset=offset),
+                openshell_pb2.ListSandboxesRequest(
+                    workspace_scope=self._workspace_scope, page_size=100, page_token=page_token
+                ),
                 timeout=self._timeout,
                 metadata=self._metadata(),
             )
             for sandbox in response.sandboxes:
                 if str(sandbox.metadata.id) == sandbox_id:
                     return _sandbox_from_proto(sandbox)
-            if len(response.sandboxes) < 100:
+            page_token = str(response.next_page_token)
+            if not page_token:
                 return None
-            offset += len(response.sandboxes)
 
     def stop_sandbox(self, name: str) -> OpenShellSandbox:
         response = self._stub.StopSandbox(
-            openshell_pb2.StopSandboxRequest(name=name),
+            openshell_pb2.StopSandboxRequest(workspace_scope=self._workspace_scope, name=name),
             timeout=self._timeout,
             metadata=self._metadata(),
         )
@@ -361,7 +368,7 @@ class OpenShellGatewayClient:
 
     def start_sandbox(self, name: str) -> OpenShellSandbox:
         response = self._stub.StartSandbox(
-            openshell_pb2.StartSandboxRequest(name=name),
+            openshell_pb2.StartSandboxRequest(workspace_scope=self._workspace_scope, name=name),
             timeout=self._timeout,
             metadata=self._metadata(),
         )
@@ -370,7 +377,9 @@ class OpenShellGatewayClient:
     def delete_sandbox(self, name: str) -> bool:
         try:
             response = self._stub.DeleteSandbox(
-                openshell_pb2.DeleteSandboxRequest(name=name),
+                openshell_pb2.DeleteSandboxRequest(
+                    workspace_scope=self._workspace_scope, name=name
+                ),
                 timeout=self._timeout,
                 metadata=self._metadata(),
             )
@@ -386,7 +395,9 @@ class OpenShellGatewayClient:
 
         try:
             response = self._stub.DeleteService(
-                openshell_pb2.DeleteServiceRequest(sandbox=sandbox_name, service=service),
+                openshell_pb2.DeleteServiceRequest(
+                    workspace_scope=self._workspace_scope, sandbox=sandbox_name, service=service
+                ),
                 timeout=self._timeout,
                 metadata=self._metadata(),
             )
@@ -396,21 +407,10 @@ class OpenShellGatewayClient:
             raise
         return bool(response.deleted)
 
-    def ensure_providers_v2(self) -> None:
-        self._stub.UpdateConfig(
-            openshell_pb2.UpdateConfigRequest(
-                setting_key=PROVIDERS_V2_SETTING,
-                setting_value=sandbox_pb2.SettingValue(bool_value=True),
-                **{"global": True},
-            ),
-            timeout=self._timeout,
-            metadata=self._metadata(),
-        )
-
     def get_provider(self, name: str) -> Any | None:
         try:
             response = self._stub.GetProvider(
-                openshell_pb2.GetProviderRequest(name=name),
+                openshell_pb2.GetProviderRequest(workspace_scope=self._workspace_scope, name=name),
                 timeout=self._timeout,
                 metadata=self._metadata(),
             )
@@ -475,12 +475,13 @@ class OpenShellGatewayClient:
         try:
             self._stub.CreateProvider(
                 openshell_pb2.CreateProviderRequest(
+                    workspace_scope=self._workspace_scope,
                     provider=datamodel_pb2.Provider(
                         metadata=datamodel_pb2.ObjectMeta(name=provider_name),
                         type=str(profile.id),
                         config=config,
                         credentials=_provider_credential_slots(profile),
-                    )
+                    ),
                 ),
                 timeout=self._timeout,
                 metadata=self._metadata(),
@@ -492,7 +493,9 @@ class OpenShellGatewayClient:
     def delete_provider_grant(self, grant: OpenShellProviderGrant) -> None:
         try:
             self._stub.DeleteProvider(
-                openshell_pb2.DeleteProviderRequest(name=grant.provider_name),
+                openshell_pb2.DeleteProviderRequest(
+                    workspace_scope=self._workspace_scope, name=grant.provider_name
+                ),
                 timeout=self._timeout,
                 metadata=self._metadata(),
             )
@@ -512,6 +515,7 @@ class OpenShellGatewayClient:
     def expose_service(self, *, sandbox_name: str, target_port: int, service: str = "") -> str:
         response = self._stub.ExposeService(
             openshell_pb2.ExposeServiceRequest(
+                workspace_scope=self._workspace_scope,
                 sandbox=sandbox_name,
                 service=service,
                 target_port=int(target_port),
@@ -619,6 +623,7 @@ class OpenShellGatewayClient:
     ) -> ResidentLogPage:
         response = self._stub.GetSandboxLogs(
             openshell_pb2.GetSandboxLogsRequest(
+                workspace_scope=self._workspace_scope,
                 sandbox_id=sandbox_id,
                 lines=lines,
                 sources=list(sources),
@@ -927,7 +932,6 @@ class OpenShellGatewayPodManager(
             "NO_COLOR": "1",
         }
         try:
-            await asyncio.to_thread(self._client.ensure_providers_v2)
             await asyncio.to_thread(
                 self._client.create_provider_grant,
                 profile=profile,
@@ -1270,7 +1274,9 @@ class OpenShellGatewayPodManager(
             annotations.update(self._supported_annotations_from_pod_spec(spec.pod_spec.annotations))
         self._warn_unsupported_pod_spec(session, spec)
         try:
-            platform_providers = await self._resolve_platform_provider(session)
+            platform_providers = await self._resolve_platform_provider(
+                session, api_urls=_resident_api_urls(spec.values)
+            )
             grants = tuple(
                 OpenShellProviderGrant(provider_name=name, profile_id=name)
                 for name in platform_providers
@@ -1279,13 +1285,29 @@ class OpenShellGatewayPodManager(
             env.update(credential_context.environment)
             process_env = {**env, **credential_context.process_environment}
             runtime_processes = _runtime_processes_from_spec(spec)
+            workloads = (spec.values.get("openshell") or {}).get("workloads", [])
+            workload_start_file = ""
+            if workloads:
+                if runtime_processes:
+                    raise ValueError(
+                        "OpenShell flock workloads cannot also declare detached processes"
+                    )
+                if credential_context.process_environment:
+                    raise ValueError(
+                        "OpenShell workload containers require dynamic provider credentials; "
+                        "disable materializeEnvironment"
+                    )
+                workload_start_file = f"{self._sandbox_workspace}/.volundr/start-{uuid4().hex}"
+            driver_config = _driver_config_from_values(
+                spec.values,
+                workload_start_file=workload_start_file,
+                workload_environment=env,
+            )
             provider_names = (*platform_providers, *credential_context.providers)
             grants = tuple(
                 OpenShellProviderGrant(provider_name=name, profile_id=name)
                 for name in provider_names
             )
-            if grants:
-                await asyncio.to_thread(self._client.ensure_providers_v2)
             if legacy is not None:
                 sandbox = await asyncio.to_thread(self._client.start_sandbox, sandbox_name)
             else:
@@ -1297,7 +1319,7 @@ class OpenShellGatewayPodManager(
                     labels=labels,
                     annotations=annotations,
                     resources=self._resources_from_spec(spec),
-                    driver_config=self._driver_config_from_spec(spec),
+                    driver_config=driver_config,
                     providers=provider_names,
                     policy=self._sandbox_policy,
                 )
@@ -1317,6 +1339,18 @@ class OpenShellGatewayPodManager(
                 spec,
                 env,
             )
+            if workload_start_file:
+                # Configuration travels over the file API, outside the bounded
+                # pod driver config. Write the startup marker last.
+                workload_files = {
+                    path: content.encode("utf-8")
+                    for path, content in (spec.values["openshell"].get("files") or {}).items()
+                }
+                await asyncio.to_thread(
+                    self._client.write_files,
+                    sandbox_id=ready.id,
+                    files={**workload_files, workload_start_file: b"ready"},
+                )
             for process in runtime_processes:
                 process_exit = await asyncio.to_thread(
                     self._client.exec_detached,
@@ -1330,10 +1364,24 @@ class OpenShellGatewayPodManager(
                         f"OpenShell runtime process {process.name!r} failed with exit "
                         f"{process_exit}"
                     )
+            # ExecSandbox env values reject newlines; command arguments are
+            # shell-quoted by exec_detached and preserve the original prose.
+            session_values = spec.values.get("session", {})
+            prompts = [
+                f"SKULD__SESSION__{name}={session_values[key]}"
+                for name, key in (
+                    ("INITIAL_PROMPT", "initialPrompt"),
+                    ("SYSTEM_PROMPT", "systemPrompt"),
+                )
+                if session_values.get(key)
+            ]
+            command = (
+                ["env", *prompts, *self._sandbox_command] if prompts else self._sandbox_command
+            )
             exit_code = await asyncio.to_thread(
                 self._client.exec_detached,
                 sandbox_id=ready.id,
-                command=self._sandbox_command,
+                command=command,
                 env=process_env,
                 log_path=self._command_log_path,
             )
@@ -1396,6 +1444,8 @@ class OpenShellGatewayPodManager(
             if sandbox.ready or sandbox.phase == openshell_pb2.SANDBOX_PHASE_READY:
                 # Older bootstrap scripts copied CLI homes into /tmp. Save
                 # those files onto the retained volume before removing compute.
+                # Stage the merge to replace root-owned image defaults and
+                # read-only Git caches, retaining the previous home as a backup.
                 exit_code, _ = await asyncio.to_thread(
                     self._client.exec_script,
                     sandbox_id=sandbox.id,
@@ -1405,8 +1455,17 @@ class OpenShellGatewayPodManager(
                         "for cli in codex claude; do\n"
                         '  source="/tmp/$cli-home"\n'
                         '  if [ -d "$source" ]; then\n'
-                        '    mkdir -p "$HOME_ROOT/.$cli"\n'
-                        '    cp -a "$source/." "$HOME_ROOT/.$cli/"\n'
+                        '    target="$HOME_ROOT/.$cli"\n'
+                        '    saved=$(mktemp -d "$HOME_ROOT/.$cli-save.XXXXXX")\n'
+                        '    if [ -d "$target" ]; then cp -a "$target/." "$saved/"; fi\n'
+                        '    cp -af "$source/." "$saved/"\n'
+                        '    if [ -e "$target" ]; then mv "$target" "$saved.previous"; fi\n'
+                        '    if ! mv "$saved" "$target"; then\n'
+                        '      if [ -e "$saved.previous" ]; then\n'
+                        '        mv "$saved.previous" "$target"\n'
+                        "      fi\n"
+                        "      exit 1\n"
+                        "    fi\n"
                         "  fi\n"
                         "done\n"
                     ),
@@ -1529,8 +1588,6 @@ class OpenShellGatewayPodManager(
                 OpenShellProviderGrant(provider_name=name, profile_id=name)
                 for name in provider_names
             )
-            if grants:
-                await asyncio.to_thread(self._client.ensure_providers_v2)
             env.update(credential_context.environment)
             mesh_labels, mesh_annotations = resident_mesh_pod_metadata(runtime)
             if not resumed_deployment:
@@ -3046,12 +3103,20 @@ def _resident_api_urls(values: dict[str, Any]) -> tuple[str, ...]:
     if platform_url:
         urls.append(str(platform_url))
     mimir = values.get("mimir")
-    if isinstance(mimir, dict) and isinstance(mimir.get("instances"), list):
-        urls.extend(
-            str(instance["url"])
-            for instance in mimir["instances"]
-            if isinstance(instance, dict) and instance.get("url")
-        )
+    if isinstance(mimir, dict):
+        hosted_url = mimir.get("hostedUrl") or mimir.get("hosted_url")
+        if hosted_url:
+            urls.append(str(hosted_url))
+        for instance in [
+            *(mimir.get("instances") or []),
+            *(mimir.get("registryRefs") or mimir.get("registry_refs") or []),
+        ]:
+            if not isinstance(instance, dict):
+                continue
+            kwargs = instance.get("kwargs") or {}
+            url = kwargs.get("base_url") or instance.get("url")
+            if url:
+                urls.append(str(url))
     llm = resident.get("llm") if isinstance(resident.get("llm"), dict) else {}
     provider = llm.get("provider") if isinstance(llm.get("provider"), dict) else {}
     kwargs = provider.get("kwargs") if isinstance(provider.get("kwargs"), dict) else {}
@@ -3164,7 +3229,26 @@ def _image_from_values(values: dict[str, Any], *, default: str) -> str:
     return _shared_image_from_values(values, default=default)
 
 
-def _driver_config_from_values(values: dict[str, Any]) -> dict[str, Any]:
+# A regular container may be Running while its entry command waits here. Do not
+# use a Kubernetes readiness probe for this gate: the primary's exec channel is
+# needed to finish workspace/credential bootstrap and release the workloads.
+_WORKLOAD_START_COMMAND = """import os, pathlib, sys, time
+marker = pathlib.Path(sys.argv[1])
+deadline = time.monotonic() + float(sys.argv[2])
+while not marker.exists():
+    if time.monotonic() >= deadline:
+        raise TimeoutError('Völundr did not finish workload bootstrap')
+    time.sleep(0.1)
+os.execvp(sys.argv[3], sys.argv[3:])
+"""
+
+
+def _driver_config_from_values(
+    values: dict[str, Any],
+    *,
+    workload_start_file: str = "",
+    workload_environment: dict[str, str] | None = None,
+) -> dict[str, Any]:
     pod: dict[str, Any] = {}
     if isinstance(values.get("nodeSelector"), dict):
         pod["node_selector"] = _string_dict(values["nodeSelector"])
@@ -3196,9 +3280,44 @@ def _driver_config_from_values(values: dict[str, Any]) -> dict[str, Any]:
             }
         )
         mounts.append({"name": name, "mount_path": mount_path, "read_only": False})
+    openshell = values.get("openshell") or {}
+    workloads = deepcopy(openshell.get("workloads") or [])
+    if workloads:
+        if not workload_start_file:
+            raise ValueError("OpenShell workload containers require session workspace bootstrap")
+        volumes.extend(deepcopy(openshell.get("volumes") or []))
+        shared_mounts = deepcopy(openshell.get("volumeMounts") or [])
+        for workload in workloads:
+            command = workload.get("command")
+            if not isinstance(command, list) or not command:
+                raise ValueError("OpenShell workload containers require an explicit command")
+            if workload.get("readiness_port"):
+                raise ValueError(
+                    "OpenShell session workloads cannot gate pod readiness "
+                    "before workspace bootstrap"
+                )
+            environment = {
+                key: value
+                for key, value in (workload_environment or {}).items()
+                if key not in SECRET_ENV_KEYS
+                and not key.startswith(("OPENSHELL_", "SKULD__WORKFLOW__"))
+            }
+            environment.update(workload.get("environment") or {})
+            workload["environment"] = environment
+            workload["volume_mounts"] = [*deepcopy(mounts), *workload.get("volume_mounts", [])]
+            workload["command"] = [
+                "python",
+                "-c",
+                _WORKLOAD_START_COMMAND,
+                workload_start_file,
+                "300",
+                *command,
+            ]
+        mounts.extend(shared_mounts)
+        config["containers"] = {"workloads": workloads}
     if volumes:
         config["volumes"] = volumes
-        config["containers"] = {"agent": {"volume_mounts": mounts}}
+        config.setdefault("containers", {})["agent"] = {"volume_mounts": mounts}
     return config
 
 
@@ -3599,6 +3718,28 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
             ),
             "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
         }
+    if env_name == "XAI_API_KEY":
+        return {
+            "auth_style": "bearer",
+            "header_name": "Authorization",
+            "hosts": ("api.x.ai",),
+            "binaries": (
+                "/usr/local/bin/grok",
+                "/opt/skuld-tools/node_modules/@xai-official/grok/bin/grok-native",
+            ),
+            "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
+        }
+    if env_name == "DEEPSEEK_API_KEY":
+        return {
+            "auth_style": "bearer",
+            "header_name": "Authorization",
+            "hosts": ("api.deepseek.com",),
+            "binaries": (
+                "/opt/niuu/lib/python*/site-packages/deepseek_harness_runtime/runtime/*",
+                "/opt/venv/lib/python*/site-packages/deepseek_harness_runtime/runtime/*",
+            ),
+            "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
+        }
     if env_name == "LINEAR_API_KEY":
         return {
             "auth_style": "header",
@@ -3656,10 +3797,19 @@ def _profile_authorizes_audience(profile: Any, audience: str) -> bool:
 def _profiles_equivalent(existing: Any, expected: Any) -> bool:
     existing_copy = openshell_pb2.ProviderProfile()
     existing_copy.CopyFrom(existing)
-    existing_copy.resource_version = 0
     expected_copy = openshell_pb2.ProviderProfile()
     expected_copy.CopyFrom(expected)
-    expected_copy.resource_version = 0
+    for profile in (existing_copy, expected_copy):
+        # These fields are gateway-owned and ignored on profile import.
+        profile.resource_version = 0
+        profile.source = ""
+        profile.scope = ""
+        for credential in profile.credentials:
+            if credential.HasField("token_grant") and not credential.token_grant.grant_type:
+                # OpenShell canonicalizes an omitted grant type on import.
+                credential.token_grant.grant_type = (
+                    openshell_pb2.PROVIDER_CREDENTIAL_TOKEN_GRANT_TYPE_CLIENT_CREDENTIALS
+                )
     return existing_copy.SerializeToString(deterministic=True) == expected_copy.SerializeToString(
         deterministic=True
     )

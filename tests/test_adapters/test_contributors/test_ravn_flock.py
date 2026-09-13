@@ -213,35 +213,87 @@ class TestWorkloadTypeRouting:
 
 
 class TestContributorOutput:
-    async def test_openshell_backend_emits_in_sandbox_process_plan(self, session, flock_template):
+    async def test_openshell_backend_emits_regular_workloads(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
-        contributor = RavnFlockContributor(launch_spec_provider=provider)
-
-        result = await contributor.contribute(
-            session,
-            SessionContext(launch_spec="ravn-flock", runtime_backend="openshell"),
+        contributor = RavnFlockContributor(
+            launch_spec_provider=provider, ravn_image="ghcr.io/niuulabs/openshell:dev-test"
         )
-
-        processes = result.values["openshell"]["processes"]
-        assert [process["name"] for process in processes] == [
+        result = await contributor.contribute(
+            session, SessionContext(launch_spec="ravn-flock", runtime_backend="openshell")
+        )
+        workloads = result.values["openshell"]["workloads"]
+        assert [workload["name"] for workload in workloads] == [
             "ravn-coordinator",
             "ravn-reviewer",
         ]
-        assert processes[0]["command"][:4] == [
-            "/opt/niuu/bin/python",
-            "-m",
-            "ravn",
-            "daemon",
-        ]
-        assert processes[0]["env"]["HOME"] == "/sandbox/workspace"
-        assert "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE" not in processes[0]["env"]
-        config_path = "/sandbox/.volundr/flock/coordinator.yaml"
-        assert config_path in processes[0]["files"]
-        config = yaml.safe_load(processes[0]["files"][config_path])
+        assert all(w["image"] == "ghcr.io/niuulabs/openshell:dev-test" for w in workloads)
+        assert "processes" not in result.values["openshell"]
+        assert not result.pod_spec.extra_containers
+        assert not result.pod_spec.init_containers
+        workload = workloads[0]
+        assert workload["command"][:2] == ["python", "-c"]
+        assert workload["environment"]["HOME"] == "/sandbox/workspace"
+        assert "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE" not in workload["environment"]
+        config_text = result.values["openshell"]["files"][workload["environment"]["RAVN_CONFIG"]]
+        config = yaml.safe_load(config_text)
         assert config["persona"] == "coordinator"
+        state_dirs = set()
+        memory_paths = set()
+        for peer in workloads:
+            peer_env = peer["environment"]
+            peer_config = yaml.safe_load(
+                result.values["openshell"]["files"][peer_env["RAVN_CONFIG"]]
+            )
+            state_dirs.add(peer_env["RAVN_STATE_DIR"])
+            memory_paths.add(peer_config["memory"]["path"])
+            assert peer_config["memory"]["path"].startswith(peer_env["RAVN_STATE_DIR"] + "/")
+        assert len(state_dirs) == len(memory_paths) == len(workloads)
         assert config["permission"]["workspace_root"] == "/sandbox/workspace"
         assert config["initiative"]["queue_journal_path"].startswith("/sandbox/workspace/")
+        assert "tcp://127.0.0.1:" in config_text
+        assert {"name": "flock-ipc", "empty_dir": {}} in result.values["openshell"]["volumes"]
+        assert workload["volume_mounts"][0]["mount_path"] == "/tmp/niuu-mesh"
+
+    async def test_openshell_bootstrap_uses_projected_config_and_streams_logs(
+        self, session, flock_template, tmp_path
+    ):
+        import os
+        import subprocess
+        import sys
+
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        result = await RavnFlockContributor(launch_spec_provider=provider).contribute(
+            session, SessionContext(launch_spec="ravn-flock", runtime_backend="openshell")
+        )
+        workload = result.values["openshell"]["workloads"][0]
+        stub = tmp_path / "ravn"
+        stub.mkdir()
+        (stub / "__init__.py").write_text("")
+        (stub / "__main__.py").write_text("print('daemon-started')")
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            result.values["openshell"]["files"][workload["environment"]["RAVN_CONFIG"]]
+        )
+        log = tmp_path / "logs" / "coordinator.log"
+        env = {
+            **os.environ,
+            **workload["environment"],
+            "PYTHONPATH": str(tmp_path),
+            "RAVN_CONFIG": str(config),
+            "RAVN_LOG_PATH": str(log),
+        }
+        completed = subprocess.run(
+            [sys.executable, *workload["command"][1:]],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+        assert yaml.safe_load(config.read_text())["persona"] == "coordinator"
+        assert completed.stdout == log.read_text() == "daemon-started\n"
 
     async def test_two_ravn_containers_produced(self, session, flock_template):
         provider = MagicMock()
@@ -650,7 +702,7 @@ class TestMountedConfig:
         for ctr in result.pod_spec.extra_containers:
             env = {e["name"]: e["value"] for e in ctr["env"]}
             assert env["HOME"] == "/workspace"
-            assert env["RAVN_STATE_DIR"] == "/workspace/.ravn"
+            assert env["RAVN_STATE_DIR"] == f"/workspace/.ravn/{env['RAVN_PERSONA']}"
 
         journals = {
             yaml.safe_load(_extract_mounted_config(result.pod_spec, persona))["initiative"][
@@ -659,8 +711,8 @@ class TestMountedConfig:
             for persona in ("coordinator", "reviewer")
         }
         assert journals == {
-            "/workspace/.ravn/daemon/coordinator-queue.json",
-            "/workspace/.ravn/daemon/reviewer-queue.json",
+            "/workspace/.ravn/coordinator/daemon/queue.json",
+            "/workspace/.ravn/reviewer/daemon/queue.json",
         }
 
     async def test_ravn_config_uses_workspace_mount_root(self, session, flock_template):

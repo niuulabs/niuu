@@ -12,7 +12,7 @@ import pytest
 import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from httpx import Response
+from httpx import ConnectTimeout, Response
 
 from identity.adapters.identity import AllowAllIdentityAdapter
 from niuu.adapters.inbound.rest_volundr import create_volundr_router
@@ -330,6 +330,73 @@ def test_get_session_searches_visible_instances() -> None:
     assert payload["id"] == "s2"
     assert payload["instance_id"] == "beta"
     assert payload["instance_name"] == "Instance beta"
+
+
+@pytest.mark.parametrize("resource", ["sessions", "resident-runtimes"])
+@respx.mock
+def test_owner_lookup_finds_resource_despite_unreachable_instance(resource: str) -> None:
+    client = _client(
+        [
+            _instance("offline", base_url="http://offline"),
+            _instance("noatun", base_url="http://noatun"),
+        ]
+    )
+    respx.get(f"http://offline/api/v1/forge/{resource}/s2").mock(
+        side_effect=ConnectTimeout("offline")
+    )
+    respx.get(f"http://noatun/api/v1/forge/{resource}/s2").mock(
+        return_value=Response(200, json={"id": "s2", "status": "running"})
+    )
+    response = client.get(f"/api/v1/forge/{resource}/s2", headers=_headers())
+    assert response.status_code == 200
+    assert response.json()["instance_id"] == "noatun"
+
+
+@respx.mock
+def test_incomplete_owner_lookup_is_not_reported_as_missing() -> None:
+    client = _client(
+        [
+            _instance("offline", base_url="http://offline"),
+            _instance("noatun", base_url="http://noatun"),
+        ]
+    )
+    respx.get("http://offline/api/v1/forge/sessions/s2").mock(side_effect=ConnectTimeout("offline"))
+    respx.get("http://noatun/api/v1/forge/sessions/s2").mock(return_value=Response(404))
+    response = client.get("/api/v1/forge/sessions/s2", headers=_headers())
+    assert response.status_code == 502
+
+
+async def test_owner_lookup_cancels_stalled_probes_after_finding_owner(monkeypatch) -> None:
+    import asyncio
+
+    from fastapi import Request
+
+    from niuu.adapters.inbound import rest_volundr
+
+    cancelled = asyncio.Event()
+
+    async def probe(instance, request, **kwargs):
+        if instance.id == "offline":
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        return Response(200, json={"id": "s2"})
+
+    monkeypatch.setattr(rest_volundr, "_request_remote", probe)
+    service = StubInstanceService(
+        [
+            _instance("offline", base_url="http://offline"),
+            _instance("noatun", base_url="http://noatun"),
+        ]
+    )
+    principal = Principal(user_id="user-a", email="", tenant_id="tenant-a", roles=[])
+    owner, _ = await asyncio.wait_for(
+        rest_volundr._find_session_owner(service, principal, Request({"type": "http"}), "s2"),
+        timeout=1,
+    )
+    assert owner.id == "noatun"
+    assert cancelled.is_set()
 
 
 @respx.mock

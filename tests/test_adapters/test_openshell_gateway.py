@@ -107,6 +107,7 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
     for name in (
         "Provider",
         "ObjectMeta",
+        "WorkspaceSelector",
     ):
         setattr(datamodel_pb2_mod, name, _Proto)
 
@@ -206,7 +207,6 @@ class _FakeOpenShellGatewayClient:
         self.delete_polls_remaining = 0
         self.cleanup_events: list[str] = []
         self.written_files: list[dict] = []
-        self.providers_v2_enabled = False
         self.service_url = "http://openshell.example/proxy/session-1"
         self.grant_sandbox = None
         self.grant_provider = None
@@ -277,9 +277,6 @@ class _FakeOpenShellGatewayClient:
     def delete_service(self, **kwargs) -> bool:
         self.deleted_services.append(kwargs)
         return True
-
-    def ensure_providers_v2(self) -> None:
-        self.providers_v2_enabled = True
 
     def create_provider_grant(self, **kwargs) -> None:
         self.provider_grants.append(kwargs)
@@ -856,7 +853,9 @@ def test_native_lifecycle_calls_authenticated_gateway(monkeypatch, method, rpc):
 
 
 @pytest.mark.asyncio
-async def test_legacy_stop_preserves_sandbox_volume(monkeypatch):
+async def test_legacy_stop_preserves_sandbox_volume(monkeypatch, tmp_path):
+    import subprocess
+
     adapter = _import_adapter(monkeypatch)
     client = _FakeOpenShellGatewayClient(adapter)
     session = _session()
@@ -876,6 +875,27 @@ async def test_legacy_stop_preserves_sandbox_volume(monkeypatch):
     assert client.deleted == []
     assert 'source="/tmp/$cli-home"' in client.bootstrap_execs[0]["script"]
     assert adapter._status_from_sandbox(stopped) == SessionStatus.STOPPED
+
+    # Git plugin caches contain read-only pack files even for the owning user.
+    source_root = tmp_path / "tmp"
+    source = source_root / "codex-home"
+    destination = tmp_path / "home" / ".codex"
+    source.mkdir(parents=True)
+    destination.mkdir(parents=True)
+    (source / "cache.pack").write_text("updated cache")
+    (destination / "cache.pack").write_text("old cache")
+    (destination / "history.jsonl").write_text("existing history")
+    (destination / "cache.pack").chmod(0o444)
+    script = (
+        client.bootstrap_execs[0]["script"]
+        .replace("HOME_ROOT=/sandbox", f"HOME_ROOT={tmp_path / 'home'}")
+        .replace('source="/tmp/$cli-home"', f'source="{source_root}/$cli-home"')
+    )
+    subprocess.run(["sh", "-c", script], check=True, capture_output=True)
+    assert (destination / "cache.pack").read_text() == "updated cache"
+    assert (destination / "history.jsonl").read_text() == "existing history"
+    backup = next(destination.parent.glob(".codex-save.*.previous"))
+    assert (backup / "cache.pack").read_text() == "old cache"
 
 
 @pytest.mark.asyncio
@@ -948,7 +968,10 @@ def test_storage_rejects_mount_outside_sandbox(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_start_uses_gateway_client_without_host_cli(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("initial_prompt", ["", "# Workflow\nDo the 'localhost' check; $(false)"])
+async def test_start_uses_gateway_client_without_host_cli(
+    monkeypatch: pytest.MonkeyPatch, initial_prompt
+):
     adapter = _import_adapter(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-real-from-volundr-env")
     session = _session()
@@ -956,6 +979,7 @@ async def test_start_uses_gateway_client_without_host_cli(monkeypatch: pytest.Mo
     spec = SessionSpec(
         values={
             "broker": {"cliType": "codex", "approvalPolicy": "on-request"},
+            "session": {"initialPrompt": initial_prompt, "systemPrompt": initial_prompt},
             "env": {"CUSTOM_ENV": "yes"},
             "resources": {
                 "requests": {"cpu": "500m", "memory": "1Gi"},
@@ -1019,7 +1043,17 @@ async def test_start_uses_gateway_client_without_host_cli(monkeypatch: pytest.Mo
     assert client.execs == [
         {
             "sandbox_id": "sandbox-id",
-            "command": ["skuld", "serve"],
+            "command": (
+                [
+                    "env",
+                    f"SKULD__SESSION__INITIAL_PROMPT={initial_prompt}",
+                    f"SKULD__SESSION__SYSTEM_PROMPT={initial_prompt}",
+                    "skuld",
+                    "serve",
+                ]
+                if initial_prompt
+                else ["skuld", "serve"]
+            ),
             "env": client.created["env"],
             "log_path": "/sandbox/.volundr/skuld.log",
         }
@@ -1880,7 +1914,6 @@ async def test_start_creates_dynamic_openbao_providers_without_secret_environmen
     assert "OPENAI_API_KEY" not in client.execs[0]["env"]
     assert "GITHUB_PERSONAL_ACCESS_TOKEN" not in client.execs[0]["env"]
     assert "secret_env" not in client.execs[0]
-    assert client.providers_v2_enabled is True
     assert len(client.provider_grants) == 2
     assert {grant["profile"].credentials[0].env_vars[0] for grant in client.provider_grants} == {
         "OPENAI_API_KEY",
@@ -2819,3 +2852,231 @@ def test_create_sandbox_wraps_storage_in_public_driver_envelope(monkeypatch):
     assert selected["volumes"][0]["name"] == "forge-workspace"
     assert selected["volumes"][0]["persistent_volume_claim"]["claim_name"] == "forge-workspace"
     assert selected["containers"]["agent"]["volume_mounts"][0]["mount_path"] == "/sandbox/workspace"
+
+
+@pytest.mark.parametrize("changed_field", [None, "audience", "scopes", "grant_type", "endpoints"])
+def test_profile_comparison_accepts_only_gateway_normalization(monkeypatch, changed_field):
+    pb2 = pytest.importorskip("openshell._proto.openshell_pb2")
+    adapter = _import_adapter(monkeypatch)
+    monkeypatch.setattr(adapter, "openshell_pb2", pb2)
+    expected = pb2.ProviderProfile(id="resume-proof")
+    grant = expected.credentials.add(name="access_token").token_grant
+    grant.token_endpoint = "https://issuer.example/token"
+    grant.audience = "workload"
+    saved = pb2.ProviderProfile()
+    saved.CopyFrom(expected)
+    saved.resource_version = 3
+    saved.source = "user"
+    saved.scope = "platform"
+    saved.credentials[
+        0
+    ].token_grant.grant_type = pb2.PROVIDER_CREDENTIAL_TOKEN_GRANT_TYPE_CLIENT_CREDENTIALS
+    if changed_field == "audience":
+        saved.credentials[0].token_grant.audience = "another-workload"
+    if changed_field == "scopes":
+        saved.credentials[0].token_grant.scopes.append("admin")
+    if changed_field == "grant_type":
+        saved.credentials[
+            0
+        ].token_grant.grant_type = pb2.PROVIDER_CREDENTIAL_TOKEN_GRANT_TYPE_TOKEN_EXCHANGE
+    if changed_field == "endpoints":
+        saved.endpoints.add(host="unexpected.example", port=443)
+    before = saved.SerializeToString()
+    assert adapter._profiles_equivalent(saved, expected) is (changed_field is None)
+    assert saved.SerializeToString() == before
+    assert expected.credentials[0].token_grant.grant_type == 0
+
+
+@pytest.mark.parametrize(
+    ("env_name", "host"),
+    [("XAI_API_KEY", "api.x.ai"), ("DEEPSEEK_API_KEY", "api.deepseek.com")],
+)
+def test_additional_runtime_credentials_use_scoped_inspected_routes(monkeypatch, env_name, host):
+    adapter = _import_adapter(monkeypatch)
+    profile = adapter._provider_profile(
+        profile_id="runtime-test",
+        env_name=env_name,
+        token_endpoint="https://forge.example/credential-token",
+    )
+    assert env_name in adapter.SECRET_ENV_KEYS
+    assert profile.credentials[0].auth_style == "bearer"
+    assert profile.credentials[0].header_name == "Authorization"
+    assert len(profile.endpoints) == 1
+    endpoint = profile.endpoints[0]
+    assert (endpoint.host, endpoint.port, endpoint.tls, endpoint.enforcement) == (
+        host,
+        443,
+        "terminate",
+        "enforce",
+    )
+    assert all(binary.path != "**" for binary in profile.binaries)
+
+
+@pytest.mark.asyncio
+async def test_start_creates_peer_containers_and_releases_after_workspace(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+    values = {
+        "env": {
+            "SKULD__WORKFLOW__GRAPH": "large workflow graph",
+            "SKULD__VOLUNDR_API_URL": "https://forge.example",
+        },
+        "persistence": {"existingClaim": "workspace", "mountPath": "/sandbox/workspace"},
+        "openshell": {
+            "files": {"/sandbox/workspace/.flock/config/reviewer.yaml": "persona: reviewer\n"},
+            "volumes": [{"name": "ipc", "empty_dir": {}}],
+            "volumeMounts": [{"name": "ipc", "mount_path": "/tmp/niuu-mesh"}],
+            "workloads": [
+                {
+                    "name": "ravn-reviewer",
+                    "image": "ravn:pinned",
+                    "command": ["python", "-m", "ravn", "daemon"],
+                    "environment": {"RAVN_PERSONA": "reviewer"},
+                    "volume_mounts": [{"name": "ipc", "mount_path": "/tmp/niuu-mesh"}],
+                }
+            ],
+        },
+    }
+    original = json.loads(json.dumps(values))
+    events = []
+    write_files = client.write_files
+
+    def write(**kwargs):
+        events.append("release")
+        write_files(**kwargs)
+
+    def bootstrap(**kwargs):
+        events.append("workspace")
+        return 0, "ready"
+
+    client.write_files = write
+    client.exec_script = bootstrap
+    await manager.start(_session(), SessionSpec(values=values, pod_spec=PodSpecAdditions()))
+    workload = client.created["driver_config"]["containers"]["workloads"][0]
+    assert workload["image"] == "ravn:pinned"
+    assert workload["environment"]["RAVN_PERSONA"] == "reviewer"
+    assert "SKULD__WORKFLOW__GRAPH" not in workload["environment"]
+    assert workload["environment"]["SKULD__VOLUNDR_API_URL"] == "https://forge.example"
+    assert workload["volume_mounts"][0]["mount_path"] == "/sandbox/workspace"
+    assert workload["volume_mounts"][1]["mount_path"] == "/tmp/niuu-mesh"
+    marker = workload["command"][3]
+    assert client.written_files[-1]["files"] == {
+        "/sandbox/workspace/.flock/config/reviewer.yaml": b"persona: reviewer\n",
+        marker: b"ready",
+    }
+    assert list(client.written_files[-1]["files"])[-1] == marker
+    assert events == ["workspace", "release"]
+    assert len(client.execs) == 1  # Only Skuld is launched through primary exec.
+    assert values == original
+
+
+def test_workflow_memory_urls_use_platform_provider_routes(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    urls = adapter._resident_api_urls(
+        {
+            "mimir": {
+                "hostedUrl": "https://mimir.example/api/v1",
+                "registryRefs": [{"kwargs": {"base_url": "https://memory.example/api/v1"}}],
+                "instances": [{"url": "https://shared.example/api/v1"}],
+            }
+        }
+    )
+    assert set(urls) == {
+        "https://mimir.example/api/v1",
+        "https://memory.example/api/v1",
+        "https://shared.example/api/v1",
+    }
+
+
+def test_large_workflow_configs_do_not_expand_pod_driver_config(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    values = {
+        "openshell": {
+            "files": {
+                f"/sandbox/workspace/.flock/config/peer-{i}.yaml": "x" * 32768 for i in range(6)
+            },
+            "workloads": [
+                {"name": f"peer-{i}", "command": ["python", "-m", "ravn"]} for i in range(6)
+            ],
+        }
+    }
+    driver = adapter._driver_config_from_values(
+        values,
+        workload_start_file="/sandbox/workspace/.volundr/ready",
+        workload_environment={"SKULD__WORKFLOW__GRAPH": "x" * 32768},
+    )
+    assert len(json.dumps(driver).encode()) < 65536
+
+
+def test_workload_start_waits_for_marker_and_executes(monkeypatch, tmp_path):
+    import subprocess
+
+    adapter = _import_adapter(monkeypatch)
+    marker = tmp_path / "ready"
+    output = tmp_path / "started"
+    command = [
+        sys.executable,
+        "-c",
+        adapter._WORKLOAD_START_COMMAND,
+        str(marker),
+        "2",
+        sys.executable,
+        "-c",
+        "import pathlib,sys;pathlib.Path(sys.argv[1]).write_text('ok')",
+        str(output),
+    ]
+    with subprocess.Popen(command) as process:
+        time.sleep(0.1)
+        assert not output.exists()
+        marker.write_text("ready")
+        assert process.wait(timeout=5) == 0
+    assert output.read_text() == "ok"
+    marker.unlink()
+    command[4] = "0"
+    result = subprocess.run(command, capture_output=True, timeout=5)
+    assert result.returncode != 0
+    assert b"did not finish workload bootstrap" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("workload", "message"),
+    [
+        ({"command": []}, "explicit command"),
+        ({"command": ["python"], "readiness_port": 8000}, "cannot gate pod readiness"),
+    ],
+)
+def test_peer_container_rejects_invalid_startup(monkeypatch, workload, message):
+    adapter = _import_adapter(monkeypatch)
+    with pytest.raises(ValueError, match=message):
+        adapter._driver_config_from_values(
+            {"openshell": {"workloads": [workload]}}, workload_start_file="/workspace/ready"
+        )
+
+
+@pytest.mark.asyncio
+async def test_peer_containers_reject_materialized_credentials_before_create(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+    monkeypatch.setattr(
+        manager,
+        "_resolve_credential_context",
+        AsyncMock(
+            return_value=adapter.OpenShellCredentialContext(
+                files={},
+                providers=(),
+                environment={},
+                process_environment={"RAVN_NATS_PASSWORD": "must-not-reach-pod-spec"},
+            )
+        ),
+    )
+    with pytest.raises(ValueError, match="disable materializeEnvironment"):
+        await manager.start(
+            _session(),
+            SessionSpec(
+                values={"openshell": {"workloads": [{"command": ["python"]}]}},
+                pod_spec=PodSpecAdditions(),
+            ),
+        )
+    assert client.created is None

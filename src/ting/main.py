@@ -341,6 +341,37 @@ async def _seed_linear_integration(
     await integration_repo.save_connection(connection)
 
 
+@asynccontextmanager
+async def _integration_repository(settings: Settings, pool):
+    config = settings.shared_integrations
+    if config.database_name and config.base_url:
+        raise ValueError("Choose shared_integrations.database_name or base_url, not both")
+    if config.database_name:
+        database = settings.database.model_copy(update={"name": config.database_name})
+        async with database_pool(database) as shared_pool:
+            yield PostgresIntegrationRepository(shared_pool)
+        return
+    if config.base_url:
+        if not settings.auth.allow_anonymous_dev and config.auth.adapter.endswith(
+            ".NoAuthHeaderAdapter"
+        ):
+            raise ValueError("Authenticated shared integrations require an HTTP auth adapter")
+        repository = HTTPIntegrationRepository(
+            config.base_url,
+            timeout=config.timeout_seconds,
+            auth_adapter=config.auth.adapter
+            if not config.auth.adapter.endswith(".NoAuthHeaderAdapter")
+            else "",
+            auth_kwargs=resolve_secret_kwargs(config.auth.kwargs, config.auth.secret_kwargs_env),
+        )
+        try:
+            yield repository
+        finally:
+            await repository.close()
+        return
+    yield PostgresIntegrationRepository(pool)
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -412,22 +443,13 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         """Manage application lifecycle."""
         settings = app.state.settings
-        async with database_pool(settings.database) as pool:
+        async with (
+            database_pool(settings.database) as pool,
+            _integration_repository(settings, pool) as integration_repo,
+        ):
             app.state.pool = pool
 
             # Wire shared credential/integration infrastructure
-            if settings.shared_integrations.base_url:
-                integration_repo = HTTPIntegrationRepository(
-                    settings.shared_integrations.base_url,
-                    timeout=settings.shared_integrations.timeout_seconds,
-                )
-                logger.info(
-                    "Integration repository: shared HTTP (%s)",
-                    settings.shared_integrations.base_url,
-                )
-            else:
-                integration_repo = PostgresIntegrationRepository(pool)
-                logger.info("Integration repository: local postgres")
             cs_cfg = settings.credential_store
             cs_cls = import_class(cs_cfg.adapter)
             cs_kwargs = resolve_secret_kwargs(cs_cfg.kwargs, cs_cfg.secret_kwargs_env)
@@ -474,7 +496,11 @@ def create_app(
             # mini/anonymous-dev mode the factory always returns the same
             # singleton; in multi-owner production the per-owner factory
             # lookup is the right path and this default is a fallback.
-            app.state.volundr = await app.state.volundr_factory.primary_for_owner("dev-user")
+            app.state.volundr = (
+                await app.state.volundr_factory.primary_for_owner("dev-user")
+                if settings.auth.allow_anonymous_dev
+                else None
+            )
             app.state.tracker_factory = TrackerAdapterFactory(
                 integration_repo, credential_store, pool=pool
             )
@@ -792,7 +818,7 @@ def create_app(
             # (slug "telegram") so the seeded credential in
             # integrations.seed_connections doesn't have to be duplicated.
             bot_token = settings.telegram.bot_token
-            if not bot_token:
+            if not bot_token and settings.auth.allow_anonymous_dev:
                 bot_token = await _resolve_dev_telegram_bot_token(
                     integration_repo, credential_store
                 )
@@ -802,9 +828,10 @@ def create_app(
             # Bridge the seeded chat_id into notification_subscriptions so the
             # webhook router's inbound auth check passes without any manual
             # SQL or deeplink dance.
-            await _ensure_telegram_subscription_from_integration(
-                pool, integration_repo, credential_store
-            )
+            if settings.auth.allow_anonymous_dev:
+                await _ensure_telegram_subscription_from_integration(
+                    pool, integration_repo, credential_store
+                )
 
             telegram_reply_client = TelegramReplyClient(
                 bot_token=bot_token,
@@ -1004,8 +1031,6 @@ def create_app(
             if telegram_polling is not None:
                 await telegram_polling.stop()
             await telegram_reply_client.close()
-            if isinstance(integration_repo, HTTPIntegrationRepository):
-                await integration_repo.close()
             if guild_registry_client is not None:
                 await guild_registry_client.close()
             if hasattr(llm_adapter, "close"):

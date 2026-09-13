@@ -63,6 +63,10 @@ RUN uv sync --frozen --no-dev --no-editable --extra cli --extra k8s --extra nats
     && mkdir -p /dist-root/data/mimir
 # cli.resources.web_dist_dir() falls back to the installed package data.
 COPY --from=web-build /app/apps/niuu/dist /opt/venv/lib/python3.14/site-packages/cli/web/dist
+# xds-protos also ships obsolete OpenTelemetry modules. Restore the locked
+# official package after installation so enabled OTLP exporters can start.
+RUN uv pip install --python /opt/venv/bin/python --no-deps --reinstall \
+    "opentelemetry-proto==$(/opt/venv/bin/python -c 'from importlib.metadata import version; print(version("opentelemetry-proto"))')"
 RUN --mount=type=bind,from=switchyard-wheel,source=/wheels,target=/wheels \
     uv pip install --python /opt/venv/bin/python --offline --no-deps --no-build /wheels/*.whl \
     && mkdir -p /opt/venv/share/niuu \
@@ -137,6 +141,8 @@ WORKDIR /app
 RUN --network=none --mount=type=bind,source=tests/container/switchyard_runtime.py,target=/tmp/verify_switchyard.py \
     --mount=type=bind,from=switchyard-tests,source=/switchyard-tests-passed,target=/tmp/switchyard-tests-passed \
     test -f /tmp/switchyard-tests-passed && python /tmp/verify_switchyard.py
+RUN --network=none --mount=type=bind,source=tests/container/observability_runtime.py,target=/tmp/verify_observability.py \
+    python /tmp/verify_observability.py
 
 EXPOSE 8082
 

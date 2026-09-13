@@ -165,7 +165,19 @@ class EnvoyHeaderIdentityAdapter(EnvoyHeaderAuthenticationAdapter, IdentityPort)
             membership = next((m for m in memberships if m.tenant_id == principal.tenant_id), None)
             if membership is None:
                 raise InvalidTokenError("Local tenant membership is required")
-            principal = replace(principal, roles=[membership.role.value])
+            # Membership changes can reduce a credential's authority, never
+            # expand the roles granted to a delegated workload or older JWT.
+            role = membership.role.value
+            credential_roles = set(principal.roles)
+            if role in credential_roles or TenantRole.ADMIN.value in credential_roles:
+                roles = [role]
+            elif membership.role == TenantRole.ADMIN:
+                roles = sorted(credential_roles & {r.value for r in TenantRole})
+            else:
+                roles = []
+            if not roles:
+                raise InvalidTokenError("Credential roles do not grant the current membership role")
+            principal = replace(principal, roles=roles)
         return principal
 
     async def validate_token(self, raw_token: str) -> Principal:

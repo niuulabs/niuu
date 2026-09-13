@@ -486,20 +486,19 @@ def _codex_auth_provider(settings: Settings) -> Any | None:
     # it would turn a missing-config error into a confusing connection failure
     # at the first model call.
     if "base_url" not in platform.model_fields_set or not base_url:
-        # A flock persona carries no platform block, but the runtime does inject
-        # the workload exchange URL, which is by construction on the Völundr
-        # that brokers this credential. Same host, same trust, already present.
-        base_url = _platform_origin_from_exchange_url()
-    if not base_url:
-        logger.warning(
-            "runtime_executor: codex_auth_adapter %s is configured but no "
-            "Völundr base URL is available from gateway.platform.base_url or "
-            "%s, so there is no broker to call; leaving the transport "
-            "unauthenticated",
-            adapter,
-            _WORKLOAD_EXCHANGE_URL_ENV,
+        # Flock personas share Skuld's platform origin. OpenShell authenticates
+        # that HTTP path through its provider proxy and has no projected
+        # workload-token exchange URL. Native Kubernetes still supplies one.
+        base_url = (
+            settings.runtime_executor.volundr_api_url.strip()
+            or _platform_origin_from_exchange_url()
         )
-        return None
+    if not base_url:
+        raise RuntimeError(
+            "Configured Codex auth requires gateway.platform.base_url, "
+            "runtime_executor.volundr_api_url (SKULD__VOLUNDR_API_URL), or "
+            "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL"
+        )
 
     # Pass token_file/exchange_url only when they were actually configured.
     # Both fall back to NIUU_WORKLOAD_IDENTITY_* inside the adapter, and in a

@@ -76,10 +76,52 @@ defaults in the image or supported session configuration.
 | Node selector and tolerations | Kubernetes driver scheduling fields |
 | Runtime class and priority class | Kubernetes driver pod fields |
 
-Ravn flock contributions use a structured process plan with Skuld and the Ravn
-processes. Do not assume unrelated extra containers, init containers, volume
-mounts, or service accounts will be carried through the gateway. Inspect adapter
-logs and supported input handling before using a Kubernetes-oriented launch spec.
+Ravn flocks use regular peer containers in the Niuu OpenShell fork. Each persona
+has its own image, process supervisor, and inline non-secret configuration. The
+containers share pod localhost, the Forge workspace/home PVC mounts, and an
+`emptyDir` at `/tmp/niuu-mesh` for Unix sockets. Local Mimir volumes are shared too;
+the sandbox policy must allow `/mimir/local` when that capability is configured.
+
+Deploy the matching fork gateway, static supervisor, and Helm chart, with
+`supervisor.topology=sidecar`. This configures OpenShell's enforcement component;
+Ravn workloads are regular Kubernetes `spec.containers` entries. Set
+`volundr.ravnFlockImage` to a pinned image containing Niuu and Python. For service
+configuration the setting is `ravn_flock_image`.
+
+The contributor emits `openshell.workloads`, `openshell.volumes`, and
+`openshell.volumeMounts`. Völundr maps these to the Kubernetes driver configuration
+and gives each workload the shared persistent mounts. Workloads wait for a unique
+startup marker while the primary completes repository checkout and credential-file
+projection, then start their daemons. Do not attach Kubernetes readiness probes to
+this startup gate: Völundr needs the ready primary exec channel to release it.
+Startup fails after five minutes if workspace bootstrap never completes.
+
+Gateway credentials remain with OpenShell's network supervisor. Dynamic provider
+updates reach every workload. Direct credential environment materialization is
+rejected for peer workloads; use the existing dynamic provider grants. Persona
+sources must be in the image or HTTP-backed; arbitrary ConfigMap/init-container
+passthrough is unsupported. The primary remains the public exec/SSH target. Peer
+stdout is also written to `/sandbox/workspace/.flock/logs/<persona>.log`.
+
+The fork's `Niuu Dev Images` workflow publishes both architectures only after
+its Kubernetes localhost and egress acceptance test succeeds. Images use full
+commit tags and the matching chart uses `0.0.0-niuu.sha<commit>`. Niuu's existing
+`dev` workflow builds the application/runtime images. Deploy these through
+cluster-specific GitOps values.
+
+The adapter uses the upstream SDK for commit `5b9daab93`, pinned by wheel hash
+in `pyproject.toml` and `uv.lock`. The unchanged CI-built wheel is mirrored in
+the fork's `niuu-7bd0ed45e` release so upstream's rolling dev release cannot
+remove the dependency. This gateway API requires an explicit workspace selector
+and page tokens; the adapter selects the existing `default` workspace for all
+workspace-scoped calls. Provider profiles are always active in this gateway; the removed
+`providers_v2_enabled` setting must not be sent. The released `0.0.116` SDK is not compatible with this
+gateway revision.
+
+Ravn peers read `SKULD__VOLUNDR_API_URL` through their typed runtime configuration
+to reach the same Codex credential broker as Skuld. OpenShell's provider proxy
+authenticates that service call; peers do not need a projected service-account
+token. A configured Codex broker without a platform URL fails explicitly.
 
 ## Validate a target
 
@@ -87,6 +129,13 @@ Create a session through the normal Forge launch flow on the intended target.
 Verify the sandbox becomes ready, Skuld is exposed, chat streams an actual model
 answer, and reconnect restores the expected history. Inspect logs under the
 correct session and owner.
+
+For a flock, verify Skuld and at least two Ravn personas are regular containers
+in the same pod and exchange mesh messages bidirectionally over localhost. Check
+shared workspace files and Unix sockets, authenticated provider/service calls,
+and denial of direct outbound connections. A required peer exiting must fail the
+group closed; stop/delete must clean up the whole sandbox. The shared localhost
+network may be private, but must retain OpenShell's network and process controls.
 
 Test each control advertised by a resident profile. A gateway metrics endpoint
 is not evidence that a resident-scoped metrics control exists. Test restart and

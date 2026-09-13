@@ -840,6 +840,9 @@ gateway:
 #   kwargs   – forwarded to the constructor as **kwargs (ports are
 #              injected automatically by the factory)
 #
+# Image for the regular per-persona Ravn containers; pin alongside the runtime image.
+ravnFlockImage: ""
+
 sessionContributors:
   - adapter: "volundr.adapters.outbound.contributors.core.CoreSessionContributor"
     kwargs:

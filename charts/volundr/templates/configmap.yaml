@@ -512,6 +512,8 @@ data:
         {{- end }}
     {{- end }}
 
+    ravn_flock_image: {{ .Values.ravnFlockImage | default "" | quote }}
+
     {{- if .Values.sessionContributors }}
     session_contributors:
       {{- $root := . }}
