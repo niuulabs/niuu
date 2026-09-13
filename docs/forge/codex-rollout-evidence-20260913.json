@@ -1,0 +1,135 @@
+{
+  "status": "Spark API deployed; Thor rolled back and halted; isolated repair not deployed",
+  "candidate_commit": "72f8fdbe0389a1568fed7d739e60d9fc39c1991e",
+  "repair_commit": "c658b1d88ee6fad4df5cf2f8396573aba51da93a",
+  "validation": {
+    "passed": 4983,
+    "skipped": 24,
+    "deselected": 95,
+    "expected_failures": 1,
+    "failures": 0,
+    "reported_warnings": 0,
+    "elapsed_seconds": 121.29,
+    "coverage_aggregate_percent": 85.66787338717164,
+    "coverage_scope": "All 11 production files changed by this runner; statement and branch; not repository-wide or per-file threshold",
+    "per_file_percent": {
+      "src/niuu/ports/cli/transport.py": 94.52054794520548,
+      "src/skuld/broker.py": 84.4105228970445,
+      "src/skuld/broker_api.py": 80.23952095808383,
+      "src/skuld/channels.py": 90.82161361954108,
+      "src/skuld/effort.py": 92.92035398230088,
+      "src/skuld/transport_lifecycle.py": 67.91666666666667,
+      "src/skuld/transports/codex_ws.py": 90.42128603104213,
+      "src/volundr/adapters/outbound/local_process.py": 84.97757847533633,
+      "src/volundr/composition_builders.py": 82.27848101265823,
+      "src/volundr/domain/ports.py": 96.6067864271457,
+      "src/volundr/main.py": 72.03728362183755
+    },
+    "targeted_preservation_tests_passed": 190
+  },
+  "scope_receipts": [
+    "a99f3c1a-b310-4285-8a85-75f40e56d61b",
+    "e5fb821b-b4b2-4154-b4e8-8c86a370a192",
+    "21483c5a-ca34-416f-a08f-c26085a1a1ea"
+  ],
+  "incident_receipts": [
+    "ca679092-30ce-4f37-8637-9bf32346c274",
+    "a8a3fcbb-5e52-49bd-9715-0d7b92a3f648"
+  ],
+  "impact": {
+    "lost_gateways": 3,
+    "lost_tmux_servers": 3,
+    "surviving_original_gateways": 9,
+    "retained_thor_archived_inclusive_identities": 629,
+    "affected_retained_forge_turns": [
+      191,
+      94,
+      34
+    ],
+    "database_postmasters_preserved": [
+      4587,
+      4594
+    ],
+    "unflushed_state_loss_excluded": false,
+    "automatic_owner_restart_or_resend": false,
+    "tls_9501_probe_corrected": true
+  },
+  "artifacts": {
+    "spark-rollout.json": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/spark-rollout.json",
+      "sha256": "7333e8141ab24e4fff28ab41fe9e10487ea99c03280db182568104ea21008295"
+    },
+    "thor-rollout.json": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/thor-rollout.json",
+      "sha256": "e8dffc061dcaaa59024d15f621d4981b73065146079daab24f324f407f7f1f4d"
+    },
+    "thor-lost-gateways.json": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/thor-lost-gateways.json",
+      "sha256": "15045701fec61b0ca9a031736aa55ba7536e90c064038056b34facdd0a413ce6"
+    },
+    "thor-archived-inclusive-comparison.json": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/thor-archived-inclusive-comparison.json",
+      "sha256": "a20713fa357fdb57139eb10c16f66733e9cbdbd4a64a47a976a6173582cee9ce"
+    },
+    "after-comparison.json": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/after-comparison.json",
+      "sha256": "527eea077577f14dba9e7673adc5b1eac96ee0fbd1396f1f384ed2de22bf4c09"
+    },
+    "affected-retained-replay.json": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/affected-retained-replay.json",
+      "sha256": "cfd179cd3c332c665c8903d339c12d51cd164a0a7a4e4ac408b405ac1cba89a7"
+    },
+    "affected-native-retention.json": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/affected-native-retention.json",
+      "sha256": "14a1ce17d12ed10ff5ee51ce7ef70d972fc3654deb8abd746e094472f50787d9"
+    },
+    "affected-native-shutdown-timeline.json": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/affected-native-shutdown-timeline.json",
+      "sha256": "8649cec289a537ab61d2967e52ab730e827a685905d3c24be5b5ec3a0bbd5b79"
+    },
+    "postgres-postmaster-preservation.json": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/postgres-postmaster-preservation.json",
+      "sha256": "c2b9b401a3079141c925317263515c25d3805a1b9862f0a82d4ace98a368116f"
+    },
+    "postgres-containers.txt": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/postgres-containers.txt",
+      "sha256": "f7383a8024a3a752586fa393c8325a6f3f6562c571ef271b61e0c935c2e6d73d"
+    },
+    "postgres-readonly-ownership.txt": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/postgres-readonly-ownership.txt",
+      "sha256": "1bcb417a02cb1affe44c7d9675e8de89dd34d1d506d47f924e6147c135ce7fab"
+    },
+    "agent-9501-https-correction.json": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/agent-9501-https-correction.json",
+      "sha256": "62e2a2619d7a2c5c168559adf8c8b1620176bddabd50ea5c87e51cace14bf654"
+    },
+    "backend-old-behavior-reproduction.json": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/backend-old-behavior-reproduction.json",
+      "sha256": "cc8707dbdb404e4fea75fe032fb32d41260835b6b0a6d1777237b6f2ae83085e"
+    },
+    "backend-preservation-after.log": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/backend-preservation-after.log",
+      "sha256": "e0aa4ef073a63455223b40087941288508c84f0e2bcebab80607ab7754441689"
+    },
+    "backend-sweep.log": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/backend-sweep.log",
+      "sha256": "25e4a7bceeb236b92aa72e810c22c73c7e1ce0034d4187b4f3ec487702389b9d"
+    },
+    "backend-source-audit.json": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/backend-source-audit.json",
+      "sha256": "9bad7fe0d8c38f9ac5047fc294dca696bb60d1935fce43072abe494940569a2f"
+    },
+    "backend-coverage.json": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/backend-coverage.json",
+      "sha256": "f5540ce88de3c5c213fe0a64cb91a055c9e4014fce4f7b50d3e7eab326d5e01a"
+    },
+    "final-host-health.json": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/final-host-health.json",
+      "sha256": "915dced54de273fac859d166bc4835c66e642651015f17c0d705893684ffcc18"
+    },
+    "event-log-conflict-summary.json": {
+      "path": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/codex-alignment-20260913/event-log-conflict-summary.json",
+      "sha256": "edcbb91aafd414e7eccb929973f8b475e7e40ff7158b9597d2211d70f6407dc6"
+    }
+  }
+}

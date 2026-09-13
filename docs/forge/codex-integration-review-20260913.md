@@ -2,6 +2,11 @@
 
 ## Status and scope
 
+**Latest rollout status:** Spark API candidate is deployed; Thor was rolled back
+after three gateway/native tmux processes failed preservation. Thor remains halted.
+The isolated backend-classification repair is not deployed. See the
+[incident, impact and recovery record](codex-rollout-incident-20260913.md).
+
 This is an **in-progress engineering sweep**, not a declaration of complete Codex
 feature parity and not a deployment. It covers the owned Codex app-server adapter,
 Forge controls, channel projection, history/replay, and adjacent harness boundaries.
