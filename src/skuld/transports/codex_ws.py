@@ -40,7 +40,7 @@ from niuu.adapters.cli.runtime import (
 from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
-from niuu.domain.reasoning import MODEL_EFFORTS, validate_effort
+from niuu.domain.reasoning import MODEL_EFFORTS, normalize_effort, validate_effort
 from niuu.domain.transcript_reducer import TOOL_ENDED_AT
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.codex_auth import CodexAuthProviderError, CodexAuthProviderPort, HostCodexAuthProvider
@@ -280,6 +280,7 @@ class CodexWebSocketTransport(CLITransport):
         mcp_servers: list[dict] | None = None,
         resume_session_id: str = "",
         reasoning_effort: str = "",
+        service_tier: str | None = None,
         max_ws_message_bytes: int | None = None,
         codex_auth_provider: CodexAuthProviderPort | None = None,
         session_id: str = "",
@@ -292,6 +293,9 @@ class CodexWebSocketTransport(CLITransport):
         # and GPT-5.6 Sol launch at the `ultra` tier, every other Codex model at
         # `high`.
         self._reasoning_effort = reasoning_effort or _codex_effort_for_model(model)
+        self._service_tier = service_tier
+        self._runtime_models: list[dict] | None = None
+        self._runtime_options_lock = asyncio.Lock()
         self._skip_permissions = skip_permissions
         self._approval_policy = approval_policy.strip()
         self._sandbox = sandbox.strip()
@@ -661,11 +665,11 @@ class CodexWebSocketTransport(CLITransport):
                 resume_params["model"] = self._model
             if self._reasoning_effort:
                 resume_params["config"] = {
-                    "model_reasoning_effort": _normalize_codex_effort(
-                        self._reasoning_effort, self._model
-                    )
+                    "model_reasoning_effort": normalize_effort(self._reasoning_effort)
                 }
             resume_params.update(self._permission_thread_params())
+            if self._service_tier is not None:
+                resume_params["serviceTier"] = self._service_tier
 
             result = await self._send_rpc("thread/resume", resume_params)
             self._thread_id = self._thread_response_id(result, expected=self._resume_session_id)
@@ -684,17 +688,16 @@ class CodexWebSocketTransport(CLITransport):
             }
             if self._model:
                 thread_params["model"] = self._model
-            # Reasoning effort -> Codex config override. Codex accepts
-            # minimal/low/medium/high, plus `ultra` on GPT-5.6 Sol. Map
-            # extra-high/xhigh/max to the highest classic tier so an unknown
-            # alias can never break the session.
+            # Preserve configured effort exactly (apart from documented aliases).
+            # The native server validates launch choices; connected controls use
+            # its model catalog instead of a static approximation.
             if self._reasoning_effort:
                 thread_params["config"] = {
-                    "model_reasoning_effort": _normalize_codex_effort(
-                        self._reasoning_effort, self._model
-                    )
+                    "model_reasoning_effort": normalize_effort(self._reasoning_effort)
                 }
             thread_params.update(self._permission_thread_params())
+            if self._service_tier is not None:
+                thread_params["serviceTier"] = self._service_tier
             if self._system_prompt:
                 # baseInstructions = role/persona ("you are a service developer…")
                 # developerInstructions = per-session task instructions
@@ -2407,7 +2410,9 @@ class CodexWebSocketTransport(CLITransport):
         if self._model:
             params["model"] = self._model
         if self._reasoning_effort:
-            params["effort"] = _normalize_codex_effort(self._reasoning_effort, self._model)
+            params["effort"] = normalize_effort(self._reasoning_effort)
+        if self._service_tier is not None:
+            params["serviceTier"] = self._service_tier
 
         logger.info("Sending turn/start to Codex (thread=%s)", self._thread_id)
         try:
@@ -2486,6 +2491,9 @@ class CodexWebSocketTransport(CLITransport):
     async def send_control(self, subtype: str, **kwargs: object) -> None:
         """Handle control messages (interrupt, set_model, etc.)."""
         if subtype == "set_effort":
+            if self._alive:
+                await self._set_runtime_options({"effort": kwargs.get("effort")})
+                return
             self._reasoning_effort = validate_effort(
                 str(kwargs.get("effort") or ""), (await self.get_effort())["levels"]
             )
@@ -2596,9 +2604,16 @@ class CodexWebSocketTransport(CLITransport):
             return
 
         if subtype == "set_model":
+            if self._alive:
+                await self._set_runtime_options({"model": kwargs.get("model")})
+                return
             model = kwargs.get("model")
             if model and isinstance(model, str):
                 self._model = model
+            return
+
+        if subtype == "set_runtime_options":
+            await self._set_runtime_options(kwargs.get("options"))
             return
 
         if subtype == "slash_command":
@@ -2781,12 +2796,115 @@ class CodexWebSocketTransport(CLITransport):
         await self._emit({"type": "system", "subtype": "notice", "content": content})
 
     async def get_effort(self) -> dict:
+        if self._alive:
+            state = await self.get_runtime_options()
+            selected = next((m for m in state["models"] if m["model"] == self._model), None)
+            return {
+                "current": self._reasoning_effort,
+                "levels": selected["effort_levels"] if selected else [],
+                "mutable": selected is not None,
+                "applies_to": "next_turn",
+                "source": "native",
+            }
         return {
             "current": self._reasoning_effort,
             "levels": list(MODEL_EFFORTS.get(self._model, ())),
             "mutable": True,
             "applies_to": "next_turn",
+            "source": "launch_configuration",
         }
+
+    async def get_runtime_options(self, *, refresh: bool = False) -> dict:
+        if not self._alive or not self._thread_id:
+            raise RuntimeError("Codex runtime options require a connected native thread")
+        async with self._runtime_options_lock:
+            return await self._read_runtime_options(refresh=refresh)
+
+    async def _read_runtime_options(self, *, refresh: bool = False) -> dict:
+        if refresh or self._runtime_models is None:
+            models = []
+            cursor = None
+            seen = set()
+            while True:
+                response = await self._send_rpc("model/list", {"cursor": cursor})
+                if not isinstance(response.get("data"), list):
+                    raise RuntimeError("Codex returned an invalid model catalog")
+                for entry in response["data"]:
+                    if not isinstance(entry, dict) or not isinstance(entry.get("model"), str):
+                        raise RuntimeError("Codex returned an invalid model entry")
+                    models.append(
+                        {
+                            "id": entry["id"],
+                            "model": entry["model"],
+                            "name": entry["displayName"],
+                            "description": entry["description"],
+                            "default": entry["isDefault"],
+                            "hidden": entry["hidden"],
+                            "effort_levels": [
+                                option["reasoningEffort"]
+                                for option in entry["supportedReasoningEfforts"]
+                            ],
+                            "default_effort": entry["defaultReasoningEffort"],
+                            "service_tiers": deepcopy(entry.get("serviceTiers", [])),
+                            "default_service_tier": entry.get("defaultServiceTier"),
+                            "input_modalities": list(entry.get("inputModalities", [])),
+                        }
+                    )
+                cursor = response.get("nextCursor")
+                if cursor is None:
+                    break
+                if not isinstance(cursor, str) or not cursor or cursor in seen:
+                    raise RuntimeError("Codex model catalog pagination did not advance")
+                seen.add(cursor)
+            self._runtime_models = models
+        return {
+            "source": "native",
+            "applies_to": "next_turn",
+            "models": deepcopy(self._runtime_models),
+            "current": {
+                "model": self._model,
+                "effort": self._reasoning_effort,
+                "service_tier": self._service_tier,
+            },
+            "active_turn": {
+                "id": self._current_turn_id,
+                "model": self._turn_model,
+            }
+            if self._current_turn_id
+            else None,
+        }
+
+    async def _set_runtime_options(self, options: object) -> None:
+        if not self._alive or not self._thread_id:
+            raise RuntimeError("Codex runtime options require a connected native thread")
+        if not isinstance(options, dict) or not options:
+            raise ValueError("Provide at least one runtime option")
+        if options.keys() - {"model", "effort", "service_tier"}:
+            raise ValueError("Unsupported runtime option; only model, effort and service_tier")
+        async with self._runtime_options_lock:
+            state = await self._read_runtime_options(refresh=True)
+            desired = {**state["current"], **options}
+            selected = next((m for m in state["models"] if m["model"] == desired["model"]), None)
+            if selected is None:
+                raise ValueError("The requested model is not in the native model catalog")
+            if not isinstance(desired["effort"], str):
+                raise ValueError("Effort must be a string")
+            desired["effort"] = validate_effort(desired["effort"], selected["effort_levels"])
+            tier = desired["service_tier"]
+            if tier is not None and tier not in [t["id"] for t in selected["service_tiers"]]:
+                raise ValueError("The requested service tier is not offered for this model")
+            await self._send_rpc(
+                "thread/settings/update",
+                {
+                    "threadId": self._thread_id,
+                    "model": desired["model"],
+                    "effort": desired["effort"],
+                    "serviceTier": tier,
+                },
+            )
+            self._model = desired["model"]
+            self._reasoning_effort = desired["effort"]
+            self._service_tier = tier
 
     async def discover_slash_commands(self, *, refresh: bool = False) -> list[dict]:
         if not self._thread_id:
@@ -2816,6 +2934,7 @@ class CodexWebSocketTransport(CLITransport):
             session_resume=True,
             interrupt=True,
             set_effort=True,
+            runtime_options=True,
             steer=True,
             steering_mode="live",
             set_model=True,

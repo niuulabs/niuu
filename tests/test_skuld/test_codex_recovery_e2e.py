@@ -63,7 +63,7 @@ async def test_native_process_loss_resumes_exact_thread_and_remembers_nonce(
     artifact = Path(
         os.environ.get("FORGE_CODEX_RECOVERY_EVIDENCE", str(tmp_path / "native-recovery-live.json"))
     )
-    transport = CodexWebSocketTransport(str(workspace), model=model)
+    transport = CodexWebSocketTransport(str(workspace), model=model, reasoning_effort="xhigh")
     frames: list[dict] = []
     completed = asyncio.Event()
     evidence = {

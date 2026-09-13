@@ -506,6 +506,39 @@ async def get_plan() -> dict:
     return {"tasks": plan.get("tasks", []), "counts": plan.get("counts", {})}
 
 
+@app.get("/api/runtime-options")
+async def get_runtime_options(refresh: bool = False) -> dict:
+    """Native, session-scoped model/effort/tier catalog; never the TUI menu."""
+    if not broker._transport:
+        raise HTTPException(status_code=503, detail="Transport not initialized")
+    if not broker._transport.capabilities.runtime_options:
+        raise HTTPException(status_code=409, detail="Runtime options not supported")
+    try:
+        return await broker._transport.get_runtime_options(refresh=refresh)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+class _RuntimeOptionsRequest(BaseModel):
+    options: dict[str, Any]
+    request_id: str | None = None
+
+
+@app.post("/api/runtime-options")
+async def set_runtime_options(body: _RuntimeOptionsRequest) -> dict:
+    """Acknowledge next-turn settings, not a changed in-flight model or completed turn."""
+    if not broker._transport:
+        raise HTTPException(status_code=503, detail="Transport not initialized")
+    if not broker._transport.capabilities.runtime_options:
+        raise HTTPException(status_code=409, detail="Runtime options not supported")
+    try:
+        return await broker.handle_runtime_options(body.options, request_id=body.request_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.get("/api/agents")
 async def get_agents(include_finished: bool = False) -> dict:
     """Return active agents, optionally including recently completed subagents."""

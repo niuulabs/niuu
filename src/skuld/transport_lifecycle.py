@@ -30,6 +30,7 @@ class TransportLifecycleMixin:
             "workspace_dir": self.workspace_dir,
             "model": self.model,
             "reasoning_effort": self._restored_effort(),
+            "service_tier": getattr(self, "_runtime_service_tier", None),
             "effort_control_timeout_s": self._settings.effort_control_timeout_s,
             "sdk_port": self._settings.port,
             "session_id": self.session_id,
@@ -86,6 +87,7 @@ class TransportLifecycleMixin:
         Legacy ``cli_type`` / ``transport`` fields are resolved to the correct
         adapter path by the config validator before this method is called.
         """
+        self._restore_runtime_options()
         adapter_path = self._settings.transport_adapter
         if "." not in adapter_path:
             raise ValueError(

@@ -3466,6 +3466,8 @@ class Broker(
         "interrupt": "interrupt",
         "steer_active_turn": "steer",
         "set_model": "set_model",
+        "get_runtime_options": "runtime_options",
+        "set_runtime_options": "runtime_options",
         "set_max_thinking_tokens": "set_thinking_tokens",
         "set_permission_mode": "set_permission_mode",
         "rewind_files": "rewind_files",
@@ -3563,6 +3565,13 @@ class Broker(
                     request_id=self._extract_request_id(data),
                 )
 
+            case "get_runtime_options" | "set_runtime_options":
+                await self.handle_runtime_options(
+                    data.get("options", {}) if msg_type == "set_runtime_options" else None,
+                    refresh=bool(data.get("refresh", False)),
+                    request_id=self._extract_request_id(data),
+                )
+
             case "interrupt":
                 await self._transport.send_control("interrupt")
 
@@ -3576,7 +3585,12 @@ class Broker(
             case "set_model":
                 model = data.get("model", "")
                 if model:
-                    await self._transport.send_control("set_model", model=model)
+                    if self._transport.capabilities.runtime_options:
+                        await self.handle_runtime_options(
+                            {"model": model}, request_id=self._extract_request_id(data)
+                        )
+                    else:
+                        await self._transport.send_control("set_model", model=model)
 
             # Phase 3: change thinking budget
             case "set_max_thinking_tokens":

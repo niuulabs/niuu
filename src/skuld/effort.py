@@ -26,15 +26,59 @@ class EffortControlMixin:
                 return saved["effort"]
         return self._settings.session.reasoning_effort
 
+    def _restore_runtime_options(self) -> None:
+        """Restore acknowledged choices unless the operator changed launch model.
+
+        Legacy effort files lack launch_model and keep their existing behavior.
+        The file contains no native permission/auth configuration.
+        """
+        path = self._effort_state_path()
+        if not path.exists():
+            return
+        saved = json.loads(path.read_text())
+        if saved.get("launch_model") != self._settings.session.model:
+            return
+        if isinstance(saved.get("model"), str) and saved["model"]:
+            self.model = saved["model"]
+            self._runtime_service_tier = saved.get("service_tier")
+
     def _save_effort(self, effort: str) -> None:
         path = self._effort_state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".tmp")
         with temporary.open("w") as stream:
-            json.dump({"model": self.model, "effort": effort}, stream)
+            json.dump(
+                {
+                    "launch_model": self._settings.session.model,
+                    "model": self.model,
+                    "effort": effort,
+                    "service_tier": getattr(self, "_runtime_service_tier", None),
+                },
+                stream,
+            )
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(path)
+
+    async def handle_runtime_options(
+        self, options: dict | None = None, *, refresh: bool = False, request_id: str | None = None
+    ) -> dict:
+        if self._transport is None:
+            raise RuntimeError("The session transport is not ready")
+        if not self._transport.capabilities.runtime_options:
+            raise ValueError("This harness does not expose runtime options")
+        async with self._effort_lock:
+            if options is not None:
+                await self._transport.send_control("set_runtime_options", options=options)
+            state = await self._transport.get_runtime_options(refresh=refresh)
+            if options is not None:
+                current = state["current"]
+                self.model = current["model"]
+                self._runtime_service_tier = current.get("service_tier")
+                self._save_effort(current["effort"])
+            frame = {"type": "runtime_options", "request_id": request_id, **state}
+            await self._emit_broker_frame(frame)
+            return frame
 
     async def handle_effort(self, argument: str = "", *, request_id: str | None = None) -> dict:
         """Apply a native control, then publish the acknowledged state to all clients."""
