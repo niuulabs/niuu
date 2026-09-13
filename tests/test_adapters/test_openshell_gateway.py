@@ -2918,8 +2918,13 @@ async def test_start_creates_peer_containers_and_releases_after_workspace(monkey
     client = _FakeOpenShellGatewayClient(adapter)
     manager = adapter.OpenShellGatewayPodManager(client=client)
     values = {
+        "env": {
+            "SKULD__WORKFLOW__GRAPH": "large workflow graph",
+            "SKULD__VOLUNDR_API_URL": "https://forge.example",
+        },
         "persistence": {"existingClaim": "workspace", "mountPath": "/sandbox/workspace"},
         "openshell": {
+            "files": {"/sandbox/workspace/.flock/config/reviewer.yaml": "persona: reviewer\n"},
             "volumes": [{"name": "ipc", "empty_dir": {}}],
             "volumeMounts": [{"name": "ipc", "mount_path": "/tmp/niuu-mesh"}],
             "workloads": [
@@ -2951,13 +2956,39 @@ async def test_start_creates_peer_containers_and_releases_after_workspace(monkey
     workload = client.created["driver_config"]["containers"]["workloads"][0]
     assert workload["image"] == "ravn:pinned"
     assert workload["environment"]["RAVN_PERSONA"] == "reviewer"
+    assert "SKULD__WORKFLOW__GRAPH" not in workload["environment"]
+    assert workload["environment"]["SKULD__VOLUNDR_API_URL"] == "https://forge.example"
     assert workload["volume_mounts"][0]["mount_path"] == "/sandbox/workspace"
     assert workload["volume_mounts"][1]["mount_path"] == "/tmp/niuu-mesh"
     marker = workload["command"][3]
-    assert client.written_files[-1]["files"] == {marker: b"ready"}
+    assert client.written_files[-1]["files"] == {
+        "/sandbox/workspace/.flock/config/reviewer.yaml": b"persona: reviewer\n",
+        marker: b"ready",
+    }
+    assert list(client.written_files[-1]["files"])[-1] == marker
     assert events == ["workspace", "release"]
     assert len(client.execs) == 1  # Only Skuld is launched through primary exec.
     assert values == original
+
+
+def test_large_workflow_configs_do_not_expand_pod_driver_config(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    values = {
+        "openshell": {
+            "files": {
+                f"/sandbox/workspace/.flock/config/peer-{i}.yaml": "x" * 32768 for i in range(6)
+            },
+            "workloads": [
+                {"name": f"peer-{i}", "command": ["python", "-m", "ravn"]} for i in range(6)
+            ],
+        }
+    }
+    driver = adapter._driver_config_from_values(
+        values,
+        workload_start_file="/sandbox/workspace/.volundr/ready",
+        workload_environment={"SKULD__WORKFLOW__GRAPH": "x" * 32768},
+    )
+    assert len(json.dumps(driver).encode()) < 65536
 
 
 def test_workload_start_waits_for_marker_and_executes(monkeypatch, tmp_path):

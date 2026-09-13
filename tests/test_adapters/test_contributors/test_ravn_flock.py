@@ -235,15 +235,16 @@ class TestContributorOutput:
         assert workload["command"][:2] == ["python", "-c"]
         assert workload["environment"]["HOME"] == "/sandbox/workspace"
         assert "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE" not in workload["environment"]
-        config = yaml.safe_load(workload["command"][-1])
+        config_text = result.values["openshell"]["files"][workload["environment"]["RAVN_CONFIG"]]
+        config = yaml.safe_load(config_text)
         assert config["persona"] == "coordinator"
         assert config["permission"]["workspace_root"] == "/sandbox/workspace"
         assert config["initiative"]["queue_journal_path"].startswith("/sandbox/workspace/")
-        assert "tcp://127.0.0.1:" in workload["command"][-1]
+        assert "tcp://127.0.0.1:" in config_text
         assert {"name": "flock-ipc", "empty_dir": {}} in result.values["openshell"]["volumes"]
         assert workload["volume_mounts"][0]["mount_path"] == "/tmp/niuu-mesh"
 
-    async def test_openshell_bootstrap_writes_config_and_streams_logs(
+    async def test_openshell_bootstrap_uses_projected_config_and_streams_logs(
         self, session, flock_template, tmp_path
     ):
         import os
@@ -261,6 +262,9 @@ class TestContributorOutput:
         (stub / "__init__.py").write_text("")
         (stub / "__main__.py").write_text("print('daemon-started')")
         config = tmp_path / "config.yaml"
+        config.write_text(
+            result.values["openshell"]["files"][workload["environment"]["RAVN_CONFIG"]]
+        )
         log = tmp_path / "logs" / "coordinator.log"
         env = {
             **os.environ,

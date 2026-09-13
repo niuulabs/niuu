@@ -1157,6 +1157,7 @@ class RavnFlockContributor(SessionContributor):
         config_volumes: list[dict] = []
         init_containers: list[dict] = []
         openshell_workloads: list[dict[str, Any]] = []
+        openshell_files: dict[str, str] = {}
 
         for i, persona_dict in enumerate(persona_dicts):
             persona = persona_dict["name"]
@@ -1275,7 +1276,8 @@ class RavnFlockContributor(SessionContributor):
             }
             extra_containers.append(container)
             if runtime_backend == "openshell":
-                config_path = f"/tmp/ravn/{persona}.yaml"
+                config_path = f"/sandbox/workspace/.flock/config/{persona}.yaml"
+                openshell_files[config_path] = config_yaml
                 process_env = {
                     str(entry["name"]): str(entry.get("value") or "")
                     for entry in ravn_env
@@ -1290,17 +1292,11 @@ class RavnFlockContributor(SessionContributor):
                     }
                 )
                 process_env.pop(self._workload_identity_token_file_env, None)
-                bootstrap = (
-                    "import os, pathlib, sys\n"
-                    "config = pathlib.Path(os.environ['RAVN_CONFIG'])\n"
-                    "config.parent.mkdir(parents=True, exist_ok=True)\n"
-                    "config.write_text(sys.argv[1], encoding='utf-8')\n"
-                )
                 openshell_workloads.append(
                     {
                         "name": f"ravn-{persona}",
                         "image": self._ravn_image,
-                        "command": ["python", "-c", bootstrap + _RAVN_COMMAND[2], config_yaml],
+                        "command": list(_RAVN_COMMAND),
                         "environment": process_env,
                         "volume_mounts": [
                             {
@@ -1382,6 +1378,7 @@ class RavnFlockContributor(SessionContributor):
                 )
             values["openshell"] = {
                 "workloads": openshell_workloads,
+                "files": openshell_files,
                 "volumes": volumes,
                 "volumeMounts": mounts,
             }

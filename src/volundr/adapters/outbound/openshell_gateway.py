@@ -1338,10 +1338,16 @@ class OpenShellGatewayPodManager(
                 env,
             )
             if workload_start_file:
+                # Configuration travels over the file API, outside the bounded
+                # pod driver config. Write the startup marker last.
+                workload_files = {
+                    path: content.encode("utf-8")
+                    for path, content in (spec.values["openshell"].get("files") or {}).items()
+                }
                 await asyncio.to_thread(
                     self._client.write_files,
                     sandbox_id=ready.id,
-                    files={workload_start_file: b"ready"},
+                    files={**workload_files, workload_start_file: b"ready"},
                 )
             for process in runtime_processes:
                 process_exit = await asyncio.to_thread(
@@ -3283,7 +3289,8 @@ def _driver_config_from_values(
             environment = {
                 key: value
                 for key, value in (workload_environment or {}).items()
-                if key not in SECRET_ENV_KEYS and not key.startswith("OPENSHELL_")
+                if key not in SECRET_ENV_KEYS
+                and not key.startswith(("OPENSHELL_", "SKULD__WORKFLOW__"))
             }
             environment.update(workload.get("environment") or {})
             workload["environment"] = environment
