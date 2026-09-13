@@ -61,6 +61,8 @@ function methodLabel(group: ProviderGroup, connection: IntegrationConnection): s
 
 interface Adding extends AddProviderSelection {
   id: number;
+  /** Connections already usable when the dialog opened; only a newer one closes it. */
+  usableAtStart: readonly string[];
 }
 
 /**
@@ -97,13 +99,17 @@ export function IntegrationsStep({
   // The dialog closes itself the moment the account being added becomes
   // usable, and the new connection is checked right away so a wrong scope
   // or a dead key shows up here, not in a session.
+  // Only a connection that became usable after the dialog opened counts:
+  // an existing account that happens to carry the default name must not
+  // close the dialog under the person's feet.
   const added =
     adding?.credentialName && connections
       ? connections.find(
           (connection) =>
             connection.enabled &&
             connection.credentialName === adding.credentialName &&
-            !connectionNeedsSignIn(connection),
+            !connectionNeedsSignIn(connection) &&
+            !adding.usableAtStart.includes(connection.id),
         )
       : undefined;
   const dialogOpen = adding !== null && added === undefined;
@@ -121,6 +127,9 @@ export function IntegrationsStep({
       groupKey: selection.groupKey ?? null,
       mode: selection.mode ?? null,
       credentialName: selection.credentialName ?? null,
+      usableAtStart: (connections ?? [])
+        .filter((connection) => connection.enabled && !connectionNeedsSignIn(connection))
+        .map((connection) => connection.id),
     });
 
   return (

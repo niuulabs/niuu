@@ -288,6 +288,22 @@ describe('IntegrationsStep', () => {
     );
   });
 
+  it('keeps the dialog open when the default name already belongs to an account', () => {
+    renderWithSetup(
+      <IntegrationsStep {...props} catalog={MOCK_CATALOG} connections={[connection]} />,
+    );
+    fireEvent.click(screen.getByTestId('setup-provider-add'));
+    fireEvent.click(screen.getByTestId('setup-add-pick-github'));
+    fireEvent.click(screen.getByTestId('setup-add-mode-key'));
+    // github-setup is taken by the existing account: the dialog must stay and say so.
+    expect(screen.getByTestId('setup-add-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('setup-add-dialog')).toHaveTextContent('already in use');
+    expect(screen.getByTestId('setup-connect-github')).toBeDisabled();
+    fireEvent.change(screen.getByTestId('setup-add-account-name'), { target: { value: 'work' } });
+    expect(screen.getByTestId('setup-add-dialog')).not.toHaveTextContent('already in use');
+    expect(screen.getByTestId('setup-connect-github')).not.toBeDisabled();
+  });
+
   it('checks a host right after it is connected and closes the dialog', () => {
     const onTest = vi.fn();
     function Harness() {
