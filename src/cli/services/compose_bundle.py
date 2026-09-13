@@ -751,6 +751,8 @@ def wait_for_health(
                 if response.status == 200:
                     return True
         except (urllib.error.URLError, OSError, ValueError):
+            # Not answering yet (connection refused, reset, or a half-open
+            # socket while the container starts): poll again until the deadline.
             pass
         sleep(poll_interval_seconds)
     return False
