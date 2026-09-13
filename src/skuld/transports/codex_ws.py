@@ -1124,17 +1124,6 @@ class CodexWebSocketTransport(CLITransport):
 
         if method == "rawResponseItem/completed":
             item = params.get("item", {})
-            if (
-                isinstance(item, dict)
-                and item.get("type") == "function_call"
-                and item.get("name") == "shell_command"
-            ):
-                task = asyncio.create_task(
-                    self._handle_raw_function_call_item(item),
-                    name=f"codex-raw-function-{item.get('call_id') or 'shell_command'}",
-                )
-                task.add_done_callback(self._log_dynamic_tool_task_result)
-                return
             await self._observe_raw_response_item(item)
             return
 
@@ -1183,26 +1172,12 @@ class CodexWebSocketTransport(CLITransport):
         if not isinstance(payload, dict):
             return
         if payload.get("type") in {
+            "function_call",
             "custom_tool_call",
             "custom_tool_call_output",
             "function_call_output",
         }:
             await self._observe_raw_response_item(payload)
-            return
-        if payload.get("type") == "function_call":
-            logger.info(
-                "Codex response_item function_call: name=%s call_id=%s",
-                payload.get("name"),
-                payload.get("call_id"),
-            )
-            task_name = (
-                f"codex-response-function-{payload.get('call_id') or payload.get('name') or 'call'}"
-            )
-            task = asyncio.create_task(
-                self._handle_raw_function_call_item(payload),
-                name=task_name,
-            )
-            task.add_done_callback(self._log_dynamic_tool_task_result)
             return
 
     async def _observe_raw_response_item(self, item: object) -> None:
@@ -1425,58 +1400,6 @@ class CodexWebSocketTransport(CLITransport):
                 "success": False,
             }
         await self._send_rpc_response(rid, result)
-
-    async def _handle_raw_function_call_item(self, item: dict) -> None:
-        """Execute Responses function_call items surfaced by newer app-server builds."""
-        call_id = str(item.get("call_id") or "")
-        name = str(item.get("name") or "").strip()
-        args = self._decode_function_arguments(item.get("arguments"))
-        ui_tool_id = call_id or f"function-{next(self._ids)}"
-        logger.info("Handling Codex raw function_call name=%s call_id=%s", name, call_id)
-
-        if name == "shell_command":
-            tool_input = args if isinstance(args, dict) else {}
-            await self._emit_tool_use(ui_tool_id, "Bash", tool_input)
-            result = await self._execute_shell_command_tool(tool_input)
-        else:
-            logger.warning("Unsupported Codex function call: %s", name or "<unknown>")
-            result = {
-                "contentItems": [
-                    {
-                        "type": "inputText",
-                        "text": f"Unsupported function call: {name or '<unknown>'}",
-                    }
-                ],
-                "success": False,
-            }
-
-        output_text = self._dynamic_tool_content_text(result.get("contentItems"))
-        if not output_text:
-            output_text = ""
-
-        if call_id and self._thread_id:
-            await self._send_rpc(
-                "thread/inject_items",
-                {
-                    "threadId": self._thread_id,
-                    "items": [
-                        {
-                            "type": "function_call_output",
-                            "call_id": call_id,
-                            "output": output_text,
-                        }
-                    ],
-                },
-            )
-        elif not self._thread_id:
-            logger.warning("Cannot inject Codex function_call_output without thread id")
-
-        await self._emit_content_block_stop()
-        await self._emit_tool_result(
-            ui_tool_id,
-            output_text,
-            is_error=result.get("success") is False,
-        )
 
     async def _execute_dynamic_tool_call(self, params: dict) -> dict:
         tool = str(params.get("tool") or "").strip()

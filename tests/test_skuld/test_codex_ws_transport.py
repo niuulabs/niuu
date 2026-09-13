@@ -1880,68 +1880,27 @@ class TestApprovals:
         assert sent["result"]["contentItems"][0]["text"] == "Exit code: 2\nstderr:\nnope\n"
 
     @pytest.mark.asyncio
-    async def test_raw_function_shell_command_injects_output(self, tmp_path):
+    async def test_raw_function_is_observed_and_native_output_completes_it(self, tmp_path):
         t = _make_transport(tmp_path)
         t._thread_id = "thread-1"
         emits = _collect_emits(t)
-        calls = []
-
-        async def fake_send_rpc(method, params=None):
-            calls.append((method, params))
-            if method == "command/exec":
-                return {"exitCode": 0, "stdout": "hello\n", "stderr": ""}
-            if method == "thread/inject_items":
-                return {}
-            raise AssertionError(method)
-
-        t._send_rpc = fake_send_rpc
-
-        await t._handle_server_message(
+        t._send_rpc = AsyncMock()
+        await t._handle_response_item_frame(
             {
-                "method": "rawResponseItem/completed",
-                "params": {
-                    "threadId": "thread-1",
-                    "turnId": "turn-1",
-                    "item": {
-                        "type": "function_call",
-                        "name": "shell_command",
-                        "arguments": json.dumps(
-                            {
-                                "command": "echo hello",
-                                "workdir": str(tmp_path),
-                                "timeout_ms": 10000,
-                            }
-                        ),
-                        "call_id": "call-raw-1",
-                    },
-                },
+                "type": "function_call",
+                "name": "shell_command",
+                "call_id": "call-raw-1",
+                "arguments": json.dumps({"command": "echo hello"}),
             }
         )
-        await asyncio.sleep(0.01)
-
-        assert calls == [
-            (
-                "command/exec",
-                {
-                    "command": ["/bin/zsh", "-lc", "echo hello"],
-                    "cwd": str(tmp_path),
-                    "timeoutMs": 10000,
-                },
-            ),
-            (
-                "thread/inject_items",
-                {
-                    "threadId": "thread-1",
-                    "items": [
-                        {
-                            "type": "function_call_output",
-                            "call_id": "call-raw-1",
-                            "output": "Exit code: 0\nstdout:\nhello\n",
-                        }
-                    ],
-                },
-            ),
-        ]
+        await t._handle_response_item_frame(
+            {
+                "type": "function_call_output",
+                "call_id": "call-raw-1",
+                "output": "hello\n",
+            }
+        )
+        t._send_rpc.assert_not_awaited()
         events = _emitted_events(emits)
         assert any(
             event.get("type") == "assistant"
@@ -1954,48 +1913,6 @@ class TestApprovals:
             and event.get("content_block", {}).get("tool_use_id") == "call-raw-1"
             for event in events
         )
-
-    @pytest.mark.asyncio
-    async def test_response_item_shell_command_frame_injects_output(self, tmp_path):
-        t = _make_transport(tmp_path)
-        t._thread_id = "thread-1"
-        calls = []
-
-        async def fake_send_rpc(method, params=None):
-            calls.append((method, params))
-            if method == "command/exec":
-                return {"exitCode": 0, "stdout": str(tmp_path), "stderr": ""}
-            if method == "thread/inject_items":
-                return {}
-            raise AssertionError(method)
-
-        t._send_rpc = fake_send_rpc
-        _collect_emits(t)
-
-        await t._handle_response_item_frame(
-            {
-                "type": "function_call",
-                "name": "shell_command",
-                "arguments": json.dumps(
-                    {
-                        "command": "pwd",
-                        "workdir": str(tmp_path),
-                    }
-                ),
-                "call_id": "call-response-1",
-            }
-        )
-        await asyncio.sleep(0.01)
-
-        assert calls[0] == (
-            "command/exec",
-            {
-                "command": ["/bin/zsh", "-lc", "pwd"],
-                "cwd": str(tmp_path),
-            },
-        )
-        assert calls[1][0] == "thread/inject_items"
-        assert calls[1][1]["items"][0]["call_id"] == "call-response-1"
 
     @pytest.mark.asyncio
     async def test_raw_custom_tool_call_emits_observable_tool_lifecycle(self, tmp_path):

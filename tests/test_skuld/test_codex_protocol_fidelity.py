@@ -1,5 +1,6 @@
 """Offline regressions against the installed Codex 0.154 app-server contract."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 
@@ -244,6 +245,31 @@ def test_broker_keeps_native_command_hints_and_method_metadata():
     )
     assert entries[0]["method"] == "thread/name/set"
     assert entries[0]["argument_hint"] == "<name>"
+
+
+@pytest.mark.parametrize("rollout_frame", [False, True])
+async def test_raw_tool_observation_cannot_execute_or_inject_output(tmp_path, rollout_frame):
+    transport = CodexWebSocketTransport(str(tmp_path))
+    transport._thread_id = "thread"
+    transport._send_rpc = AsyncMock(return_value={})
+    transport._execute_shell_command_tool = AsyncMock(
+        return_value={"contentItems": [], "success": True}
+    )
+    item = {
+        "type": "function_call",
+        "name": "shell_command",
+        "call_id": "native-call",
+        "arguments": json.dumps({"command": "must not run again"}),
+    }
+    if rollout_frame:
+        await transport._handle_response_item_frame(item)
+    else:
+        await transport._handle_server_message(
+            {"method": "rawResponseItem/completed", "params": {"threadId": "thread", "item": item}}
+        )
+    await asyncio.sleep(0)  # Also catches the old background execution path.
+    transport._execute_shell_command_tool.assert_not_awaited()
+    transport._send_rpc.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
