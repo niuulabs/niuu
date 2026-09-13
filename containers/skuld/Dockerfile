@@ -85,6 +85,8 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && gh --version
 
 # GitLab CLI (glab), pinned release .deb per architecture: the GitLab counterpart of gh.
+# ARG values do not cross stages; TARGETARCH must be declared again here.
+ARG TARGETARCH
 ARG GLAB_VERSION=1.117.0
 RUN curl -fsSL -o /tmp/glab.deb \
     "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/packages/generic/glab/${GLAB_VERSION}/glab_${GLAB_VERSION}_linux_${TARGETARCH}.deb" \
