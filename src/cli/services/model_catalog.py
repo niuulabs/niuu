@@ -39,7 +39,15 @@ CURATED_MODELS: tuple[CuratedModel, ...] = (
         weight_gib=62,
         recommended=True,
         trust_remote_code=True,
-        serve_args=("--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder"),
+        # The model card's serve command for DGX Spark: a sequence cap for the
+        # unified memory, and the tool-call parser agents need.
+        serve_args=(
+            "--max-num-seqs",
+            "8",
+            "--enable-auto-tool-choice",
+            "--tool-call-parser",
+            "qwen3_coder",
+        ),
     ),
     CuratedModel(
         id="gpt-oss-120b",

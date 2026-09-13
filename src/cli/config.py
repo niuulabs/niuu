@@ -127,9 +127,11 @@ class DockerVllmConfig(BaseModel):
         description="Hugging Face model id to serve (e.g. nvidia/Nemotron-3-Nano-30B-A3B).",
     )
     image: str = Field(
-        # The tag NVIDIA names for DGX Spark and Jetson Thor on the Nemotron 3
-        # Nano model card; 25.09 ships vLLM 0.10, which cannot load that model.
-        default="nvcr.io/nvidia/vllm:25.12.post1-py3",
+        # NVIDIA's monthly vLLM container, built for arm64 and amd64; its
+        # release notes list DGX Spark (GB10) and Nemotron 3 Nano. 26.08 carries
+        # vLLM 0.27 on CUDA 13.4; 25.09 shipped vLLM 0.10, which cannot load
+        # Nemotron 3 Nano at all.
+        default="nvcr.io/nvidia/vllm:26.08-py3",
         description="vLLM container image (must match the host architecture).",
     )
     port: int = Field(default=8000, description="Port vLLM listens on inside the compose network.")
