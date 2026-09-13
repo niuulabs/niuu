@@ -61,17 +61,63 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Containers — build multi-arch, publish feature tag + feature-<short-sha>.
-  # Delegated to reusable workflow.
+  # Delegated to reusable workflow, in three independent calls: a manifest
+  # can only be published once every build in its call has finished, so the
+  # platform image (what a docker-mode install pulls) and the session image
+  # get their own calls and land in minutes instead of waiting for the
+  # slowest image in the set.
   # ---------------------------------------------------------------------------
-  containers:
-    name: Containers
+  containers-platform:
+    name: Containers (platform)
     needs: meta
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
-      containers: '["agent","skuld","openshell","devrunner","volundr-web","niuu-web","niuu"]'
+      containers: '["niuu"]'
+      platforms: '["amd64","arm64"]'
+      tag-prefix: ${{ needs.meta.outputs.tag }}
+      manifest-tags: "${{ needs.meta.outputs.tag }} ${{ needs.meta.outputs.tag }}-${{ needs.meta.outputs.short_sha }}"
+      build-args: |
+        APP_VERSION=${{ needs.meta.outputs.tag }}-${{ github.sha }}
+      labels: |
+        org.opencontainers.image.title=niuu
+        org.opencontainers.image.licenses=Apache-2.0
+        org.opencontainers.image.vendor=Niuu Labs
+        org.opencontainers.image.source=https://github.com/${{ github.repository }}
+        dev.niuu.feature=${{ needs.meta.outputs.tag }}
+
+  containers-sessions:
+    name: Containers (sessions)
+    needs: meta
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/reusable-container-build.yaml
+    with:
+      containers: '["skuld"]'
+      platforms: '["amd64","arm64"]'
+      tag-prefix: ${{ needs.meta.outputs.tag }}
+      manifest-tags: "${{ needs.meta.outputs.tag }} ${{ needs.meta.outputs.tag }}-${{ needs.meta.outputs.short_sha }}"
+      build-args: |
+        APP_VERSION=${{ needs.meta.outputs.tag }}-${{ github.sha }}
+      labels: |
+        org.opencontainers.image.title=niuu
+        org.opencontainers.image.licenses=Apache-2.0
+        org.opencontainers.image.vendor=Niuu Labs
+        org.opencontainers.image.source=https://github.com/${{ github.repository }}
+        dev.niuu.feature=${{ needs.meta.outputs.tag }}
+
+  containers-others:
+    name: Containers (others)
+    needs: meta
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/reusable-container-build.yaml
+    with:
+      containers: '["agent","openshell","devrunner","volundr-web","niuu-web"]'
       platforms: '["amd64","arm64"]'
       tag-prefix: ${{ needs.meta.outputs.tag }}
       manifest-tags: "${{ needs.meta.outputs.tag }} ${{ needs.meta.outputs.tag }}-${{ needs.meta.outputs.short_sha }}"
