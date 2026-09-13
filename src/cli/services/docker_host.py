@@ -84,7 +84,7 @@ class GpuFacts:
 def describe_gpu(gpu: GpuFacts, system_memory_bytes: int) -> str:
     """Name a GPU with the memory it can use: ``NVIDIA GB10 (122 GiB shared with the system)``."""
     if gpu.shares_system_memory:
-        gib = system_memory_bytes // BYTES_PER_MIB // MIB_PER_GIB
+        gib = round(system_memory_bytes / (BYTES_PER_MIB * MIB_PER_GIB))
         return f"{gpu.name} ({gib} GiB shared with the system)"
     return f"{gpu.name} ({gpu.memory_total_mib // MIB_PER_GIB} GiB)"
 

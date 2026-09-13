@@ -195,7 +195,7 @@ class DockerStackController(StackControlPort):
         effective = self._effective_settings()
         external_host = self._external_host(current)
         facts = self._host_facts()
-        memory_gib = facts.accelerator_memory_mib // MIB_PER_GIB
+        memory_gib = round(facts.accelerator_memory_mib / MIB_PER_GIB)
         return StackView(
             current=stack_settings_view(current, external_host),
             staged=self._staged(),
