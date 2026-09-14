@@ -406,3 +406,89 @@ def test_write_session_archive_rejects_event_symlink_escape(tmp_path):
             aggregated_logs={"lines": []},
             event_source_dir=events,
         )
+
+
+@pytest.fixture
+def timed_archive_payload():
+    """Synthetic shared server/native regression; never a captured user transcript."""
+    from pathlib import Path
+
+    return json.loads(
+        (Path(__file__).parent / "fixtures/codex_steering_archive_timeline.json").read_text()
+    )
+
+
+def _assert_timed_archive_projection(payload, original):
+    from niuu.domain.conversation_timeline import project_timeline
+
+    expected = project_timeline(original["turns"], original["session_id"])
+    assert payload["turns"] == expected
+    assert [t["role"] for t in expected] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+    assert payload["projection_revision"].endswith(";timeline-1")
+    assert [p["type"] for p in expected[1]["parts"]] == ["tool_use", "tool_result"]
+    assert expected[1]["parts"][1]["content"] == "fixture-only\n"
+    assert len({t["id"] for t in expected}) == len(expected)
+    return expected
+
+
+def test_workspace_archive_projects_timed_items_without_rewriting_source(
+    tmp_path, timed_archive_payload
+):
+    sid = timed_archive_payload["session_id"]
+    path = tmp_path / ".skuld" / f"conversation_{sid}.json"
+    path.parent.mkdir()
+    source = json.dumps(timed_archive_payload).encode()
+    path.write_bytes(source)
+    actual = load_workspace_transcript(tmp_path, sid)
+    _assert_timed_archive_projection(actual, timed_archive_payload)
+    assert load_workspace_transcript(tmp_path, sid) == actual
+    assert path.read_bytes() == source
+
+
+@pytest.mark.parametrize("location", ["workspace", "config"])
+def test_existing_archive_read_projects_timeline_without_rewriting_files(
+    tmp_path, monkeypatch, timed_archive_payload, location
+):
+    from volundr.session_archive import archive_root
+
+    monkeypatch.setenv("NIUU_HOME", str(tmp_path / "niuu"))
+    sid = timed_archive_payload["session_id"]
+    root = archive_root(tmp_path, session_id=sid, archive_location=location)
+    root.mkdir(parents=True)
+    source = json.dumps(timed_archive_payload).encode()
+    (root / "transcript.json").write_bytes(source)
+    (root / "manifest.json").write_text(json.dumps({"session_id": sid}))
+    actual = load_archive_transcript(tmp_path, session_id=sid, archive_location=location)
+    _assert_timed_archive_projection(actual, timed_archive_payload)
+    assert load_archive_transcript(tmp_path, session_id=sid, archive_location=location) == actual
+    assert (root / "transcript.json").read_bytes() == source
+
+
+def test_new_archive_artifacts_use_same_timeline_as_live(tmp_path, timed_archive_payload):
+    import copy
+
+    from volundr.session_archive import archive_transcript_json_path
+
+    original = copy.deepcopy(timed_archive_payload)
+    sid = original["session_id"]
+    manifest = write_session_archive(
+        session_id=sid,
+        workspace_dir=tmp_path,
+        transcript_payload=timed_archive_payload,
+        aggregated_logs={"lines": []},
+    )
+    payload = json.loads(archive_transcript_json_path(tmp_path).read_text())
+    expected = _assert_timed_archive_projection(payload, original)
+    assert manifest["counts"]["turns"] == len(expected)
+    assert timed_archive_payload == original
+    assert load_archive_transcript(tmp_path, session_id=sid)["turns"] == expected
+    markdown = archive_transcript_markdown_path(tmp_path).read_text()
+    assert markdown.count("## Assistant") == 3
+    assert markdown.index("09:00:05") < markdown.index("09:00:10") < markdown.index("09:00:15")

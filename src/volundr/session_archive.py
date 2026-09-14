@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+from niuu.domain.conversation_timeline import project_timeline
 from niuu.domain.text_projection import projection_revision
 
 ARCHIVE_VERSION = 1
@@ -170,7 +171,7 @@ def load_workspace_transcript(workspace_dir: str | Path, session_id: str) -> dic
         return {"turns": [], "is_active": False, "last_activity": ""}
 
     data = _read_json(Path(workspace_path), Path(safe_transcript_path))
-    return _normalise_transcript_payload(data)
+    return _normalise_transcript_payload(data, session_id)
 
 
 def _archive_owned_by(
@@ -250,7 +251,7 @@ def load_archive_transcript(
         archive_path=archive_path,
     )
     data = _read_json(root, safe_path)
-    return _normalise_transcript_payload(data)
+    return _normalise_transcript_payload(data, session_id)
 
 
 def load_archive_manifest(
@@ -389,6 +390,7 @@ def write_session_archive(
     event_source_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Write a normalized archive snapshot into the workspace."""
+    transcript_payload = _project_transcript_payload(transcript_payload, session_id)
     workspace_path = os.path.realpath(os.path.abspath(os.path.expanduser(os.fspath(workspace_dir))))
     workspace = Path(workspace_path)
     root_candidate = archive_root(
@@ -652,7 +654,25 @@ def _read_json(root: str | Path, path: str | Path) -> dict[str, Any]:
     return data
 
 
-def _normalise_transcript_payload(data: dict[str, Any]) -> dict[str, Any]:
+def _project_transcript_payload(data: dict[str, Any], session_id: str | None) -> dict[str, Any]:
+    """Use the live display identity/order for timed workspace and archive reads.
+
+    Persisted broker rows may still be cumulative native turns. The filesystem
+    path must apply the same projection as the broker and event-log reducer,
+    without rewriting the source snapshot or fabricating a session identity for
+    legacy callers which do not supply one.
+    """
+    turns = data.get("turns")
+    if not session_id or not isinstance(turns, list):
+        return data
+    projected = project_timeline(turns, session_id)
+    if projected == turns:
+        return data
+    return {**data, "turns": projected, "projection_revision": projection_revision(projected)}
+
+
+def _normalise_transcript_payload(data: dict[str, Any], session_id: str | None) -> dict[str, Any]:
+    data = _project_transcript_payload(data, session_id)
     turns = data.get("turns", [])
     if not isinstance(turns, list):
         turns = []
