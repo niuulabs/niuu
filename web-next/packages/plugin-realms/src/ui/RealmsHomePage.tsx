@@ -36,7 +36,24 @@ function NeedsYouRow({ item, card }: { item: ReviewItem; card: RealmHomeCard | n
         <TemplateIcon templateId={card?.binding?.template} size={13} />
       </span>
       <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col">
-        <span className="niuu:truncate niuu:text-sm niuu:text-text-primary">{item.title}</span>
+        {card ? (
+          <Link
+            to="/realms/$slug"
+            params={{ slug: card.realm.slug }}
+            className="niuu:truncate niuu:text-sm niuu:text-text-primary"
+            title={`Open ${card.realm.name}`}
+          >
+            {item.title}
+          </Link>
+        ) : (
+          <Link
+            to={'/valkyrie/inbox' as never}
+            className="niuu:truncate niuu:text-sm niuu:text-text-primary"
+            title="Open in the inbox"
+          >
+            {item.title}
+          </Link>
+        )}
         <span className="niuu:truncate niuu:text-xs niuu:text-text-muted">
           {card ? `${card.realm.name} · ` : ''}
           {item.summary}

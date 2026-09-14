@@ -167,6 +167,7 @@ function TimelineRow({
   time,
   tone,
   text,
+  detail,
   tag,
   actions,
   testId,
@@ -174,6 +175,8 @@ function TimelineRow({
   time: string;
   tone: ActivityTone;
   text: string;
+  /** The resident's own words for an ask; shown under the title so you can decide here. */
+  detail?: string;
   tag: string;
   actions?: ReactNode;
   testId?: string;
@@ -191,7 +194,20 @@ function TimelineRow({
       </span>
       <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col">
         <span className="niuu:text-xs niuu:text-text-primary">{text}</span>
-        <span className="niuu:text-[11px] niuu:text-text-muted">{tag}</span>
+        {detail ? (
+          <span className="niuu:text-[11px] niuu:text-text-secondary">{detail}</span>
+        ) : null}
+        <span className="niuu:text-[11px] niuu:text-text-muted">
+          {tag}
+          {detail ? (
+            <>
+              {' · '}
+              <Link to={'/valkyrie/inbox' as never} className={LINK}>
+                open in inbox
+              </Link>
+            </>
+          ) : null}
+        </span>
       </div>
       {actions}
     </div>
@@ -216,6 +232,7 @@ function Timeline({ reviews, decisions }: { reviews: ReviewItem[]; decisions: De
           time={item.requestedAt ? item.requestedAt.slice(11, 16) : '—'}
           tone="warn"
           text={item.title}
+          detail={item.summary}
           tag={`asked you · ${reviewKindLabel(item.kind)}`}
           testId={`realm-review-${item.itemId}`}
           actions={
