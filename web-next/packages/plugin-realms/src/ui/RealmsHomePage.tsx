@@ -263,7 +263,7 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
                   </span>
                   <span className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">now</span>
                 </div>
-                <div className="niuu:grid niuu:grid-cols-4 niuu:gap-3">
+                <div className="niuu:grid niuu:grid-cols-2 niuu:gap-x-4 niuu:gap-y-3">
                   <Figure value={home.cards.length} label="realms" />
                   <Figure value={home.residentsOnline} label="residents online" />
                   <Figure value={home.sessionsRunning} label="sessions running" />

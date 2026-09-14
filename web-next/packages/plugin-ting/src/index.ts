@@ -38,6 +38,7 @@ export const tingPlugin = definePlugin({
   subtitle: 'sagas · runs · dispatch',
   simple: {
     tabs: ['dashboard', 'plan', 'sagas'],
+    // Work dispatched as workflows: sagas, runs, the plan.
     icon: createElement(Workflow, { size: 17, 'aria-hidden': true }),
   },
   tabs: [

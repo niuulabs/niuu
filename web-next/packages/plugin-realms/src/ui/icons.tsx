@@ -1,6 +1,10 @@
-import { BookOpen, Bug, Castle, Package, Sparkles } from 'lucide-react';
+import { Boxes, FileText, GitPullRequest, NotebookText, TestTubes } from 'lucide-react';
 
-/** The picture for a realm template; a letter says nothing about what the resident keeps. */
+/**
+ * The picture for a realm template: what the resident produces, not the word for it.
+ * Product residents turn tickets into pull requests, QA residents run tests and
+ * reproductions, docs residents write pages, a blank resident has only its charter.
+ */
 export function TemplateIcon({
   templateId,
   size = 14,
@@ -10,15 +14,15 @@ export function TemplateIcon({
 }) {
   switch (templateId) {
     case 'product-resident':
-      return <Package size={size} aria-hidden="true" />;
+      return <GitPullRequest size={size} aria-hidden="true" />;
     case 'qa-resident':
-      return <Bug size={size} aria-hidden="true" />;
+      return <TestTubes size={size} aria-hidden="true" />;
     case 'docs-resident':
-      return <BookOpen size={size} aria-hidden="true" />;
+      return <FileText size={size} aria-hidden="true" />;
     case 'blank-resident':
-      return <Sparkles size={size} aria-hidden="true" />;
+      return <NotebookText size={size} aria-hidden="true" />;
     default:
-      return <Castle size={size} aria-hidden="true" />;
+      return <Boxes size={size} aria-hidden="true" />;
   }
 }
 

@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { createRoute, redirect } from '@tanstack/react-router';
-import { Hammer } from 'lucide-react';
+import { SquareTerminal } from 'lucide-react';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ForgePage } from './ui/ForgePage';
 import { VolundrPage } from './ui/VolundrPage';
@@ -16,7 +16,8 @@ export const volundrPlugin = definePlugin({
   subtitle: 'session forge · remote dev pods',
   simple: {
     tabs: ['forge', 'sessions'],
-    icon: createElement(Hammer, { size: 17, 'aria-hidden': true }),
+    // Coding sessions: a terminal an agent works in.
+    icon: createElement(SquareTerminal, { size: 17, 'aria-hidden': true }),
   },
   tabs: [
     { id: 'forge', label: 'Forge', path: '/volundr/forge' },
