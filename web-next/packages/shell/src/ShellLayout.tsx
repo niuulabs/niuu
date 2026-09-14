@@ -12,7 +12,7 @@ import {
 } from '@niuulabs/ui';
 import { useShellContext } from './ShellContext';
 import { UiModeSwitch } from './UiModeSwitch';
-import { isVisibleInMode, tabsForMode, useUiMode } from './uiMode';
+import { isVisibleInMode, pluginFace, tabsForMode, useUiMode } from './uiMode';
 import './Shell.css';
 
 function pathMatches(pathname: string, basePath: string): boolean {
@@ -79,6 +79,7 @@ export function ShellLayout() {
 
   const active = navPlugins.find((p) => p.id === activeId) ?? navPlugins[0] ?? null;
   const activeTabs = active ? tabsForMode(active, mode) : undefined;
+  const face = (plugin: PluginDescriptor) => pluginFace(plugin, mode);
   const subnavCollapsed = active ? Boolean(ctx.tweaks[`${active.id}.subnavCollapsed`]) : false;
 
   // localStorage follows the router — not the other way around
@@ -99,10 +100,11 @@ export function ShellLayout() {
   // Register "switch plugin" default commands for all nav plugins
   useEffect(() => {
     for (const plugin of navPlugins) {
+      const label = pluginFace(plugin, mode);
       register({
         id: `switch:${plugin.id}`,
-        title: plugin.title,
-        subtitle: plugin.subtitle,
+        title: label.title,
+        subtitle: label.subtitle,
         keywords: ['switch', 'navigate', 'go', 'plugin', plugin.id],
         execute: () => handleSelect(plugin.id),
       });
@@ -112,7 +114,7 @@ export function ShellLayout() {
         unregister(`switch:${plugin.id}`);
       }
     };
-  }, [navPlugins, register, unregister, handleSelect]);
+  }, [navPlugins, mode, register, unregister, handleSelect]);
 
   return (
     <TooltipProvider>
@@ -126,7 +128,7 @@ export function ShellLayout() {
               key={p.id}
               side="right"
               delayMs={0}
-              content={<RailTooltipContent title={p.title} subtitle={p.subtitle} />}
+              content={<RailTooltipContent title={face(p).title} subtitle={face(p).subtitle} />}
             >
               <button
                 type="button"
@@ -134,11 +136,11 @@ export function ShellLayout() {
                   'niuu-shell__rail-item',
                   active?.id === p.id && 'niuu-shell__rail-item--active',
                 )}
-                title={`${p.title} · ${p.subtitle}`}
-                aria-label={p.title}
+                title={`${face(p).title} · ${face(p).subtitle}`}
+                aria-label={face(p).title}
                 onClick={() => handleSelect(p.id)}
               >
-                {mode === 'simple' && p.simple?.icon ? p.simple.icon : p.rune}
+                {face(p).glyph}
               </button>
             </Tooltip>
           ))}
@@ -148,7 +150,7 @@ export function ShellLayout() {
               key={p.id}
               side="right"
               delayMs={0}
-              content={<RailTooltipContent title={p.title} subtitle={p.subtitle} />}
+              content={<RailTooltipContent title={face(p).title} subtitle={face(p).subtitle} />}
             >
               <button
                 type="button"
@@ -156,11 +158,11 @@ export function ShellLayout() {
                   'niuu-shell__rail-item',
                   active?.id === p.id && 'niuu-shell__rail-item--active',
                 )}
-                title={`${p.title} · ${p.subtitle}`}
-                aria-label={p.title}
+                title={`${face(p).title} · ${face(p).subtitle}`}
+                aria-label={face(p).title}
                 onClick={() => handleSelect(p.id)}
               >
-                {mode === 'simple' && p.simple?.icon ? p.simple.icon : p.rune}
+                {face(p).glyph}
               </button>
             </Tooltip>
           ))}
@@ -172,11 +174,9 @@ export function ShellLayout() {
             <div className="niuu-shell__topbar-title">
               {active && (
                 <>
-                  <span className="niuu-shell__rune-mark">
-                    {mode === 'simple' && active.simple?.icon ? active.simple.icon : active.rune}
-                  </span>
-                  <h1>{active.title}</h1>
-                  <span className="niuu-shell__topbar-subtitle">{active.subtitle}</span>
+                  <span className="niuu-shell__rune-mark">{face(active).glyph}</span>
+                  <h1>{face(active).title}</h1>
+                  <span className="niuu-shell__topbar-subtitle">{face(active).subtitle}</span>
                 </>
               )}
             </div>

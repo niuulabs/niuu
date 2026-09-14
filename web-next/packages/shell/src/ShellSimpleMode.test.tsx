@@ -24,12 +24,22 @@ const volundr = definePlugin({
   rune: 'V',
   title: 'Völundr',
   subtitle: 'forge',
-  simple: { tabs: ['forge'] },
+  simple: { tabs: ['forge', 'quick'], title: 'Sessions', icon: <span>icon</span> },
   tabs: [
     { id: 'forge', label: 'Forge' },
     { id: 'catalog', label: 'Catalog' },
+    { id: 'quick', label: 'Quick', simpleOnly: true },
   ],
   render: () => <div data-testid="volundr-content">volundr</div>,
+});
+
+const home = definePlugin({
+  id: 'home',
+  rune: 'H',
+  title: 'Home',
+  subtitle: 'simple only',
+  simple: { only: true, landing: true },
+  render: () => <div data-testid="home-content">home</div>,
 });
 
 const observatory = definePlugin({
@@ -46,7 +56,7 @@ function wrap(path: string) {
       <ServicesProvider services={{}}>
         <FeatureCatalogProvider>
           <Shell
-            plugins={[realms, volundr, observatory]}
+            plugins={[home, realms, volundr, observatory]}
             _testHistory={createMemoryHistory({ initialEntries: [path] })}
           />
         </FeatureCatalogProvider>
@@ -67,8 +77,17 @@ describe('Shell in simple mode', () => {
     expect(screen.getByRole('button', { name: 'Realms' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Observatory' })).not.toBeInTheDocument();
     expect(screen.getByTestId('volundr-tab-forge')).toBeInTheDocument();
+    expect(screen.getByTestId('volundr-tab-quick')).toBeInTheDocument();
     expect(screen.queryByTestId('volundr-tab-catalog')).not.toBeInTheDocument();
     expect(screen.getByTestId('ui-mode-switch')).toHaveAttribute('data-mode', 'simple');
+    expect(screen.getByRole('button', { name: 'Sessions' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Sessions' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Home' })).toBeInTheDocument();
+  });
+
+  it('lands on the home plugin from the index route', async () => {
+    wrap('/');
+    await screen.findByTestId('home-content');
   });
 
   it('keeps a hidden plugin reachable by deep link, with its rail item while active', async () => {
@@ -85,6 +104,9 @@ describe('Shell in simple mode', () => {
       expect(screen.getByRole('button', { name: 'Observatory' })).toBeInTheDocument(),
     );
     expect(screen.getByTestId('volundr-tab-catalog')).toBeInTheDocument();
+    expect(screen.queryByTestId('volundr-tab-quick')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Home' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Völundr' })).toBeInTheDocument();
   });
 
   it('offers no switch when no plugin opted into simple mode', async () => {

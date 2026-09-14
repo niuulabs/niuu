@@ -4,6 +4,8 @@ import {
   UI_MODE_STORAGE_KEY,
   cacheUiMode,
   isVisibleInMode,
+  landingPluginId,
+  pluginFace,
   preferencesForMode,
   readUiMode,
   tabsForMode,
@@ -55,5 +57,30 @@ describe('uiMode', () => {
     expect(tabsForMode(plugin, 'advanced')).toEqual(plugin.tabs);
     expect(tabsForMode({ simple: {}, tabs: plugin.tabs }, 'simple')).toEqual(plugin.tabs);
     expect(tabsForMode({}, 'simple')).toBeUndefined();
+  });
+
+  it('hides simple-only plugins and tabs in advanced mode', () => {
+    expect(isVisibleInMode({ simple: { only: true } }, 'advanced')).toBe(false);
+    expect(isVisibleInMode({ simple: { only: true } }, 'simple')).toBe(true);
+    const tabs = [{ id: 'ravens' }, { id: 'residents', simpleOnly: true }];
+    expect(tabsForMode({ simple: { tabs: ['residents'] }, tabs }, 'simple')).toEqual([tabs[1]]);
+    expect(tabsForMode({ simple: { tabs: ['residents'] }, tabs }, 'advanced')).toEqual([tabs[0]]);
+  });
+
+  it('gives a plugin its simple-mode face and finds the landing plugin', () => {
+    const plugin = {
+      id: 'volundr',
+      rune: 'V',
+      title: 'Völundr',
+      subtitle: 'forge',
+      simple: { title: 'Sessions', icon: 'icon', landing: false },
+    };
+    expect(pluginFace(plugin, 'advanced')).toEqual({ title: 'Völundr', subtitle: 'forge', glyph: 'V' });
+    expect(pluginFace(plugin, 'simple')).toEqual({ title: 'Sessions', subtitle: 'forge', glyph: 'icon' });
+    expect(pluginFace({ ...plugin, simple: undefined }, 'simple').glyph).toBe('V');
+    const home = { id: 'home', simple: { landing: true } };
+    expect(landingPluginId([plugin, home], 'simple')).toBe('home');
+    expect(landingPluginId([plugin, home], 'advanced')).toBeNull();
+    expect(landingPluginId([plugin], 'simple')).toBeNull();
   });
 });

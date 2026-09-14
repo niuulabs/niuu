@@ -7,11 +7,14 @@ export {
   UI_MODE_STORAGE_KEY,
   cacheUiMode,
   isVisibleInMode,
+  landingPluginId,
+  pluginFace,
   preferencesForMode,
   readUiMode,
   tabsForMode,
   uiModeFromPreferences,
   useUiMode,
+  type PluginFace,
   type UiMode,
 } from './uiMode';
 export { UiModeSwitch } from './UiModeSwitch';

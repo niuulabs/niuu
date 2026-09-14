@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react';
+import { useSyncExternalStore, type ReactNode } from 'react';
 import type { UserFeaturePreference } from '@niuulabs/plugin-sdk';
 
 /**
@@ -81,20 +81,56 @@ export function preferencesForMode(
 }
 
 export function isVisibleInMode(
-  plugin: { simple?: { tabs?: string[] }; position?: 'top' | 'bottom' },
+  plugin: { simple?: { tabs?: string[]; only?: boolean }; position?: 'top' | 'bottom' },
   mode: UiMode,
 ): boolean {
-  if (mode === 'advanced') return true;
+  if (mode === 'advanced') return plugin.simple?.only !== true;
   if (plugin.position === 'bottom') return true;
   return plugin.simple !== undefined;
 }
 
-export function tabsForMode<T extends { id: string }>(
+export function tabsForMode<T extends { id: string; simpleOnly?: boolean }>(
   plugin: { simple?: { tabs?: string[] }; tabs?: T[] },
   mode: UiMode,
 ): T[] | undefined {
   if (!plugin.tabs) return undefined;
-  if (mode === 'advanced' || !plugin.simple?.tabs) return plugin.tabs;
+  if (mode === 'advanced') return plugin.tabs.filter((tab) => tab.simpleOnly !== true);
+  if (!plugin.simple?.tabs) return plugin.tabs;
   const allowed = new Set(plugin.simple.tabs);
   return plugin.tabs.filter((tab) => allowed.has(tab.id));
+}
+
+export interface PluginFace {
+  title: string;
+  subtitle: string;
+  glyph: ReactNode;
+}
+
+/** What the rail, topbar and palette call a plugin in the given mode. */
+export function pluginFace(
+  plugin: {
+    rune: string;
+    title: string;
+    subtitle: string;
+    simple?: { icon?: ReactNode; title?: string; subtitle?: string };
+  },
+  mode: UiMode,
+): PluginFace {
+  if (mode !== 'simple' || !plugin.simple) {
+    return { title: plugin.title, subtitle: plugin.subtitle, glyph: plugin.rune };
+  }
+  return {
+    title: plugin.simple.title ?? plugin.title,
+    subtitle: plugin.simple.subtitle ?? plugin.subtitle,
+    glyph: plugin.simple.icon ?? plugin.rune,
+  };
+}
+
+/** The plugin the index route lands on: the Simple-mode landing page when one is declared. */
+export function landingPluginId(
+  plugins: Array<{ id: string; simple?: { landing?: boolean } }>,
+  mode: UiMode,
+): string | null {
+  if (mode !== 'simple') return null;
+  return plugins.find((plugin) => plugin.simple?.landing)?.id ?? null;
 }
