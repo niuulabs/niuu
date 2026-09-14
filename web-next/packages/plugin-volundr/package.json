@@ -27,6 +27,7 @@
     "dev": "tsup --watch"
   },
   "peerDependencies": {
+    "@niuulabs/shell": "workspace:*",
     "@tanstack/react-query": "^5.102.8",
     "@tanstack/react-router": "^1.170.33",
     "react": "^19.2.8"
@@ -35,6 +36,7 @@
     "@niuulabs/domain": "workspace:*",
     "@niuulabs/plugin-sdk": "workspace:*",
     "@niuulabs/query": "workspace:*",
+    "@niuulabs/shell": "workspace:*",
     "@niuulabs/ui": "workspace:*",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",

@@ -12,7 +12,7 @@ import {
   sessionOriginBadge,
   shortenRepoLabel,
   toGroupTestId,
-} from './SessionsPage';
+} from './sessions/sessionLabels';
 
 function makeSession(
   overrides: Partial<Session> & Pick<Session, 'id' | 'personaName' | 'state'>,

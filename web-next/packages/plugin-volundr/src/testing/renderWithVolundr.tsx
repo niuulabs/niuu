@@ -15,6 +15,8 @@ export interface RenderWithVolundrOptions {
   service?: IVolundrService;
   clusterAdapter?: IClusterAdapter;
   sessionStore?: ISessionStore;
+  /** Extra services to register, e.g. the optional `ravn.personas` catalog. */
+  extraServices?: Record<string, unknown>;
 }
 
 export function renderWithVolundr(
@@ -25,6 +27,7 @@ export function renderWithVolundr(
     service = createMockVolundrService(),
     clusterAdapter = createMockClusterAdapter(),
     sessionStore = createMockSessionStore(),
+    extraServices = {},
   } = options;
 
   const client = new QueryClient({
@@ -54,6 +57,7 @@ export function renderWithVolundr(
           'volundr.clusters': clusterAdapter,
           'volundr.sessions': sessionStore,
           sessionStore,
+          ...extraServices,
         }}
       >
         {ui}
