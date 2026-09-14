@@ -1,0 +1,119 @@
+{
+  "candidate_revision": "39da0146a2957f81f51bad54c107d7b042e55cd2",
+  "candidate_source_sha256": "103f449bb7b12305b77d37c03d0e2b0710ca47025cd2a7a4a594b4563c649fc0",
+  "rollback_revision": "f5d7a5e49eafd765f8daf53bdc51c95ac1949939",
+  "python": "3.13.13",
+  "tests_each_host": {
+    "passed": 5085,
+    "skipped": 24,
+    "deselected": 95,
+    "xfailed": 1
+  },
+  "coverage_scoped_statement_branch": 86.00353527237667,
+  "sessions": 13,
+  "protected_processes": 6,
+  "gateways": 1,
+  "archived_samples": {
+    "0f84a1e0-4aad-50d3-b58a-29af015bf28e": {
+      "turns": 4,
+      "sha256": "1f0133fb87c364bdcdc165c74622dc40cbb2fc337b6b2c200d5042a527c2c110"
+    },
+    "20165833-46bf-48ed-bbc7-8a1de29196e8": {
+      "turns": 2,
+      "sha256": "fbdee981a196e18a35f0379c1b65fbc2968948605066abb01f6b2d8f286246f9"
+    }
+  },
+  "evidence_sha256": {
+    "release-sweep-frozen-final.log": "323c7c2ef27fd2bfb1e2b991d672edd48187d80052493202649c6425e15b47ef",
+    "spark-v3-release-sweep.log": "46da9883777a99311ed8108a378e906bc0b549dfc1d2f1d63a1f4d2249d230d7",
+    "spark-preparation-v3.json": "6bc7a1bc59d9468ce36ac18484974a62dbf3489c7244f7764660e2453c393849",
+    "captured-legacy-immutable.json": "7ef372116a2506eeaf6d58e0a999834b4955a973b42d9594e99397b92565d30a",
+    "spark-captured-legacy-v3.json": "d3a1b6e07724ba10bbd7d98393be9b3ba48b9b843960cdc03ba0a72011696e20",
+    "frozen-final-lint.log": "14bd1ce2e814bc6480530ed3631a301c6295834ba98784e2bc9fad0d1a358f2e",
+    "spark-attempt-window0838.json": "cef13b1462385197593850eb5ba0ad95150ed4deb61e7abf06995c708510182d",
+    "spark-preparation-window0838.json": "7fcc040f98446abe34b57a1888f26d505927318cd50aca682f9507bfa40988da",
+    "spark-adoption-after.json": "24e7830caed41abe293ed834cc69955670018411c58775e2685caa33f4589419",
+    "spark-conversations-after.json": "5c3cdeca0c30c34b038b8a000dbdac76819e9d844dc1fd320a04fc5d7a90e879",
+    "spark-preservation-comparison.json": "6bd2cde4573de985f6b6a161daef3e9a57edd9482cbc5b3bf802cbc5966f97ac",
+    "spark-final-window-journal.jsonl": "e7d09d0dd75888b9b4d92650d1fd6c653b57d70e1fa0c0ef1ae3503bca2cc50f",
+    "spark-attempt-window0820.json": "196112d2564f1ed98499a3c8bbca7d7b805a736414d411e1c203cffdb0cfb0be"
+  },
+  "outcome": "Spark API deployed; existing gateway source intentionally preserved. Native UI acceptance remains outstanding.",
+  "window": {
+    "start": "2026-09-14T08:38:00+00:00",
+    "end": "2026-09-14T08:48:00+00:00"
+  },
+  "apply_started_at": "2026-09-14T08:38:41.269219+00:00",
+  "apply_finished_at": "2026-09-14T08:38:46.240664+00:00",
+  "guard_passed": true,
+  "api_pid_before": 3769570,
+  "api_pid_after": 3784128,
+  "api_health": {
+    "status": "ok",
+    "revision": "39da0146a2957f81f51bad54c107d7b042e55cd2",
+    "build": "forge-codex-ready-20260914-timeline-v3",
+    "source_sha256": "103f449bb7b12305b77d37c03d0e2b0710ca47025cd2a7a4a594b4563c649fc0",
+    "dirty": false,
+    "failed_plugins": []
+  },
+  "existing_gateway_disposition": {
+    "e93a4633-c288-519c-bb6b-7dc2274aa2e2": {
+      "pid": 3741717,
+      "port": 19100,
+      "health": {
+        "status": "healthy",
+        "session_id": "e93a4633-c288-519c-bb6b-7dc2274aa2e2",
+        "revision": "f5d7a5e49eafd765f8daf53bdc51c95ac1949939",
+        "build": "forge-codex-ready-20260913-v2",
+        "source_sha256": "47dfd370523fefaabcf9189808495a942c9548d3c148203d4251ab15907c42a1",
+        "dirty": false
+      }
+    }
+  },
+  "new_owned_drop_in": "/home/xteo/.config/systemd/user/niuu-forge.service.d/zzzzzzz-steering-timeline-v3-20260914.conf",
+  "previous_files_preserved": true,
+  "session_native_processes_restarted": false,
+  "new_sessions_launched": false,
+  "provider_calls_this_iteration": false,
+  "ios_source_changed": false,
+  "thor_deployed": false,
+  "conversation_comparison": {
+    "api_candidate_verified": true,
+    "preserved_session_ids": 13,
+    "preserved_turn_payloads": 50,
+    "all_conversations_exactly_equal": true,
+    "preserved_public_log_rows": 258,
+    "test_public_frames_after": 258
+  },
+  "independent_services": [
+    {
+      "name": "agent HTTP",
+      "fields": {
+        "status": "ok"
+      }
+    },
+    {
+      "name": "agent TLS",
+      "fields": {
+        "status": "ok"
+      }
+    },
+    {
+      "name": "web preview",
+      "sha256": "736173c7bf20a6c8b373da0dc00d63e56991da9c648e10f9aa9aa33445c31ca0"
+    }
+  ],
+  "journal_forced_stop_indicators": [],
+  "first_attempt": {
+    "candidate": "273e9aa328521ba79944b79866c7b4d09ed8ce34",
+    "outcome": "Rejected for metadata-only legacy replay change; automatic safe rollback preserved six process owners and original conversations.",
+    "finished_at": "2026-09-14T08:20:31.884815+00:00"
+  },
+  "limits": [
+    "Existing test gateway still uses f5d7a5e4; new-source behavior needs a new gateway or separately approved adoption.",
+    "Native/iOS duplicate merge requires separate implementation and rendered acceptance; installed build not device-confirmed.",
+    "Native RPC/ledger chronology tests are hermetic; no new provider or physical iOS proof.",
+    "Public captured log excludes conversation.turn/projection/per-connect rows; no full database crash-durability claim.",
+    "Offline canonical-seed comparison uses synthetic seed positions, not captured internal database rows."
+  ]
+}

@@ -49,8 +49,11 @@ constitute a rendered reproduction.
   `steering_accepted_at`. These distinguish broker insertion from native acceptance;
   neither claims to measure the model's internal token-level consumption.
 - When a transport declares live steering and durable event logging is enabled,
-  frames carry `conversation_timeline: {schema: 1, seq, observed_at}`. A user echo
-  carries the original input anchor, not its later echo position. The outer event
+  frames carry `conversation_timeline: {schema: 1, seq, observed_at}`. `user_confirmed`
+  carries the original input anchor, not its later confirmation position. A
+  `user_active` marker observes the lifecycle ACK itself, not the input slot;
+  recover input placement from the correlated canonical row or original
+  confirmation (its `created_at` still names the original input). The outer event
   ledger sequence/cursor still identifies the individual echo event.
 - Native assistant parts preserve their first observation in the same marker,
   plus `span_seq` identifying the native accumulation span. Later completion

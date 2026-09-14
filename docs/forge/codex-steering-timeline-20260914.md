@@ -1,6 +1,40 @@
 # Codex steering chronology — September 14 follow-up
 
-## Release status at the compatibility correction
+## Final result — Spark API deployed; native acceptance remains
+
+The corrected API release **39da0146a2957f81f51bad54c107d7b042e55cd2** was deployed
+on Spark at **08:38 UTC**, source SHA
+`103f449bb7b12305b77d37c03d0e2b0710ca47025cd2a7a4a594b4563c649fc0`, immutable
+`forge-codex-ready-20260914-timeline-v3`. The unchanged guarded apply passed from
+08:38:41 to 08:38:46 within the newly announced 08:38–08:48 UTC window.
+
+- The exact final source passed **5,085 tests on each host**, 24 skips, 95
+  deselections and one expected failure; **86.00%** scoped statement/branch
+  coverage, new chronology module 100%. Final source/import/dependency audits,
+  lint/format and captured legacy comparisons passed. Seed metadata is copied
+  before delivery folding so replay cannot mutate retained input payloads.
+- Six protected process identities and the same live user gateway survived.
+  All 13 conversations / 50 complete turn payloads and 258 captured public log
+  rows match exactly after deployment. Archived sample hashes, session metadata,
+  existing unit/config hashes and independent 9500 HTTP, 9501 trusted HTTPS and
+  5300 HTTPS checks match. The final journal shows normal service stop/start
+  with no observed timeout/SIGKILL indicators in that window.
+- Only the API changed (PID 3769570 → 3784128). No gateway, native Codex, tmux or
+  postmaster was restarted. The original captured session's gateway PID 3741717
+  directly reports its unchanged **f5d7a5e4** source. Its old history is not
+  backfilled or transformed merely by this deployment. New sessions adopt the
+  new source; no acceptance session was launched by this runner.
+- All existing drop-ins were retained, including the earlier owned rollback
+  override. The final new owned override is
+  `zzzzzzz-steering-timeline-v3-20260914.conf`. Safe rollback remains f5d7a5e4,
+  not the original unsafe local-backend classifier. Thor was not deployed.
+
+[Curated evidence](codex-steering-timeline-evidence-20260914.json) links exact
+source/validation and private artifact hashes. The [native handoff](codex-steering-timeline-ios-handoff-20260914.md)
+still requires a separate native merge fix and rendered/phone acceptance; this
+API release is **not** a claim that iOS's transient duplication is resolved.
+
+## Earlier compatibility correction checkpoint
 
 The first Spark candidate started healthy at 08:20 UTC but **was rolled back**
 by the archived-replay equality guard. Its global cross-seed ACK fold had added
@@ -20,9 +54,10 @@ not a claim of captured internal database rows.
 
 The corrected owned-checkout sweep passes **5,084 tests**, 24 skips, 95
 deselections and one expected failure, with **86.00%** scoped statement/branch
-coverage. The initial source below is not the accepted release. A replacement
-immutable staging audit, fresh preparation and a newly announced window are
-required before another attempt; no retry is authorized by the expired attempt.
+coverage. The initial source below is not the accepted release. At that checkpoint, a replacement
+immutable staging audit, fresh preparation and a newly announced window were
+still required. The successful final result above supersedes that release status,
+not the failed-attempt history. Intermediate v2 was staged/tested, never deployed.
 
 ## Diagnosis
 
