@@ -58,6 +58,13 @@ export function fakeRealmService(log: CallLog, seed: RealmSummary[] = []): IReal
       realms.push(realm);
       return realm;
     },
+    async deleteRealm(slug) {
+      log.calls.push(`deleteRealm:${slug}`);
+      const index = realms.findIndex((entry) => entry.slug === slug);
+      if (index < 0) throw Object.assign(new Error(`Realm not found: ${slug}`), { status: 404 });
+      realms.splice(index, 1);
+      grants.delete(slug);
+    },
     async listTrustGrants(slug) {
       log.calls.push(`listTrustGrants:${slug}`);
       return grants.get(slug) ?? [];
@@ -90,6 +97,7 @@ export function fakeMimir(
   const mountAppears = options.mountAppears ?? true;
   const targets = options.targets ?? ['ymir'];
   const mounts: string[] = [];
+  const rules = new Set<string>();
   // Reads the realm pages never touch come from the Mímir mock; writes are logged here.
   const base = createMimirMockAdapter();
   const mimir = {
@@ -124,7 +132,14 @@ export function fakeMimir(
       },
       async upsertRoutingRule(rule: { id: string; prefix: string; mountName: string }) {
         log.calls.push(`upsertRoutingRule:${rule.id}->${rule.mountName}`);
+        rules.add(rule.id);
         return rule;
+      },
+      async deleteRoutingRule(id: string) {
+        log.calls.push(`deleteRoutingRule:${id}`);
+        if (!rules.delete(id)) {
+          throw Object.assign(new Error(`Routing rule not found: ${id}`), { status: 404 });
+        }
       },
     },
     pages: {
@@ -199,7 +214,12 @@ export function fakePersonas(log: CallLog): IPersonaStore {
         yamlSource: '',
       } as never;
     },
-    async deletePersona() {},
+    async deletePersona(name) {
+      log.calls.push(`deletePersona:${name}`);
+      if (!personas.delete(name)) {
+        throw Object.assign(new Error(`Persona not found: ${name}`), { status: 404 });
+      }
+    },
     async forkPersona(name, request) {
       log.calls.push(`forkPersona:${name}->${request.newName}`);
       return { name: request.newName } as never;

@@ -338,6 +338,16 @@ describe('buildRealmGovernanceHttpAdapter', () => {
     expect(workflowsClient.get).not.toHaveBeenCalled();
   });
 
+  it('deletes a realm by its encoded slug', async () => {
+    const realmsClient = makeClient();
+    const workflowsClient = makeClient();
+    realmsClient.delete.mockResolvedValue(undefined);
+    const adapter = buildRealmGovernanceHttpAdapter(realmsClient, workflowsClient);
+
+    await adapter.deleteRealm('realm/with slash');
+    expect(realmsClient.delete).toHaveBeenCalledWith('/realms/realm%2Fwith%20slash');
+  });
+
   it('posts the trust grant body untouched', async () => {
     const realmsClient = makeClient();
     const workflowsClient = makeClient();

@@ -154,6 +154,20 @@ describe('RealmPage with a running resident', () => {
     await waitFor(() => expect(log.calls).toContain('deleteResident:valhalla'));
   });
 
+  it('deletes the realm in two clicks and lands on the home page', async () => {
+    const user = userEvent.setup();
+    const log = createCallLog();
+    const { router } = renderRealms('/realms/valhalla/settings', await populated(log), log);
+    await screen.findByTestId('realm-settings');
+    await user.click(screen.getByRole('button', { name: 'Resident' }));
+    await screen.findByTestId('realm-teardown');
+    await user.click(screen.getByTestId('realm-delete'));
+    await user.click(screen.getByTestId('realm-delete-confirm'));
+    await waitFor(() => expect(log.calls).toContain('deleteRealm:valhalla'));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/realms'));
+    expect(log.calls).toContain('deletePersona:realm-valhalla');
+  });
+
   it('clones the realm into the wizard with its charter and trust', async () => {
     const user = userEvent.setup();
     const log = createCallLog();

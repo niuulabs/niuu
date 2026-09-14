@@ -241,6 +241,9 @@ export function buildRealmGovernanceHttpAdapter(
     createRealm(request: RealmCreate) {
       return realmsClient.post<RealmSummary>('/realms', request);
     },
+    async deleteRealm(slug: string) {
+      await realmsClient.delete<void>(`/realms/${encodeURIComponent(slug)}`);
+    },
     listTrustGrants(slug: string) {
       return realmsClient.get<RealmTrustGrant[]>(
         `/realms/${encodeURIComponent(slug)}/trust-grants`,

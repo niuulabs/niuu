@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useParams } from '@tanstack/react-router';
+import { Link, useNavigate, useParams } from '@tanstack/react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import {
@@ -21,6 +21,7 @@ import {
   MountChip,
   SegmentedFilter,
 } from '@niuulabs/ui';
+import { TEARDOWN_STEPS, useDeleteRealm } from '../application/useDeleteRealm';
 import { RAVENS_QUERY_KEY, useRavens } from '../application/useRealmsHome';
 import { useRealmView } from '../application/useRealmView';
 import { ravnForRealm } from '../domain/join';
@@ -134,6 +135,60 @@ function ResidentControls({ ravn, realmName }: { ravn: Ravn | null; realmName: s
       </span>
       {error ? (
         <span className="niuu:text-xs niuu:text-critical-fg">{String(error)}</span>
+      ) : null}
+    </div>
+  );
+}
+
+/** Delete the realm: the create recipe backwards, two clicks, fail loud on the step that broke. */
+function RealmTeardown({ slug, ravn, realmName }: { slug: string; ravn: Ravn | null; realmName: string }) {
+  const navigate = useNavigate();
+  const teardown = useDeleteRealm(slug);
+  const [armed, setArmed] = useState(false);
+  return (
+    <div className="niuu:flex niuu:flex-col niuu:gap-2" data-testid="realm-teardown">
+      <span className="niuu:text-xs niuu:text-text-muted">
+        Deleting the realm removes its resident, persona, memory routing rule, trust and
+        capabilities. The Mímir instance stays (the platform cannot remove one yet); its pages
+        are still under Mímir › Registry.
+      </span>
+      <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
+        {armed ? (
+          <>
+            <button
+              type="button"
+              className={DANGER}
+              disabled={teardown.running}
+              onClick={() =>
+                teardown
+                  .run(ravn)
+                  .then(() => navigate({ to: '/realms' }))
+                  .catch(() => undefined)
+              }
+              data-testid="realm-delete-confirm"
+            >
+              Yes, delete {realmName}
+            </button>
+            <button type="button" className={BUTTON} onClick={() => setArmed(false)}>
+              Keep it
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className={DANGER}
+            onClick={() => setArmed(true)}
+            data-testid="realm-delete"
+          >
+            Delete realm
+          </button>
+        )}
+      </div>
+      {teardown.error ? (
+        <span className="niuu:text-xs niuu:text-critical-fg">
+          Stopped at “{TEARDOWN_STEPS.find((step) => step.id === teardown.failedStep)?.label}”:{' '}
+          {teardown.error}. Nothing after that step was touched.
+        </span>
       ) : null}
     </div>
   );
@@ -298,12 +353,17 @@ export function RealmSettingsPage() {
       ) : null}
 
       {section === 'resident' ? (
-        <SectionCard
-          title="Resident"
-          description="Pause, resume, restart or remove the resident that keeps this realm."
-        >
-          <ResidentControls ravn={ravn} realmName={data.realm.name} />
-        </SectionCard>
+        <div className="niuu:flex niuu:flex-col niuu:gap-4">
+          <SectionCard
+            title="Resident"
+            description="Pause, resume, restart or remove the resident that keeps this realm."
+          >
+            <ResidentControls ravn={ravn} realmName={data.realm.name} />
+          </SectionCard>
+          <SectionCard title="Delete the realm" description="Gone from the list, for good.">
+            <RealmTeardown slug={slug} ravn={ravn} realmName={data.realm.name} />
+          </SectionCard>
+        </div>
       ) : null}
 
       {section === 'memory' ? (

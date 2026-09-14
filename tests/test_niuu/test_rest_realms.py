@@ -99,6 +99,25 @@ def test_get_realm_not_found() -> None:
     assert resp.status_code == 404
 
 
+def test_delete_realm_removes_it_and_its_grants() -> None:
+    client = _make_client()
+    client.post("/api/v1/realms", json={"slug": "forge", "name": "Forge"})
+    client.post("/api/v1/realms/forge/trust-grants", json={"action_class": "build", "level": 2})
+
+    resp = client.delete("/api/v1/realms/forge")
+    assert resp.status_code == 204
+
+    assert client.get("/api/v1/realms/forge").status_code == 404
+    assert client.get("/api/v1/realms/forge/trust-grants").json() == []
+    assert client.get("/api/v1/realms").json() == []
+
+
+def test_delete_realm_not_found() -> None:
+    client = _make_client()
+    resp = client.delete("/api/v1/realms/ghost")
+    assert resp.status_code == 404
+
+
 def test_create_realm_rejects_invalid_slug() -> None:
     client = _make_client()
     resp = client.post("/api/v1/realms", json={"slug": "Bad Slug!", "name": "X"})

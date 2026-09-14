@@ -1716,6 +1716,11 @@ export function createMockRealmGovernanceService(
       grants.set(realm.slug, []);
       return { ...realm };
     },
+    async deleteRealm(slug: string) {
+      const realm = requireRealm(slug);
+      realms.splice(realms.indexOf(realm), 1);
+      grants.delete(slug);
+    },
     async listTrustGrants(slug: string) {
       requireRealm(slug);
       return (grants.get(slug) ?? []).map((grant) => ({ ...grant }));

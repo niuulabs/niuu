@@ -181,6 +181,8 @@ export interface IRealmGovernanceService {
   listRealms(): Promise<RealmSummary[]>;
   getRealm(slug: string): Promise<RealmSummary>;
   createRealm(request: RealmCreate): Promise<RealmSummary>;
+  /** Removes the realm with its trust grants and capabilities; the resident is the fleet's. */
+  deleteRealm(slug: string): Promise<void>;
   listTrustGrants(slug: string): Promise<RealmTrustGrant[]>;
   createTrustGrant(slug: string, request: TrustGrantCreate): Promise<RealmTrustGrant>;
   listWorkflows(): Promise<TingWorkflowSummary[]>;

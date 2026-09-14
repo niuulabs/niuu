@@ -61,6 +61,20 @@ class RealmService:
         logger.info("realm created: id=%s slug=%s", saved.id, saved.slug)
         return saved
 
+    async def delete_realm(self, realm_ref: UUID | str) -> Realm | None:
+        """Delete a realm by id or slug, with its trust grants and capabilities.
+
+        Returns the realm that was deleted, or ``None`` when there was none.
+        The realm's resident is not touched here: residents belong to the
+        Ravn fleet and are removed through its own lifecycle routes.
+        """
+        realm = await self._repo.get_realm(realm_ref)
+        if realm is None:
+            return None
+        await self._repo.delete_realm(realm.id)
+        logger.info("realm deleted: id=%s slug=%s", realm.id, realm.slug)
+        return realm
+
     async def list_trust_grants(self, realm_id: UUID) -> list[TrustGrant]:
         """List all trust grants for a realm."""
         return await self._repo.list_trust_grants(realm_id)
