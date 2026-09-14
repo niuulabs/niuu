@@ -45,6 +45,8 @@ export const realmsPlugin = definePlugin({
   ],
 });
 
+export { homePlugin } from './home/plugin';
+export { HomePage } from './home/HomePage';
 export { RealmsHomePage } from './ui/RealmsHomePage';
 export { NewRealmPage } from './ui/NewRealmPage';
 export { RealmPage } from './ui/RealmPage';

@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from '@tanstack/react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { usePluginCtx, useService } from '@niuulabs/plugin-sdk';
+import { useUiMode } from '@niuulabs/shell';
 import { PagesView } from '@niuulabs/plugin-mimir';
 import {
   MessageRow,
@@ -75,118 +76,125 @@ type RealmTab = 'overview' | 'queue' | 'sessions' | 'memory' | 'settings';
 // Overview pieces (artboard E: four compact queues, a timeline, three small cards)
 // ---------------------------------------------------------------------------
 
-interface QueueRow {
-  key: string;
-  title: string;
-  meta: string;
-  href?: string;
-}
-
-function QueueColumn({
+/** A count you can act on: click to land on the tab that lists the things counted. */
+function CountTile({
   id,
   label,
   count,
-  rows,
-  empty,
-  onMore,
+  hint,
+  attention,
+  onOpen,
 }: {
   id: string;
   label: string;
   count: number;
-  rows: QueueRow[];
-  empty: string;
-  onMore: () => void;
+  hint: string;
+  attention?: boolean;
+  onOpen: () => void;
 }) {
-  const shown = rows.slice(0, 3);
   return (
-    <div className="niuu:flex niuu:min-w-0 niuu:flex-col niuu:gap-1.5" data-testid={`queue-${id}`}>
-      <div className="niuu:flex niuu:items-center niuu:justify-between">
-        <span className="niuu:text-[10px] niuu:font-medium niuu:uppercase niuu:tracking-wider niuu:text-text-muted">
-          {label}
-        </span>
-        <span
-          className={`niuu:font-mono niuu:text-xs ${count > 0 ? 'niuu:text-text-secondary' : 'niuu:text-text-faint'}`}
-        >
-          {count}
-        </span>
-      </div>
-      {shown.length === 0 ? (
-        <span className="niuu:rounded-md niuu:border niuu:border-dashed niuu:border-border-subtle niuu:px-2.5 niuu:py-2 niuu:text-xs niuu:text-text-faint">
-          {empty}
-        </span>
-      ) : (
-        shown.map((row) => (
-          <div
-            key={row.key}
-            className="niuu:flex niuu:flex-col niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-2.5 niuu:py-1.5"
-          >
-            {row.href ? (
-              <a
-                href={row.href}
-                target="_blank"
-                rel="noreferrer"
-                className="niuu:truncate niuu:text-xs niuu:text-text-primary"
-              >
-                {row.title}
-              </a>
-            ) : (
-              <span className="niuu:truncate niuu:text-xs niuu:text-text-primary">{row.title}</span>
-            )}
-            <span className="niuu:truncate niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
-              {row.meta}
-            </span>
-          </div>
-        ))
-      )}
-      {rows.length > shown.length ? (
-        <button type="button" className={`${LINK} niuu:self-start`} onClick={onMore}>
-          and {rows.length - shown.length} more
-        </button>
-      ) : null}
-    </div>
+    <button
+      type="button"
+      className="niuu:flex niuu:min-w-0 niuu:flex-col niuu:gap-0.5 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-3 niuu:text-left niuu:hover:border-brand/50"
+      data-testid={`queue-${id}`}
+      onClick={onOpen}
+    >
+      <span className="niuu:text-[10px] niuu:font-medium niuu:uppercase niuu:tracking-wider niuu:text-text-muted">
+        {label}
+      </span>
+      <span
+        className={`niuu:font-mono niuu:text-2xl niuu:font-semibold niuu:leading-tight ${attention && count > 0 ? 'niuu:text-status-amber' : 'niuu:text-text-primary'}`}
+      >
+        {count}
+      </span>
+      <span className="niuu:truncate niuu:text-[11px] niuu:text-text-faint">{hint}</span>
+    </button>
   );
 }
 
-function issueRows(issues: TrackerIssue[]): QueueRow[] {
-  return issues.map((issue) => ({
-    key: issue.identifier,
-    title: issue.title,
-    meta: `${issue.identifier} · P${issue.priority} · ${issue.status}`,
-    href: issue.url,
-  }));
-}
+/**
+ * Everything the resident is waiting on you for, above everything it did. It is the
+ * only part of the overview that asks something of you, so it sits at the top and
+ * disappears the moment it is empty.
+ */
+function NeedsYouStrip({ reviews }: { reviews: ReviewItem[] }) {
+  const decide = useDecideReview();
+  const [decided, setDecided] = useState<string[]>([]);
+  const pending = reviews.filter(
+    (item) => item.status === 'pending' && !decided.includes(item.itemId),
+  );
 
-function sessionRows(sessions: VolundrSession[]): QueueRow[] {
-  return sessions.map((session) => ({
-    key: session.id,
-    title: session.name,
-    meta: `${session.id.slice(0, 8)} · ${session.model} · ${session.status}`,
-  }));
+  function answer(item: ReviewItem, decision: 'approved' | 'rejected') {
+    setDecided((ids) => [...ids, item.itemId]);
+    decide.mutate(
+      { itemId: item.itemId, decision },
+      { onError: () => setDecided((ids) => ids.filter((id) => id !== item.itemId)) },
+    );
+  }
+
+  if (pending.length === 0) return null;
+  return (
+    <section
+      className="niuu:flex niuu:flex-col niuu:rounded-xl niuu:border niuu:border-status-amber/40 niuu:bg-status-amber/5 niuu:px-4 niuu:py-3"
+      data-testid="realm-needs-you"
+    >
+      <span className="niuu:pb-1 niuu:text-sm niuu:font-medium niuu:text-text-primary">
+        Needs you · {pending.length}
+      </span>
+      {pending.map((item) => (
+        <div
+          key={item.itemId}
+          className="niuu:flex niuu:items-center niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:py-2 niuu:last:border-b-0"
+          data-testid={`realm-review-${item.itemId}`}
+        >
+          <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col">
+            <span className="niuu:truncate niuu:text-xs niuu:text-text-primary">{item.title}</span>
+            <span className="niuu:truncate niuu:text-[11px] niuu:text-text-muted">
+              {item.summary}
+            </span>
+          </div>
+          <Chip tone="muted">{reviewKindLabel(item.kind)}</Chip>
+          <button
+            type="button"
+            className={PRIMARY}
+            disabled={decide.isPending}
+            onClick={() => answer(item, 'approved')}
+          >
+            Approve
+          </button>
+          <button
+            type="button"
+            className={BUTTON}
+            disabled={decide.isPending}
+            onClick={() => answer(item, 'rejected')}
+          >
+            Reject
+          </button>
+          <Link to={'/valkyrie/inbox' as never} className={LINK}>
+            Open
+          </Link>
+        </div>
+      ))}
+      {decide.error ? (
+        <span className="niuu:pt-2 niuu:text-xs niuu:text-critical-fg">{String(decide.error)}</span>
+      ) : null}
+    </section>
+  );
 }
 
 function TimelineRow({
   time,
   tone,
   text,
-  detail,
   tag,
-  actions,
-  testId,
 }: {
   time: string;
   tone: ActivityTone;
   text: string;
-  /** The resident's own words for an ask; shown under the title so you can decide here. */
-  detail?: string;
   tag: string;
-  actions?: ReactNode;
-  testId?: string;
 }) {
   return (
-    <div
-      className="niuu:flex niuu:items-start niuu:gap-2.5 niuu:border-b niuu:border-border-subtle niuu:py-2"
-      data-testid={testId}
-    >
+    <div className="niuu:flex niuu:items-start niuu:gap-2.5 niuu:border-b niuu:border-border-subtle niuu:py-2">
       <span className="niuu:w-10 niuu:shrink-0 niuu:pt-0.5 niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
         {time}
       </span>
@@ -195,30 +203,15 @@ function TimelineRow({
       </span>
       <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col">
         <span className="niuu:text-xs niuu:text-text-primary">{text}</span>
-        {detail ? (
-          <span className="niuu:text-[11px] niuu:text-text-secondary">{detail}</span>
-        ) : null}
-        <span className="niuu:text-[11px] niuu:text-text-muted">
-          {tag}
-          {detail ? (
-            <>
-              {' · '}
-              <Link to={'/valkyrie/inbox' as never} className={LINK}>
-                open in inbox
-              </Link>
-            </>
-          ) : null}
-        </span>
+        <span className="niuu:text-[11px] niuu:text-text-muted">{tag}</span>
       </div>
-      {actions}
     </div>
   );
 }
 
-function Timeline({ reviews, decisions }: { reviews: ReviewItem[]; decisions: DecisionRecord[] }) {
-  const decide = useDecideReview();
-  const pending = reviews.filter((item) => item.status === 'pending');
-  if (pending.length === 0 && decisions.length === 0) {
+/** What the resident did, latest first. What it is asking sits above, in the strip. */
+function Timeline({ decisions }: { decisions: DecisionRecord[] }) {
+  if (decisions.length === 0) {
     return (
       <span className="niuu:py-3 niuu:text-xs niuu:text-text-faint">
         Nothing yet. Decisions show here as the resident makes them.
@@ -227,37 +220,6 @@ function Timeline({ reviews, decisions }: { reviews: ReviewItem[]; decisions: De
   }
   return (
     <div className="niuu:flex niuu:flex-col">
-      {pending.map((item) => (
-        <TimelineRow
-          key={item.itemId}
-          time={item.requestedAt ? item.requestedAt.slice(11, 16) : '—'}
-          tone="warn"
-          text={item.title}
-          detail={item.summary}
-          tag={`asked you · ${reviewKindLabel(item.kind)}`}
-          testId={`realm-review-${item.itemId}`}
-          actions={
-            <span className="niuu:flex niuu:shrink-0 niuu:gap-1">
-              <button
-                type="button"
-                className={PRIMARY}
-                disabled={decide.isPending}
-                onClick={() => decide.mutate({ itemId: item.itemId, decision: 'approved' })}
-              >
-                Approve
-              </button>
-              <button
-                type="button"
-                className={BUTTON}
-                disabled={decide.isPending}
-                onClick={() => decide.mutate({ itemId: item.itemId, decision: 'rejected' })}
-              >
-                Reject
-              </button>
-            </span>
-          }
-        />
-      ))}
       {decisions.slice(0, 8).map((decision) => (
         <TimelineRow
           key={decision.decisionId}
@@ -267,9 +229,6 @@ function Timeline({ reviews, decisions }: { reviews: ReviewItem[]; decisions: De
           tag={`${decisionStatusCopy(decision).label}${decision.actionAuthority ? ` · ${decision.actionAuthority}` : ''}`}
         />
       ))}
-      {decide.error ? (
-        <span className="niuu:pt-2 niuu:text-xs niuu:text-critical-fg">{String(decide.error)}</span>
-      ) : null}
     </div>
   );
 }
@@ -444,6 +403,7 @@ export function RealmPage() {
   const ravn = ravnForRealm(ravens.data, slug);
   const walkthrough = useWalkthrough(FIRST_REALM_WALKTHROUGH);
   const ctx = usePluginCtx();
+  const mode = useUiMode();
   const [tab, setTab] = useState<RealmTab>('overview');
   const [launchOpen, setLaunchOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -488,15 +448,33 @@ export function RealmPage() {
     ]),
   );
   const pendingCount = data.realmReviews.filter((item) => item.status === 'pending').length;
-  const healthRows: QueueRow[] = data.environment
-    ? [
-        {
-          key: 'health',
-          title: `${data.environment.name}: ${health}`,
-          meta: `${unresolved} unresolved of ${data.environment.signalCount} signals`,
-        },
-      ]
-    : [];
+
+  // Simple mode has whole pages for these; Advanced keeps the dialogs it knows.
+  const startSession = () => {
+    if (mode === 'advanced') {
+      setLaunchOpen(true);
+      return;
+    }
+    void navigate({
+      to: '/volundr/sessions/new' as never,
+      search: {
+        repo: view.binding?.repo ?? '',
+        branch: view.binding?.branch ?? '',
+        persona: view.personaName,
+      } as never,
+    });
+  };
+
+  const runWorkflow = () => {
+    if (mode === 'advanced') {
+      setPickerOpen(true);
+      return;
+    }
+    void navigate({
+      to: '/ting/workflows' as never,
+      search: { repo: view.binding?.repo ?? '' } as never,
+    });
+  };
 
   const switchTab = (next: RealmTab) => {
     if (next === 'settings') {
@@ -542,7 +520,7 @@ export function RealmPage() {
             <button
               type="button"
               className={BUTTON}
-              onClick={() => setLaunchOpen(true)}
+              onClick={startSession}
               data-testid="realm-launch-session"
             >
               Session
@@ -550,8 +528,8 @@ export function RealmPage() {
             <button
               type="button"
               className={BUTTON}
-              onClick={() => setPickerOpen(true)}
-              disabled={!workflows.data}
+              onClick={runWorkflow}
+              disabled={mode === 'advanced' && !workflows.data}
               title="Run a workflow in this realm"
               data-testid="realm-run-workflow"
             >
@@ -585,38 +563,40 @@ export function RealmPage() {
 
         {tab === 'overview' ? (
           <>
+            <NeedsYouStrip reviews={data.realmReviews} />
             <div className="niuu:grid niuu:grid-cols-4 niuu:gap-3">
-              <QueueColumn
+              <CountTile
                 id="intake"
                 label="Intake"
                 count={data.intake.length}
-                rows={issueRows(data.intake)}
-                empty={view.binding?.trackerBoard ? 'Board is empty' : 'No board bound'}
-                onMore={() => switchTab('queue')}
+                hint={view.binding?.trackerBoard ? 'tickets on the board' : 'no board bound'}
+                onOpen={() => switchTab('queue')}
               />
-              <QueueColumn
+              <CountTile
                 id="sessions"
                 label="In sessions"
                 count={view.runningSessions}
-                rows={sessionRows(data.realmSessions)}
-                empty="No sessions yet"
-                onMore={() => switchTab('sessions')}
+                hint={`${data.realmSessions.length} in all`}
+                onOpen={() => switchTab('sessions')}
               />
-              <QueueColumn
+              <CountTile
                 id="findings"
                 label="QA findings"
                 count={data.findings.length}
-                rows={issueRows(data.findings)}
-                empty={view.binding?.bugBoard ? 'No findings' : 'No bug board bound'}
-                onMore={() => switchTab('queue')}
+                hint={view.binding?.bugBoard ? 'on the bug board' : 'no bug board bound'}
+                onOpen={() => switchTab('queue')}
               />
-              <QueueColumn
+              <CountTile
                 id="health"
-                label="Health"
+                label="Health signals"
                 count={unresolved}
-                rows={healthRows}
-                empty="No environment yet"
-                onMore={() => switchTab('queue')}
+                hint={
+                  data.environment
+                    ? `${health} · ${data.environment.signalCount} seen`
+                    : 'no environment yet'
+                }
+                attention
+                onOpen={() => switchTab('queue')}
               />
             </div>
 
@@ -634,7 +614,7 @@ export function RealmPage() {
                   </span>
                 </div>
                 <div className="niuu:min-h-0 niuu:overflow-auto">
-                  <Timeline reviews={data.realmReviews} decisions={data.decisions} />
+                  <Timeline decisions={data.decisions} />
                 </div>
               </div>
               <div className="niuu:flex niuu:min-h-0 niuu:flex-col niuu:gap-3">
@@ -752,7 +732,9 @@ export function RealmPage() {
                 {data.mountName ?? 'no mount'}
               </span>
               <span className="niuu:text-text-muted">
-                {data.mount ? `${data.mount.pages} pages · ${data.mount.status}` : 'not discovered yet'}
+                {data.mount
+                  ? `${data.mount.pages} pages · ${data.mount.status}`
+                  : 'not discovered yet'}
               </span>
               <button
                 type="button"

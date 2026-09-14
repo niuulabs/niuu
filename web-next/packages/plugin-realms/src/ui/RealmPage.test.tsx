@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { UI_MODE_STORAGE_KEY } from '@niuulabs/shell';
 import { createSeedRealms } from '@niuulabs/plugin-valkyrie';
 import { createCallLog, fakeRealmService } from '../testing/fakes';
 import { renderRealms } from '../testing/renderRealms';
@@ -33,17 +34,53 @@ describe('RealmPage', () => {
     localStorage.clear();
   });
 
-  it('shows the realm with its resident, queues, trust and budget', async () => {
+  it('shows the realm with its resident, counts, trust and budget', async () => {
+    const user = userEvent.setup();
     const log = createCallLog();
     renderRealms('/realms/valhalla', { 'valkyrie.realms': await realmWithBinding(log) }, log);
     await screen.findByTestId('realm-page');
     expect(screen.getByText('Valhalla')).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText(/LXA-1/)).toBeInTheDocument());
-    expect(screen.getByTestId('queue-intake')).toHaveTextContent('Intake1');
+    await waitFor(() => expect(screen.getByTestId('queue-intake')).toHaveTextContent('Intake1'));
     expect(screen.getByRole('group', { name: 'Realm section' })).toBeInTheDocument();
     expect(screen.getByText('observe · L2')).toBeInTheDocument();
     expect(screen.getByText('deploy · L1')).toBeInTheDocument();
     expect(screen.getByText(/board board-1/)).toBeInTheDocument();
+    // The counts are the overview; the tickets themselves live one click away.
+    expect(screen.queryByText(/LXA-1/)).not.toBeInTheDocument();
+    await user.click(screen.getByTestId('queue-intake'));
+    expect(await screen.findByText(/LXA-1/)).toBeInTheDocument();
+  });
+
+  it('sends you to the whole-page launch and workflow screens in Simple mode', async () => {
+    const user = userEvent.setup();
+    const log = createCallLog();
+    const { router } = renderRealms(
+      '/realms/valhalla',
+      { 'valkyrie.realms': await realmWithBinding(log) },
+      log,
+    );
+    await screen.findByTestId('realm-page');
+    await user.click(screen.getByTestId('realm-launch-session'));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/volundr/sessions/new'));
+    expect(router.state.location.search).toMatchObject({
+      repo: 'niuulabs/volundr',
+      branch: 'dev',
+      persona: 'realm-valhalla',
+    });
+  });
+
+  it('sends you to the workflows page with the realm repository in Simple mode', async () => {
+    const user = userEvent.setup();
+    const log = createCallLog();
+    const { router } = renderRealms(
+      '/realms/valhalla',
+      { 'valkyrie.realms': await realmWithBinding(log) },
+      log,
+    );
+    await screen.findByTestId('realm-page');
+    await user.click(screen.getByTestId('realm-run-workflow'));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/ting/workflows'));
+    expect(router.state.location.search).toMatchObject({ repo: 'niuulabs/volundr' });
   });
 
   it('explains when the realm does not exist', async () => {
@@ -51,8 +88,9 @@ describe('RealmPage', () => {
     await screen.findByText('No such realm');
   });
 
-  it('opens the launch wizard and the workflow modal from the header', async () => {
+  it('opens the launch wizard and the workflow modal from the header in Advanced mode', async () => {
     const user = userEvent.setup();
+    localStorage.setItem(UI_MODE_STORAGE_KEY, 'advanced');
     const log = createCallLog();
     renderRealms('/realms/valhalla', { 'valkyrie.realms': await realmWithBinding(log) }, log);
     await screen.findByTestId('realm-page');

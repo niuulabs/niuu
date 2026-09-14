@@ -1,7 +1,7 @@
 {
   "name": "@niuulabs/plugin-realms",
   "version": "0.0.1",
-  "description": "Realms plugin — environments kept by residents, set up from a template or a sentence",
+  "description": "Realms plugin \u2014 environments kept by residents, set up from a template or a sentence",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -27,6 +27,7 @@
     "dev": "tsup --watch"
   },
   "peerDependencies": {
+    "@niuulabs/shell": "workspace:*",
     "@tanstack/react-query": "^5.102.8",
     "@tanstack/react-router": "^1.170.33",
     "react": "^19.2.8"
@@ -40,6 +41,7 @@
     "@niuulabs/plugin-valkyrie": "workspace:*",
     "@niuulabs/plugin-volundr": "workspace:*",
     "@niuulabs/query": "workspace:*",
+    "@niuulabs/shell": "workspace:*",
     "@niuulabs/ui": "workspace:*",
     "lucide-react": "^1.43.0"
   },

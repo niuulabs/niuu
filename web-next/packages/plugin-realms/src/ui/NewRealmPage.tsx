@@ -529,12 +529,12 @@ function LaunchStep({
                       : key === 'trackerBoard'
                         ? 'board'
                         : key === 'bugBoard'
-                        ? 'bug board'
-                        : key === 'mountTarget'
-                          ? 'memory'
-                          : key === 'profileId'
-                            ? 'runs on'
-                            : key
+                          ? 'bug board'
+                          : key === 'mountTarget'
+                            ? 'memory'
+                            : key === 'profileId'
+                              ? 'runs on'
+                              : key
                   }
                   value={value || 'not set'}
                 />

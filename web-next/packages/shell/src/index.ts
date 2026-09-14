@@ -1,5 +1,6 @@
 export { Shell } from './Shell';
 export { composeRouter, type ComposeRouterOptions } from './composeRouter';
+export { ShellContext, useShellContext, type ShellContextValue } from './ShellContext';
 export { FooterChip, FooterChipSep, type FooterChipProps } from './FooterChip';
 export {
   DEFAULT_UI_MODE,
@@ -13,6 +14,7 @@ export {
   readUiMode,
   tabsForMode,
   uiModeFromPreferences,
+  useSetUiMode,
   useUiMode,
   type PluginFace,
   type UiMode,

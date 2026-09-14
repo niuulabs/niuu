@@ -5,7 +5,8 @@ describe('decisionLine', () => {
   it('drops the resident and environment prefix and capitalises the verb phrase', () => {
     expect(
       decisionLine({
-        summary: 'Valkyrie valkyrie-valhalla-k8s in valhalla recommends: continue monitoring (present)',
+        summary:
+          'Valkyrie valkyrie-valhalla-k8s in valhalla recommends: continue monitoring (present)',
         recommendedAction: '',
       }),
     ).toBe('Continue monitoring (present)');

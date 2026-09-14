@@ -12,6 +12,9 @@ export default defineConfig({
   use: {
     baseURL: 'http://localhost:5173',
     trace: 'on-first-retry',
+    // The suite describes the Advanced UI; Simple mode (the default for a fresh
+    // browser) has its own spec that opts in per test.
+    storageState: './e2e/advanced-mode.storage.json',
   },
   expect: {
     toHaveScreenshot: {

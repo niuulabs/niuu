@@ -75,8 +75,16 @@ describe('uiMode', () => {
       subtitle: 'forge',
       simple: { title: 'Sessions', icon: 'icon', landing: false },
     };
-    expect(pluginFace(plugin, 'advanced')).toEqual({ title: 'Völundr', subtitle: 'forge', glyph: 'V' });
-    expect(pluginFace(plugin, 'simple')).toEqual({ title: 'Sessions', subtitle: 'forge', glyph: 'icon' });
+    expect(pluginFace(plugin, 'advanced')).toEqual({
+      title: 'Völundr',
+      subtitle: 'forge',
+      glyph: 'V',
+    });
+    expect(pluginFace(plugin, 'simple')).toEqual({
+      title: 'Sessions',
+      subtitle: 'forge',
+      glyph: 'icon',
+    });
     expect(pluginFace({ ...plugin, simple: undefined }, 'simple').glyph).toBe('V');
     const home = { id: 'home', simple: { landing: true } };
     expect(landingPluginId([plugin, home], 'simple')).toBe('home');

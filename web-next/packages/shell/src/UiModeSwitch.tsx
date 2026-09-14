@@ -5,13 +5,7 @@ import {
   type PluginDescriptor,
 } from '@niuulabs/plugin-sdk';
 import { SegmentedFilter } from '@niuulabs/ui';
-import {
-  cacheUiMode,
-  preferencesForMode,
-  uiModeFromPreferences,
-  useUiMode,
-  type UiMode,
-} from './uiMode';
+import { cacheUiMode, uiModeFromPreferences, useSetUiMode, useUiMode, type UiMode } from './uiMode';
 
 const OPTIONS: Array<{ value: UiMode; label: string }> = [
   { value: 'simple', label: 'Simple' },
@@ -26,6 +20,7 @@ const OPTIONS: Array<{ value: UiMode; label: string }> = [
  */
 export function UiModeSwitch({ plugins }: { plugins: PluginDescriptor[] }) {
   const features = useOptionalService<IFeatureCatalogService>('features');
+  const setUiMode = useSetUiMode();
   const mode = useUiMode();
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -57,8 +52,7 @@ export function UiModeSwitch({ plugins }: { plugins: PluginDescriptor[] }) {
     setSaving(true);
     setError(null);
     try {
-      if (features) await features.updateUserFeaturePreferences(preferencesForMode(next, plugins));
-      cacheUiMode(next);
+      await setUiMode(next, plugins);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { UI_MODE_STORAGE_KEY } from '@niuulabs/shell';
 import { createSeedRealms } from '@niuulabs/plugin-valkyrie';
 import {
   createCallLog,
@@ -84,9 +85,9 @@ describe('RealmPage with a running resident', () => {
     const log = createCallLog();
     const { router } = renderRealms('/realms/valhalla', await populated(log), log);
     await screen.findByTestId('realm-page');
-    await waitFor(() => expect(screen.getByText('fix flaky test')).toBeInTheDocument());
-    expect(screen.queryByText('other')).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.getByTestId('queue-findings')).toHaveTextContent('LXA-1'));
+    await waitFor(() =>
+      expect(screen.getByTestId('queue-findings')).toHaveTextContent('QA findings1'),
+    );
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'New conversation' })).toBeInTheDocument(),
     );
@@ -94,8 +95,11 @@ describe('RealmPage with a running resident', () => {
     await screen.findByText(/not used in tests/);
     await user.click(screen.getByRole('button', { name: /^Queue/ }));
     expect(await screen.findByText(/QA findings · 1/)).toBeInTheDocument();
+    expect(screen.getAllByText(/LXA-1/).length).toBeGreaterThan(0);
     await user.click(screen.getByRole('button', { name: /^Sessions/ }));
     expect(await screen.findByText(/Resident logs/)).toBeInTheDocument();
+    expect(screen.getByText('fix flaky test')).toBeInTheDocument();
+    expect(screen.queryByText('other')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Memory' }));
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Open realm memory' })).toBeEnabled(),
@@ -125,6 +129,7 @@ describe('RealmPage with a running resident', () => {
 
   it('picks a workflow before launching it into the realm', async () => {
     const user = userEvent.setup();
+    localStorage.setItem(UI_MODE_STORAGE_KEY, 'advanced');
     const log = createCallLog();
     renderRealms('/realms/valhalla', await populated(log), log);
     await screen.findByTestId('realm-page');

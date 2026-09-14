@@ -145,6 +145,8 @@ export {
 export { SessionsPage } from './ui/SessionsPage';
 export { SimpleSessionsPage } from './ui/SimpleSessionsPage';
 export { SimpleLaunchPage } from './ui/SimpleLaunchPage';
+export { useSessionList, useSessionDetail } from './ui/hooks/useSessionStore';
+export { sessionActivityTs, compareSessionsByActivity } from './ui/sessions/sessionLabels';
 export {
   useQuickLaunch,
   quickLaunchName,

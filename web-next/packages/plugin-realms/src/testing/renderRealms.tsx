@@ -11,7 +11,13 @@ import {
   type RouterHistory,
 } from '@tanstack/react-router';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
-import { PluginCtxProvider, ServicesProvider } from '@niuulabs/plugin-sdk';
+import {
+  PluginCtxProvider,
+  ServicesProvider,
+  createMockIdentityService,
+  type PluginDescriptor,
+} from '@niuulabs/plugin-sdk';
+import { ShellContext, type ShellContextValue } from '@niuulabs/shell';
 import { createMockBudgetStream, createMockSessionStream } from '@niuulabs/plugin-ravn';
 import { createMockWorkflowService } from '@niuulabs/plugin-ting';
 import {
@@ -20,7 +26,8 @@ import {
   createSeedRealms,
 } from '@niuulabs/plugin-valkyrie';
 import { useState } from 'react';
-import { realmsPlugin } from '../index';
+import { createMockSessionStore } from '@niuulabs/plugin-volundr';
+import { homePlugin, realmsPlugin } from '../index';
 import {
   createCallLog,
   fakeMimir,
@@ -54,9 +61,14 @@ export function defaultServices(log: CallLog, overrides: Record<string, unknown>
     },
     mimir: fakeMimir(log),
     bifrost: createMockBifrostService(),
+    sessionStore: createMockSessionStore(),
+    identity: createMockIdentityService(),
     ...overrides,
   };
 }
+
+/** The shell context the home page reads the enabled plugin list from. */
+const SHELL_PLUGINS: PluginDescriptor[] = [homePlugin, realmsPlugin];
 
 function CtxProvider({ children }: { children: React.ReactNode }) {
   const [tweaks, setTweaks] = useState<Record<string, unknown>>({});
@@ -83,29 +95,45 @@ export function renderRealms(
   log: CallLog = createCallLog(),
 ): RenderRealmsResult {
   const rootRoute = createRootRoute({ component: () => <Outlet /> });
+  // Stand-ins for the pages other plugins own, so the links on these pages resolve.
   const extra = [
+    '/mimir/pages',
+    '/ravn/ravens',
+    '/valkyrie/inbox',
+    '/volundr/forge',
+    '/volundr/sessions/new',
+    '/volundr/sessions/$sessionId',
+    '/ting/workflows',
+  ].map((routePath) =>
     createRoute({
       getParentRoute: () => rootRoute,
-      path: '/mimir/pages',
-      component: () => <div data-testid="mimir-pages" />,
+      path: routePath,
+      component: () => <div data-testid={`route-${routePath.replace(/[^a-z]+/gi, '-')}`} />,
     }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/ravn/ravens',
-      component: () => <div data-testid="ravn-ravens" />,
-    }),
-  ];
-  const routeTree = rootRoute.addChildren([...realmsPlugin.routes!(rootRoute), ...extra]);
+  );
+  const routeTree = rootRoute.addChildren([
+    ...realmsPlugin.routes!(rootRoute),
+    ...homePlugin.routes!(rootRoute),
+    ...extra,
+  ]);
   const history = createMemoryHistory({ initialEntries: [path] });
   const router = createRouter({ routeTree, history });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const all = defaultServices(log, services);
+  const shell: ShellContextValue = {
+    enabled: SHELL_PLUGINS,
+    brand: null,
+    version: '0.0.0',
+    ctx: { tweaks: {}, setTweak: () => {} },
+  };
   const utils = render(
     <QueryClientProvider client={client}>
       <ServicesProvider services={all}>
-        <CtxProvider>
-          <RouterProvider router={router} />
-        </CtxProvider>
+        <ShellContext.Provider value={shell}>
+          <CtxProvider>
+            <RouterProvider router={router} />
+          </CtxProvider>
+        </ShellContext.Provider>
       </ServicesProvider>
     </QueryClientProvider>,
   );

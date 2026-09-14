@@ -5,33 +5,13 @@ import { SectionCard } from '@niuulabs/plugin-volundr';
 import { Chip, EmptyState, ErrorState, LoadingState, Modal } from '@niuulabs/ui';
 import { orderCards, useRealmsHome, type RealmHomeCard } from '../application/useRealmsHome';
 import { FIRST_REALM_WALKTHROUGH, useWalkthrough } from '../application/useWalkthrough';
+import { countWords } from '../domain/homeCopy';
 import { REALM_TEMPLATES } from '../domain/templates';
 import { TemplateIcon } from './icons';
 import { RealmCard } from './RealmCard';
 import { SentenceComposer } from './SentenceComposer';
-import { StarterHome } from './StarterHome';
 
 export type RealmsHomeView = 'all' | 'needs-you' | 'templates';
-
-/** Newcomers land on the starter; once they ask for the realms view it sticks. */
-const HOME_VIEW_KEY = 'niuu.compactUx.home';
-type HomeView = 'starter' | 'realms';
-
-function readHomeView(): HomeView {
-  try {
-    return localStorage.getItem(HOME_VIEW_KEY) === 'realms' ? 'realms' : 'starter';
-  } catch {
-    return 'starter';
-  }
-}
-
-function writeHomeView(value: HomeView): void {
-  try {
-    localStorage.setItem(HOME_VIEW_KEY, value);
-  } catch {
-    // localStorage unavailable; the choice lasts for this page only
-  }
-}
 
 const BUTTON =
   'niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:font-medium niuu:text-text-primary';
@@ -39,11 +19,6 @@ const PRIMARY =
   'niuu:rounded-md niuu:border niuu:border-brand/50 niuu:bg-brand/10 niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:font-medium niuu:text-brand-300';
 const LINK = 'niuu:text-[11px] niuu:text-brand-300';
 const FIRST_ROW = 3;
-const WORDS = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten'];
-
-function countWords(count: number): string {
-  return WORDS[count] ?? String(count);
-}
 
 function NeedsYouRow({ item, card }: { item: ReviewItem; card: RealmHomeCard | null }) {
   const decide = useDecideReview();
@@ -170,12 +145,6 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
   const walkthrough = useWalkthrough(FIRST_REALM_WALKTHROUGH);
   const [cloneOpen, setCloneOpen] = useState(false);
   const [showAll, setShowAll] = useState(false);
-  const [homeView, setHomeView] = useState<HomeView>(readHomeView);
-  const chooseHomeView = (next: HomeView) => {
-    writeHomeView(next);
-    setHomeView(next);
-  };
-  const starter = view === 'all' && homeView === 'starter' && !home.error && !home.isLoading;
 
   const ordered = orderCards(home.cards);
   const shown = showAll ? ordered : ordered.slice(0, FIRST_ROW);
@@ -187,54 +156,37 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
       className="niuu:flex niuu:h-full niuu:flex-col niuu:gap-5 niuu:overflow-auto niuu:px-10 niuu:py-7"
       data-testid="realms-home"
     >
-      {starter ? (
-        <StarterHome
-          realmCount={home.cards.length}
-          onClone={() => setCloneOpen(true)}
-          onSeeRealms={() => chooseHomeView('realms')}
-        />
-      ) : null}
-      {starter ? null : (
-        <header className="niuu:flex niuu:items-end niuu:justify-between niuu:gap-6">
-          <div className="niuu:flex niuu:max-w-3xl niuu:flex-col niuu:gap-1.5">
-            <span className="niuu:font-mono niuu:text-[11px] niuu:uppercase niuu:tracking-[0.3em] niuu:text-brand-300">
-              realms
-            </span>
-            <h1 className="niuu:m-0 niuu:text-2xl niuu:font-bold niuu:tracking-tight niuu:text-text-primary">
-              {home.error
-                ? 'Realms'
-                : home.cards.length === 0
-                  ? 'No realms yet. Start with one sentence.'
-                  : `${countWords(home.cards.length)} realm${home.cards.length === 1 ? '' : 's'}, each kept by a resident.`}
-            </h1>
-            <p className="niuu:m-0 niuu:text-[15px] niuu:text-text-secondary">
-              A realm is an environment a resident keeps: it reads your tracker, works the tickets
-              in sessions, checks quality, watches health and keeps learning. You review what it
-              asks you to.
-            </p>
-          </div>
-          <div className="niuu:flex niuu:gap-2">
-            <button
-              type="button"
-              className={BUTTON}
-              onClick={() => chooseHomeView('starter')}
-              data-testid="home-start-here"
-            >
-              Start here
-            </button>
-            <button type="button" className={BUTTON} onClick={() => setCloneOpen(true)}>
-              Clone a realm
-            </button>
-            <Link to="/realms/new" className={BUTTON}>
-              Set one up step by step
-            </Link>
-          </div>
-        </header>
-      )}
+      <header className="niuu:flex niuu:items-end niuu:justify-between niuu:gap-6">
+        <div className="niuu:flex niuu:max-w-3xl niuu:flex-col niuu:gap-1.5">
+          <span className="niuu:font-mono niuu:text-[11px] niuu:uppercase niuu:tracking-[0.3em] niuu:text-brand-300">
+            realms
+          </span>
+          <h1 className="niuu:m-0 niuu:text-2xl niuu:font-bold niuu:tracking-tight niuu:text-text-primary">
+            {home.error
+              ? 'Realms'
+              : home.cards.length === 0
+                ? 'No realms yet. Start with one sentence.'
+                : `${countWords(home.cards.length)} realm${home.cards.length === 1 ? '' : 's'}, each kept by a resident.`}
+          </h1>
+          <p className="niuu:m-0 niuu:text-[15px] niuu:text-text-secondary">
+            A realm is an environment a resident keeps: it reads your tracker, works the tickets in
+            sessions, checks quality, watches health and keeps learning. You review what it asks you
+            to.
+          </p>
+        </div>
+        <div className="niuu:flex niuu:gap-2">
+          <button type="button" className={BUTTON} onClick={() => setCloneOpen(true)}>
+            Clone a realm
+          </button>
+          <Link to="/realms/new" className={BUTTON}>
+            Set one up step by step
+          </Link>
+        </div>
+      </header>
 
-      {starter ? null : <SentenceComposer />}
+      <SentenceComposer />
 
-      {starter ? null : home.error ? (
+      {home.error ? (
         <ErrorState title="Could not load realms" message={String(home.error)} />
       ) : home.isLoading ? (
         <LoadingState label="Loading realms…" />

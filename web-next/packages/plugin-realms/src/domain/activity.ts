@@ -4,7 +4,9 @@ import { ACTION_CLASSES, type ActionClass } from './realm';
 /** Decision summaries arrive as "Valkyrie <name> in <env> recommends: …"; keep the verb phrase. */
 const DECISION_PREFIX = /^valkyrie\s+\S+\s+in\s+\S+\s+(?:recommends:\s*|judged\s+)/i;
 
-export function decisionLine(decision: Pick<DecisionRecord, 'summary' | 'recommendedAction'>): string {
+export function decisionLine(
+  decision: Pick<DecisionRecord, 'summary' | 'recommendedAction'>,
+): string {
   const raw = (decision.summary || decision.recommendedAction || '').trim();
   const stripped = raw.replace(DECISION_PREFIX, '').trim();
   if (!stripped) return raw;
@@ -14,10 +16,14 @@ export function decisionLine(decision: Pick<DecisionRecord, 'summary' | 'recomme
 /** Dot colour for a timeline row, by what happened to the decision. */
 export type ActivityTone = 'brand' | 'ok' | 'warn' | 'muted';
 
-export function decisionTone(decision: Pick<DecisionRecord, 'outcome' | 'actionAuthority'>): ActivityTone {
+export function decisionTone(
+  decision: Pick<DecisionRecord, 'outcome' | 'actionAuthority'>,
+): ActivityTone {
   const outcome = decision.outcome.toLowerCase();
-  if (outcome.includes('fail') || outcome.includes('reject') || outcome.includes('error')) return 'warn';
-  if (outcome.includes('pending') || outcome.includes('review') || outcome.includes('ask')) return 'warn';
+  if (outcome.includes('fail') || outcome.includes('reject') || outcome.includes('error'))
+    return 'warn';
+  if (outcome.includes('pending') || outcome.includes('review') || outcome.includes('ask'))
+    return 'warn';
   if (outcome.includes('observ') || outcome.includes('none') || outcome === '') return 'muted';
   return decision.actionAuthority === 'autonomous' ? 'ok' : 'brand';
 }

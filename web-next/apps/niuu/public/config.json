@@ -3,14 +3,15 @@
   "theme": "ice",
   "plugins": {
     "login": { "enabled": true, "order": 0 },
-    "realms": { "enabled": true, "order": 1 },
-    "volundr": { "enabled": true, "order": 2 },
-    "ting": { "enabled": true, "order": 3 },
-    "mimir": { "enabled": true, "order": 4 },
-    "ravn": { "enabled": true, "order": 5 },
-    "valkyrie": { "enabled": true, "order": 6 },
-    "observatory": { "enabled": true, "order": 7 },
-    "settings": { "enabled": true, "order": 8 }
+    "home": { "enabled": true, "order": 1 },
+    "realms": { "enabled": true, "order": 2 },
+    "volundr": { "enabled": true, "order": 3 },
+    "ting": { "enabled": true, "order": 4 },
+    "mimir": { "enabled": true, "order": 5 },
+    "ravn": { "enabled": true, "order": 6 },
+    "valkyrie": { "enabled": true, "order": 7 },
+    "observatory": { "enabled": true, "order": 8 },
+    "settings": { "enabled": true, "order": 9 }
   },
   "services": {
     "identity": { "mode": "mock" },

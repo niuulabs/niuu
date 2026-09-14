@@ -89,8 +89,7 @@ export function useRealmsHome() {
       resident,
       ravn,
       environment:
-        dashboard.data?.environments.find((entry) => entry.id === resident?.environmentId) ??
-        null,
+        dashboard.data?.environments.find((entry) => entry.id === resident?.environmentId) ?? null,
       binding: bindingFromGrants(grants[index]?.data),
       pendingReviews: pending,
       runningSessions: activeSessionCount(realmSessions),

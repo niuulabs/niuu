@@ -1,5 +1,11 @@
-import { useSyncExternalStore, type ReactNode } from 'react';
-import type { UserFeaturePreference } from '@niuulabs/plugin-sdk';
+import { useContext, useSyncExternalStore, type ReactNode } from 'react';
+import {
+  useOptionalService,
+  type IFeatureCatalogService,
+  type PluginDescriptor,
+  type UserFeaturePreference,
+} from '@niuulabs/plugin-sdk';
+import { ShellContext } from './ShellContext';
 
 /**
  * Simple / Advanced mode.
@@ -78,6 +84,31 @@ export function preferencesForMode(
     sortOrder: plugins.length,
   });
   return rows;
+}
+
+/**
+ * Switches Simple / Advanced mode: the server preference first, then the local cache,
+ * so the next reload cannot disagree with what the server holds. It raises when the
+ * preference cannot be stored, so the caller can leave its control where it was.
+ *
+ * `plugins` defaults to the shell's own nav plugins; pass it explicitly when calling
+ * from outside a `<Shell>` (the topbar switch does, it already has the list).
+ * A host that wires no `features` service keeps the mode in the browser only — that
+ * is the host's decision, not a downgrade taken here.
+ */
+export function useSetUiMode(): (mode: UiMode, plugins?: PluginDescriptor[]) => Promise<void> {
+  const features = useOptionalService<IFeatureCatalogService>('features');
+  const shell = useContext(ShellContext);
+  return async (mode, plugins) => {
+    const list = plugins ?? shell?.enabled.filter((plugin) => !plugin.system);
+    if (!list) {
+      throw new Error(
+        'useSetUiMode needs the plugin list: call it inside <Shell>, or pass plugins.',
+      );
+    }
+    if (features) await features.updateUserFeaturePreferences(preferencesForMode(mode, list));
+    cacheUiMode(mode);
+  };
 }
 
 export function isVisibleInMode(
