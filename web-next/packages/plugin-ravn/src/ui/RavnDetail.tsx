@@ -26,6 +26,16 @@ import {
   useResidentSessions,
 } from './hooks/useResidentControl';
 import { ravnStatusToDotState } from './grouping';
+import {
+  canCreateResidentSession,
+  canDeleteResidentSession,
+  canListResidentSessions,
+  canRestartResident,
+  canResumeResident,
+  canSuspendResident,
+  nameForRavn,
+} from '../domain/residentActions';
+import { dispatchSessionSelection } from './sessionSelection';
 import { ResidentModelSelect } from './ResidentModelSelect';
 import { ResidentLogsView } from './ResidentLogsView';
 import { loadStorage, saveStorage } from './storage';
@@ -86,10 +96,6 @@ function detailSubtitle(ravn: Ravn): string {
     .join(' · ');
 }
 
-function nameForRavn(ravn: Ravn): string {
-  return ravn.residentName || ravn.personaName || ravn.id.slice(0, 8);
-}
-
 function buildSpecialisations(ravn: Ravn): string {
   const values = [
     ravn.role ? normalizeLabel(ravn.role) : null,
@@ -103,28 +109,6 @@ function buildSpecialisations(ravn: Ravn): string {
 function spendPercent(budget?: BudgetState): number {
   if (!budget || budget.capUsd <= 0) return 0;
   return Math.round((budget.spentUsd / budget.capUsd) * 100);
-}
-
-function sessionKey(session: Pick<Session, 'id' | 'ravnId' | 'instanceId'>): string {
-  return session.instanceId
-    ? `${encodeURIComponent(session.instanceId)}:${encodeURIComponent(session.ravnId)}:${session.id}`
-    : session.id;
-}
-
-function dispatchSessionSelection(session: Session) {
-  saveStorage('ravn.session', sessionKey(session));
-  window.dispatchEvent(
-    new CustomEvent('ravn:session-selected', {
-      detail: { sessionId: session.id, ravnId: session.ravnId, instanceId: session.instanceId },
-    }),
-  );
-  const params = new URLSearchParams(window.location.search);
-  params.set('session', session.id);
-  params.set('ravn_id', session.ravnId);
-  if (session.instanceId) params.set('instance_id', session.instanceId);
-  else params.delete('instance_id');
-  window.history.pushState(null, '', `/ravn/sessions?${params.toString()}`);
-  window.dispatchEvent(new Event('popstate'));
 }
 
 interface KeyValueRowProps {
@@ -503,16 +487,9 @@ function SessionsSection({ ravn, sessions }: SessionsSectionProps) {
   const [title, setTitle] = useState('');
   const [model, setModel] = useState(ravn.model);
   const [pendingDelete, setPendingDelete] = useState<Session | null>(null);
-  const residentActive = ravn.observedState === 'active';
-  const canList = Boolean(
-    ravn.managed && residentActive && ravn.capabilities?.includes('session.list'),
-  );
-  const canCreate = Boolean(
-    ravn.managed && residentActive && ravn.capabilities?.includes('session.create'),
-  );
-  const canDelete = Boolean(
-    ravn.managed && residentActive && ravn.capabilities?.includes('session.delete'),
-  );
+  const canList = canListResidentSessions(ravn);
+  const canCreate = canCreateResidentSession(ravn);
+  const canDelete = canDeleteResidentSession(ravn);
   const residentSessions = useResidentSessions(ravn, canList);
   const profiles = useResidentProfiles(canCreate);
   const createSession = useCreateResidentSession(ravn);
@@ -901,16 +878,9 @@ export function RavnDetail({ ravn, onClose, onDeleted }: RavnDetailProps) {
   const resolvedTab: TabId = tabs.some((tab) => tab.id === activeTab) ? activeTab : 'overview';
 
   const subtitle = detailSubtitle(ravn);
-  const canRestart = Boolean(
-    ravn.managed &&
-    ravn.capabilities?.includes('runtime.restart') &&
-    ravn.desiredState === 'running' &&
-    ['active', 'failed'].includes(ravn.observedState ?? ''),
-  );
-  const hasSuspend = Boolean(ravn.managed && ravn.capabilities?.includes('runtime.suspend'));
-  const isSuspended = ravn.observedState === 'suspended' || ravn.desiredState === 'suspended';
-  const canSuspend = hasSuspend && ravn.observedState === 'active' && !isSuspended;
-  const canResume = hasSuspend && isSuspended;
+  const canRestart = canRestartResident(ravn);
+  const canSuspend = canSuspendResident(ravn);
+  const canResume = canResumeResident(ravn);
 
   async function removeResident() {
     try {

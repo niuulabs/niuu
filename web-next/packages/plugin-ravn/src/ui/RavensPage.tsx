@@ -14,6 +14,7 @@ import { useRavens } from './hooks/useRavens';
 import { useRavnBudgets } from './hooks/useBudget';
 import { useSessions } from './hooks/useSessions';
 import { groupRavens, ravnStatusToDotState, type GroupKey } from './grouping';
+import { nameForRavn, ravnKey } from '../domain/residentActions';
 import { RavnDetail } from './RavnDetail';
 import { ResidentDeployDialog } from './ResidentDeployDialog';
 import { ResidentFlockDeployDialog } from './ResidentFlockDeployDialog';
@@ -68,14 +69,6 @@ function formatBudgetText(budget?: BudgetState): string {
 function subtitleForRavn(ravn: Ravn): string {
   if (ravn.kind === 'resident' && ravn.personaName) return normalizeLabel(ravn.personaName);
   return ROLE_LABELS[ravn.role ?? 'build'];
-}
-
-function nameForRavn(ravn: Ravn): string {
-  return ravn.residentName || ravn.personaName || ravn.id.slice(0, 8);
-}
-
-function ravnKey(ravn: Pick<Ravn, 'id' | 'instanceId'>): string {
-  return ravn.instanceId ? `${encodeURIComponent(ravn.instanceId)}:${ravn.id}` : ravn.id;
 }
 
 function matchesQuery(ravn: Ravn, query: string): boolean {
