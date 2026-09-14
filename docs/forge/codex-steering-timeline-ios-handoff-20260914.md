@@ -165,3 +165,11 @@ rows, preserving every original assistant part payload (29/29) and each human
 identity/content. It is not deployed output or a database backfill. The original
 canonical user dates precede raw log observations by fractions of a millisecond;
 the new broker removes that difference for newly recorded inputs.
+
+## Follow-up from the fresh timeline-v3 gateway
+
+[Live deduplication and filesystem archive follow-up](codex-live-dedup-followup-20260914.md)
+adds real fresh-gateway evidence, precise frozen-tool/result and mutable-cache
+boundary findings, an explicit native-owner escalation, and a shared synthetic
+fixture. It also corrects the prior overly broad archive parity claim: the
+filesystem archive normalization path was omitted despite reducer/cache parity.
