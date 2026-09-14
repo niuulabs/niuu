@@ -227,3 +227,55 @@ def test_empty_or_chrome_only_log_returns_no_turns():
 def test_empty_input_returns_empty():
     res = rebuild_turns([])
     assert res.turns == []
+
+
+def test_untimed_saved_user_delivery_labels_are_not_retroactively_changed():
+    # Spark canary regression: global ACK replay added pending to a legacy row
+    # with {} metadata and changed another saved pending label to active.
+    initial = {"id": "initial", "role": "user", "content": "start", "metadata": {}}
+    steer = {
+        "id": "steer",
+        "role": "user",
+        "content": "continue",
+        "metadata": {"request_id": "request", "steering_state": "pending"},
+    }
+    answer = {"id": "answer", "role": "assistant", "content": "done", "parts": []}
+    rows = [
+        _conv_turn(1, initial),
+        _entry(2, "user_confirmed", {"id": "initial", "content": "start"}),
+        _conv_turn(3, steer),
+        _entry(4, "user_active", {"id": "steer", "request_id": "request"}),
+        _conv_turn(5, answer),
+    ]
+    assert rebuild_turns(rows).turns == [initial, steer, answer]
+
+
+def test_timed_saved_user_delivery_labels_reconcile_without_mutating_seed():
+    import copy
+
+    from niuu.domain.conversation_timeline import TIMELINE_KEY, observation
+
+    stamp = observation(1, "2026-09-14T07:30:00+00:00")
+    steer = {
+        "id": "steer",
+        "role": "user",
+        "content": "continue",
+        "parts": [],
+        "metadata": {"steering_state": "pending", TIMELINE_KEY: stamp},
+    }
+    saved = copy.deepcopy(steer)
+    answer = {"id": "answer", "role": "assistant", "content": "done", "parts": []}
+    accepted = "2026-09-14T07:30:01+00:00"
+    rows = [
+        _conv_turn(1, steer),
+        _entry(2, "user_active", {"id": "steer", "accepted_at": accepted}),
+        _conv_turn(3, answer),
+    ]
+    result = rebuild_turns(rows)
+    assert result.turns[0]["metadata"] == {
+        "steering_state": "active",
+        TIMELINE_KEY: stamp,
+        "steering_accepted_at": accepted,
+    }
+    assert steer == saved
+    assert result.turns[1] == answer

@@ -813,6 +813,9 @@ def reduce_frames(
     # span stays closed until a new human turn or assistant activity opens it.
     # Initial/raw-only history still admits the last-resort pane fallback.
     terminal_span_closed = False
+    # Preserve legacy raw-tail delivery folding. Only explicitly timed user seeds
+    # opt into the additional cross-seed lifecycle reconciliation below.
+    steering: dict[str, tuple[int, str]] = {}
 
     def flush(status: str | None = None, md: dict | None = None) -> None:
         scrape_text = None
@@ -849,6 +852,7 @@ def reduce_frames(
         ts = _ts_of(r)
 
         if k in _STEERING_FRAME_KINDS:
+            _record_steering(steering, k, p, seq)
             # user_confirmed also seeds/dedups the user turn (handled below); user_active /
             # user_delivery_failed carry no content, so they are pure state transitions.
             if k != "user_confirmed":
@@ -933,6 +937,7 @@ def reduce_frames(
     if not acc.is_empty() or acc.pending_tmux_rows is not None:
         flush(status="interrupted")
 
+    _apply_steering_states(turns, steering)
     turns = apply_steering_frames(turns, rows)
 
     partial = any(
@@ -949,8 +954,10 @@ def reduce_frames(
 def apply_steering_frames(turns: list[dict], frames: list[Frame]) -> list[dict]:
     """Apply logged delivery outcomes even when saved assistant seeds cover the raw tail.
 
-    Content seeds do not supersede later lifecycle ACKs for earlier user rows.
-    Copy user metadata so a read never mutates an authoritative stored payload.
+    Content seeds do not supersede lifecycle ACKs for timed same-turn input.
+    Untimed authoritative history retains its prior projection exactly: this is
+    not a retrospective repair of legacy delivery labels. Copy timed user metadata
+    so a read never mutates an authoritative stored payload.
     """
     result = [
         {
@@ -966,10 +973,14 @@ def apply_steering_frames(turns: list[dict], frames: list[Frame]) -> list[dict]:
         for turn in turns
     ]
     states: dict[str, tuple[int, str]] = {}
-    users = {turn.get("id"): turn for turn in result if turn.get("role") == "user"}
+    users = {
+        turn.get("id"): turn
+        for turn in result
+        if turn.get("role") == "user" and timeline(turn.get("metadata")) is not None
+    }
     for row in sorted(frames, key=lambda frame: frame.seq):
         payload = row.payload
-        if not isinstance(payload, dict):
+        if not isinstance(payload, dict) or steering_target_id(row.kind, payload) not in users:
             continue
         _record_steering(states, row.kind, payload, row.seq)
         accepted = payload.get("accepted_at")

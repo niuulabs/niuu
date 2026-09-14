@@ -36,7 +36,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from niuu.domain.conversation_timeline import project_timeline
+from niuu.domain.conversation_timeline import project_timeline, timeline
 from niuu.domain.text_projection import apply_repair_markers, repair_legacy_turns
 from niuu.domain.transcript_reducer import apply_steering_frames, reduce_frames
 
@@ -118,15 +118,18 @@ def rebuild_turns(entries: list[SessionLogEntry]) -> RebuildResult:
         and r.payload["turn"].get("role") == "assistant"
         for r in sdk_turn_rows
     )
-    # A later user seed inside an open turn does NOT cover the assistant prefix
-    # before it. Only a completed assistant seed advances the content cutoff.
+    # A timed user seed inside an open turn does NOT cover the assistant prefix
+    # before it. Untimed legacy seeds retain the historical cutoff unchanged.
     last_sdk_seq = max(
         (
             r.seq
             for r in sdk_turn_rows
-            if isinstance(r.payload, dict)
-            and isinstance(r.payload.get("turn"), dict)
-            and r.payload["turn"].get("role") == "assistant"
+            if not (
+                isinstance(r.payload, dict)
+                and isinstance(r.payload.get("turn"), dict)
+                and r.payload["turn"].get("role") == "user"
+                and timeline(r.payload["turn"].get("metadata")) is not None
+            )
         ),
         default=0,
     )
