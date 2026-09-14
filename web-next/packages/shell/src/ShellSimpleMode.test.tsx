@@ -81,6 +81,9 @@ describe('Shell in simple mode', () => {
     expect(screen.queryByTestId('volundr-tab-catalog')).not.toBeInTheDocument();
     expect(screen.getByTestId('ui-mode-switch')).toHaveAttribute('data-mode', 'simple');
     expect(screen.getByRole('button', { name: 'Sessions' })).toBeInTheDocument();
+    // The rail item stays keyed on the plugin id even when the mode renames it,
+    // so hosts outside the monorepo can find it without knowing the mode.
+    expect(screen.getByTestId('rail-item-volundr')).toHaveAttribute('aria-label', 'Sessions');
     expect(screen.getByRole('heading', { level: 1, name: 'Sessions' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Home' })).toBeInTheDocument();
   });

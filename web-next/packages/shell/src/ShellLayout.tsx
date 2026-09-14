@@ -138,6 +138,7 @@ export function ShellLayout() {
                 )}
                 title={`${face(p).title} · ${face(p).subtitle}`}
                 aria-label={face(p).title}
+                data-testid={`rail-item-${p.id}`}
                 onClick={() => handleSelect(p.id)}
               >
                 {face(p).glyph}
@@ -160,6 +161,7 @@ export function ShellLayout() {
                 )}
                 title={`${face(p).title} · ${face(p).subtitle}`}
                 aria-label={face(p).title}
+                data-testid={`rail-item-${p.id}`}
                 onClick={() => handleSelect(p.id)}
               >
                 {face(p).glyph}

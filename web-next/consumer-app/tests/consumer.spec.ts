@@ -20,9 +20,10 @@ test('consumer app loads and shell renders', async ({ page }) => {
 
 test('plugin-ting nav item is visible after config loads', async ({ page }) => {
   await page.goto('/');
-  // Wait for the Ting plugin rune / nav label to appear in the rail
-  // The shell renders the plugin title from tingPlugin.title = 'Ting'
-  await expect(page.getByText('Ting').first()).toBeVisible({ timeout: 10_000 });
+  // Wait for the Ting plugin's rail item to appear. The rail is keyed on the
+  // plugin id, not on its label: the shell renames plugins per UI mode
+  // (Simple mode calls Ting "Workflows"), so the id is the stable hook.
+  await expect(page.getByTestId('rail-item-ting')).toBeVisible({ timeout: 10_000 });
 });
 
 test('navigating to /ting renders the Ting page', async ({ page }) => {
@@ -30,8 +31,8 @@ test('navigating to /ting renders the Ting page', async ({ page }) => {
   // The TingPage renders inside the Shell; the route resolves
   // and something from the Ting UI is visible
   await expect(page.locator('#root')).not.toBeEmpty();
-  // Wait for the Ting nav item to confirm the shell is mounted
-  await expect(page.getByText('Ting').first()).toBeVisible({ timeout: 10_000 });
+  // Wait for the Ting rail item to confirm the shell is mounted
+  await expect(page.getByTestId('rail-item-ting')).toBeVisible({ timeout: 10_000 });
 });
 
 test('plugin CSS is applied — shell has background colour', async ({ page }) => {
