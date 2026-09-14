@@ -274,6 +274,16 @@ describe('createMockRealmGovernanceService', () => {
     expect(workflows).toEqual(createSeedToolWorkflows());
   });
 
+  it('deletes a realm and forgets its grants', async () => {
+    const service = createMockRealmGovernanceService();
+
+    await service.deleteRealm('valhalla');
+
+    expect((await service.listRealms()).some((realm) => realm.slug === 'valhalla')).toBe(false);
+    await expect(service.getRealm('valhalla')).rejects.toThrow();
+    await expect(service.deleteRealm('valhalla')).rejects.toThrow();
+  });
+
   it('creates a trust grant that later listings include', async () => {
     const service = createMockRealmGovernanceService();
 

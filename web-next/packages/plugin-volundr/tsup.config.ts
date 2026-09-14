@@ -13,6 +13,7 @@ export default defineConfig({
     '@tanstack/react-router',
     '@niuulabs/plugin-sdk',
     '@niuulabs/query',
+    '@niuulabs/shell',
     '@niuulabs/ui',
     '@xterm/xterm',
     '@xterm/addon-fit',

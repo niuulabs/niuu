@@ -61,7 +61,16 @@ export interface LaunchWizardProps {
   initialForm?: Partial<WizardForm>;
 }
 
-export function StepIndicator({ current, steps }: { current: WizardStep; steps: WizardStep[] }) {
+export function StepIndicator({
+  current,
+  steps,
+  labels = STEP_LABELS,
+}: {
+  current: string;
+  steps: readonly string[];
+  /** Label per step id. Defaults to the launch wizard's own steps. */
+  labels?: Record<string, string>;
+}) {
   const idx = steps.indexOf(current);
   return (
     <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:py-4" data-testid="step-indicator">
@@ -84,7 +93,7 @@ export function StepIndicator({ current, steps }: { current: WizardStep; steps: 
               i === idx ? 'niuu:text-text-primary' : 'niuu:text-text-faint'
             }`}
           >
-            {STEP_LABELS[step]}
+            {labels[step] ?? step}
           </span>
           {i < steps.length - 1 && (
             <div
@@ -102,16 +111,22 @@ export function StepIndicator({ current, steps }: { current: WizardStep; steps: 
 export function SectionCard({
   title,
   description,
+  icon,
   children,
 }: {
   title: string;
   description?: string;
+  /** Optional picture rendered before the title. */
+  icon?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <section className="niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4">
       <div className="niuu:mb-4 niuu:border-b niuu:border-border-subtle niuu:pb-3">
-        <h3 className="niuu:text-sm niuu:font-medium niuu:text-text-primary">{title}</h3>
+        <h3 className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:font-medium niuu:text-text-primary">
+          {icon ? <span className="niuu:text-brand">{icon}</span> : null}
+          {title}
+        </h3>
         {description ? (
           <p className="niuu:mt-1 niuu:text-xs niuu:text-text-faint">{description}</p>
         ) : null}

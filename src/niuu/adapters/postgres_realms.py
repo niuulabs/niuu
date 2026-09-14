@@ -95,6 +95,10 @@ class PostgresRealmRepository(RealmRepository):
     # Trust grants
     # ------------------------------------------------------------------
 
+    async def delete_realm(self, realm_id: UUID) -> None:
+        """Delete a realm; trust grants and capabilities cascade in the schema."""
+        await self._pool.execute("DELETE FROM realms WHERE id = $1", realm_id)
+
     async def list_trust_grants(self, realm_id: UUID) -> list[TrustGrant]:
         """List all trust grants for a realm."""
         rows = await self._pool.fetch(

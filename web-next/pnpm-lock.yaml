@@ -39,6 +39,9 @@ importers:
       '@niuulabs/plugin-ravn':
         specifier: workspace:*
         version: link:packages/plugin-ravn
+      '@niuulabs/plugin-realms':
+        specifier: workspace:*
+        version: link:packages/plugin-realms
       '@niuulabs/plugin-setup':
         specifier: workspace:*
         version: link:packages/plugin-setup
@@ -193,6 +196,9 @@ importers:
       '@niuulabs/plugin-ravn':
         specifier: workspace:*
         version: link:../../packages/plugin-ravn
+      '@niuulabs/plugin-realms':
+        specifier: workspace:*
+        version: link:../../packages/plugin-realms
       '@niuulabs/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
@@ -442,6 +448,9 @@ importers:
       '@niuulabs/query':
         specifier: workspace:*
         version: link:../query
+      '@niuulabs/shell':
+        specifier: workspace:*
+        version: link:../shell
       '@niuulabs/ui':
         specifier: workspace:*
         version: link:../ui
@@ -626,6 +635,88 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
+  packages/plugin-realms:
+    dependencies:
+      '@niuulabs/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@niuulabs/plugin-mimir':
+        specifier: workspace:*
+        version: link:../plugin-mimir
+      '@niuulabs/plugin-ravn':
+        specifier: workspace:*
+        version: link:../plugin-ravn
+      '@niuulabs/plugin-sdk':
+        specifier: workspace:*
+        version: link:../plugin-sdk
+      '@niuulabs/plugin-ting':
+        specifier: workspace:*
+        version: link:../plugin-ting
+      '@niuulabs/plugin-valkyrie':
+        specifier: workspace:*
+        version: link:../plugin-valkyrie
+      '@niuulabs/plugin-volundr':
+        specifier: workspace:*
+        version: link:../plugin-volundr
+      '@niuulabs/query':
+        specifier: workspace:*
+        version: link:../query
+      '@niuulabs/shell':
+        specifier: workspace:*
+        version: link:../shell
+      '@niuulabs/ui':
+        specifier: workspace:*
+        version: link:../ui
+      lucide-react:
+        specifier: ^1.43.0
+        version: 1.43.0(react@19.2.8)
+    devDependencies:
+      '@niuulabs/design-tokens':
+        specifier: workspace:*
+        version: link:../design-tokens
+      '@niuulabs/plugin-bifrost':
+        specifier: workspace:*
+        version: link:../plugin-bifrost
+      '@tanstack/react-query':
+        specifier: ^5.102.8
+        version: 5.102.8(react@19.2.8)
+      '@tanstack/react-router':
+        specifier: ^1.170.33
+        version: 1.170.33(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@testing-library/react':
+        specifier: ^16.3.3
+        version: 16.3.3(@testing-library/dom@10.4.1)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@testing-library/user-event':
+        specifier: ^14.6.7
+        version: 14.6.7(@testing-library/dom@10.4.1)
+      '@types/react':
+        specifier: ^19.2.18
+        version: 19.2.18
+      autoprefixer:
+        specifier: ^10.5.5
+        version: 10.5.5(postcss@8.5.28)
+      postcss:
+        specifier: ^8.5.28
+        version: 8.5.28
+      postcss-import:
+        specifier: ^17.0.0
+        version: 17.0.0(postcss@8.5.28)
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
+      tailwindcss:
+        specifier: ^4.3.3
+        version: 4.3.3
+      tsup:
+        specifier: ^8.3.5
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.28)(typescript@6.0.3)(yaml@2.8.3)
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^5.0.0
+        version: 5.0.0(@types/node@26.5.0)(@vitest/coverage-istanbul@5.0.0)(@vitest/coverage-v8@5.0.0)(jsdom@30.0.1)(vite@8.2.2(@types/node@26.5.0)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.8.3))
+
   packages/plugin-sdk:
     dependencies:
       zod:
@@ -806,6 +897,9 @@ importers:
       '@niuulabs/query':
         specifier: workspace:*
         version: link:../query
+      '@niuulabs/shell':
+        specifier: workspace:*
+        version: link:../shell
       '@niuulabs/ui':
         specifier: workspace:*
         version: link:../ui

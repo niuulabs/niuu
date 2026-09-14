@@ -220,6 +220,17 @@
   gap: var(--space-4);
   font-size: var(--text-xs);
 }
+.niuu-shell__mode {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.niuu-shell__mode-error {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-critical-fg);
+}
+
 .niuu-shell__topbar-sep {
   width: 1px;
   height: 20px;

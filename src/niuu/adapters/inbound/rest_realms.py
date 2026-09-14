@@ -12,7 +12,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from niuu.domain.models import Capability, Realm, TrustGrant
@@ -225,6 +225,18 @@ def create_realms_router(
         """Get a realm by slug."""
         realm = await _require_realm(request, slug)
         return RealmResponse.from_domain(realm)
+
+    @router.delete("/{slug}", status_code=status.HTTP_204_NO_CONTENT)
+    async def delete_realm(request: Request, slug: str) -> Response:
+        """Delete a realm with its trust grants and capabilities.
+
+        The realm's resident is a Ravn fleet object and is removed through
+        ``DELETE /api/v1/ravn/ravens/{id}``; callers tear the resident down
+        first so nothing keeps acting for a realm that no longer exists.
+        """
+        realm = await _require_realm(request, slug)
+        await _service(request).delete_realm(realm.id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @router.get("/{slug}/trust-grants", response_model=list[TrustGrantResponse])
     async def list_trust_grants(request: Request, slug: str) -> list[TrustGrantResponse]:

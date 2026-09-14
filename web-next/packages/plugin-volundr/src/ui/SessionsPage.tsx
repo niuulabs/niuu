@@ -1,520 +1,33 @@
-import { useEffect, useMemo, useState, useRef } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
-import {
-  LoadingState,
-  ErrorState,
-  EmptyState,
-  StateDot,
-  relTime,
-  cn,
-  Dialog,
-  DialogContent,
-} from '@niuulabs/ui';
-import type { DotState } from '@niuulabs/ui';
-import {
-  Archive,
-  Check,
-  ChevronRight,
-  Search,
-  Square,
-  Download,
-  SquareTerminal,
-  Ticket,
-  Trash2,
-} from 'lucide-react';
+import { LoadingState, ErrorState, EmptyState, cn, Dialog, DialogContent } from '@niuulabs/ui';
+import { Search, Download, Trash2 } from 'lucide-react';
 import { ImportExternalSessionsDialog } from './ImportExternalSessionsDialog';
 import { QuickLaunch } from './QuickLaunch';
 import { useSessionList } from './hooks/useSessionStore';
 import { groupByState } from './sessions/groupByState';
+import { PodGroup } from './sessions/PodGroup';
+import { useSessionListWidth } from './sessions/useSessionListWidth';
+import {
+  POD_GROUPS,
+  STOPPABLE_STATES,
+  filterSessionsByQuery,
+  groupByForge,
+  groupByRepo,
+  type SessionSection,
+} from './sessions/sessionLabels';
 import { LiveSessionDetailPage } from './LiveSessionDetailPage';
 import { useShowDebugMeta, setShowDebugMeta } from './uxPrefs';
-import type { Session, SessionState } from '../domain/session';
 import type { IVolundrService } from '../ports/IVolundrService';
 import './session-card.css';
 
-// ---------------------------------------------------------------------------
-// Pod group definitions — maps display labels to session states
-// ---------------------------------------------------------------------------
-
-interface PodGroupDef {
-  label: string;
-  states: SessionState[];
-}
-
 type SidebarMode = 'state' | 'repo' | 'forge';
-
-interface SessionSection {
-  label: string;
-  sessions: Session[];
-}
-
-const POD_GROUPS: PodGroupDef[] = [
-  { label: 'NEEDS YOU', states: ['awaiting_input'] },
-  { label: 'ACTIVE', states: ['running'] },
-  { label: 'IDLE', states: ['idle'] },
-  { label: 'BOOTING', states: ['provisioning', 'requested'] },
-  { label: 'ERROR', states: ['failed'] },
-  { label: 'STOPPED', states: ['terminated'] },
-  { label: 'ARCHIVED', states: ['archived'] },
-];
-
-// ---------------------------------------------------------------------------
-// Session state → dot state mapping
-// ---------------------------------------------------------------------------
-
-const SESSION_DOT: Record<SessionState, DotState> = {
-  running: 'running',
-  idle: 'idle',
-  awaiting_input: 'attention',
-  provisioning: 'processing',
-  requested: 'queued',
-  ready: 'healthy',
-  terminating: 'degraded',
-  terminated: 'archived',
-  archived: 'archived',
-  failed: 'failed',
-};
-
-export function looksLikeRepoLabel(value: string): boolean {
-  return (
-    value.includes('#') ||
-    value.startsWith('~/') ||
-    value.startsWith('/') ||
-    value.startsWith('http')
-  );
-}
-
-export function compactSourceParts(value: string): { label: string; branch?: string } {
-  if (value.includes('#')) {
-    const [repo, branch] = value.split('#');
-    return { label: shortenRepoLabel(repo ?? value), branch: branch || undefined };
-  }
-  return { label: shortenRepoLabel(value) };
-}
-
-/** Collapse a leading "/home/<user>/" (incl. literal "/home/thor/") to "~/". */
-function homeToTilde(value: string): string {
-  return value.replace(/^\/(?:home|Users)\/[^/]+\//, '~/');
-}
-
-export function shortenRepoLabel(value: string): string {
-  if (value.startsWith('~/') || value.startsWith('/')) return homeToTilde(value);
-  const trimmed = value.replace(/\/+$/, '');
-  const slug = trimmed.split('/').pop() ?? trimmed;
-  return slug.replace(/\.git$/, '') || value;
-}
-
-export function toGroupTestId(label: string): string {
-  return label
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
-export function sessionActivityTs(session: Session): number {
-  return new Date(session.lastActivityAt ?? session.startedAt).getTime();
-}
-
-const EXTERNAL_ORIGINS = new Set(['claude', 'codex']);
-
-/** External origins ('claude' / 'codex') get a badge; volundr-native rows do not. */
-export function sessionOriginBadge(session: Pick<Session, 'origin'>): string | null {
-  if (!session.origin) return null;
-  if (!EXTERNAL_ORIGINS.has(session.origin)) return null;
-  return session.origin;
-}
-
-export function compareSessionsByActivity(a: Session, b: Session): number {
-  return sessionActivityTs(b) - sessionActivityTs(a);
-}
-
-export function repoGroupLabel(session: Session): string {
-  if (session.preview && looksLikeRepoLabel(session.preview)) {
-    return compactSourceParts(session.preview).label;
-  }
-  if (session.personaName.startsWith('~/') || session.personaName.startsWith('/')) {
-    return homeToTilde(session.personaName);
-  }
-  return 'other';
-}
-
-export function groupByRepo(sessions: Session[]): SessionSection[] {
-  const grouped = new Map<string, Session[]>();
-
-  for (const session of sessions) {
-    const label = repoGroupLabel(session);
-    const bucket = grouped.get(label);
-    if (bucket) {
-      bucket.push(session);
-    } else {
-      grouped.set(label, [session]);
-    }
-  }
-
-  return [...grouped.entries()]
-    .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
-    .map(([label, groupedSessions]) => ({
-      label,
-      sessions: [...groupedSessions].sort(compareSessionsByActivity),
-    }));
-}
-
-export function forgeGroupLabel(session: Session): string {
-  return session.clusterName ?? session.clusterId ?? 'unknown forge';
-}
-
-export function groupByForge(sessions: Session[]): SessionSection[] {
-  const grouped = new Map<string, Session[]>();
-
-  for (const session of sessions) {
-    const label = forgeGroupLabel(session);
-    const bucket = grouped.get(label);
-    if (bucket) {
-      bucket.push(session);
-    } else {
-      grouped.set(label, [session]);
-    }
-  }
-
-  return [...grouped.entries()]
-    .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
-    .map(([label, groupedSessions]) => ({
-      label,
-      sessions: [...groupedSessions].sort(compareSessionsByActivity),
-    }));
-}
-
-// ---------------------------------------------------------------------------
-// PodEntry — a single session row in the sidebar
-// ---------------------------------------------------------------------------
-
-/** States from which a session can still be stopped. */
-const STOPPABLE_STATES: SessionState[] = [
-  'running',
-  'awaiting_input',
-  'idle',
-  'provisioning',
-  'requested',
-  'ready',
-  'terminating',
-];
-
-function PodEntry({
-  session,
-  selected,
-  onSelect,
-  onStop,
-  onArchive,
-  busy = false,
-  collapsed = false,
-  selectable = false,
-  checked = false,
-  onToggleSelection,
-  index = 0,
-}: {
-  session: Session;
-  selected: boolean;
-  onSelect: () => void;
-  /** Stop the session in place (hover action). */
-  onStop?: (id: string) => void;
-  /** Stop (if running) then archive the session (hover action). */
-  onArchive?: (id: string) => void;
-  /** True while this row has an action in flight — disables its buttons. */
-  busy?: boolean;
-  collapsed?: boolean;
-  selectable?: boolean;
-  checked?: boolean;
-  onToggleSelection?: () => void;
-  /** Row position within its group — drives the zebra striping. */
-  index?: number;
-}) {
-  const canStop = STOPPABLE_STATES.includes(session.state) || session.state === 'awaiting_input';
-  const canArchive = session.state !== 'archived';
-  const lastActiveMs = new Date(session.lastActivityAt ?? session.startedAt).getTime();
-  const ageLabel = relTime(lastActiveMs);
-  const isActivelyWorking = session.state === 'running' || session.state === 'awaiting_input';
-  const primaryLabel = session.name || session.personaName || '(unnamed)';
-  // saga/run/ravn id and forge/cluster id are platform plumbing. ravnId in
-  // particular falls back to the owner id ("dev-user") when there is no real
-  // tracker, so it renders as a meaningless "ticket". Hide both unless the
-  // operator opts into debug metadata. See uxPrefs.getShowDebugMeta.
-  const showDebugMeta = useShowDebugMeta();
-  const trackerLabel = showDebugMeta
-    ? (session.sagaId ?? session.runId ?? session.ravnId)
-    : undefined;
-  const previewLabel = session.preview;
-  const sourceParts =
-    previewLabel && looksLikeRepoLabel(previewLabel) ? compactSourceParts(previewLabel) : null;
-  const showPreviewFallback = previewLabel && !sourceParts;
-  const originBadge = sessionOriginBadge(session);
-  const forgeLabel = showDebugMeta ? (session.clusterName ?? session.clusterId) : undefined;
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(e) => {
-        if (e.target !== e.currentTarget) return;
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onSelect();
-        }
-      }}
-      data-testid={`pod-entry-${session.id}`}
-      aria-pressed={selected}
-      data-zebra={index % 2 === 1 || undefined}
-      className={cn(
-        'lx-pod-entry niuu:flex niuu:w-full niuu:items-start niuu:gap-2 niuu:border-b niuu:border-l-2 niuu:px-3 niuu:py-1.5 niuu:text-left niuu:transition-colors',
-        selected
-          ? 'lx-pod-entry--selected niuu:border-brand niuu:border-b-white/10'
-          : 'niuu:border-transparent niuu:border-b-white/6',
-      )}
-    >
-      {selectable && !collapsed ? (
-        <span
-          role="checkbox"
-          tabIndex={0}
-          aria-checked={checked}
-          onClick={(event) => {
-            event.stopPropagation();
-            onToggleSelection?.();
-          }}
-          onKeyDown={(event) => {
-            if (event.key !== 'Enter' && event.key !== ' ') return;
-            event.preventDefault();
-            event.stopPropagation();
-            onToggleSelection?.();
-          }}
-          aria-label={`${checked ? 'Deselect' : 'Select'} stopped session ${session.id}`}
-          data-testid={`stopped-session-checkbox-${session.id}`}
-          className={cn(
-            'niuu:mt-0.5 niuu:flex niuu:h-4 niuu:w-4 niuu:flex-shrink-0 niuu:items-center niuu:justify-center niuu:rounded-sm niuu:border niuu:transition-colors',
-            checked
-              ? 'niuu:border-brand niuu:bg-brand niuu:text-bg-primary'
-              : 'niuu:border-border-subtle niuu:bg-bg-elevated niuu:text-transparent niuu:hover:border-brand/60',
-          )}
-        >
-          <Check className="niuu:h-3 niuu:w-3" />
-        </span>
-      ) : null}
-      <StateDot state={SESSION_DOT[session.state]} pulse={isActivelyWorking} />
-      {collapsed ? null : (
-        <>
-          <div className="niuu:flex-1 niuu:min-w-0 niuu:flex niuu:flex-col niuu:gap-0.5">
-            <div className="niuu:flex niuu:min-w-0 niuu:items-baseline niuu:gap-2">
-              <span className="niuu:flex-1 niuu:min-w-0 niuu:font-mono niuu:text-[13px] niuu:font-medium niuu:text-text-primary niuu:truncate">
-                {primaryLabel}
-              </span>
-              <span className="lx-pod-age niuu:flex-shrink-0 niuu:font-mono niuu:text-[10px] niuu:text-text-secondary">
-                {ageLabel}
-              </span>
-            </div>
-            <div className="niuu:flex niuu:min-w-0 niuu:flex-wrap niuu:items-center niuu:gap-x-2 niuu:gap-y-0.5 niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
-              {trackerLabel ? (
-                <span
-                  className="niuu:flex niuu:min-w-0 niuu:items-center niuu:gap-1.5"
-                  title={trackerLabel}
-                >
-                  <Ticket className="niuu:h-3 niuu:w-3 niuu:flex-shrink-0 niuu:text-text-faint" />
-                  <span className="niuu:truncate niuu:text-brand">{trackerLabel}</span>
-                </span>
-              ) : null}
-              {forgeLabel ? (
-                <span
-                  className="niuu:inline-flex niuu:min-w-0 niuu:items-center niuu:rounded-full niuu:border niuu:border-brand/20 niuu:bg-brand/10 niuu:px-2 niuu:py-0.5"
-                  title={forgeLabel}
-                >
-                  <span className="niuu:truncate niuu:text-brand">{forgeLabel}</span>
-                </span>
-              ) : null}
-              {originBadge ? (
-                <span
-                  className="niuu:inline-flex niuu:flex-shrink-0 niuu:items-center niuu:rounded-full niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-2 niuu:py-0.5"
-                  title={`Imported from ${originBadge}`}
-                  data-testid={`session-origin-badge-${session.id}`}
-                >
-                  <span className="niuu:text-[9px] niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-secondary">
-                    {originBadge}
-                  </span>
-                </span>
-              ) : null}
-              {sourceParts ? (
-                <span
-                  className="niuu:flex niuu:min-w-0 niuu:items-center niuu:gap-1.5 niuu:text-text-secondary"
-                  title={previewLabel}
-                >
-                  <span className="niuu:truncate">{sourceParts.label}</span>
-                  {sourceParts.branch ? (
-                    <span className="niuu:flex-shrink-0 niuu:text-brand">
-                      @{sourceParts.branch}
-                    </span>
-                  ) : null}
-                </span>
-              ) : null}
-              {showPreviewFallback ? (
-                <span
-                  className="niuu:flex niuu:min-w-0 niuu:items-center niuu:gap-1.5"
-                  title={previewLabel}
-                >
-                  <SquareTerminal className="niuu:h-3 niuu:w-3 niuu:flex-shrink-0 niuu:text-text-faint" />
-                  <span className="niuu:truncate">{previewLabel}</span>
-                </span>
-              ) : null}
-            </div>
-          </div>
-          {(canStop && onStop) || (canArchive && onArchive) ? (
-            <div className="lx-pod-actions" onClick={(e) => e.stopPropagation()}>
-              {canStop && onStop ? (
-                <button
-                  type="button"
-                  className="lx-pod-action-btn lx-pod-action-btn--stop"
-                  title="Stop session"
-                  aria-label={`Stop session ${primaryLabel}`}
-                  data-testid={`pod-entry-${session.id}-stop`}
-                  disabled={busy}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onStop(session.id);
-                  }}
-                >
-                  <Square size={11} fill="currentColor" />
-                </button>
-              ) : null}
-              {canArchive && onArchive ? (
-                <button
-                  type="button"
-                  className="lx-pod-action-btn lx-pod-action-btn--archive"
-                  title="Stop & archive session"
-                  aria-label={`Stop and archive session ${primaryLabel}`}
-                  data-testid={`pod-entry-${session.id}-archive`}
-                  disabled={busy}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onArchive(session.id);
-                  }}
-                >
-                  <Archive size={11} />
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-        </>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// PodGroup — a state section with label + session entries
-// ---------------------------------------------------------------------------
-
-function PodGroup({
-  label,
-  sessions,
-  selectedId,
-  onSelect,
-  onStop,
-  onArchive,
-  busyId,
-  collapsed = false,
-  selectableSessionIds,
-  selectedSessionIds,
-  onToggleSelection,
-  folded = false,
-  onToggleFold,
-}: {
-  label: string;
-  sessions: Session[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-  onStop?: (id: string) => void;
-  onArchive?: (id: string) => void;
-  /** Id of the session whose row action is currently in flight. */
-  busyId?: string | null;
-  collapsed?: boolean;
-  selectableSessionIds?: ReadonlySet<string>;
-  selectedSessionIds?: ReadonlySet<string>;
-  onToggleSelection?: (id: string) => void;
-  /** Whether the group's session rows are folded away (header still shown). */
-  folded?: boolean;
-  /** Toggles the folded state. When absent, the header is not interactive. */
-  onToggleFold?: () => void;
-}) {
-  if (sessions.length === 0) return null;
-
-  return (
-    <div data-testid={`pod-group-${toGroupTestId(label)}`}>
-      {!collapsed && (
-        <button
-          type="button"
-          onClick={onToggleFold}
-          disabled={!onToggleFold}
-          aria-expanded={!folded}
-          data-testid={`pod-group-${toGroupTestId(label)}-header`}
-          className={cn(
-            'niuu:flex niuu:w-full niuu:items-center niuu:gap-1.5 niuu:border-b niuu:border-white/6 niuu:px-2.5 niuu:py-2 niuu:text-left niuu:text-[10px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.18em] niuu:text-text-muted niuu:transition-colors',
-            onToggleFold && 'niuu:hover:text-text-primary',
-          )}
-        >
-          <ChevronRight
-            className="vol-session-group-chevron niuu:h-3 niuu:w-3 niuu:flex-shrink-0 niuu:text-text-faint niuu:transition-transform"
-            data-folded={folded}
-            aria-hidden="true"
-          />
-          <span className="niuu:flex-1 niuu:truncate">{label}</span>
-          <span
-            className="niuu:font-mono niuu:text-text-faint"
-            data-testid={`pod-group-${toGroupTestId(label)}-count`}
-          >
-            {sessions.length}
-          </span>
-        </button>
-      )}
-      {!folded &&
-        sessions.map((s, i) => (
-          <PodEntry
-            key={s.id}
-            session={s}
-            selected={s.id === selectedId}
-            onSelect={() => onSelect(s.id)}
-            onStop={onStop}
-            onArchive={onArchive}
-            busy={busyId === s.id}
-            collapsed={collapsed}
-            index={i}
-            selectable={selectableSessionIds?.has(s.id) ?? false}
-            checked={selectedSessionIds?.has(s.id) ?? false}
-            onToggleSelection={
-              onToggleSelection && selectableSessionIds?.has(s.id)
-                ? () => onToggleSelection(s.id)
-                : undefined
-            }
-          />
-        ))}
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // SessionsPage — master-detail layout
 // ---------------------------------------------------------------------------
-
-// Compact UX: configurable (drag-resizable) left session column, persisted.
-const LEFT_WIDTH_KEY = 'niuu.compactUx.sessions.leftWidth';
-const LEFT_MIN_PX = 200;
-const LEFT_MAX_PX = 560;
-const LEFT_DEFAULT_PX = 300;
-function readLeftWidth(): number {
-  if (typeof window === 'undefined') return LEFT_DEFAULT_PX;
-  try {
-    const v = Number(window.localStorage.getItem(LEFT_WIDTH_KEY));
-    return Number.isFinite(v) && v >= LEFT_MIN_PX && v <= LEFT_MAX_PX ? v : LEFT_DEFAULT_PX;
-  } catch {
-    return LEFT_DEFAULT_PX;
-  }
-}
 
 // Compact UX: foldable groups + hide-archived, persisted in localStorage.
 const FOLDED_GROUPS_KEY = 'niuu.compactUx.sessions.foldedGroups';
@@ -563,17 +76,9 @@ export function SessionsPage() {
   const [importOpen, setImportOpen] = useState(false);
   // Mini (local, no-k8s) deployments get the simple Quick Launch; cluster mode
   // keeps the full LaunchWizard.
-  const [sidebarWidth, setSidebarWidth] = useState<number>(readLeftWidth);
-  const [resizing, setResizing] = useState(false);
+  const { width: sidebarWidth, resizing, separatorProps } = useSessionListWidth(sidebarCollapsed);
   const [foldedGroups, setFoldedGroups] = useState<Record<string, boolean>>(readFoldedGroups);
   const [hideArchived, setHideArchived] = useState<boolean>(readHideArchived);
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(LEFT_WIDTH_KEY, String(sidebarWidth));
-    } catch {
-      /* localStorage unavailable — non-fatal */
-    }
-  }, [sidebarWidth]);
   useEffect(() => {
     try {
       window.localStorage.setItem(FOLDED_GROUPS_KEY, JSON.stringify(foldedGroups));
@@ -591,7 +96,6 @@ export function SessionsPage() {
   const toggleGroupFold = (label: string) => {
     setFoldedGroups((prev) => ({ ...prev, [label]: !prev[label] }));
   };
-  const resizeOrigin = useRef<{ x: number; width: number } | null>(null);
   const volundr = useService<IVolundrService>('volundr');
   const queryClient = useQueryClient();
 
@@ -613,19 +117,10 @@ export function SessionsPage() {
   );
 
   // Filter by search query
-  const filteredSessions = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return allSessions;
-    return allSessions.filter(
-      (s) =>
-        s.id.toLowerCase().includes(q) ||
-        s.name?.toLowerCase().includes(q) ||
-        s.personaName.toLowerCase().includes(q) ||
-        s.preview?.toLowerCase().includes(q) ||
-        s.clusterName?.toLowerCase().includes(q) ||
-        s.clusterId?.toLowerCase().includes(q),
-    );
-  }, [allSessions, searchQuery]);
+  const filteredSessions = useMemo(
+    () => filterSessionsByQuery(allSessions, searchQuery),
+    [allSessions, searchQuery],
+  );
   const filteredStoppedSessions = useMemo(
     () => filteredSessions.filter((session) => session.state === 'terminated'),
     [filteredSessions],
@@ -1062,50 +557,7 @@ export function SessionsPage() {
         </nav>
 
         {/* ── Resizable divider: drag to set the left column width ── */}
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize session list"
-          tabIndex={sidebarCollapsed ? -1 : 0}
-          aria-valuemin={LEFT_MIN_PX}
-          aria-valuemax={LEFT_MAX_PX}
-          aria-valuenow={sidebarWidth}
-          onKeyDown={(event) => {
-            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-            event.preventDefault();
-            setSidebarWidth((width) =>
-              event.key === 'Home'
-                ? LEFT_MIN_PX
-                : event.key === 'End'
-                  ? LEFT_MAX_PX
-                  : Math.max(
-                      LEFT_MIN_PX,
-                      Math.min(LEFT_MAX_PX, width + (event.key === 'ArrowRight' ? 20 : -20)),
-                    ),
-            );
-          }}
-          onPointerDown={(event) => {
-            if (sidebarCollapsed) return;
-            resizeOrigin.current = { x: event.clientX, width: sidebarWidth };
-            event.currentTarget.setPointerCapture(event.pointerId);
-            setResizing(true);
-          }}
-          onPointerMove={(event) => {
-            const origin = resizeOrigin.current;
-            if (origin)
-              setSidebarWidth(
-                Math.max(
-                  LEFT_MIN_PX,
-                  Math.min(LEFT_MAX_PX, origin.width + event.clientX - origin.x),
-                ),
-              );
-          }}
-          onLostPointerCapture={() => {
-            resizeOrigin.current = null;
-            setResizing(false);
-          }}
-          className="vol-session-resize"
-        />
+        <div {...separatorProps} />
 
         <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col niuu:overflow-hidden">
           {sessionsQuery.isLoading && <LoadingState label="Loading sessions…" />}

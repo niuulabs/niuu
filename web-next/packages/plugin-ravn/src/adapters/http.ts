@@ -91,7 +91,8 @@ interface RawPersonaDetail extends RawPersonaSummary {
   llm: RawPersonaLLM & { temperature?: number };
   produces: RawPersonaProduces;
   consumes: RawPersonaConsumes;
-  fan_in: RawPersonaFanIn;
+  /** Absent when the persona declares no fan-in (the API returns null). */
+  fan_in: RawPersonaFanIn | null;
   mimir_write_routing?: string;
   yaml_source: string;
   override_source?: string;
@@ -142,10 +143,12 @@ function toDetail(raw: RawPersonaDetail): PersonaDetail {
       schemaDef: (raw.consumes.schema_def ?? {}) as PersonaDetail['consumes']['schemaDef'],
     },
     mimirWriteRouting: raw.mimir_write_routing as PersonaDetail['mimirWriteRouting'],
-    fanIn: {
-      strategy: raw.fan_in.strategy,
-      params: raw.fan_in.params,
-    },
+    fanIn: raw.fan_in
+      ? {
+          strategy: raw.fan_in.strategy,
+          params: raw.fan_in.params,
+        }
+      : undefined,
     yamlSource: raw.yaml_source,
     overrideSource: raw.override_source,
   };

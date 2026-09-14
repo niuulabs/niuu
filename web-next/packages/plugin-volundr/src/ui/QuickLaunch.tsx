@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from '@tanstack/react-router';
+import { useQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import {
   BranchSelect,
@@ -13,11 +12,15 @@ import {
   type RepoRecord,
 } from '@niuulabs/ui';
 import type { IVolundrService } from '../ports/IVolundrService';
-import type { SessionSource } from '../models/volundr.model';
-import { definitionToTaskType, slugifySessionName, validateSessionName } from './launchWizardModel';
+import { validateSessionName } from './launchWizardModel';
+import {
+  defaultTargetId,
+  quickLaunchName,
+  quickLaunchSource,
+  useQuickLaunch,
+} from './hooks/useQuickLaunch';
 import { EngineSelect } from './EngineSelect';
 import { LinkedText } from './LinkedText';
-import { errorText } from './errorText';
 import {
   availableEngines,
   launchModel,
@@ -44,8 +47,7 @@ const CANCEL_BTN =
 /** Compact launch for local and remote Forge hosts; advanced configuration remains available. */
 export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickLaunchProps) {
   const volundr = useService<IVolundrService>('volundr');
-  const queryClient = useQueryClient();
-  const navigate = useNavigate();
+  const { launch, creating, error } = useQuickLaunch();
 
   const definitionsQuery = useQuery({
     queryKey: ['volundr', 'session-definitions'],
@@ -87,8 +89,7 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
   const [sourceType, setSourceType] = useState<'git' | 'local_mount' | null>(null);
   const [branch, setBranch] = useState('');
   const [advanced, setAdvanced] = useState(false);
-  const selectedTarget =
-    targetId || targets.find((target) => target.isDefault)?.id || targets[0]?.id;
+  const selectedTarget = targetId || defaultTargetId(targets);
   const features = useFeatures(open && targetsQuery.isSuccess, selectedTarget);
   const local =
     (sourceType ??
@@ -110,8 +111,6 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
   const pickFromList = !local && repos.length > 0 && !customRepo && (!folder || !!selectedRepo);
   const [definitionKey, setDefinitionKey] = useState('skuldClaude');
   const [prompt, setPrompt] = useState('');
-  const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const selectedEngine =
     engines.find((engine) => engine.definition.key === definitionKey) ?? engines[0];
@@ -125,13 +124,7 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
   const effectiveModel = launchModel(selectedEngine, selectedProvider, model);
 
   // Auto-derive the session name from the folder's last path segment when blank.
-  const effectiveName = useMemo(() => {
-    const explicit = slugifySessionName(name);
-    if (explicit) return explicit;
-    const lastSegment = (folder || '').split('/').filter(Boolean).at(-1) ?? '';
-    const fromFolder = slugifySessionName(lastSegment.replace(/\.git$/, '').replace(/^~/, 'home'));
-    return fromFolder || 'forge-session';
-  }, [name, folder]);
+  const effectiveName = useMemo(() => quickLaunchName(name, folder), [name, folder]);
 
   const nameError = validateSessionName(effectiveName);
   const loadError = definitionsQuery.error ?? features.error ?? targetsQuery.error;
@@ -149,26 +142,14 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
 
   async function handleCreate() {
     if (!canCreate) return;
-    setError(null);
-    setCreating(true);
-    try {
-      const def = selectedDef;
-      const path = folder.trim();
-      const source: SessionSource = local
-        ? {
-            type: 'local_mount',
-            local_path: path,
-            paths: [{ host_path: path, mount_path: '/workspace', read_only: false }],
-          }
-        : { type: 'git', repo: path, branch: branch.trim() };
-      const session = await volundr.startSession({
+    await launch(
+      {
         name: effectiveName,
-        source,
+        source: quickLaunchSource(local, folder, branch),
+        definition: selectedDef,
         instanceId: selectedTarget,
+        initialPrompt: prompt,
         model: effectiveModel,
-        definition: def?.key,
-        taskType: def ? definitionToTaskType(def.key) : undefined,
-        initialPrompt: prompt.trim() || undefined,
         // Exactly one AI credential (the chosen account), the Git account
         // that listed the repository, and the rest of the person's
         // integrations; never every AI account at once.
@@ -176,27 +157,12 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
           provider: selectedProvider,
           integrations: integrationsQuery.data ?? [],
           repos,
-          repoUrl: path,
+          repoUrl: folder,
           local,
         }),
-        terminalRestricted: false,
-        workloadConfig: {},
-      });
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['volundr', 'sessions'] }),
-        queryClient.invalidateQueries({ queryKey: ['volundr', 'stats'] }),
-        queryClient.invalidateQueries({ queryKey: ['volundr', 'domain-sessions'] }),
-      ]);
-      onOpenChange(false);
-      void navigate({
-        to: '/volundr/sessions/$sessionId',
-        params: { sessionId: session.id },
-      });
-    } catch (e) {
-      setError(errorText(e, 'Failed to create session'));
-    } finally {
-      setCreating(false);
-    }
+      },
+      { onCreated: () => onOpenChange(false) },
+    );
   }
 
   if (advanced || initialLaunchSpecRef) {

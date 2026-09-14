@@ -10,6 +10,7 @@ import type { PluginDescriptor } from '@niuulabs/plugin-sdk';
 import { ShellLayout } from './ShellLayout';
 import { NotFoundPage } from './NotFoundPage';
 import { useShellContext } from './ShellContext';
+import { isVisibleInMode, landingPluginId, readUiMode } from './uiMode';
 
 export interface ComposeRouterOptions {
   /** Override the browser history (useful for testing and Storybook). */
@@ -45,10 +46,14 @@ export function composeRouter(
     path: '/',
     beforeLoad: () => {
       const storedId = typeof window !== 'undefined' ? localStorage.getItem('niuu.active') : null;
+      // Same rule as the shell: Simple mode only exists once a plugin opts into it.
+      const mode = navPlugins.some((p) => p.simple) ? readUiMode() : 'advanced';
+      // Only plugins the rail shows in this mode are somewhere to land.
+      const visible = navPlugins.filter((p) => isVisibleInMode(p, mode));
+      const landing = landingPluginId(visible, mode);
       const targetId =
-        storedId && navPlugins.some((p) => p.id === storedId)
-          ? storedId
-          : (navPlugins[0]?.id ?? null);
+        landing ??
+        (storedId && visible.some((p) => p.id === storedId) ? storedId : (visible[0]?.id ?? null));
       if (targetId) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         throw redirect({ to: `/${targetId}` as any });

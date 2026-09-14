@@ -28,6 +28,10 @@ class RealmRepository(ABC):
         """Create or update a realm (upsert by id)."""
 
     @abstractmethod
+    async def delete_realm(self, realm_id: UUID) -> None:
+        """Delete a realm together with its trust grants and capabilities."""
+
+    @abstractmethod
     async def list_trust_grants(self, realm_id: UUID) -> list[TrustGrant]:
         """List all trust grants for a realm."""
 

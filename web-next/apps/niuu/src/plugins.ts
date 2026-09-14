@@ -58,6 +58,23 @@ const logoutPlugin = definePlugin({
 
 const pluginLoaders: Record<string, () => Promise<PluginDescriptor>> = {
   login: async () => loginPlugin,
+  home: async () => {
+    // Home lives in the realms package; its styles come from the same bundle.
+    const [module] = await Promise.all([
+      import('@niuulabs/plugin-realms'),
+      import('@niuulabs/plugin-realms/styles.css'),
+      import('@niuulabs/plugin-realms/index.css'),
+    ]);
+    return module.homePlugin;
+  },
+  realms: async () => {
+    const [module] = await Promise.all([
+      import('@niuulabs/plugin-realms'),
+      import('@niuulabs/plugin-realms/styles.css'),
+      import('@niuulabs/plugin-realms/index.css'),
+    ]);
+    return module.realmsPlugin;
+  },
   setup: async () => setupPlugin,
   volundr: async () => {
     const [module] = await Promise.all([

@@ -7,6 +7,8 @@ vi.mock('@niuulabs/plugin-volundr', () => ({
 const disabled = Object.fromEntries(
   [
     'login',
+    'home',
+    'realms',
     'setup',
     'volundr',
     'ting',

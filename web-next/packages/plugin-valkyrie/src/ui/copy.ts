@@ -13,7 +13,7 @@ import {
   type DecisionRecord,
 } from '../domain';
 
-interface TermCopy {
+export interface TermCopy {
   label: string;
   description: string;
 }

@@ -60,13 +60,43 @@ export function useDeployResidentFlock() {
   });
 }
 
+/** What the backend will report once it has picked the command up. */
+const LIFECYCLE_INTENT: Record<
+  ResidentLifecycleAction,
+  Pick<Ravn, 'desiredState' | 'observedState'>
+> = {
+  restart: { desiredState: 'running', observedState: 'pending' },
+  suspend: { desiredState: 'suspended', observedState: 'suspended' },
+  resume: { desiredState: 'running', observedState: 'pending' },
+};
+
 export function useResidentLifecycle() {
   const control = useControl();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ ravn, action }: { ravn: Ravn; action: ResidentLifecycleAction }) =>
       control.applyLifecycle(ravn, action),
-    onSuccess: async () => {
+    // Show the command as taken immediately; the poll on ['ravn','ravens']
+    // replaces it with what the backend actually reports.
+    onMutate: async ({ ravn, action }: { ravn: Ravn; action: ResidentLifecycleAction }) => {
+      await queryClient.cancelQueries({ queryKey: ['ravn', 'ravens'] });
+      const previous = queryClient.getQueryData<Ravn[]>(['ravn', 'ravens']);
+      if (previous) {
+        queryClient.setQueryData<Ravn[]>(
+          ['ravn', 'ravens'],
+          previous.map((entry) =>
+            entry.id === ravn.id && entry.instanceId === ravn.instanceId
+              ? { ...entry, ...LIFECYCLE_INTENT[action] }
+              : entry,
+          ),
+        );
+      }
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) queryClient.setQueryData(['ravn', 'ravens'], context.previous);
+    },
+    onSettled: async () => {
       await queryClient.invalidateQueries({ queryKey: ['ravn', 'ravens'] });
     },
   });

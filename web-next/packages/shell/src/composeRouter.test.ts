@@ -123,6 +123,50 @@ describe('composeRouter', () => {
     expect(thrown).toMatchObject({ options: { to: '/hello' } });
   });
 
+  it('lands on the simple-mode landing plugin, ignoring the stored active plugin', () => {
+    window.localStorage.setItem('niuu.active', 'hello');
+    const home = { ...makePlugin('home'), simple: { landing: true } };
+    const router = composeRouter([makePlugin('hello'), home], {
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    });
+    const beforeLoad = (router.routesById['/'] as { options: { beforeLoad?: () => void } }).options
+      .beforeLoad;
+    let thrown: unknown;
+    try {
+      beforeLoad?.();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ options: { to: '/home' } });
+
+    window.localStorage.setItem('niuu.compactUx.mode', 'advanced');
+    thrown = undefined;
+    try {
+      beforeLoad?.();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ options: { to: '/hello' } });
+  });
+
+  it('skips a simple-only plugin when advanced mode is on', () => {
+    window.localStorage.setItem('niuu.compactUx.mode', 'advanced');
+    const home = { ...makePlugin('home'), simple: { only: true, landing: true } };
+    const realms = { ...makePlugin('realms'), simple: {} };
+    const router = composeRouter([home, realms], {
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    });
+    const beforeLoad = (router.routesById['/'] as { options: { beforeLoad?: () => void } }).options
+      .beforeLoad;
+    let thrown: unknown;
+    try {
+      beforeLoad?.();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ options: { to: '/realms' } });
+  });
+
   it('redirects the index route to the first navigable plugin when storage is invalid', () => {
     window.localStorage.setItem('niuu.active', 'missing');
     const router = composeRouter([makePlugin('login', true), makePlugin('alpha')], {

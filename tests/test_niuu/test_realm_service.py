@@ -34,6 +34,11 @@ class InMemoryRealmRepository(RealmRepository):
         self.realms[realm.id] = realm
         return realm
 
+    async def delete_realm(self, realm_id: UUID) -> None:
+        self.realms.pop(realm_id, None)
+        self.grants = {k: g for k, g in self.grants.items() if g.realm_id != realm_id}
+        self.capabilities = {k: c for k, c in self.capabilities.items() if c.realm_id != realm_id}
+
     async def list_trust_grants(self, realm_id: UUID) -> list[TrustGrant]:
         return [g for g in self.grants.values() if g.realm_id == realm_id]
 
@@ -72,6 +77,28 @@ class InMemoryRealmRepository(RealmRepository):
 @pytest.fixture
 def service() -> RealmService:
     return RealmService(InMemoryRealmRepository())
+
+
+@pytest.mark.asyncio
+async def test_delete_realm_removes_realm_grants_and_capabilities(
+    service: RealmService,
+) -> None:
+    realm = await service.create_realm("forge", "Forge")
+    await service.grant_trust(realm.id, "build", level=2)
+    await service.record_capability(realm.id, "grep-tool", "tool")
+
+    deleted = await service.delete_realm("forge")
+
+    assert deleted is not None and deleted.id == realm.id
+    assert await service.get_realm("forge") is None
+    assert await service.list_trust_grants(realm.id) == []
+    assert await service.list_capabilities(realm.id) == []
+
+
+@pytest.mark.asyncio
+async def test_delete_realm_unknown_returns_none(service: RealmService) -> None:
+    assert await service.delete_realm("ghost") is None
+    assert await service.delete_realm(uuid4()) is None
 
 
 # ---------------------------------------------------------------------------

@@ -1,13 +1,20 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';
-import { useQueryClient } from '@tanstack/react-query';
-import { openEventStream } from '@niuulabs/query';
 import type { SpecCampaign } from '../ports';
+import {
+  activeStageLabel,
+  pendingSpecGates,
+  progressPercent,
+  statusForCampaign,
+} from '../domain/campaignProgress';
 import { useSpecCampaigns } from './useSpecs';
+import { useCampaignEvents } from './useCampaignEvents';
 import './ResearchCenterPage.css';
 import './SpecsPage.css';
 
 type SpecFilter = 'all' | 'review' | 'running' | 'published' | 'draft';
+
+const SPEC_CAMPAIGN_QUERY_KEYS = [['ting', 'specs', 'campaigns']];
 
 const FILTER_LABELS: Record<SpecFilter, string> = {
   all: 'All',
@@ -24,34 +31,6 @@ const DOCS = [
   ['breakdown', 'Breakdown'],
 ] as const;
 
-interface PendingSpecGate {
-  id: string;
-  nodeId: string;
-  summary: string;
-  instructions: string;
-}
-
-function pendingSpecGates(campaign: SpecCampaign): PendingSpecGate[] {
-  const raw = campaign.metadata.pending_workflow_gates;
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((gate): gate is Record<string, unknown> => typeof gate === 'object' && gate !== null)
-    .map((gate) => ({
-      id: String(gate.id ?? gate.gate_id ?? gate.gateId ?? ''),
-      nodeId: String(gate.node_id ?? gate.nodeId ?? ''),
-      summary: String(gate.summary ?? gate.label ?? 'Review required'),
-      instructions: String(gate.instructions ?? ''),
-    }))
-    .filter((gate) => gate.nodeId.startsWith('spec-') && gate.nodeId.endsWith('-gate'));
-}
-
-function statusForCampaign(campaign: SpecCampaign): 'review' | 'running' | 'published' | 'draft' {
-  if (pendingSpecGates(campaign).length > 0 || campaign.status === 'blocked') return 'review';
-  if (campaign.status === 'completed') return 'published';
-  if (campaign.status === 'pending') return 'draft';
-  return 'running';
-}
-
 function campaignPrompt(campaign: SpecCampaign): string {
   const prompt = campaign.metadata.prompt;
   if (typeof prompt === 'string' && prompt.trim()) return prompt.trim();
@@ -62,29 +41,6 @@ function artifactKinds(campaign: SpecCampaign): Set<string> {
   const canonical = campaign.metadata.canonical_artifacts;
   if (canonical && typeof canonical === 'object') return new Set(Object.keys(canonical));
   return new Set(campaign.stageState.map((stage) => stage.stageId.replace(/^spec-/, '')));
-}
-
-function progressPercent(campaign: SpecCampaign): number {
-  const stages = campaign.stageState;
-  if (!stages.length) return campaign.status === 'pending' ? 8 : 18;
-  const complete = stages.filter((stage) => stage.status === 'complete').length;
-  const active = stages.some((stage) => stage.status === 'active') ? 0.5 : 0;
-  const blocked = stages.some((stage) => stage.status === 'blocked') ? 0.2 : 0;
-  return Math.max(
-    8,
-    Math.min(100, Math.round(((complete + active + blocked) / stages.length) * 100)),
-  );
-}
-
-function activeStageLabel(campaign: SpecCampaign): string {
-  const stages = campaign.stageState;
-  const active =
-    stages.find((stage) => stage.status === 'blocked' || stage.status === 'active') ??
-    stages.find((stage) => stage.stageId === campaign.activeStageId) ??
-    stages.find((stage) => stage.status === 'pending') ??
-    stages.at(-1);
-  if (!active) return campaign.status === 'pending' ? 'Queued' : 'Starting';
-  return active.label || active.stageId.replace(/^spec-/, '').replace(/-/g, ' ');
 }
 
 function filterMatches(campaign: SpecCampaign, query: string, filter: SpecFilter): boolean {
@@ -173,23 +129,10 @@ function SpecCard({ campaign, onOpen }: { campaign: SpecCampaign; onOpen: () => 
 
 export function SpecsCenterPage() {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const { data: campaigns = [], isLoading, isError, error } = useSpecCampaigns();
+  useCampaignEvents(SPEC_CAMPAIGN_QUERY_KEYS);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<SpecFilter>('all');
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const stream = openEventStream('/api/v1/ting/events', {
-      onMessage: () => {},
-      onEvent: ({ event }) => {
-        if (event?.startsWith('workflow.campaign.')) {
-          void queryClient.invalidateQueries({ queryKey: ['ting', 'specs', 'campaigns'] });
-        }
-      },
-    });
-    return () => stream.close();
-  }, [queryClient]);
 
   const visibleCampaigns = useMemo(
     () =>

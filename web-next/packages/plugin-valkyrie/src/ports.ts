@@ -167,8 +167,22 @@ export interface TrustGrantCreate {
   granted_by?: string | null;
 }
 
+/** Body for POST /api/v1/realms (exact backend casing). */
+export interface RealmCreate {
+  slug: string;
+  name: string;
+  sleipnir_domain?: string | null;
+  owner_id?: string | null;
+  instance_id?: string | null;
+  autonomy_profile?: string;
+}
+
 export interface IRealmGovernanceService {
   listRealms(): Promise<RealmSummary[]>;
+  getRealm(slug: string): Promise<RealmSummary>;
+  createRealm(request: RealmCreate): Promise<RealmSummary>;
+  /** Removes the realm with its trust grants and capabilities; the resident is the fleet's. */
+  deleteRealm(slug: string): Promise<void>;
   listTrustGrants(slug: string): Promise<RealmTrustGrant[]>;
   createTrustGrant(slug: string, request: TrustGrantCreate): Promise<RealmTrustGrant>;
   listWorkflows(): Promise<TingWorkflowSummary[]>;

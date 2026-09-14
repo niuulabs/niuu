@@ -49,7 +49,7 @@ function categoriesToCsv(value: string[] | null): string {
   return (value ?? []).join(', ');
 }
 
-interface RegistryMountEditorProps {
+export interface RegistryMountEditorProps {
   heading: string;
   mount: Omit<RegistryMount, 'id'>;
   submitLabel: string;
@@ -59,7 +59,7 @@ interface RegistryMountEditorProps {
   onReset?: () => void;
 }
 
-function RegistryMountEditor({
+export function RegistryMountEditor({
   heading,
   mount,
   submitLabel,

@@ -1,7 +1,11 @@
+import { createElement } from 'react';
 import { createRoute, redirect } from '@tanstack/react-router';
+import { Workflow } from 'lucide-react';
 import { definePlugin } from '@niuulabs/plugin-sdk';
+import { readUiMode } from '@niuulabs/shell';
 import { TingPage } from './ui/TingPage';
 import { WorkflowBuilderPage } from './ui/WorkflowBuilderPage';
+import { WorkflowsRoute } from './ui/WorkflowsRoute';
 import { SagasPage } from './ui/SagasPage';
 import { DispatchView } from './ui/DispatchView';
 import { TingTopbar } from './ui/TingTopbar';
@@ -34,6 +38,13 @@ export const tingPlugin = definePlugin({
   rune: 'T',
   title: 'Ting',
   subtitle: 'sagas · runs · dispatch',
+  simple: {
+    // Simple mode is one screen: the workflow, its gates, and its runs.
+    tabs: ['workflows'],
+    title: 'Workflows',
+    subtitle: 'stages with gates you approve',
+    icon: createElement(Workflow, { size: 17, 'aria-hidden': true }),
+  },
   tabs: [
     { id: 'dashboard', label: 'Dashboard', rune: '◈', path: '/ting' },
     { id: 'sagas', label: 'Sagas', rune: '✦', path: '/ting/sagas' },
@@ -47,11 +58,22 @@ export const tingPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting',
+      beforeLoad: () => {
+        // Simple mode has no dashboard: workflows are the whole surface.
+        if (readUiMode() === 'simple') {
+          throw redirect({ to: '/ting/workflows' as never });
+        }
+      },
       component: TingPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting/workflows',
+      component: WorkflowsRoute,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/workflows/build',
       component: WorkflowBuilderPage,
     }),
     createRoute({
@@ -174,6 +196,7 @@ export type {
   ITingSessionService,
   ITrackerBrowserService,
   IWorkflowService,
+  WorkflowLaunchRequest,
   IResearchService,
   ISpecsService,
   CreateResearchCampaignRequest,
@@ -283,6 +306,18 @@ export {
 
 export { dispatcherStateSchema, dispatchRuleSchema } from './domain/dispatcher';
 
+export {
+  actionableSpecGates,
+  activeStageLabel,
+  pendingSpecGates,
+  pendingWorkflowGates,
+  progressPercent,
+  statusForCampaign,
+  type CampaignProgressInput,
+  type CampaignReviewStatus,
+  type PendingWorkflowGate,
+} from './domain/campaignProgress';
+
 export { topologicalSort, detectCycle } from './domain/topologicalSort';
 export type { TopologicalLayer } from './domain/topologicalSort';
 
@@ -291,6 +326,21 @@ export type { WorkflowIssue, WorkflowIssueKind } from './domain/workflowValidati
 
 // WorkflowBuilder UI
 export { WorkflowBuilder } from './ui/WorkflowBuilder';
+export { WorkflowLaunchModal, type WorkflowLaunchModalProps } from './ui/WorkflowLaunchModal';
+export {
+  WorkflowLaunchForm,
+  useWorkflowLaunchDraft,
+  workflowLaunchRequest,
+  type WorkflowLaunchDraft,
+  type WorkflowLaunchFormProps,
+} from './ui/WorkflowLaunchForm';
+export { WorkflowStrip, gateWaitsForPerson, type WorkflowStripProps } from './ui/WorkflowStrip';
+export { SimpleWorkflowsPage } from './ui/SimpleWorkflowsPage';
+export { WorkflowCard } from './ui/WorkflowCard';
+export { StageProgressRail } from './ui/StageProgressRail';
+export { StepDots } from './ui/StepDots';
+export { useSagas } from './ui/useSagas';
+export { useWorkflows, useWorkflow, useLaunchWorkflow } from './ui/useWorkflows';
 
 export {
   PLAN_STEPS,

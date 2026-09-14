@@ -14,6 +14,7 @@
 import { useState } from 'react';
 import type { Message } from '../domain/message';
 import { formatTime } from './formatTime';
+import './ravn-views.css';
 
 interface MessageRowProps {
   message: Message;

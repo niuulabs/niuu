@@ -192,6 +192,18 @@ async def test_save_realm_returns_realm():
     pool.execute.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_delete_realm_deletes_by_id():
+    repo, pool = _make_repo()
+
+    await repo.delete_realm(_REALM_ID)
+
+    pool.execute.assert_awaited_once()
+    sql, realm_id = pool.execute.await_args.args
+    assert sql.strip().startswith("DELETE FROM realms")
+    assert realm_id == _REALM_ID
+
+
 # ---------------------------------------------------------------------------
 # Trust grants
 # ---------------------------------------------------------------------------

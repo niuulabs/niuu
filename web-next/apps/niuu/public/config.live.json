@@ -3,16 +3,18 @@
   "plugins": {
     "setup": { "enabled": true, "order": 0 },
     "login": { "enabled": true, "order": 0 },
-    "credentials": { "enabled": true, "order": 1 },
-    "integrations": { "enabled": true, "order": 2 },
-    "volundr": { "enabled": true, "order": 3 },
-    "ting": { "enabled": true, "order": 4 },
-    "mimir": { "enabled": true, "order": 5 },
-    "ravn": { "enabled": true, "order": 6 },
-    "valkyrie": { "enabled": true, "order": 7 },
-    "observatory": { "enabled": true, "order": 8 },
-    "bifrost": { "enabled": true, "order": 9 },
-    "settings": { "enabled": true, "order": 10 }
+    "home": { "enabled": true, "order": 1 },
+    "realms": { "enabled": true, "order": 2 },
+    "credentials": { "enabled": true, "order": 3 },
+    "integrations": { "enabled": true, "order": 4 },
+    "volundr": { "enabled": true, "order": 5 },
+    "ting": { "enabled": true, "order": 6 },
+    "mimir": { "enabled": true, "order": 7 },
+    "ravn": { "enabled": true, "order": 8 },
+    "valkyrie": { "enabled": true, "order": 9 },
+    "observatory": { "enabled": true, "order": 10 },
+    "bifrost": { "enabled": true, "order": 11 },
+    "settings": { "enabled": true, "order": 12 }
   },
   "services": {
     "setup": { "mode": "http", "baseUrl": "/api/v1/niuu/setup" },

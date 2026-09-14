@@ -2,6 +2,7 @@ import type { PageMeta, Page, SearchResult } from '../domain/page';
 import type { Source, OriginType } from '../domain/source';
 import type { MimirStats, MimirGraph } from '../domain/api-types';
 import type { EntityKind, EntityMeta } from '../domain/entity';
+import type { FactEvidence, RelatedPage, ReviseRequest } from '../domain/evidence';
 
 export type SearchMode = 'fts' | 'semantic' | 'hybrid';
 
@@ -72,6 +73,31 @@ export interface IPageStore {
    * Optionally scoped to a single mount.
    */
   getGraph(options?: { mountName?: string }): Promise<MimirGraph>;
+
+  /**
+   * Evidence-counted beliefs for a page: every Key Fact with its proof count
+   * and trend.
+   *
+   * The route reads the serving instance's own store and takes no mount, so a
+   * page kept on another mount answers 404. That is an expected absence:
+   * adapters return an empty list rather than raising.
+   */
+  getEvidence(path: string): Promise<FactEvidence[]>;
+
+  /**
+   * Walk the link graph out from a page, up to `depth` hops, optionally
+   * restricted to one typed relationship.
+   *
+   * Like `getEvidence` this takes no mount, and a store without a link graph
+   * answers 501 — both are an empty neighbourhood, not an error.
+   */
+  getRelated(path: string, depth?: number, rel?: string): Promise<RelatedPage[]>;
+
+  /**
+   * Rewrite one Key Fact and append the old → new transition to the page's
+   * timeline. Requires write authority; a rejected write raises.
+   */
+  revisePage(request: ReviseRequest): Promise<Page>;
 
   /**
    * List entity pages, optionally filtered by entity kind.

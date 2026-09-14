@@ -95,7 +95,30 @@ export {
   buildValkyrieSkillsHttpAdapter,
 } from './adapters/http';
 export { useUpdateAutonomy, useValkyrieDashboard } from './application/useValkyrieDashboard';
+export { ToolBuilderGrantCard, type RealmRef } from './ui/ToolBuilderGrantCard';
+export { Roster } from './ui/Roster';
+export { LearningViewer } from './ui/LearningViewer';
 export {
+  actionAuthorityCopy,
+  autonomyModeCopy,
+  autonomyModeHint,
+  decisionStatusCopy,
+  operationalStateCopy,
+  outcomeCopy,
+  reviewKindLabel,
+  severityCopy,
+  wakefulnessCopy,
+  type TermCopy,
+} from './ui/copy';
+export {
+  DEFAULT_STORY_FILTERS,
+  filterActivityStories,
+  groupActivityStories,
+  type ActivityStory,
+  type ActivityStoryFilters,
+} from './application/activityStories';
+export {
+  REALMS_QUERY_KEY,
   useCreateTrustGrant,
   useRealms,
   useRealmTrustGrants,
@@ -186,5 +209,6 @@ export type {
   ReviewListFilters,
   ReviewSummaryFilters,
   SignalHistoryFilters,
+  RealmCreate,
   TrustGrantCreate,
 } from './ports';

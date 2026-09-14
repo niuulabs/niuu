@@ -4,6 +4,11 @@ import react from '@vitejs/plugin-react';
 
 const fromHere = (relativePath: string) => fileURLToPath(new URL(relativePath, import.meta.url));
 const apiProxyTarget = process.env.NIUU_API_PROXY_TARGET ?? 'http://127.0.0.1:8080';
+// Dev only: when the browser cannot complete the IdP flow against a remote stack
+// (the IdP does not allow a localhost redirect), a personal access token can be
+// injected by the proxy instead. Never set this in a deployed environment.
+const apiProxyToken = process.env.NIUU_API_PROXY_TOKEN;
+const apiProxyHeaders = apiProxyToken ? { Authorization: `Bearer ${apiProxyToken}` } : undefined;
 
 const workspaceAlias = [
   {
@@ -65,6 +70,14 @@ const workspaceAlias = [
   {
     find: '@niuulabs/plugin-ting/index.css',
     replacement: fromHere('../../packages/plugin-ting/dist/index.css'),
+  },
+  {
+    find: '@niuulabs/plugin-realms/styles.css',
+    replacement: fromHere('../../packages/plugin-realms/dist/styles.css'),
+  },
+  {
+    find: '@niuulabs/plugin-realms/index.css',
+    replacement: fromHere('../../packages/plugin-realms/dist/index.css'),
   },
   {
     find: '@niuulabs/plugin-valkyrie/styles.css',
@@ -131,6 +144,10 @@ const workspaceAlias = [
     replacement: fromHere('../../packages/plugin-ting/src/index.ts'),
   },
   {
+    find: '@niuulabs/plugin-realms',
+    replacement: fromHere('../../packages/plugin-realms/src/index.tsx'),
+  },
+  {
     find: '@niuulabs/plugin-valkyrie',
     replacement: fromHere('../../packages/plugin-valkyrie/src/index.tsx'),
   },
@@ -163,12 +180,13 @@ export default defineConfig({
     // Opt into remote development explicitly; Vite keeps its hostname checks.
     host: process.env.NIUU_DEV_HOST ?? 'localhost',
     proxy: {
-      '/s/': { target: apiProxyTarget, changeOrigin: true, ws: true },
+      '/s/': { target: apiProxyTarget, changeOrigin: true, ws: true, headers: apiProxyHeaders },
       '/health': { target: apiProxyTarget, changeOrigin: true },
-      '/mcp': { target: apiProxyTarget, changeOrigin: true },
+      '/mcp': { target: apiProxyTarget, changeOrigin: true, headers: apiProxyHeaders },
       '/api': {
         target: apiProxyTarget,
         changeOrigin: true,
+        headers: apiProxyHeaders,
       },
     },
   },

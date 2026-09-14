@@ -1,10 +1,11 @@
 import { test, expect } from '@playwright/test';
 
-test('niuu boots into the volundr front door', async ({ page }) => {
+test('niuu boots into the first rail plugin, realms', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Völundr' })).toBeVisible({ timeout: 5000 });
-  await expect(page.getByTestId('forge-page')).toBeVisible();
-  await expect(page).toHaveURL('http://localhost:5173/volundr/forge');
+  await expect(page.getByRole('heading', { level: 1, name: 'Realms' }).first()).toBeVisible({
+    timeout: 5000,
+  });
+  await expect(page).toHaveURL('http://localhost:5173/realms');
 });
 
 test('deep-link /volundr renders the forge page directly', async ({ page }) => {

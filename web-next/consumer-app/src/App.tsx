@@ -7,6 +7,7 @@
  */
 import { QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '@niuulabs/design-tokens';
+import type { RepoRecord } from '@niuulabs/domain';
 import { ConfigProvider, FeatureCatalogProvider, ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createQueryClient } from '@niuulabs/query';
 import { Shell } from '@niuulabs/shell';
@@ -18,6 +19,7 @@ import {
   createMockTrackerService,
   createMockWorkflowService,
   createMockResearchService,
+  createMockSpecsService,
   createMockDispatchBus,
   createMockTingSettingsService,
   createMockAuditLogService,
@@ -25,14 +27,31 @@ import {
 
 const queryClient = createQueryClient();
 
+// `niuu.repos` is a platform service, not a Ting one: the shared repository
+// catalog the Ting surfaces read. A host that mounts Ting has to provide it —
+// here a canned catalog, since this app runs without a backend.
+const repos: RepoRecord[] = [
+  {
+    provider: 'github',
+    org: 'niuulabs',
+    name: 'demo',
+    cloneUrl: 'https://github.com/niuulabs/demo.git',
+    url: 'https://github.com/niuulabs/demo',
+    defaultBranch: 'main',
+    branches: ['main', 'dev'],
+  },
+];
+
 // All Ting sub-services wired with mock adapters — no backend required
 const services = {
+  'niuu.repos': { getRepos: async () => repos, getBranches: async () => repos[0].branches },
   ting: createMockTingService(),
   'ting.dispatcher': createMockDispatcherService(),
   'ting.sessions': createMockTingSessionService(),
   'ting.tracker': createMockTrackerService(),
   'ting.workflows': createMockWorkflowService(),
   'ting.research': createMockResearchService(),
+  'ting.specs': createMockSpecsService(),
   'ting.dispatch': createMockDispatchBus(),
   'ting.settings': createMockTingSettingsService(),
   'ting.audit': createMockAuditLogService(),

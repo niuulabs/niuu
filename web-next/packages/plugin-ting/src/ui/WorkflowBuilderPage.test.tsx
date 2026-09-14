@@ -1,10 +1,16 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { WorkflowBuilderPage } from './WorkflowBuilderPage';
 import type { Workflow } from '../domain/workflow';
+
+const mockSearch = vi.hoisted(() => ({ current: {} as { id?: string } }));
+
+vi.mock('@tanstack/react-router', () => ({
+  useSearch: () => mockSearch.current,
+}));
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -84,6 +90,23 @@ function wrap(service: Record<string, unknown>) {
 // ---------------------------------------------------------------------------
 
 describe('WorkflowBuilderPage', () => {
+  beforeEach(() => {
+    mockSearch.current = {};
+  });
+
+  it('opens the workflow named in ?id=', async () => {
+    mockSearch.current = { id: wf2.id };
+    const svc = { listWorkflows: vi.fn().mockResolvedValue([wf1, wf2]) };
+    render(<WorkflowBuilderPage />, { wrapper: wrap({ 'ting.workflows': svc }) });
+    await waitFor(() =>
+      expect(screen.getByTestId(`workflow-tab-${wf2.id}`)).toHaveAttribute(
+        'class',
+        expect.stringContaining('niuu:bg-bg-elevated'),
+      ),
+    );
+    expect(screen.getByTestId(`delete-workflow-${wf2.id}`)).toBeInTheDocument();
+  });
+
   it('renders the workflow-builder-page container', async () => {
     const svc = { listWorkflows: vi.fn().mockResolvedValue([wf1]) };
     render(<WorkflowBuilderPage />, { wrapper: wrap({ 'ting.workflows': svc }) });

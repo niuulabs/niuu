@@ -38,6 +38,7 @@ import type {
   ReviewDecisionRequest,
   ReviewListFilters,
   SignalHistoryFilters,
+  RealmCreate,
   TrustGrantCreate,
 } from '../ports';
 
@@ -1691,6 +1692,34 @@ export function createMockRealmGovernanceService(
   return {
     async listRealms() {
       return realms.map((realm) => ({ ...realm }));
+    },
+    async getRealm(slug: string) {
+      return { ...requireRealm(slug) };
+    },
+    async createRealm(request: RealmCreate) {
+      if (realms.some((entry) => entry.slug === request.slug)) {
+        throw new Error(`Realm already exists: ${request.slug}`);
+      }
+      const now = new Date().toISOString();
+      const realm: RealmSummary = {
+        id: `realm-${realms.length + 1}`,
+        slug: request.slug,
+        name: request.name,
+        sleipnir_domain: request.sleipnir_domain ?? null,
+        owner_id: request.owner_id ?? null,
+        instance_id: request.instance_id ?? null,
+        autonomy_profile: request.autonomy_profile ?? 'balanced',
+        created_at: now,
+        updated_at: now,
+      };
+      realms.push(realm);
+      grants.set(realm.slug, []);
+      return { ...realm };
+    },
+    async deleteRealm(slug: string) {
+      const realm = requireRealm(slug);
+      realms.splice(realms.indexOf(realm), 1);
+      grants.delete(slug);
     },
     async listTrustGrants(slug: string) {
       requireRealm(slug);
