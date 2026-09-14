@@ -235,9 +235,13 @@ export function WorkflowRunsCard({ workflowId, className }: WorkflowRunsCardProp
         className,
       )}
     >
-      <h2 className="niuu:m-0 niuu:mb-1 niuu:text-[15px] niuu:font-semibold niuu:text-text-primary">
+      <div
+        role="heading"
+        aria-level={2}
+        className="niuu:mb-1 niuu:text-[15px] niuu:font-semibold niuu:text-text-primary"
+      >
         Runs of this workflow
-      </h2>
+      </div>
       <p className="niuu:m-0 niuu:mb-3 niuu:text-[11px] niuu:text-text-muted">
         Campaign runs. A launch you start here opens as a session instead.
       </p>

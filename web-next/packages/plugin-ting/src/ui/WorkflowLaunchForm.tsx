@@ -10,7 +10,7 @@
  */
 
 import { useState } from 'react';
-import { BranchSelect, RepoSelect, type RepoRecord } from '@niuulabs/ui';
+import { BranchSelect, RepoSelect, cn, type RepoRecord } from '@niuulabs/ui';
 import type { WorkflowLaunchRequest } from '../ports';
 
 export interface WorkflowLaunchDraft {
@@ -82,6 +82,8 @@ export interface WorkflowLaunchFormProps {
   showSessionName?: boolean;
   promptLabel?: string;
   promptPlaceholder?: string;
+  /** Lines the prompt box starts with; the launch modal keeps six, the page three. */
+  promptRows?: number;
   onPromptSubmit?: () => void;
 }
 
@@ -95,6 +97,7 @@ export function WorkflowLaunchForm({
   showSessionName = true,
   promptLabel = 'Prompt',
   promptPlaceholder = 'Describe what this workflow should do.',
+  promptRows = 6,
   onPromptSubmit,
 }: WorkflowLaunchFormProps) {
   return (
@@ -113,9 +116,9 @@ export function WorkflowLaunchForm({
             event.preventDefault();
             onPromptSubmit();
           }}
-          rows={6}
+          rows={promptRows}
           placeholder={promptPlaceholder}
-          className={`niuu:min-h-[132px] ${FIELD_CLASS}`}
+          className={cn(promptRows >= 6 ? 'niuu:min-h-[132px]' : 'niuu:min-h-[76px]', FIELD_CLASS)}
         />
       </label>
 

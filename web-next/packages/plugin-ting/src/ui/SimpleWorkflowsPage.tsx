@@ -95,13 +95,15 @@ function WorkflowOptionCard({
         <span className="niuu:truncate niuu:text-[13px] niuu:font-semibold niuu:text-text-primary">
           {workflow.name}
         </span>
-        <span className="niuu:truncate niuu:text-[11px] niuu:text-text-muted">
-          {workflowSummary(workflow)}
+        <span className="niuu:flex niuu:items-baseline niuu:gap-3">
+          <span className="niuu:min-w-0 niuu:flex-1 niuu:truncate niuu:text-[11px] niuu:text-text-muted">
+            {workflowSummary(workflow)}
+          </span>
+          <span className="niuu:shrink-0 niuu:font-mono niuu:text-[10px] niuu:text-text-faint">
+            {humanGateCount(workflow)} gates · {stageCount(workflow)} stages
+            {runCount > 0 ? ` · ran ${runCount}×` : ''}
+          </span>
         </span>
-      </span>
-      <span className="niuu:shrink-0 niuu:text-right niuu:font-mono niuu:text-[10px] niuu:text-text-faint">
-        {humanGateCount(workflow)} gates · {stageCount(workflow)} stages
-        {runCount > 0 ? ` · ran ${runCount}×` : ''}
       </span>
     </button>
   );
@@ -185,7 +187,7 @@ export function SimpleWorkflowsPage() {
   return (
     <div
       data-testid="simple-workflows-page"
-      className="niuu:flex niuu:h-full niuu:font-sans niuu:bg-bg-primary"
+      className="niuu:flex niuu:h-full niuu:min-h-0 niuu:overflow-hidden niuu:font-sans niuu:bg-bg-primary"
     >
       <aside className="niuu:flex niuu:w-[340px] niuu:shrink-0 niuu:flex-col niuu:border-r niuu:border-border niuu:bg-bg-secondary">
         <div className="niuu:flex niuu:items-center niuu:justify-between niuu:px-5 niuu:pt-5 niuu:pb-3">
@@ -246,7 +248,7 @@ export function SimpleWorkflowsPage() {
         ) : null}
       </aside>
 
-      <main className="niuu:flex-1 niuu:overflow-y-auto niuu:px-8 niuu:py-7">
+      <main className="niuu:min-w-0 niuu:flex-1 niuu:min-h-0 niuu:overflow-y-auto niuu:px-9 niuu:py-7">
         {!isLoading && !selected ? (
           <p className="niuu:m-0 niuu:text-sm niuu:text-text-muted">No workflow selected yet.</p>
         ) : null}
@@ -278,23 +280,32 @@ export function SimpleWorkflowsPage() {
             </header>
 
             <section className="niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-5">
-              <h2 className="niuu:m-0 niuu:mb-3 niuu:text-[15px] niuu:font-semibold niuu:text-text-primary">
+              <div
+                role="heading"
+                aria-level={2}
+                className="niuu:mb-3.5 niuu:text-[10px] niuu:font-medium niuu:uppercase niuu:tracking-[0.08em] niuu:text-text-muted"
+              >
                 How it runs
-              </h2>
+              </div>
               <WorkflowStrip nodes={selected.nodes} edges={selected.edges} />
             </section>
 
-            <div className="niuu:grid niuu:grid-cols-1 niuu:gap-5 niuu:xl:grid-cols-2">
+            <div className="niuu:grid niuu:grid-cols-[repeat(auto-fit,minmax(400px,1fr))] niuu:items-start niuu:gap-5">
               <section className="niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-5">
-                <h2 className="niuu:m-0 niuu:mb-3 niuu:text-[15px] niuu:font-semibold niuu:text-text-primary">
+                <div
+                  role="heading"
+                  aria-level={2}
+                  className="niuu:mb-3 niuu:text-[15px] niuu:font-semibold niuu:text-text-primary"
+                >
                   Launch it
-                </h2>
+                </div>
                 <WorkflowLaunchForm
                   values={draft.values}
                   onChange={draft.update}
                   repos={reposQuery.data ?? []}
                   showSessionName={false}
                   promptLabel="What should it do?"
+                  promptRows={3}
                   onPromptSubmit={() => void handleLaunch()}
                 />
                 <div className="niuu:mt-4 niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">

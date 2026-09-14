@@ -120,7 +120,7 @@ describe('WorkflowStrip', () => {
     expect(screen.getByTestId('workflow-strip-node-crowd')).toHaveTextContent('a · b +2');
   });
 
-  it('describes triggers, conditions, resources and gates without an explicit mode', () => {
+  it('describes triggers, conditions and gates, and leaves resource bindings out', () => {
     render(
       <WorkflowStrip
         nodes={[
@@ -146,7 +146,7 @@ describe('WorkflowStrip', () => {
     );
     expect(screen.getByTestId('workflow-strip-node-kick')).toHaveTextContent('manual dispatch');
     expect(screen.getByTestId('workflow-strip-node-branch')).toHaveTextContent('condition');
-    expect(screen.getByTestId('workflow-strip-node-mimir')).toHaveTextContent('resource');
+    expect(screen.queryByTestId('workflow-strip-node-mimir')).toBeNull();
     // No mode means human approval, so it waits.
     expect(screen.getByTestId('workflow-strip-node-default-gate')).toHaveTextContent('You approve');
   });
@@ -204,7 +204,8 @@ describe('WorkflowStrip', () => {
         ]}
       />,
     );
-    expect(screen.getByTestId('workflow-strip-cycle')).toHaveTextContent('Loops back');
+    expect(screen.getByTestId('workflow-strip-loops')).toHaveTextContent(/loops back/i);
+    expect(screen.getAllByTestId('workflow-strip-cycle')).toHaveLength(2);
   });
 
   it('shows a gate that a cycle left out as a diamond too', () => {

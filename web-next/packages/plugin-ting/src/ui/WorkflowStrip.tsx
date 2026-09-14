@@ -85,30 +85,44 @@ function BoxNode({ node }: { node: WorkflowNode }) {
       data-testid={`workflow-strip-node-${node.id}`}
       data-kind={node.kind}
       className={cn(
-        'niuu:flex niuu:w-[132px] niuu:shrink-0 niuu:flex-col niuu:gap-1 niuu:rounded-md niuu:px-3 niuu:py-2.5',
+        'niuu:flex niuu:w-[140px] niuu:shrink-0 niuu:flex-col niuu:gap-0.5 niuu:rounded-lg niuu:px-3 niuu:py-2.5',
         dashed
           ? 'niuu:border niuu:border-dashed niuu:border-border niuu:bg-transparent'
-          : 'niuu:border niuu:border-border niuu:bg-bg-elevated',
+          : 'niuu:border niuu:border-border-subtle niuu:bg-bg-primary',
       )}
     >
-      <span className="niuu:truncate niuu:text-[12px] niuu:font-semibold niuu:text-text-primary">
+      <span
+        className="niuu:truncate niuu:text-[12px] niuu:font-medium niuu:text-text-primary"
+        title={node.label}
+      >
         {node.label}
       </span>
-      <span className="niuu:truncate niuu:text-[10px] niuu:font-mono niuu:text-text-faint">
+      <span className="niuu:truncate niuu:text-[10.5px] niuu:text-text-muted" title={sub}>
         {sub}
       </span>
     </div>
   );
 }
 
-export function WorkflowStrip({ nodes, edges, className }: WorkflowStripProps) {
+export function WorkflowStrip({ nodes: allNodes, edges, className }: WorkflowStripProps) {
+  // Resources are knowledge bindings, not steps the run passes through.
+  const nodes = allNodes.filter((node) => node.kind !== 'resource');
+  const nodeIds = new Set(nodes.map((node) => node.id));
   const layers = topologicalSort(
     nodes.map((node) => node.id),
-    structuralWorkflowEdges(edges),
+    structuralWorkflowEdges(edges).filter(
+      (edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target),
+    ),
   );
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const placed = new Set(layers.flatMap((layer) => layer.nodeIds));
-  const unplaced = nodes.filter((node) => !placed.has(node.id));
+  // Nodes on a cycle have no topological depth; the builder's left-to-right
+  // positions still say how the author reads them, so they follow in that order.
+  const unplaced = nodes
+    .filter((node) => !placed.has(node.id))
+    .sort(
+      (left, right) => left.position.x - right.position.x || left.position.y - right.position.y,
+    );
 
   if (nodes.length === 0) {
     return (
@@ -123,6 +137,15 @@ export function WorkflowStrip({ nodes, edges, className }: WorkflowStripProps) {
 
   return (
     <div data-testid="workflow-strip" className={cn('niuu:font-sans', className)}>
+      {unplaced.length > 0 ? (
+        <p
+          data-testid="workflow-strip-loops"
+          className="niuu:m-0 niuu:mb-2 niuu:text-[10px] niuu:font-semibold niuu:uppercase niuu:tracking-wide niuu:text-critical"
+        >
+          Part of this workflow loops back: the steps after the connector repeat until a gate lets
+          them through.
+        </p>
+      ) : null}
       <div className="niuu:flex niuu:items-stretch niuu:gap-0 niuu:overflow-x-auto niuu:pb-2">
         {layers.map((layer, index) => (
           <div key={layer.depth} className="niuu:flex niuu:items-stretch">
@@ -138,23 +161,16 @@ export function WorkflowStrip({ nodes, edges, className }: WorkflowStripProps) {
           </div>
         ))}
 
-        {unplaced.length > 0 ? (
-          <div className="niuu:flex niuu:items-stretch">
-            <Connector />
-            <div className="niuu:flex niuu:flex-col niuu:gap-2" data-testid="workflow-strip-cycle">
-              <span className="niuu:text-[10px] niuu:font-semibold niuu:uppercase niuu:tracking-wide niuu:text-critical">
-                Loops back
-              </span>
-              {unplaced.map((node) =>
-                node.kind === 'gate' ? (
-                  <GateNode key={node.id} node={node} />
-                ) : (
-                  <BoxNode key={node.id} node={node} />
-                ),
-              )}
-            </div>
+        {unplaced.map((node, index) => (
+          <div
+            key={node.id}
+            className="niuu:flex niuu:items-stretch"
+            data-testid="workflow-strip-cycle"
+          >
+            {layers.length > 0 || index > 0 ? <Connector /> : null}
+            {node.kind === 'gate' ? <GateNode node={node} /> : <BoxNode node={node} />}
           </div>
-        ) : null}
+        ))}
       </div>
 
       <p className="niuu:m-0 niuu:mt-3 niuu:text-[11px] niuu:text-text-muted">
