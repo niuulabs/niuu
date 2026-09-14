@@ -7,7 +7,7 @@ const PLACEHOLDER =
   'Keep niuulabs/lexi-api shippable, work the LXA board in priority order, and ask me before anything deploys.';
 
 /** One sentence is enough: it becomes a draft realm the resident fills in. */
-export function SentenceComposer() {
+export function SentenceComposer({ rows = 1 }: { rows?: number } = {}) {
   const navigate = useNavigate();
   const [text, setText] = useState('');
   const ready = text.trim().length > 0;
@@ -29,7 +29,7 @@ export function SentenceComposer() {
         <Textarea
           aria-label="Describe the realm in one sentence"
           placeholder={PLACEHOLDER}
-          rows={1}
+          rows={rows}
           value={text}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => {

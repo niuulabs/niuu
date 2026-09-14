@@ -48,7 +48,7 @@ export function StarterHome({
               the rest and asks for what it cannot infer.
             </span>
           </div>
-          <SentenceComposer />
+          <SentenceComposer rows={2} />
         </section>
 
         <section className={CHOICE} data-testid="starter-templates">
