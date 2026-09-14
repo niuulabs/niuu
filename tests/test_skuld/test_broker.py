@@ -4292,6 +4292,7 @@ class TestHandleWebSocket:
     async def test_handle_websocket_no_transport(self, test_broker):
         """Returns error JSON when transport is not initialized."""
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         test_broker._transport = None
 
         await test_broker.handle_websocket(mock_ws)
@@ -4311,6 +4312,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         # First receive_json returns a message, second raises disconnect
         mock_ws.receive_json = AsyncMock(side_effect=[{"content": "hello"}, WebSocketDisconnect()])
 
@@ -4333,6 +4335,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
         await test_broker.handle_websocket(mock_ws)
@@ -4398,6 +4401,7 @@ class TestHandleWebSocket:
         test_broker._pending_permission_requests["perm-replay"] = pending
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
         await test_broker.handle_websocket(mock_ws)
@@ -4416,6 +4420,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         # Bad frame (non-JSON) -> valid message -> disconnect. The valid message after
         # the bad one MUST still be dispatched.
         mock_ws.receive_json = AsyncMock(
@@ -4451,6 +4456,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(
             side_effect=RuntimeError('WebSocket is not connected. Need to call "accept" first.')
         )
@@ -4472,6 +4478,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.send_json = AsyncMock(
             side_effect=RuntimeError('Cannot call "send" once a close message has been sent.')
         )
@@ -4490,6 +4497,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
         await test_broker.handle_websocket(mock_ws)
@@ -4523,6 +4531,7 @@ class TestHandleWebSocket:
         broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
         await broker.handle_websocket(mock_ws)
@@ -4550,6 +4559,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=[{"content": "hello"}, WebSocketDisconnect()])
 
         with caplog.at_level("ERROR"):
@@ -4577,6 +4587,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=RuntimeError("boom"))
 
         await test_broker.handle_websocket(mock_ws)
@@ -6196,6 +6207,7 @@ class TestBrokerRoomAdapter:
         b._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
         await b.handle_websocket(mock_ws)
@@ -6214,6 +6226,7 @@ class TestBrokerRoomAdapter:
         b._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
         await b.handle_websocket(mock_ws)

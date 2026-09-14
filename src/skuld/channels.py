@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from fastapi import WebSocketDisconnect
 
+from niuu.domain.history_control import history_gap
 from niuu.domain.outcome import parse_outcome_block
 from niuu.observability import get_observability
 from skuld.live_frames import prepare_live_frame
@@ -228,7 +229,13 @@ class WebSocketChannel(MessageChannel):
     """
 
     def __init__(
-        self, ws: object, *, show_internal: bool = False, max_frame_bytes: int | None = None
+        self,
+        ws: object,
+        *,
+        show_internal: bool = False,
+        max_frame_bytes: int | None = None,
+        history_protocol: int = 0,
+        history_bootstrap_max_frames: int = 256,
     ) -> None:
         """Initialize with a FastAPI WebSocket instance.
 
@@ -245,6 +252,29 @@ class WebSocketChannel(MessageChannel):
         self._open_block_type: str | None = None
         self._open_blocks: dict[tuple[str, str, str, str], str] = {}
         self._max_frame_bytes = max_frame_bytes
+        self._history_protocol = history_protocol
+        if history_protocol == 2 and (max_frame_bytes is None or history_bootstrap_max_frames <= 0):
+            raise ValueError("Protocol2 bootstrap requires positive count and byte limits")
+        self._bootstrap_max_frames = history_bootstrap_max_frames
+        self._bootstrap: list[str] | None = [] if history_protocol == 2 else None
+        self._bootstrap_bytes = 0
+        self._bootstrap_overflow = False
+
+    async def finish_history_bootstrap(self) -> None:
+        """Send only post-snapshot events, after the snapshot, in broadcast order.
+
+        The broker registers this channel synchronously AFTER capturing history.
+        Appends during awaited socket writes are buffered, count/byte bounded.
+        Overflow is a recovery control, never an incomplete successful replay.
+        """
+        while self._bootstrap:
+            wire = self._bootstrap.pop(0)
+            self._bootstrap_bytes -= len(wire.encode("utf-8"))
+            await self._ws.send_text(wire)
+        overflow = self._bootstrap_overflow
+        self._bootstrap = None
+        if overflow:
+            await self._ws.send_text(json.dumps(history_gap("snapshot_race")))
 
     def set_show_internal(self, visible: bool) -> None:
         """Update the per-channel filter for tool_use / tool_result events."""
@@ -270,7 +300,29 @@ class WebSocketChannel(MessageChannel):
         try:
             if self._max_frame_bytes is not None:
                 event = prepare_live_frame(event, max_bytes=self._max_frame_bytes)
-            await self._ws.send_text(json.dumps(event, ensure_ascii=False))
+            if self._history_protocol == 2 and event.get("code") == "live_frame_too_large":
+                event = history_gap("live_frame_too_large")
+            wire = json.dumps(
+                event,
+                ensure_ascii=False,
+                separators=(",", ":") if self._history_protocol == 2 else None,
+            )
+            if self._bootstrap is not None:
+                size = len(wire.encode("utf-8"))
+                if self._bootstrap_overflow:
+                    return
+                if (
+                    self._bootstrap_bytes + size > self._max_frame_bytes
+                    or len(self._bootstrap) >= self._bootstrap_max_frames
+                ):
+                    self._bootstrap.clear()
+                    self._bootstrap_bytes = 0
+                    self._bootstrap_overflow = True
+                    return
+                self._bootstrap.append(wire)
+                self._bootstrap_bytes += size
+                return
+            await self._ws.send_text(wire)
         except Exception as exc:
             if not _is_expected_ws_disconnect(exc):
                 raise

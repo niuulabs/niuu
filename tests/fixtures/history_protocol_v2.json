@@ -1,0 +1,222 @@
+{
+  "synthetic": true,
+  "session_id": "25ff9d87-cd99-4bf6-919b-d2bc80a4617d",
+  "initial": {
+    "turns": [
+      {
+        "id": "row-4",
+        "role": "assistant",
+        "content": "Synthetic text 4",
+        "parts": [],
+        "created_at": "2026-01-01T00:00:00+00:00"
+      },
+      {
+        "id": "row-5",
+        "role": "assistant",
+        "content": "Synthetic text 5",
+        "parts": [],
+        "created_at": "2026-01-01T00:00:00+00:00"
+      },
+      {
+        "id": "row-6",
+        "role": "assistant",
+        "content": "Synthetic text 6",
+        "parts": [],
+        "created_at": "2026-01-01T00:00:00+00:00"
+      },
+      {
+        "id": "row-7",
+        "role": "assistant",
+        "content": "Synthetic text 7",
+        "parts": [],
+        "created_at": "2026-01-01T00:00:00+00:00"
+      }
+    ],
+    "head_seq": 321,
+    "history_source": "gateway",
+    "history_protocol": 2,
+    "total_turns": 8,
+    "window_offset": 4,
+    "window_end": 8,
+    "page_kind": "recent",
+    "requested_window_offset": 4,
+    "requested_window_end": 8,
+    "page_complete": true,
+    "continuation_cursor": null,
+    "projection_revision": "text-items-1:0",
+    "has_more_before": true,
+    "older_cursor": "WzIsIjI1ZmY5ZDg3LWNkOTktNGJmNi05MTliLWQyYmM4MGE0NjE3ZCIsInRleHQtaXRlbXMtMTowIiwtMSw0LCIwMGUzZjRkZGQ3MzhkMzQyYTc2NGQwZDEwYzU5YTQ3NTZmZDY3YmQxYTRhMWRhMjllNDllY2E3ZDQ4YjU4N2E1Il0=",
+    "refresh_cursor": "WzIsIjI1ZmY5ZDg3LWNkOTktNGJmNi05MTliLWQyYmM4MGE0NjE3ZCIsInRleHQtaXRlbXMtMTowIiw0LDgsImViZWI0MDNiZDExNDNhMjUzMjMzMDc2ZTJiYzczMTlhYzNhMTAxYzJjY2FiZGNlNjYyNWE0YzljM2QwYWNmYjciXQ==",
+    "recent_window": true,
+    "detail": "shallow"
+  },
+  "older": {
+    "turns": [
+      {
+        "id": "row-0",
+        "role": "assistant",
+        "content": "Synthetic text 0",
+        "parts": [],
+        "created_at": "2026-01-01T00:00:00+00:00"
+      },
+      {
+        "id": "row-1",
+        "role": "assistant",
+        "content": "Synthetic text 1",
+        "parts": [],
+        "created_at": "2026-01-01T00:00:00+00:00"
+      },
+      {
+        "id": "row-2",
+        "role": "assistant",
+        "content": "Synthetic text 2",
+        "parts": [],
+        "created_at": "2026-01-01T00:00:00+00:00"
+      },
+      {
+        "id": "row-3",
+        "role": "assistant",
+        "content": "Synthetic text 3",
+        "parts": [],
+        "created_at": "2026-01-01T00:00:00+00:00"
+      }
+    ],
+    "head_seq": 321,
+    "history_source": "gateway",
+    "history_protocol": 2,
+    "total_turns": 8,
+    "window_offset": 0,
+    "window_end": 4,
+    "page_kind": "older",
+    "requested_window_offset": 0,
+    "requested_window_end": 4,
+    "page_complete": true,
+    "continuation_cursor": null,
+    "projection_revision": "text-items-1:0",
+    "has_more_before": false,
+    "older_cursor": null,
+    "refresh_cursor": "WzIsIjI1ZmY5ZDg3LWNkOTktNGJmNi05MTliLWQyYmM4MGE0NjE3ZCIsInRleHQtaXRlbXMtMTowIiwwLDQsIjAwZTNmNGRkZDczOGQzNDJhNzY0ZDBkMTBjNTlhNDc1NmZkNjdiZDFhNGExZGEyOWU0OWVjYTdkNDhiNTg3YTUiXQ==",
+    "recent_window": true,
+    "detail": "shallow"
+  },
+  "grown_refresh_pages": [
+    {
+      "turns": [
+        {
+          "id": "row-7",
+          "role": "assistant",
+          "content": "Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. ",
+          "parts": [],
+          "created_at": "2026-01-01T00:00:00+00:00"
+        }
+      ],
+      "head_seq": 321,
+      "history_source": "gateway",
+      "history_protocol": 2,
+      "total_turns": 8,
+      "window_offset": 7,
+      "window_end": 8,
+      "page_kind": "refresh",
+      "requested_window_offset": 4,
+      "requested_window_end": 8,
+      "page_complete": false,
+      "continuation_cursor": "WzIsIjI1ZmY5ZDg3LWNkOTktNGJmNi05MTliLWQyYmM4MGE0NjE3ZCIsInRleHQtaXRlbXMtMTowIiw0LDcsImYzMDYwZDZlM2NkN2YyNzdjNTNhOTRmYzRjYjMzMmNlZDQ5NDA1Mzc3ZTM5ZDEyZGJhZDhiZWU0MzI5MGIxMjQiXQ==",
+      "projection_revision": "text-items-1:0",
+      "has_more_before": true,
+      "older_cursor": "WzIsIjI1ZmY5ZDg3LWNkOTktNGJmNi05MTliLWQyYmM4MGE0NjE3ZCIsInRleHQtaXRlbXMtMTowIiwtMSw3LCJmMzA2MGQ2ZTNjZDdmMjc3YzUzYTk0ZmM0Y2IzMzJjZWQ0OTQwNTM3N2UzOWQxMmRiYWQ4YmVlNDMyOTBiMTI0Il0=",
+      "refresh_cursor": "WzIsIjI1ZmY5ZDg3LWNkOTktNGJmNi05MTliLWQyYmM4MGE0NjE3ZCIsInRleHQtaXRlbXMtMTowIiw3LDgsImViZWI0MDNiZDExNDNhMjUzMjMzMDc2ZTJiYzczMTlhYzNhMTAxYzJjY2FiZGNlNjYyNWE0YzljM2QwYWNmYjciXQ==",
+      "recent_window": true,
+      "detail": "shallow"
+    },
+    {
+      "turns": [
+        {
+          "id": "row-6",
+          "role": "assistant",
+          "content": "Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. ",
+          "parts": [],
+          "created_at": "2026-01-01T00:00:00+00:00"
+        }
+      ],
+      "head_seq": 321,
+      "history_source": "gateway",
+      "history_protocol": 2,
+      "total_turns": 8,
+      "window_offset": 6,
+      "window_end": 7,
+      "page_kind": "refresh",
+      "requested_window_offset": 4,
+      "requested_window_end": 7,
+      "page_complete": false,
+      "continuation_cursor": "WzIsIjI1ZmY5ZDg3LWNkOTktNGJmNi05MTliLWQyYmM4MGE0NjE3ZCIsInRleHQtaXRlbXMtMTowIiw0LDYsIjE5MjdmOWNiNDc0YzA5ZGJlOWQ1OGU2NjBjZWNiZTAyMjU5NWZhMjZhMjEwNzgyYmM0ZjhlYTQyMmYyMGViNzQiXQ==",
+      "projection_revision": "text-items-1:0",
+      "has_more_before": true,
+      "older_cursor": "WzIsIjI1ZmY5ZDg3LWNkOTktNGJmNi05MTliLWQyYmM4MGE0NjE3ZCIsInRleHQtaXRlbXMtMTowIiwtMSw2LCIxOTI3ZjljYjQ3NGMwOWRiZTlkNThlNjYwY2VjYmUwMjI1OTVmYTI2YTIxMDc4MmJjNGY4ZWE0MjJmMjBlYjc0Il0=",
+      "refresh_cursor": "WzIsIjI1ZmY5ZDg3LWNkOTktNGJmNi05MTliLWQyYmM4MGE0NjE3ZCIsInRleHQtaXRlbXMtMTowIiw2LDcsImYzMDYwZDZlM2NkN2YyNzdjNTNhOTRmYzRjYjMzMmNlZDQ5NDA1Mzc3ZTM5ZDEyZGJhZDhiZWU0MzI5MGIxMjQiXQ==",
+      "recent_window": true,
+      "detail": "shallow"
+    },
+    {
+      "turns": [
+        {
+          "id": "row-5",
+          "role": "assistant",
+          "content": "Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. ",
+          "parts": [],
+          "created_at": "2026-01-01T00:00:00+00:00"
+        }
+      ],
+      "head_seq": 321,
+      "history_source": "gateway",
+      "history_protocol": 2,
+      "total_turns": 8,
+      "window_offset": 5,
+      "window_end": 6,
+      "page_kind": "refresh",
+      "requested_window_offset": 4,
+      "requested_window_end": 6,
+      "page_complete": false,
+      "continuation_cursor": "WzIsIjI1ZmY5ZDg3LWNkOTktNGJmNi05MTliLWQyYmM4MGE0NjE3ZCIsInRleHQtaXRlbXMtMTowIiw0LDUsIjM0YTA2OWUwNWE1NWY1ZmQ1M2Y5OTdkNWQ4ZmJhNWUwYjQxM2I3ZDNkY2JmMjc2NmMxYmEyYjc1MmYxNmRmZTEiXQ==",
+      "projection_revision": "text-items-1:0",
+      "has_more_before": true,
+      "older_cursor": "WzIsIjI1ZmY5ZDg3LWNkOTktNGJmNi05MTliLWQyYmM4MGE0NjE3ZCIsInRleHQtaXRlbXMtMTowIiwtMSw1LCIzNGEwNjllMDVhNTVmNWZkNTNmOTk3ZDVkOGZiYTVlMGI0MTNiN2QzZGNiZjI3NjZjMWJhMmI3NTJmMTZkZmUxIl0=",
+      "refresh_cursor": "WzIsIjI1ZmY5ZDg3LWNkOTktNGJmNi05MTliLWQyYmM4MGE0NjE3ZCIsInRleHQtaXRlbXMtMTowIiw1LDYsIjE5MjdmOWNiNDc0YzA5ZGJlOWQ1OGU2NjBjZWNiZTAyMjU5NWZhMjZhMjEwNzgyYmM0ZjhlYTQyMmYyMGViNzQiXQ==",
+      "recent_window": true,
+      "detail": "shallow"
+    },
+    {
+      "turns": [
+        {
+          "id": "row-4",
+          "role": "assistant",
+          "content": "Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. Synthetic growing text. ",
+          "parts": [],
+          "created_at": "2026-01-01T00:00:00+00:00"
+        }
+      ],
+      "head_seq": 321,
+      "history_source": "gateway",
+      "history_protocol": 2,
+      "total_turns": 8,
+      "window_offset": 4,
+      "window_end": 5,
+      "page_kind": "refresh",
+      "requested_window_offset": 4,
+      "requested_window_end": 5,
+      "page_complete": true,
+      "continuation_cursor": null,
+      "projection_revision": "text-items-1:0",
+      "has_more_before": true,
+      "older_cursor": "WzIsIjI1ZmY5ZDg3LWNkOTktNGJmNi05MTliLWQyYmM4MGE0NjE3ZCIsInRleHQtaXRlbXMtMTowIiwtMSw0LCIwMGUzZjRkZGQ3MzhkMzQyYTc2NGQwZDEwYzU5YTQ3NTZmZDY3YmQxYTRhMWRhMjllNDllY2E3ZDQ4YjU4N2E1Il0=",
+      "refresh_cursor": "WzIsIjI1ZmY5ZDg3LWNkOTktNGJmNi05MTliLWQyYmM4MGE0NjE3ZCIsInRleHQtaXRlbXMtMTowIiw0LDUsIjM0YTA2OWUwNWE1NWY1ZmQ1M2Y5OTdkNWQ4ZmJhNWUwYjQxM2I3ZDNkY2JmMjc2NmMxYmEyYjc1MmYxNmRmZTEiXQ==",
+      "recent_window": true,
+      "detail": "shallow"
+    }
+  ],
+  "expected_refreshed_ids": [
+    "row-4",
+    "row-5",
+    "row-6",
+    "row-7"
+  ]
+}

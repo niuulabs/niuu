@@ -888,6 +888,8 @@ oauth:
 
 # Application configuration
 config:
+  conversationRecentMaxTurns: 15
+  conversationRecentMaxBytes: 262144
   # -- Log level (debug, info, warning, error)
   logLevel: info
   # -- Log format (json, text)

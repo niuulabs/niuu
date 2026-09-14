@@ -204,6 +204,25 @@ def _ensure_remote_success(response: httpx.Response) -> None:
     raise HTTPException(status_code=response.status_code, detail=detail[:1000])
 
 
+def _ensure_history_success(response: httpx.Response) -> None:
+    """Preserve machine-readable history recovery through the aggregate facade."""
+    if response.status_code < 400:
+        return
+    try:
+        payload = response.json()
+        detail = payload.get("detail") if isinstance(payload, dict) else None
+    except ValueError:
+        detail = None
+    if isinstance(detail, dict) and detail.get("code") in {
+        "history_cursor_invalid",
+        "history_busy",
+        "history_page_too_large",
+    }:
+        headers = {"Retry-After": "1"} if detail["code"] == "history_busy" else None
+        raise HTTPException(response.status_code, detail, headers=headers)
+    _ensure_remote_success(response)
+
+
 def _uses_embedded_transport(instance: RegisteredInstance) -> bool:
     return str(instance.config.get("transport", "")).strip().lower() == "embedded"
 
@@ -1719,8 +1738,12 @@ def create_volundr_router(
             embedded_app=embedded_forge_app,
         )
         t_remote = time.perf_counter()
-        _ensure_remote_success(response)
+        _ensure_history_success(response)
         payload = response.json()
+        if isinstance(payload, dict) and payload.get("history_protocol") == 2:
+            # The owner fitted the WHOLE page envelope to the requested byte
+            # limit. Adding aggregate timings afterwards can exceed that limit.
+            return payload
         t_json = time.perf_counter()
         if isinstance(payload, dict):
             prep = dict(payload.get("_prep") or {})
@@ -1732,6 +1755,31 @@ def create_volundr_router(
             prep["server_total_ms"] = round((t_json - t0) * 1000, 1)
             payload["_prep"] = prep
         return payload if isinstance(payload, dict) else {"turns": []}
+
+    @router.get("/sessions/{session_id}/conversation/turns/{turn_id}")
+    async def get_conversation_item(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        turn_id: str = Path(description="Stable conversation row identity"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/conversation/turns/{quote(turn_id, safe='')}",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_history_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
 
     @router.get("/sessions/{session_id}/tool-result/{tool_use_id}")
     async def get_tool_result(

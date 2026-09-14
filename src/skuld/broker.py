@@ -76,6 +76,7 @@ from skuld.conversation_models import (  # noqa: F401
     SUMMARY_TIMEOUT_SECONDS,
     ConversationTurn,
 )
+from skuld.conversation_read import history_write
 from skuld.delivery_claims import claim_message, settle_message
 from skuld.delivery_errors import DeliveryNotAcceptedError
 from skuld.effort import EffortControlMixin, effort_argument
@@ -2909,6 +2910,7 @@ class Broker(
             auto_approved=True,
         )
 
+    @history_write
     async def _handle_cli_event(self, data: dict) -> None:
         """Forward a CLI event to all connected channels."""
         event_type = data.get("type", "unknown")
@@ -3509,6 +3511,7 @@ class Broker(
         "discover_slash_commands": "slash_commands",
     }
 
+    @history_write
     async def _dispatch_browser_message(
         self,
         data: dict,

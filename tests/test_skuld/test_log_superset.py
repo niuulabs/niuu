@@ -168,6 +168,8 @@ class TestSupersetInvariant:
 
 
 class _FakeWebsocket:
+    query_params = {}
+
     """A minimal WebSocket stand-in that records every per-channel ``send_json``
     and breaks ``handle_websocket``'s receive loop with a clean disconnect so we
     can assert on exactly the first-connect frames a real browser would see."""

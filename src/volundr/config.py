@@ -1640,6 +1640,8 @@ class Settings(BaseSettings):
 
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     projects: ProjectsConfig = Field(default_factory=ProjectsConfig)
+    conversation_recent_max_turns: int = Field(default=15, gt=0)
+    conversation_recent_max_bytes: int = Field(default=256 * 1024, ge=4096)
     server_host: str = Field(
         default="127.0.0.1",
         validation_alias=AliasChoices("server_host", "NIUU_SERVER_HOST"),

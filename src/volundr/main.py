@@ -958,6 +958,8 @@ def create_app(
                 server_public_host=settings.server_public_host,
                 openshell_internal_gateway_url=settings.openshell_internal_gateway_url,
                 project_service=project_service,
+                history_max_turns=settings.conversation_recent_max_turns,
+                history_max_bytes=settings.conversation_recent_max_bytes,
             )
             app.include_router(forge_router)
             app.include_router(create_resident_runtimes_router(resident_runtime_service))

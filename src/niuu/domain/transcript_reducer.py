@@ -53,6 +53,7 @@ from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
 from niuu.domain.conversation_timeline import TIMELINE_KEY, project_timeline, stamp_parts, timeline
+from niuu.domain.history_control import is_history_control
 
 # Deterministic namespace for folded-turn ids (stable across reloads AND across paths).
 _TURN_NAMESPACE = uuid.UUID("6f2d2e2a-7b1c-4e8a-9d3f-0a1b2c3d4e5f")
@@ -145,7 +146,7 @@ def is_per_connect_ephemeral(kind: str, payload: dict | None) -> bool:
     such a frame; a ``system`` welcome is identified by the ``PER_CONNECT_MARKER``
     payload key the broker stamps (so genuine CLI ``system`` frames are unaffected).
     """
-    if kind in PER_CONNECT_EPHEMERAL_KINDS:
+    if kind in PER_CONNECT_EPHEMERAL_KINDS or is_history_control(kind, payload):
         return True
     return isinstance(payload, dict) and bool(payload.get(PER_CONNECT_MARKER))
 
@@ -843,6 +844,10 @@ def reduce_frames(
     for r in rows:
         k = r.kind
         p = r.payload if isinstance(r.payload, dict) else {}
+        # Exclude before any accumulator/import boundary transition. A failed
+        # viewer history delivery must never terminate the running agent span.
+        if is_per_connect_ephemeral(k, p):
+            continue
         metadata = p.get("metadata")
         is_imported = isinstance(metadata, dict) and isinstance(metadata.get("native_import"), dict)
         # An imported snapshot is a distinct historical prefix. If it ended

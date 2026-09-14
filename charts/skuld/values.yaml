@@ -223,6 +223,8 @@ git:
 
 # Broker configuration (Skuld application settings)
 broker:
+  historyReadTimeoutSeconds: 2.0
+  historyBootstrapMaxFrames: 256
   # Native question proof bounds and optional Muse executable override.
   tmuxQuestionTranscriptMaxBytes: 1048576
   tmuxQuestionResultHistoryLimit: 128

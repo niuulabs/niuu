@@ -10,7 +10,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path as FilePath
 from typing import Any
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import httpx
@@ -18,12 +18,17 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Res
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
 from niuu.domain.services.token_scope import OPENSHELL_SESSION_TOKEN_USE, require_scope
 from niuu.domain.session_endpoint import public_session_endpoint
 from niuu.domain.text_projection import projection_revision
 from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turns, is_elided_input
-from skuld.conversation_snapshot import prepare_recent_snapshot
+from skuld.conversation_snapshot import (
+    ConversationSnapshotTooLargeError,
+    prepare_history_page,
+    prepare_recent_snapshot,
+)
 from skuld.tool_result_preview import (
     PreviewCache,
     PreviewUnavailableError,
@@ -1505,6 +1510,8 @@ def create_router(
     openshell_internal_gateway_url: str = DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL,
     preview_cache: PreviewCache | None = None,
     project_service=None,
+    history_max_turns: int = 15,
+    history_max_bytes: int = 256 * 1024,
 ) -> APIRouter:
     """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
     router = APIRouter(prefix=prefix)
@@ -2875,6 +2882,19 @@ def create_router(
 
         # Build WS URL with access token
         ws_url = session.chat_endpoint
+        # An instruction sender needs delivery ACKs, not the whole conversation.
+        # Old proxies only forward history=recent, still avoiding full replay;
+        # protocol2 gateways honor none and omit history entirely. Never resend.
+        endpoint = urlsplit(ws_url)
+        query = [
+            (k, v)
+            for k, v in parse_qsl(endpoint.query, keep_blank_values=True)
+            if k not in {"history", "history_protocol", "history_delivery"}
+        ]
+        query.extend(
+            (("history", "recent"), ("history_protocol", "2"), ("history_delivery", "none"))
+        )
+        ws_url = urlunsplit(endpoint._replace(query=urlencode(query)))
         auth = request.headers.get("authorization", "")
         token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
         if token:
@@ -3086,6 +3106,9 @@ def create_router(
                 "appending re-served turns as phantom messages."
             ),
         ),
+        history_protocol: int = Query(0),
+        cursor: str | None = Query(None),
+        turn_id: str | None = Query(None),
     ) -> dict:
         """Return conversation history from a live session or stopped-session workspace.
 
@@ -3094,6 +3117,15 @@ def create_router(
         and the durable-log rebuild fallback (elided here), so the shape is
         identical regardless of which path served the transcript.
         """
+        if cursor and history_protocol != 2:
+            raise HTTPException(400, "cursor requires history_protocol=2")
+        if history_protocol == 2 and (before or after >= 0 or after_id or turn_id):
+            raise HTTPException(
+                400, "Protocol2 cursors cannot be mixed with legacy seek parameters"
+            )
+        if history_protocol == 2:
+            limit = min(limit or history_max_turns, history_max_turns)
+            max_bytes = min(max_bytes or history_max_bytes, history_max_bytes)
         shallow = detail == SHALLOW_DETAIL
         timings: dict[str, float] = {}
 
@@ -3107,6 +3139,49 @@ def create_router(
             if not isinstance(payload, dict) or not isinstance(payload.get("turns"), list):
                 return payload
             all_turns = payload["turns"]
+            if turn_id is not None:
+                turn = next((t for t in all_turns if t.get("id") == turn_id), None)
+                if turn is None:
+                    raise HTTPException(404, "History item no longer exists in this projection")
+                return {
+                    "turn": json_text_safe(turn),
+                    "projection_revision": payload.get("projection_revision")
+                    or projection_revision(all_turns),
+                }
+            if history_protocol == 2:
+                if payload.get("history_protocol") == 2:
+                    # The gateway applied the cursor to the COMPLETE projection.
+                    # Re-slicing this page would corrupt offsets/fingerprints.
+                    return payload
+                try:
+                    return prepare_history_page(
+                        {
+                            **payload,
+                            "head_seq": payload.get("head_seq"),
+                            "history_source": "legacy_gateway"
+                            if fetch_ms is not None
+                            else "archive",
+                        },
+                        session_id=str(session_id),
+                        max_turns=limit,
+                        max_bytes=max_bytes,
+                        cursor=cursor,
+                    )
+                except InvalidHistoryCursorError as exc:
+                    raise HTTPException(
+                        409,
+                        {
+                            "code": "history_cursor_invalid",
+                            "recovery": "recent",
+                            "history_protocol": 2,
+                        },
+                    ) from exc
+                except ConversationSnapshotTooLargeError as exc:
+                    raise HTTPException(
+                        413, {"code": "history_page_too_large", "recovery": "retry"}
+                    ) from exc
+                except ValueError as exc:
+                    raise HTTPException(400, "Malformed history cursor") from exc
             # Compute over the complete prefix BEFORE pagination/shallow elision.
             payload = {
                 **payload,
@@ -3188,6 +3263,12 @@ def create_router(
                 detail=f"Session not found: {session_id}",
             )
 
+        principal = await _optional_principal(request, strict=True)
+        try:
+            await forge.ensure_access(session, principal)
+        except SessionAccessDeniedError as exc:
+            raise HTTPException(403, f"Access denied to session {session_id}") from exc
+
         try:
             if session.chat_endpoint:
                 t_tgt = time.perf_counter()
@@ -3210,18 +3291,37 @@ def create_router(
                 # the client to the durable fallback, flipping the served turn space under a
                 # cached client. Give a busy-but-alive broker 20s to answer; a DEAD pod still
                 # fails fast (3s connect).
+                params: dict[str, str | int] = {"detail": detail}
+                if history_protocol == 2:
+                    params.update(history_protocol=2, limit=limit, max_bytes=max_bytes)
+                    if cursor:
+                        params["cursor"] = cursor
+                if turn_id is not None:
+                    params["turn_id"] = turn_id
                 async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=3.0)) as client:
                     response = await client.get(
                         proxy_url,
                         headers=headers,
-                        params={"detail": detail},
+                        params=params,
                     )
+                    if history_protocol == 2 and response.status_code != 200:
+                        # A typed stale/busy response must not silently select a
+                        # different history source and pretend its cursor worked.
+                        try:
+                            error = response.json().get("detail", "History unavailable")
+                        except (ValueError, AttributeError):
+                            error = "History unavailable"
+                        raise HTTPException(response.status_code, error)
                     response.raise_for_status()
                     live = response.json()
                     # Broker round-trip: build + (source) elide + serialize + localhost transfer +
                     # JSON parse. For an old broker that ignores `detail` this is the FULL payload.
                     fetch_ms = (time.perf_counter() - t_fetch) * 1000.0
-                    if _live_transcript_is_renderable(live):
+                    if isinstance(live, dict) and (
+                        _live_transcript_is_renderable(live)
+                        or live.get("history_protocol") == 2
+                        or (turn_id is not None and live.get("turns"))
+                    ):
                         # FAULT C: a resumed/restarted broker can be desynced from
                         # the durable log and serve FEWER turns than the durable
                         # rebuild (partial history for a running session). Only when
@@ -3241,9 +3341,16 @@ def create_router(
                             isinstance(live, dict)
                             and (live.get("is_active") or (live.get("last_activity") or ""))
                         )
-                        if not (is_streaming or _live_body_has_in_progress_turn(live)):
+                        if not (
+                            is_streaming
+                            or live.get("history_has_in_progress")
+                            or _live_body_has_in_progress_turn(live)
+                            or turn_id is not None
+                        ):
                             live_turns = live.get("turns") if isinstance(live, dict) else None
                             live_count = len(live_turns) if isinstance(live_turns, list) else 0
+                            if live.get("history_protocol") == 2:
+                                live_count = live["total_turns"]
                             # CHEAP GATE + OPTIMISTIC OPEN: detecting a desync (broker serving
                             # fewer turns than the durable log) needs the durable turn count, but
                             # rebuilding the whole transcript for it is ~4s on a big session. Cache
@@ -3257,7 +3364,11 @@ def create_router(
                             warm = cached is not None and seq > 0 and cached[0] == seq
                             durable_count = cached[1] if warm and cached else None
                             durable_tail = cached[2] if warm and cached else None
-                            live_tail = _last_settled_turn_id(live_turns)
+                            live_tail = (
+                                live.get("history_settled_tail_id")
+                                if live.get("history_protocol") == 2
+                                else _last_settled_turn_id(live_turns)
+                            )
                             if durable_count is None:
                                 # COLD: serve live immediately; warm the count off the request path.
                                 timings["fault_c_optimistic"] = 1.0
@@ -3352,6 +3463,23 @@ def create_router(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(e),
             )
+
+    @router.get("/sessions/{session_id}/conversation/turns/{turn_id}", tags=["Sessions"])
+    async def get_conversation_item(request: Request, session_id: UUID, turn_id: str) -> dict:
+        """Explicit full-item expansion, never used for automatic history recovery."""
+        return await get_conversation(
+            request=request,
+            session_id=session_id,
+            detail="full",
+            limit=0,
+            before=0,
+            after=-1,
+            max_bytes=0,
+            after_id=None,
+            history_protocol=0,
+            cursor=None,
+            turn_id=turn_id,
+        )
 
     async def _fetch_full_tool_result(
         request: Request,

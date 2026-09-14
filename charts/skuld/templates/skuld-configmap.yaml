@@ -38,6 +38,8 @@ data:
     skip_permissions: {{ .Values.broker.skipPermissions }}
     agent_teams: {{ .Values.broker.agentTeams | default false }}
     cli_type: {{ .Values.broker.cliType | default "claude" | quote }}
+    history_read_timeout_seconds: {{ .Values.broker.historyReadTimeoutSeconds | default 2.0 }}
+    history_bootstrap_max_frames: {{ .Values.broker.historyBootstrapMaxFrames | default 256 }}
     codex_auth:
       adapter: {{ dig "codexAuth" "adapter" "skuld.codex_auth.HostCodexAuthProvider" .Values.broker | quote }}
       kwargs: {{ dig "codexAuth" "kwargs" dict .Values.broker | toJson }}

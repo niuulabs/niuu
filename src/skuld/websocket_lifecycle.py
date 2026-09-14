@@ -11,14 +11,16 @@ from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from niuu.domain.conversation_timeline import project_timeline
+from niuu.domain.history_control import history_gap
 from niuu.domain.text_projection import projection_revision
 from niuu.domain.transcript_reducer import PER_CONNECT_MARKER
 from skuld.channels import WebSocketChannel, _is_expected_ws_disconnect
 from skuld.control_errors import control_error_frame
+from skuld.conversation_read import conversation_rows, wait_history_quiet
 from skuld.conversation_snapshot import (
     ConversationSnapshotTooLargeError,
     prepare_conversation_snapshot,
+    prepare_history_page,
     prepare_recent_snapshot,
 )
 from skuld.websocket_auth import (
@@ -144,12 +146,17 @@ class WebSocketLifecycleMixin:
         # FR-7 / INV-10) — NOT the hardcoded WebSocketChannel default — so the live
         # channel, the replay tail, and the cold-read all read the same default and
         # move together when it is flipped.
+        protocol2 = websocket.query_params.get("history_protocol") == "2"
+        no_history = protocol2 and websocket.query_params.get("history_delivery") == "none"
         channel = WebSocketChannel(
             websocket,
             show_internal=self._settings.default_show_internal,
             max_frame_bytes=self._settings.live_frame_max_bytes,
+            history_protocol=2 if protocol2 else 0,
+            history_bootstrap_max_frames=self._settings.history_bootstrap_max_frames,
         )
-        self._channels.add(channel)
+        if not protocol2:
+            self._channels.add(channel)
         conn_count = self._channels.count
         logger.info("WebSocket connected, total channels: %d", conn_count)
 
@@ -216,49 +223,46 @@ class WebSocketLifecycleMixin:
             if self._transport:
                 caps = {"type": "capabilities", **asdict(self._transport.capabilities)}
                 caps["room_prompt_resend"] = self._room_bridge is not None
+                caps["history_protocol"] = 2
                 if not await self._safe_send_broker_frame_to(websocket, caps):
                     return
                 logger.debug("handle_websocket: capabilities sent")
 
-            # Replay conversation history so late-joining browsers see
-            # earlier messages (including the initial prompt)
-            # Whole-truth unification: replay completed turns PLUS the in-flight turn so a
-            # reconnect mid-run reconstructs the FULL truth (not just new frames from now on).
-            in_progress_turn = self._serialize_in_progress_turn()
-            if self._conversation_turns or in_progress_turn is not None:
-                recent_requested = websocket.query_params.get("history") == "recent"
-                # Projection is read-only. Do not deep-copy heavy tool payloads outside
-                # the requested recent window. Snapshot preparation owns any elision.
-                replay_turns = [vars(t).copy() for t in self._conversation_turns]
-                if in_progress_turn is not None:
-                    replay_turns.append(in_progress_turn)
-                replay_turns = project_timeline(replay_turns, self.session_id)
-                total_turns = len(replay_turns)
-                if recent_requested:
-                    replay_turns = replay_turns[-self._settings.conversation_recent_max_turns :]
-                # Revision only needs identities and repair metadata, not the potentially
-                # enormous text/tool payloads outside the requested window.
-                revision_turns = [
-                    {"id": t.id, "metadata": t.metadata, "parts": t.parts}
-                    for t in self._conversation_turns
-                ]
-                if in_progress_turn is not None:
-                    revision_turns.append(in_progress_turn)
-                frame = {
-                    "type": "conversation_history",
-                    "turns": replay_turns,
-                    "projection_revision": projection_revision(revision_turns),
-                    "head_seq": self._event_log_seq,
-                }
-                logger.info(
-                    "Replaying %d recent=%s conversation turns", len(replay_turns), recent_requested
-                )
+            # Protocol2 readers wait for a coherent state, without locking or
+            # delaying writers. Register only AFTER synchronous capture so events
+            # included in history cannot also be buffered as post-snapshot deltas.
+            snapshot = None
+            gap = None
+            if not no_history:
                 try:
-                    if recent_requested:
-                        frame.update(
-                            total_turns=total_turns,
-                            window_offset=total_turns - len(replay_turns),
+                    if protocol2:
+                        await wait_history_quiet(self)
+                    replay_turns = conversation_rows(self)
+                    recent_requested = (
+                        protocol2 or websocket.query_params.get("history") == "recent"
+                    )
+                    frame = {
+                        "type": "conversation_history",
+                        "turns": replay_turns,
+                        "projection_revision": projection_revision(replay_turns),
+                        "head_seq": self._event_log_seq,
+                    }
+                    logger.info(
+                        "Replaying %d recent=%s conversation turns",
+                        len(replay_turns),
+                        recent_requested,
+                    )
+                    if protocol2:
+                        snapshot = prepare_history_page(
+                            {**frame, "history_source": "gateway"},
+                            session_id=self.session_id,
+                            max_bytes=min(
+                                self._settings.conversation_recent_max_bytes,
+                                self._settings.conversation_snapshot_max_bytes,
+                            ),
+                            max_turns=self._settings.conversation_recent_max_turns,
                         )
+                    elif replay_turns and recent_requested:
                         snapshot = prepare_recent_snapshot(
                             frame,
                             max_bytes=min(
@@ -267,27 +271,37 @@ class WebSocketLifecycleMixin:
                             ),
                             max_turns=self._settings.conversation_recent_max_turns,
                         )
-                    else:
+                    elif replay_turns:
                         snapshot = prepare_conversation_snapshot(
                             frame, max_bytes=self._settings.conversation_snapshot_max_bytes
                         )
-                except ConversationSnapshotTooLargeError as exc:
+                except (ConversationSnapshotTooLargeError, TimeoutError) as exc:
                     logger.warning("WebSocket conversation replay requires REST: %s", exc)
-                    if not await self._safe_send_broker_frame_to(
-                        websocket,
-                        {
+                    if protocol2:
+                        gap = history_gap(
+                            "snapshot_race"
+                            if isinstance(exc, TimeoutError)
+                            else "snapshot_too_large",
+                            head_seq=self._event_log_seq,
+                        )
+                    else:
+                        gap = {
                             "type": "error",
                             "code": "conversation_history_too_large",
                             "content": (
                                 "Conversation history is too large for WebSocket replay. "
                                 "Reload history through REST."
                             ),
-                        },
-                    ):
-                        return
-                else:
-                    if not await self._safe_browser_send_json(websocket, snapshot):
-                        return
+                            PER_CONNECT_MARKER: True,
+                        }
+            if protocol2:
+                self._channels.add(channel)
+            if snapshot is not None:
+                if not await self._safe_browser_send_json(websocket, snapshot):
+                    return
+            if gap is not None:
+                if not await self._safe_send_broker_frame_to(websocket, gap):
+                    return
 
             # Send current room state to late-joining browsers when room mode active
             if self._room_bridge is not None:
@@ -365,6 +379,9 @@ class WebSocketLifecycleMixin:
                     }
                     if not await self._safe_browser_send_json(websocket, frame):
                         return
+
+            if protocol2:
+                await channel.finish_history_bootstrap()
 
             # Handle messages from browser
             while True:

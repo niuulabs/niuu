@@ -720,6 +720,8 @@ class TestConfiguredVisibilityDefaultParityINV10:
         broker._transport = _T()  # type: ignore[assignment]
 
         class _StubWS:
+            query_params = {}
+
             async def accept(self) -> None:
                 return None
 

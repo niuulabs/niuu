@@ -23,11 +23,13 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from niuu.build_identity import build_identity
-from niuu.domain.conversation_timeline import project_timeline
+from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
 from niuu.domain.text_projection import projection_revision
 from skuld.conversation_models import ConversationTurn
+from skuld.conversation_read import conversation_rows, wait_history_quiet
 from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turn, is_elided_input
+from skuld.conversation_snapshot import ConversationSnapshotTooLargeError, prepare_history_page
 from skuld.event_log import FORGE_SESSIONS_PATH
 from skuld.file_routes import register_file_routes
 from skuld.path_security import (
@@ -254,13 +256,27 @@ async def get_aggregate_logs(
 
 
 @app.get("/api/conversation/history")
-async def get_conversation_history(detail: str = "full") -> dict:
+async def get_conversation_history(
+    detail: str = "full",
+    history_protocol: int = 0,
+    limit: int = 0,
+    max_bytes: int = 0,
+    cursor: str | None = None,
+    turn_id: str | None = None,
+) -> dict:
     """Return the conversation history with activity state.
 
     ``detail=shallow`` elides heavy ``tool_result`` content to lazy-load
     placeholders (see ``conversation_shallow``); the client fetches an
     individual result on demand via ``/api/conversation/tool-result/{id}``.
     """
+    if history_protocol == 2:
+        try:
+            await wait_history_quiet(broker)
+        except TimeoutError as exc:
+            raise HTTPException(
+                503, {"code": "history_busy", "recovery": "retry"}, headers={"Retry-After": "1"}
+            ) from exc
     shallow = detail == SHALLOW_DETAIL
     is_active = (
         broker._transport is not None
@@ -276,38 +292,27 @@ async def get_conversation_history(detail: str = "full") -> dict:
         elif broker._pending_reasoning_text:
             last_activity = "Thinking..."
 
-    def _serialize_turn(turn: ConversationTurn) -> dict:
-        d = asdict(turn)
-        # Omit optional participant fields when absent to keep JSON backward-compatible
-        if d["participant_id"] is None:
-            del d["participant_id"]
-        if d["participant_meta"] is None:
-            del d["participant_meta"]
-        if d["thread_id"] is None:
-            del d["thread_id"]
-        # Always include visibility so clients can rely on it being present
-        return d
-
-    # PERF PROFILE (server-side): the open latency the client sees is mostly here. Time the two
-    # phases SEPARATELY — the `asdict` BUILD (a deep copy of every turn incl. the heavy tool_result
-    # content) vs the shallow ELIDE — because `asdict` runs on the FULL payload BEFORE the elide
-    # shrinks it, so a shallow request still pays the full build/serialize cost. If build_ms
-    # dominates, the real fix is eliding BEFORE asdict (never materialize the heavy content), not
-    # the transfer size. `_prep` rides in the response so volundr + the client see the breakdown.
     t_build = time.perf_counter()
-    turns = [_serialize_turn(t) for t in broker._conversation_turns]
-    # Whole-truth unification: append the in-flight turn so a first connect / other device sees
-    # the running turn's tools+text immediately (not just the is_active/last_activity snippet).
-    in_progress_turn = broker._serialize_in_progress_turn()
-    if in_progress_turn is not None:
-        turns.append(in_progress_turn)
-    turns = project_timeline(turns, broker.session_id)
-    turns = json_text_safe(turns)
+    turns = conversation_rows(broker, omit_empty_participants=True)
+    revision = projection_revision(turns)
+    settled = [
+        t
+        for t in turns
+        if not t.get("in_progress") and (t.get("metadata") or {}).get("status") != "in_progress"
+    ]
+    history_state = {
+        "history_has_in_progress": len(settled) != len(turns),
+        "history_settled_tail_id": settled[-1].get("id") if settled else None,
+    }
+    if turn_id is not None:
+        turns = [turn for turn in turns if turn.get("id") == turn_id]
+        if not turns:
+            raise HTTPException(404, "History item no longer exists in this projection")
     last_activity = json_text_safe(last_activity)
     build_ms = (time.perf_counter() - t_build) * 1000.0
 
     elide_ms = 0.0
-    if shallow:
+    if shallow and history_protocol != 2:
         t_elide = time.perf_counter()
         turns = [elide_turn(d) for d in turns]
         elide_ms = (time.perf_counter() - t_elide) * 1000.0
@@ -326,9 +331,10 @@ async def get_conversation_history(detail: str = "full") -> dict:
         build_ms,
         elide_ms,
     )
-    return {
+    result = {
         "turns": turns,
-        "projection_revision": projection_revision(turns),
+        "projection_revision": revision,
+        "head_seq": broker._event_log_seq,
         "is_active": is_active,
         "last_activity": last_activity,
         "_prep": prep,
@@ -346,6 +352,34 @@ async def get_conversation_history(detail: str = "full") -> dict:
             else None
         ),
     }
+    if history_protocol != 2:
+        if cursor:
+            raise HTTPException(400, "cursor requires history_protocol=2")
+        return json_text_safe(result)
+    if turn_id is not None or limit < 0 or max_bytes < 0:
+        raise HTTPException(400, "Invalid history page request")
+    try:
+        return prepare_history_page(
+            {**result, **history_state, "history_source": "gateway"},
+            session_id=broker.session_id,
+            max_turns=min(
+                limit or broker._settings.conversation_recent_max_turns,
+                broker._settings.conversation_recent_max_turns,
+            ),
+            max_bytes=min(
+                max_bytes or broker._settings.conversation_recent_max_bytes,
+                broker._settings.conversation_recent_max_bytes,
+            ),
+            cursor=cursor,
+        )
+    except InvalidHistoryCursorError as exc:
+        raise HTTPException(
+            409, {"code": "history_cursor_invalid", "recovery": "recent", "history_protocol": 2}
+        ) from exc
+    except ConversationSnapshotTooLargeError as exc:
+        raise HTTPException(413, {"code": "history_page_too_large", "recovery": "retry"}) from exc
+    except ValueError as exc:
+        raise HTTPException(400, "Malformed history cursor") from exc
 
 
 @app.get("/api/conversation/tool-result/{tool_use_id}")

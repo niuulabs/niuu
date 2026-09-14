@@ -753,6 +753,16 @@ class SkuldSettings(BaseSettings):
         default=256 * 1024, ge=1024, description="Byte budget for recent reconnect activity."
     )
     live_frame_max_bytes: int = Field(default=900 * 1024, ge=1024)
+    history_read_timeout_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        description="Bounded wait for a coherent protocol2 snapshot; never blocks writers.",
+    )
+    history_bootstrap_max_frames: int = Field(
+        default=256,
+        gt=0,
+        description="Maximum queued live frames while sending a protocol2 snapshot.",
+    )
     # Native results are retained whole before the browser projection elides them.
     muse_bin: str = Field(
         default="",

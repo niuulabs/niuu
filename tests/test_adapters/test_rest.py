@@ -720,7 +720,11 @@ class TestSessionMessages:
         assert body["status"] == "pending"
         assert body["delivery"] == "pending"
         assert fake_connect.calls == [
-            ("ws://localhost:8080/s/message-session/session", {"open_timeout": 10})
+            (
+                "ws://localhost:8080/s/message-session/session"
+                "?history=recent&history_protocol=2&history_delivery=none",
+                {"open_timeout": 10},
+            )
         ]
         # BUG-3: the outbound user frame now carries a request_id correlating with the
         # broker's delivery ACK. The endpoint echoes the same request_id in its body,
