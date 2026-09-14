@@ -228,6 +228,25 @@ describe('WorkflowLaunchModal', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('backend exploded');
   });
 
+  it('clears the draft when the modal is dismissed', () => {
+    const onOpenChange = vi.fn();
+    render(
+      <WorkflowLaunchModal
+        open
+        onOpenChange={onOpenChange}
+        workflow={workflow}
+        onLaunch={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('Describe what this workflow should do.'), {
+      target: { value: 'Investigate this topic deeply.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
   it('renders the generic title and launching state when no workflow is selected', () => {
     render(
       <WorkflowLaunchModal

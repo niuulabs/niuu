@@ -9,6 +9,7 @@
  */
 
 import { useState } from 'react';
+import { useSearch } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import type { IBifrostService } from '@niuulabs/plugin-bifrost';
 import { useService } from '@niuulabs/plugin-sdk';
@@ -43,7 +44,13 @@ function formatModelOption(
   return parts.filter(Boolean).join(' · ');
 }
 
+interface WorkflowBuilderSearch {
+  /** Open this workflow — the Simple-mode page links here with it. */
+  id?: string;
+}
+
 export function WorkflowBuilderPage() {
+  const search = useSearch({ strict: false }) as WorkflowBuilderSearch;
   const bifrost = useService<IBifrostService>('bifrost');
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const { data: workflows, isLoading, isError, error } = useWorkflows();
@@ -64,7 +71,8 @@ export function WorkflowBuilderPage() {
   const launchMutation = useLaunchWorkflow();
   const [showLaunchModal, setShowLaunchModal] = useState(false);
 
-  const displayed = activeWorkflow ?? workflows?.[0] ?? null;
+  const requested = search.id ? (workflows?.find((wf) => wf.id === search.id) ?? null) : null;
+  const displayed = activeWorkflow ?? requested ?? workflows?.[0] ?? null;
   const activeCount = workflows?.length ?? 0;
 
   const workflowPersonas: PersonaEntry[] | undefined = personas?.map((persona) => ({
