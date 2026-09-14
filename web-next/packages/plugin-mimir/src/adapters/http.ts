@@ -23,6 +23,7 @@ import type {
 import type { MimirStats, MimirGraph, GraphNode, GraphEdge } from '../domain/api-types';
 import type { EmbeddingSearchResult } from '../ports/IEmbeddingStore';
 import type { EntityKind, EntityMeta } from '../domain/entity';
+import type { FactEvidence, RelatedPage, ReviseRequest } from '../domain/evidence';
 import type { WriteRoutingRule } from '../domain/routing';
 import type { RavnBinding } from '../domain/ravn-binding';
 import type { RegistryMount } from '../domain/registry';
@@ -206,6 +207,22 @@ interface RawGraphEdge {
 interface RawGraph {
   nodes: RawGraphNode[];
   edges: RawGraphEdge[];
+}
+
+interface RawFactEvidence {
+  fact: string;
+  proof_count: number;
+  trend: string;
+  latest_support?: string | null;
+  supporting_dates?: string[];
+  source_proof_count?: number;
+}
+
+interface RawRelatedPage {
+  path: string;
+  hop: number;
+  rel?: string | null;
+  direction: string;
 }
 
 interface RawEntityMeta {
@@ -675,6 +692,26 @@ export function isMissingRouteError(error: unknown): error is { status: number }
   );
 }
 
+export function toFactEvidence(raw: RawFactEvidence): FactEvidence {
+  return {
+    fact: raw.fact,
+    proofCount: raw.proof_count,
+    trend: raw.trend as FactEvidence['trend'],
+    latestSupport: raw.latest_support ?? null,
+    supportingDates: raw.supporting_dates ?? [],
+    sourceProofCount: raw.source_proof_count ?? 0,
+  };
+}
+
+export function toRelatedPage(raw: RawRelatedPage): RelatedPage {
+  return {
+    path: raw.path,
+    hop: raw.hop,
+    rel: raw.rel ?? null,
+    direction: raw.direction === 'in' ? 'in' : 'out',
+  };
+}
+
 export function inferPageType(path: string, category: string): PageMeta['type'] {
   if (path.startsWith('/entities/') || category === 'entity') return 'entity';
   if (path.includes('/decisions/') || category === 'decision') return 'decision';
@@ -1013,6 +1050,48 @@ export function buildMimirHttpAdapter(
           mounts: mountName ? [mountName] : undefined,
           scoreBreakdown: r.score_breakdown ?? undefined,
         }));
+      },
+
+      /**
+       * GET /evidence?path= — the route takes no mount, so the serving
+       * instance answers 404 for a page it does not itself keep. That, and a
+       * store with no evidence subsystem (501), mean "no proof rows here";
+       * anything else is a real failure and raises.
+       */
+      async getEvidence(path: string): Promise<FactEvidence[]> {
+        try {
+          const raw = await client.get<RawFactEvidence[]>(
+            `/evidence?path=${encodeURIComponent(path)}`,
+          );
+          return raw.map(toFactEvidence);
+        } catch (error) {
+          if (!isMissingRouteError(error)) throw error;
+          return [];
+        }
+      },
+
+      /** GET /related?path=&depth=&rel= — same absence rules as getEvidence. */
+      async getRelated(path: string, depth = 1, rel?: string): Promise<RelatedPage[]> {
+        const params = new URLSearchParams({ path, depth: String(depth) });
+        if (rel) params.set('rel', rel);
+        try {
+          const raw = await client.get<RawRelatedPage[]>(`/related?${params.toString()}`);
+          return raw.map(toRelatedPage);
+        } catch (error) {
+          if (!isMissingRouteError(error)) throw error;
+          return [];
+        }
+      },
+
+      /** POST /page/revise — write-authenticated; a refusal raises. */
+      async revisePage(request: ReviseRequest): Promise<Page> {
+        const raw = await client.post<RawPage>('/page/revise', {
+          path: request.path,
+          old_fact: request.oldFact,
+          new_fact: request.newFact,
+          attribution: request.attribution,
+        });
+        return toPage(raw);
       },
 
       async getGraph(options): Promise<MimirGraph> {

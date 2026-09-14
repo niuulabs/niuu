@@ -3,6 +3,9 @@ import { Brain } from 'lucide-react';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import type { PluginCtx } from '@niuulabs/plugin-sdk';
 import { MimirPage } from './ui/MimirPage';
+import { MemoryOverviewRoute } from './ui/memory/MemoryOverviewRoute';
+import { AskMemoryPage } from './ui/memory/AskMemoryPage';
+import { MemoryPagePage } from './ui/memory/MemoryPagePage';
 import { SearchPage } from './ui/SearchPage';
 import { GraphPage } from './ui/GraphPage';
 import { RegistryWorkspace } from './ui/RegistryWorkspace';
@@ -15,7 +18,12 @@ export const mimirPlugin = definePlugin({
   title: 'Mímir',
   subtitle: 'the well of knowledge',
   // Memory: what the platform and its residents know.
-  simple: { tabs: ['overview', 'pages'], icon: <Brain size={17} aria-hidden="true" /> },
+  simple: {
+    tabs: ['overview', 'pages'],
+    title: 'Memory',
+    subtitle: 'what niuu knows, and how sure it is',
+    icon: <Brain size={17} aria-hidden="true" />,
+  },
   tabs: [
     { id: 'overview', label: 'Overview', rune: '◎', path: '/mimir' },
     { id: 'pages', label: 'Pages', rune: '▤', path: '/mimir/pages' },
@@ -35,7 +43,19 @@ export const mimirPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/mimir',
-      component: MimirPage,
+      component: MemoryOverviewRoute,
+    }),
+    // Ask and read work in either mode: a link from a realm, a session, or the
+    // Advanced pages view lands on the same screen.
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/mimir/ask',
+      component: AskMemoryPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/mimir/read',
+      component: MemoryPagePage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -163,6 +183,11 @@ export type { KnowledgeDeployment, DeploymentStatus } from './domain/instances';
 export { WikilinkPill } from './ui/components/WikilinkPill';
 export { PageTypeGlyph } from './ui/components/PageTypeGlyph';
 export { MountChip } from './ui/components/MountChip';
+export { MemoryHomePage } from './ui/memory/MemoryHomePage';
+export { AskMemoryPage } from './ui/memory/AskMemoryPage';
+export { MemoryPagePage } from './ui/memory/MemoryPagePage';
+export { ProofPill } from './ui/memory/ProofPill';
+export type { FactEvidence, EvidenceTrend, RelatedPage, ReviseRequest } from './domain/evidence';
 export { OverviewView } from './ui/OverviewView';
 export { PagesView } from './ui/PagesView';
 export { SourcesView } from './ui/SourcesView';

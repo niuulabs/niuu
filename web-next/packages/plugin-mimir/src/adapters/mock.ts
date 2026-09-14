@@ -7,6 +7,7 @@ import type { Source } from '../domain/source';
 import type { MimirStats, MimirGraph } from '../domain/api-types';
 import type { EmbeddingSearchResult } from '../ports/IEmbeddingStore';
 import type { EntityMeta } from '../domain/entity';
+import type { FactEvidence, RelatedPage, ReviseRequest } from '../domain/evidence';
 import type { WriteRoutingRule } from '../domain/routing';
 import type { RavnBinding } from '../domain/ravn-binding';
 import type { RegistryMount } from '../domain/registry';
@@ -131,8 +132,31 @@ const MOCK_PAGES: Page[] = [
         ],
       },
       {
+        kind: 'relationships',
+        items: [
+          { slug: 'api/overview', note: 'the API rules it implies' },
+          { slug: 'infra/k8s', note: 'where it runs' },
+        ],
+      },
+      {
         kind: 'assessment',
         text: 'Architecture is sound and well-documented. Consider extracting shared domain types.',
+      },
+      {
+        kind: 'timeline',
+        items: [
+          {
+            date: '2026-01-08',
+            note: 'Compiled from the platform architecture wiki',
+            source: 'src-001',
+          },
+          { date: '2026-02-19', note: 'Confirmed by the hexagonal ADR', source: 'src-002' },
+          {
+            date: '2026-04-18',
+            note: 'belief revised: three modules → Ting, Volundr, and Niuu are separate modules',
+            source: 'ravn-fjolnir',
+          },
+        ],
       },
     ],
   },
@@ -508,6 +532,129 @@ const MOCK_GRAPH: MimirGraph = {
     { source: '/entities/hexagonal-arch', target: '/entities/asyncpg' },
   ],
 };
+
+// ---------------------------------------------------------------------------
+// Seed data — Evidence (GET /evidence) and link-graph relationships
+// ---------------------------------------------------------------------------
+
+/**
+ * Proof counts per Key Fact, keyed by page path. Facts are verbatim copies of
+ * the page's `key-facts` zone — the screens join the two by exact text.
+ */
+const MOCK_EVIDENCE: Record<string, FactEvidence[]> = {
+  '/arch/overview': [
+    {
+      fact: 'Hexagonal architecture with ports and adapters',
+      proofCount: 5,
+      trend: 'strengthening',
+      latestSupport: '2026-04-18',
+      supportingDates: ['2026-01-08', '2026-02-19', '2026-04-18'],
+      sourceProofCount: 2,
+    },
+    {
+      fact: 'Six cognitive regions (Sköll, Hati, Sága, Móði, Váli, Víðarr)',
+      proofCount: 2,
+      trend: 'weakening',
+      latestSupport: '2026-01-12',
+      supportingDates: ['2025-11-30', '2026-01-12'],
+      sourceProofCount: 0,
+    },
+    {
+      fact: 'Ting, Volundr, and Niuu are separate modules',
+      proofCount: 3,
+      trend: 'stable',
+      latestSupport: '2026-04-02',
+      supportingDates: ['2026-03-11', '2026-04-02'],
+      sourceProofCount: 1,
+    },
+  ],
+  '/api/overview': [
+    {
+      fact: 'Raw SQL with asyncpg — no ORM',
+      proofCount: 4,
+      trend: 'stable',
+      latestSupport: '2026-03-20',
+      supportingDates: ['2026-01-10', '2026-03-20'],
+      sourceProofCount: 2,
+    },
+    {
+      fact: 'Parameterised queries only',
+      proofCount: 0,
+      trend: 'new',
+      latestSupport: null,
+      supportingDates: [],
+      sourceProofCount: 0,
+    },
+    {
+      fact: 'Hexagonal adapter pattern for all infrastructure',
+      proofCount: 2,
+      trend: 'stale',
+      latestSupport: '2025-09-02',
+      supportingDates: ['2025-06-14', '2025-09-02'],
+      sourceProofCount: 1,
+    },
+  ],
+  '/infra/k8s': [
+    {
+      fact: 'Uses `migrate` for schema migrations (not Alembic)',
+      proofCount: 3,
+      trend: 'stable',
+      latestSupport: '2026-04-10',
+      supportingDates: ['2026-02-02', '2026-04-10'],
+      sourceProofCount: 1,
+    },
+    {
+      fact: 'Envoy as API gateway with OIDC',
+      proofCount: 2,
+      trend: 'weakening',
+      latestSupport: '2026-01-05',
+      supportingDates: ['2025-12-01', '2026-01-05'],
+      sourceProofCount: 0,
+    },
+    {
+      fact: 'Services exposed as ClusterIP internally',
+      proofCount: 0,
+      trend: 'new',
+      latestSupport: null,
+      supportingDates: [],
+      sourceProofCount: 0,
+    },
+  ],
+};
+
+/** Typed edge labels for the graph edges that carry one. */
+const MOCK_EDGE_RELS: Record<string, string> = {
+  '/arch/overview|/api/overview': 'documents',
+  '/infra/k8s|/arch/overview': 'deploys',
+  '/arch/overview|/entities/hexagonal-arch': 'applies',
+  '/api/overview|/entities/asyncpg': 'uses',
+};
+
+/** BFS over the mock link graph — the shape `GET /related` returns. */
+function relatedFromGraph(path: string, depth: number, rel?: string): RelatedPage[] {
+  const results: RelatedPage[] = [];
+  const visited = new Set([path]);
+  let frontier = [path];
+  for (let hop = 1; hop <= Math.max(1, depth); hop += 1) {
+    const next: string[] = [];
+    for (const current of frontier) {
+      for (const edge of MOCK_GRAPH.edges) {
+        const outward = edge.source === current;
+        const inward = edge.target === current;
+        if (!outward && !inward) continue;
+        const other = outward ? edge.target : edge.source;
+        if (visited.has(other)) continue;
+        const edgeRel = MOCK_EDGE_RELS[`${edge.source}|${edge.target}`] ?? edge.type ?? null;
+        if (rel !== undefined && edgeRel !== rel) continue;
+        visited.add(other);
+        next.push(other);
+        results.push({ path: other, hop, rel: edgeRel, direction: outward ? 'out' : 'in' });
+      }
+    }
+    frontier = next;
+  }
+  return results;
+}
 
 // ---------------------------------------------------------------------------
 // Seed data — Lint issues
@@ -1039,6 +1186,15 @@ export function createMimirMockAdapter(): IMimirService {
   let sources = [...MOCK_SOURCES];
   let registryMounts = [...MOCK_REGISTRY_MOUNTS];
   let doctorChecks = INITIAL_DOCTOR_CHECKS.map((check) => ({ ...check }));
+  // Belief revision rewrites a page and its evidence row in place.
+  const revisedPages = new Map<string, Page>();
+  const evidenceByPath = new Map<string, FactEvidence[]>(
+    Object.entries(MOCK_EVIDENCE).map(([path, rows]) => [path, rows.map((row) => ({ ...row }))]),
+  );
+
+  function currentPage(path: string): Page | null {
+    return revisedPages.get(path) ?? ALL_PAGES.find((page) => page.path === path) ?? null;
+  }
 
   return {
     mounts: {
@@ -1144,10 +1300,10 @@ export function createMimirMockAdapter(): IMimirService {
       },
 
       async getPage(path: string, mountName?: string): Promise<Page | null> {
-        return (
-          ALL_PAGES.find((p) => p.path === path && (!mountName || p.mounts.includes(mountName))) ??
-          null
-        );
+        const page = currentPage(path);
+        if (!page) return null;
+        if (mountName && !page.mounts.includes(mountName)) return null;
+        return page;
       },
 
       async upsertPage(): Promise<void> {
@@ -1234,6 +1390,67 @@ export function createMimirMockAdapter(): IMimirService {
         };
         sources = [source, ...sources];
         return source;
+      },
+
+      async getEvidence(path: string): Promise<FactEvidence[]> {
+        return (evidenceByPath.get(path) ?? []).map((row) => ({ ...row }));
+      },
+
+      async getRelated(path: string, depth = 1, rel?: string): Promise<RelatedPage[]> {
+        return relatedFromGraph(path, depth, rel);
+      },
+
+      async revisePage(request: ReviseRequest): Promise<Page> {
+        const base = currentPage(request.path);
+        if (!base) throw new Error(`Page not found: ${request.path}`);
+        const zones = base.zones ?? [];
+        const carriesFact = zones.some(
+          (zone) => zone.kind === 'key-facts' && zone.items.includes(request.oldFact),
+        );
+        if (!carriesFact) {
+          throw new Error(`Fact not found on ${request.path}: ${request.oldFact}`);
+        }
+        const today = new Date().toISOString().slice(0, 10);
+        const note = `belief revised: ${request.oldFact} → ${request.newFact}`;
+        const rewritten = zones.map((zone) =>
+          zone.kind === 'key-facts'
+            ? {
+                ...zone,
+                items: zone.items.map((item) =>
+                  item === request.oldFact ? request.newFact : item,
+                ),
+              }
+            : zone,
+        );
+        const entry = { date: today, note, source: request.attribution };
+        const withTimeline = rewritten.some((zone) => zone.kind === 'timeline')
+          ? rewritten.map((zone) =>
+              zone.kind === 'timeline' ? { ...zone, items: [...zone.items, entry] } : zone,
+            )
+          : [...rewritten, { kind: 'timeline' as const, items: [entry] }];
+        const revised: Page = {
+          ...base,
+          zones: withTimeline,
+          updatedAt: new Date().toISOString(),
+          updatedBy: request.attribution,
+        };
+        revisedPages.set(request.path, revised);
+        evidenceByPath.set(
+          request.path,
+          (evidenceByPath.get(request.path) ?? []).map((row) =>
+            row.fact === request.oldFact
+              ? {
+                  ...row,
+                  fact: request.newFact,
+                  trend: 'stable',
+                  proofCount: row.proofCount + 1,
+                  latestSupport: today,
+                  supportingDates: [...row.supportingDates, today],
+                }
+              : row,
+          ),
+        );
+        return revised;
       },
 
       async getGraph(options): Promise<MimirGraph> {

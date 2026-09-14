@@ -1,7 +1,7 @@
 {
   "name": "@niuulabs/plugin-mimir",
   "version": "0.0.1",
-  "description": "Mímir plugin — knowledge-base management for the Niuu platform",
+  "description": "M\u00edmir plugin \u2014 knowledge-base management for the Niuu platform",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -27,6 +27,7 @@
     "dev": "tsup --watch"
   },
   "peerDependencies": {
+    "@niuulabs/shell": "workspace:*",
     "@tanstack/react-query": "^5.102.8",
     "@tanstack/react-router": "^1.170.33",
     "react": "^19.2.8"
@@ -35,6 +36,7 @@
     "@niuulabs/domain": "workspace:*",
     "@niuulabs/plugin-sdk": "workspace:*",
     "@niuulabs/query": "workspace:*",
+    "@niuulabs/shell": "workspace:*",
     "@niuulabs/ui": "workspace:*"
   },
   "devDependencies": {

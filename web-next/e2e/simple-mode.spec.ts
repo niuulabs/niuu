@@ -81,3 +81,28 @@ test('escape closes the command palette on the home page', async ({ page }) => {
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toBeHidden();
 });
+
+test('memory lands on the ask box, the realms and the feed', async ({ page }) => {
+  await useSimpleMode(page);
+  await page.goto('/mimir');
+  await expect(page.getByTestId('memory-home')).toBeVisible({ timeout: 8_000 });
+  await expect(page.getByTestId('memory-ask-box')).toBeVisible();
+  await expect(page.getByTestId('memory-feed')).toBeVisible();
+  await expect(page.getByTestId('memory-mount-local')).toBeVisible();
+});
+
+test('asking memory lists pages and the facts behind the answer', async ({ page }) => {
+  await useSimpleMode(page);
+  await page.goto('/mimir/ask?q=architecture');
+  await expect(page.getByTestId('memory-ask-page')).toBeVisible({ timeout: 8_000 });
+  await expect(page.getByTestId('memory-results')).toBeVisible();
+  await expect(page.getByTestId('memory-facts')).toBeVisible();
+});
+
+test('reading a page shows beliefs, relationships and evidence', async ({ page }) => {
+  await useSimpleMode(page);
+  await page.goto('/mimir/read?path=%2Farch%2Foverview&mount=local');
+  await expect(page.getByTestId('memory-read-page')).toBeVisible({ timeout: 8_000 });
+  await expect(page.getByTestId('memory-facts-zone')).toBeVisible();
+  await expect(page.getByTestId('memory-evidence')).toBeVisible();
+});
