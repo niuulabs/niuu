@@ -24,6 +24,7 @@
   "scripts": {
     "dev": "pnpm --filter @niuulabs/niuu dev",
     "dev:playwright": "pnpm -r --filter='./packages/*' build && pnpm --filter @niuulabs/niuu dev",
+    "preview:playwright": "pnpm -r --filter='./packages/*' build && pnpm --filter @niuulabs/niuu build && cp apps/niuu/dist/config.json apps/niuu/dist/config.live.json && pnpm --filter @niuulabs/niuu exec vite preview --port 5173 --strictPort",
     "build": "pnpm -r --filter='./packages/*' build && pnpm --filter @niuulabs/niuu build",
     "test": "vitest run --coverage",
     "test:watch": "vitest",
