@@ -2334,6 +2334,7 @@ class TestDispatchBrowserMessage:
                 "content": "hello",
                 "request_id": "req-1",
                 "steering_state": "pending",
+                "created_at": test_broker._conversation_turns[-1].created_at,
             }
         )
         # BUG-3: a delivery ack is emitted so the HTTP /messages bridge can confirm the
@@ -2384,6 +2385,7 @@ class TestDispatchBrowserMessage:
                 "content": expected,
                 "request_id": None,
                 "steering_state": "pending",
+                "created_at": test_broker._conversation_turns[-1].created_at,
             }
         )
 
@@ -2419,6 +2421,7 @@ class TestDispatchBrowserMessage:
                 "content": expected,
                 "request_id": None,
                 "steering_state": "pending",
+                "created_at": test_broker._conversation_turns[-1].created_at,
             }
         )
 

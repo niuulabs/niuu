@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 from fastapi import WebSocket, WebSocketDisconnect  # noqa: F401
 
+from niuu.domain.conversation_timeline import TIMELINE_KEY, project_timeline, stamp_parts, timeline
 from niuu.domain.logging import LoggingConfig
 from niuu.domain.outcome import parse_outcome_block
 from niuu.domain.text_projection import projection_revision
@@ -518,6 +519,7 @@ class Broker(
         # SHARED reducer's deterministic turn-id (uuid5(session:seq:role)) so the live turn id
         # equals the id a later log rebuild assigns to the same logical turn (SRD INV-4).
         self._pending_assistant_last_seq: int = 0
+        self._pending_assistant_last_ts: datetime | None = None
         self._pending_explicit_human_messages: list[tuple[str, str]] = []
         self._pending_explicit_human_response_count = 0
         self._chronicle_watcher: ChronicleWatcher | None = None
@@ -677,6 +679,7 @@ class Broker(
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             turns = [asdict(t) for t in self._conversation_turns]
+            turns = project_timeline(turns, self.session_id)
             data = {"turns": turns, "projection_revision": projection_revision(turns)}
             path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except Exception:
@@ -722,7 +725,11 @@ class Broker(
             "role": "assistant",
             "content": self._pending_assistant_content,
             "parts": parts,
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": (
+                self._pending_assistant_last_ts.isoformat()
+                if self._pending_assistant_last_ts
+                else ""
+            ),
             "metadata": {"status": "in_progress"},
             "visibility": "public",
             "in_progress": True,
@@ -740,6 +747,7 @@ class Broker(
             parts=self._pending_assistant_parts,
             reasoning=self._pending_reasoning_text,
             last_seq=self._pending_assistant_last_seq,
+            last_ts=self._pending_assistant_last_ts,
         )
 
     def _flush_pending_assistant_turn(self, metadata: dict | None = None) -> None:
@@ -754,12 +762,14 @@ class Broker(
                 role="assistant",
                 content=turn["content"],
                 parts=turn["parts"],
+                created_at=turn["created_at"],
                 metadata=turn["metadata"],
             )
         )
         self._pending_assistant_content = ""
         self._pending_assistant_parts = []
         self._pending_reasoning_text = ""
+        self._pending_assistant_last_ts = None
 
     async def _ensure_workflow_prompt_turn(self) -> None:
         """Persist the workflow trigger prompt without executing it locally."""
@@ -3093,21 +3103,21 @@ class Broker(
         # initial prompt flushed as a pending message) into conversation
         # history so late-joining browsers see them.
         if event_type == "user" and not tool_result_only_user_event:
-            # A user event means the previous assistant turn is complete.
-            # Flush any pending assistant content as a saved turn.
-            self._flush_pending_assistant_turn()
-            await self._finish_pending_assistant_tool_trace_spans(
-                status="completed",
-                attributes={"reason": "new_user_event"},
-            )
-            if self._trace_assistant_span_id is not None:
-                await self._finish_trace_span(
-                    self._trace_assistant_span_id,
+            # Timed input may belong to the still-open native turn. It is a
+            # presentation boundary, not evidence the assistant/tools finished.
+            if timeline(data) is None:
+                self._flush_pending_assistant_turn()
+                await self._finish_pending_assistant_tool_trace_spans(
                     status="completed",
                     attributes={"reason": "new_user_event"},
                 )
-                self._trace_assistant_span_id = None
-
+                if self._trace_assistant_span_id is not None:
+                    await self._finish_trace_span(
+                        self._trace_assistant_span_id,
+                        status="completed",
+                        attributes={"reason": "new_user_event"},
+                    )
+                    self._trace_assistant_span_id = None
             user_content = ""
             msg = data.get("message", {})
             if isinstance(msg, dict):
@@ -3130,6 +3140,10 @@ class Broker(
                             id=user_turn_id,
                             role="user",
                             content=user_content,
+                            created_at=frame_ts.isoformat(),
+                            metadata=(
+                                {TIMELINE_KEY: dict(timeline(data))} if timeline(data) else {}
+                            ),
                         )
                     )
 
@@ -3208,8 +3222,12 @@ class Broker(
             # part. The accumulator shares the pending parts LIST object, and the back-fill
             # mutates those part dicts in place, so both the in-progress serialization and the
             # eventual flush carry the completed timing.
-            apply_tool_result_blocks(self._pending_accumulator(), tr_blocks, ts=frame_ts)
+            acc = self._pending_accumulator()
+            part_start = len(acc.parts)
+            apply_tool_result_blocks(acc, tr_blocks, ts=frame_ts)
+            stamp_parts(self._pending_assistant_parts, data, start=part_start)
             self._pending_assistant_last_seq = self._event_log_seq
+            self._pending_assistant_last_ts = frame_ts
         elif event_type == "result":
             # A turn that reaches result is no longer blocked on the user; drop
             # any stale pending gates so a later heartbeat can't resurrect
@@ -3241,19 +3259,25 @@ class Broker(
             content_blocks = message.get("content", [])
             acc = self._pending_accumulator()
             # D1: ``frame_ts`` (== this frame's durable row ts) is the tool_use start stamp.
+            part_start = len(acc.parts)
             apply_assistant_blocks(acc, content_blocks, ts=frame_ts)
+            stamp_parts(acc.parts, data, start=part_start)
             self._pending_assistant_content = acc.content
             self._pending_assistant_last_seq = self._event_log_seq
+            self._pending_assistant_last_ts = frame_ts
 
         # Reserve/close text anchors as part of the same shared fold as raw replay.
         if event_type in ("content_block_start", "content_block_stop"):
             acc = self._pending_accumulator()
+            part_start = len(acc.parts)
             if event_type == "content_block_start":
                 apply_text_start(acc, data)
             else:
                 apply_text_stop(acc, data)
+            stamp_parts(acc.parts, data, start=part_start)
             self._pending_assistant_content = acc.content
             self._pending_assistant_last_seq = self._event_log_seq
+            self._pending_assistant_last_ts = frame_ts
 
         # HTTP streaming format: accumulate deltas
         if event_type == "content_block_delta":
@@ -3261,13 +3285,16 @@ class Broker(
             delta_type = delta.get("type", "")
             # SHARED reducer delta transitions (same fold a later log rebuild applies).
             acc = self._pending_accumulator()
+            part_start = len(acc.parts)
             if delta_type == "thinking_delta":
                 apply_thinking_delta(acc, delta.get("thinking", ""))
                 self._pending_reasoning_text = acc.reasoning
             else:
                 apply_text_delta(acc, delta.get("text", ""), frame=data)
                 self._pending_assistant_content = acc.content
+            stamp_parts(acc.parts, data, start=part_start)
             self._pending_assistant_last_seq = self._event_log_seq
+            self._pending_assistant_last_ts = frame_ts
 
         # Accumulate artifacts from assistant tool_use events
         if event_type == "assistant":
@@ -3341,7 +3368,9 @@ class Broker(
             # the SAME fold a later log rebuild applies — so a tool_use-only turn closed by a
             # result with text surfaces that text identically on live and rebuild (INV-4/FR-3).
             acc = self._pending_accumulator()
+            part_start = len(acc.parts)
             apply_result_content(acc, data)
+            stamp_parts(acc.parts, data, start=part_start)
             self._pending_assistant_content = acc.content
             # Build metadata from the result frame via the SHARED reducer so the live turn's
             # {usage,cost,model,stop_reason} schema is byte-identical to a later log rebuild.
@@ -3349,6 +3378,7 @@ class Broker(
             # The result frame closes the turn — stamp its seq so the deterministic turn id
             # (uuid5(session:seq:role)) matches the id a log rebuild assigns to this turn.
             self._pending_assistant_last_seq = self._event_log_seq
+            self._pending_assistant_last_ts = frame_ts
 
             # Capture content before flush clears it
             content = self._pending_assistant_content or data.get("result", "")
@@ -3871,11 +3901,16 @@ class Broker(
                         )
                         return
                     self._message_claim_tokens[request_id] = token
+                now = datetime.now(UTC)
+                input_timeline = self._enqueue_human_turn_event(
+                    content_str, msg_id, request_id=request_id, ts=now
+                )
                 self._append_turn(
                     ConversationTurn(
                         id=msg_id,
                         role="user",
                         content=content_str,
+                        created_at=now.isoformat(),
                         # The message has been accepted but not yet consumed by the
                         # agent. It rides as "pending" (the client renders it greyed /
                         # italic) until the correlated UserPromptSubmit flips it to
@@ -3884,13 +3919,12 @@ class Broker(
                         metadata={
                             "steering_state": "pending",
                             **({"request_id": request_id} if request_id else {}),
+                            **({TIMELINE_KEY: input_timeline} if input_timeline else {}),
                         },
                     )
                 )
                 # Mirror the human turn into the durable event log so log-only
                 # transcript replay (web/iOS) includes it.
-                self._enqueue_human_turn_event(content_str, msg_id, request_id=request_id)
-                now = datetime.now(UTC)
                 await self._complete_trace_span(
                     kind="turn.user",
                     name=content_str[:120] or "user turn",
@@ -3913,6 +3947,8 @@ class Broker(
                         "content": content_str,
                         "request_id": request_id,
                         "steering_state": "pending",
+                        "created_at": now.isoformat(),
+                        **({TIMELINE_KEY: input_timeline} if input_timeline else {}),
                     }
                 )
 
@@ -4337,6 +4373,12 @@ class Broker(
         if not isinstance(msg_id, str) or not msg_id:
             return
         request_id = data.get("request_id")
+        stamp = timeline(data)
+        if stamp is not None:
+            for turn in self._conversation_turns:
+                if turn.id == msg_id and turn.role == "user":
+                    turn.metadata.setdefault("steering_accepted_at", stamp["observed_at"])
+                    break
         if self._mark_user_turn_active(msg_id):
             self._save_conversation_history()
         await self._broadcast_user_active(msg_id, request_id)
@@ -4371,6 +4413,12 @@ class Broker(
     async def _broadcast_user_active(self, msg_id: str, request_id: object = None) -> None:
         """Tell live clients a steering message went active so they flip that specific bubble."""
         event: dict[str, Any] = {"type": "user_active", "id": msg_id}
+        for turn in self._conversation_turns:
+            if turn.id == msg_id and turn.role == "user":
+                event["created_at"] = turn.created_at
+                if turn.metadata.get("steering_accepted_at"):
+                    event["accepted_at"] = turn.metadata["steering_accepted_at"]
+                break
         if isinstance(request_id, str) and request_id:
             event["request_id"] = request_id
         try:

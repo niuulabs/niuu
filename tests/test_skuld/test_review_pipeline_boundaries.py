@@ -945,7 +945,12 @@ async def test_codex_ambiguous_delivery_needs_exact_consumption_and_replays_requ
         )
         await _finish_deliveries()
     user = next(turn for turn in b._conversation_turns if turn.role == "user")
-    assert user.metadata == {"steering_state": "pending", "request_id": "exact-request"}
+    input_stamp = _events(b, "user")[0]["conversation_timeline"]
+    assert user.metadata == {
+        "steering_state": "pending",
+        "request_id": "exact-request",
+        "conversation_timeline": input_stamp,
+    }
     for frame in [
         {"type": "assistant", "message": {"content": [{"type": "text", "text": "old turn reply"}]}},
         {"type": "error", "content": "old transport error"},
@@ -957,7 +962,12 @@ async def test_codex_ambiguous_delivery_needs_exact_consumption_and_replays_requ
     await b._handle_cli_event(
         {"type": "user_consumed", "msg_id": user.id, "request_id": "exact-request"}
     )
-    expected = {"steering_state": "active", "request_id": "exact-request"}
+    expected = {
+        "steering_state": "active",
+        "request_id": "exact-request",
+        "conversation_timeline": input_stamp,
+        "steering_accepted_at": _events(b, "user_active")[-1]["accepted_at"],
+    }
     assert user.metadata == expected
     stored = json.loads(b._conversation_history_path().read_text())
     assert next(turn for turn in stored["turns"] if turn["role"] == "user")["metadata"] == expected

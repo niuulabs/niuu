@@ -5,6 +5,13 @@ or physical-device acceptance performed by this runner.** A separate session own
 native implementation. The server candidate includes the fixed Project UX input
 `11e9e0c668747fd0af1b97463f2c238e9fb40811`; do not import a moving UX branch.
 
+## September 14 steering/reconciliation follow-up
+
+The later Spark user test exposed a separate chronological replay and transient
+native duplicate-display problem. See the [bounded native handoff](codex-steering-timeline-ios-handoff-20260914.md).
+The September 13 control compatibility below is **not** proof that the existing
+iOS history reconciliation supports the new item-based display fragments.
+
 ## Core fixes require no new client control
 
 An API-only release may close the proxy WebSocket while the gateway and native

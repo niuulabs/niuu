@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from niuu.domain.conversation_timeline import project_timeline
 from niuu.domain.text_projection import projection_revision
 from niuu.domain.transcript_reducer import PER_CONNECT_MARKER
 from skuld.channels import WebSocketChannel, _is_expected_ws_disconnect
@@ -226,18 +227,23 @@ class WebSocketLifecycleMixin:
             in_progress_turn = self._serialize_in_progress_turn()
             if self._conversation_turns or in_progress_turn is not None:
                 recent_requested = websocket.query_params.get("history") == "recent"
-                total_turns = len(self._conversation_turns) + int(in_progress_turn is not None)
-                completed = self._conversation_turns
-                if recent_requested:
-                    completed = completed[-self._settings.conversation_recent_max_turns :]
-                replay_turns = [asdict(t) for t in completed]
+                # Projection is read-only. Do not deep-copy heavy tool payloads outside
+                # the requested recent window. Snapshot preparation owns any elision.
+                replay_turns = [vars(t).copy() for t in self._conversation_turns]
                 if in_progress_turn is not None:
                     replay_turns.append(in_progress_turn)
+                replay_turns = project_timeline(replay_turns, self.session_id)
+                total_turns = len(replay_turns)
+                if recent_requested:
+                    replay_turns = replay_turns[-self._settings.conversation_recent_max_turns :]
                 # Revision only needs identities and repair metadata, not the potentially
                 # enormous text/tool payloads outside the requested window.
                 revision_turns = [
-                    {"id": t.id, "metadata": t.metadata} for t in self._conversation_turns
+                    {"id": t.id, "metadata": t.metadata, "parts": t.parts}
+                    for t in self._conversation_turns
                 ]
+                if in_progress_turn is not None:
+                    revision_turns.append(in_progress_turn)
                 frame = {
                     "type": "conversation_history",
                     "turns": replay_turns,

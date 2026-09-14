@@ -12,6 +12,7 @@ import json
 from collections import defaultdict
 from typing import Any
 
+from niuu.domain.conversation_timeline import timeline
 from niuu.domain.transcript_reducer import Frame, reduce_frames
 
 REPAIR_KIND = "conversation.projection"
@@ -46,7 +47,13 @@ def projection_revision(turns: list[dict]) -> str:
         suffix = hashlib.sha256(
             json.dumps(repairs, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()[:24]
-    return f"text-items-{SCHEMA}:{suffix}"
+    timed = any(
+        timeline(turn.get("metadata")) is not None
+        or any(timeline(part) is not None for part in turn.get("parts", []))
+        for turn in turns
+        if isinstance(turn, dict)
+    )
+    return f"text-items-{SCHEMA}:{suffix}" + (";timeline-1" if timed else "")
 
 
 def _legacy(turn: dict) -> bool:

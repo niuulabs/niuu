@@ -164,7 +164,14 @@ async def test_live_input_replay_restart_and_duplicate_claim_keep_exact_identity
             "steering_state": "pending" if lost_response else "active",
         }
         users = [turn for turn in broker._conversation_turns if turn.role == "user"]
-        assert len(users) == 1 and users[0].metadata == expected
+        assert len(users) == 1
+        captured = next(e for e in broker._event_log_buffer if e["kind"] == "user")
+        expected["conversation_timeline"] = captured["payload"]["conversation_timeline"]
+        assert users[0].created_at == captured["ts"]
+        if not lost_response:
+            accepted = next(e for e in broker._event_log_buffer if e["kind"] == "user_active")
+            expected["steering_accepted_at"] = accepted["payload"]["accepted_at"]
+        assert users[0].metadata == expected
         snapshot = json.loads(broker._conversation_history_path().read_text())
         assert (
             next(turn for turn in snapshot["turns"] if turn["role"] == "user")["metadata"]

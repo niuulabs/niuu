@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from niuu.build_identity import build_identity
+from niuu.domain.conversation_timeline import project_timeline
 from niuu.domain.json_text import json_text_safe
 from niuu.domain.text_projection import projection_revision
 from skuld.conversation_models import ConversationTurn
@@ -300,6 +301,7 @@ async def get_conversation_history(detail: str = "full") -> dict:
     in_progress_turn = broker._serialize_in_progress_turn()
     if in_progress_turn is not None:
         turns.append(in_progress_turn)
+    turns = project_timeline(turns, broker.session_id)
     turns = json_text_safe(turns)
     last_activity = json_text_safe(last_activity)
     build_ms = (time.perf_counter() - t_build) * 1000.0

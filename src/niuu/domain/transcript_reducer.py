@@ -52,6 +52,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
+from niuu.domain.conversation_timeline import TIMELINE_KEY, project_timeline, stamp_parts, timeline
+
 # Deterministic namespace for folded-turn ids (stable across reloads AND across paths).
 _TURN_NAMESPACE = uuid.UUID("6f2d2e2a-7b1c-4e8a-9d3f-0a1b2c3d4e5f")
 
@@ -811,9 +813,6 @@ def reduce_frames(
     # span stays closed until a new human turn or assistant activity opens it.
     # Initial/raw-only history still admits the last-resort pane fallback.
     terminal_span_closed = False
-    # turn_id -> (seq, steering_state): the delivery-state transitions seen in the log, applied
-    # onto the matching user turns at the end (last-writer-wins by seq, == the live path).
-    steering: dict[str, tuple[int, str]] = {}
 
     def flush(status: str | None = None, md: dict | None = None) -> None:
         scrape_text = None
@@ -850,7 +849,6 @@ def reduce_frames(
         ts = _ts_of(r)
 
         if k in _STEERING_FRAME_KINDS:
-            _record_steering(steering, k, p, seq)
             # user_confirmed also seeds/dedups the user turn (handled below); user_active /
             # user_delivery_failed carry no content, so they are pure state transitions.
             if k != "user_confirmed":
@@ -872,18 +870,24 @@ def reduce_frames(
             terminal_span_closed = False
             # D1: the frame's durable ts IS the tool_use start stamp — the same instant the
             # live broker passes here as it enqueues the frame, so both planes agree exactly.
+            part_start = len(acc.parts)
             apply_assistant_blocks(acc, _content_blocks(p), ts=ts)
+            stamp_parts(acc.parts, p, start=part_start)
             acc.touch(ts, seq)
             continue
 
         if k == "content_block_start":
             terminal_span_closed = False
+            part_start = len(acc.parts)
             apply_text_start(acc, p)
+            stamp_parts(acc.parts, p, start=part_start)
             acc.touch(ts, seq)
             continue
 
         if k == "content_block_stop":
+            part_start = len(acc.parts)
             apply_text_stop(acc, p)
+            stamp_parts(acc.parts, p, start=part_start)
             acc.touch(ts, seq)
             continue
 
@@ -891,10 +895,12 @@ def reduce_frames(
             delta = p.get("delta", {}) if isinstance(p.get("delta"), dict) else {}
             if delta.get("text") or delta.get("thinking"):
                 terminal_span_closed = False
+            part_start = len(acc.parts)
             if delta.get("type") == "thinking_delta":
                 apply_thinking_delta(acc, delta.get("thinking", ""))
             else:
                 apply_text_delta(acc, delta.get("text", ""), frame=p)
+            stamp_parts(acc.parts, p, start=part_start)
             acc.touch(ts, seq)
             continue
 
@@ -909,7 +915,9 @@ def reduce_frames(
             continue
 
         if k == "result":
+            part_start = len(acc.parts)
             apply_result_content(acc, p)
+            stamp_parts(acc.parts, p, start=part_start)
             acc.touch(ts, seq)
             flush(md=result_metadata(p))
             terminal_span_closed = True
@@ -925,17 +933,53 @@ def reduce_frames(
     if not acc.is_empty() or acc.pending_tmux_rows is not None:
         flush(status="interrupted")
 
-    _apply_steering_states(turns, steering)
+    turns = apply_steering_frames(turns, rows)
 
     partial = any(
         t.get("metadata", {}).get("status") in ("interrupted", "error")
         or bool(t.get("metadata", {}).get("native_import", {}).get("partial"))
         for t in turns
     )
-    return ReduceResult(turns=turns, partial=partial)
+    return ReduceResult(turns=project_timeline(turns, session_id), partial=partial)
 
 
 # --------------------------------------------------------------------------- internal helpers
+
+
+def apply_steering_frames(turns: list[dict], frames: list[Frame]) -> list[dict]:
+    """Apply logged delivery outcomes even when saved assistant seeds cover the raw tail.
+
+    Content seeds do not supersede later lifecycle ACKs for earlier user rows.
+    Copy user metadata so a read never mutates an authoritative stored payload.
+    """
+    result = [
+        {
+            **turn,
+            **(
+                {"metadata": dict(turn["metadata"])}
+                if isinstance(turn.get("metadata"), dict)
+                else {}
+            ),
+        }
+        if turn.get("role") == "user"
+        else turn
+        for turn in turns
+    ]
+    states: dict[str, tuple[int, str]] = {}
+    users = {turn.get("id"): turn for turn in result if turn.get("role") == "user"}
+    for row in sorted(frames, key=lambda frame: frame.seq):
+        payload = row.payload
+        if not isinstance(payload, dict):
+            continue
+        _record_steering(states, row.kind, payload, row.seq)
+        accepted = payload.get("accepted_at")
+        if row.kind != "user_active" or not isinstance(accepted, str) or not accepted:
+            continue
+        user = users.get(payload.get("id"))
+        if user is not None:
+            user.setdefault("metadata", {}).setdefault("steering_accepted_at", accepted)
+    _apply_steering_states(result, states)
+    return result
 
 
 def _record_steering(
@@ -983,13 +1027,19 @@ def _apply_user_frame(acc, turns, seen_ids, session_id, seq, ts, kind, payload, 
     if content is None:
         if kind == "user":
             # D1: the frame's durable ts IS the tool_result end stamp (see the assistant branch).
+            part_start = len(acc.parts)
             apply_tool_result_blocks(acc, _tool_result_blocks(payload), ts=ts)
+            stamp_parts(acc.parts, payload, start=part_start)
             acc.touch(ts, seq)
         return False
     uid = _user_id(payload, kind)
     if uid and uid in seen_ids:
         return False  # already emitted (seed double-log, or the user/user_confirmed pair)
-    flush()
+    # A same-turn steering input is a display boundary, NOT an execution end.
+    # Keep native items open so a later full text/tool completion updates the
+    # original item. The shared presentation projection positions the input.
+    if timeline(payload) is None:
+        flush()
     if uid:
         seen_ids.add(uid)
     metadata = {}
@@ -998,6 +1048,8 @@ def _apply_user_frame(acc, turns, seen_ids, session_id, seq, ts, kind, payload, 
         metadata["native_import"] = dict(source_metadata["native_import"])
     if payload.get("request_id"):
         metadata["request_id"] = payload["request_id"]
+    if timeline(payload) is not None:
+        metadata[TIMELINE_KEY] = dict(timeline(payload))
     turns.append(
         build_user_turn(session_id, seq, content, turn_id=uid or None, ts=ts, metadata=metadata)
     )

@@ -36,8 +36,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from niuu.domain.conversation_timeline import project_timeline
 from niuu.domain.text_projection import apply_repair_markers, repair_legacy_turns
-from niuu.domain.transcript_reducer import reduce_frames
+from niuu.domain.transcript_reducer import apply_steering_frames, reduce_frames
 
 if TYPE_CHECKING:
     from volundr.domain.models import SessionLogEntry
@@ -117,7 +118,18 @@ def rebuild_turns(entries: list[SessionLogEntry]) -> RebuildResult:
         and r.payload["turn"].get("role") == "assistant"
         for r in sdk_turn_rows
     )
-    last_sdk_seq = max((r.seq for r in sdk_turn_rows), default=0)
+    # A later user seed inside an open turn does NOT cover the assistant prefix
+    # before it. Only a completed assistant seed advances the content cutoff.
+    last_sdk_seq = max(
+        (
+            r.seq
+            for r in sdk_turn_rows
+            if isinstance(r.payload, dict)
+            and isinstance(r.payload.get("turn"), dict)
+            and r.payload["turn"].get("role") == "assistant"
+        ),
+        default=0,
+    )
     tail = [r for r in rows if r.seq > last_sdk_seq] if has_sdk_assistant else rows
     result = reduce_frames(
         tail,
@@ -128,9 +140,12 @@ def rebuild_turns(entries: list[SessionLogEntry]) -> RebuildResult:
     )
     # Explicit verified repairs take precedence over automatic reconstruction,
     # including native item IDs/phases recovered from a separately verified log.
-    turns = apply_repair_markers(result.turns, rows)
+    turns = apply_steering_frames(result.turns, rows)
+    turns = apply_repair_markers(turns, rows)
     turns = repair_legacy_turns(turns, rows)
-    return RebuildResult(turns=turns, partial=result.partial)
+    return RebuildResult(
+        turns=project_timeline(turns, str(rows[0].session_id)), partial=result.partial
+    )
 
 
 # --------------------------------------------------------------------------- tmux pane scrape
