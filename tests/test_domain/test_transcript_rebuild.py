@@ -279,3 +279,31 @@ def test_timed_saved_user_delivery_labels_reconcile_without_mutating_seed():
     }
     assert steer == saved
     assert result.turns[1] == answer
+
+
+def test_open_timed_user_seed_ack_does_not_mutate_retained_ledger_payload():
+    import copy
+
+    from niuu.domain.conversation_timeline import TIMELINE_KEY, observation
+
+    steer = {
+        "id": "steer",
+        "role": "user",
+        "content": "continue",
+        "parts": [],
+        "metadata": {
+            "steering_state": "pending",
+            TIMELINE_KEY: observation(1, "2026-09-14T07:30:00+00:00"),
+        },
+    }
+    rows = [
+        _conv_turn(1, steer),
+        _entry(2, "user_active", {"id": "steer", "accepted_at": "2026-09-14T07:30:01+00:00"}),
+        _entry(3, "assistant", {"message": {"content": [{"type": "text", "text": "working"}]}}),
+    ]
+    before = copy.deepcopy(rows)
+    result = rebuild_turns(rows)
+    assert result.turns[0]["metadata"]["steering_state"] == "active"
+    assert result.partial
+    assert rows == before
+    assert steer["metadata"]["steering_state"] == "pending"

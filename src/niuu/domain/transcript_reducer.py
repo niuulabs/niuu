@@ -804,7 +804,19 @@ def reduce_frames(
     session_id = _session_id_of(rows[0])
     folded_request_ids = set(folded_request_ids or set())
     seen_ids = set(seen_ids or set())
-    turns: list[dict[str, Any]] = list(sdk_turns or [])
+    # Delivery folding must not mutate seed payloads supplied by a repository
+    # or a caller retaining the original ledger rows. Preserve absent metadata.
+    turns: list[dict[str, Any]] = [
+        {
+            **turn,
+            **(
+                {"metadata": dict(turn["metadata"])}
+                if isinstance(turn.get("metadata"), dict)
+                else {}
+            ),
+        }
+        for turn in sdk_turns or []
+    ]
 
     acc = TurnAccumulator()
     imported_prefix_open = False
