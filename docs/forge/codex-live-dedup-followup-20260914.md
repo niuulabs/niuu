@@ -1,10 +1,10 @@
 # Spark live deduplication and filesystem replay follow-up
 
-Status: server correction validated locally; Spark validation/preparation in progress;
-**not deployed**. Native
+Status: server filesystem replay correction **deployed to Spark API only at
+10:02 UTC**. Thor remains untouched. Native
 implementation still requires a dedicated owner. This is not a claim that the
-reported iOS display bug is fixed. No native files, running gateways, provider
-turns, services, or persisted production history were modified in this follow-up.
+reported iOS display bug is fixed. No native files, gateway/native processes, provider turns, or saved production
+history were modified. Only the Spark API source selection and API process changed.
 
 ## Observations, not inferred device reproduction
 
@@ -188,3 +188,49 @@ through full/shallow responses, repeated `after`/`after_id`, a mismatched seam,
 recent windows and full tool-result retrieval. No provider or production database
 is involved. Two captured legacy archived transcripts remain byte-equivalent at
 the turn-payload level under the new read projection.
+
+## Spark rollout and independent readback
+
+Announced window: **10:02–10:12 UTC**; window receipt
+`cebeafbc-5f4a-4edb-ac63-a8b2dffcff89`, OpenClaw message 6683.
+Actual guarded cutover: **10:02:51.917277–10:02:56.833643 UTC**.
+Candidate `650088f3e2fe234e75cd7d2578acae911290ee91`,
+source SHA256 `57446280f7a8bc81d6ae0b8215f8e8df528f0d28add876ac272bd39d3ebff000`,
+build `forge-codex-ready-20260914-timeline-v4`.
+Exact staged Spark suite: **5,132 passed**, 24 skipped, 95 deselected, one expected
+failure; **85.77%** scoped statement/branch coverage, unchanged 85% gate. Both
+source-root and host-local dependency/composition audits pass.
+
+Host release root:
+`/home/xteo/.local/share/niuu/releases/forge-codex-ready-20260914-timeline-v4`.
+Only `niuu-forge.service` restarted, with one new owned source-only drop-in:
+`~/.config/systemd/user/niuu-forge.service.d/zzzzzzzz-steering-timeline-v4-20260914.conf`.
+Safe rollback remains `39da0146` / timeline-v3, already containing the local-process
+preservation fix. Existing drop-ins/configuration/auth/mounts remain intact.
+
+Guard and independent follow-up verify:
+
+- All **14 session identities/statuses** retained (5 archived, 9 stopped).
+- **Four protected process identities** unchanged: three PostgreSQL postmasters
+  and tmux PID 5640, including PID/start ticks/boot ID/command hashes.
+- No live Spark gateways existed at cutover; therefore this rollout makes no new
+  empirical active-turn reconnection claim. The real-process isolated preservation
+  tests still pass; no owner was resumed, resent to, or restarted.
+- All **13 unrelated session turn payloads** unchanged, including selected archived
+  samples. The newly timed test alone intentionally changes derived display order:
+  **9 cumulative rows → 12 rows**, matching its live row IDs/order/dates and the
+  precomputed projected-payload hash. Fleet display row total **59 → 62** is this
+  correction, not new messages or database inserts.
+- All **2,357 public test log entries** retain exact hashed contents.
+- Source health clean; saved unit/config bytes and separate 9500 HTTP, 9501 trusted
+  HTTPS and 5300 HTTPS preview checks pass. No forced-stop/failure indicator found
+  in the scoped API journal. Thor was not redeployed.
+
+The corrected API can now replay the archived test with its live display identities.
+This is **not** acceptance of native live deduplication: frozen/tool-result merging,
+mutable cache boundaries and rendered/relaunch tests remain the dedicated native
+assignment. Existing downloadable artifact bytes are preserved, not retroactively
+rewritten. Detailed sanitized evidence: [JSON](codex-live-dedup-evidence-20260914.json).
+
+Deployed milestone OpenClaw delivery: message 6685. Notification delivery is not
+feature acceptance or proof of a native-owner assignment.

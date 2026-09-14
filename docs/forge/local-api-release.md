@@ -115,3 +115,13 @@ the newly selected source. Migrate an existing gateway only at an owner-approved
 saved turn boundary, preserving its Forge ID, native thread/session ID, workspace,
 history and pending-control disposition. Do not replay uncertain prompts or old
 approval answers. This release procedure does not perform that migration.
+
+### September 14 filesystem replay follow-up
+
+Spark API `650088f3` / timeline-v4 was installed at 10:02 UTC with the same guarded
+procedure and `39da0146` as safe rollback. All 14 session identities and four
+protected owners remained unchanged; no live gateway existed at this cutover.
+One newly timed archive intentionally gains its correct live display grouping;
+the other 13 session payloads and 2,357 test log entries are unchanged. This is not
+an iOS live-deduplication fix or a new active-turn reconnect proof. See the
+[readback and remaining native work](codex-live-dedup-followup-20260914.md).
