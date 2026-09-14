@@ -316,6 +316,9 @@ describe('LaunchWizard helpers', () => {
   it('slugifies and validates session names', () => {
     expect(slugifySessionName(' Feature / Branch ')).toBe('feature-branch');
     expect(slugifySessionName('UPPER_and spaces')).toBe('upper-and-spaces');
+    expect(slugifySessionName('---lead--and--trail---')).toBe('lead-and-trail');
+    expect(slugifySessionName('-'.repeat(200))).toBe('');
+    expect(slugifySessionName(`${'-'.repeat(200)}tail`)).toBe('tail');
     expect(validateSessionName('')).toBeNull();
     expect(validateSessionName('x'.repeat(64))).toBe('Session name must be 63 characters or fewer');
     expect(validateSessionName('Bad Name')).toBe('Session name must be lowercase');

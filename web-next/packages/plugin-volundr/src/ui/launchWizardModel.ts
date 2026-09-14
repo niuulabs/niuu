@@ -440,14 +440,21 @@ export function getResourceErrors(form: WizardForm, clusterResources: ClusterRes
   return errors;
 }
 
+function trimHyphens(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === '-') start += 1;
+  while (end > start && value[end - 1] === '-') end -= 1;
+  return value.slice(start, end);
+}
+
 export function slugifySessionName(value: string): string {
-  return value
+  const collapsed = value
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .replace(/-{2,}/g, '-')
-    .slice(0, 63);
+    .replace(/-{2,}/g, '-');
+  return trimHyphens(collapsed).slice(0, 63);
 }
 
 export function validateSessionName(name: string): string | null {
