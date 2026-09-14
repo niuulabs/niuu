@@ -36,7 +36,8 @@
     "spark-conversations-after.json": "5c3cdeca0c30c34b038b8a000dbdac76819e9d844dc1fd320a04fc5d7a90e879",
     "spark-preservation-comparison.json": "6bd2cde4573de985f6b6a161daef3e9a57edd9482cbc5b3bf802cbc5966f97ac",
     "spark-final-window-journal.jsonl": "e7d09d0dd75888b9b4d92650d1fd6c653b57d70e1fa0c0ef1ae3503bca2cc50f",
-    "spark-attempt-window0820.json": "196112d2564f1ed98499a3c8bbca7d7b805a736414d411e1c203cffdb0cfb0be"
+    "spark-attempt-window0820.json": "196112d2564f1ed98499a3c8bbca7d7b805a736414d411e1c203cffdb0cfb0be",
+    "spark-stabilization0838.json": "afcd9874175c503f918628b11ba9997934ee7368a6893bb1af4d03189f88394f"
   },
   "outcome": "Spark API deployed; existing gateway source intentionally preserved. Native UI acceptance remains outstanding.",
   "window": {
@@ -115,5 +116,18 @@
     "Native RPC/ledger chronology tests are hermetic; no new provider or physical iOS proof.",
     "Public captured log excludes conversation.turn/projection/per-connect rows; no full database crash-durability claim.",
     "Offline canonical-seed comparison uses synthetic seed positions, not captured internal database rows."
-  ]
+  ],
+  "stabilization": {
+    "passed": true,
+    "observed_at": "2026-09-14T08:42:55.455029+00:00",
+    "health": {
+      "status": "ok",
+      "revision": "39da0146a2957f81f51bad54c107d7b042e55cd2",
+      "build": "forge-codex-ready-20260914-timeline-v3",
+      "source_sha256": "103f449bb7b12305b77d37c03d0e2b0710ca47025cd2a7a4a594b4563c649fc0",
+      "dirty": false,
+      "failed_plugins": []
+    },
+    "same_api_runtime_owners_metadata_archived_replay_units_config_independent_services": true
+  }
 }

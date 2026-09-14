@@ -7,6 +7,8 @@ on Spark at **08:38 UTC**, source SHA
 `103f449bb7b12305b77d37c03d0e2b0710ca47025cd2a7a4a594b4563c649fc0`, immutable
 `forge-codex-ready-20260914-timeline-v3`. The unchanged guarded apply passed from
 08:38:41 to 08:38:46 within the newly announced 08:38–08:48 UTC window.
+A further read-only check at **08:42:55 UTC** verified the same healthy API,
+runtime owners, metadata, archived replay, units/config and independent services.
 
 - The exact final source passed **5,085 tests on each host**, 24 skips, 95
   deselections and one expected failure; **86.00%** scoped statement/branch
