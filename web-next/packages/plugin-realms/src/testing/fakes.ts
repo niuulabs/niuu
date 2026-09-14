@@ -2,7 +2,7 @@
  * Test doubles for the services the Realms plugin consumes. Every double records the
  * calls it received so tests can assert the recipe's order and payloads.
  */
-import type { IMimirService } from '@niuulabs/plugin-mimir';
+import { createMimirMockAdapter, type IMimirService } from '@niuulabs/plugin-mimir';
 import type {
   DeployResidentRequest,
   IPersonaStore,
@@ -90,8 +90,12 @@ export function fakeMimir(
   const mountAppears = options.mountAppears ?? true;
   const targets = options.targets ?? ['ymir'];
   const mounts: string[] = [];
+  // Reads the realm pages never touch come from the Mímir mock; writes are logged here.
+  const base = createMimirMockAdapter();
   const mimir = {
+    ...base,
     mounts: {
+      ...base.mounts,
       async listMounts() {
         log.calls.push('listMounts');
         return mounts.map((name) => ({ name, role: 'domain', status: 'healthy', pages: 0 }));
@@ -124,6 +128,7 @@ export function fakeMimir(
       },
     },
     pages: {
+      ...base.pages,
       async upsertPage(path: string, _content: string, mountName?: string) {
         log.calls.push(`upsertPage:${path}@${mountName}`);
       },

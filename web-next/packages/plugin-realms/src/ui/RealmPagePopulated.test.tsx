@@ -86,12 +86,17 @@ describe('RealmPage with a running resident', () => {
     await screen.findByTestId('realm-page');
     await waitFor(() => expect(screen.getByText('fix flaky test')).toBeInTheDocument());
     expect(screen.queryByText('other')).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText(/QA findings · 1/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('queue-findings')).toHaveTextContent('LXA-1'));
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'New conversation' })).toBeInTheDocument(),
     );
     await user.click(screen.getByRole('button', { name: 'New conversation' }));
     await screen.findByText(/not used in tests/);
+    await user.click(screen.getByRole('button', { name: /^Queue/ }));
+    expect(await screen.findByText(/QA findings · 1/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^Sessions/ }));
+    expect(await screen.findByText(/Resident logs/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Memory' }));
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Open realm memory' })).toBeEnabled(),
     );
@@ -111,7 +116,7 @@ describe('RealmPage with a running resident', () => {
     const finish = await screen.findByRole('button', { name: 'I answered its first question' });
     await user.click(finish);
     await screen.findByText('Done. Nicely kept.');
-    expect(screen.getByText('Needs you')).toBeInTheDocument();
+    expect(screen.getByText('What it did')).toBeInTheDocument();
   });
 
   it('clones the realm into the wizard with its charter and trust', async () => {

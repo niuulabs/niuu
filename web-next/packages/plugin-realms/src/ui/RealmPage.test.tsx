@@ -38,8 +38,9 @@ describe('RealmPage', () => {
     renderRealms('/realms/valhalla', { 'valkyrie.realms': await realmWithBinding(log) }, log);
     await screen.findByTestId('realm-page');
     expect(screen.getByText('Valhalla')).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText(/Intake · 1/)).toBeInTheDocument());
-    expect(screen.getByText('LXA-1')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/LXA-1/)).toBeInTheDocument());
+    expect(screen.getByTestId('queue-intake')).toHaveTextContent('Intake1');
+    expect(screen.getByRole('group', { name: 'Realm section' })).toBeInTheDocument();
     expect(screen.getByText('observe · L2')).toBeInTheDocument();
     expect(screen.getByText('deploy · L1')).toBeInTheDocument();
     expect(screen.getByText(/board board-1/)).toBeInTheDocument();
