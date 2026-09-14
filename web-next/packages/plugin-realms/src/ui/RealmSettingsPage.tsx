@@ -190,6 +190,8 @@ export function RealmSettingsPage() {
     queryKey: ['ravn', 'personas', data.view?.personaName ?? ''],
     queryFn: () => personas.getPersona(data.view?.personaName as string),
     enabled: Boolean(data.view?.personaName),
+    // A missing persona is an answer, not a blip worth retrying for seven seconds.
+    retry: false,
   });
   const save = useMutation({
     mutationFn: (request: PersonaCreateRequest) => personas.updatePersona(request.name, request),
@@ -241,7 +243,14 @@ export function RealmSettingsPage() {
 
       {section === 'charter' ? (
         persona.error ? (
-          <ErrorState message={String(persona.error)} />
+          (persona.error as { status?: number }).status === 404 ? (
+            <EmptyState
+              title={`No persona named ${view.personaName} yet`}
+              description="This realm was not set up by the wizard, so it has no charter persona. Clone it to create one, or write the persona under Ravn › Personas."
+            />
+          ) : (
+            <ErrorState message={String(persona.error)} />
+          )
         ) : persona.data ? (
           <SectionCard
             title="Charter and persona"
