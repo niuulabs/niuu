@@ -85,7 +85,7 @@ export function useRealmView(slug: string) {
     enabled: ravnId !== null,
   });
 
-  const mountName = view?.binding ? mountNameFor(slug, view.binding.mountTarget) : null;
+  const mountName = view?.binding ? mountNameFor(slug) : null;
   const mounts = useQuery({
     queryKey: ['mimir', 'mounts'],
     queryFn: () => mimir.mounts.listMounts(),

@@ -17,8 +17,12 @@ export function residentNameFor(slug: string): string {
   return slug;
 }
 
-export function mountNameFor(slug: string, target: string): string {
-  return target ? `${target}/realm-${slug}` : `realm-${slug}`;
+/**
+ * Mímir lists a deployed instance under its bare deployment name, whatever target it
+ * runs on (verified against the cluster target on yggdrasil).
+ */
+export function mountNameFor(slug: string): string {
+  return `realm-${slug}`;
 }
 
 export function deploymentNameFor(slug: string): string {

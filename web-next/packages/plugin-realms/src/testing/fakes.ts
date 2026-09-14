@@ -114,7 +114,8 @@ export function fakeMimir(
       },
       async deployInstance(request: { name: string; target?: string }) {
         log.calls.push(`deployInstance:${request.name}@${request.target}`);
-        if (mountAppears) mounts.push(`${request.target}/${request.name}`);
+        // Mímir lists a deployed instance under its bare deployment name.
+        if (mountAppears) mounts.push(request.name);
         return {};
       },
       async upsertRoutingRule(rule: { id: string; prefix: string; mountName: string }) {

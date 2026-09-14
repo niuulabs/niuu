@@ -73,7 +73,7 @@ describe('useCreateRealm', () => {
       'testIntegration:int-1',
       'createRealm:lexi-api',
       'deployInstance:realm-lexi-api@ymir',
-      'upsertRoutingRule:realm-lexi-api->ymir/realm-lexi-api',
+      'upsertRoutingRule:realm-lexi-api->realm-lexi-api',
       'createPersona:realm-lexi-api',
       'createTrustGrant:lexi-api:observe:2',
       'createTrustGrant:lexi-api:draft:2',
@@ -87,7 +87,7 @@ describe('useCreateRealm', () => {
       'importProject:board-1:niuulabs/lexi-api',
       'deploy:lexi-api:realm-lexi-api',
       'listMounts',
-      'upsertPage:realms/lexi-api/charter.md@ymir/realm-lexi-api',
+      'upsertPage:realms/lexi-api/charter.md@realm-lexi-api',
     ]);
     expect(Object.values(result.current.progress.states).every((state) => state === 'done')).toBe(
       true,

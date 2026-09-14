@@ -159,6 +159,13 @@ describe('getPersona', () => {
       overrideSource: '[user:user-1]',
     });
   });
+
+  it('leaves fanIn undefined when the API returns fan_in null', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({ ...rawDetail, fan_in: null });
+    const result = await buildRavnPersonaAdapter(client).getPersona('coder');
+    expect(result.fanIn).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

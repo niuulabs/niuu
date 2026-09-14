@@ -102,8 +102,8 @@ export function useCreateRealm() {
   const realms = useService<IRealmGovernanceService>('valkyrie.realms');
   const mimir = useService<IMimirService>('mimir');
   const personas = useService<IPersonaStore>('ravn.personas');
-  const triggers = useService<ITriggerStore>('ravn.triggers');
   const residents = useService<IResidentControl>('ravn.residents');
+  const triggers = useService<ITriggerStore>('ravn.triggers');
   const tracker = useService<ITrackerBrowserService>('ting.tracker');
   const volundr = useService<IVolundrService>('volundr');
   const queryClient = useQueryClient();
@@ -113,7 +113,7 @@ export function useCreateRealm() {
     async (draft: RealmDraft): Promise<RealmSummary> => {
       const template = templateById(draft.templateId);
       const personaName = personaNameFor(draft.slug);
-      const mountName = mountNameFor(draft.slug, draft.mountTarget);
+      const mountName = mountNameFor(draft.slug);
       let states = { ...IDLE.states };
       setProgress({ ...IDLE, states });
 

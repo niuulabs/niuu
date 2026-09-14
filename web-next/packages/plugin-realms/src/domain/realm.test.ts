@@ -21,8 +21,7 @@ describe('realm naming conventions', () => {
     expect(personaNameFor('lexi-api')).toBe('realm-lexi-api');
     expect(residentNameFor('lexi-api')).toBe('lexi-api');
     expect(deploymentNameFor('lexi-api')).toBe('realm-lexi-api');
-    expect(mountNameFor('lexi-api', 'ymir')).toBe('ymir/realm-lexi-api');
-    expect(mountNameFor('lexi-api', '')).toBe('realm-lexi-api');
+    expect(mountNameFor('lexi-api')).toBe('realm-lexi-api');
     expect(routingRuleIdFor('lexi-api')).toBe('realm-lexi-api');
     expect(routingPrefixFor('lexi-api')).toBe('realms/lexi-api/');
     expect(charterPagePathFor('lexi-api')).toBe('realms/lexi-api/charter.md');

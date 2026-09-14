@@ -524,9 +524,11 @@ function LaunchStep({
               <div className="niuu:flex-1">
                 <ConfirmRow
                   label={
-                    key === 'trackerBoard'
-                      ? 'board'
-                      : key === 'bugBoard'
+                    key === 'templateId'
+                      ? 'template'
+                      : key === 'trackerBoard'
+                        ? 'board'
+                        : key === 'bugBoard'
                         ? 'bug board'
                         : key === 'mountTarget'
                           ? 'memory'
