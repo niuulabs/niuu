@@ -6,12 +6,24 @@ import {
   PersonaForm,
   TriggersView,
   type IPersonaStore,
+  type IResidentControl,
   type PersonaCreateRequest,
+  type Ravn,
+  type ResidentLifecycleAction,
 } from '@niuulabs/plugin-ravn';
 import { ToolBuilderGrantCard, useCreateTrustGrant } from '@niuulabs/plugin-valkyrie';
 import { SectionCard } from '@niuulabs/plugin-volundr';
-import { Chip, ErrorState, LoadingState, MountChip, SegmentedFilter } from '@niuulabs/ui';
+import {
+  Chip,
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  MountChip,
+  SegmentedFilter,
+} from '@niuulabs/ui';
+import { RAVENS_QUERY_KEY, useRavens } from '../application/useRealmsHome';
 import { useRealmView } from '../application/useRealmView';
+import { ravnForRealm } from '../domain/join';
 import {
   ACTION_CLASSES,
   ACTION_CLASS_COPY,
@@ -20,6 +32,112 @@ import {
   type ActionClass,
   type TrustSetting,
 } from '../domain/realm';
+
+const BUTTON =
+  'niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:font-medium niuu:text-text-primary niuu:disabled:opacity-40';
+const DANGER =
+  'niuu:rounded-md niuu:border niuu:border-critical-bo niuu:bg-critical-bg niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:font-medium niuu:text-critical-fg niuu:disabled:opacity-40';
+
+/**
+ * Pause, resume, restart or remove the resident. The realm record itself has no
+ * delete route on the platform yet, so removing the resident is how a realm is
+ * switched off: nothing runs, the charter and trust stay for when it comes back.
+ */
+function ResidentControls({ ravn, realmName }: { ravn: Ravn | null; realmName: string }) {
+  const residents = useService<IResidentControl>('ravn.residents');
+  const queryClient = useQueryClient();
+  const [armed, setArmed] = useState(false);
+  const refresh = () => queryClient.invalidateQueries({ queryKey: RAVENS_QUERY_KEY });
+  const lifecycle = useMutation({
+    mutationFn: (action: ResidentLifecycleAction) => residents.applyLifecycle(ravn as Ravn, action),
+    onSuccess: refresh,
+  });
+  const remove = useMutation({
+    mutationFn: () => residents.delete(ravn as Ravn),
+    onSuccess: () => {
+      setArmed(false);
+      void refresh();
+    },
+  });
+  if (!ravn) {
+    return (
+      <EmptyState
+        title="No resident is running for this realm"
+        description="Start one from the realm page, or clone the realm to deploy a fresh resident."
+      />
+    );
+  }
+  const busy = lifecycle.isPending || remove.isPending;
+  const error = lifecycle.error ?? remove.error;
+  return (
+    <div className="niuu:flex niuu:flex-col niuu:gap-3" data-testid="resident-controls">
+      <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-xs niuu:text-text-secondary">
+        <Chip tone={ravn.status === 'active' ? 'brand' : 'muted'}>{ravn.status}</Chip>
+        <span className="niuu:font-mono">{ravn.residentName ?? ravn.id}</span>
+      </div>
+      <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
+        <button
+          type="button"
+          className={BUTTON}
+          disabled={busy}
+          onClick={() => lifecycle.mutate('suspend')}
+        >
+          Pause
+        </button>
+        <button
+          type="button"
+          className={BUTTON}
+          disabled={busy}
+          onClick={() => lifecycle.mutate('resume')}
+        >
+          Resume
+        </button>
+        <button
+          type="button"
+          className={BUTTON}
+          disabled={busy}
+          onClick={() => lifecycle.mutate('restart')}
+        >
+          Restart
+        </button>
+        {armed ? (
+          <>
+            <button
+              type="button"
+              className={DANGER}
+              disabled={busy}
+              onClick={() => remove.mutate()}
+              data-testid="resident-remove-confirm"
+            >
+              Yes, remove {realmName}&apos;s resident
+            </button>
+            <button type="button" className={BUTTON} onClick={() => setArmed(false)}>
+              Keep it
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className={DANGER}
+            disabled={busy}
+            onClick={() => setArmed(true)}
+            data-testid="resident-remove"
+          >
+            Remove resident
+          </button>
+        )}
+      </div>
+      <span className="niuu:text-xs niuu:text-text-muted">
+        Pause keeps the resident deployed but idle. Remove tears its deployment down; the realm,
+        its charter, trust and memory stay, and the platform has no route to delete the realm
+        record itself yet.
+      </span>
+      {error ? (
+        <span className="niuu:text-xs niuu:text-critical-fg">{String(error)}</span>
+      ) : null}
+    </div>
+  );
+}
 
 const TRUST_OPTIONS: Array<{ value: TrustSetting; label: string }> = [
   { value: 'auto', label: 'on its own' },
@@ -77,7 +195,11 @@ export function RealmSettingsPage() {
     mutationFn: (request: PersonaCreateRequest) => personas.updatePersona(request.name, request),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ravn', 'personas'] }),
   });
-  const [section, setSection] = useState<'charter' | 'trust' | 'jobs' | 'memory'>('charter');
+  const [section, setSection] = useState<'charter' | 'trust' | 'jobs' | 'memory' | 'resident'>(
+    'charter',
+  );
+  const ravens = useRavens();
+  const ravn = ravnForRealm(ravens.data, slug);
 
   if (data.isLoading) return <LoadingState label="Loading realm…" />;
   if (data.error)
@@ -109,6 +231,7 @@ export function RealmSettingsPage() {
             { value: 'trust', label: 'Trust' },
             { value: 'jobs', label: 'Standing jobs' },
             { value: 'memory', label: 'Memory' },
+            { value: 'resident', label: 'Resident' },
           ]}
           value={section}
           onChange={setSection}
@@ -162,6 +285,15 @@ export function RealmSettingsPage() {
           description="Triggers that wake the resident on a schedule or an event."
         >
           <TriggersView personaName={view.personaName} />
+        </SectionCard>
+      ) : null}
+
+      {section === 'resident' ? (
+        <SectionCard
+          title="Resident"
+          description="Pause, resume, restart or remove the resident that keeps this realm."
+        >
+          <ResidentControls ravn={ravn} realmName={data.realm.name} />
         </SectionCard>
       ) : null}
 

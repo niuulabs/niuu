@@ -12,9 +12,28 @@ export function WalkthroughRail({
   action?: React.ReactNode;
 }) {
   const { done, hidden, complete, currentStepId, setHidden } = useWalkthrough(walkthrough);
-  if (hidden) return null;
   const total = walkthrough.steps.length;
   const doneCount = done.length;
+  if (hidden) {
+    // A thin edge tab keeps the way back visible on every page that has the rail.
+    return (
+      <button
+        type="button"
+        onClick={() => setHidden(false)}
+        className="niuu:flex niuu:w-7 niuu:shrink-0 niuu:items-center niuu:justify-center niuu:border-l niuu:border-border-subtle niuu:bg-bg-secondary niuu:text-text-muted niuu:hover:text-text-primary"
+        title="Show the walkthrough"
+        aria-label="Show the walkthrough"
+        data-testid="walkthrough-show"
+      >
+        <span
+          className="niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.25em]"
+          style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
+        >
+          walkthrough · {doneCount}/{total}
+        </span>
+      </button>
+    );
+  }
 
   return (
     <aside

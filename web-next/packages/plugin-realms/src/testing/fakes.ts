@@ -137,6 +137,34 @@ export function fakeMimir(
   return mimir as unknown as IMimirService;
 }
 
+/** The shape the persona API hands back: every list and block present, like the real thing. */
+function personaDetailOf(request: Partial<PersonaCreateRequest> & { name: string }) {
+  return {
+    role: 'build',
+    letter: request.name.charAt(0).toUpperCase(),
+    color: '',
+    summary: '',
+    description: '',
+    systemPromptTemplate: '',
+    allowedTools: [],
+    forbiddenTools: [],
+    permissionMode: 'default',
+    iterationBudget: 20,
+    ...request,
+    isBuiltin: false,
+    hasOverride: false,
+    producesEvent: request.producesEventType ?? '',
+    consumesEvents: request.consumesEvents ?? [],
+    llm: {
+      thinkingEnabled: request.llmThinkingEnabled ?? false,
+      maxTokens: request.llmMaxTokens ?? 8192,
+    },
+    produces: { eventType: request.producesEventType ?? '', schemaDef: {} },
+    consumes: { events: [], schemaDef: {} },
+    yamlSource: '',
+  } as never;
+}
+
 export function fakePersonas(log: CallLog): IPersonaStore {
   const personas = new Map<string, PersonaCreateRequest>();
   return {
@@ -146,17 +174,7 @@ export function fakePersonas(log: CallLog): IPersonaStore {
     async getPersona(name) {
       const persona = personas.get(name);
       if (!persona) throw new Error(`Persona not found: ${name}`);
-      return {
-        ...persona,
-        isBuiltin: false,
-        hasOverride: false,
-        producesEvent: '',
-        consumesEvents: [],
-        llm: {},
-        produces: {},
-        consumes: {},
-        yamlSource: '',
-      } as never;
+      return personaDetailOf(persona);
     },
     async getPersonaYaml() {
       return '';
@@ -164,17 +182,7 @@ export function fakePersonas(log: CallLog): IPersonaStore {
     async createPersona(request) {
       log.calls.push(`createPersona:${request.name}`);
       personas.set(request.name, request);
-      return {
-        ...request,
-        isBuiltin: false,
-        hasOverride: false,
-        producesEvent: '',
-        consumesEvents: [],
-        llm: {},
-        produces: {},
-        consumes: {},
-        yamlSource: '',
-      } as never;
+      return personaDetailOf(request);
     },
     async updatePersona(name, request) {
       log.calls.push(`updatePersona:${name}`);
@@ -260,10 +268,15 @@ export function fakeResidents(
       ravens.push(ravn);
       return ravn;
     },
-    async applyLifecycle(ravn) {
+    async applyLifecycle(ravn, action) {
+      log.calls.push(`applyLifecycle:${ravn.residentName ?? ravn.id}:${action}`);
       return ravn;
     },
-    async delete() {},
+    async delete(ravn) {
+      log.calls.push(`deleteResident:${ravn.residentName ?? ravn.id}`);
+      const index = ravens.indexOf(ravn);
+      if (index >= 0) ravens.splice(index, 1);
+    },
     async getLogs() {
       return { entries: [], bufferTotal: 0 };
     },

@@ -35,6 +35,7 @@ import {
   EmptyState,
   ErrorState,
   LoadingState,
+  Modal,
   SegmentedFilter,
   StateDot,
   Table,
@@ -445,6 +446,7 @@ export function RealmPage() {
   const ctx = usePluginCtx();
   const [tab, setTab] = useState<RealmTab>('overview');
   const [launchOpen, setLaunchOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const workflows = useWorkflows();
@@ -548,13 +550,9 @@ export function RealmPage() {
             <button
               type="button"
               className={BUTTON}
-              onClick={() => setWorkflowOpen(true)}
-              disabled={!workflows.data || workflows.data.length === 0}
-              title={
-                workflows.data && workflows.data.length === 0
-                  ? 'No workflows yet. Create one under Ting › Workflows.'
-                  : 'Run a workflow in this realm'
-              }
+              onClick={() => setPickerOpen(true)}
+              disabled={!workflows.data}
+              title="Run a workflow in this realm"
               data-testid="realm-run-workflow"
             >
               Workflow
@@ -809,6 +807,49 @@ export function RealmPage() {
           }}
         />
       ) : null}
+      <Modal
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        title="Run a workflow here"
+        description={`The workflow starts against ${view.binding?.repo ?? 'this realm'}${view.binding?.branch ? ` on ${view.binding.branch}` : ''}.`}
+      >
+        <div className="niuu:flex niuu:flex-col niuu:gap-2" data-testid="workflow-picker">
+          {(workflows.data ?? []).length === 0 ? (
+            <EmptyState
+              title="No workflows yet"
+              description="Build one under Ting › Workflows, then run it here."
+              action={
+                <Link to={'/ting/workflows' as never} className={PRIMARY}>
+                  Open Ting › Workflows
+                </Link>
+              }
+            />
+          ) : (
+            (workflows.data ?? []).map((entry) => (
+              <button
+                key={entry.id}
+                type="button"
+                className={`${BUTTON} niuu:text-left`}
+                onClick={() => {
+                  setWorkflow(entry);
+                  setPickerOpen(false);
+                  setWorkflowOpen(true);
+                }}
+              >
+                {entry.name}
+                {entry.description ? (
+                  <span className="niuu:ml-2 niuu:text-[11px] niuu:text-text-muted">
+                    {entry.description}
+                  </span>
+                ) : null}
+              </button>
+            ))
+          )}
+          <Link to={'/ting/workflows' as never} className={`${LINK} niuu:self-start`}>
+            Manage workflows in Ting
+          </Link>
+        </div>
+      </Modal>
       <WorkflowLaunchModal
         open={workflowOpen}
         onOpenChange={(open) => {

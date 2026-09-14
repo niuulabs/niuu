@@ -117,6 +117,41 @@ describe('RealmPage with a running resident', () => {
     await user.click(finish);
     await screen.findByText('Done. Nicely kept.');
     expect(screen.getByText('What it did')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Hide walkthrough' }));
+    expect(screen.queryByTestId('walkthrough-rail')).not.toBeInTheDocument();
+    await user.click(screen.getByTestId('walkthrough-show'));
+    expect(await screen.findByTestId('walkthrough-rail')).toBeInTheDocument();
+  });
+
+  it('picks a workflow before launching it into the realm', async () => {
+    const user = userEvent.setup();
+    const log = createCallLog();
+    renderRealms('/realms/valhalla', await populated(log), log);
+    await screen.findByTestId('realm-page');
+    await waitFor(() => expect(screen.getByTestId('realm-run-workflow')).toBeEnabled());
+    await user.click(screen.getByTestId('realm-run-workflow'));
+    const picker = await screen.findByTestId('workflow-picker');
+    const first = picker.querySelector('button')!;
+    await user.click(first);
+    await waitFor(() => expect(screen.queryByTestId('workflow-picker')).not.toBeInTheDocument());
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('pauses and removes the resident from settings', async () => {
+    const user = userEvent.setup();
+    const log = createCallLog();
+    renderRealms('/realms/valhalla/settings', await populated(log), log);
+    await screen.findByTestId('realm-settings');
+    await user.click(screen.getByRole('button', { name: 'Resident' }));
+    await screen.findByTestId('resident-controls');
+    await user.click(screen.getByRole('button', { name: 'Pause' }));
+    await waitFor(() => expect(log.calls).toContain('applyLifecycle:valhalla:suspend'));
+    await user.click(screen.getByTestId('resident-remove'));
+    await user.click(screen.getByRole('button', { name: 'Keep it' }));
+    expect(screen.getByTestId('resident-remove')).toBeInTheDocument();
+    await user.click(screen.getByTestId('resident-remove'));
+    await user.click(screen.getByTestId('resident-remove-confirm'));
+    await waitFor(() => expect(log.calls).toContain('deleteResident:valhalla'));
   });
 
   it('clones the realm into the wizard with its charter and trust', async () => {

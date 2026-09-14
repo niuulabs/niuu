@@ -37,7 +37,8 @@ export const tingPlugin = definePlugin({
   title: 'Ting',
   subtitle: 'sagas · runs · dispatch',
   simple: {
-    tabs: ['dashboard', 'plan', 'sagas'],
+    // Workflows stay reachable in Simple mode: a realm runs them and picks one for builds.
+    tabs: ['dashboard', 'plan', 'sagas', 'workflows'],
     // Work dispatched as workflows: sagas, runs, the plan.
     icon: createElement(Workflow, { size: 17, 'aria-hidden': true }),
   },
