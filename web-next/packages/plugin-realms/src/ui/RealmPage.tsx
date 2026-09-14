@@ -622,7 +622,7 @@ export function RealmPage() {
               />
             </div>
 
-            <div className="niuu:grid niuu:min-h-0 niuu:flex-1 niuu:grid-cols-[1.4fr_1fr] niuu:gap-4">
+            <div className="niuu:grid niuu:min-h-0 niuu:flex-1 niuu:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] niuu:gap-4">
               <div className="niuu:flex niuu:min-h-0 niuu:flex-col niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:pb-1 niuu:pt-3">
                 <div className="niuu:flex niuu:items-center niuu:justify-between niuu:pb-1">
                   <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
