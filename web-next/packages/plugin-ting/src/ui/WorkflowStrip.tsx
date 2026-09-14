@@ -140,7 +140,7 @@ export function WorkflowStrip({ nodes: allNodes, edges, className }: WorkflowStr
       {unplaced.length > 0 ? (
         <p
           data-testid="workflow-strip-loops"
-          className="niuu:m-0 niuu:mb-2 niuu:text-[10px] niuu:font-semibold niuu:uppercase niuu:tracking-wide niuu:text-critical"
+          className="niuu:m-0 niuu:mb-2.5 niuu:text-[11px] niuu:text-status-amber"
         >
           Part of this workflow loops back: the steps after the connector repeat until a gate lets
           them through.
