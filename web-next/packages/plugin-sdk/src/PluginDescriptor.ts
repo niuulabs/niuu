@@ -43,8 +43,10 @@ export interface PluginDescriptor {
    * stays in the rail with only the listed tab ids (all tabs when omitted);
    * a plugin without it is hidden from the rail while Simple mode is on.
    * Routes are unaffected: deep links keep working in either mode.
+   * `icon` replaces the rune in the rail and topbar while Simple mode is on:
+   * a picture of what the plugin does, for people who do not read runes yet.
    */
-  simple?: { tabs?: string[] };
+  simple?: { tabs?: string[]; icon?: ReactNode };
 
   routes?: (rootRoute: AnyRoute) => AnyRoute[];
 

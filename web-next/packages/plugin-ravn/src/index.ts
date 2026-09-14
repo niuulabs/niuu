@@ -1,4 +1,6 @@
+import { createElement } from 'react';
 import { createRoute } from '@tanstack/react-router';
+import { Bird } from 'lucide-react';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { RavnPage } from './ui/RavnPage';
 import { RavensPage } from './ui/RavensPage';
@@ -14,7 +16,10 @@ export const ravnPlugin = definePlugin({
   rune: 'R',
   title: 'Ravn',
   subtitle: 'personas · ravens · sessions',
-  simple: { tabs: ['ravens', 'personas'] },
+  simple: {
+    tabs: ['ravens', 'personas'],
+    icon: createElement(Bird, { size: 17, 'aria-hidden': true }),
+  },
   tabs: [
     { id: 'overview', label: 'Overview', path: '/ravn' },
     { id: 'ravens', label: 'Ravens', path: '/ravn/ravens' },

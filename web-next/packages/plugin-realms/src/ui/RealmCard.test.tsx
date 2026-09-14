@@ -54,7 +54,8 @@ describe('RealmCard', () => {
     mount({});
     expect(await screen.findByText('no resident yet')).toBeInTheDocument();
     expect(screen.getByText('balanced')).toBeInTheDocument();
-    expect(screen.getByText('Open')).toBeInTheDocument();
+    expect(screen.getByText('Open ›')).toBeInTheDocument();
+    expect(screen.getByText('nothing bound yet')).toBeInTheDocument();
   });
 
   it('shows the ravn status when only the fleet knows the resident', async () => {
@@ -75,8 +76,26 @@ describe('RealmCard', () => {
     });
     expect(await screen.findByText('Review 2')).toBeInTheDocument();
     expect(screen.getByText('tools')).toBeInTheDocument();
-    expect(screen.getByText(/last acted 2026-09-13 09:41/)).toBeInTheDocument();
+    expect(screen.getByText(/last acted .* ago/)).toBeInTheDocument();
     expect(screen.getByText('3')).toBeInTheDocument();
+  });
+
+  it('shows what the realm is bound to and the environment health', async () => {
+    mount({
+      binding: {
+        template: 'qa-resident',
+        repo: 'niuulabs/lexi-api',
+        branch: 'dev',
+        trackerBoard: 'LXA',
+        bugBoard: 'QA',
+        mountTarget: 'ymir',
+      },
+      environment: { health: 'degraded', unresolvedSignalCount: 2 } as never,
+    });
+    expect(await screen.findByText('QA resident · niuulabs/lexi-api')).toBeInTheDocument();
+    expect(screen.getByText('board LXA')).toBeInTheDocument();
+    expect(screen.getByText('bugs QA')).toBeInTheDocument();
+    expect(screen.getByText('2 open signals')).toBeInTheDocument();
   });
 
   it('falls back to an unknown dot for an unexpected wakefulness value', async () => {

@@ -138,7 +138,7 @@ export function ShellLayout() {
                 aria-label={p.title}
                 onClick={() => handleSelect(p.id)}
               >
-                {p.rune}
+                {mode === 'simple' && p.simple?.icon ? p.simple.icon : p.rune}
               </button>
             </Tooltip>
           ))}
@@ -160,7 +160,7 @@ export function ShellLayout() {
                 aria-label={p.title}
                 onClick={() => handleSelect(p.id)}
               >
-                {p.rune}
+                {mode === 'simple' && p.simple?.icon ? p.simple.icon : p.rune}
               </button>
             </Tooltip>
           ))}
@@ -172,7 +172,9 @@ export function ShellLayout() {
             <div className="niuu-shell__topbar-title">
               {active && (
                 <>
-                  <span className="niuu-shell__rune-mark">{active.rune}</span>
+                  <span className="niuu-shell__rune-mark">
+                    {mode === 'simple' && active.simple?.icon ? active.simple.icon : active.rune}
+                  </span>
                   <h1>{active.title}</h1>
                   <span className="niuu-shell__topbar-subtitle">{active.subtitle}</span>
                 </>

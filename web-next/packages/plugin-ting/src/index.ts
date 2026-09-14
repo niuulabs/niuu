@@ -1,4 +1,6 @@
+import { createElement } from 'react';
 import { createRoute, redirect } from '@tanstack/react-router';
+import { Workflow } from 'lucide-react';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import { TingPage } from './ui/TingPage';
 import { WorkflowBuilderPage } from './ui/WorkflowBuilderPage';
@@ -34,7 +36,10 @@ export const tingPlugin = definePlugin({
   rune: 'T',
   title: 'Ting',
   subtitle: 'sagas · runs · dispatch',
-  simple: { tabs: ['dashboard', 'plan', 'sagas'] },
+  simple: {
+    tabs: ['dashboard', 'plan', 'sagas'],
+    icon: createElement(Workflow, { size: 17, 'aria-hidden': true }),
+  },
   tabs: [
     { id: 'dashboard', label: 'Dashboard', rune: '◈', path: '/ting' },
     { id: 'sagas', label: 'Sagas', rune: '✦', path: '/ting/sagas' },

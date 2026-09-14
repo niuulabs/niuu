@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { createSeedRealms } from '@niuulabs/plugin-valkyrie';
 import { createCallLog, fakeRealmService } from '../testing/fakes';
 import { renderRealms } from '../testing/renderRealms';
 
@@ -17,6 +18,25 @@ describe('RealmsHomePage', () => {
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
       /realms, each kept by a resident/,
     );
+  });
+
+  it('shows the three realms that matter most and expands on request', async () => {
+    const user = userEvent.setup();
+    const log = createCallLog();
+    const seeds = createSeedRealms();
+    const extra = seeds.map((realm, index) => ({
+      ...realm,
+      id: `extra-${index}`,
+      slug: `${realm.slug}-copy`,
+      name: `${realm.name} copy`,
+    }));
+    renderRealms('/realms', { 'valkyrie.realms': fakeRealmService(log, [...seeds, ...extra]) }, log);
+    const toggle = await screen.findByTestId('realm-cards-toggle');
+    expect(screen.getByTestId('realm-cards').children).toHaveLength(3);
+    expect(toggle).toHaveTextContent('Show all 6 realms');
+    await user.click(toggle);
+    expect(screen.getByTestId('realm-cards').children).toHaveLength(6);
+    expect(screen.getByTestId('realm-cards-toggle')).toHaveTextContent('matter most');
   });
 
   it('shows the empty state when there are no realms', async () => {

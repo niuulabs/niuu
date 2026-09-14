@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { Textarea } from '@niuulabs/ui';
+import { Sparkles } from 'lucide-react';
 
 const PLACEHOLDER =
   'Keep niuulabs/lexi-api shippable, work the LXA board in priority order, and ask me before anything deploys.';
@@ -20,14 +21,15 @@ export function SentenceComposer() {
   return (
     <form
       onSubmit={submit}
-      className="niuu:flex niuu:items-start niuu:gap-3 niuu:rounded-xl niuu:border niuu:border-brand/40 niuu:bg-brand/5 niuu:p-4"
+      className="niuu:flex niuu:items-center niuu:gap-3 niuu:rounded-xl niuu:border niuu:border-brand/40 niuu:bg-brand/5 niuu:py-3 niuu:pl-4 niuu:pr-3.5"
       data-testid="sentence-composer"
     >
-      <div className="niuu:flex niuu:flex-1 niuu:flex-col niuu:gap-1">
+      <Sparkles size={18} className="niuu:shrink-0 niuu:text-brand" aria-hidden="true" />
+      <div className="niuu:flex niuu:flex-1 niuu:flex-col niuu:gap-0.5">
         <Textarea
           aria-label="Describe the realm in one sentence"
           placeholder={PLACEHOLDER}
-          rows={2}
+          rows={1}
           value={text}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => {

@@ -1,4 +1,5 @@
 import { createRoute } from '@tanstack/react-router';
+import { BookOpen } from 'lucide-react';
 import { definePlugin } from '@niuulabs/plugin-sdk';
 import type { PluginCtx } from '@niuulabs/plugin-sdk';
 import { MimirPage } from './ui/MimirPage';
@@ -13,7 +14,7 @@ export const mimirPlugin = definePlugin({
   rune: 'M',
   title: 'Mímir',
   subtitle: 'the well of knowledge',
-  simple: { tabs: ['overview', 'pages'] },
+  simple: { tabs: ['overview', 'pages'], icon: <BookOpen size={17} aria-hidden="true" /> },
   tabs: [
     { id: 'overview', label: 'Overview', rune: '◎', path: '/mimir' },
     { id: 'pages', label: 'Pages', rune: '▤', path: '/mimir/pages' },
