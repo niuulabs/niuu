@@ -314,15 +314,13 @@ describe('ResidentsPage', () => {
     mount(
       valkyrieServices({
         'ravn.sessions': {
-          listSessions: vi
-            .fn()
-            .mockResolvedValue([
-              makeSession(),
-              makeSession({
-                id: '55555555-5555-4555-8555-555555555555',
-                createdAt: '2026-09-14T09:00:00Z',
-              }),
-            ]),
+          listSessions: vi.fn().mockResolvedValue([
+            makeSession(),
+            makeSession({
+              id: '55555555-5555-4555-8555-555555555555',
+              createdAt: '2026-09-14T09:00:00Z',
+            }),
+          ]),
           getSession: vi.fn(),
           getMessages: vi.fn(),
         },
