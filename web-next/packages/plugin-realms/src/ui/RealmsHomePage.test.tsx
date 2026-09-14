@@ -1,11 +1,63 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createSeedRealms } from '@niuulabs/plugin-valkyrie';
 import { createCallLog, fakeRealmService } from '../testing/fakes';
 import { renderRealms } from '../testing/renderRealms';
 
+describe('RealmsHomePage starter', () => {
+  afterEach(() => {
+    cleanup();
+    localStorage.clear();
+  });
+
+  it('greets a newcomer with three ways to begin and nothing else', async () => {
+    renderRealms('/realms');
+    await screen.findByTestId('starter-home');
+    expect(screen.getByTestId('starter-sentence')).toBeInTheDocument();
+    expect(screen.getByTestId('starter-template-product-resident')).toHaveAttribute(
+      'href',
+      '/realms/new?template=product-resident',
+    );
+    expect(screen.getAllByTestId(/^starter-template-/)).toHaveLength(4);
+    await screen.findByTestId('starter-clone');
+    expect(screen.queryByTestId('realm-cards')).not.toBeInTheDocument();
+    expect(screen.queryByText('Needs you')).not.toBeInTheDocument();
+  });
+
+  it('shows the realms on request, remembers it, and can come back', async () => {
+    const user = userEvent.setup();
+    renderRealms('/realms');
+    await user.click(await screen.findByTestId('starter-see-realms'));
+    await screen.findByTestId('realm-cards');
+    expect(localStorage.getItem('niuu.compactUx.home')).toBe('realms');
+    await user.click(screen.getByTestId('home-start-here'));
+    await screen.findByTestId('starter-home');
+    expect(localStorage.getItem('niuu.compactUx.home')).toBe('starter');
+  });
+
+  it('opens the clone picker from the starter', async () => {
+    const user = userEvent.setup();
+    renderRealms('/realms');
+    await screen.findByTestId('starter-clone');
+    await user.click(screen.getByRole('button', { name: 'Clone a realm' }));
+    expect(await screen.findByTestId('clone-picker')).toBeInTheDocument();
+  });
+
+  it('hides the clone option when there is nothing to clone', async () => {
+    const log = createCallLog();
+    renderRealms('/realms', { 'valkyrie.realms': fakeRealmService(log, []) }, log);
+    await screen.findByTestId('starter-home');
+    expect(screen.queryByTestId('starter-clone')).not.toBeInTheDocument();
+    expect(screen.getByTestId('starter-see-realms')).toHaveTextContent('Show the realms view');
+  });
+});
+
 describe('RealmsHomePage', () => {
+  beforeEach(() => {
+    localStorage.setItem('niuu.compactUx.home', 'realms');
+  });
+
   afterEach(() => {
     cleanup();
     localStorage.clear();

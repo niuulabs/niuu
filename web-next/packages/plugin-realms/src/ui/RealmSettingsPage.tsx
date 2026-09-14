@@ -129,19 +129,25 @@ function ResidentControls({ ravn, realmName }: { ravn: Ravn | null; realmName: s
         )}
       </div>
       <span className="niuu:text-xs niuu:text-text-muted">
-        Pause keeps the resident deployed but idle. Remove tears its deployment down; the realm,
-        its charter, trust and memory stay, and the platform has no route to delete the realm
-        record itself yet.
+        Pause keeps the resident deployed but idle. Remove tears its deployment down; the realm, its
+        charter, trust and memory stay, and the platform has no route to delete the realm record
+        itself yet.
       </span>
-      {error ? (
-        <span className="niuu:text-xs niuu:text-critical-fg">{String(error)}</span>
-      ) : null}
+      {error ? <span className="niuu:text-xs niuu:text-critical-fg">{String(error)}</span> : null}
     </div>
   );
 }
 
 /** Delete the realm: the create recipe backwards, two clicks, fail loud on the step that broke. */
-function RealmTeardown({ slug, ravn, realmName }: { slug: string; ravn: Ravn | null; realmName: string }) {
+function RealmTeardown({
+  slug,
+  ravn,
+  realmName,
+}: {
+  slug: string;
+  ravn: Ravn | null;
+  realmName: string;
+}) {
   const navigate = useNavigate();
   const teardown = useDeleteRealm(slug);
   const [armed, setArmed] = useState(false);
@@ -149,8 +155,8 @@ function RealmTeardown({ slug, ravn, realmName }: { slug: string; ravn: Ravn | n
     <div className="niuu:flex niuu:flex-col niuu:gap-2" data-testid="realm-teardown">
       <span className="niuu:text-xs niuu:text-text-muted">
         Deleting the realm removes its resident, persona, memory routing rule, trust and
-        capabilities. The Mímir instance stays (the platform cannot remove one yet); its pages
-        are still under Mímir › Registry.
+        capabilities. The Mímir instance stays (the platform cannot remove one yet); its pages are
+        still under Mímir › Registry.
       </span>
       <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
         {armed ? (

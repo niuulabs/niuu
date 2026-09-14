@@ -63,7 +63,9 @@ export function useDeleteRealm(slug: string) {
       await step('resident', async () => {
         if (ravn) await residents.delete(ravn);
       });
-      await step('persona', () => tolerateMissing(() => personas.deletePersona(personaNameFor(slug))));
+      await step('persona', () =>
+        tolerateMissing(() => personas.deletePersona(personaNameFor(slug))),
+      );
       await step('routing', () =>
         tolerateMissing(() => mimir.mounts.deleteRoutingRule(routingRuleIdFor(slug))),
       );
