@@ -987,7 +987,7 @@ sessionDefinitions:
     # -- Human-readable name shown in the UI
     displayName: "Claude Code"
     # -- Short description for the session picker
-    description: "Anthropic Claude — full IDE with terminal, tools, and MCP"
+    description: "Claude Code in the full session workspace: chat, terminal, diffs, files and MCP tools. The usual choice for Claude."
     # -- Default model for this definition (empty = use server default)
     defaultModel: "claude-sonnet-4-6"
     # -- Labels for agent routing - only agents with matching labels will load this
@@ -996,6 +996,8 @@ sessionDefinitions:
     # -- Model providers this runtime accepts (empty = provider-neutral)
     compatibleProviders:
       - anthropic
+      # a model server you run yourself, through the model gateway
+      - local
     # -- Whether this session definition is active
     active: true
 
@@ -1116,7 +1118,7 @@ sessionDefinitions:
     # -- Human-readable name shown in the UI
     displayName: "Claude Code Interactive"
     # -- Short description for the session picker
-    description: "Anthropic Claude Code through a tmux-backed interactive terminal"
+    description: "Claude Code as the plain interactive terminal you know from your own machine: slash commands, permission prompts and agent teams. Pick this when you want the CLI itself rather than the chat workspace."
     # -- Default model for this definition (empty = use server default)
     defaultModel: "claude-sonnet-4-6"
     # -- Labels for agent routing
@@ -1126,6 +1128,8 @@ sessionDefinitions:
     # -- Model providers this runtime accepts
     compatibleProviders:
       - anthropic
+      # a model server you run yourself, through the model gateway
+      - local
     # -- Whether this session definition is active
     active: true
 
@@ -1239,7 +1243,7 @@ sessionDefinitions:
     # -- Human-readable name shown in the UI
     displayName: "OpenAI Codex"
     # -- Short description for the session picker
-    description: "OpenAI Codex — WebSocket protocol with streaming and tools"
+    description: "OpenAI's Codex coding agent with streaming chat and tools. The usual choice for OpenAI."
     # -- Default model for this definition (empty = use Codex default based on subscription)
     defaultModel: ""
     # -- Labels for agent routing
@@ -1248,6 +1252,8 @@ sessionDefinitions:
     # -- Model providers this runtime accepts (empty = provider-neutral)
     compatibleProviders:
       - openai
+      # a model server you run yourself, through the model gateway
+      - local
     # -- Whether this session definition is active
     active: true
 
@@ -1339,7 +1345,7 @@ sessionDefinitions:
     # -- Human-readable name shown in the UI
     displayName: "OpenCode"
     # -- Short description for the session picker
-    description: "Model-neutral AI coding agent — supports Claude, OpenAI, Gemini, local models"
+    description: "OpenCode, an open-source coding agent that works with any connected provider or a local model."
     # -- Default model for this definition (empty = use OpenCode default)
     defaultModel: ""
     # -- Labels for agent routing
@@ -1416,7 +1422,7 @@ sessionDefinitions:
     # -- Human-readable name shown in the UI
     displayName: "DeepSeek Harness"
     # -- Short description for the session picker
-    description: "DeepSeek Harness (dsh) — streaming, tools, durable session events"
+    description: "DeepSeek's Harness coding agent (dsh) with streaming chat and tools."
     # -- Default model for this definition
     defaultModel: "deepseek-v4-flash"
     # -- Labels for agent routing

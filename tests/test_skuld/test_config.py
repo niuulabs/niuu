@@ -487,3 +487,18 @@ class TestWorkflowRuntimeConfigInitialContext:
 
     def test_empty_stays_empty(self):
         assert WorkflowRuntimeConfig().initial_context == ""
+
+
+class TestModelGatewayConfig:
+    def test_defaults_to_the_vendor_apis(self, monkeypatch):
+        monkeypatch.delenv("SKULD__MODEL_GATEWAY__URL", raising=False)
+        s = SkuldSettings()
+        assert s.model_gateway.url == ""
+        assert s.model_gateway.token == "niuu-gateway"
+
+    def test_platform_sets_it_through_the_env(self, monkeypatch):
+        monkeypatch.setenv("SKULD__MODEL_GATEWAY__URL", "http://niuu:8080/api/v1/bifrost")
+        monkeypatch.setenv("SKULD__MODEL_GATEWAY__TOKEN", "pat")
+        s = SkuldSettings()
+        assert s.model_gateway.url == "http://niuu:8080/api/v1/bifrost"
+        assert s.model_gateway.token == "pat"

@@ -80,6 +80,20 @@ describe('buildMountedSettingsProviders', () => {
   });
 });
 
+it('mounts the host runtime settings when the setup plugin is enabled', () => {
+  const providers = buildMountedSettingsProviders({
+    demoMode: false,
+    theme: 'ice',
+    plugins: { setup: { enabled: true, order: 0 }, volundr: { enabled: true, order: 1 } },
+    services: { niuu: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/niuu' } },
+  } as any);
+  const runtime = providers.find((p) => p.id === 'runtime');
+  expect(runtime).toMatchObject({ source: 'remote', scope: 'admin', pluginId: 'setup' });
+  expect((runtime as { baseUrl?: string | null }).baseUrl).toBe(
+    'http://localhost:8080/api/v1/niuu/setup',
+  );
+});
+
 it('mounts personal storage alongside Volundr service settings', () => {
   const providers = buildMountedSettingsProviders({
     demoMode: false,

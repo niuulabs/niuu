@@ -8,6 +8,8 @@ export const repoRecordSchema = z.object({
   url: z.string().min(1).optional(),
   defaultBranch: z.string().min(1),
   branches: z.array(z.string()),
+  /** The Git account (a connection's credential name) that listed this repository. */
+  account: z.string().min(1).optional(),
 });
 
 export type RepoRecord = z.infer<typeof repoRecordSchema>;
@@ -50,5 +52,9 @@ export function normalizeRepoCatalogResponse(
     return payload.map((repo) => ('cloneUrl' in repo ? repo : normalizeRepo(repo)));
   }
 
-  return Object.values(payload).flat().map(normalizeRepo);
+  // The platform groups repositories by the account that listed them; keeping
+  // that lets a launch clone with the same account's credential.
+  return Object.entries(payload).flatMap(([account, repos]) =>
+    repos.map((repo) => ({ ...normalizeRepo(repo), account })),
+  );
 }

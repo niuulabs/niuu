@@ -37,8 +37,14 @@ class TestCLIEntryPoint:
     def test_old_commands_gone(self) -> None:
         """Commands removed in NIU-405 must no longer exist at top level."""
         result = runner.invoke(_app(), ["--help"])
-        for cmd in ("up", "down", "status", "migrate", "serve"):
+        for cmd in ("migrate", "serve"):
             assert cmd not in result.output.split(), f"unexpected {cmd!r} at top level"
+
+    def test_lifecycle_shortcuts_registered(self) -> None:
+        """`niuu up|down|status|doctor` are the installer-facing shortcuts (docker mode)."""
+        result = runner.invoke(_app(), ["--help"])
+        for cmd in ("up", "down", "status", "doctor"):
+            assert cmd in result.output.split(), f"expected {cmd!r} at top level"
 
     def test_platform_up_command_exists(self) -> None:
         result = runner.invoke(_app(), ["platform", "up", "--help"])

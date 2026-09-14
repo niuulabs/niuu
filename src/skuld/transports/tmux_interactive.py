@@ -193,10 +193,14 @@ class TmuxInteractiveTransport(CLITransport):
         turn_max_seconds: float | None = None,
         pane_poll_interval_s: float | None = None,
         frame_interval_s: float | None = None,
+        model_gateway_url: str = "",
+        model_gateway_token: str = "",
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
         self._model = model
+        self._model_gateway_url = model_gateway_url
+        self._model_gateway_token = model_gateway_token
         self._forge_session_id = session_id or "skuld-interactive"
         self._skip_permissions = skip_permissions
         self._agent_teams = agent_teams
@@ -315,6 +319,11 @@ class TmuxInteractiveTransport(CLITransport):
 
         self._alive = False
         self._initial_prompt_sent = False
+        # Set once the CLI's input prompt has been seen in the pane. Until then
+        # every delivery waits for it: text pasted into a still-booting REPL
+        # lands in the input box while the Enter is swallowed by the startup
+        # screen, and the message sits there unsent.
+        self._repl_ready_seen = False
         self._lifecycle_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
         # Correlation FIFO of (msg_id, request_id, normalized_text) for each user
@@ -430,11 +439,18 @@ class TmuxInteractiveTransport(CLITransport):
         """Bound-poll the pane until the CLI's input prompt has rendered, so the seed
         prompt isn't pasted into a still-booting REPL. Best-effort: returns after the
         timeout even if no marker appears, so a marker change never wedges startup."""
+        if self._repl_ready_seen:
+            return
         deadline = time.monotonic() + max(self._repl_ready_timeout_s, 0.0)
         while time.monotonic() < deadline:
             if self._repl_looks_ready(await self._capture_pane_text()):
+                self._repl_ready_seen = True
                 return
             await asyncio.sleep(self._menu_poll_step_s)
+        logger.warning(
+            "tmux: REPL prompt not seen within %.0fs; delivering anyway",
+            self._repl_ready_timeout_s,
+        )
 
     async def _ensure_started(self) -> None:
         async with self._lifecycle_lock:
@@ -701,6 +717,9 @@ class TmuxInteractiveTransport(CLITransport):
         try:
             if not self.is_alive:
                 await self._ensure_started()
+            # A message that arrives while the REPL is still booting must wait
+            # for its prompt, exactly like the seed prompt does.
+            await self._wait_for_repl_ready()
             if self._turn_active:
                 # Mid-turn steer: keep the SAME turn alive. Refresh the idle
                 # clock so the completion watchdog doesn't fire in the gap
@@ -1565,7 +1584,9 @@ class TmuxInteractiveTransport(CLITransport):
             return str(value)
 
     async def _create_session(self) -> None:
+        self._repl_ready_seen = False
         env = self._spawn_env()
+        self._prepare_claude_config(env)
         self._write_hook_settings()
         command = self._interactive_argv()
         logger.info("TmuxInteractiveTransport: starting %s", self._session_name)
@@ -1664,7 +1685,10 @@ class TmuxInteractiveTransport(CLITransport):
         )
 
     def _spawn_env(self) -> dict[str, str]:
-        env = claude_spawn_env()
+        env = claude_spawn_env(
+            gateway_url=self._model_gateway_url,
+            gateway_token=self._model_gateway_token,
+        )
         env["TERM"] = env.get("TERM") or "xterm-256color"
         if self._agent_teams:
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
@@ -1678,6 +1702,67 @@ class TmuxInteractiveTransport(CLITransport):
         if self._sdk_port:
             env["FORGE_PRESENT_FILE_URL"] = f"http://127.0.0.1:{self._sdk_port}/api/present-file"
         return env
+
+    @staticmethod
+    def _claude_config_path(env: dict[str, str]) -> Path:
+        """The CLI's user config file: ``$CLAUDE_CONFIG_DIR/.claude.json`` when the
+        directory is set (the session image sets it), else ``~/.claude.json``."""
+        config_dir = env.get("CLAUDE_CONFIG_DIR", "").strip()
+        if config_dir:
+            return Path(config_dir) / ".claude.json"
+        home = env.get("HOME", "").strip()
+        return (Path(home) if home else Path.home()) / ".claude.json"
+
+    def _prepare_claude_config(self, env: dict[str, str]) -> None:
+        """Answer the CLI's first-run dialogs ahead of time.
+
+        A session sandbox starts with no CLI state, and the interactive REPL
+        then walks through onboarding (theme, then a login picker that does
+        not count the OAuth token in the environment as a login), the
+        workspace trust question, and the bypass-permissions notice. Nobody
+        is at that keyboard; the broker is. So the answers a sandboxed session
+        implies are written into the config the CLI reads before it starts:
+        onboarding done, this workspace trusted, and the permission mode the
+        session was configured with acknowledged.
+        """
+        config_path = self._claude_config_path(env)
+        config: dict[str, Any] = {}
+        if config_path.exists():
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        before = json.dumps(config, sort_keys=True)
+        config["hasCompletedOnboarding"] = True
+        config.setdefault("theme", "dark")
+        projects = config.setdefault("projects", {})
+        project = projects.setdefault(self.workspace_dir, {})
+        project["hasTrustDialogAccepted"] = True
+        if json.dumps(config, sort_keys=True) != before:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+            logger.info("tmux: prepared Claude CLI config at %s (onboarding, trust)", config_path)
+        if not self._skip_permissions:
+            return
+        # The bypass-permissions notice is skipped through the user settings
+        # file, the same switch a person flips by hand for a sandbox.
+        settings_path = self._claude_settings_path(env)
+        settings: dict[str, Any] = {}
+        if settings_path.exists():
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        if settings.get("skipDangerousModePermissionPrompt") is True:
+            return
+        settings["skipDangerousModePermissionPrompt"] = True
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+        logger.info("tmux: acknowledged bypass-permissions mode in %s", settings_path)
+
+    @staticmethod
+    def _claude_settings_path(env: dict[str, str]) -> Path:
+        """The CLI's user settings file: ``$CLAUDE_CONFIG_DIR/settings.json``,
+        else ``~/.claude/settings.json``."""
+        config_dir = env.get("CLAUDE_CONFIG_DIR", "").strip()
+        if config_dir:
+            return Path(config_dir) / "settings.json"
+        home = env.get("HOME", "").strip()
+        return (Path(home) if home else Path.home()) / ".claude" / "settings.json"
 
     async def _emit_system_init(self) -> None:
         await self._emit(

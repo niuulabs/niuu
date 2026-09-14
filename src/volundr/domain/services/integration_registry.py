@@ -127,6 +127,7 @@ def definitions_from_config(
                 token_field_mapping=oauth_raw.get("token_field_mapping", {}),
                 extra_authorize_params=oauth_raw.get("extra_authorize_params", {}),
                 extra_token_params=oauth_raw.get("extra_token_params", {}),
+                device_authorization_url=oauth_raw.get("device_authorization_url", ""),
             )
 
         enrollment_raw = item.get("credential_enrollment")
@@ -149,10 +150,13 @@ def definitions_from_config(
             config_schema=item.get("config_schema", {}),
             mcp_server=mcp_spec,
             env_from_credentials=item.get("env_from_credentials", {}),
+            env_from_config=item.get("env_from_config", {}),
             auth_type=item.get("auth_type", "api_key"),
             oauth=oauth_spec,
             file_mounts=item.get("file_mounts", {}),
             credential_enrollment=enrollment_spec,
+            model_vendor=item.get("model_vendor", ""),
+            key_probe=item.get("key_probe") or {},
         )
         result.append(defn)
         logger.debug("Loaded integration definition: %s", defn.slug)

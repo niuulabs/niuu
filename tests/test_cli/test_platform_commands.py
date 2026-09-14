@@ -22,6 +22,7 @@ from cli.commands.platform import (
     _resolve_local_pod_manager_env,
     _route_inventory_payload,
     create_platform_commands,
+    model_server_seed_connections,
 )
 from cli.config import CLISettings, PerServiceConfig, PodManagerConfig
 from cli.registry import PluginRegistry
@@ -969,3 +970,103 @@ def test_only_mini_selects_no_auth(mode, monkeypatch):
     assert RavnSettings().api_auth.adapter.endswith("AllowAllHeaderAuthenticationAdapter")
     assert TingSettings().auth.allow_anonymous_dev is True
     assert TingSettings().authorization.adapter.endswith("AllowAllAuthorizationAdapter")
+
+
+class TestModelServerSeeds:
+    """Every model server the bundle routes is seeded as a "Model server" AI provider."""
+
+    def _settings(self, **docker: object) -> CLISettings:
+        return CLISettings(
+            mode="docker",
+            docker={
+                "vllm": {"enabled": True, "model": "nvidia/nemotron-test"},
+                "model_server": {
+                    "enabled": True,
+                    "base_url": "http://host.docker.internal:11434",
+                    "models": ["llama3.2:latest", "qwen3:8b"],
+                },
+                **docker,
+            },
+            pod_manager={
+                "adapter": "volundr.adapters.outbound.docker_container.DockerContainerPodManager"
+            },
+        )
+
+    def test_seeds_one_connection_per_model_server(self) -> None:
+        seeds = model_server_seed_connections(self._settings())
+        assert [s["credential_name"] for s in seeds] == [
+            "model-server-vllm",
+            "model-server-local",
+        ]
+        local = seeds[1]
+        assert local["slug"] == "model-server"
+        assert local["integration_type"] == "ai_provider"
+        assert local["owner_id"] == "dev-user"
+        assert local["credential"] == {"secret_type": "generic", "data": {"provider": "local"}}
+        assert local["config"] == {
+            "provider": "local",
+            "gateway_url": "http://niuu:8080/api/v1/bifrost",
+            "models": ["llama3.2:latest", "qwen3:8b"],
+        }
+        assert seeds[0]["config"]["models"] == ["nvidia/nemotron-test"]
+
+    def test_gateway_url_follows_where_sessions_reach_the_platform(self) -> None:
+        host = CLISettings(
+            mode="mini",
+            docker={"model_server": {"enabled": True, "base_url": "http://x:1", "models": ["m"]}},
+        )
+        assert model_server_seed_connections(host)[0]["config"]["gateway_url"] == (
+            "http://127.0.0.1:8080/api/v1/bifrost"
+        )
+        explicit = CLISettings(
+            mode="docker",
+            docker={"model_server": {"enabled": True, "base_url": "http://x:1", "models": ["m"]}},
+            pod_manager={
+                "adapter": "volundr.adapters.outbound.docker_container.DockerContainerPodManager",
+                "platform_url": "http://platform.internal:9000/",
+            },
+        )
+        assert model_server_seed_connections(explicit)[0]["config"]["gateway_url"] == (
+            "http://platform.internal:9000/api/v1/bifrost"
+        )
+
+    def test_container_view_reads_the_gateway_providers(self) -> None:
+        """Inside the platform container only NIUU_BIFROST carries the servers."""
+        settings = CLISettings(
+            mode="mini",
+            bifrost={
+                "providers": {
+                    "local": {"base_url": "http://host.docker.internal:11434", "models": ["m"]},
+                    "vllm": {"base_url": "http://vllm:8000", "models": ["org/x"]},
+                    "openai": {"base_url": "https://api.openai.com", "models": ["gpt-x"]},
+                }
+            },
+        )
+        seeds = model_server_seed_connections(settings)
+        assert [(s["config"]["provider"], s["config"]["models"]) for s in seeds] == [
+            ("local", ["m"]),
+            ("vllm", ["org/x"]),
+        ]
+
+    def test_the_gateways_builtin_local_entry_is_not_a_server(self) -> None:
+        settings = CLISettings(
+            mode="mini", bifrost={"providers": {"local": {"models": ["llama3.2:latest"]}}}
+        )
+        assert model_server_seed_connections(settings) == []
+
+    def test_nothing_seeded_without_model_servers(self) -> None:
+        assert model_server_seed_connections(CLISettings(mode="docker")) == []
+        assert "INTEGRATIONS__SEED_CONNECTIONS" not in _resolve_local_pod_manager_env(
+            CLISettings(mode="docker")
+        )
+
+    def test_seeds_reach_volundr_settings_through_the_env(self, monkeypatch) -> None:
+        from volundr.config import Settings as VolundrSettings
+
+        env = _resolve_local_pod_manager_env(self._settings())
+        monkeypatch.setenv("INTEGRATIONS__SEED_CONNECTIONS", env["INTEGRATIONS__SEED_CONNECTIONS"])
+        seeds = VolundrSettings().integrations.seed_connections
+        assert [s.slug for s in seeds] == ["model-server", "model-server"]
+        assert seeds[1].config["gateway_url"] == "http://niuu:8080/api/v1/bifrost"
+        assert seeds[1].credential is not None
+        assert seeds[1].credential.data == {"provider": "local"}

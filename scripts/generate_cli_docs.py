@@ -281,6 +281,21 @@ NIUU_TASKS: list[tuple[str, str, list[str]]] = [
         ],
     ),
     (
+        "Lifecycle shortcuts",
+        "`niuu up`, `niuu down`, and `niuu status` forward to the `platform` "
+        "commands with default flags; use the `platform` group when you need "
+        "per-service flags. In docker mode `niuu up` starts the Docker compose "
+        "bundle instead of host processes. `niuu doctor` runs the host checks "
+        "for the configured mode without starting anything.",
+        [
+            "niuu up                     # same as `niuu platform up` with default flags",
+            "niuu down                   # same as `niuu platform down`",
+            "niuu status                 # same as `niuu platform status`",
+            "niuu doctor                 # host checks only; exit 1 on failure",
+            "niuu up --mode docker       # whole stack as containers on this host",
+        ],
+    ),
+    (
         "Choose what starts",
         "Services resolve from plugin defaults, then config, then these flags. "
         "`--all` overrides everything.",

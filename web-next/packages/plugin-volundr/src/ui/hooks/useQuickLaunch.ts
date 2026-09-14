@@ -10,6 +10,7 @@ import type {
   VolundrTarget,
 } from '../../models/volundr.model';
 import { definitionToTaskType, slugifySessionName } from '../launchWizardModel';
+import { errorText } from '../errorText';
 
 const DEFAULT_SESSION_NAME = 'forge-session';
 
@@ -48,6 +49,10 @@ export interface QuickLaunchRequest {
   instanceId?: string;
   initialPrompt?: string;
   personaName?: string;
+  /** The model to run; the engine's own default when omitted. */
+  model?: string;
+  /** Credentials and integrations to attach; omitted means the server's default set. */
+  integrationIds?: string[];
 }
 
 export interface QuickLaunchOptions {
@@ -80,11 +85,12 @@ export function useQuickLaunch() {
         name: request.name,
         source: request.source,
         instanceId: request.instanceId,
-        model: definition?.defaultModel ?? '',
+        model: request.model || (definition?.defaultModel ?? ''),
         definition: definition?.key,
         taskType: definition ? definitionToTaskType(definition.key) : undefined,
         initialPrompt: request.initialPrompt?.trim() || undefined,
         personaName: request.personaName?.trim() || undefined,
+        integrationIds: request.integrationIds,
         terminalRestricted: false,
         workloadConfig: {},
       });
@@ -104,7 +110,7 @@ export function useQuickLaunch() {
       });
       return session;
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to create session');
+      setError(errorText(e, 'Failed to create session'));
       return null;
     } finally {
       setCreating(false);

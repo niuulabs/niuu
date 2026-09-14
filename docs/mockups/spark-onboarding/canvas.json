@@ -1,0 +1,110 @@
+{
+  "artboards": [
+    {
+      "file": "Terminal.dc.html",
+      "title": "0 · One command",
+      "x": 0,
+      "y": 140,
+      "w": 1100,
+      "h": 620
+    },
+    {
+      "file": "Main.dc.html",
+      "title": "1 · Welcome",
+      "x": 1220,
+      "y": 0,
+      "w": 1440,
+      "h": 900
+    },
+    {
+      "file": "SystemCheck.dc.html",
+      "title": "2 · System check",
+      "x": 0,
+      "y": 1120,
+      "w": 1440,
+      "h": 960
+    },
+    {
+      "file": "LocalModel.dc.html",
+      "title": "3 · Local model",
+      "x": 1560,
+      "y": 1120,
+      "w": 1440,
+      "h": 960
+    },
+    {
+      "file": "Providers.dc.html",
+      "title": "4 · AI providers",
+      "x": 3120,
+      "y": 1120,
+      "w": 1440,
+      "h": 960
+    },
+    {
+      "file": "Git.dc.html",
+      "title": "5 · Git",
+      "x": 0,
+      "y": 2240,
+      "w": 1440,
+      "h": 960
+    },
+    {
+      "file": "Tracker.dc.html",
+      "title": "6 · Tickets",
+      "x": 1560,
+      "y": 2240,
+      "w": 1440,
+      "h": 960
+    },
+    {
+      "file": "Runtime.dc.html",
+      "title": "7 · Runtime & access",
+      "x": 3120,
+      "y": 2240,
+      "w": 1440,
+      "h": 960
+    },
+    {
+      "file": "Launch.dc.html",
+      "title": "8 · Launch",
+      "x": 0,
+      "y": 3360,
+      "w": 1440,
+      "h": 960
+    },
+    {
+      "file": "Ready.dc.html",
+      "title": "9 · Ready + tutorials",
+      "x": 1560,
+      "y": 3360,
+      "w": 1440,
+      "h": 960
+    }
+  ],
+  "annotations": [
+    {
+      "id": "flow",
+      "x": 0,
+      "y": -260,
+      "w": 640,
+      "text": "Spark first-launch flow\n\nTerminal: `curl … | sh` installs the CLI, runs preflight, pulls the compose bundle, starts the stack, prints the setup URL. No terminal prompts.\n\nBrowser: /setup wizard (this canvas), 8 steps, ~10 min. Left rail = progress, right = one decision per screen. Every step has a \"connected\" state and a fix-it path; nothing degrades silently.\n\nAfter Launch: /ready with three in-product walkthroughs."
+    },
+    {
+      "id": "principles",
+      "x": 720,
+      "y": -260,
+      "w": 360,
+      "text": "Rules baked into the copy\n\n• No fallbacks: a down provider is reported, never substituted.\n• Credentials encrypted at rest with a per-machine key; OAuth/device-code preferred over pasted tokens.\n• Sign-in off by default on LAN, with a visible warning and a later path.\n• Everything editable later in Settings; the wizard never becomes the only way."
+    },
+    {
+      "id": "open",
+      "x": 3120,
+      "y": 3400,
+      "w": 420,
+      "text": "Open questions for Jozef\n\n1. Model list: show only what fits, or everything with a \"does not fit\" state?\n2. Should Launch also start a resident (Muninn-style) by default, or leave that to tutorial 3?\n3. Is \"Host process\" runtime worth offering on Spark at all?\n4. GitHub App vs PAT as the first-class path (App needs a published app on GitHub)."
+    }
+  ],
+  "launch": {
+    "view": "canvas"
+  }
+}

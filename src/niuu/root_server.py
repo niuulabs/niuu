@@ -20,10 +20,12 @@ from niuu.app import (
     build_root_app,
 )
 from niuu.config import NiuuSettings
+from niuu.ports.embedded_database import ConnectionInfo
 from niuu.ports.plugin import Service
 from niuu.service_databases import (
     bootstrap_database,
     database_name_for_service,
+    ensure_databases,
     local_service_database_names,
     service_database_env_var,
 )
@@ -57,18 +59,56 @@ class RootServer(Service):
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task[None] | None = None
         self._embedded_db: EmbeddedDatabasePort | None = None
+        self._external_db: ConnectionInfo | None = None
         self.skuld_registry = SkuldPortRegistry()
         _install_skuld_registry(self.skuld_registry)
+
+    async def _prepare_external_db(self, host_config: object) -> None:
+        """Create the per-service databases on an external PostgreSQL server.
+
+        Mirrors what the embedded path does with ``ensure_databases`` so a
+        Docker-hosted platform (spark mode) comes up on a blank server.
+        """
+        host = str(getattr(host_config, "external_database_host", "")).strip()
+        if not host:
+            raise RuntimeError(
+                "NIUU_DATABASE_MODE=external requires DATABASE__HOST "
+                "(and DATABASE__PORT/USER/PASSWORD) to be set."
+            )
+        info = ConnectionInfo(
+            host=host,
+            port=int(getattr(host_config, "external_database_port", 5432)),
+            dbname=database_name_for_service("volundr"),
+            user=str(getattr(host_config, "external_database_user", "postgres")),
+            password=str(getattr(host_config, "external_database_password", "")),
+        )
+        created = await ensure_databases(
+            host=info.host,
+            port=info.port,
+            user=info.user,
+            password=info.password,
+            names=local_service_database_names(),
+        )
+        self._external_db = info
+        os.environ["DATABASE__NAME"] = database_name_for_service("volundr")
+        for service_name in ("volundr", "niuu-shared", "guild", "observatory"):
+            os.environ[service_database_env_var(service_name)] = database_name_for_service(
+                service_name
+            )
+        logger.info(
+            "External PostgreSQL ready at %s:%s (created %d database(s))",
+            info.host,
+            info.port,
+            len(created),
+        )
 
     async def _start_embedded_db(self) -> None:
         """Start embedded PostgreSQL and set env vars for sub-apps."""
         host_config = NiuuSettings().host
         database_mode = host_config.database_mode
-        if database_mode == "external":
-            logger.info("Skipping embedded PostgreSQL because NIUU_DATABASE_MODE=external")
-            return
-        if host_config.external_database_host.strip():
-            logger.info("Skipping embedded PostgreSQL because DATABASE__HOST is already set")
+        if database_mode == "external" or host_config.external_database_host.strip():
+            logger.info("Skipping embedded PostgreSQL; using external DATABASE__HOST")
+            await self._prepare_external_db(host_config)
             return
 
         from niuu.adapters.embedded_postgres import EmbeddedPostgresDatabase
@@ -128,20 +168,26 @@ class RootServer(Service):
         self._server = uvicorn.Server(config)
         self._task = asyncio.create_task(self._server.serve())
 
+    def _migration_connection_info(self) -> ConnectionInfo | None:
+        if self._embedded_db is not None:
+            return self._embedded_db._connection_info
+        return self._external_db
+
     async def _run_migrations(self) -> None:
         """Run database migrations for all services."""
-        if self._embedded_db is None:
+        info = self._migration_connection_info()
+        if info is None:
             return
         try:
             import asyncpg
 
             from cli.resources import migration_dir, ordered_migration_files
 
-            info = self._embedded_db._connection_info
             volundr_conn = await asyncpg.connect(
                 host=info.host,
                 port=info.port,
                 user=info.user,
+                password=info.password,
                 database=database_name_for_service("volundr"),
             )
             try:
@@ -172,7 +218,7 @@ class RootServer(Service):
                     host=info.host,
                     port=info.port,
                     user=info.user,
-                    password="",
+                    password=info.password,
                     database=database_name_for_service(service_name),
                     statements=bootstrap_sql,
                 )

@@ -65,6 +65,7 @@ from volundr.domain.services import (
     RepoValidationError,
     SessionAccessDeniedError,
     SessionArchiveNotAvailableError,
+    SessionCapacityError,
     SessionNotFoundError,
     SessionNotRunningError,
     SessionService,
@@ -1513,9 +1514,11 @@ def create_router(
         """
         settings = request.app.state.settings
         admin = request.app.state.admin_settings
+        storage = request.app.state.storage
         return {
             "local_mounts_enabled": settings.local_mounts.enabled,
             "file_manager_enabled": admin.get("storage", {}).get("file_manager_enabled", True),
+            "home_volumes_supported": storage.supports_home_volumes,
             "mini_mode": settings.local_mounts.mini_mode,
             "local_mounts_allowed_prefixes": settings.local_mounts.allowed_prefixes,
         }
@@ -1779,6 +1782,11 @@ def create_router(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(e),
             )
+        except SessionCapacityError as e:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(e),
+            )
         except SessionStateError as e:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -1974,6 +1982,11 @@ def create_router(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
+            )
+        except SessionCapacityError as e:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(e),
             )
         except SessionStateError as e:
             raise HTTPException(

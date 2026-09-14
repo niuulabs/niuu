@@ -142,3 +142,17 @@ async def test_openshell_service_endpoint_uses_gateway_with_host_header():
         route.calls[0].request.headers["host"]
         == "forge-8093e93dc7634efeb2c382--skuld.openshell.localhost:8080"
     )
+
+
+@respx.mock
+async def test_internal_base_url_replaces_public_origin():
+    session = _session()
+    route = respx.get(f"http://127.0.0.1:18080/s/{session.id}/api/communication/routes").mock(
+        return_value=httpx.Response(200, json={"routes": []})
+    )
+    adapter = SkuldRoomAdapter(
+        _FakeSessionRepository(session), internal_base_url="http://127.0.0.1:18080/"
+    )
+
+    assert await adapter.list_communication_targets(session.id) == []
+    assert route.called

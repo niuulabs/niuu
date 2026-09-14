@@ -53,6 +53,8 @@ class TransportLifecycleMixin:
             "dsh_api_key": self._settings.dsh.api_key,
             "dsh_provider": self._settings.dsh.provider,
             "dsh_prompt_timeout_s": self._settings.dsh.prompt_timeout_s,
+            "model_gateway_url": self._settings.model_gateway.url,
+            "model_gateway_token": self._settings.model_gateway.token,
         }
 
     def _create_codex_auth_provider(self) -> CodexAuthProviderPort:

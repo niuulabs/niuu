@@ -255,6 +255,12 @@ def _build_up_callback(
         except ValueError as exc:
             raise typer.BadParameter(str(exc), param_hint="mounts") from exc
 
+        if effective_settings.mode == "docker":
+            from cli.commands.stack import stack_up
+
+            stack_up(effective_settings, skip_preflight=skip_preflight)
+            return
+
         enabled = _resolve_enabled_services(service_defs, settings, start_all, svc_flags)
         environment_before: dict[str, str | None] = {}
 
@@ -469,6 +475,9 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
     }
     for key, value in kwargs.items():
         env[f"POD_MANAGER__KWARGS__{key.upper()}"] = str(value)
+    seeds = model_server_seed_connections(settings)
+    if seeds:
+        env["INTEGRATIONS__SEED_CONNECTIONS"] = json.dumps(seeds)
     if settings.mode == "mini":
         env["RAVN_API_AUTH__ADAPTER"] = (
             "identity.adapters.identity.AllowAllHeaderAuthenticationAdapter"
@@ -478,6 +487,61 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
             "identity.adapters.authorization.AllowAllAuthorizationAdapter"
         )
     return env
+
+
+MODEL_SERVER_SLUG = "model-server"
+MODEL_SERVER_OWNER_ID = "dev-user"
+
+
+def _session_platform_url(settings: CLISettings) -> str:
+    """Where a session container reaches this platform (and so the gateway)."""
+    kwargs = settings.pod_manager.adapter_kwargs()
+    configured = str(kwargs.get("platform_url") or "").strip()
+    if configured:
+        return configured.rstrip("/")
+    if "DockerContainerPodManager" in settings.pod_manager.adapter:
+        return f"http://niuu:{settings.server.port}"
+    return f"http://127.0.0.1:{settings.server.port}"
+
+
+def model_server_seed_connections(settings: CLISettings) -> list[dict[str, Any]]:
+    """One "Model server" AI-provider connection per self-hosted gateway provider.
+
+    Read from the merged gateway providers, not the docker section: inside the
+    platform container the bundle's settings arrive as ``NIUU_BIFROST`` only.
+    A self-hosted provider without a base URL (the gateway's built-in ``local``
+    entry) is not a server anyone can reach and is skipped.
+
+    Sessions launched with the connection get the gateway URL from its config
+    (``env_from_config`` on the catalog entry), which is what points Claude Code
+    and Codex at the served models. Seeded again on every start, so the model
+    list follows the stack settings.
+    """
+    from cli.services.compose_bundle import MODEL_SERVER_PROVIDERS, bifrost_providers
+
+    gateway_url = f"{_session_platform_url(settings)}/api/v1/bifrost"
+    seeds: list[dict[str, Any]] = []
+    for provider, config in bifrost_providers(settings).items():
+        if provider not in MODEL_SERVER_PROVIDERS or not str(config.get("base_url") or "").strip():
+            continue
+        seeds.append(
+            {
+                "owner_type": "user",
+                "owner_id": MODEL_SERVER_OWNER_ID,
+                "integration_type": "ai_provider",
+                "adapter": "",
+                "credential_name": f"{MODEL_SERVER_SLUG}-{provider}",
+                "slug": MODEL_SERVER_SLUG,
+                "enabled": True,
+                "credential": {"secret_type": "generic", "data": {"provider": provider}},
+                "config": {
+                    "provider": provider,
+                    "gateway_url": gateway_url,
+                    "models": list(config["models"]),
+                },
+            }
+        )
+    return seeds
 
 
 def _mini_resident_runtimes_config(settings: CLISettings) -> dict[str, Any]:
@@ -690,21 +754,30 @@ def _mini_resident_runtimes_config(settings: CLISettings) -> dict[str, Any]:
 
 
 def _prompt_mode_selection() -> str:
-    """Prompt the user for mini, OpenShell, or cluster mode."""
+    """Prompt the user for mini, OpenShell, cluster, or docker mode."""
     typer.echo("Select operating mode:")
     typer.echo("  [1] mini   — local processes, no cluster needed (default)")
     typer.echo("  [2] openshell — OpenShell gateway sandboxes")
     typer.echo("  [3] cluster — session pods run in k3d/k3s cluster")
+    typer.echo(
+        "  [4] docker — whole stack as containers on this host (any Docker host, e.g. DGX Spark)"
+    )
     choice = typer.prompt("Choice", default="1", show_default=False)
     if choice.strip() in ("2", "openshell"):
         return "openshell"
     if choice.strip() in ("3", "cluster"):
         return "cluster"
+    if choice.strip() in ("4", "docker"):
+        return "docker"
     return "mini"
 
 
 def _build_init_config(mode: str) -> dict[str, Any]:
     """Build the initial config dict for the selected mode."""
+    if mode == "docker":
+        from cli.config import DockerConfig
+
+        return {"mode": "docker", "docker": DockerConfig().model_dump(exclude={"vllm"})}
     if mode == "cluster":
         return {
             "mode": "cluster",
@@ -742,7 +815,8 @@ def create_platform_commands(
     """Create the ``platform`` command group with dynamic service flags."""
     platform_app = typer.Typer(
         name="platform",
-        help="Manage the platform (up, down, status, init).",
+        help="Manage the platform (up, down, status, init). "
+        "`niuu up|down|status` are shortcuts for these with default flags.",
         no_args_is_help=True,
     )
 
@@ -757,12 +831,22 @@ def create_platform_commands(
     @platform_app.command()
     def down() -> None:
         """Stop all running services."""
+        if settings.mode == "docker":
+            from cli.commands.stack import stack_down
+
+            stack_down(settings)
+            return
         asyncio.run(_shutdown(manager))
         typer.echo("Services stopped.")
 
     @platform_app.command()
     def status() -> None:
         """Show health of all registered services."""
+        if settings.mode == "docker":
+            from cli.commands.stack import stack_status
+
+            stack_status(settings)
+            return
         typer.echo(f"Mode: {settings.mode}")
         typer.echo(f"Pod manager: {settings.pod_manager.adapter.rsplit('.', 1)[-1]}")
         typer.echo()

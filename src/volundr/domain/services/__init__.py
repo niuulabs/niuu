@@ -28,6 +28,7 @@ from .repo import ProviderInfo, RepoService
 from .session import (
     RepoValidationError,
     SessionAccessDeniedError,
+    SessionCapacityError,
     SessionNotFoundError,
     SessionService,
     SessionStateError,
@@ -55,6 +56,7 @@ __all__ = [
     "SessionAccessDeniedError",
     "SessionNotFoundError",
     "SessionNotRunningError",
+    "SessionCapacityError",
     "SessionStateError",
     "TenantAlreadyExistsError",
     "TenantNotFoundError",

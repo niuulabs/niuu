@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { createRoute } from '@tanstack/react-router';
 import { useAuth } from '@niuulabs/auth';
 import { loginPlugin } from '@niuulabs/plugin-login';
+import { setupPlugin } from '@niuulabs/plugin-setup';
 import { definePlugin, type NiuuConfig, type PluginDescriptor } from '@niuulabs/plugin-sdk';
 import { SettingsPage } from './SettingsPage';
 
@@ -74,6 +75,7 @@ const pluginLoaders: Record<string, () => Promise<PluginDescriptor>> = {
     ]);
     return module.realmsPlugin;
   },
+  setup: async () => setupPlugin,
   volundr: async () => {
     const [module] = await Promise.all([
       import('@niuulabs/plugin-volundr'),

@@ -11,6 +11,11 @@ subscription login can use.
 Set ``SKULD__CLAUDE_AUTH=api_key`` to restore API-key billing (the key vars are
 kept). ``CLAUDECODE`` is always dropped — a nested-session marker that breaks
 the spawned CLI.
+
+With a model gateway (``gateway_url``), the CLI is pointed at it instead of
+api.anthropic.com: ``ANTHROPIC_BASE_URL`` + ``ANTHROPIC_AUTH_TOKEN``, and the
+platform API key is dropped so it cannot win over the token. The subscription
+login stays untouched but unused.
 """
 
 from __future__ import annotations
@@ -25,8 +30,17 @@ logger = logging.getLogger(__name__)
 _API_KEY_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 
 
-def claude_spawn_env() -> dict[str, str]:
+def claude_spawn_env(*, gateway_url: str = "", gateway_token: str = "") -> dict[str, str]:
     """Build the child env for a Claude CLI/SDK spawn (see module docstring)."""
+    if gateway_url.strip():
+        env = {
+            k: v for k, v in os.environ.items() if k != "CLAUDECODE" and k != "ANTHROPIC_API_KEY"
+        }
+        env["ANTHROPIC_BASE_URL"] = gateway_url.strip().rstrip("/")
+        env["ANTHROPIC_AUTH_TOKEN"] = gateway_token
+        logger.info("Claude CLI routed through the model gateway at %s", env["ANTHROPIC_BASE_URL"])
+        return env
+
     mode = os.environ.get("SKULD__CLAUDE_AUTH", "subscription").strip().lower()
     if mode == "api_key":
         return {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}

@@ -9,6 +9,15 @@ your OS user. A workspace is the directory containing the agent's files; a
 session is the running agent and its conversation. Stopping a session leaves its
 workspace on disk.
 
+!!! tip "On a Docker host, one command replaces steps 1 to 3"
+
+    On a machine with Docker (a DGX Spark, a Linux box, a Mac with Docker
+    Desktop) the [one-command install](install.md#one-command-on-a-docker-host)
+    runs the whole platform as containers and opens a setup wizard that
+    connects Claude, Git and your tracker, and can serve a local model on the
+    GPU. Nothing else is installed on the host. Continue at step 4 once the
+    wizard reports the platform is running.
+
 ## 1. Install the two tools
 
 You need:

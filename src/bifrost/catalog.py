@@ -12,11 +12,15 @@ from niuu.domain.model_catalog import (
     ProviderHealthState,
 )
 
+# Provider keys that mean "served on our own hardware": their models count as
+# vendor ``local``, which is what the Claude Code and Codex engines accept.
+SELF_HOSTED_PROVIDERS = frozenset({"local", "ollama", "vllm"})
+
 
 def _infer_provider_kind(provider_key: str, model_id: str) -> ManagedModelProvider:
     normalized_provider = str(provider_key or "").strip().lower()
     normalized_model = str(model_id or "").strip().lower()
-    if normalized_provider in {"local", "ollama"} or ":" in normalized_model:
+    if normalized_provider in SELF_HOSTED_PROVIDERS or ":" in normalized_model:
         return ManagedModelProvider.LOCAL
     return ManagedModelProvider.CLOUD
 
@@ -26,7 +30,7 @@ def _model_vendor(config: BifrostConfig, provider_key: str, model_id: str) -> st
     if model_entry is not None and model_entry.vendor:
         return model_entry.vendor
     normalized_provider = str(provider_key or "").strip().lower()
-    if normalized_provider == "ollama":
+    if normalized_provider in SELF_HOSTED_PROVIDERS:
         return "local"
     return normalized_provider
 

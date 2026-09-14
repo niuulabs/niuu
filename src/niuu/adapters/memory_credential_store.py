@@ -59,7 +59,7 @@ class MemoryCredentialStore(CredentialStorePort):
 
         self._metadata[key] = credential
         self._values[key] = dict(data)
-        logger.debug("Stored credential %s for %s/%s", name, owner_type, owner_id)
+        logger.debug("Stored a credential for %r/%r", owner_type, owner_id)
         return credential
 
     async def get(
@@ -87,7 +87,7 @@ class MemoryCredentialStore(CredentialStorePort):
         key = self._key(owner_type, owner_id, name)
         self._metadata.pop(key, None)
         self._values.pop(key, None)
-        logger.debug("Deleted credential %s for %s/%s", name, owner_type, owner_id)
+        logger.debug("Deleted a credential for %r/%r", owner_type, owner_id)
 
     async def list(
         self,

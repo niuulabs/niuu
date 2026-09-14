@@ -1326,6 +1326,8 @@ describe('buildVolundrHttpAdapter', () => {
         cloneUrl: 'https://github.com/niuulabs/volundr.git',
         defaultBranch: 'main',
         branches: ['main', 'feat/wizard'],
+        // the group key is the account that listed the repository
+        account: 'GitHub',
       }),
     ]);
   });

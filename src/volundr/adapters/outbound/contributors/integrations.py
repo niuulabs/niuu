@@ -74,6 +74,20 @@ class IntegrationContributor(SessionContributor):
                     "key": cred_key,
                 }
 
+            # Non-secret settings the session needs, straight from the connection
+            # config (the Model server's gateway URL). A connection without them
+            # cannot run the session, so say so instead of launching without.
+            for env_var, config_key in defn.env_from_config.items():
+                value = conn.config.get(config_key) if isinstance(conn.config, dict) else None
+                if value is None or value == "":
+                    raise ValueError(
+                        f"Connection '{conn.credential_name}' ({conn.slug}) has no "
+                        f"'{config_key}' in its config, which {env_var} needs. Reconnect the "
+                        "provider from Settings → Integrations; a Model server is registered "
+                        "from Settings → Runtime."
+                    )
+                env_vars.append({"name": env_var, "value": str(value)})
+
             # MCP server integration
             if defn.mcp_server is not None:
                 spec = defn.mcp_server
@@ -99,6 +113,13 @@ class IntegrationContributor(SessionContributor):
                 manifest["files"][target_path] = {
                     "file": conn.credential_name,
                 }
+
+        # The Claude transports default to the subscription login and strip
+        # API-key variables from the spawn environment; a session whose only
+        # Claude credential is an API key must say so or it starts with none.
+        subscription = any(var["name"] == "SKULD__CLAUDE_AUTH" for var in env_vars)
+        if not subscription and "ANTHROPIC_API_KEY" in manifest["env"]:
+            env_vars.append({"name": "SKULD__CLAUDE_AUTH", "value": "api_key"})
 
         values: dict[str, Any] = {}
         if env_vars:

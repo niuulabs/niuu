@@ -263,6 +263,9 @@ class BrokerHarness:
         self.hook_server = await HookServer(self._hook_handler).start()
         sdk_port = self.hook_server.port if self._hooks else None
 
+        # The transport holds every delivery until the CLI's input prompt has
+        # rendered; the fake agent's prompt is its "ready" banner.
+        os.environ.setdefault("SKULD__TMUX_REPL_READY_MARKER", "fakeagent ready")
         self.transport = TmuxInteractiveTransport(
             workspace_dir=str(workspace_dir),
             session_id=self._token,

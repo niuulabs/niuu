@@ -244,3 +244,8 @@ async def test_scan_existing_on_init(tmp_path: Path) -> None:
 
     assert "user-x" in adapter._user_pvcs
     assert adapter._user_pvcs["user-x"].namespace == "local"
+
+
+class TestHomeVolumeCapability:
+    def test_host_directories_count_as_home_volumes(self, adapter: LocalStorageAdapter):
+        assert adapter.supports_home_volumes is True

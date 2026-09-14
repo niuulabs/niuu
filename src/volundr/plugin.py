@@ -68,6 +68,14 @@ class VolundrPlugin(ServicePlugin):
                 ),
             ),
             APIRouteDomain(
+                name="forge-internal-api",
+                prefixes=("/api/v1/internal/credentials",),
+                description=(
+                    "Session-facing credential brokers (Codex token refresh) that run inside "
+                    "the Forge app and must be reachable from session containers."
+                ),
+            ),
+            APIRouteDomain(
                 name="catalog-api",
                 prefixes=(
                     "/api/v1/volundr/launch-specs",

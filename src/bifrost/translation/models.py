@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 # ---------------------------------------------------------------------------
 # Content blocks
@@ -115,6 +115,45 @@ class AnthropicRequest(BaseModel):
     _routed_provider: str | None = PrivateAttr(default=None)
     _routing_prepared: bool = PrivateAttr(default=False)
     _response_format: dict[str, Any] | None = PrivateAttr(default=None)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_system_messages(cls, data: Any) -> Any:
+        """Accept ``role: system`` messages by moving them into ``system``.
+
+        The Anthropic API keeps the system prompt out of ``messages``, but
+        clients written against OpenAI-style APIs (and Claude Code itself, once
+        pointed at a custom base URL) put instructions there. Rejecting the
+        turn would break every such client; folding keeps the instructions.
+        """
+        if not isinstance(data, dict) or not isinstance(data.get("messages"), list):
+            return data
+        system_texts: list[str] = []
+        kept: list[Any] = []
+        for message in data["messages"]:
+            if not (isinstance(message, dict) and message.get("role") == "system"):
+                kept.append(message)
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                system_texts.append(content)
+            elif isinstance(content, list):
+                system_texts.extend(
+                    str(block.get("text", ""))
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                )
+        if not system_texts:
+            return data
+        blocks: list[Any] = []
+        existing = data.get("system")
+        if isinstance(existing, str) and existing:
+            blocks.append({"type": "text", "text": existing})
+        elif isinstance(existing, list):
+            blocks.extend(existing)
+        blocks.extend({"type": "text", "text": text} for text in system_texts if text)
+        return {**data, "messages": kept, "system": blocks}
+
     model: str
     max_tokens: int = 1024
     messages: list[Message]

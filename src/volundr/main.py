@@ -71,6 +71,7 @@ from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
 from volundr.adapters.outbound.postgres import PostgresSessionRepository
+from volundr.adapters.outbound.postgres_admin_settings import PostgresAdminSettingsRepository
 from volundr.adapters.outbound.postgres_chronicles import PostgresChronicleRepository
 from volundr.adapters.outbound.postgres_communication_cursors import (
     PostgresCommunicationCursorRepository,
@@ -115,7 +116,9 @@ from volundr.composition_builders import (  # noqa: F401
     _create_resource_provider,
     _create_secret_injection_adapter,
     _runtime_backend,
+    create_oauth_client_registry,
     integration_database_pool,
+    with_oauth_device_runner,
 )
 from volundr.config import Settings
 from volundr.domain.models import SessionStatus
@@ -135,10 +138,7 @@ from volundr.domain.services import (
 from volundr.domain.services.attention_notifier import PushAttentionNotifier
 from volundr.domain.services.communication_ingress import CommunicationIngressService
 from volundr.domain.services.credential import CredentialService
-from volundr.domain.services.credential_enrollment import (
-    CredentialEnrollmentService,
-    reconcile_credential_enrollments_loop,
-)
+from volundr.domain.services.credential_enrollment import CredentialEnrollmentService
 from volundr.domain.services.event_ingestion import EventIngestionService
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
 from volundr.domain.services.resident_runtime import (
@@ -428,6 +428,13 @@ def create_app(
 
             resource_provider = _create_resource_provider(settings)
             storage_adapter = _create_storage_adapter(settings)
+
+            # Admin settings: the in-process dict the contributors and feature
+            # flags read, filled from the database so a restart keeps them.
+            # Update in place: contributors hold a reference to this dict.
+            admin_settings_repository = PostgresAdminSettingsRepository(pool)
+            for section, values in (await admin_settings_repository.load()).items():
+                app.state.admin_settings.setdefault(section, {}).update(values)
             identity_adapter = _create_identity_adapter(
                 settings,
                 user_repository,
@@ -657,9 +664,17 @@ def create_app(
                 integration_repo = PostgresIntegrationRepository(integration_pool)
             mapping_repository = PostgresMappingRepository(pool)
             tracker_factory = TrackerFactory(credential_store)
+            oauth_clients = create_oauth_client_registry(
+                settings,
+                credential_store=credential_store,
+                integration_registry=integration_registry,
+            )
+            await oauth_clients.load()
             credential_enrollment_service = CredentialEnrollmentService(
                 repository=PostgresCredentialEnrollmentRepository(integration_pool),
-                runner=credential_enrollment_runner,
+                runner=with_oauth_device_runner(
+                    credential_enrollment_runner, oauth_clients, integration_registry
+                ),
                 integration_repository=integration_repo,
                 integration_registry=integration_registry,
                 credential_store=credential_store,
@@ -679,7 +694,10 @@ def create_app(
                 integration_registry=integration_registry,
                 credential_store=credential_store,
             )
-            session_room_port = SkuldRoomAdapter(repository)
+            session_room_port = SkuldRoomAdapter(
+                repository,
+                internal_base_url=settings.session_room.internal_base_url,
+            )
             communication_ingress = CommunicationIngressService(
                 route_repository=communication_route_repository,
                 room_port=session_room_port,
@@ -968,6 +986,7 @@ def create_app(
                     registry=integration_registry,
                     credential_store=credential_store,
                     credential_enrollment_service=credential_enrollment_service,
+                    oauth_clients=oauth_clients,
                 )
             )
             app.include_router(
@@ -1027,8 +1046,11 @@ def create_app(
             app.include_router(local_git_router)
             app.state.local_git_service = local_git_service
 
-            # Admin settings (config-driven, runtime-toggleable)
-            admin_settings_router = create_admin_settings_router()
+            # Admin settings (persisted, runtime-toggleable)
+            admin_settings_router = create_admin_settings_router(
+                admin_settings_repository,
+                home_volumes_supported=storage_adapter.supports_home_volumes,
+            )
             app.include_router(admin_settings_router)
             app.include_router(create_user_storage_router(storage_adapter))
 
@@ -1251,13 +1273,6 @@ def create_app(
                     flock_adapter=resident_flock_adapter,
                 )
             )
-            credential_enrollment_reconcile_task = (
-                asyncio.create_task(
-                    reconcile_credential_enrollments_loop(credential_enrollment_service)
-                )
-                if credential_enrollment_service is not None
-                else None
-            )
             if settings.telegram_ingress.enabled:
                 await telegram_ingress.start()
             else:
@@ -1301,12 +1316,6 @@ def create_app(
                     await resident_reconcile_task
                 except asyncio.CancelledError:
                     pass
-                if credential_enrollment_reconcile_task is not None:
-                    credential_enrollment_reconcile_task.cancel()
-                    try:
-                        await credential_enrollment_reconcile_task
-                    except asyncio.CancelledError:
-                        pass
                 if resident_flock_adapter is not None:
                     await resident_flock_adapter.stop()
                 await resident_runtime_service.close()

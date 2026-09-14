@@ -4,6 +4,7 @@ import '@niuulabs/design-tokens/tokens.css';
 import '@niuulabs/ui/styles.css';
 import '@niuulabs/shell/index.css';
 import '@niuulabs/plugin-login/styles.css';
+import '@niuulabs/plugin-setup/styles.css';
 import './styles.css';
 import { setTokenProvider } from '@niuulabs/query';
 import { App } from './App';

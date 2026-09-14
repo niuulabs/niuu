@@ -49,7 +49,8 @@ from volundr.domain.models import (
     SessionSpec,
     SessionStatus,
 )
-from volundr.domain.ports import PodManager, PodStartResult
+from volundr.domain.ports import PodManager, PodStartResult, SessionCapacity
+from volundr.domain.services.session import SessionCapacityError
 
 logger = logging.getLogger(__name__)
 
@@ -519,7 +520,7 @@ class LocalProcessPodManager(PodManager):
                 detail,
                 session_id[:8],
             )
-            raise RuntimeError(f"Max concurrent sessions ({self._max_concurrent}) reached")
+            raise SessionCapacityError(self._capacity_snapshot(active))
         logger.info(
             "Provisioning session %s (%d/%d concurrent slots in use)",
             session_id[:8],
@@ -1453,17 +1454,32 @@ class LocalProcessPodManager(PodManager):
 
         raise FileNotFoundError(f"Claude binary '{self._claude_binary}' not found in PATH")
 
-    @staticmethod
-    def _build_env(spec: SessionSpec, workspace: Path) -> dict[str, str]:
-        """Build environment variables for the Skuld process."""
+    @classmethod
+    def _build_env(cls, spec: SessionSpec, workspace: Path) -> dict[str, str]:
+        """Build environment variables for the Skuld process.
+
+        The host process inherits the platform environment; the session-specific
+        values from :meth:`_session_env` are layered on top.
+        """
         env = dict(os.environ)
-        env["SKULD__SESSION__WORKSPACE_DIR"] = str(workspace)
         for key in (
             "SKULD__SKIP_PERMISSIONS",
             "SKULD__APPROVAL_POLICY",
             "SKULD__SANDBOX",
         ):
             env.pop(key, None)
+        env.update(cls._session_env(spec, workspace))
+        return env
+
+    @staticmethod
+    def _session_env(spec: SessionSpec, workspace: Path) -> dict[str, str]:
+        """Environment derived from the session spec alone (no host inheritance).
+
+        Container-based managers use this directly so the platform's own
+        environment never leaks into a sandbox.
+        """
+        env: dict[str, str] = {}
+        env["SKULD__SESSION__WORKSPACE_DIR"] = str(workspace)
 
         api_key = spec.values.get("anthropic_api_key", "")
         if api_key:
@@ -1477,6 +1493,14 @@ class LocalProcessPodManager(PodManager):
         if isinstance(extra_env, dict):
             for key, value in extra_env.items():
                 env[str(key)] = str(value)
+
+        # Contributors (integrations, model gateway routing) hand over env as the
+        # Helm-shaped list; on a single host it is applied here, so a session
+        # gets the same variables whichever runtime starts it.
+        for entry in spec.values.get("envVars") or []:
+            if not isinstance(entry, dict) or not entry.get("name"):
+                raise ValueError(f"envVars entries need a name: {entry!r}")
+            env[str(entry["name"])] = str(entry.get("value", ""))
 
         broker = spec.values.get("broker", {})
         if isinstance(broker, dict):
@@ -1714,6 +1738,21 @@ class LocalProcessPodManager(PodManager):
             for sid, info in self._processes.items()
             if info.state in (ProcessState.RUNNING, ProcessState.STARTING)
         ]
+
+    def _capacity_remedy(self) -> str:
+        """Where this runtime's session limit is raised, for the refusal message."""
+        return "raise pod_manager.max_concurrent in this install's config.yaml and restart"
+
+    def _capacity_snapshot(self, active: list[str]) -> SessionCapacity:
+        return SessionCapacity(
+            limit=self._max_concurrent,
+            active=len(active),
+            remedy=self._capacity_remedy(),
+        )
+
+    async def capacity(self) -> SessionCapacity:
+        """The concurrent-session cap and how much of it is in use right now."""
+        return self._capacity_snapshot(self._reconcile_active())
 
     def _reconcile_active(self) -> list[str]:
         """Active session IDs, after reaping entries whose process is dead.

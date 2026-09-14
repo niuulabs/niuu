@@ -285,3 +285,93 @@ async def test_claude_subscription_selects_subscription_auth(session, principal)
         "file": "claude-code-credentials",
         "key": "token",
     }
+
+
+async def test_anthropic_api_key_alone_selects_api_key_auth(session, principal):
+    """The Claude transports strip API-key variables unless told otherwise, so a
+    session whose only Claude credential is a key must be told to keep it."""
+    from dataclasses import replace
+
+    registry = IntegrationRegistry(
+        definitions_from_config([d.model_dump() for d in Settings().integrations.definitions])
+    )
+    connection = replace(_linear_connection(), slug="anthropic", credential_name="anthropic-work")
+    result = await IntegrationContributor(integration_registry=registry).contribute(
+        session, SessionContext(principal=principal, integration_connections=(connection,))
+    )
+    assert result.values["envVars"] == [{"name": "SKULD__CLAUDE_AUTH", "value": "api_key"}]
+    assert result.values["secretManifest"]["env"]["ANTHROPIC_API_KEY"] == {
+        "file": "anthropic-work",
+        "key": "api_key",
+    }
+
+
+async def test_subscription_wins_when_both_claude_credentials_are_attached(session, principal):
+    from dataclasses import replace
+
+    registry = IntegrationRegistry(
+        definitions_from_config([d.model_dump() for d in Settings().integrations.definitions])
+    )
+    key = replace(_linear_connection(), slug="anthropic", credential_name="anthropic-work")
+    login = replace(
+        _linear_connection(conn_id="conn-claude"),
+        slug="claude-code",
+        credential_name="claude-code-credentials",
+    )
+    result = await IntegrationContributor(integration_registry=registry).contribute(
+        session, SessionContext(principal=principal, integration_connections=(key, login))
+    )
+    assert result.values["envVars"] == [{"name": "SKULD__CLAUDE_AUTH", "value": "subscription"}]
+
+
+def _model_server_definition():
+    return IntegrationDefinition(
+        slug="model-server",
+        name="Model server",
+        description="A model you serve yourself, through the gateway",
+        integration_type="ai_provider",
+        adapter="",
+        env_from_config={"SKULD__MODEL_GATEWAY__URL": "gateway_url"},
+    )
+
+
+def _model_server_connection(config):
+    return IntegrationConnection(
+        id="conn-model-server",
+        owner_id="user-1",
+        integration_type="ai_provider",
+        adapter="",
+        credential_name="model-server-local",
+        config=config,
+        enabled=True,
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
+        slug="model-server",
+    )
+
+
+async def test_model_server_gateway_url_becomes_session_env(session, principal):
+    """The seeded Model server carries the gateway URL in its config; the session
+    gets it as SKULD__MODEL_GATEWAY__URL, which routes Claude Code and Codex."""
+    registry = IntegrationRegistry([_model_server_definition()])
+    conn = _model_server_connection(
+        {"provider": "local", "gateway_url": "http://niuu:8080/api/v1/bifrost", "models": ["m"]}
+    )
+    ctx = SessionContext(principal=principal, integration_connections=(conn,))
+
+    result = await IntegrationContributor(integration_registry=registry).contribute(session, ctx)
+
+    assert {"name": "SKULD__MODEL_GATEWAY__URL", "value": "http://niuu:8080/api/v1/bifrost"} in (
+        result.values["envVars"]
+    )
+    assert "secretManifest" not in result.values
+
+
+async def test_model_server_without_a_gateway_url_refuses_to_launch(session, principal):
+    registry = IntegrationRegistry([_model_server_definition()])
+    ctx = SessionContext(
+        principal=principal,
+        integration_connections=(_model_server_connection({"provider": "local"}),),
+    )
+    with pytest.raises(ValueError, match="gateway_url"):
+        await IntegrationContributor(integration_registry=registry).contribute(session, ctx)

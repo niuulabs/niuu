@@ -36,6 +36,10 @@ const workspaceAlias = [
     replacement: fromHere('../../packages/plugin-login/dist/styles.css'),
   },
   {
+    find: '@niuulabs/plugin-setup/styles.css',
+    replacement: fromHere('../../packages/plugin-setup/dist/styles.css'),
+  },
+  {
     find: '@niuulabs/plugin-mimir/styles.css',
     replacement: fromHere('../../packages/plugin-mimir/dist/styles.css'),
   },
@@ -130,6 +134,10 @@ const workspaceAlias = [
   {
     find: '@niuulabs/plugin-sdk',
     replacement: fromHere('../../packages/plugin-sdk/src/index.ts'),
+  },
+  {
+    find: '@niuulabs/plugin-setup',
+    replacement: fromHere('../../packages/plugin-setup/src/index.ts'),
   },
   {
     find: '@niuulabs/plugin-ting',

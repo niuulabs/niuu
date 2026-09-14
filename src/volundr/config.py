@@ -922,13 +922,21 @@ class OAuthSpecConfig(BaseModel):
     token_field_mapping: dict[str, str] = Field(default_factory=dict)
     extra_authorize_params: dict[str, str] = Field(default_factory=dict)
     extra_token_params: dict[str, str] = Field(default_factory=dict)
+    device_authorization_url: str = Field(
+        default="",
+        description="RFC 8628 device authorization endpoint; enables sign-in without a callback.",
+    )
 
 
 class OAuthClientConfig(BaseModel):
-    """Client credentials for a single OAuth integration."""
+    """Client credentials for a single OAuth integration.
+
+    The device flow only needs the (public) client id; the secret is for the
+    authorization-code flow behind a callback URL.
+    """
 
     client_id: str
-    client_secret: str
+    client_secret: str = ""
 
 
 class OAuthConfig(BaseModel):
@@ -951,10 +959,45 @@ class IntegrationDefinitionConfig(BaseModel):
     config_schema: dict[str, Any] = Field(default_factory=dict)
     mcp_server: dict[str, Any] | None = None
     env_from_credentials: dict[str, str] = Field(default_factory=dict)
+    env_from_config: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Session environment variables taken from the connection's (non-secret) config, "
+            "env var name → config key. A missing key fails the launch."
+        ),
+    )
     auth_type: str = "api_key"
     oauth: OAuthSpecConfig | None = None
     file_mounts: dict[str, str] = Field(default_factory=dict)
     credential_enrollment: dict[str, str] | None = None
+    model_vendor: str = Field(
+        default="",
+        description=(
+            "Model vendor an AI provider connection unlocks (anthropic, openai, xai, "
+            "deepseek). Session definitions name the vendors they accept in "
+            "compatible_providers, so this is what decides which engines a connected "
+            "account makes launchable."
+        ),
+    )
+    key_probe: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Cheap authenticated request that proves an API key works: url, auth "
+            "('bearer' or a header name) and optional extra headers."
+        ),
+    )
+
+
+GITHUB_DEVICE_AUTHORIZATION_URL = "https://github.com/login/device/code"
+GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
+GITLAB_DEVICE_AUTHORIZATION_URL = "https://gitlab.com/oauth/authorize_device"
+GITLAB_TOKEN_URL = "https://gitlab.com/oauth/token"
+
+
+# The seeded "Model server" provider (see cli.commands.platform) and the env var
+# that tells a session's Skuld to route Claude Code and Codex through the gateway.
+MODEL_SERVER_SLUG = "model-server"
+MODEL_GATEWAY_URL_ENV = "SKULD__MODEL_GATEWAY__URL"
 
 
 def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
@@ -984,11 +1027,31 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                     "orgs": {"label": "Organizations", "type": "string[]"},
                 },
             },
+            # gh in the session image signs in with GH_TOKEN.
+            env_from_credentials={"GH_TOKEN": "token"},
             mcp_server={
                 "name": "github",
                 "command": "npx",
                 "args": ["-y", "@modelcontextprotocol/server-github"],
                 "env_from_credentials": {"GITHUB_PERSONAL_ACCESS_TOKEN": "token"},
+            },
+            # Sign in with GitHub: device flow of an OAuth App the person owns
+            # (client id registered from the wizard or under oauth.clients.github;
+            # no secret, no callback). Without scopes GitHub hands out a token
+            # that only reads public data, so sessions could neither see private
+            # or organisation repositories nor push: `repo` covers code and pull
+            # requests everywhere the account can reach, `read:org` the
+            # organisation membership, `workflow` files under .github/workflows.
+            oauth=OAuthSpecConfig(
+                authorize_url="https://github.com/login/oauth/authorize",
+                token_url=GITHUB_TOKEN_URL,
+                device_authorization_url=GITHUB_DEVICE_AUTHORIZATION_URL,
+                scopes=["repo", "read:org", "workflow"],
+            ),
+            credential_enrollment={
+                "method": "oauth_device",
+                "credential_field": "token",
+                "default_credential_name": "github-signin",
             },
         ),
         IntegrationDefinitionConfig(
@@ -1015,11 +1078,26 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                     "groups": {"label": "Groups", "type": "string[]"},
                 },
             },
+            # glab in the session image signs in with GITLAB_TOKEN.
+            env_from_credentials={"GITLAB_TOKEN": "token"},
             mcp_server={
                 "name": "gitlab",
                 "command": "npx",
                 "args": ["-y", "@modelcontextprotocol/server-gitlab"],
                 "env_from_credentials": {"GITLAB_PERSONAL_ACCESS_TOKEN": "token"},
+            },
+            # Sign in with GitLab (17.2+): device grant of an application whose
+            # public client id is configured under oauth.clients.gitlab.
+            oauth=OAuthSpecConfig(
+                authorize_url="https://gitlab.com/oauth/authorize",
+                token_url=GITLAB_TOKEN_URL,
+                device_authorization_url=GITLAB_DEVICE_AUTHORIZATION_URL,
+                scopes=["api"],
+            ),
+            credential_enrollment={
+                "method": "oauth_device",
+                "credential_field": "token",
+                "default_credential_name": "gitlab-signin",
             },
         ),
         IntegrationDefinitionConfig(
@@ -1046,30 +1124,84 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             name="Anthropic (Claude API)",
             description="Anthropic API key for Claude models",
             integration_type="ai_provider",
+            model_vendor="anthropic",
             icon="anthropic",
             credential_schema={
                 "required": ["api_key"],
                 "properties": {"api_key": {"label": "API Key", "type": "password"}},
             },
             env_from_credentials={"ANTHROPIC_API_KEY": "api_key"},
+            key_probe={
+                "url": "https://api.anthropic.com/v1/models",
+                "auth": "x-api-key",
+                "headers": {"anthropic-version": "2023-06-01"},
+            },
         ),
         IntegrationDefinitionConfig(
             slug="openai",
             name="OpenAI",
             description="OpenAI API key for GPT/Codex models",
             integration_type="ai_provider",
+            model_vendor="openai",
             icon="openai",
             credential_schema={
                 "required": ["api_key"],
                 "properties": {"api_key": {"label": "API Key", "type": "password"}},
             },
             env_from_credentials={"OPENAI_API_KEY": "api_key"},
+            key_probe={"url": "https://api.openai.com/v1/models", "auth": "bearer"},
+        ),
+        IntegrationDefinitionConfig(
+            slug="xai",
+            name="xAI (Grok)",
+            description="xAI API key for Grok models",
+            integration_type="ai_provider",
+            model_vendor="xai",
+            icon="xai",
+            credential_schema={
+                "required": ["api_key"],
+                "properties": {"api_key": {"label": "API Key", "type": "password"}},
+            },
+            env_from_credentials={"XAI_API_KEY": "api_key"},
+            key_probe={"url": "https://api.x.ai/v1/models", "auth": "bearer"},
+        ),
+        IntegrationDefinitionConfig(
+            slug="grok-build",
+            name="Grok Build (xAI sign-in)",
+            description="Sign in with your SuperGrok or X Premium+ account for Grok Build sessions",
+            integration_type="ai_provider",
+            model_vendor="xai",
+            icon="xai",
+            credential_schema={},
+            auth_type="device_code",
+            credential_enrollment={
+                "method": "grok_device",
+                "credential_field": "auth.json",
+                "default_credential_name": "grok-credentials",
+            },
+            # The grok CLI reads its session from ~/.grok/auth.json.
+            file_mounts={"/home/skuld/.grok/auth.json": "auth.json"},
+        ),
+        IntegrationDefinitionConfig(
+            slug="deepseek",
+            name="DeepSeek",
+            description="DeepSeek API key for DeepSeek models and the DeepSeek Harness runtime",
+            integration_type="ai_provider",
+            model_vendor="deepseek",
+            icon="deepseek",
+            credential_schema={
+                "required": ["api_key"],
+                "properties": {"api_key": {"label": "API Key", "type": "password"}},
+            },
+            env_from_credentials={"DEEPSEEK_API_KEY": "api_key"},
+            key_probe={"url": "https://api.deepseek.com/models", "auth": "bearer"},
         ),
         IntegrationDefinitionConfig(
             slug="claude-code",
             name="Claude Code (subscription)",
             description="Connect your Claude subscription for Claude Code sessions",
             integration_type="ai_provider",
+            model_vendor="anthropic",
             icon="anthropic",
             credential_schema={},
             auth_type="browser_login",
@@ -1085,6 +1217,7 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             name="OpenAI Codex (ChatGPT)",
             description="User-scoped ChatGPT subscription login for Codex runtimes",
             integration_type="ai_provider",
+            model_vendor="openai",
             icon="openai",
             credential_schema={},
             auth_type="device_code",
@@ -1093,6 +1226,28 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "credential_field": "auth.json",
                 "default_credential_name": "codex-credentials",
             },
+        ),
+        IntegrationDefinitionConfig(
+            slug=MODEL_SERVER_SLUG,
+            name="Model server",
+            description=(
+                "A model you serve yourself (vLLM, sparkrun, Ollama, anything "
+                "OpenAI-compatible), reached through the platform's model gateway. "
+                "Registered from Settings → Runtime → Model server, not added here."
+            ),
+            integration_type="ai_provider",
+            model_vendor="local",
+            icon="server",
+            auth_type="none",
+            credential_schema={},
+            config_schema={
+                "properties": {
+                    "provider": {"label": "Gateway provider", "type": "string"},
+                    "gateway_url": {"label": "Gateway URL", "type": "string"},
+                    "models": {"label": "Models", "type": "list"},
+                },
+            },
+            env_from_config={MODEL_GATEWAY_URL_ENV: "gateway_url"},
         ),
         IntegrationDefinitionConfig(
             slug="telegram",
@@ -1118,6 +1273,19 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             auth_type="api_key",
         ),
     ]
+
+
+class SessionRoomConfig(BaseModel):
+    """How the platform reaches a session's broker for room and route calls."""
+
+    internal_base_url: str = Field(
+        default="",
+        description=(
+            "Origin to dial instead of the session's public chat endpoint origin, "
+            "e.g. http://127.0.0.1:8080 when the public address is not reachable "
+            "from the platform process itself (single-host Docker). Empty = public."
+        ),
+    )
 
 
 class IntegrationsConfig(BaseModel):
@@ -1204,6 +1372,11 @@ class SeededIntegrationConnectionConfig(BaseModel):
         default=None,
         description="Optional credential payload to seed before creating the connection.",
     )
+
+
+# The seed list is declared before its item type; resolve the forward reference
+# so settings sources (env, files) can parse it instead of warning.
+IntegrationsConfig.model_rebuild()
 
 
 class FeatureModuleConfig(BaseModel):
@@ -1763,6 +1936,7 @@ class Settings(BaseSettings):
     pat: PATConfig = Field(default_factory=PATConfig)
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
     auth_discovery: AuthDiscoveryConfig = Field(default_factory=AuthDiscoveryConfig)
+    session_room: SessionRoomConfig = Field(default_factory=SessionRoomConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     oauth: OAuthConfig = Field(default_factory=OAuthConfig)
     provisioning: ProvisioningConfig = Field(default_factory=ProvisioningConfig)
