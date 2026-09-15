@@ -152,11 +152,15 @@ function ConnectStep({
   onChange: (next: RealmDraft) => void;
 }) {
   const volundr = useService<IVolundrService>('volundr');
+  const repoCatalog = useService<{
+    getRepos: IVolundrService['getRepos'];
+    getBranches(repoUrl: string): Promise<string[]>;
+  }>('niuu.repos');
   const tracker = useService<ITrackerBrowserService>('ting.tracker');
   const mimir = useService<IMimirService>('mimir');
   const template = templateById(draft.templateId);
 
-  const repos = useQuery({ queryKey: ['volundr', 'repos'], queryFn: () => volundr.getRepos() });
+  const repos = useQuery({ queryKey: ['niuu', 'repos'], queryFn: () => repoCatalog.getRepos() });
   const boards = useQuery({
     queryKey: ['ting', 'tracker', 'boards'],
     queryFn: () => tracker.listProjects(),
@@ -220,7 +224,7 @@ function ConnectStep({
             </Field>
             <Field label="Branch" hint="Optional — uses the repository default">
               <BranchSelect
-                loadBranches={volundr.getBranches}
+                loadBranches={repoCatalog.getBranches}
                 repos={repos.data ?? []}
                 selectedRepos={draft.repo}
                 value={draft.branch}

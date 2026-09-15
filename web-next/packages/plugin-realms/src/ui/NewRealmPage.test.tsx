@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createCallLog, fakeVolundr } from '../testing/fakes';
@@ -12,12 +12,23 @@ describe('NewRealmPage', () => {
 
   it('walks template → connect → charter → launch on the existing form widgets', async () => {
     const user = userEvent.setup();
-    renderRealms('/realms/new');
+    const repos = (await fakeVolundr(createCallLog()).getRepos()).map((repo) => ({
+      ...repo,
+      branches: [],
+    }));
+    const getBranches = vi.fn().mockResolvedValue(['dev', 'release']);
+    renderRealms('/realms/new', {
+      'niuu.repos': { getRepos: async () => repos, getBranches },
+    });
     await screen.findByTestId('wizard-step-template');
     await user.click(screen.getByTestId('template-qa-resident'));
     await user.click(screen.getByTestId('realm-continue'));
     await screen.findByTestId('wizard-step-connect');
     await waitFor(() => expect(screen.getByTestId('realm-repo')).toBeInTheDocument());
+    expect(getBranches).not.toHaveBeenCalled();
+    await user.selectOptions(screen.getByTestId('realm-repo'), 'niuulabs/lexi-api');
+    expect(await screen.findByRole('option', { name: 'release' })).toBeInTheDocument();
+    expect(getBranches).toHaveBeenCalledExactlyOnceWith(repos[0]!.cloneUrl);
     await user.click(screen.getByTestId('realm-continue'));
     await screen.findByTestId('wizard-step-charter');
     expect(screen.getByTestId('trust-ladder')).toHaveTextContent('observe');
