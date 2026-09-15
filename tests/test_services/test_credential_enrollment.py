@@ -8,9 +8,14 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
+import respx
 
+from niuu.adapters.memory_credential_store import MemoryCredentialStore
 from volundr.adapters.outbound.memory_integrations import InMemoryIntegrationRepository
+from volundr.adapters.outbound.oauth_device_runner import OAuthDeviceFlowRunner
+from volundr.config import _default_integration_definitions
 from volundr.domain.models import (
     CredentialEnrollmentPoll,
     CredentialEnrollmentState,
@@ -25,6 +30,33 @@ from volundr.domain.services.integration_registry import (
     IntegrationRegistry,
     definitions_from_config,
 )
+from volundr.domain.services.oauth_clients import OAuthClientRegistry
+
+
+@respx.mock
+async def test_oauth_enrollment_saves_the_self_hosted_repository_api_url():
+    registry = IntegrationRegistry(
+        definitions_from_config([d.model_dump() for d in _default_integration_definitions()])
+    )
+    store = MemoryCredentialStore()
+    clients = OAuthClientRegistry(credential_store=store, integration_registry=registry)
+    await clients.register("github", "own-client", base_url="https://git.example.com")
+    repo = InMemoryIntegrationRepository()
+    service = CredentialEnrollmentService(
+        repository=_EnrollmentRepository(),
+        runner=OAuthDeviceFlowRunner(registry=registry, clients=clients),
+        integration_repository=repo,
+        integration_registry=registry,
+        credential_store=store,
+    )
+    respx.post("https://git.example.com/login/device/code").mock(
+        return_value=httpx.Response(
+            200, json={"device_code": "d", "user_code": "U", "verification_uri": "v"}
+        )
+    )
+    started = await service.start(principal=_principal("user"), slug="github")
+    connection = await repo.get_connection(started.connection_id)
+    assert connection.config["base_url"] == "https://git.example.com/api/v3"
 
 
 class _EnrollmentRepository:

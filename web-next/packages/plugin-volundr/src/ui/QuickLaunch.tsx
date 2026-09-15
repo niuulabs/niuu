@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import {
-  BranchSelect,
   Dialog,
   DialogContent,
   Field,
@@ -31,7 +30,10 @@ import { LaunchWizard } from './LaunchWizard';
 import { useFeatures } from './useFeatures';
 
 /** The shared repository catalog (`niuu.repos`), the same one the advanced launch reads. */
-type RepoCatalog = { getRepos(): Promise<RepoRecord[]> };
+type RepoCatalog = {
+  getRepos(): Promise<RepoRecord[]>;
+  getBranches(repoUrl: string): Promise<string[]>;
+};
 
 export interface QuickLaunchProps {
   open: boolean;
@@ -108,6 +110,13 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
   const repos: RepoRecord[] = reposQuery.data ?? [];
   const [customRepo, setCustomRepo] = useState(false);
   const selectedRepo = repos.find((repo) => repo.cloneUrl === folder);
+  const branchesQuery = useQuery({
+    queryKey: ['volundr', 'repo-branches', folder],
+    queryFn: () => repoCatalog.getBranches(folder),
+    enabled: open && !local && Boolean(folder.trim()),
+    staleTime: 60_000,
+    retry: false,
+  });
   const pickFromList = !local && repos.length > 0 && !customRepo && (!folder || !!selectedRepo);
   const [definitionKey, setDefinitionKey] = useState('skuldClaude');
   const [prompt, setPrompt] = useState('');
@@ -225,6 +234,7 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
                     : 'Repository clone URL'
             }
           >
+            {!local && reposQuery.isFetching ? <p role="status">Loading repositories…</p> : null}
             {pickFromList ? (
               <RepoSelect
                 repos={repos}
@@ -241,7 +251,7 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
                 value={folder}
                 onChange={(e) => setFolder(e.target.value)}
                 placeholder={
-                  local ? '/path/to/checkout' : 'https://github.com/owner/repository.git'
+                  local ? '/path/to/checkout' : 'https://git.example.com/group/repository.git'
                 }
                 data-testid="quick-launch-folder"
               />
@@ -266,18 +276,28 @@ export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickL
             <Field
               label="Branch"
               hint={
-                selectedRepo?.branches.length ? undefined : 'Optional — uses the repository default'
+                branchesQuery.data?.length ? undefined : 'Optional — uses the repository default'
               }
             >
-              {selectedRepo?.branches.length ? (
-                <BranchSelect
-                  repos={repos}
-                  selectedRepos={folder}
+              {branchesQuery.isFetching ? <p role="status">Loading branches…</p> : null}
+              {branchesQuery.error ? (
+                <p role="alert">Could not load branches: {branchesQuery.error.message}</p>
+              ) : null}
+              {branchesQuery.data?.length ? (
+                <select
+                  aria-label="Branch"
                   value={branch}
-                  onChange={(value: string) => setBranch(value)}
-                  placeholder="Select branch"
-                  testId="quick-launch-branch"
-                />
+                  onChange={(event) => setBranch(event.target.value)}
+                  className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-sm"
+                  data-testid="quick-launch-branch"
+                >
+                  <option value="">Repository default</option>
+                  {branchesQuery.data.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
               ) : (
                 <Input
                   aria-label="Branch"

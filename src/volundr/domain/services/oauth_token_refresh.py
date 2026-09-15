@@ -110,6 +110,7 @@ class OAuthTokenRefreshService:
                 f"no OAuth application {app!r} is registered for {connection.slug}; register "
                 "one from the setup wizard or set oauth.clients"
             )
+        token_url = client.endpoint(token_url)
         form = {
             "grant_type": "refresh_token",
             "refresh_token": values["refresh_token"],

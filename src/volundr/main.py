@@ -29,7 +29,7 @@ from niuu.service_runtime import (
 from niuu.service_runtime import create_identity_adapter as _create_identity_adapter
 from niuu.service_runtime import create_pat_validator as _create_pat_validator
 from niuu.service_runtime import create_storage_adapter as _create_storage_adapter
-from niuu.service_runtime import create_workload_identity_service
+from niuu.service_runtime import create_workload_identity_service, seed_development_identity
 from niuu.service_runtime import release_credential_store as _release_credential_store
 from niuu.utils import import_class, resolve_secret_kwargs
 from sleipnir.adapters.audit_postgres import PostgresAuditRepository
@@ -449,6 +449,7 @@ def create_app(
 
             # Tenant service + ensure default tenant exists
             await tenant_service.ensure_default_tenant()
+            await seed_development_identity(identity_adapter, user_repository)
 
             # Create adapters
             repository = PostgresSessionRepository(pool)

@@ -13,25 +13,45 @@ describe('OAuth applications over HTTP', () => {
     const c = clients();
     c.integrations.put.mockResolvedValueOnce({});
     c.integrations.get.mockResolvedValueOnce([
-      { slug: 'github', app: 'niuu-org', client_id: 'Iv1.org', has_secret: true, source: 'x' },
+      {
+        slug: 'github',
+        app: 'niuu-org',
+        client_id: 'Iv1.org',
+        base_url: 'https://git.example.com',
+        has_secret: true,
+        source: 'x',
+      },
       { slug: 'gitlab', client_id: 'glcfg', source: 'configured' },
     ]);
     const adapter = buildSetupHttpAdapter(c);
-    await adapter.registerOAuthClient('github', { app: 'niuu-org', clientId: 'Iv1.org' });
+    await adapter.registerOAuthClient('github', {
+      app: 'niuu-org',
+      clientId: 'Iv1.org',
+      baseUrl: 'https://git.example.com',
+    });
     expect(c.integrations.put).toHaveBeenCalledWith('/oauth-clients/github', {
       app: 'niuu-org',
       client_id: 'Iv1.org',
       client_secret: '',
+      base_url: 'https://git.example.com',
     });
     expect(await adapter.listOAuthClients()).toEqual([
       {
         slug: 'github',
         app: 'niuu-org',
         clientId: 'Iv1.org',
+        baseUrl: 'https://git.example.com',
         hasSecret: true,
         source: 'registered',
       },
-      { slug: 'gitlab', app: 'default', clientId: 'glcfg', hasSecret: false, source: 'configured' },
+      {
+        slug: 'gitlab',
+        app: 'default',
+        clientId: 'glcfg',
+        baseUrl: undefined,
+        hasSecret: false,
+        source: 'configured',
+      },
     ]);
     const started = { id: 'e1', connection_id: 'c', provider_slug: 'github', state: 'pending' };
     c.integrations.post.mockResolvedValueOnce(started);

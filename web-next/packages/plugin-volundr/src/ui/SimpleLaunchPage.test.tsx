@@ -87,6 +87,20 @@ describe('SimpleLaunchPage', () => {
     await waitFor(() => expect(screen.getByTestId('simple-launch-repo')).toBeInTheDocument());
   });
 
+  it('fetches branches after repository selection and displays the fetched options', async () => {
+    const service = createMockVolundrService();
+    const repos = (await service.getRepos()).map((repo) => ({ ...repo, branches: [] }));
+    const getBranches = vi.fn().mockResolvedValue(['main', 'release']);
+    renderPage(service, {
+      'niuu.repos': { getRepos: async () => repos, getBranches },
+    });
+    const select = await screen.findByTestId('simple-launch-repo');
+    expect(getBranches).not.toHaveBeenCalled();
+    fireEvent.change(select, { target: { value: repos[0]!.cloneUrl } });
+    expect(await screen.findByRole('option', { name: 'release' })).toBeInTheDocument();
+    expect(getBranches).toHaveBeenCalledExactlyOnceWith(repos[0]!.cloneUrl);
+  });
+
   it('lists what happens next and the most recent sessions', async () => {
     renderPage();
     expect(screen.getByText('What happens next')).toBeInTheDocument();

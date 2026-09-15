@@ -124,9 +124,42 @@ async def test_an_account_signs_in_through_its_own_application() -> None:
     sent = dict(httpx.QueryParams(start.calls.last.request.content.decode()))
     assert sent["client_id"] == "Iv1.org"
     assert sent["scope"] == "repo read:org workflow"
-    assert started.runner_ref == {"runner": "oauth_device", "oauth_app": "niuu-org"}
+    assert started.runner_ref == {
+        "runner": "oauth_device",
+        "oauth_app": "niuu-org",
+        "base_url": "https://api.github.com",
+    }
     with pytest.raises(ValueError, match="No OAuth application 'other'"):
         await runner.start_enrollment(replace(enrollment(), runner_ref={"oauth_app": "other"}))
+
+
+@pytest.mark.asyncio
+@respx.mock
+@pytest.mark.parametrize(
+    ("slug", "device_path", "token_path", "api_path"),
+    [
+        ("github", "/login/device/code", "/login/oauth/access_token", "/api/v3"),
+        ("gitlab", "/oauth/authorize_device", "/oauth/token", ""),
+    ],
+)
+async def test_self_hosted_sign_in_uses_the_registered_host(
+    slug, device_path, token_path, api_path
+) -> None:
+    apps = clients()
+    await apps.register(slug, "own-client", base_url="https://git.example.com")
+    runner = OAuthDeviceFlowRunner(registry=registry(), clients=apps)
+    respx.post(f"https://git.example.com{device_path}").respond(
+        200,
+        json={"device_code": "d", "user_code": "U", "verification_uri": "v", "interval": 0},
+    )
+    token = respx.post(f"https://git.example.com{token_path}").respond(
+        200, json={"access_token": "token", "token_type": "bearer"}
+    )
+    started = await runner.start_enrollment(enrollment(slug))
+    assert started.runner_ref["base_url"] == f"https://git.example.com{api_path}"
+    result = await runner.poll_enrollment(started)
+    assert result.state == CredentialEnrollmentState.COMPLETE
+    assert token.called
 
 
 @pytest.mark.asyncio

@@ -220,6 +220,7 @@ function ConnectStep({
             </Field>
             <Field label="Branch" hint="Optional — uses the repository default">
               <BranchSelect
+                loadBranches={volundr.getBranches}
                 repos={repos.data ?? []}
                 selectedRepos={draft.repo}
                 value={draft.branch}

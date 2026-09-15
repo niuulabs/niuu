@@ -1,4 +1,5 @@
 import type { RepoRecord } from '@niuulabs/domain';
+import { useEffect, useState } from 'react';
 
 export type { RepoRecord } from '@niuulabs/domain';
 
@@ -145,6 +146,7 @@ export interface BranchSelectProps {
   placeholder?: string;
   testId?: string;
   className?: string;
+  loadBranches?: (repoUrl: string) => Promise<string[]>;
 }
 
 export function BranchSelect({
@@ -155,38 +157,72 @@ export function BranchSelect({
   placeholder = 'Select branch',
   testId,
   className = '',
+  loadBranches,
 }: BranchSelectProps) {
-  const options = getCommonBranches(repos, selectedRepos);
+  const refs = Array.isArray(selectedRepos) ? selectedRepos : selectedRepos ? [selectedRepos] : [];
+  const urls = JSON.stringify(refs.map((ref) => findRepoByRef(repos, ref)?.cloneUrl ?? ref));
+  const [loaded, setLoaded] = useState<{ urls: string; branches: string[]; error?: string }>();
+  useEffect(() => {
+    if (!loadBranches) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        let common: string[] | undefined;
+        // Only selected repositories are queried, sequentially for multi-repo pickers.
+        for (const url of JSON.parse(urls) as string[]) {
+          const branches = await loadBranches(url);
+          if (cancelled) return;
+          common = common === undefined ? branches : common.filter((b) => branches.includes(b));
+        }
+        if (!cancelled) setLoaded({ urls, branches: common ?? [] });
+      } catch (error) {
+        if (!cancelled) setLoaded({ urls, branches: [], error: String(error) });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadBranches, urls]);
+  const current = loaded?.urls === urls ? loaded : undefined;
+  const options = loadBranches
+    ? (current?.branches ?? [])
+    : getCommonBranches(repos, selectedRepos);
 
   return (
-    <select
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      data-testid={testId}
-      className={[
-        'niuu-form-control',
-        'niuu:w-full',
-        'niuu:rounded-md',
-        'niuu:border',
-        'niuu:border-border-subtle',
-        'niuu:bg-bg-primary',
-        'niuu:px-3',
-        'niuu:py-2',
-        'niuu:text-sm',
-        'niuu:text-text-primary',
-        'outline-none',
-        'niuu:focus:border-brand',
-        className,
-      ]
-        .filter(Boolean)
-        .join(' ')}
-    >
-      <option value="">{placeholder}</option>
-      {options.map((branch) => (
-        <option key={branch} value={branch}>
-          {branch}
-        </option>
-      ))}
-    </select>
+    <div>
+      {loadBranches && !current ? <p role="status">Loading branches…</p> : null}
+      {current?.error ? <p role="alert">Could not load branches: {current.error}</p> : null}
+      <select
+        aria-label="Branch"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        data-testid={testId}
+        className={[
+          'niuu-form-control',
+          'niuu:w-full',
+          'niuu:rounded-md',
+          'niuu:border',
+          'niuu:border-border-subtle',
+          'niuu:bg-bg-primary',
+          'niuu:px-3',
+          'niuu:py-2',
+          'niuu:text-sm',
+          'niuu:text-text-primary',
+          'outline-none',
+          'niuu:focus:border-brand',
+          className,
+        ]
+          .filter(Boolean)
+          .join(' ')}
+      >
+        <option value="">{placeholder}</option>
+        {value && !options.includes(value) ? <option value={value}>{value}</option> : null}
+        {options.map((branch) => (
+          <option key={branch} value={branch}>
+            {branch}
+          </option>
+        ))}
+      </select>
+    </div>
   );
 }

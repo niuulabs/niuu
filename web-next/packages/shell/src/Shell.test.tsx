@@ -117,6 +117,33 @@ describe('Shell', () => {
     localStorage.clear();
   });
 
+  it.each([false, true])(
+    'keeps the current page after feature data arrives (reorder=%s)',
+    async (reorder) => {
+      const plugins = [pluginA, pluginB];
+      const history = memHistory('/alpha');
+      function Harness() {
+        const [loaded, setLoaded] = useState(false);
+        return (
+          <ConfigProvider value={{ demoMode: false, theme: 'ice', plugins: {}, services: {} }}>
+            <button onClick={() => setLoaded(true)}>Load features</button>
+            <FeatureCatalogProvider
+              overrides={{ order: (id) => (id === 'alpha' && loaded && reorder ? 2 : 1) }}
+            >
+              <Shell plugins={plugins} _testHistory={history} />
+            </FeatureCatalogProvider>
+          </ConfigProvider>
+        );
+      }
+      render(<Harness />);
+      const content = await screen.findByTestId('alpha-content');
+      fireEvent.click(screen.getByRole('button', { name: 'Load features' }));
+      await screen.findByTestId('alpha-content');
+      expect(history.location.pathname).toBe('/alpha');
+      if (!reorder) expect(screen.getByTestId('alpha-content')).toBe(content);
+    },
+  );
+
   it('renders the first enabled plugin by default', async () => {
     wrap(<Shell plugins={[pluginA, pluginB]} _testHistory={memHistory('/')} />);
     // Index route redirects to /alpha (first enabled plugin)

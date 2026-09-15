@@ -47,6 +47,8 @@ GPU_NOT_CHECKED = (
 class DockerPreflightConfig:
     """Configuration for Docker-mode preflight checks."""
 
+    host_os: str = ""
+    host_arch: str = ""
     data_dir: str = "~/.niuu/data"
     ports: list[int] = field(default_factory=lambda: [8080])
     min_disk_space_bytes: int = 50 * 1024**3
@@ -227,10 +229,19 @@ def check_docker_daemon(config: DockerPreflightConfig) -> PreflightResult:
         return info
     version = str(info.get("ServerVersion", "unknown"))
     arch = str(info.get("Architecture", "unknown"))
+    native_arch = config.host_arch or _platform.machine()
+    aliases = {"x86_64": "amd64", "aarch64": "arm64"}
+    mismatch = aliases.get(native_arch, native_arch) != aliases.get(arch, arch)
     return PreflightResult(
         name="docker daemon",
         passed=True,
-        message=f"Docker Engine {version} ({arch}) reachable.",
+        warn_only=mismatch,
+        message=f"Docker Engine {version} ({arch}) reachable."
+        + (
+            f" Host architecture is {native_arch}; check your Docker VM architecture."
+            if mismatch
+            else ""
+        ),
     )
 
 
@@ -268,6 +279,13 @@ def _nvidia_runtime_registered(info: dict[str, object]) -> bool:
 
 def check_nvidia_runtime(config: DockerPreflightConfig) -> PreflightResult:
     """Verify the NVIDIA container runtime is registered with Docker."""
+    if (config.host_os or _platform.system()) == "Darwin":
+        return PreflightResult(
+            name="nvidia runtime",
+            passed=not config.require_gpu,
+            message="NVIDIA GPUs are unavailable on macOS; use a cloud or external model server."
+            + (" Set docker.require_gpu to false." if config.require_gpu else ""),
+        )
     info = docker_info(config)
     if isinstance(info, PreflightResult):
         return PreflightResult(
@@ -343,6 +361,13 @@ def check_gpu(config: DockerPreflightConfig) -> PreflightResult:
     only meaningful once Docker has the NVIDIA runtime (the wrapper passes
     ``--gpus all`` then). Without it the GPU is unknown, not absent.
     """
+    if (config.host_os or _platform.system()) == "Darwin":
+        return PreflightResult(
+            name="gpu",
+            passed=not config.require_gpu,
+            message="NVIDIA GPUs are unavailable on macOS; use a cloud or external model server."
+            + (" Set docker.require_gpu to false." if config.require_gpu else ""),
+        )
     gpus = query_gpus(config)
     if gpus:
         system_memory = _memory_total_bytes()
@@ -586,9 +611,11 @@ def collect_host_facts(
     os_name, os_version = _os_release()
     return HostFacts(
         hostname=socket.gethostname(),
-        os_name=os_name,
-        os_version=os_version,
-        arch=_platform.machine(),
+        os_name="macOS" if config.host_os == "Darwin" else os_name,
+        os_version="" if config.host_os == "Darwin" else os_version,
+        arch=str(info.get("Architecture", _platform.machine()))
+        if isinstance(info, dict)
+        else _platform.machine(),
         cpu_count=os.cpu_count() or 0,
         memory_total_bytes=_memory_total_bytes(),
         docker_version=docker_version,

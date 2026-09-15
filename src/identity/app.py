@@ -22,6 +22,7 @@ from niuu.service_runtime import (
     create_pat_validator,
     create_storage_adapter,
     create_workload_identity_service,
+    seed_development_identity,
 )
 from niuu.utils import import_class
 from volundr.adapters.inbound.rest_tenants import create_identity_router
@@ -63,6 +64,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 tenant_service=tenant_service,
             )
             await tenant_service.ensure_default_tenant()
+            await seed_development_identity(identity_adapter, user_repository)
             app.state.authorization = create_authorization_adapter(settings)
             pat_repository = PostgresPATRepository(pool)
             pat_validator = create_pat_validator(settings, pat_repository)

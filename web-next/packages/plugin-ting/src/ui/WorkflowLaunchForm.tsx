@@ -78,6 +78,7 @@ export interface WorkflowLaunchFormProps {
   values: WorkflowLaunchDraft;
   onChange: (patch: Partial<WorkflowLaunchDraft>) => void;
   repos?: RepoRecord[];
+  loadBranches?: (repoUrl: string) => Promise<string[]>;
   /** Show the optional session-name override. */
   showSessionName?: boolean;
   promptLabel?: string;
@@ -94,6 +95,7 @@ export function WorkflowLaunchForm({
   values,
   onChange,
   repos = [],
+  loadBranches,
   showSessionName = true,
   promptLabel = 'Prompt',
   promptPlaceholder = 'Describe what this workflow should do.',
@@ -167,6 +169,7 @@ export function WorkflowLaunchForm({
           <span className="niuu:text-xs niuu:font-semibold niuu:text-text-primary">Branch</span>
           {values.repo && repos.length > 0 ? (
             <BranchSelect
+              loadBranches={loadBranches}
               repos={repos}
               selectedRepos={values.repo}
               value={values.branch}

@@ -1,9 +1,7 @@
 """GitHub git provider adapter."""
 
-import asyncio
 import logging
 import re
-from dataclasses import replace
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -355,26 +353,6 @@ class GitHubProvider(GitProvider, GitWorkflowProvider):
                 if url is not None:
                     response = await client.get(url)
 
-            # Fetch branches concurrently for all repos
-            branch_lists = await asyncio.gather(
-                *(self._fetch_branches(client, r.org, r.name) for r in repos),
-                return_exceptions=True,
-            )
-            updated_repos: list[RepoInfo] = []
-            for r, bl in zip(repos, branch_lists):
-                if isinstance(bl, Exception):
-                    logger.warning(
-                        "GitHubProvider[%s]: failed to fetch branches for %s/%s: %s",
-                        self._name,
-                        org,
-                        r.name,
-                        bl,
-                    )
-                    updated_repos.append(replace(r, branches=()))
-                else:
-                    updated_repos.append(replace(r, branches=tuple(bl)))
-            repos = updated_repos
-
             logger.info(
                 "GitHubProvider[%s]: listed %d repos for org=%s",
                 self._name,
@@ -391,50 +369,6 @@ class GitHubProvider(GitProvider, GitWorkflowProvider):
             )
 
         return repos
-
-    async def _fetch_branches(self, client: httpx.AsyncClient, org: str, repo: str) -> list[str]:
-        """Fetch branch names for a repository (single page, max 100)."""
-        response = await client.get(
-            f"/repos/{org}/{repo}/branches",
-            params={"per_page": 100},
-        )
-
-        if response.status_code in (401, 403):
-            logger.warning(
-                "GitHubProvider[%s]: auth error fetching branches for %s/%s: "
-                "HTTP %d. Token may be missing the 'repo' scope (classic PAT) "
-                "or 'contents:read' permission (fine-grained PAT).",
-                self._name,
-                org,
-                repo,
-                response.status_code,
-            )
-            return []
-
-        if response.status_code == 404:
-            logger.warning(
-                "GitHubProvider[%s]: 404 fetching branches for %s/%s. "
-                "The repo may be private and the token lacks access. "
-                "Ensure the token has the 'repo' scope (classic PAT) "
-                "or 'contents:read' permission (fine-grained PAT).",
-                self._name,
-                org,
-                repo,
-            )
-            await self._check_token_scopes(client)
-            return []
-
-        if response.status_code != 200:
-            logger.warning(
-                "GitHubProvider[%s]: unexpected status %d fetching branches for %s/%s",
-                self._name,
-                response.status_code,
-                org,
-                repo,
-            )
-            return []
-
-        return [branch["name"] for branch in response.json()]
 
     async def _check_token_scopes(self, client: httpx.AsyncClient) -> list[str]:
         """Check token scopes by inspecting X-OAuth-Scopes header from /user.
@@ -525,15 +459,7 @@ class GitHubProvider(GitProvider, GitWorkflowProvider):
                 f"(classic PAT) or 'contents:read' permission (fine-grained PAT)."
             )
 
-        if response.status_code != 200:
-            logger.warning(
-                "GitHubProvider[%s]: unexpected status %d listing branches for %s/%s",
-                self._name,
-                response.status_code,
-                org,
-                repo,
-            )
-            return []
+        response.raise_for_status()
 
         branches = [branch["name"] for branch in response.json()]
 

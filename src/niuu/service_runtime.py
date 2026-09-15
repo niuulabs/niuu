@@ -120,6 +120,24 @@ def create_identity_adapter(
     return instance
 
 
+async def seed_development_identity(identity, user_repository) -> None:
+    """Persist the configured dev principal and its admin membership at startup."""
+    from identity.adapters.identity import AllowAllIdentityAdapter
+    from identity.models import TenantMembership, TenantRole
+
+    if not isinstance(identity, AllowAllIdentityAdapter):
+        return
+    principal = await identity.validate_token("allow-all")
+    await identity.get_or_provision_user(principal)
+    await user_repository.add_membership(
+        TenantMembership(
+            user_id=principal.user_id,
+            tenant_id=principal.tenant_id,
+            role=TenantRole.ADMIN,
+        )
+    )
+
+
 def create_storage_adapter(settings: ServiceSettings):
     """Create the shared storage adapter from dynamic config."""
     config = settings.storage

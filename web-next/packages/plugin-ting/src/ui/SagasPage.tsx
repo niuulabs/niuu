@@ -692,6 +692,7 @@ function SagasPageContent() {
                                       {label}
                                     </span>
                                     <BranchSelect
+                                      loadBranches={repoCatalog.getBranches}
                                       repos={availableRepos}
                                       selectedRepos={[repoUrl]}
                                       value={entry.branch}

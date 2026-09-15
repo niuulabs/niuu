@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
 import {
   BranchSelect,
   findRepoByRef,
@@ -39,6 +39,41 @@ const REPOS: RepoRecord[] = [
 ];
 
 describe('RepoPicker', () => {
+  it('loads only selected repositories and reports branch failures', async () => {
+    let resolve!: (branches: string[]) => void;
+    const loadBranches = vi.fn().mockImplementationOnce(
+      () =>
+        new Promise<string[]>((done) => {
+          resolve = done;
+        }),
+    );
+    const { rerender } = render(
+      <BranchSelect
+        repos={REPOS}
+        selectedRepos="niuulabs/volundr"
+        value="main"
+        onChange={() => {}}
+        loadBranches={loadBranches}
+      />,
+    );
+    expect(screen.getByRole('status')).toHaveTextContent('Loading branches');
+    expect(loadBranches).toHaveBeenCalledTimes(1);
+    expect(loadBranches).toHaveBeenCalledWith(REPOS[0]!.cloneUrl);
+    resolve(['main', 'release']);
+    await screen.findByRole('option', { name: 'release' });
+    loadBranches.mockRejectedValueOnce(new Error('GitLab unavailable'));
+    rerender(
+      <BranchSelect
+        repos={REPOS}
+        selectedRepos="niuulabs/ravn"
+        value="main"
+        onChange={() => {}}
+        loadBranches={loadBranches}
+      />,
+    );
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('GitLab unavailable'));
+    expect(screen.queryByRole('option', { name: 'release' })).not.toBeInTheDocument();
+  });
   it('matches repos by clone url or slug', () => {
     expect(findRepoByRef(REPOS, 'https://github.com/niuulabs/volundr')?.name).toBe('volundr');
     expect(findRepoByRef(REPOS, 'https://github.com/niuulabs/ravn')?.name).toBe('ravn');

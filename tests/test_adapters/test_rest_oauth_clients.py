@@ -84,6 +84,7 @@ def test_registering_an_application_turns_sign_in_on(tmp_path) -> None:
         "app": "default",
         "client_id": "Iv1.mine",
         "has_secret": True,
+        "base_url": "",
         "source": "registered",
     }
 
@@ -97,6 +98,7 @@ def test_registering_an_application_turns_sign_in_on(tmp_path) -> None:
             "app": "default",
             "client_id": "Iv1.mine",
             "has_secret": True,
+            "base_url": "",
             "source": "registered",
         },
         {
@@ -104,6 +106,7 @@ def test_registering_an_application_turns_sign_in_on(tmp_path) -> None:
             "app": "default",
             "client_id": "glcfg",
             "has_secret": False,
+            "base_url": "",
             "source": "configured",
         },
     ]

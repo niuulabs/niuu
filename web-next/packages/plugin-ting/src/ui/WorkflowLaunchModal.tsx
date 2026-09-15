@@ -14,6 +14,7 @@ export interface WorkflowLaunchModalProps {
   onOpenChange: (open: boolean) => void;
   workflow: Workflow | null;
   repos?: RepoRecord[];
+  loadBranches?: (repoUrl: string) => Promise<string[]>;
   launching?: boolean;
   onLaunch: (request: WorkflowLaunchRequest) => Promise<void> | void;
 }
@@ -23,6 +24,7 @@ export function WorkflowLaunchModal({
   onOpenChange,
   workflow,
   repos = [],
+  loadBranches,
   launching = false,
   onLaunch,
 }: WorkflowLaunchModalProps) {
@@ -82,7 +84,12 @@ export function WorkflowLaunchModal({
       ]}
     >
       <div className="niuu:mt-4">
-        <WorkflowLaunchForm values={draft.values} onChange={draft.update} repos={repos} />
+        <WorkflowLaunchForm
+          values={draft.values}
+          onChange={draft.update}
+          repos={repos}
+          loadBranches={loadBranches}
+        />
       </div>
     </Modal>
   );

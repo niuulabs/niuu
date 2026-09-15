@@ -169,6 +169,7 @@ class OAuthClientResponse(BaseModel):
     app: str = Field(description="Which of the provider's applications; 'default' unless named")
     client_id: str
     has_secret: bool
+    base_url: str = ""
     source: str = Field(description="configured (oauth.clients) or registered (from the wizard)")
 
 
@@ -176,6 +177,7 @@ class OAuthClientRegisterRequest(BaseModel):
     app: str = Field(default="", max_length=64, description="A name; empty means 'default'")
     client_id: str = Field(min_length=1, max_length=512)
     client_secret: str = Field(default="", max_length=1024)
+    base_url: str = Field(default="", max_length=2048)
 
 
 class CatalogEntryResponse(BaseModel):
@@ -589,6 +591,7 @@ def _build_integrations_router(
             app=client.app,
             client_id=client.client_id,
             has_secret=bool(client.client_secret),
+            base_url=client.base_url,
             source=client.source,
         )
 
@@ -610,7 +613,11 @@ def _build_integrations_router(
         clients = _require_oauth_clients()
         try:
             client = await clients.register(
-                slug, data.client_id, data.client_secret, app=app_key(data.app)
+                slug,
+                data.client_id,
+                data.client_secret,
+                app=app_key(data.app),
+                base_url=data.base_url,
             )
         except OAuthClientError as exc:
             raise HTTPException(

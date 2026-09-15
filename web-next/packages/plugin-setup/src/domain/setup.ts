@@ -526,6 +526,7 @@ export interface OAuthClientInput {
   app?: string;
   clientId: string;
   clientSecret?: string;
+  baseUrl?: string;
 }
 
 /** An OAuth application the install signs in through (never the secret). */
@@ -534,6 +535,7 @@ export interface OAuthApp {
   app: string;
   clientId: string;
   hasSecret: boolean;
+  baseUrl?: string;
   source: 'configured' | 'registered';
 }
 

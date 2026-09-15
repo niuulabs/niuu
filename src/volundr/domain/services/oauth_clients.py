@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from volundr.domain.models import SecretType
 from volundr.domain.ports import CredentialStorePort
@@ -38,6 +39,22 @@ class OAuthClient:
     client_secret: str = ""
     source: str = SOURCE_REGISTERED
     app: str = DEFAULT_APP
+    base_url: str = ""
+
+    def endpoint(self, default_url: str) -> str:
+        """Keep the provider endpoint's path on this application's Git host."""
+        if not self.base_url:
+            return default_url
+        return f"{self.base_url}{urlsplit(default_url).path}"
+
+    def api_base_url(self, default_url: str) -> str:
+        if not self.base_url:
+            return default_url
+        if self.slug == "github":
+            if self.base_url == "https://github.com":
+                return "https://api.github.com"
+            return f"{self.base_url}/api/v3"
+        return self.base_url
 
 
 class OAuthClientError(ValueError):
@@ -78,6 +95,7 @@ class OAuthClientRegistry:
                 client_secret=client.client_secret,
                 source=SOURCE_CONFIGURED,
                 app=DEFAULT_APP,
+                base_url=client.base_url,
             )
             for slug, client in (configured or {}).items()
             if client.client_id
@@ -99,6 +117,7 @@ class OAuthClientRegistry:
                 client_id=values["client_id"],
                 client_secret=values.get("client_secret", ""),
                 app=app,
+                base_url=values.get("base_url", ""),
             )
         self._registered = registered
 
@@ -128,7 +147,12 @@ class OAuthClientRegistry:
         )
 
     async def register(
-        self, slug: str, client_id: str, client_secret: str = "", app: str = DEFAULT_APP
+        self,
+        slug: str,
+        client_id: str,
+        client_secret: str = "",
+        app: str = DEFAULT_APP,
+        base_url: str = "",
     ) -> OAuthClient:
         if not self.supports(slug):
             raise OAuthClientError(f"{slug!r} does not sign in through an OAuth application")
@@ -140,15 +164,38 @@ class OAuthClientRegistry:
             raise OAuthClientError(
                 "An application name is letters, digits and dashes, at most 40 characters"
             )
+        base_url = base_url.strip().rstrip("/")
+        if base_url:
+            parsed = urlsplit(base_url)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.query
+                or parsed.fragment
+                or parsed.path
+            ):
+                raise OAuthClientError(
+                    "Git host must be an HTTP(S) origin, without a path or credentials"
+                )
         client = OAuthClient(
-            slug=slug, client_id=client_id, client_secret=client_secret.strip(), app=app
+            slug=slug,
+            client_id=client_id,
+            client_secret=client_secret.strip(),
+            app=app,
+            base_url=base_url,
         )
         await self._store.store(
             APP_REGISTRY_OWNER_TYPE,
             APP_REGISTRY_OWNER_ID,
             _storage_name(slug, app),
             SecretType.GENERIC,
-            {"client_id": client.client_id, "client_secret": client.client_secret},
+            {
+                "client_id": client.client_id,
+                "client_secret": client.client_secret,
+                "base_url": client.base_url,
+            },
             {"integration": slug, "app": app, "source": SOURCE_REGISTERED},
         )
         self._registered[(slug, app)] = client

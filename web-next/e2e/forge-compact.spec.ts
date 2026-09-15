@@ -9,9 +9,38 @@ async function configure(page: Page, mini: boolean, fail = false, holdFlags?: Pr
     config.plugins[id] = { enabled: false };
   config.services.forge = { mode: 'http', baseUrl: '/api/v1/forge' };
   config.services.volundr = { mode: 'http', baseUrl: '/api/v1/volundr' };
+  config.services.setup = { mode: 'http', baseUrl: '/api/v1/setup' };
+  config.services.integrations = { mode: 'http', baseUrl: '/api/v1/integrations' };
   await page.route('**/config.json', (route) => route.fulfill({ json: config }));
   await page.route('**/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (path === '/api/v1/setup')
+      return route.fulfill({ json: { enabled: false, completed: true } });
+    if (path.endsWith('/integrations/catalog'))
+      return route.fulfill({
+        json: [
+          {
+            slug: 'anthropic',
+            name: 'Anthropic',
+            integration_type: 'ai_provider',
+            model_vendor: 'anthropic',
+          },
+        ],
+      });
+    if (path.endsWith('/integrations'))
+      return route.fulfill({
+        json: [
+          {
+            id: 'provider-1',
+            slug: 'anthropic',
+            integration_type: 'ai_provider',
+            credential_name: 'anthropic-test',
+            enabled: true,
+            config: {},
+            credential_status: 'valid',
+          },
+        ],
+      });
     if (path.endsWith('/cluster/resources'))
       return route.fulfill({ json: { resourceTypes: [], nodes: [] } });
     if (path.endsWith('/features/modules'))

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import type { BifrostModel, IBifrostService } from '@niuulabs/plugin-bifrost';
 import type { IPersonaCatalog, PersonaSummary } from '@niuulabs/domain';
@@ -66,7 +66,9 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [repos, setRepos] = useState<RepoRecord[]>([]);
-  const [manualBranches, setManualBranches] = useState<string[]>([]);
+  const [optionsLoading, setOptionsLoading] = useState(true);
+  const [reposLoading, setReposLoading] = useState(true);
+  const [reposError, setReposError] = useState<Error | null>(null);
   const [models, setModels] = useState<Record<string, RuntimeModelDescriptor>>({});
   const [workspaces, setWorkspaces] = useState<VolundrWorkspace[]>([]);
   const [credentials, setCredentials] = useState<StoredCredential[]>([]);
@@ -128,6 +130,13 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
     if (!open) return;
 
     let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) {
+        setOptionsLoading(true);
+        setReposLoading(true);
+        setReposError(null);
+      }
+    });
     let providerFailure: Error | null = null;
     const recordProviderFailure = (error: unknown): [] => {
       providerFailure = error instanceof Error ? error : new Error(String(error));
@@ -135,7 +144,23 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
     };
 
     void Promise.all([
-      repoCatalog.getRepos().catch(() => []),
+      repoCatalog
+        .getRepos()
+        .then((result) => {
+          if (!cancelled) {
+            setRepos(result);
+            setReposLoading(false);
+            setReposError(null);
+          }
+          return result;
+        })
+        .catch((error: unknown) => {
+          if (!cancelled) {
+            setReposLoading(false);
+            setReposError(error instanceof Error ? error : new Error(String(error)));
+          }
+          return [];
+        }),
       bifrost.getModelCatalog().catch((): Record<string, BifrostModel> => ({})),
       Promise.all([
         volundr.listWorkspaces('archived').catch(() => []),
@@ -192,6 +217,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
           ).find((candidate) => candidate.definition.key === current.definition);
           return { ...current, selectedIntegrations: withEngineProvider(withSources, engine) };
         });
+        setOptionsLoading(false);
         setClusterResources(nextClusterResources);
         setPresets(nextPresets);
         setTargets(nextTargets);
@@ -208,36 +234,14 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
     };
   }, [bifrost, open, personaCatalog, repoCatalog, volundr]);
 
-  useEffect(() => {
-    if (!open || form.sourcetype !== 'git' || !form.repo.trim()) {
-      queueMicrotask(() => {
-        setManualBranches([]);
-      });
-      return;
-    }
-
-    const matchingRepo = repos.find((repo) => repo.cloneUrl === form.repo);
-    if (matchingRepo?.branches.length) {
-      queueMicrotask(() => {
-        setManualBranches([]);
-      });
-      return;
-    }
-
-    let cancelled = false;
-    void repoCatalog
-      .getBranches(form.repo)
-      .then((branches) => {
-        if (!cancelled) setManualBranches(branches);
-      })
-      .catch(() => {
-        if (!cancelled) setManualBranches([]);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [form.repo, form.sourcetype, open, repoCatalog, repos]);
+  const branchesQuery = useQuery({
+    queryKey: ['volundr', 'repo-branches', form.repo],
+    queryFn: () => repoCatalog.getBranches(form.repo),
+    enabled: open && form.sourcetype === 'git' && Boolean(form.repo.trim()),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const manualBranches = branchesQuery.data ?? [];
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -608,6 +612,11 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
     launchError,
     launching,
     manualBranches,
+    branchesLoading: branchesQuery.isFetching,
+    branchesError: branchesQuery.error,
+    optionsLoading,
+    reposLoading,
+    reposError,
     models,
     navigate,
     personas,

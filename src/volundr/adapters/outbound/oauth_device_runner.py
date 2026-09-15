@@ -119,8 +119,8 @@ class OAuthDeviceFlowRunner(CredentialEnrollmentRunnerPort):
                 "the setup wizard (a client id with the device flow enabled) or use a token instead"
             )
         return (
-            definition.oauth.device_authorization_url,
-            definition.oauth.token_url,
+            client.endpoint(definition.oauth.device_authorization_url),
+            client.endpoint(definition.oauth.token_url),
             client.client_id,
             definition.oauth.scopes,
         )
@@ -173,6 +173,12 @@ class OAuthDeviceFlowRunner(CredentialEnrollmentRunnerPort):
             expires_at=min(enrollment.expires_at, now + timedelta(seconds=expires_in)),
         )
         self._sessions[enrollment.id] = session
+        client = self._clients.get(enrollment.provider_slug, app)
+        definition = self._registry.get_definition(enrollment.provider_slug)
+        default_base = (
+            definition.config_schema.get("properties", {}).get("base_url", {}).get("default", "")
+        )
+        base_url = client.api_base_url(default_base)
         # The challenge is known immediately; the record carries it so the
         # first status read already shows the URL and code.
         return replace(
@@ -180,7 +186,7 @@ class OAuthDeviceFlowRunner(CredentialEnrollmentRunnerPort):
             state=CredentialEnrollmentState.AWAITING_USER,
             verification_uri=session.verification_uri,
             user_code=session.user_code,
-            runner_ref={"runner": OAUTH_DEVICE_METHOD, "oauth_app": app},
+            runner_ref={"runner": OAUTH_DEVICE_METHOD, "oauth_app": app, "base_url": base_url},
         )
 
     async def poll_enrollment(self, enrollment: CredentialEnrollment) -> CredentialEnrollmentPoll:

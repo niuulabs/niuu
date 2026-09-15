@@ -38,7 +38,7 @@ VERSION="${NIUU_VERSION:-latest}"
 IMAGE_TAG="${NIUU_IMAGE_TAG:-latest}"
 DATA_DIR="${NIUU_DATA_DIR:-$HOME/.niuu/data}"
 MODE="${NIUU_MODE:-docker}"
-SOCKET="${DOCKER_HOST_SOCKET:-/var/run/docker.sock}"
+SOCKET="${DOCKER_HOST_SOCKET:-}"
 
 say() { printf '%s\n' "$*" >&2; }
 fail() { say "niuu: $*"; exit 1; }
@@ -75,6 +75,7 @@ docker_has_nvidia_runtime() {
 }
 
 check_nvidia_runtime() {
+  [ "$(uname -s)" = "Darwin" ] && return 0
   [ "${NIUU_SKIP_GPU:-0}" = "1" ] && return 0
   host_has_nvidia_gpu || return 0
   if docker_has_nvidia_runtime; then
@@ -147,7 +148,8 @@ EOF
 }
 
 install_docker_mode() {
-  need docker
+  command -v docker >/dev/null 2>&1 \
+    || fail "Docker Engine and Compose are required. On macOS, start Docker Desktop or Colima with '--runtime docker'. A containerd-only runtime does not expose the Docker API Niuu uses."
   need hostname
 
   if ! docker info >/dev/null 2>&1; then
@@ -159,11 +161,43 @@ install_docker_mode() {
       say "  3. run this installer again"
       exit 1
     fi
+    if [ "$(uname -s)" = "Darwin" ]; then
+      fail "Docker is not reachable. Start Docker Desktop or run 'colima start --runtime docker', then check 'docker context ls'."
+    fi
     fail "Docker is installed but the daemon is not reachable. Start it (e.g. 'sudo systemctl start docker') and rerun."
   fi
   docker compose version >/dev/null 2>&1 \
-    || fail "Docker Compose v2 is missing. Install the compose plugin: https://docs.docker.com/compose/install/linux/"
+    || fail "Docker Compose v2 is missing. Install the Compose plugin for your Docker runtime, then confirm 'docker compose version' works."
   check_nvidia_runtime
+
+  endpoint="${DOCKER_HOST:-}"
+  if [ -n "${DOCKER_CONTEXT:-}" ] || [ -z "$endpoint" ]; then
+    endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}')"
+  fi
+  case "$endpoint" in
+    unix://*) ;;
+    *) fail "Docker mode needs a local Unix socket for host file mounts; selected endpoint is '$endpoint'. Select a local Docker context." ;;
+  esac
+  if [ -z "$SOCKET" ]; then
+    SOCKET="${endpoint#unix://}"
+    # Docker resolves bind sources inside its Linux VM, not in the macOS client.
+    [ "$(uname -s)" != "Darwin" ] || SOCKET=/var/run/docker.sock
+  fi
+
+  daemon_arch="$(docker info --format '{{.Architecture}}')"
+  case "$daemon_arch" in
+    x86_64|amd64) daemon_arch=amd64 ;;
+    aarch64|arm64) daemon_arch=arm64 ;;
+    *) fail "unsupported Docker daemon architecture: $daemon_arch" ;;
+  esac
+  native_arch="$(uname -m)"
+  case "$native_arch" in
+    x86_64|amd64) native_arch=amd64 ;;
+    aarch64|arm64) native_arch=arm64 ;;
+  esac
+  if [ "$native_arch" != "$daemon_arch" ]; then
+    say "Architecture mismatch: this host is $native_arch but Docker runs $daemon_arch. Using linux/$daemon_arch images. Check the VM architecture in your Docker/Colima configuration to run natively."
+  fi
 
   if ! mkdir -p "$DATA_DIR" 2>/dev/null || [ ! -w "$DATA_DIR" ]; then
     say "niuu: the data directory $DATA_DIR cannot be created or written by $(id -un)."
@@ -180,8 +214,11 @@ install_docker_mode() {
     docker image inspect "$image" >/dev/null 2>&1 || fail "NIUU_NO_PULL=1 but ${image} is not present locally"
   else
     say "Pulling ${image}…"
-    docker pull -q "$image" >/dev/null || fail "could not pull ${image}"
+    docker pull -q --platform "linux/$daemon_arch" "$image" >/dev/null || fail "could not pull ${image}"
   fi
+  image_arch="$(docker image inspect --format '{{.Architecture}}' "$image")"
+  [ "$image_arch" = "$daemon_arch" ] \
+    || fail "${image} is $image_arch but Docker runs $daemon_arch. Pull the image with '--platform linux/$daemon_arch' and rerun."
 
   wrapper="${INSTALL_DIR}/niuu"
   cat > "$wrapper" <<EOF
@@ -193,17 +230,30 @@ IMAGE="${image}"
 SKULD_IMAGE="${skuld_image}"
 DATA_DIR="${DATA_DIR}"
 SOCKET="${SOCKET}"
+PLATFORM="linux/${daemon_arch}"
 tty=""
 if [ -t 0 ] && [ -t 1 ]; then tty="-t"; fi
 gpus=""
-if docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"nvidia"'; then gpus="--gpus all"; fi
+if [ "\$(uname -s)" != Darwin ] && docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"nvidia"'; then gpus="--gpus all"; fi
 # The socket keeps the host's group inside a container on Linux; Docker Desktop
 # runs the daemon in a VM and presents it as root-owned, so root's group grants
 # access there (the platform container is configured the same way).
-if docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -q 'Docker Desktop'; then
+if [ "\$(uname -s)" = Darwin ]; then
+  sock_gid="\$(docker run --rm --platform "\$PLATFORM" --user 0:0 -v "\$SOCKET:/var/run/docker.sock" --entrypoint stat "\$IMAGE" -c %g /var/run/docker.sock)"
+elif docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -q 'Docker Desktop'; then
   sock_gid=0
 else
   sock_gid="\$(stat -c %g "\$SOCKET" 2>/dev/null || stat -f %g "\$SOCKET")"
+fi
+# Detect the advertised address on macOS before entering the Docker VM.
+# Keep the existing server.external_host setting authoritative inside the CLI.
+export NIUU_DOCKER__HOST_OS="\$(uname -s)"
+export NIUU_DOCKER__HOST_ARCH="\$(uname -m)"
+if [ "\$NIUU_DOCKER__HOST_OS" = Darwin ] && [ -z "\${NIUU_DOCKER__HOST_LAN_IP:-}" ]; then
+  interface="\$(route -n get default 2>/dev/null | awk '/interface:/ {print \$2}')"
+  NIUU_DOCKER__HOST_LAN_IP="\$(ipconfig getifaddr "\$interface" 2>/dev/null || true)"
+  [ -n "\$NIUU_DOCKER__HOST_LAN_IP" ] || { printf '%s\\n' 'Cannot determine the macOS LAN address; set NIUU_DOCKER__HOST_LAN_IP.' >&2; exit 1; }
+  export NIUU_DOCKER__HOST_LAN_IP
 fi
 # Any NIUU_* variable in this shell reaches the CLI (NIUU_SERVER__PORT=8081 ...).
 passthrough=""
@@ -211,15 +261,17 @@ for name in \$(env | sed -n 's/^\(NIUU_[A-Za-z0-9_]*\)=.*/\1/p'); do
   passthrough="\$passthrough -e \$name"
 done
 mkdir -p "\$HOME/.niuu"
+set -- --entrypoint /opt/venv/bin/niuu "\$IMAGE" "\$@"
+if [ "\$NIUU_DOCKER__HOST_OS" = Linux ] && [ -f /etc/os-release ]; then set -- -v /etc/os-release:/etc/os-release:ro "\$@"; fi
 # shellcheck disable=SC2086
-exec docker run --rm -i \$tty \$gpus \$passthrough \\
+exec docker run --rm -i --platform "\$PLATFORM" \$tty \$gpus \$passthrough \\
   --network host --hostname "\$(hostname)" \\
   --user "\$(id -u):\$(id -g)" --group-add "\$sock_gid" \\
   -e HOME="\$HOME" -e NIUU_MODE=docker \\
   -e NIUU_DOCKER__IMAGE="\$IMAGE" -e NIUU_DOCKER__SKULD_IMAGE="\$SKULD_IMAGE" -e NIUU_DOCKER__DATA_DIR="\$DATA_DIR" \\
-  -v "\$SOCKET:\$SOCKET" -v "\$HOME/.niuu:\$HOME/.niuu" -v "\$DATA_DIR:\$DATA_DIR" \\
-  -v /etc/os-release:/etc/os-release:ro \\
-  --entrypoint /opt/venv/bin/niuu "\$IMAGE" "\$@"
+  -e NIUU_DOCKER__SOCKET_PATH="\$SOCKET" \\
+  -v "\$SOCKET:/var/run/docker.sock" -v "\$HOME/.niuu:\$HOME/.niuu" -v "\$DATA_DIR:\$DATA_DIR" \\
+  "\$@"
 EOF
   chmod 0755 "$wrapper"
   say "Installed niuu to ${wrapper} (docker mode, image ${image})"

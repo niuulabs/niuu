@@ -21,8 +21,15 @@ def _fake_docker(
     runtimes: dict | None = None,
     info_ok: bool = True,
     operating_system: str = "Ubuntu 24.04.5 LTS",
+    architecture: str = "amd64",
+    image_architecture: str | None = None,
+    endpoint: str = "unix:///var/run/docker.sock",
 ) -> Path:
     """A `docker` on PATH that records every call and answers the installer's probes."""
+    uname = bin_dir / "uname"
+    if not uname.exists():
+        uname.write_text('#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo x86_64;; esac\n')
+        uname.chmod(0o755)
     log = bin_dir / "docker.log"
     info = json.dumps(runtimes if runtimes is not None else {})
     script = f"""#!/bin/sh
@@ -33,11 +40,16 @@ case "$1" in
     if [ "$2" = "--format" ] && [ "$3" = "{{{{.OperatingSystem}}}}" ]; then
       printf '%s\\n' '{operating_system}'; exit 0
     fi
+    if [ "$2" = "--format" ] && [ "$3" = "{{{{.Architecture}}}}" ]; then
+      echo '{architecture}'; exit 0
+    fi
     if [ "$2" = "--format" ]; then printf '%s\\n' '{info}'; fi
     exit 0 ;;
+  context) echo '{endpoint}'; exit 0 ;;
+  image) echo '{image_architecture or architecture}'; exit 0 ;;
   compose) exit 0 ;;
   pull) exit 0 ;;
-  run) exit 0 ;;
+  run) case "$*" in *"--entrypoint stat"*) echo 0 ;; esac; exit 0 ;;
 esac
 exit 0
 """
@@ -93,6 +105,58 @@ class TestModeFlag:
 
 
 class TestDockerMode:
+    def test_colima_uses_daemon_arch_socket_and_native_lan(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        for name, script in {
+            "uname": 'case "$1" in -s) echo Darwin;; -m) echo arm64;; esac',
+            "route": "echo 'interface: en0'",
+            "ipconfig": 'test "$*" = "getifaddr en0" && echo 192.168.1.87',
+        }.items():
+            executable = bin_dir / name
+            executable.write_text(f"#!/bin/sh\n{script}\n")
+            executable.chmod(0o755)
+        log = _fake_docker(
+            bin_dir,
+            endpoint="unix:///Users/test/.colima/default/docker.sock",
+            architecture="x86_64",
+            image_architecture="amd64",
+            runtimes={"nvidia": {}, "runc": {}},
+        )
+        result = _run(tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert "host is arm64 but Docker runs amd64" in result.stderr
+        assert "NVIDIA" not in result.stderr
+        calls = log.read_text()
+        assert "pull -q --platform linux/amd64" in calls
+        call = [line for line in calls.splitlines() if line.startswith("run ")][-1]
+        assert "--platform linux/amd64" in call
+        assert "-v /var/run/docker.sock:/var/run/docker.sock" in call
+        assert ".colima" not in call
+        assert "/etc/os-release" not in call
+        assert "--group-add 0" in call
+        assert "-e NIUU_DOCKER__HOST_LAN_IP " in call
+        assert "-e NIUU_DOCKER__HOST_ARCH " in call
+        assert "--gpus" not in call
+
+    def test_rejects_an_image_for_a_different_architecture(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _fake_docker(bin_dir, architecture="amd64", image_architecture="arm64")
+        result = _run(tmp_path, env={"NIUU_NO_PULL": "1"})
+        assert result.returncode == 1
+        assert "is arm64 but Docker runs amd64" in result.stderr
+        assert not (tmp_path / "home" / ".local" / "bin" / "niuu").exists()
+
+    def test_honors_a_rootless_docker_context_socket(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _fake_docker(bin_dir, endpoint="unix:///run/user/1000/docker.sock")
+        result = _run(tmp_path, env={"NIUU_NO_UP": "1"})
+        assert result.returncode == 0, result.stderr
+        wrapper = (tmp_path / "home" / ".local" / "bin" / "niuu").read_text()
+        assert 'SOCKET="/run/user/1000/docker.sock"' in wrapper
+
     def test_installs_a_wrapper_that_runs_the_cli_from_the_image(self, tmp_path: Path) -> None:
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
@@ -101,7 +165,10 @@ class TestDockerMode:
             tmp_path, env={"NIUU_IMAGE_TAG": "spark-onboarding-wizard", "NIUU_NO_UP": "1"}
         )
         assert result.returncode == 0, result.stderr
-        assert "pull -q ghcr.io/niuulabs/niuu:spark-onboarding-wizard" in log.read_text()
+        assert (
+            "pull -q --platform linux/amd64 ghcr.io/niuulabs/niuu:spark-onboarding-wizard"
+            in log.read_text()
+        )
         wrapper = tmp_path / "home" / ".local" / "bin" / "niuu"
         assert wrapper.exists()
         assert os.access(wrapper, os.X_OK)
@@ -266,7 +333,7 @@ class TestDockerMode:
             check=False,
         )
         assert result.returncode == 1
-        assert "'docker' is required" in result.stderr
+        assert "Docker Engine and Compose are required" in result.stderr
 
     def test_writes_the_initial_config_once(self, tmp_path: Path) -> None:
         """The vLLM image and the wizard's model list are configuration the installer

@@ -11,8 +11,11 @@ INSTALLER = ROOT / "scripts" / "install.sh"
 
 FAKE_DOCKER = """\
 case "$1" in
+  context) echo unix:///var/run/docker.sock; exit 0 ;;
+  image) echo amd64; exit 0 ;;
   info)
     if [ "$2" = "--format" ] && [ "$3" = "{{{{.OperatingSystem}}}}" ]; then echo Ubuntu; exit 0; fi
+    if [ "$2" = "--format" ] && [ "$3" = "{{{{.Architecture}}}}" ]; then echo amd64; exit 0; fi
     if [ "$2" = "--format" ]; then echo '{runtimes}'; fi
     exit 0 ;;
 esac
@@ -33,6 +36,7 @@ class Host:
     def __init__(self, tmp_path: Path, *, gpu: bool, runtime: bool, ctk: bool):
         self.bin = tmp_path / "bin"
         self.bin.mkdir()
+        _tool(self.bin, "uname", 'case "$1" in -s) echo Linux;; -m) echo x86_64;; esac\n')
         self.home = tmp_path / "home"
         self.home.mkdir()
         self.data = tmp_path / "data"

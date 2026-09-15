@@ -137,6 +137,11 @@ class CredentialEnrollmentService:
             # The slug comes from the request; the provider's answer is what matters.
             logger.error("Provider login could not start: %s", exc)
             raise CredentialEnrollmentError(f"Could not start provider login: {exc}") from exc
+        if spec.method == OAUTH_DEVICE_METHOD and started.runner_ref.get("base_url"):
+            connection = replace(
+                connection, config={**connection.config, "base_url": started.runner_ref["base_url"]}
+            )
+            await self._integration_repository.save_connection(connection)
         return await self._repository.save(started)
 
     def available(self, slug: str) -> bool:

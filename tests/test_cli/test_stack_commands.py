@@ -175,8 +175,12 @@ class TestStackUp:
             stack.stack_up(settings)
         assert exc.value.exit_code == 1
 
-    def test_uses_configured_external_host(self, settings: CLISettings, tmp_path: Path) -> None:
-        settings.server.external_host = "spark.local"
+    @pytest.mark.parametrize("external_host", ["", "spark.local"])
+    def test_uses_native_lan_unless_external_host_is_configured(
+        self, settings: CLISettings, tmp_path: Path, external_host: str
+    ) -> None:
+        settings.server.external_host = external_host
+        settings.docker.host_lan_ip = "192.168.1.87"
         with (
             patch(f"{MOD}.stack_is_running", return_value=False),
             patch(f"{MOD}.run_docker_preflight_checks", return_value=[OK]),
@@ -186,7 +190,7 @@ class TestStackUp:
             patch(f"{MOD}.wait_for_health", return_value=True),
         ):
             stack.stack_up(settings)
-        assert wb.call_args.kwargs["external_host"] == "spark.local"
+        assert wb.call_args.kwargs["external_host"] == (external_host or "192.168.1.87")
 
 
 class TestDownStatus:

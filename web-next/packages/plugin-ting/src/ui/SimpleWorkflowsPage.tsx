@@ -36,6 +36,7 @@ interface SimpleWorkflowsSearch {
 
 type RepoCatalogService = {
   getRepos(): Promise<RepoRecord[]>;
+  getBranches(repoUrl: string): Promise<string[]>;
 };
 
 /** Gates a person has to answer before the run continues. */
@@ -299,7 +300,12 @@ export function SimpleWorkflowsPage() {
                 >
                   Launch it
                 </div>
+                {reposQuery.isFetching ? <LoadingState label="Loading repositories…" /> : null}
+                {reposQuery.error ? (
+                  <p role="alert">Could not load repositories: {reposQuery.error.message}</p>
+                ) : null}
                 <WorkflowLaunchForm
+                  loadBranches={repoCatalog.getBranches}
                   values={draft.values}
                   onChange={draft.update}
                   repos={reposQuery.data ?? []}

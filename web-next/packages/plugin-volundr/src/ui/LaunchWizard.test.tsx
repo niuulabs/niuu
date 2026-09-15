@@ -15,7 +15,8 @@ vi.mock('@tanstack/react-router', () => ({
 function wrap(open = true, onOpenChange = vi.fn(), service = createMockVolundrService()) {
   return wrapWithServices(open, onOpenChange, service, {
     getRepos: service.getRepos.bind(service),
-    getBranches: async () => [],
+    getBranches: async (url: string) =>
+      (await service.getRepos()).find((repo) => repo.cloneUrl === url)?.branches ?? [],
   });
 }
 
@@ -231,7 +232,7 @@ describe('LaunchWizard', () => {
     });
   });
 
-  it('uses embedded branch lists, links tracker issues, clears them, and supports blank sources', async () => {
+  it('loads selected repository branches, links tracker issues, clears them, and supports blank sources', async () => {
     wrap();
     await waitForSourceStep();
 

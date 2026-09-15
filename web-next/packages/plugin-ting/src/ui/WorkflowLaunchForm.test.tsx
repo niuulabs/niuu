@@ -27,12 +27,14 @@ function Harness({
   onSubmit,
   showSessionName = true,
   withRepos = true,
+  loadBranches,
 }: {
   workflowKey?: string;
   initial?: Partial<WorkflowLaunchDraft>;
   onSubmit?: () => void;
   showSessionName?: boolean;
   withRepos?: boolean;
+  loadBranches?: (repoUrl: string) => Promise<string[]>;
 }) {
   const [key, setKey] = useState(workflowKey);
   const draft = useWorkflowLaunchDraft(key, initial);
@@ -42,6 +44,7 @@ function Harness({
         values={draft.values}
         onChange={draft.update}
         repos={withRepos ? repos : []}
+        loadBranches={loadBranches}
         showSessionName={showSessionName}
         onPromptSubmit={onSubmit}
       />
@@ -84,6 +87,19 @@ describe('useWorkflowLaunchDraft', () => {
 });
 
 describe('WorkflowLaunchForm', () => {
+  it('loads branches only for the selected repository', async () => {
+    const loadBranches = vi.fn().mockResolvedValue(['main', 'release']);
+    render(<Harness loadBranches={loadBranches} />);
+    expect(loadBranches).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByTestId('workflow-launch-repo-select'), {
+      target: { value: repos[0]!.cloneUrl },
+    });
+
+    expect(await screen.findByRole('option', { name: 'release' })).toBeInTheDocument();
+    expect(loadBranches).toHaveBeenCalledExactlyOnceWith(repos[0]!.cloneUrl);
+  });
+
   it('submits on ⌘/Ctrl+Enter and ignores other keys', () => {
     const onSubmit = vi.fn();
     render(<Harness onSubmit={onSubmit} />);

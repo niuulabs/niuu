@@ -1,9 +1,7 @@
 """GitLab git provider adapter."""
 
-import asyncio
 import logging
 import re
-from dataclasses import replace
 from datetime import datetime
 from urllib.parse import quote_plus, urlparse
 
@@ -39,11 +37,14 @@ class GitLabProvider(GitProvider, GitWorkflowProvider):
         base_url: str,
         token: str | None = None,
         orgs: tuple[str, ...] | list[str] | str = (),
+        groups: tuple[str, ...] | list[str] | str | None = None,
         **_extra: object,
     ):
         self._name = name
-        self._base_url = base_url.rstrip("/")
+        self._base_url = (base_url if "://" in base_url else f"https://{base_url}").rstrip("/")
         self._token = token
+        if groups is not None:
+            orgs = groups
         if isinstance(orgs, str):
             self._orgs = tuple(o.strip() for o in orgs.split(",") if o.strip())
         else:
@@ -57,8 +58,10 @@ class GitLabProvider(GitProvider, GitWorkflowProvider):
         # Build URL patterns for this instance
         host_escaped = re.escape(self._host)
         self._patterns = [
-            re.compile(rf"^(?:https?://)?{host_escaped}/([^/]+)/([^/]+?)(?:\.git)?/?$"),
-            re.compile(rf"^git@{host_escaped}:([^/]+)/([^/]+?)(?:\.git)?$"),
+            re.compile(
+                rf"^(?:https?://)?{host_escaped}/([^/?#]+(?:/[^/?#]+)*)/([^/?#]+?)(?:\.git)?/?$"
+            ),
+            re.compile(rf"^git@{host_escaped}:([^/?#]+(?:/[^/?#]+)*)/([^/?#]+?)(?:\.git)?$"),
         ]
 
         logger.debug(
@@ -143,8 +146,8 @@ class GitLabProvider(GitProvider, GitWorkflowProvider):
             provider=GitProviderType.GITLAB,
             org=org,
             name=repo,
-            clone_url=f"https://{self._host}/{org}/{repo}.git",
-            url=f"https://{self._host}/{org}/{repo}",
+            clone_url=f"{self._base_url}/{org}/{repo}.git",
+            url=f"{self._base_url}/{org}/{repo}",
         )
 
     def get_clone_url(self, repo_url: str) -> str | None:
@@ -156,9 +159,10 @@ class GitLabProvider(GitProvider, GitWorkflowProvider):
         org, repo = parsed
 
         if self._token:
-            return f"https://oauth2:{self._token}@{self._host}/{org}/{repo}.git"
+            scheme, host = self._base_url.split("://", 1)
+            return f"{scheme}://oauth2:{self._token}@{host}/{org}/{repo}.git"
 
-        return f"https://{self._host}/{org}/{repo}.git"
+        return f"{self._base_url}/{org}/{repo}.git"
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
@@ -168,7 +172,7 @@ class GitLabProvider(GitProvider, GitWorkflowProvider):
                 headers["PRIVATE-TOKEN"] = self._token
 
             self._client = httpx.AsyncClient(
-                base_url=f"https://{self._host}/api/v4",
+                base_url=f"{self._base_url}/api/v4",
                 headers=headers,
                 timeout=30.0,
             )
@@ -296,13 +300,20 @@ class GitLabProvider(GitProvider, GitWorkflowProvider):
 
                 for project in page_data:
                     repo_name = project["path"]
-                    namespace = project.get("namespace", {}).get("path", org)
+                    full_path = project.get("path_with_namespace")
+                    namespace = (
+                        full_path.rsplit("/", 1)[0]
+                        if full_path
+                        else project.get("namespace", {}).get("full_path")
+                        or project.get("namespace", {}).get("path", org)
+                    )
                     repos.append(
                         RepoInfo(
                             provider=GitProviderType.GITLAB,
                             org=namespace,
                             name=repo_name,
-                            clone_url=f"https://{self._host}/{namespace}/{repo_name}.git",
+                            clone_url=project.get("http_url_to_repo")
+                            or f"{self._base_url}/{namespace}/{repo_name}.git",
                             url=project["web_url"],
                             default_branch=project.get("default_branch", "main"),
                         )
@@ -316,16 +327,6 @@ class GitLabProvider(GitProvider, GitWorkflowProvider):
                 page = int(next_page)
                 params["page"] = page
                 response = await client.get(url, params=params)
-
-            # Fetch branches concurrently for all repos
-            branch_lists = await asyncio.gather(
-                *(self._fetch_branches(client, r.org, r.name) for r in repos),
-                return_exceptions=True,
-            )
-            repos = [
-                replace(r, branches=tuple(bl) if isinstance(bl, list) else ())
-                for r, bl in zip(repos, branch_lists)
-            ]
 
             logger.info(
                 "GitLabProvider[%s]: listed %d repos for org=%s",
@@ -343,45 +344,6 @@ class GitLabProvider(GitProvider, GitWorkflowProvider):
             )
 
         return repos
-
-    async def _fetch_branches(
-        self, client: httpx.AsyncClient, namespace: str, repo: str
-    ) -> list[str]:
-        """Fetch all branch names for a repository."""
-        branches: list[str] = []
-        project_path = quote_plus(f"{namespace}/{repo}")
-        page = 1
-        params: dict[str, str | int] = {"per_page": 100, "page": page}
-
-        while True:
-            response = await client.get(
-                f"/projects/{project_path}/repository/branches", params=params
-            )
-            if response.status_code != 200:
-                logger.debug(
-                    "GitLabProvider[%s]: failed to fetch branches for %s/%s: %d",
-                    self._name,
-                    namespace,
-                    repo,
-                    response.status_code,
-                )
-                break
-
-            page_data = response.json()
-            if not page_data:
-                break
-
-            for branch in page_data:
-                branches.append(branch["name"])
-
-            next_page = response.headers.get("x-next-page", "")
-            if not next_page:
-                break
-
-            page = int(next_page)
-            params["page"] = page
-
-        return branches
 
     async def list_branches(self, repo_url: str) -> list[str]:
         """List all branches for a specific repository with proper auth."""
@@ -415,15 +377,7 @@ class GitLabProvider(GitProvider, GitWorkflowProvider):
                     f"It may not exist or your token lacks access."
                 )
 
-            if response.status_code != 200:
-                logger.warning(
-                    "GitLabProvider[%s]: unexpected status %d listing branches for %s/%s",
-                    self._name,
-                    response.status_code,
-                    namespace,
-                    repo,
-                )
-                break
+            response.raise_for_status()
 
             page_data = response.json()
             if not page_data:

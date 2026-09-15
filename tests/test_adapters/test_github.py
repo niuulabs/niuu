@@ -190,7 +190,7 @@ class TestGitHubProviderHTTP:
     @pytest.mark.asyncio
     @respx.mock
     async def test_list_repos_org(self, provider: GitHubProvider):
-        """list_repos returns repos with default_branch and branches."""
+        """list_repos returns repository metadata without fetching branches."""
         respx.get("https://api.github.com/orgs/myorg/repos").mock(
             return_value=Response(
                 200,
@@ -210,18 +210,6 @@ class TestGitHubProviderHTTP:
                 ],
             )
         )
-        respx.get("https://api.github.com/repos/myorg/repo1/branches").mock(
-            return_value=Response(
-                200,
-                json=[{"name": "develop"}, {"name": "main"}, {"name": "feature/x"}],
-            )
-        )
-        respx.get("https://api.github.com/repos/myorg/repo2/branches").mock(
-            return_value=Response(
-                200,
-                json=[{"name": "main"}],
-            )
-        )
 
         repos = await provider.list_repos("myorg")
 
@@ -229,10 +217,10 @@ class TestGitHubProviderHTTP:
         assert repos[0].name == "repo1"
         assert repos[0].org == "myorg"
         assert repos[0].default_branch == "develop"
-        assert repos[0].branches == ("develop", "main", "feature/x")
+        assert repos[0].branches == ()
         assert repos[1].name == "repo2"
         assert repos[1].default_branch == "main"
-        assert repos[1].branches == ("main",)
+        assert repos[1].branches == ()
         await provider.close()
 
     @pytest.mark.asyncio
@@ -381,8 +369,8 @@ class TestGitHubProviderHTTP:
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_list_repos_branch_fetch_404_logs_warning(self, provider: GitHubProvider):
-        """Branch fetch 404 in list_repos logs warning and returns empty branches."""
+    async def test_list_repos_does_not_probe_private_repo_branches(self, provider: GitHubProvider):
+        """Repository discovery does not request private branches."""
         respx.get("https://api.github.com/orgs/myorg/repos").mock(
             return_value=Response(
                 200,
@@ -395,16 +383,6 @@ class TestGitHubProviderHTTP:
                 ],
             )
         )
-        respx.get("https://api.github.com/repos/myorg/private-repo/branches").mock(
-            return_value=Response(404, json={"message": "Not Found"})
-        )
-        respx.get("https://api.github.com/user").mock(
-            return_value=Response(
-                200,
-                json={"login": "testuser"},
-                headers={"x-oauth-scopes": "public_repo"},
-            )
-        )
 
         repos = await provider.list_repos("myorg")
 
@@ -414,8 +392,8 @@ class TestGitHubProviderHTTP:
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_list_repos_branch_fetch_401_logs_warning(self, provider: GitHubProvider):
-        """Branch fetch 401 in list_repos logs warning with scope hint."""
+    async def test_list_repos_does_not_probe_branch_permissions(self, provider: GitHubProvider):
+        """Repository discovery does not request branch permissions."""
         respx.get("https://api.github.com/orgs/myorg/repos").mock(
             return_value=Response(
                 200,
@@ -427,9 +405,6 @@ class TestGitHubProviderHTTP:
                     },
                 ],
             )
-        )
-        respx.get("https://api.github.com/repos/myorg/repo1/branches").mock(
-            return_value=Response(401, json={"message": "Bad credentials"})
         )
 
         repos = await provider.list_repos("myorg")
@@ -1025,9 +1000,6 @@ class TestGitHubEverythingTheTokenReaches:
                 ],
             )
         )
-        respx.get(url__regex=r"https://api\.github\.com/repos/.*/branches").mock(
-            return_value=Response(200, json=[{"name": "main"}])
-        )
 
         repos = await provider.list_repos("")
 
@@ -1035,7 +1007,7 @@ class TestGitHubEverythingTheTokenReaches:
         assert sent["affiliation"] == "owner,collaborator,organization_member"
         assert [(r.org, r.name) for r in repos] == [("niuulabs", "volundr"), ("jve", "dotfiles")]
         assert repos[0].clone_url == "https://github.com/niuulabs/volundr.git"
-        assert repos[1].branches == ("main",)
+        assert repos[1].branches == ()
 
     @pytest.mark.asyncio
     async def test_empty_org_without_a_token_is_refused(self) -> None:

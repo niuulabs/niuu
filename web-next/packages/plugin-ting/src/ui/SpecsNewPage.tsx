@@ -9,6 +9,7 @@ import { useWorkflows } from './useWorkflows';
 
 type RepoCatalogService = {
   getRepos(): Promise<RepoRecord[]>;
+  getBranches(repoUrl: string): Promise<string[]>;
 };
 
 function isSpecWorkflow(name: string, tags?: string[]): boolean {
@@ -255,6 +256,7 @@ export function SpecsNewPage() {
               <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">Branch</span>
               {selectedRepos.length > 0 && repos.length > 0 ? (
                 <BranchSelect
+                  loadBranches={repoCatalog.getBranches}
                   repos={repos}
                   selectedRepos={selectedRepos[0] ?? ''}
                   value={branch}

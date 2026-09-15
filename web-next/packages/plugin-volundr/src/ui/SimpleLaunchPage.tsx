@@ -31,6 +31,7 @@ import { LaunchWizard } from './LaunchWizard';
 
 type RepoCatalogService = {
   getRepos(): Promise<RepoRecord[]>;
+  getBranches(repoUrl: string): Promise<string[]>;
 };
 
 interface SimpleLaunchSearch {
@@ -193,6 +194,7 @@ export function SimpleLaunchPage() {
 
         <div className="niuu:grid niuu:grid-cols-1 niuu:gap-4 niuu:sm:grid-cols-2">
           <Field label="Repository">
+            {reposQuery.isFetching ? <LoadingState label="Loading repositories…" /> : null}
             {repos.length > 0 ? (
               <RepoSelect
                 repos={repos}
@@ -210,7 +212,7 @@ export function SimpleLaunchPage() {
                 aria-label="Repository"
                 value={repo}
                 onChange={(event) => setRepo(event.target.value)}
-                placeholder="https://github.com/owner/repository.git"
+                placeholder="https://git.example.com/group/repository.git"
                 data-testid="simple-launch-repo-input"
               />
             )}
@@ -218,6 +220,7 @@ export function SimpleLaunchPage() {
           <Field label="Branch" hint="Optional — uses the repository default">
             {repo && repos.length > 0 ? (
               <BranchSelect
+                loadBranches={repoCatalog.getBranches}
                 repos={repos}
                 selectedRepos={repo}
                 value={branch}

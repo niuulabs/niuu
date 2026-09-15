@@ -162,6 +162,7 @@ describe('AddProviderDialog', () => {
       e.slug === 'github' ? { ...e, signInAvailable: false, signInNeedsApp: true } : e,
     );
     const service = createMockSetupService({ latencyMs: 0, catalog });
+    const register = vi.spyOn(service, 'registerOAuthClient');
     const groups = providerGroups(catalog, git);
     renderWithSetup(
       <AddProviderDialog
@@ -180,6 +181,13 @@ describe('AddProviderDialog', () => {
       'https://github.com/settings/applications/new',
     );
     expect(form).not.toHaveTextContent('oauth.clients');
+    fireEvent.change(screen.getByTestId('setup-oauth-app-host-github'), {
+      target: { value: 'https://git.example.com' },
+    });
+    expect(form.querySelector('a')).toHaveAttribute(
+      'href',
+      'https://git.example.com/settings/applications/new',
+    );
     fireEvent.click(screen.getByTestId('setup-oauth-app-save-github'));
     expect(form).toHaveTextContent('Client ID is required');
     fireEvent.change(screen.getByTestId('setup-oauth-app-id-github'), {
@@ -190,6 +198,13 @@ describe('AddProviderDialog', () => {
       const [entry] = (await service.listCatalog()).filter((e) => e.slug === 'github');
       expect(entry?.signInAvailable).toBe(true);
     });
+    expect(register).toHaveBeenCalledWith(
+      'github',
+      expect.objectContaining({
+        clientId: 'Iv1.mine',
+        baseUrl: 'https://git.example.com',
+      }),
+    );
   });
 
   it('lets each account pick its own application or register another', async () => {

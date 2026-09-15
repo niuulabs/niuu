@@ -22,7 +22,11 @@ function renderQuickLaunch(volundr: IVolundrService, onOpenChange = () => {}) {
         services={{
           volundr,
           bifrost: createMockBifrostService(),
-          'niuu.repos': { getRepos: volundr.getRepos.bind(volundr), getBranches: async () => [] },
+          'niuu.repos': {
+            getRepos: volundr.getRepos.bind(volundr),
+            getBranches: async (url: string) =>
+              (await volundr.getRepos()).find((repo) => repo.cloneUrl === url)?.branches ?? [],
+          },
         }}
       >
         <QuickLaunch open onOpenChange={onOpenChange} />

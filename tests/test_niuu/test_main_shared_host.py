@@ -152,6 +152,9 @@ def test_create_app_mounts_shared_identity_features_and_personas(monkeypatch) ->
         assert repo_services and repo_services[0][1] is not None
 
         paths = set(client.get("/openapi.json").json()["paths"])
+        assert "/api/v1/realms" in paths
+        assert app.state.realm_service is not None
+        assert client.get("/api/v1/realms").status_code == 401
         assert "/api/v1/niuu/repos" in paths
         assert "/api/v1/identity/auth/config" in paths
         assert "/api/v1/features" in paths
@@ -176,3 +179,9 @@ def test_create_app_mounts_shared_identity_features_and_personas(monkeypatch) ->
         assert "/api/v1/tracker/repo-mappings" in paths
         assert "/api/v1/niuu/instances" not in paths
         assert "/api/v1/forge/sessions" not in paths
+        app.dependency_overrides[niuu_main.extract_principal] = lambda: object()
+        app.state.realm_service.list_realms = AsyncMock(return_value=[])
+        response = client.get("/api/v1/realms")
+        assert response.status_code == 200
+        assert response.json() == []
+        app.state.realm_service.list_realms.assert_awaited_once()

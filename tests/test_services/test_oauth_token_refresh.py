@@ -203,8 +203,10 @@ async def test_refreshes_with_the_accounts_own_application(repo, store) -> None:
     work = await repo.get_connection("gitlab-gitlab-work")
     await repo.save_connection(replace(work, config={"oauth_app": "work-org"}))
     service = _service(repo, store)
-    await service._clients.register("gitlab", "glwork", app="work-org")
-    route = respx.post(GITLAB_TOKEN_URL).mock(
+    await service._clients.register(
+        "gitlab", "glwork", app="work-org", base_url="https://git.example.com"
+    )
+    route = respx.post("https://git.example.com/oauth/token").mock(
         return_value=httpx.Response(200, json={"access_token": "t", "expires_in": 7200})
     )
 

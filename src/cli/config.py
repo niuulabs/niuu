@@ -247,6 +247,17 @@ class DockerConfig(BaseModel):
         default="~/.niuu/docker",
         description="Where the rendered compose bundle and env file are written.",
     )
+    host_os: str = Field(default="", description="Native host OS supplied by the installer.")
+    host_arch: str = Field(
+        default="", description="Native host architecture before entering Docker."
+    )
+    host_lan_ip: str = Field(
+        default="", description="Native host LAN address, before entering Docker."
+    )
+    socket_path: str = Field(
+        default="/var/run/docker.sock",
+        description="Docker socket bind source on the daemon host (inside its VM on macOS).",
+    )
     project_name: str = Field(default="niuu", description="Docker Compose project name.")
     image: str = Field(
         default="ghcr.io/niuulabs/niuu:dev",

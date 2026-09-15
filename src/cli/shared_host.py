@@ -15,14 +15,17 @@ from niuu.adapters.inbound.auth import extract_principal
 from niuu.adapters.inbound.rest_credentials_settings import create_credentials_settings_router
 from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
 from niuu.adapters.inbound.rest_pats import create_pats_router
+from niuu.adapters.inbound.rest_realms import create_realms_router
 from niuu.adapters.inbound.rest_repos import create_repos_router
 from niuu.adapters.inbound.rest_setup import create_setup_router
 from niuu.adapters.outbound.git_registry import create_git_registry
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.adapters.postgres_pats import PostgresPATRepository
+from niuu.adapters.postgres_realms import PostgresRealmRepository
 from niuu.config import GitConfig, NiuuSettings
 from niuu.cors import apply_cors_middleware
+from niuu.domain.services.realm import RealmService
 from niuu.domain.services.repo import RepoService
 from niuu.domain.services.setup import SetupService
 from niuu.service_database import database_pool
@@ -40,6 +43,7 @@ from niuu.service_runtime import (
     create_storage_adapter,
     create_workload_identity_service,
     release_credential_store,
+    seed_development_identity,
 )
 from niuu.utils import import_class
 from ravn.adapters.personas.postgres_registry import PostgresPersonaRegistry
@@ -134,6 +138,7 @@ def create_app(
                 tenant_service=tenant_service,
             )
             await tenant_service.ensure_default_tenant()
+            await seed_development_identity(identity_adapter, user_repository)
             app.state.authorization = create_authorization_adapter(loaded_settings)
 
             pat_repository = PostgresPATRepository(pool)
@@ -247,6 +252,8 @@ def create_app(
             )
             app.state.persona_registry = PostgresPersonaRegistry(pool)
 
+            app.state.realm_service = RealmService(PostgresRealmRepository(pool))
+            app.include_router(create_realms_router(extract_principal))
             app.include_router(create_repos_router(repo_service))
             app.include_router(create_identity_router(tenant_service))
             app.include_router(create_pats_router(extract_principal, prefix="/api/v1/tokens"))

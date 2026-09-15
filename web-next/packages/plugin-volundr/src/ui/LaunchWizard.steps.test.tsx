@@ -375,7 +375,7 @@ describe('LaunchWizard step components', () => {
       />,
     );
 
-    fireEvent.change(screen.getByPlaceholderText('github.com/niuulabs/volundr'), {
+    fireEvent.change(screen.getByPlaceholderText('https://git.example.com/group/repository.git'), {
       target: { value: 'github.com/niuulabs/custom' },
     });
     fireEvent.change(screen.getByPlaceholderText('main'), {

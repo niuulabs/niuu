@@ -14,6 +14,16 @@ from volundr.config import Settings
 from volundr.main import _bootstrap_startup_schema, _load_bifrost_catalog, create_app
 
 
+@pytest.fixture(autouse=True)
+def user_repository(monkeypatch):
+    """Keep startup identity provisioning behind the mocked persistence port."""
+    repository = AsyncMock()
+    repository.get.return_value = None
+    repository.create.side_effect = lambda user: user
+    monkeypatch.setattr("volundr.main.PostgresUserRepository", lambda _pool: repository)
+    return repository
+
+
 class TestCreateApp:
     """Tests for create_app factory."""
 

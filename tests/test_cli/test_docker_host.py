@@ -48,7 +48,9 @@ def _proc(
 
 @pytest.fixture
 def config(tmp_path: Path) -> DockerPreflightConfig:
-    return DockerPreflightConfig(data_dir=str(tmp_path / "niuu"), ports=[18080], require_gpu=True)
+    return DockerPreflightConfig(
+        host_os="Linux", data_dir=str(tmp_path / "niuu"), ports=[18080], require_gpu=True
+    )
 
 
 class TestDockerBinary:
@@ -335,7 +337,7 @@ class TestDiskSpace:
         assert "50 GiB" in result.message
 
     def test_missing_dir_falls_back_to_home(self, tmp_path: Path) -> None:
-        cfg = DockerPreflightConfig(data_dir=str(tmp_path / "missing" / "deeper"))
+        cfg = DockerPreflightConfig(host_os="Linux", data_dir=str(tmp_path / "missing" / "deeper"))
         usage = type("U", (), {"free": 200 * 1024**3, "total": 400 * 1024**3})()
         with patch(f"{MOD}.shutil.disk_usage", return_value=usage) as disk_usage:
             check_disk_space(cfg)
@@ -452,7 +454,7 @@ class TestHostFacts:
 
 class TestOutboundNetwork:
     def test_all_reachable(self) -> None:
-        config = DockerPreflightConfig(outbound_hosts=["a.example", "b.example"])
+        config = DockerPreflightConfig(host_os="Linux", outbound_hosts=["a.example", "b.example"])
         with patch(f"{MOD}.socket.create_connection") as connect:
             connect.return_value.__enter__ = lambda *_: None
             connect.return_value.__exit__ = lambda *_: None
@@ -461,7 +463,7 @@ class TestOutboundNetwork:
         assert "a.example, b.example reachable" in result.message
 
     def test_partial_failure_warns(self) -> None:
-        config = DockerPreflightConfig(outbound_hosts=["a.example", "b.example"])
+        config = DockerPreflightConfig(host_os="Linux", outbound_hosts=["a.example", "b.example"])
 
         def _connect(address, timeout):
             del timeout
@@ -540,3 +542,23 @@ class TestUnifiedMemoryGpu:
         loaded = json.loads(facts.to_json())
         del loaded["gpus"][0]["shares_system_memory"]
         assert GpuFacts(**loaded["gpus"][0]).shares_system_memory is False
+
+
+@pytest.mark.parametrize("check", [check_nvidia_runtime, check_gpu])
+def test_macos_never_recommends_installing_nvidia_drivers(check):
+    result = check(DockerPreflightConfig(host_os="Darwin"))
+    assert result.passed and not result.warn_only
+    assert "unavailable on macOS" in result.message
+    assert "sudo" not in result.message
+    assert "install" not in result.message.lower()
+
+
+def test_daemon_architecture_mismatch_is_reported(monkeypatch):
+    monkeypatch.setattr(
+        "cli.services.docker_host.docker_info",
+        lambda _: {"ServerVersion": "27", "Architecture": "x86_64"},
+    )
+    result = check_docker_daemon(DockerPreflightConfig(host_os="Darwin", host_arch="arm64"))
+    assert result.passed and result.warn_only
+    assert "Host architecture is arm64" in result.message
+    assert "x86_64" in result.message

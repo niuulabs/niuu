@@ -61,3 +61,17 @@ def test_branches_for_an_unknown_address_is_not_found_not_a_crash() -> None:
 
     assert response.status_code == 404
     assert "No connected Git host serves 'jve'" in response.json()["detail"]
+
+
+def test_branch_provider_outage_is_a_visible_gateway_error():
+    import httpx
+
+    client, integrations, _ = _client()
+    provider = AsyncMock()
+    provider.list_branches.side_effect = httpx.ConnectError("provider unreachable")
+    integrations.find_git_provider_for.return_value = provider
+    response = client.get(
+        "/api/v1/niuu/repos/branches", params={"repo_url": "https://git.test/a/b"}
+    )
+    assert response.status_code == 502
+    assert "Could not fetch branches" in response.json()["detail"]

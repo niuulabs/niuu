@@ -62,6 +62,7 @@ export interface OAuthClientWire {
   app?: string;
   client_id: string;
   has_secret?: boolean;
+  base_url?: string;
   source?: string;
 }
 
@@ -236,6 +237,7 @@ export function buildSetupHttpAdapter(clients: SetupHttpClients): ISetupService 
         app: input.app ?? '',
         client_id: input.clientId,
         client_secret: input.clientSecret ?? '',
+        base_url: input.baseUrl ?? '',
       });
     },
     async listOAuthClients(): Promise<OAuthApp[]> {
@@ -245,6 +247,7 @@ export function buildSetupHttpAdapter(clients: SetupHttpClients): ISetupService 
         app: row.app ?? 'default',
         clientId: row.client_id,
         hasSecret: row.has_secret ?? false,
+        baseUrl: row.base_url,
         source: row.source === 'configured' ? 'configured' : 'registered',
       }));
     },

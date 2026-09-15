@@ -32,6 +32,7 @@ import { WorkflowLaunchModal } from './WorkflowLaunchModal';
 
 type RepoCatalogService = {
   getRepos(): Promise<RepoRecord[]>;
+  getBranches(repoUrl: string): Promise<string[]>;
 };
 
 function formatModelOption(
@@ -246,6 +247,7 @@ export function WorkflowBuilderPage() {
             }
           />
           <WorkflowLaunchModal
+            loadBranches={repoCatalog.getBranches}
             open={showLaunchModal}
             onOpenChange={setShowLaunchModal}
             workflow={displayed}

@@ -1546,6 +1546,11 @@ def create_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=str(e),
             )
+        except httpx.HTTPError as e:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Could not fetch branches from the Git provider; try again shortly.",
+            ) from e
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

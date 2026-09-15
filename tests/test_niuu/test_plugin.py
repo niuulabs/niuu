@@ -74,6 +74,7 @@ class TestNiuuPlugin:
         assert route_domains[1].name == "niuu-shared-api"
         assert route_domains[1].prefixes == (
             "/api/v1/tokens",
+            "/api/v1/realms",
             "/api/v1/identity",
             "/api/v1/features",
             "/api/v1/personas",

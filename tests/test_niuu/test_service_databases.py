@@ -46,3 +46,6 @@ def test_bootstrap_sql_is_defined_for_split_services() -> None:
     assert all(
         "CREATE EXTENSION IF NOT EXISTS pgcrypto" not in statement for statement in guild_sql
     )
+    shared_sql = "\n".join(bootstrap_sql_for_service("niuu-shared"))
+    for table in ("realms", "trust_grants", "capabilities"):
+        assert f"CREATE TABLE IF NOT EXISTS {table}" in shared_sql

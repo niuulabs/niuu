@@ -37,6 +37,11 @@ export function LaunchWizard(props: LaunchWizardProps) {
     launchError,
     launching,
     manualBranches,
+    branchesLoading,
+    branchesError,
+    optionsLoading,
+    reposLoading,
+    reposError,
     models,
     navigate,
     personas,
@@ -63,6 +68,7 @@ export function LaunchWizard(props: LaunchWizardProps) {
           {/* Step indicator */}
           {step !== 'booting' && <StepIndicator current={step} steps={STEPS} />}
 
+          {optionsLoading && <p role="status">Loading launch options…</p>}
           {/* Step content */}
           {step === 'source' && (
             <SourceStep
@@ -70,11 +76,11 @@ export function LaunchWizard(props: LaunchWizardProps) {
               update={update}
               repos={repos}
               integrations={integrations}
-              branchOptions={
-                repos.find((repo) => repo.cloneUrl === form.repo)?.branches.length
-                  ? (repos.find((repo) => repo.cloneUrl === form.repo)?.branches ?? [])
-                  : manualBranches
-              }
+              branchOptions={manualBranches}
+              branchesLoading={branchesLoading}
+              branchesError={branchesError}
+              reposLoading={reposLoading}
+              reposError={reposError}
               trackerResults={trackerResults}
               trackerLoading={trackerLoading}
             />

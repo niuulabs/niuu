@@ -57,6 +57,7 @@ function statusLabel(status: RunStatus | Saga['status'] | Phase['status']): stri
 
 type RepoCatalogService = {
   getRepos(): Promise<RepoRecord[]>;
+  getBranches(repoUrl: string): Promise<string[]>;
 };
 
 function repoRefsForSaga(saga: Saga): SagaRepoRef[] {
@@ -460,6 +461,7 @@ function TargetCard({
 }
 
 function SagaReposCard({
+  loadBranches,
   saga,
   repos,
   isLoading,
@@ -467,6 +469,7 @@ function SagaReposCard({
   onSave,
 }: {
   saga: Saga;
+  loadBranches: (repoUrl: string) => Promise<string[]>;
   repos: RepoRecord[];
   isLoading: boolean;
   isUpdating: boolean;
@@ -568,6 +571,7 @@ function SagaReposCard({
                   </span>
                   {repos.length > 0 ? (
                     <BranchSelect
+                      loadBranches={loadBranches}
                       repos={repos}
                       selectedRepos={[entry.repo]}
                       value={entry.branch}
@@ -871,6 +875,7 @@ export function SagaDetailPage({ sagaId, hideBackButton = false }: SagaDetailPag
         <div className="niuu:space-y-4">
           <SagaFeedbackPanel runs={activeRuns} />
           <SagaReposCard
+            loadBranches={repoCatalog.getBranches}
             saga={saga}
             repos={repoCatalogQuery.data ?? []}
             isLoading={repoCatalogQuery.isLoading}

@@ -178,7 +178,9 @@ function SignInPane({
               <span className="setup-option__radio" />
               <span className="setup-option__body">
                 <span className="setup-option__title">{app.app}</span>
-                <span className="setup-option__desc">client id {app.clientId}</span>
+                <span className="setup-option__desc">
+                  {app.baseUrl ? `${app.baseUrl} · ` : ''}client id {app.clientId}
+                </span>
               </span>
             </button>
           ))}

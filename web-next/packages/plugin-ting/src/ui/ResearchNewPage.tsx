@@ -9,6 +9,7 @@ import { useWorkflows } from './useWorkflows';
 
 type RepoCatalogService = {
   getRepos(): Promise<RepoRecord[]>;
+  getBranches(repoUrl: string): Promise<string[]>;
 };
 
 function hasResearchTag(tags: string[] | undefined): boolean {
@@ -362,6 +363,7 @@ export function ResearchNewPage() {
               <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">Branch</span>
               {repo && repos.length > 0 ? (
                 <BranchSelect
+                  loadBranches={repoCatalog.getBranches}
                   repos={repos}
                   selectedRepos={repo}
                   value={branch}

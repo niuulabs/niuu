@@ -63,7 +63,7 @@ async def test_registered_applications_survive_a_restart_and_win_over_config(sto
     assert [client.slug for client in fresh.list()] == ["github", "gitlab"]
 
     stored = await store.get_value(APP_REGISTRY_OWNER_TYPE, APP_REGISTRY_OWNER_ID, "gitlab")
-    assert stored == {"client_id": "glpub", "client_secret": "shh"}
+    assert stored == {"client_id": "glpub", "client_secret": "shh", "base_url": ""}
 
 
 @pytest.mark.asyncio
@@ -82,7 +82,7 @@ async def test_a_provider_can_have_an_application_per_account(store) -> None:
     stored = await store.get_value(
         APP_REGISTRY_OWNER_TYPE, APP_REGISTRY_OWNER_ID, "github--niuu-org"
     )
-    assert stored == {"client_id": "Iv1.org", "client_secret": ""}
+    assert stored == {"client_id": "Iv1.org", "client_secret": "", "base_url": ""}
 
     fresh = _registry(store)
     await fresh.load()
@@ -123,3 +123,41 @@ async def test_remove_forgets_registered_applications_only(store) -> None:
     with pytest.raises(OAuthClientError, match="No registered"):
         await registry.remove("github")
     assert registry.get("github") == configured
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "slug,api_url",
+    [
+        ("gitlab", "https://git.company.test"),
+        ("github", "https://git.company.test/api/v3"),
+    ],
+)
+async def test_self_hosted_application_survives_reload_and_routes_endpoints(store, slug, api_url):
+    registry = _registry(store)
+    await registry.register(slug, "client", app="work", base_url="https://git.company.test/")
+    fresh = _registry(store)
+    await fresh.load()
+    client = fresh.get(slug, "work")
+    assert client.base_url == "https://git.company.test"
+    assert client.api_base_url("https://public.test") == api_url
+    assert (
+        client.endpoint("https://public.test/oauth/token") == "https://git.company.test/oauth/token"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    [
+        "git.company.test",
+        "ftp://git.test",
+        "https://user:pass@git.test",
+        "https://git.test/path",
+        "https://git.test?x=1",
+        "https://git.test#x",
+    ],
+)
+async def test_oauth_host_rejects_non_origins(store, url):
+    with pytest.raises(OAuthClientError, match="HTTP"):
+        await _registry(store).register("gitlab", "client", base_url=url)

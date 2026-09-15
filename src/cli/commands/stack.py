@@ -45,6 +45,8 @@ def docker_preflight_config(settings: CLISettings) -> DockerPreflightConfig:
     """Build the Docker-host preflight configuration from CLI settings."""
     return DockerPreflightConfig(
         data_dir=settings.docker.data_dir,
+        host_os=settings.docker.host_os,
+        host_arch=settings.docker.host_arch,
         ports=[settings.server.port],
         min_disk_space_bytes=settings.docker.min_disk_space_gib * GIB,
         require_gpu=settings.docker.require_gpu,
@@ -123,7 +125,11 @@ def stack_up(settings: CLISettings, *, skip_preflight: bool = False) -> None:
             raise typer.Exit(1)
         typer.echo()
 
-    external_host = settings.server.external_host.strip() or detect_lan_ip()
+    external_host = (
+        settings.server.external_host.strip()
+        or settings.docker.host_lan_ip.strip()
+        or detect_lan_ip()
+    )
     facts = collect_host_facts(
         config,
         bind_host=settings.docker.bind_host,

@@ -1,4 +1,4 @@
-import { BranchSelect, Field, Input, RepoSelect, type RepoRecord } from '@niuulabs/ui';
+import { Field, Input, RepoSelect, type RepoRecord } from '@niuulabs/ui';
 import type {
   IntegrationConnection,
   SessionDefinition,
@@ -29,6 +29,10 @@ export function SourceStep({
   update,
   repos,
   branchOptions,
+  branchesLoading = false,
+  branchesError = null,
+  reposLoading = false,
+  reposError = null,
   trackerResults,
   trackerLoading,
   integrations = [],
@@ -37,6 +41,10 @@ export function SourceStep({
   update: (patch: Partial<WizardForm>) => void;
   repos: RepoRecord[];
   branchOptions: string[];
+  branchesLoading?: boolean;
+  branchesError?: Error | null;
+  reposLoading?: boolean;
+  reposError?: Error | null;
   trackerResults: TrackerIssue[];
   trackerLoading: boolean;
   /** The person's integrations; picking a repository attaches the account that listed it. */
@@ -69,6 +77,8 @@ export function SourceStep({
         {form.sourcetype === 'git' ? (
           <div className="niuu:grid niuu:grid-cols-2 niuu:gap-4">
             <Field label="Repository">
+              {reposLoading && <p role="status">Loading repositories…</p>}
+              {reposError && <p role="alert">Could not load repositories: {reposError.message}</p>}
               {repos.length > 0 && (!form.repo || currentRepo) ? (
                 <RepoSelect
                   repos={repos}
@@ -96,30 +106,23 @@ export function SourceStep({
                   aria-label="Repository"
                   value={form.repo}
                   onChange={(e) => update({ repo: e.target.value, workspaceId: '' })}
-                  placeholder="github.com/niuulabs/volundr"
+                  placeholder="https://git.example.com/group/repository.git"
                 />
               )}
             </Field>
             <Field label="Branch">
+              {branchesLoading && <p role="status">Loading branches…</p>}
+              {branchesError && (
+                <p role="alert">Could not load branches: {branchesError.message}</p>
+              )}
               {branchOptions.length && (!form.branch || branchOptions.includes(form.branch)) ? (
-                currentRepo?.branches.length ? (
-                  <BranchSelect
-                    repos={repos}
-                    selectedRepos={form.repo}
-                    value={form.branch}
-                    onChange={(value: string) => update({ branch: value })}
-                    placeholder="Select branch"
-                    testId="branch-select"
-                  />
-                ) : (
-                  <WizardSelect
-                    options={branchOptions.map((branch) => ({ value: branch, label: branch }))}
-                    value={form.branch}
-                    onChange={(value) => update({ branch: value })}
-                    placeholder="Select branch"
-                    testId="branch-select"
-                  />
-                )
+                <WizardSelect
+                  options={branchOptions.map((branch) => ({ value: branch, label: branch }))}
+                  value={form.branch}
+                  onChange={(value) => update({ branch: value })}
+                  placeholder="Select branch"
+                  testId="branch-select"
+                />
               ) : (
                 <Input
                   value={form.branch}

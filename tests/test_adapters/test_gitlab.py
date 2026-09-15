@@ -252,7 +252,7 @@ class TestGitLabProviderHTTP:
     @pytest.mark.asyncio
     @respx.mock
     async def test_list_repos_group(self, provider: GitLabProvider):
-        """list_repos returns repos with default_branch and branches."""
+        """list_repos returns repository metadata without fetching branches."""
         respx.get("https://gitlab.com/api/v4/groups/mygroup/projects").mock(
             return_value=Response(
                 200,
@@ -274,18 +274,6 @@ class TestGitLabProviderHTTP:
                 ],
             )
         )
-        respx.get("https://gitlab.com/api/v4/projects/mygroup%2Frepo1/repository/branches").mock(
-            return_value=Response(
-                200,
-                json=[{"name": "develop"}, {"name": "main"}, {"name": "feature/y"}],
-            )
-        )
-        respx.get("https://gitlab.com/api/v4/projects/mygroup%2Frepo2/repository/branches").mock(
-            return_value=Response(
-                200,
-                json=[{"name": "main"}],
-            )
-        )
 
         repos = await provider.list_repos("mygroup")
 
@@ -293,10 +281,10 @@ class TestGitLabProviderHTTP:
         assert repos[0].name == "repo1"
         assert repos[0].org == "mygroup"
         assert repos[0].default_branch == "develop"
-        assert repos[0].branches == ("develop", "main", "feature/y")
+        assert repos[0].branches == ()
         assert repos[1].name == "repo2"
         assert repos[1].default_branch == "main"
-        assert repos[1].branches == ("main",)
+        assert repos[1].branches == ()
         await provider.close()
 
     @pytest.mark.asyncio
@@ -734,9 +722,6 @@ class TestGitLabEverythingTheTokenReaches:
                 headers={"x-next-page": ""},
             )
         )
-        respx.get(url__regex=r"https://gitlab\.com/api/v4/projects/.*/repository/branches").mock(
-            return_value=Response(200, json=[{"name": "main"}])
-        )
 
         repos = await provider.list_repos("")
 
@@ -761,3 +746,69 @@ def test_ignores_connection_keys_it_does_not_take() -> None:
         refresh_token="r",
     )
     assert provider.orgs == ("niuulabs", "other")
+
+
+@pytest.mark.parametrize(
+    "prefix,suffix",
+    [
+        ("https://git.company.com/", ".git"),
+        ("http://git.company.com/", "/"),
+        ("git@git.company.com:", ".git"),
+        ("git.company.com/", ""),
+    ],
+)
+def test_nested_subgroup_urls(prefix, suffix):
+    provider = GitLabProvider(name="work", base_url="https://git.company.com")
+    info = provider.parse_repo(f"{prefix}ncp/vmaas/observability/example{suffix}")
+    assert info is not None
+    assert info.org == "ncp/vmaas/observability"
+    assert info.name == "example"
+    assert info.clone_url == "https://git.company.com/ncp/vmaas/observability/example.git"
+
+
+@pytest.mark.parametrize("groups", ["ncp/vmaas, other", ["ncp/vmaas", "other"]])
+def test_integration_groups_config(groups):
+    provider = GitLabProvider(name="work", base_url="https://git.company.com", groups=groups)
+    assert provider.orgs == ("ncp/vmaas", "other")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_path", [True, False])
+@respx.mock
+async def test_nested_project_metadata_never_fetches_branches(include_path):
+    provider = GitLabProvider(name="work", base_url="https://git.company.com")
+    project = {
+        "path": "example",
+        "namespace": {"path": "observability", "full_path": "ncp/vmaas/observability"},
+        "web_url": "https://git.company.com/ncp/vmaas/observability/example",
+        "default_branch": "dev",
+    }
+    if include_path:
+        project["path_with_namespace"] = "ncp/vmaas/observability/example"
+    respx.get("https://git.company.com/api/v4/groups/ncp/projects").respond(200, json=[project])
+    repos = await provider.list_repos("ncp")
+    assert len(respx.calls) == 1
+    assert repos[0].org == "ncp/vmaas/observability"
+    assert repos[0].clone_url == project["web_url"] + ".git"
+    assert repos[0].default_branch == "dev"
+    assert repos[0].branches == ()
+    await provider.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_selected_nested_repository_branches_paginate_and_do_not_hide_failures():
+    import httpx
+
+    provider = GitLabProvider(name="work", base_url="https://git.company.com")
+    route = respx.get(
+        "https://git.company.com/api/v4/projects/ncp%2Fvmaas%2Fobservability%2Fexample/repository/branches"
+    )
+    route.side_effect = [
+        Response(200, json=[{"name": "dev"}], headers={"x-next-page": "2"}),
+        Response(503),
+    ]
+    with pytest.raises(httpx.HTTPStatusError):
+        await provider.list_branches("https://git.company.com/ncp/vmaas/observability/example.git")
+    assert route.calls[1].request.url.params["page"] == "2"
+    await provider.close()

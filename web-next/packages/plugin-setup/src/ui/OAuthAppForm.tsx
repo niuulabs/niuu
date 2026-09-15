@@ -29,6 +29,17 @@ export function OAuthAppForm({ entry, existingApps = [], onRegistered }: OAuthAp
   const register = useRegisterOAuthClient();
   const [appName, setAppName] = useState('');
   const [clientId, setClientId] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
+  const defaultHost = new URL(help.createUrl).origin;
+  let createUrl = help.createUrl;
+  try {
+    const host = new URL(baseUrl || defaultHost);
+    if (['https:', 'http:'].includes(host.protocol)) {
+      createUrl = new URL(new URL(help.createUrl).pathname, host.origin).href;
+    }
+  } catch {
+    /* The URL input reports invalid hosts on submit. */
+  }
   const [clientSecret, setClientSecret] = useState('');
   const [touched, setTouched] = useState(false);
   const needsName = existingApps.length > 0;
@@ -43,7 +54,12 @@ export function OAuthAppForm({ entry, existingApps = [], onRegistered }: OAuthAp
     register.mutate(
       {
         slug: entry.slug,
-        input: { app: appKey, clientId: clientId.trim(), clientSecret: clientSecret.trim() },
+        input: {
+          app: appKey,
+          clientId: clientId.trim(),
+          clientSecret: clientSecret.trim(),
+          baseUrl: baseUrl.trim(),
+        },
       },
       { onSuccess: () => onRegistered?.(appKey) },
     );
@@ -58,7 +74,7 @@ export function OAuthAppForm({ entry, existingApps = [], onRegistered }: OAuthAp
         </p>
         <ol className="setup-pane__steps">
           <li>
-            <a href={help.createUrl} target="_blank" rel="noreferrer noopener">
+            <a href={createUrl} target="_blank" rel="noreferrer noopener">
               {help.createLabel}
             </a>
             . {help.createHint}
@@ -70,6 +86,18 @@ export function OAuthAppForm({ entry, existingApps = [], onRegistered }: OAuthAp
         </ol>
       </div>
       <form className="setup-form" onSubmit={submit}>
+        <Field
+          label="Git host URL"
+          hint="Use your self-hosted GitLab or GitHub Enterprise address."
+        >
+          <Input
+            type="url"
+            value={baseUrl}
+            placeholder={defaultHost}
+            onChange={(event) => setBaseUrl(event.target.value)}
+            data-testid={`setup-oauth-app-host-${entry.slug}`}
+          />
+        </Field>
         {needsName ? (
           <Field
             label="Name for this application"

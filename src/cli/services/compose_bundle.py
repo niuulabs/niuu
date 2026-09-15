@@ -474,7 +474,7 @@ def render_compose(settings: CLISettings) -> dict[str, Any]:
             "volumes": [
                 f"{data_root}:{data_root}",
                 f"{bundle_dir}:{bundle_dir}",
-                "/var/run/docker.sock:/var/run/docker.sock",
+                f"{settings.docker.socket_path}:/var/run/docker.sock",
             ],
             "ports": [f"${{NIUU_BIND_HOST}}:{port}:{port}"],
             "extra_hosts": ["host.docker.internal:host-gateway"],

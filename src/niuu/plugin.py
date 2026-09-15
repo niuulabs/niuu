@@ -42,6 +42,7 @@ class NiuuPlugin(ServicePlugin):
                 name="niuu-shared-api",
                 prefixes=(
                     "/api/v1/tokens",
+                    "/api/v1/realms",
                     "/api/v1/identity",
                     "/api/v1/features",
                     "/api/v1/personas",
