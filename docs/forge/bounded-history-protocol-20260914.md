@@ -154,6 +154,12 @@ snapshot delivery are buffered behind it, bounded by count and bytes. Overflow i
 explicit recovery, not silent partial success. Cancellation of a read does not
 cancel a writer. Pending control replay remains separate from transcript rows.
 
+The API's bidirectional socket bridge drains both forwarding tasks when either
+transport ends or the outer connection task is cancelled. An isolated cancellation
+test found that the old bridge left both tasks alive on outer cancellation. This
+fix does not resend input, close a runtime session, or establish that this was the
+cause of the user's earlier duplicate-display report.
+
 ```
 {"type":"history_gap","history_protocol":2,
  "reason":"snapshot_too_large|snapshot_race|live_frame_too_large",

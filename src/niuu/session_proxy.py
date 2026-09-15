@@ -309,16 +309,19 @@ async def bridge_websocket(
                 async for msg in broker_ws:
                     await websocket.send_text(str(msg))
 
-        done, pending = await asyncio.wait(
-            [
-                asyncio.create_task(browser_to_broker()),
-                asyncio.create_task(broker_to_browser()),
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
+        pumps = [
+            asyncio.create_task(browser_to_broker()),
+            asyncio.create_task(broker_to_browser()),
+        ]
+        try:
+            done, _ = await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            # Also drain both pumps when the outer request is cancelled. A
+            # reconnect must not leave an old view forwarding in the background.
+            for task in pumps:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*pumps, return_exceptions=True)
         for task in done:
             task.result()
 
