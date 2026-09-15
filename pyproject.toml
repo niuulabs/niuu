@@ -35,7 +35,7 @@ dependencies = [
     "sqlite-vec>=0.1.9",
     "docker>=7.2.0",
     "xds-protos>=1.78.0,<2",
-    "grpcio>=1.78.0,<2",
+    "grpcio>=1.83.1,<2",
 ]
 
 [project.optional-dependencies]
@@ -48,7 +48,7 @@ openshell = [
 # DeepSeek Harness runtime for DshJsonRpcTransport (Skuld and OpenShell images).
 # Exact pin: dsh is a developer preview with promised breaking changes.
 dsh = [
-    "deepseek-harness-runtime-bin==0.1.2rc1",
+    "deepseek-harness-runtime-bin==0.1.5rc1",
 ]
 nats = [
     "nats-py[nkeys]>=2.15.0",
