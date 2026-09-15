@@ -27,8 +27,8 @@
   },
   "peerDependencies": {
     "@tanstack/react-query": "^5.102.8",
-    "@tanstack/react-router": "^1.170.33",
-    "react": "^19.2.8"
+    "@tanstack/react-router": "^1.170.35",
+    "react": "^19.3.0"
   },
   "dependencies": {
     "@niuulabs/plugin-sdk": "workspace:*",
@@ -36,11 +36,11 @@
   },
   "devDependencies": {
     "@tanstack/react-query": "^5.102.8",
-    "@tanstack/react-router": "^1.170.33",
-    "@types/react": "^19.2.18",
-    "react": "^19.2.8",
+    "@tanstack/react-router": "^1.170.35",
+    "@types/react": "^19.3.0",
+    "react": "^19.3.0",
     "tsup": "^8.3.5",
     "typescript": "^6.0.3",
-    "vite": "^8.2.2"
+    "vite": "^8.3.0"
   }
 }
