@@ -218,5 +218,40 @@
     "row-5",
     "row-6",
     "row-7"
-  ]
+  ],
+  "metadata_preview": {
+    "turns": [
+      {
+        "id": "metadata-preview-row",
+        "role": "user",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "visibility": "internal",
+        "participant_id": "synthetic-internal-sender",
+        "content": "",
+        "parts": [],
+        "history_preview": true,
+        "history_metadata_preview": true,
+        "preview_omitted_parts": 0,
+        "history_ref": {
+          "turn_id": "metadata-preview-row"
+        }
+      }
+    ],
+    "head_seq": 321,
+    "history_source": "gateway",
+    "history_protocol": 2,
+    "total_turns": 1,
+    "window_offset": 0,
+    "window_end": 1,
+    "page_kind": "recent",
+    "requested_window_offset": 0,
+    "requested_window_end": 1,
+    "page_complete": true,
+    "continuation_cursor": null,
+    "projection_revision": "text-items-1:0",
+    "has_more_before": false,
+    "older_cursor": null,
+    "refresh_cursor": "WzIsIjI1ZmY5ZDg3LWNkOTktNGJmNi05MTliLWQyYmM4MGE0NjE3ZCIsInRleHQtaXRlbXMtMTowIiwwLDEsImE5Y2MxOWQwOTFhNTM4MGRhMjkxY2U3MjdjMWExYmI5MjZkNTRmZmY0NGNiNjMxZjZiNDA5ODA4NmRlNzI4MjgiXQ==",
+    "history_preview": true
+  }
 }

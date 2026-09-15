@@ -177,12 +177,25 @@ def prepare_history_page(
             {
                 **{
                     k: original[k]
-                    for k in ("id", "role", "created_at", "in_progress")
+                    for k in (
+                        "id",
+                        "role",
+                        "created_at",
+                        "in_progress",
+                        "visibility",
+                        "participant_id",
+                        "participant_meta",
+                        "thread_id",
+                    )
                     if k in original
                 },
                 "content": "",
                 "parts": [],
                 "history_preview": True,
+                # Missing metadata must never be interpreted as evidence that
+                # this was human-authored. Clients render a neutral lazy item
+                # until full metadata is loaded, preserving any cached origin.
+                "history_metadata_preview": True,
                 "preview_omitted_parts": len(original.get("parts") or []),
             }
         ]

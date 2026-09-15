@@ -133,6 +133,13 @@ or polling path. A missing/resegmented item returns 404. Preview data must never
 erase an already expanded full item in native cache state. Historical question
 text is not permission to answer a current runtime RPC.
 
+Metadata-limited previews also carry `history_metadata_preview:true`. Visibility,
+participant identity and thread fields are preserved, not reset to public/human
+defaults. The client must render these as neutral lazy items (or retain previously
+loaded trusted origin), never infer human authorship from an incomplete row's role
+or absent metadata. Oversized identity fields that cannot themselves fit fail
+explicitly rather than dropping privacy/identity fields.
+
 ## WebSocket connection and recovery
 
 Protocol 2 sends one bounded `conversation_history` frame carrying the same page

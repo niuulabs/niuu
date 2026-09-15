@@ -91,6 +91,8 @@ def test_one_huge_item_is_explicit_preview_with_full_item_reference(huge):
     content = "x" * 150_000 if huge != "control_chars" else "\0" * 150_000
     if huge == "metadata":
         source[0]["metadata"] = {"evidence": content}
+        source[0]["visibility"] = "internal"
+        source[0]["participant_id"] = "synthetic-internal-sender"
     elif huge == "tools":
         source[0]["parts"] = [
             {"type": "tool_use", "id": f"call-{i}", "name": "Bash", "input": {}}
@@ -106,6 +108,10 @@ def test_one_huge_item_is_explicit_preview_with_full_item_reference(huge):
     assert turn["history_ref"] == {"turn_id": "0"}
     assert turn["parts"] == []  # no orphan result falsely presented as complete
     assert source == original
+    if huge == "metadata":
+        assert turn["history_metadata_preview"] is True
+        assert turn["visibility"] == "internal"
+        assert turn["participant_id"] == "synthetic-internal-sender"
     assert result["window_offset"] == 0 and result["total_turns"] == 1
 
 
@@ -192,3 +198,25 @@ def test_native_wire_fixture_has_complete_disjoint_refresh_continuations():
         max_turns=4,
     )
     assert actual == fixture["initial"]
+    metadata_row = fixture["metadata_preview"]["turns"][0]
+    assert metadata_row["history_metadata_preview"] is True
+    assert metadata_row["history_ref"] == {"turn_id": "metadata-preview-row"}
+    assert metadata_row["role"] == "user"
+    assert metadata_row["visibility"] == "internal"
+    assert metadata_row["participant_id"] == "synthetic-internal-sender"
+
+
+@pytest.mark.parametrize("source", [[{"content": "missing identity"}], [{"id": ""}]])
+def test_missing_stable_identity_cannot_mint_a_successful_cursor(source):
+    with pytest.raises(InvalidHistoryCursorError):
+        page(source)
+
+
+def test_valid_base64_with_invalid_cursor_schema_is_rejected():
+    import base64
+
+    cursor = base64.urlsafe_b64encode(
+        json.dumps([2, "session", "rev", False, 1, "x"]).encode()
+    ).decode()
+    with pytest.raises(ValueError, match="Malformed"):
+        page(rows(), cursor)
