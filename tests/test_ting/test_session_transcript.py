@@ -21,6 +21,9 @@ class StubVolundrAdapter:
         self._conversation = conversation or {"turns": []}
         self.get_conversation_calls: list[str] = []
 
+    async def get_session(self, session_id: str) -> object:
+        return object()
+
     async def get_conversation(self, session_id: str) -> dict:
         self.get_conversation_calls.append(session_id)
         return self._conversation
@@ -49,6 +52,9 @@ class StubTracker:
 
 class ErrorVolundrAdapter:
     """Adapter that raises on get_conversation."""
+
+    async def get_session(self, session_id: str) -> object:
+        return object()
 
     async def get_conversation(self, session_id: str) -> dict:
         raise RuntimeError("connection refused")
@@ -231,3 +237,18 @@ class TestAttachSessionTranscript:
         _, title, content = tracker.attached[0]
         assert title == "Working Session Transcript — run-y"
         assert "# Working Session Transcript" in content
+
+
+async def test_transcript_comes_from_nonprimary_session_owner():
+    from unittest.mock import AsyncMock
+
+    primary = StubVolundrAdapter()
+    primary.get_session = AsyncMock(return_value=None)
+    owner = StubVolundrAdapter({"turns": [{"role": "assistant", "content": "remote work"}]})
+    tracker = StubTracker()
+    await attach_session_transcript(
+        StubVolundrFactory([primary, owner]), tracker, "issue", "user", "session", "Work", "run"
+    )
+    assert primary.get_conversation_calls == []
+    assert owner.get_conversation_calls == ["session"]
+    assert "remote work" in tracker.attached[0][2]

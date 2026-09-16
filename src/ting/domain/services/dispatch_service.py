@@ -12,6 +12,7 @@ import hashlib
 import inspect
 import json
 import logging
+import random
 import re
 import string
 import uuid
@@ -409,41 +410,38 @@ def _promote_default_ting_run_personas(personas: list[dict]) -> list[dict]:
     return upgraded
 
 
-def resolve_target_adapter(
-    connection_id: str | None,
-    adapter_by_target: dict[str, VolundrPort],
-    fallback: VolundrPort,
-) -> VolundrPort:
-    """Resolve the target Volundr adapter for a dispatch item."""
-    if not connection_id:
-        return fallback
-    adapter = adapter_by_target.get(connection_id)
-    if adapter is not None:
-        return adapter
-    return fallback
-
-
 class TargetSelectionError(Exception):
-    """Raised when a tag selector matches no available Volundr backend."""
+    """Raised when no available Volundr backend satisfies the requested target."""
 
 
 def select_adapter_by_tags(
     adapters: list[VolundrPort],
-    tags: list[str] | tuple[str, ...],
+    tags: list[str] | tuple[str, ...] = (),
     match: str = "all",
+    *,
+    connection_id: str | None = None,
 ) -> VolundrPort:
-    """Select a Volundr adapter whose registered instance carries the given tags.
+    """Place new work uniformly across eligible targets, or honor an explicit pin.
 
-    ``match="all"`` (default) requires every tag; ``match="any"`` requires one.
-    Fails loud — raises ``TargetSelectionError`` if nothing matches rather than
-    silently dispatching to an unintended backend.
+    ``match="all"`` requires every tag; ``match="any"`` requires one.
+    Selection never retries another target after a failure.
     """
-    for adapter in adapters:
-        if matches_tags(getattr(adapter, "tags", []) or [], tags, match):
-            return adapter
-    raise TargetSelectionError(
-        f"No Volundr backend matches tags {sorted(set(tags))} (match={match})"
-    )
+    eligible = [
+        adapter
+        for adapter in adapters
+        if not tags or matches_tags(getattr(adapter, "tags", []) or [], tags, match)
+    ]
+    if connection_id:
+        for adapter in eligible:
+            if connection_id in {adapter.target_id, adapter.name}:
+                return adapter
+        raise TargetSelectionError(f"Volundr target not found or ineligible: {connection_id}")
+    if not eligible:
+        raise TargetSelectionError(
+            f"No Volundr backend matches tags {sorted(set(tags))} (match={match})"
+        )
+    # ponytail: uniform placement; use capacity-aware scheduling when targets expose capacity.
+    return random.choice(eligible)
 
 
 def base_branch_for_repo(saga: Saga, repo: str) -> str:
@@ -548,7 +546,7 @@ class DispatchService:
         self,
         owner_id: str,
         *,
-        volundr: VolundrPort,
+        volundrs: list[VolundrPort],
         trackers: list[TrackerPort] | None = None,
         auth_token: str | None = None,
     ) -> tuple[DispatcherState, int, int, int]:
@@ -561,18 +559,14 @@ class DispatchService:
         """
         state = await self._dispatcher_repo.get_or_create(owner_id)
 
-        active_sessions = 0
-        try:
-            sessions = await volundr.list_sessions(auth_token=auth_token)
-            active_sessions = sum(
-                1 for session in sessions if session.status in _ACTIVE_SESSION_STATUSES
-            )
-        except Exception:
-            logger.warning(
-                "Failed to list active Volundr sessions for owner %s while checking capacity",
-                owner_id[:8],
-                exc_info=True,
-            )
+        session_groups = await asyncio.gather(
+            *(adapter.list_sessions(auth_token=auth_token) for adapter in volundrs)
+        )
+        active_sessions = sum(
+            session.status in _ACTIVE_SESSION_STATUSES
+            for sessions in session_groups
+            for session in sessions
+        )
 
         running_runs = 0
         if trackers:
@@ -606,11 +600,11 @@ class DispatchService:
     ) -> list[QueueItem]:
         """Find all dispatchable issues, optionally scoped to one saga."""
         adapters = await self._tracker_factory.for_owner(owner_id)
-        if principal is not None and hasattr(self._volundr_factory, "primary_for_principal"):
-            volundr = await self._volundr_factory.primary_for_principal(principal)
+        if principal is not None and hasattr(self._volundr_factory, "for_principal"):
+            all_volundr = await self._volundr_factory.for_principal(principal)
         else:
-            volundr = await self._volundr_factory.primary_for_owner(owner_id)
-        if volundr is None:
+            all_volundr = await self._volundr_factory.for_owner(owner_id)
+        if not all_volundr:
             logger.warning("No Volundr adapter for owner %s, returning empty queue", owner_id)
             return []
 
@@ -630,9 +624,12 @@ class DispatchService:
             return []
 
         # Get active sessions to exclude already-running issues
-        sessions = await volundr.list_sessions(auth_token=auth_token)
+        session_groups = await asyncio.gather(
+            *(adapter.list_sessions(auth_token=auth_token) for adapter in all_volundr)
+        )
         active_issue_ids = {
             s.tracker_issue_id
+            for sessions in session_groups
             for s in sessions
             if s.tracker_issue_id and s.status in _ACTIVE_SESSION_STATUSES
         }
@@ -700,11 +697,11 @@ class DispatchService:
         )
 
         adapters = await self._tracker_factory.for_owner(owner_id)
-        if principal is not None and hasattr(self._volundr_factory, "primary_for_principal"):
-            volundr = await self._volundr_factory.primary_for_principal(principal)
+        if principal is not None and hasattr(self._volundr_factory, "for_principal"):
+            all_volundr = await self._volundr_factory.for_principal(principal)
         else:
-            volundr = await self._volundr_factory.primary_for_owner(owner_id)
-        if volundr is None:
+            all_volundr = await self._volundr_factory.for_owner(owner_id)
+        if not all_volundr:
             logger.error("No Volundr adapter for owner %s, cannot dispatch", owner_id)
             return [
                 DispatchResult(
@@ -715,18 +712,6 @@ class DispatchService:
                 )
                 for item in items
             ]
-
-        # Pre-resolve all Volundr adapters for connection_id targeting
-        if principal is not None and hasattr(self._volundr_factory, "for_principal"):
-            all_volundr = await self._volundr_factory.for_principal(principal)
-        else:
-            all_volundr = await self._volundr_factory.for_owner(owner_id)
-        adapter_by_target: dict[str, VolundrPort] = {}
-        for a in all_volundr:
-            if a.target_id:
-                adapter_by_target[a.target_id] = a
-            if a.name:
-                adapter_by_target[a.name] = a
 
         integration_ids_by_target: dict[int, list[str]] = {}
 
@@ -747,31 +732,28 @@ class DispatchService:
                 logger.warning("Issue not found: %s", item.issue_id)
                 continue
 
-            if item.target_tags:
-                # Label-based targeting: pick a backend whose tags match. Fail loud —
-                # never silently fall back to an unintended backend.
-                try:
-                    target_volundr = select_adapter_by_tags(
-                        all_volundr, item.target_tags, item.target_match
-                    )
-                except TargetSelectionError as exc:
-                    logger.warning("Tag targeting failed for issue %s: %s", item.issue_id, exc)
-                    results.append(
-                        DispatchResult(
-                            issue_id=item.issue_id,
-                            session_id="",
-                            session_name="",
-                            status="failed",
-                        )
-                    )
-                    continue
-            else:
-                target_connection = item.connection_id or connection_id or saga.instance_id
-                target_volundr = resolve_target_adapter(
-                    target_connection,
-                    adapter_by_target,
-                    volundr,
+            target_connection = item.connection_id or connection_id
+            # Saga tags replace its default instance; an explicit request pin still applies.
+            if not target_connection and not item.target_tags:
+                target_connection = saga.instance_id
+            try:
+                target_volundr = select_adapter_by_tags(
+                    all_volundr,
+                    item.target_tags,
+                    item.target_match,
+                    connection_id=target_connection,
                 )
+            except TargetSelectionError as exc:
+                logger.warning("Target selection failed for issue %s: %s", item.issue_id, exc)
+                results.append(
+                    DispatchResult(
+                        issue_id=item.issue_id,
+                        session_id="",
+                        session_name="",
+                        status="failed",
+                    )
+                )
+                continue
             integration_cache_key = id(target_volundr)
             integration_ids = integration_ids_by_target.get(integration_cache_key)
             if integration_ids is None:
@@ -848,8 +830,8 @@ class DispatchService:
                 return []
             if self._volundr_factory is None:
                 return []
-            volundr = await self._volundr_factory.primary_for_owner(owner_id)
-            if volundr is None:
+            all_volundr = await self._volundr_factory.for_owner(owner_id)
+            if not all_volundr:
                 logger.info("Auto-continue skipped for owner %s: no Volundr adapter", owner_id[:8])
                 return []
 
@@ -860,7 +842,7 @@ class DispatchService:
                 available_slots,
             ) = await self._dispatch_capacity_snapshot(
                 owner_id,
-                volundr=volundr,
+                volundrs=all_volundr,
                 trackers=adapters,
             )
             if available_slots <= 0:
@@ -1066,8 +1048,8 @@ class DispatchService:
         Per-run ``persona_overrides`` from the template YAML are merged onto
         the matching flow persona before dispatch.
         """
-        volundr = await self._volundr_factory.primary_for_owner(owner_id)
-        if volundr is None:
+        all_volundr = await self._volundr_factory.for_owner(owner_id)
+        if not all_volundr:
             logger.error(
                 "DispatchService: no Volundr adapter for owner %s, cannot dispatch phase '%s'",
                 owner_id,
@@ -1075,11 +1057,7 @@ class DispatchService:
             )
             return
 
-        integration_ids = await self._fetch_integration_ids(
-            volundr,
-            None,
-            owner_id,
-        )
+        integration_ids_by_target: dict[int, list[str]] = {}
         trackers = await self._tracker_factory.for_owner(owner_id)
         (
             state,
@@ -1088,7 +1066,7 @@ class DispatchService:
             available_slots,
         ) = await self._dispatch_capacity_snapshot(
             owner_id,
-            volundr=volundr,
+            volundrs=all_volundr,
             trackers=trackers,
         )
         if available_slots < len(runs):
@@ -1135,6 +1113,17 @@ class DispatchService:
                     phase.name,
                 )
                 continue
+            volundr = select_adapter_by_tags(
+                all_volundr,
+                saga.target_tags,
+                saga.target_match,
+                connection_id=saga.instance_id if not saga.target_tags else None,
+            )
+            if id(volundr) not in integration_ids_by_target:
+                integration_ids_by_target[id(volundr)] = await self._fetch_integration_ids(
+                    volundr, None, owner_id
+                )
+            integration_ids = integration_ids_by_target[id(volundr)]
             session_name = re.sub(r"[^a-z0-9]+", "-", run.name.lower()).strip("-")[:48]
             workload_config = build_flock_workload_config(
                 flock_flow_name,

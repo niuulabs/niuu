@@ -1626,3 +1626,28 @@ class TestBundledShipRetroTemplates:
         assert tpl.phases[0].runs[0].persona == "reviewer"
         assert tpl.phases[0].runs[1].persona == "security-auditor"
         assert tpl.phases[1].runs[0].persona == "qa-agent"
+
+
+async def test_event_phase_balances_each_run(monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+
+    from tests.test_ting.test_services.test_dispatch_service import (
+        _make_phase,
+        _make_run,
+        _make_saga,
+        _make_template_phase,
+        _make_template_run,
+    )
+
+    first, second = StubVolundrPort(), StubVolundrPort()
+    factory = StubVolundrFactory(first)
+    factory.for_owner = AsyncMock(return_value=[first, second])
+    choice = Mock(side_effect=[first, second])
+    monkeypatch.setattr("ting.domain.services.dispatch_service.random.choice", choice)
+    adapter = _make_adapter(volundr_factory=factory)
+    saga = _make_saga()
+    phase = _make_phase(saga.id)
+    runs = [_make_run(phase.id), _make_run(phase.id)]
+    template = _make_template_phase([_make_template_run(), _make_template_run()])
+    await adapter._activate_phase(saga, phase, runs, template)
+    assert len(first.spawned) == len(second.spawned) == 1

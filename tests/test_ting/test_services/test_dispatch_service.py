@@ -10,7 +10,7 @@ import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, Mock
 from uuid import uuid4
 
 import pytest
@@ -40,7 +40,6 @@ from ting.domain.services.dispatch_service import (
     _format_persona_label,
     build_prompt,
     is_ready,
-    resolve_target_adapter,
     select_adapter_by_tags,
 )
 from ting.domain.templates import TemplatePhase, TemplateRun
@@ -254,21 +253,6 @@ class TestBuildPrompt:
         assert "NIU-42" in prompt
         assert "Add auth" in prompt
         assert "niu-42" in prompt
-
-
-class TestResolveTargetAdapter:
-    def test_no_connection_id_returns_fallback(self):
-        fallback = MockVolundr()
-        assert resolve_target_adapter(None, {}, fallback) is fallback
-
-    def test_matching_returns_adapter(self):
-        fallback = MockVolundr()
-        target = MockVolundr()
-        assert resolve_target_adapter("a", {"a": target}, fallback) is target
-
-    def test_unknown_returns_fallback(self):
-        fallback = MockVolundr()
-        assert resolve_target_adapter("b", {"a": MockVolundr()}, fallback) is fallback
 
 
 class TestSelectAdapterByTags:
@@ -1831,3 +1815,137 @@ class TestDispatchTemplatePhaseFlockFlow:
         assert final_runs[runs[0].tracker_id].status == RunStatus.RUNNING
         assert final_runs[runs[1].tracker_id].status == RunStatus.RUNNING
         assert final_runs[runs[2].tracker_id].status == RunStatus.QUEUED
+
+
+@pytest.mark.parametrize("tags,match", [((), "all"), (("gpu",), "all"), (("gpu", "cpu"), "any")])
+def test_selection_balances_only_eligible_targets(monkeypatch, tags, match):
+    first = SimpleNamespace(name="one", target_id="one", tags=["gpu"])
+    second = SimpleNamespace(name="two", target_id="two", tags=["gpu"])
+    excluded = SimpleNamespace(name="three", target_id="three", tags=["other"])
+    adapters = [first, second, excluded]
+    eligible = adapters if not tags else [first, second]
+    choice = Mock(side_effect=[first, second])
+    monkeypatch.setattr("ting.domain.services.dispatch_service.random.choice", choice)
+    assert select_adapter_by_tags(adapters, tags, match) is first
+    assert select_adapter_by_tags(adapters, tags, match) is second
+    assert all(call.args == (eligible,) for call in choice.call_args_list)
+    assert select_adapter_by_tags(adapters, tags, match, connection_id="two") is second
+    assert choice.call_count == 2
+    with pytest.raises(TargetSelectionError):
+        select_adapter_by_tags(adapters, tags, match, connection_id="missing")
+    with pytest.raises(TargetSelectionError):
+        select_adapter_by_tags(adapters, ["gpu"], connection_id="three")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_balances_each_issue_and_does_not_retry_failure(
+    service, saga_repo, volundr, monkeypatch
+):
+    second = MockVolundr()
+    service._volundr_factory = MockVolundrFactory([volundr, second])
+    choice = Mock(side_effect=[volundr, second, second])
+    monkeypatch.setattr("ting.domain.services.dispatch_service.random.choice", choice)
+    items = [
+        DispatchItem(saga_id=str(saga_repo.sagas[0].id), issue_id=i, repo="org/repo-a")
+        for i in ("i-1", "i-3")
+    ]
+    results = await service.dispatch_issues("dev-user", items)
+    assert [result.status for result in results] == ["spawned", "spawned"]
+    assert [len(adapter.spawned) for adapter in (volundr, second)] == [1, 1]
+    second.fail_spawn = True
+    results = await service.dispatch_issues("dev-user", items[:1])
+    assert results[0].status == "failed"
+    assert len(volundr.spawned) == 1
+    assert choice.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_queue_and_capacity_include_all_targets(service, volundr):
+    from ting.ports.volundr import VolundrSession
+
+    second = MockVolundr()
+    second.sessions = [
+        VolundrSession(
+            id="secondary-session", name="run", status="running", tracker_issue_id="ALPHA-1"
+        )
+    ]
+    service._volundr_factory = MockVolundrFactory([volundr, second])
+    queue = await service.find_ready_issues("dev-user")
+    assert {item.identifier for item in queue} == {"ALPHA-3"}
+    _, active, _, available = await service._dispatch_capacity_snapshot(
+        "dev-user", volundrs=[volundr, second]
+    )
+    assert (active, available) == (1, 2)
+    second.list_sessions = AsyncMock(side_effect=RuntimeError("unreachable"))
+    with pytest.raises(RuntimeError, match="unreachable"):
+        await service._dispatch_capacity_snapshot("dev-user", volundrs=[volundr, second])
+
+
+@pytest.mark.asyncio
+async def test_template_phase_balances_each_run(service, volundr, monkeypatch):
+    second = MockVolundr()
+    volundr.integration_ids = ["first-integration"]
+    second.integration_ids = ["second-integration"]
+    service._volundr_factory = MockVolundrFactory([volundr, second])
+    choice = Mock(side_effect=[volundr, second])
+    monkeypatch.setattr("ting.domain.services.dispatch_service.random.choice", choice)
+    saga = _make_saga()
+    phase = _make_phase(saga.id)
+    runs = [_make_run(phase.id), _make_run(phase.id)]
+    template = _make_template_phase([_make_template_run(), _make_template_run()])
+    await service._dispatch_template_phase(saga, phase, runs, template, "dev-user")
+    assert len(volundr.spawned) == len(second.spawned) == 1
+    assert volundr.spawned[0].integration_ids == ["first-integration"]
+    assert second.spawned[0].integration_ids == ["second-integration"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pin_source", ["item", "request", "saga"])
+async def test_dispatch_honors_pins(service, saga_repo, volundr, monkeypatch, pin_source):
+    class NamedVolundr(MockVolundr):
+        @property
+        def name(self):
+            return "pinned"
+
+    pinned = NamedVolundr()
+    service._volundr_factory = MockVolundrFactory([volundr, pinned])
+    choice = Mock(side_effect=AssertionError("Pinned work must not choose randomly"))
+    monkeypatch.setattr("ting.domain.services.dispatch_service.random.choice", choice)
+    saga = saga_repo.sagas[0]
+    if pin_source == "saga":
+        saga_repo.sagas[0] = replace(saga, instance_id="pinned")
+    item = DispatchItem(
+        saga_id=str(saga.id),
+        issue_id="i-1",
+        repo="org/repo-a",
+        connection_id="pinned" if pin_source == "item" else None,
+    )
+    results = await service.dispatch_issues(
+        "dev-user",
+        [item],
+        connection_id="pinned" if pin_source == "request" else None,
+    )
+    assert results[0].status == "spawned"
+    assert len(pinned.spawned) == 1
+    assert not volundr.spawned
+
+
+@pytest.mark.asyncio
+async def test_dispatch_uses_principal_visible_targets(service, saga_repo, monkeypatch):
+    visible = MockVolundr()
+    principal = Principal(user_id="dev-user", email="", tenant_id="tenant-a", roles=[])
+    factory = SimpleNamespace(
+        for_principal=AsyncMock(return_value=[visible]),
+        for_owner=AsyncMock(side_effect=AssertionError("Principal scope must be preserved")),
+    )
+    service._volundr_factory = factory
+    choice = Mock(return_value=visible)
+    monkeypatch.setattr("ting.domain.services.dispatch_service.random.choice", choice)
+    results = await service.dispatch_issues(
+        "dev-user",
+        [DispatchItem(saga_id=str(saga_repo.sagas[0].id), issue_id="i-1", repo="org/repo-a")],
+        principal=principal,
+    )
+    assert results[0].status == "spawned"
+    factory.for_principal.assert_awaited_once_with(principal)
+    choice.assert_called_once_with([visible])

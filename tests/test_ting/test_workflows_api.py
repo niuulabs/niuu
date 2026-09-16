@@ -660,7 +660,7 @@ class TestWorkflowCatalogAPI:
         assert response.status_code == 201
         assert response.json()["chatEndpoint"] == "ws://testserver:8080/s/session-123/session"
 
-    def test_launch_workflow_uses_first_available_connection(self) -> None:
+    def test_launch_workflow_balances_available_connections(self, monkeypatch) -> None:
         workflow = _make_research_workflow()
         repo = InMemoryWorkflowRepository([workflow])
         primary = RecordingVolundrPort(name="primary", target_id="primary")
@@ -670,6 +670,9 @@ class TestWorkflowCatalogAPI:
             volundr_factory=RecordingVolundrFactory([primary, secondary]),
         )
 
+        monkeypatch.setattr(
+            "ting.domain.services.dispatch_service.random.choice", lambda candidates: candidates[-1]
+        )
         response = client.post(
             f"/api/v1/ting/workflows/{workflow.id}/launch",
             headers=_headers(roles="ting:admin"),
@@ -679,8 +682,9 @@ class TestWorkflowCatalogAPI:
         )
 
         assert response.status_code == 201
-        assert len(primary.requests) == 1
-        assert len(secondary.requests) == 0
+        assert len(primary.requests) == 0
+        assert len(secondary.requests) == 1
+        assert response.json()["clusterName"] == "secondary"
 
     def test_launch_workflow_scoped_build_token_missing_scope_is_403(self) -> None:
         workflow = _make_research_workflow()

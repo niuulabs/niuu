@@ -794,3 +794,32 @@ class TestRunsSummary:
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/api/v1/ting/runs/summary")
         assert resp.status_code == 503
+
+
+@pytest.mark.parametrize("operation", ["review", "message"])
+def test_run_operations_follow_nonprimary_session_owner(client, tracker, volundr, operation):
+    from unittest.mock import AsyncMock
+
+    from ting.api.runs import resolve_volundr_targets
+
+    run = _make_run(status=RunStatus.RUNNING)
+    tracker.runs[run.id] = run
+    volundr.get_session = AsyncMock(return_value=None)
+    volundr.send_message = AsyncMock()
+    volundr.get_pr_status = AsyncMock()
+    owner = MockVolundr()
+    owner.send_message = AsyncMock()
+    owner.get_pr_status = AsyncMock(return_value=owner.pr_status)
+    client.app.dependency_overrides[resolve_volundr_targets] = lambda: [volundr, owner]
+
+    url = f"/api/v1/ting/runs/{run.id}/{operation}"
+    response = (
+        client.get(url) if operation == "review" else client.post(url, json={"content": "hi"})
+    )
+    assert response.status_code == 200, response.text
+    volundr.send_message.assert_not_awaited()
+    volundr.get_pr_status.assert_not_awaited()
+    if operation == "review":
+        owner.get_pr_status.assert_awaited_once_with(run.session_id)
+    else:
+        owner.send_message.assert_awaited_once_with(run.session_id, "hi", auth_token=None)

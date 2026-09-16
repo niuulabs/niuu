@@ -43,7 +43,6 @@ from ting.domain.services.dispatch_service import (
     DispatchService,
     build_prompt,
     is_ready,
-    resolve_target_adapter,
 )
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.volundr import SpawnRequest, VolundrPort, VolundrSession
@@ -162,9 +161,7 @@ class MockVolundrFactory:
         self._adapters = adapters or []
 
     async def for_owner(self, owner_id: str) -> list[VolundrPort]:
-        if self._adapters:
-            return self._adapters
-        return [MockVolundr()]
+        return self._adapters
 
     async def primary_for_owner(self, owner_id: str) -> VolundrPort | None:
         if self._adapters:
@@ -965,13 +962,13 @@ class TestApproveDispatch:
         assert all(d["status"] == "spawned" for d in data)
         assert len(mock_volundr.spawned) == 2
 
-    def test_connection_id_on_request(
+    def test_unknown_connection_id_on_request_fails(
         self,
         client: TestClient,
         saga_repo: MockSagaRepo,
         mock_volundr: MockVolundr,
     ):
-        """connection_id at request level is accepted and doesn't break dispatch."""
+        """An unknown request target must not dispatch to the primary."""
         saga_id = str(saga_repo.sagas[0].id)
         resp = client.post(
             "/api/v1/ting/dispatch/approve",
@@ -985,15 +982,16 @@ class TestApproveDispatch:
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 1
-        assert data[0]["status"] == "spawned"
+        assert data[0]["status"] == "failed"
+        assert mock_volundr.spawned == []
 
-    def test_connection_id_on_item(
+    def test_unknown_connection_id_on_item_fails(
         self,
         client: TestClient,
         saga_repo: MockSagaRepo,
         mock_volundr: MockVolundr,
     ):
-        """Per-item connection_id is accepted and doesn't break dispatch."""
+        """An unknown item target must not dispatch to the primary."""
         saga_id = str(saga_repo.sagas[0].id)
         resp = client.post(
             "/api/v1/ting/dispatch/approve",
@@ -1011,38 +1009,8 @@ class TestApproveDispatch:
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 1
-        assert data[0]["status"] == "spawned"
-
-
-# -------------------------------------------------------------------
-# Unit tests: _resolve_target_adapter
-# -------------------------------------------------------------------
-
-
-class TestResolveTargetAdapter:
-    def test_no_connection_id_returns_fallback(self):
-        fallback = MockVolundr()
-        result = resolve_target_adapter(None, {}, fallback)
-        assert result is fallback
-
-    def test_empty_connection_id_returns_fallback(self):
-        fallback = MockVolundr()
-        result = resolve_target_adapter("", {}, fallback)
-        assert result is fallback
-
-    def test_matching_connection_id_returns_adapter(self):
-        fallback = MockVolundr()
-        target = MockVolundr()
-        adapters = {"cluster-a": target}
-        result = resolve_target_adapter("cluster-a", adapters, fallback)
-        assert result is target
-
-    def test_unknown_connection_id_returns_fallback(self):
-        fallback = MockVolundr()
-        target = MockVolundr()
-        adapters = {"cluster-a": target}
-        result = resolve_target_adapter("cluster-b", adapters, fallback)
-        assert result is fallback
+        assert data[0]["status"] == "failed"
+        assert mock_volundr.spawned == []
 
 
 # -------------------------------------------------------------------

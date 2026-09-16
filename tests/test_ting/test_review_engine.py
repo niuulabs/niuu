@@ -894,3 +894,20 @@ class TestReviewConfig:
     def test_custom_config(self) -> None:
         cfg = ReviewConfig(max_retries=5)
         assert cfg.max_retries == 5
+
+
+async def test_review_feedback_and_stop_follow_nonprimary_session_owner():
+    engine, _, _, primary = _make_engine()
+    primary.get_session = AsyncMock(return_value=None)
+    owner = StubVolundr()
+    engine._volundr_factory = SimpleNamespace(for_owner=AsyncMock(return_value=[primary, owner]))
+
+    await engine._send_retry_feedback(_make_run(), "owner", "tests failed")
+    await engine._stop_session("owner", "session-1")
+
+    assert primary.messages == []
+    assert primary.stopped_sessions == []
+    assert owner.messages == [
+        ("session-1", "Review failed: tests failed. Please fix and push again.")
+    ]
+    assert owner.stopped_sessions == ["session-1"]

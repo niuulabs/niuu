@@ -27,10 +27,12 @@ from ting.domain.services.run_review import (
     RunReviewService,
 )
 from ting.domain.services.session_message import (
+    RUNNING_STATUSES,
     NoActiveSessionError,
     RunNotRunningError,
     SessionMessageService,
 )
+from ting.domain.services.session_target import find_session_target
 from ting.ports.git import GitPort
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.tracker import TrackerPort
@@ -197,6 +199,13 @@ async def resolve_volundr() -> VolundrPort:
     )
 
 
+async def resolve_volundr_targets(
+    volundr: VolundrPort = Depends(resolve_volundr),
+) -> list[VolundrPort]:
+    """Single-target composition; main wires the owner's visible target list."""
+    return [volundr]
+
+
 async def resolve_git() -> GitPort:
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -356,7 +365,7 @@ def create_runs_router() -> APIRouter:
         request: Request,
         principal: Principal = Depends(extract_principal),
         tracker: TrackerPort = Depends(resolve_tracker),
-        volundr: VolundrPort = Depends(resolve_volundr),
+        volundr_targets: list[VolundrPort] = Depends(resolve_volundr_targets),
     ) -> ReviewResponse:
         """Get review state for a run: chronicle summary, CI status, confidence."""
         try:
@@ -375,6 +384,7 @@ def create_runs_router() -> APIRouter:
         ci_passed: bool | None = None
         if run.session_id:
             try:
+                volundr = await find_session_target(volundr_targets, run.session_id)
                 pr_status = await volundr.get_pr_status(run.session_id)
                 pr_url = pr_status.url
                 ci_passed = pr_status.ci_passed
@@ -413,7 +423,7 @@ def create_runs_router() -> APIRouter:
         request: Request,
         principal: Principal = Depends(extract_principal),
         tracker: TrackerPort = Depends(resolve_tracker),
-        volundr: VolundrPort = Depends(resolve_volundr),
+        volundr_targets: list[VolundrPort] = Depends(resolve_volundr_targets),
         git: GitPort = Depends(resolve_git),
     ) -> RunResponse:
         """Approve a run: merge branch, update state, check phase gate.
@@ -439,6 +449,7 @@ def create_runs_router() -> APIRouter:
         # Pre-step: check CI status (warn but don't block)
         if run.session_id:
             try:
+                volundr = await find_session_target(volundr_targets, run.session_id)
                 pr_status = await volundr.get_pr_status(run.session_id)
                 if pr_status.ci_passed is False:
                     logger.warning("Approving run %s with failing CI", _sanitize_log(run_id))
@@ -590,15 +601,22 @@ def create_runs_router() -> APIRouter:
         request: Request,
         principal: Principal = Depends(extract_principal),
         tracker: TrackerPort = Depends(resolve_tracker),
-        volundr: VolundrPort = Depends(resolve_volundr),
+        volundr_targets: list[VolundrPort] = Depends(resolve_volundr_targets),
     ) -> SendMessageResponse:
         """Send a message to the running session for a run."""
         event_bus = getattr(request.app.state, "event_bus", None)
-        svc = SessionMessageService(tracker, volundr, event_bus=event_bus)
-
         try:
             run_obj = await _resolve_run_identifier(tracker, run_id)
             await _require_tracker_run(request, principal, tracker, run_obj)
+            if run_obj.status not in RUNNING_STATUSES:
+                raise RunNotRunningError(run_obj.id, run_obj.status.value)
+            session_id = (
+                run_obj.reviewer_session_id if run_obj.status == RunStatus.REVIEW else None
+            ) or run_obj.session_id
+            if not session_id:
+                raise NoActiveSessionError(run_obj.id)
+            volundr = await find_session_target(volundr_targets, session_id)
+            svc = SessionMessageService(tracker, volundr, event_bus=event_bus)
             result = await svc.send_message(
                 run_obj.id,
                 body.content,
