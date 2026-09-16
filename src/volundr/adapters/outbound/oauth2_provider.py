@@ -90,9 +90,8 @@ class OAuth2Provider:
         if not result:
             result["access_token"] = str(token_data["access_token"])
 
-        mapped_token_fields = set(self._spec.token_field_mapping.values())
         refresh_token = token_data.get("refresh_token")
-        if refresh_token and "refresh_token" not in mapped_token_fields:
+        if refresh_token:
             result["refresh_token"] = str(refresh_token)
         if token_data.get("expires_in"):
             expires_at = datetime.now(UTC) + timedelta(seconds=float(token_data["expires_in"]))

@@ -91,6 +91,14 @@ class IntegrationRegistry:
 
         env = self.build_mcp_env(connection, credentials)
         spec = defn.mcp_server
+        if spec.transport != "stdio":
+            config = {"name": spec.name, "type": spec.transport, "url": spec.url}
+            if spec.token_field:
+                token = credentials.get(spec.token_field)
+                if not token:
+                    raise ValueError("MCP credential missing; reconnect the integration")
+                config["headers"] = {spec.auth_header: spec.auth_prefix + token}
+            return config
         return {
             "name": spec.name,
             "type": "stdio",
@@ -111,7 +119,12 @@ def definitions_from_config(
         if mcp_raw and isinstance(mcp_raw, dict):
             mcp_spec = MCPServerSpec(
                 name=mcp_raw["name"],
-                command=mcp_raw["command"],
+                command=mcp_raw.get("command", ""),
+                transport=mcp_raw.get("transport", "stdio"),
+                url=mcp_raw.get("url", ""),
+                token_field=mcp_raw.get("token_field", ""),
+                auth_header=mcp_raw.get("auth_header", "Authorization"),
+                auth_prefix=mcp_raw.get("auth_prefix", "Bearer "),
                 args=tuple(mcp_raw.get("args", [])),
                 env_from_credentials=mcp_raw.get("env_from_credentials", {}),
             )

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from niuu.domain.oauth_credentials import OAUTH_ENGINE, mcp_token_path
 from volundr.domain.models import (
     CredentialMapping,
     IntegrationType,
@@ -120,6 +122,8 @@ class SecretInjectionContributor(SessionContributor):
 
         # Integration connections — mapping comes from IntegrationDefinition
         for conn in context.integration_connections:
+            if conn.owner_id != owner_id:
+                raise ValueError("Integration does not belong to the session owner")
             env_mappings: dict[str, str] = {}
             file_mappings: dict[str, str] = {}
 
@@ -129,6 +133,8 @@ class SecretInjectionContributor(SessionContributor):
                     env_mappings.update(defn.env_from_credentials)
                     if defn.mcp_server:
                         env_mappings.update(defn.mcp_server.env_from_credentials)
+                        if defn.mcp_server.token_field:
+                            file_mappings[mcp_token_path(conn.id)] = defn.mcp_server.token_field
                     file_mappings.update(defn.file_mounts)
                     auth_ref = _integration_auth_ref(conn.slug)
                     if auth_ref in self._mimir_auth_refs(context):
@@ -272,6 +278,56 @@ class SecretInjectionContributor(SessionContributor):
         mappings = await self._build_mappings(context, session.owner_id)
         if not mappings:
             return SessionContribution()
+
+        if self._credential_store:
+            checked = []
+            for mapping in mappings:
+                stored = await self._credential_store.get(
+                    "user", session.owner_id, mapping.credential_name
+                )
+                if stored and stored.metadata.get("renewal_owner") == OAUTH_ENGINE:
+                    if stored.metadata.get("tenant_id") != session.tenant_id:
+                        raise ValueError("OAuth credential does not belong to the session tenant")
+                    if context.runtime_backend == "openshell":
+                        raise ValueError("Managed OAuth projection requires OpenBao pod injection")
+                    if (
+                        not self._secret_injection
+                        or not self._secret_injection.supports_managed_oauth
+                    ):
+                        raise ValueError(
+                            "Managed OAuth credentials require continuous OpenBao injection"
+                        )
+                    # Reading the engine endpoint refreshes if needed and prevents
+                    # launch with an unusable grant. Never put this value in specs.
+                    await self._credential_store.get_value(
+                        "user", session.owner_id, mapping.credential_name
+                    )
+                    # Stdio environment credentials are snapshots. Do not claim
+                    # live renewal for a server that cannot reload them.
+                    token_documents = []
+                    for connection in context.integration_connections:
+                        if (
+                            connection.credential_name != mapping.credential_name
+                            or not self._registry
+                        ):
+                            continue
+                        definition = self._registry.get_definition(connection.slug)
+                        spec = definition.mcp_server if definition else None
+                        if spec and spec.transport == "stdio" and mapping.env_mappings:
+                            raise ValueError(
+                                "Renewable MCP credentials require HTTP token_field "
+                                "or a file-aware server"
+                            )
+                        if spec and spec.token_field:
+                            token_documents.append(mcp_token_path(connection.id))
+                    mapping = replace(
+                        mapping,
+                        oauth_tenant_id=session.tenant_id,
+                        oauth_token_field=stored.metadata["oauth_token_field"],
+                        oauth_token_documents=tuple(token_documents),
+                    )
+                checked.append(mapping)
+            mappings = checked
 
         values = _openshell_credential_values(mappings)
         codex_values = _codex_auth_values(context, self._registry)

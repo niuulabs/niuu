@@ -951,6 +951,9 @@ class OAuthClientConfig(BaseModel):
 class OAuthConfig(BaseModel):
     """Top-level OAuth configuration."""
 
+    mini_mode_refresh_enabled: bool = Field(
+        default=True, description="Run the legacy OAuth refresher only in mini-mode."
+    )
     redirect_base_url: str = ""
     clients: dict[str, OAuthClientConfig] = Field(default_factory=dict)
 

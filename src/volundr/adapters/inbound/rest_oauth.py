@@ -151,6 +151,7 @@ def _build_oauth_router(
         *,
         slug: str,
         user_id: str,
+        tenant_id: str,
         credential_name: str = "",
         oauth_app: str = "",
         config: dict[str, Any] | None = None,
@@ -184,6 +185,7 @@ def _build_oauth_router(
         _pending_states[state] = {
             "slug": slug,
             "user_id": user_id,
+            "tenant_id": tenant_id,
             "redirect_uri": redirect_uri,
             "credential_name": resolved_credential_name,
             "oauth_app": app,
@@ -219,6 +221,7 @@ def _build_oauth_router(
         return _start_authorization(
             slug=slug,
             user_id=principal.user_id,
+            tenant_id=principal.tenant_id,
             credential_name=credential_name,
             oauth_app=oauth_app,
             request_base_url=str(request.base_url),
@@ -235,6 +238,7 @@ def _build_oauth_router(
         return _start_authorization(
             slug=slug,
             user_id=principal.user_id,
+            tenant_id=principal.tenant_id,
             credential_name=data.credential_name,
             oauth_app=data.oauth_app,
             config=data.config,
@@ -290,7 +294,17 @@ def _build_oauth_router(
                 detail="That credential name is already used by another integration",
             )
 
-        metadata = {"source": "oauth2", "integration": slug, "auth_state": "active"}
+        metadata = {
+            "source": "oauth2",
+            "integration": slug,
+            "auth_state": "active",
+            "tenant_id": pending["tenant_id"],
+            "oauth_app": oauth_app,
+            "oauth_token_field": next(
+                (k for k, v in defn.oauth.token_field_mapping.items() if v == "access_token"),
+                "access_token",
+            ),
+        }
         if credentials.get("expires_at"):
             metadata["auth_expires_at"] = credentials["expires_at"]
         await credential_store.store(

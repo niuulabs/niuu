@@ -75,3 +75,25 @@ class CredentialRefreshLockPort(ABC):
         name: str,
     ) -> AbstractAsyncContextManager[None]:
         """Hold the credential's distributed refresh lock for one critical section."""
+
+
+class OAuthApplicationStorePort(ABC):
+    """Optional provider-client provisioning capability of a managed OAuth store."""
+
+    @property
+    @abstractmethod
+    def manages_oauth_applications(self) -> bool:
+        """Whether this store owns provider-client provisioning."""
+
+    @abstractmethod
+    async def configure_oauth_application(
+        self,
+        *,
+        slug: str,
+        app: str,
+        client_id: str,
+        client_secret: str,
+        authorize_url: str,
+        token_url: str,
+    ) -> None:
+        """Provision the client used by the same enrollment flow and refresh engine."""

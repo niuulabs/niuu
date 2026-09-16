@@ -375,3 +375,45 @@ async def test_model_server_without_a_gateway_url_refuses_to_launch(session, pri
     )
     with pytest.raises(ValueError, match="gateway_url"):
         await IntegrationContributor(integration_registry=registry).contribute(session, ctx)
+
+
+async def test_http_oauth_config_contains_only_file_references(session):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from niuu.domain.oauth_credentials import OAUTH_ENGINE, mcp_token_path
+
+    registry = IntegrationRegistry(
+        definitions_from_config(
+            [
+                {
+                    "slug": "linear",
+                    "name": "Linear",
+                    "integration_type": "issue_tracker",
+                    "mcp_server": {
+                        "name": "linear",
+                        "transport": "http",
+                        "url": "https://mcp.linear.app/mcp",
+                        "token_field": "token",
+                    },
+                }
+            ]
+        )
+    )
+    store = AsyncMock()
+    store.get.return_value = SimpleNamespace(metadata={"renewal_owner": OAUTH_ENGINE})
+    contributor = IntegrationContributor(integration_registry=registry, credential_store=store)
+    result = await contributor.contribute(
+        session, SessionContext(integration_connections=(_linear_connection(),))
+    )
+    server = result.values["mcpServers"][0]
+    assert server == {
+        "name": "linear",
+        "type": "http",
+        "url": "https://mcp.linear.app/mcp",
+        "credential_file": mcp_token_path("conn-linear"),
+        "credential_format": "oauth",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+    }
+    store.get_value.assert_not_called()

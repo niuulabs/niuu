@@ -168,3 +168,37 @@ async def test_self_hosted_application_survives_reload_and_routes_endpoints(stor
 async def test_oauth_host_rejects_non_origins(store, url):
     with pytest.raises(OAuthClientError, match="HTTP"):
         await _registry(store).register("gitlab", "client", base_url=url)
+
+
+async def test_managed_store_provisions_registration_and_restart(store):
+    from unittest.mock import AsyncMock
+
+    from niuu.ports.credentials import OAuthApplicationStorePort
+
+    applications = AsyncMock(spec=OAuthApplicationStorePort)
+    registry = OAuthClientRegistry(
+        credential_store=store,
+        integration_registry=_integrations(),
+        application_store=applications,
+    )
+    await registry.register(
+        "gitlab", "client", "secret", app="work", base_url="https://git.example.test"
+    )
+    applications.configure_oauth_application.assert_awaited_once_with(
+        slug="gitlab",
+        app="work",
+        client_id="client",
+        client_secret="secret",
+        authorize_url="https://git.example.test/oauth/authorize",
+        token_url="https://git.example.test/oauth/token",
+    )
+    applications.configure_oauth_application.reset_mock()
+    await registry.load()
+    applications.configure_oauth_application.assert_awaited_once()
+    applications.configure_oauth_application.side_effect = RuntimeError("vault unavailable")
+    with pytest.raises(RuntimeError, match="vault unavailable"):
+        await registry.register("gitlab", "replacement", "secret", app="work")
+    assert registry.get("gitlab", "work").client_id == "client"
+    assert (await store.get_value("system", "oauth-clients", "gitlab--work"))[
+        "client_id"
+    ] == "client"

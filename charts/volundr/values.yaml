@@ -753,6 +753,10 @@ authorization:
 #       auth_method: "token"
 #       token: ""
 #
+# OAuth renewal: see docs/operations/openbao-oauth.md. Use
+# niuu.adapters.openbao_oauth_credential_store.OpenBaoOAuthCredentialStore
+# with oauth_mount_path/oauth_servers, plus oauth_mount_path on secretInjection.
+#
 # ── Infisical ──────────────────────────────────────────────────
 #   credentialStore:
 #     adapter: "niuu.adapters.infisical_credential_store.InfisicalCredentialStore"
@@ -929,6 +933,8 @@ auth:
 
 # OAuth integration configuration
 oauth:
+  # -- Legacy refresh loop; ignored outside mini-mode. OpenBao owns production renewal.
+  miniModeRefreshEnabled: true
   # -- Base URL for OAuth redirect callbacks (e.g. https://volundr.example.com)
   redirectBaseUrl: ""
   # -- Per-integration OAuth client credentials

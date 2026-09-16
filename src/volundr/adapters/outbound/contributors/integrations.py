@@ -5,8 +5,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from niuu.domain.oauth_credentials import OAUTH_ENGINE, mcp_token_path
 from volundr.domain.models import Session
 from volundr.domain.ports import (
+    CredentialStorePort,
     SessionContext,
     SessionContribution,
     SessionContributor,
@@ -35,9 +37,11 @@ class IntegrationContributor(SessionContributor):
         self,
         *,
         integration_registry: IntegrationRegistry | None = None,
+        credential_store: CredentialStorePort | None = None,
         **_extra: object,
     ):
         self._registry = integration_registry
+        self._credential_store = credential_store
 
     @property
     def name(self) -> str:
@@ -97,16 +101,29 @@ class IntegrationContributor(SessionContributor):
                         "file": conn.credential_name,
                         "key": cred_key,
                     }
-                # MCP server config with empty env — sourced by entrypoint
-                mcp_servers.append(
-                    {
-                        "name": spec.name,
-                        "type": "stdio",
-                        "command": spec.command,
-                        "args": list(spec.args),
-                        "env": {},
-                    }
-                )
+                if spec.transport == "stdio":
+                    mcp_servers.append(
+                        {
+                            "name": spec.name,
+                            "type": "stdio",
+                            "command": spec.command,
+                            "args": list(spec.args),
+                            "env": {},
+                        }
+                    )
+                else:
+                    server = {"name": spec.name, "type": spec.transport, "url": spec.url}
+                    if spec.token_field:
+                        server["credential_file"] = mcp_token_path(conn.id)
+                        server["auth_header"] = spec.auth_header
+                        server["auth_prefix"] = spec.auth_prefix
+                        if self._credential_store:
+                            stored = await self._credential_store.get(
+                                "user", session.owner_id, conn.credential_name
+                            )
+                            if stored and stored.metadata.get("renewal_owner") == OAUTH_ENGINE:
+                                server["credential_format"] = "oauth"
+                    mcp_servers.append(server)
 
             # File mounts (e.g., Claude OAuth credentials)
             for target_path in defn.file_mounts:

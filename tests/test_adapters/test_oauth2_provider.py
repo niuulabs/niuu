@@ -134,7 +134,7 @@ class TestExchangeCode:
         with patch(_HTTPX_CLIENT, return_value=mock_client):
             result = await provider.exchange_code("code", "https://app/cb")
 
-        assert result == {"api_key": "at-123", "refresh": "rt-456"}
+        assert result == {"api_key": "at-123", "refresh": "rt-456", "refresh_token": "rt-456"}
 
     async def test_falls_back_to_access_token_when_no_mapping_matches(self):
         spec = _make_spec(token_field_mapping={})

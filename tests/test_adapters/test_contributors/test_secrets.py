@@ -609,3 +609,52 @@ async def test_openshell_source_control_uses_dynamic_provider_without_token_file
             "fileMappings": {},
         }
     ]
+
+
+@pytest.mark.parametrize("failure", ["", "tenant", "owner", "stdio", "injector", "revoked"])
+async def test_managed_oauth_projection_preflights_and_checks_scope(session, failure):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from niuu.domain.oauth_credentials import OAUTH_ENGINE, mcp_token_path
+
+    session.tenant_id = "tenant-a"
+    spec = MCPServerSpec(
+        name="remote", transport="http", url="https://mcp.example.test", token_field="token"
+    )
+    if failure == "stdio":
+        spec = MCPServerSpec(name="remote", command="mcp", env_from_credentials={"TOKEN": "token"})
+    connection = _connection()
+    if failure == "owner":
+        connection = replace(connection, owner_id="other")
+    store = AsyncMock()
+    store.get.return_value = SimpleNamespace(
+        metadata={
+            "renewal_owner": OAUTH_ENGINE,
+            "tenant_id": "other" if failure == "tenant" else "tenant-a",
+            "oauth_token_field": "token",
+        }
+    )
+    store.get_value.return_value = {"token": "private-access-token"}
+    if failure == "revoked":
+        store.get_value.side_effect = RuntimeError("reconnect")
+    injection = AsyncMock()
+    injection.supports_managed_oauth = failure != "injector"
+    contributor = SecretInjectionContributor(
+        credential_store=store,
+        secret_injection=injection,
+        integration_registry=_registry([_definition(mcp_server=spec)]),
+    )
+    context = SessionContext(integration_connections=(connection,))
+    if failure:
+        with pytest.raises((ValueError, RuntimeError)):
+            await contributor.contribute(session, context)
+        injection.ensure_secret_provider_class.assert_not_called()
+        return
+    await contributor.contribute(session, context)
+    mapping = injection.ensure_secret_provider_class.call_args.args[1][0]
+    assert mapping.oauth_tenant_id == "tenant-a"
+    assert mapping.oauth_token_documents == (mcp_token_path(connection.id),)
+    assert mapping.file_mappings == {mcp_token_path(connection.id): "token"}
+    assert "private-access-token" not in repr(mapping)
+    store.get_value.assert_awaited_once()

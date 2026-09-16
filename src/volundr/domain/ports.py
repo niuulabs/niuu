@@ -1377,6 +1377,11 @@ class SecretInjectionPort(ABC):
     sees secret values in production.
     """
 
+    @property
+    def supports_managed_oauth(self) -> bool:
+        """Whether this adapter continuously projects OAuth engine access tokens."""
+        return False
+
     @abstractmethod
     async def pod_spec_additions(
         self,

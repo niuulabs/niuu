@@ -94,7 +94,16 @@ def create_oauth_client_registry(
     integration_registry: IntegrationRegistry,
 ) -> OAuthClientRegistry:
     """The install's OAuth applications: ``oauth.clients`` plus those registered in the wizard."""
+    from niuu.ports.credentials import OAuthApplicationStorePort
+
+    application_store = (
+        credential_store
+        if isinstance(credential_store, OAuthApplicationStorePort)
+        and credential_store.manages_oauth_applications
+        else None
+    )
     return OAuthClientRegistry(
+        application_store=application_store,
         credential_store=credential_store,
         integration_registry=integration_registry,
         configured={

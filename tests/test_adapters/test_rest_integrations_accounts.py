@@ -70,3 +70,59 @@ def test_reusing_an_accounts_name_is_refused_not_overwritten(tmp_path) -> None:
     assert "already connected as 'github-setup'" in response.json()["detail"]
     rows = client.get("/api/v1/integrations").json()
     assert len(rows) == 1
+
+
+def test_managed_oauth_status_distinguishes_reconnect_from_vault_failure(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from niuu.domain.oauth_credentials import OAUTH_ENGINE, OAuthCredentialUnavailableError
+
+    client, store = _client(tmp_path)
+    assert _connect(client, "gitlab", "initial").status_code == 201
+    metadata = {
+        "renewal_owner": OAUTH_ENGINE,
+        "auth_state": "active",
+        # An enrollment's old expiry is not the current engine token expiry.
+        "auth_expires_at": "2000-01-01T00:00:00Z",
+    }
+    monkeypatch.setattr(store, "get", AsyncMock(return_value=SimpleNamespace(metadata=metadata)))
+    value = AsyncMock(
+        return_value={"token": "private-access", "expires_at": "2099-01-01T00:00:00Z"}
+    )
+    monkeypatch.setattr(store, "get_value", value)
+    response = client.get("/api/v1/integrations")
+    assert response.json()[0]["credential_status"] == "active"
+    assert "private-access" not in response.text
+    for reconnect, expected in [(True, "auth_required"), (False, "unavailable")]:
+        value.side_effect = OAuthCredentialUnavailableError(reconnect=reconnect)
+        response = client.get("/api/v1/integrations")
+        assert response.status_code == 200
+        assert response.json()[0]["credential_status"] == expected
+
+
+def test_credential_identity_comes_from_authenticated_context(tmp_path):
+    import asyncio
+
+    client, store = _client(tmp_path)
+    response = client.post(
+        "/api/v1/integrations",
+        json={
+            "slug": "github",
+            "config": {},
+            "credential": {
+                "name": "github",
+                "data": {"token": "test"},
+                "metadata": {
+                    "tenant_id": "forged",
+                    "integration": "forged",
+                    "oauth_app": "forged",
+                },
+            },
+        },
+    )
+    assert response.status_code == 201
+    stored = asyncio.run(store.get("user", "owner-1", "github"))
+    assert stored.metadata["tenant_id"] == "t"
+    assert stored.metadata["integration"] == "github"
+    assert stored.metadata["oauth_app"] == "default"

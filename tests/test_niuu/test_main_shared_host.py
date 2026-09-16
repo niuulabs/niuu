@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 import cli.shared_host as niuu_main
@@ -44,7 +45,16 @@ async def _idle_reconcile(_service) -> None:
     await asyncio.Event().wait()
 
 
-def test_create_app_mounts_shared_identity_features_and_personas(monkeypatch) -> None:
+@pytest.mark.parametrize("mini,enabled", [(False, True), (True, False), (True, True)])
+def test_create_app_mounts_shared_identity_features_and_personas(
+    monkeypatch, mini, enabled
+) -> None:
+    # Factory is synchronous; the loop is replaced so no background I/O occurs.
+    from unittest.mock import MagicMock
+
+    refresh_factory = MagicMock()
+    monkeypatch.setattr(niuu_main, "create_oauth_token_refresh_service", refresh_factory)
+    monkeypatch.setattr(niuu_main, "refresh_oauth_tokens_loop", _idle_reconcile)
     monkeypatch.setattr(niuu_main, "create_git_registry", lambda _cfg: _DummyGitRegistry())
     monkeypatch.setattr(niuu_main, "database_pool", _fake_database_pool)
     monkeypatch.setattr(niuu_main, "create_storage_adapter", lambda _settings: object())
@@ -146,17 +156,20 @@ def test_create_app_mounts_shared_identity_features_and_personas(monkeypatch) ->
     app = niuu_main.create_app(
         git_config=GitConfig(),
         settings=Settings(
+            local_mounts={"mini_mode": mini},
+            oauth={"mini_mode_refresh_enabled": enabled},
             auth_discovery={
                 "issuer": "https://issuer.example.com",
                 "cli_client_id": "volundr-cli",
                 "scopes": "openid profile email",
-            }
+            },
         ),
     )
 
     with TestClient(app) as client:
         response = client.get("/api/v1/identity/auth/config")
         assert response.status_code == 200
+        assert refresh_factory.call_count == int(mini and enabled)
         assert response.json()["issuer"] == "https://issuer.example.com"
         # /api/v1/niuu/repos lists the person's own accounts, not only config
         assert repo_services and repo_services[0][1] is not None
