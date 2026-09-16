@@ -22,6 +22,7 @@ from volundr.domain.models import (
     StoredCredential,
 )
 from volundr.domain.ports import SessionContext
+from volundr.domain.services.integration_registry import IntegrationRegistry
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
 
 
@@ -69,11 +70,7 @@ def _definition(
 
 
 def _registry(definitions=None):
-    """Build a mock IntegrationRegistry."""
-    reg = MagicMock()
-    defs = {d.slug: d for d in (definitions or [])}
-    reg.get_definition = lambda slug: defs.get(slug)
-    return reg
+    return IntegrationRegistry(definitions or [])
 
 
 class TestSecretInjectionContributor:

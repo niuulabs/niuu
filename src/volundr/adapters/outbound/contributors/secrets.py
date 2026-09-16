@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
@@ -134,10 +135,10 @@ class SecretInjectionContributor(SessionContributor):
                 defn = self._registry.get_definition(conn.slug)
                 if defn is not None:
                     env_mappings.update(defn.env_from_credentials)
-                    if defn.mcp_server:
-                        env_mappings.update(defn.mcp_server.env_from_credentials)
-                        if defn.mcp_server.token_field:
-                            spec = defn.mcp_server
+                    spec = self._registry.mcp_spec(conn)
+                    if spec:
+                        env_mappings.update(spec.env_from_credentials)
+                        if spec.token_field:
                             if context.runtime_backend == "openshell":
                                 if spec.auth_prefix not in {"Bearer ", ""}:
                                     raise ValueError(
@@ -326,6 +327,21 @@ class SecretInjectionContributor(SessionContributor):
                 stored = await self._credential_store.get(
                     "user", session.owner_id, mapping.credential_name
                 )
+                for connection in context.integration_connections:
+                    if (
+                        connection.slug != "mcp"
+                        or connection.credential_name != mapping.credential_name
+                    ):
+                        continue
+                    if (
+                        stored is None
+                        or stored.metadata.get("mcp_url") != connection.config.get("mcp_url")
+                        or stored.metadata.get("tenant_id") != session.tenant_id
+                    ):
+                        raise ValueError("MCP credential is not bound to this server and tenant")
+                    expiry = stored.metadata.get("auth_expires_at")
+                    if expiry and datetime.fromisoformat(str(expiry)) <= datetime.now(UTC):
+                        raise ValueError("MCP authorization has expired; reconnect the server")
                 if stored and stored.metadata.get("renewal_owner") == OAUTH_ENGINE:
                     if stored.metadata.get("tenant_id") != session.tenant_id:
                         raise ValueError("OAuth credential does not belong to the session tenant")
@@ -358,8 +374,7 @@ class SecretInjectionContributor(SessionContributor):
                             or not self._registry
                         ):
                             continue
-                        definition = self._registry.get_definition(connection.slug)
-                        spec = definition.mcp_server if definition else None
+                        spec = self._registry.mcp_spec(connection)
                         if spec and spec.transport == "stdio" and mapping.env_mappings:
                             raise ValueError(
                                 "Renewable MCP credentials require HTTP token_field "

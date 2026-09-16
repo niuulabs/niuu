@@ -90,6 +90,7 @@ def engine(tmp_path, request):
                 not state["revoked"]
                 and form.get("refresh_token") == [state["refresh"]]
                 and form.get("client_id") == ["test-public-client"]
+                and (not state.get("resource") or form.get("resource") == [state["resource"]])
             )
             if good:
                 state["calls"] += 1
@@ -282,6 +283,86 @@ async def test_import_rotation_parallel_readers_and_revocation(engine):
         with pytest.raises(CodexCredentialBrokerError) as exc:
             await broker.get_tokens(**kwargs)
         assert exc.value.reconnect
+    finally:
+        await store.close()
+
+
+async def test_mcp_engine_rejects_private_discovered_token_endpoint(engine):
+    from niuu.domain.oauth_credentials import OAuthCredentialUnavailableError
+
+    base, state, _ = engine
+    store = OpenBaoOAuthCredentialStore(
+        url=base,
+        token="test-root",
+        oauth_mount_path="oauthapp",
+        manage_oauth_applications=True,
+        mcp_resource_indicators=True,
+    )
+    try:
+        await store.configure_oauth_application(
+            slug="mcp",
+            app="private",
+            client_id="test-public-client",
+            client_secret="",
+            authorize_url="https://127.0.0.1/authorize",
+            token_url="https://127.0.0.1/token",
+            token_endpoint_auth_method="none",
+            public_endpoints_only=True,
+        )
+        with pytest.raises(OAuthCredentialUnavailableError):
+            await store.store(
+                "user",
+                "alice",
+                "private-mcp",
+                SecretType.OAUTH_TOKEN,
+                {"refresh_token": "seed-refresh"},
+                {
+                    "integration": "mcp",
+                    "tenant_id": "tenant-a",
+                    "oauth_app": "private",
+                    "mcp_resource": "https://mcp.example.test/tools",
+                },
+            )
+        assert state["calls"] == 0
+    finally:
+        await store.close()
+
+
+async def test_mcp_resource_survives_engine_import_and_parallel_refresh(engine):
+    base, state, _ = engine
+    state["resource"] = "https://mcp.example.test/tools"
+    store = OpenBaoOAuthCredentialStore(
+        url=base,
+        token="test-root",
+        oauth_mount_path="oauthapp",
+        oauth_servers={"mcp/default": "niuu-codex-subscription"},
+        mcp_resource_indicators=True,
+        minimum_seconds=1,
+        maximum_expiry_seconds=14,
+    )
+    try:
+        await store.store(
+            "user",
+            "alice",
+            "mcp-tools",
+            SecretType.OAUTH_TOKEN,
+            {"access_token": "first", "refresh_token": "seed-refresh"},
+            {
+                "integration": "mcp",
+                "tenant_id": "tenant-a",
+                "oauth_app": "default",
+                "oauth_token_field": "access_token",
+                "mcp_resource": state["resource"],
+            },
+        )
+        assert state["calls"] == 1
+        await asyncio.sleep(5)
+        values = await asyncio.gather(
+            *(store.get_value("user", "alice", "mcp-tools") for _ in range(8))
+        )
+        assert state["calls"] == 2
+        assert len({value["access_token"] for value in values}) == 1
+        assert all("refresh_token" not in value for value in values)
     finally:
         await store.close()
 

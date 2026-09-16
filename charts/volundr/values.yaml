@@ -568,6 +568,9 @@ envoy:
     # -- Path prefixes that bypass JWT validation (no auth required)
     # Rules are evaluated in order; matching prefixes skip the JWT check.
     bypassPrefixes:
+      - /api/v1/integrations/oauth/callback
+      - /api/v1/integrations/oauth/mcp/callback
+      - /api/v1/integrations/oauth/mcp/client-metadata
       - /api/v1/identity/auth/config
       - /api/v1/tokens/workload/exchange
       - /api/v1/tokens/workload/jwks
@@ -934,6 +937,8 @@ oauth:
   miniModeRefreshEnabled: true
   # -- Base URL for OAuth redirect callbacks (e.g. https://volundr.example.com)
   redirectBaseUrl: ""
+  mcpRequestTimeoutSeconds: 15
+  mcpStateTtlSeconds: 600
   # -- Per-integration OAuth client credentials
   # clients:
   #   linear:

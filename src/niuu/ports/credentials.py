@@ -76,6 +76,11 @@ class OAuthApplicationStorePort(ABC):
     """Optional provider-client provisioning capability of a managed OAuth store."""
 
     @property
+    def supports_resource_indicators(self) -> bool:
+        """Whether the deployed refresh engine preserves RFC 8707 resource binding."""
+        return False
+
+    @property
     @abstractmethod
     def manages_oauth_applications(self) -> bool:
         """Whether this store owns provider-client provisioning."""
@@ -90,5 +95,7 @@ class OAuthApplicationStorePort(ABC):
         client_secret: str,
         authorize_url: str,
         token_url: str,
+        token_endpoint_auth_method: str = "client_secret_post",
+        public_endpoints_only: bool = False,
     ) -> None:
         """Provision the client used by the same enrollment flow and refresh engine."""

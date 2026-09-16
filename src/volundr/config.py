@@ -955,6 +955,8 @@ class OAuthConfig(BaseModel):
         default=True, description="Run the legacy OAuth refresher only in mini-mode."
     )
     redirect_base_url: str = ""
+    mcp_request_timeout_seconds: float = Field(default=15.0, gt=0)
+    mcp_state_ttl_seconds: int = Field(default=600, gt=0)
     clients: dict[str, OAuthClientConfig] = Field(default_factory=dict)
 
 
@@ -1016,9 +1018,26 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
     """Return the built-in integration catalog entries."""
     return [
         IntegrationDefinitionConfig(
+            slug="mcp",
+            name="MCP server",
+            description="Connect an MCP server using OAuth or an API token",
+            integration_type="mcp",
+            credential_schema={
+                "required": ["access_token"],
+                "properties": {"access_token": {"label": "API token", "type": "password"}},
+            },
+            config_schema={
+                "required": ["mcp_url"],
+                "properties": {
+                    "mcp_url": {"label": "MCP server URL", "type": "string"},
+                    "name": {"label": "Display name", "type": "string"},
+                },
+            },
+        ),
+        IntegrationDefinitionConfig(
             slug="github",
             name="GitHub",
-            description="GitHub source control — repo browsing, clone, PRs, and MCP server",
+            description="GitHub source control — repo browsing, clone, PRs, and gh CLI",
             integration_type="source_control",
             adapter="volundr.adapters.outbound.github.GitHubProvider",
             icon="github",
@@ -1041,12 +1060,6 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             },
             # gh in the session image signs in with GH_TOKEN.
             env_from_credentials={"GH_TOKEN": "token"},
-            mcp_server={
-                "name": "github",
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-github"],
-                "env_from_credentials": {"GITHUB_PERSONAL_ACCESS_TOKEN": "token"},
-            },
             # Sign in with GitHub: device flow of an OAuth App the person owns
             # (client id registered from the wizard or under oauth.clients.github;
             # no secret, no callback). Without scopes GitHub hands out a token
@@ -1069,7 +1082,7 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
         IntegrationDefinitionConfig(
             slug="gitlab",
             name="GitLab",
-            description="GitLab source control — repo browsing, clone, MRs, and MCP server",
+            description="GitLab source control — repo browsing, clone, MRs, and glab CLI",
             integration_type="source_control",
             adapter="volundr.adapters.outbound.gitlab.GitLabProvider",
             icon="gitlab",
@@ -1092,12 +1105,6 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             },
             # glab in the session image signs in with GITLAB_TOKEN.
             env_from_credentials={"GITLAB_TOKEN": "token"},
-            mcp_server={
-                "name": "gitlab",
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-gitlab"],
-                "env_from_credentials": {"GITLAB_PERSONAL_ACCESS_TOKEN": "token"},
-            },
             # Sign in with GitLab (17.2+): device grant of an application whose
             # public client id is configured under oauth.clients.gitlab.
             oauth=OAuthSpecConfig(

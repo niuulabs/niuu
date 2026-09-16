@@ -17,6 +17,7 @@ from niuu.domain.models import SecretType
 from niuu.domain.oauth_credentials import OAUTH_ENGINE, OAuthCredentialUnavailableError
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from volundr.adapters.inbound.auth import extract_principal
+from volundr.adapters.outbound.mcp_oauth import MCPOAuthDiscovery
 from volundr.domain.models import (
     CredentialEnrollment,
     IntegrationConnection,
@@ -822,6 +823,8 @@ def _build_integrations_router(
                     canonical_path=canonical_prefix,
                 ),
             )
+        if data.slug == "mcp":
+            raise HTTPException(422, "Connect MCP servers through the MCP connection endpoint")
         definition = (
             registry.get_definition(data.slug) if registry is not None and data.slug else None
         )
@@ -986,6 +989,11 @@ def _build_integrations_router(
                 detail=f"Integration not found: {connection_id}",
             )
 
+        if existing.slug == "mcp" and (
+            data.credential_name is not None
+            or (data.config is not None and data.config != existing.config)
+        ):
+            raise HTTPException(422, "Reconnect the MCP server to change its authentication")
         now = datetime.now(UTC)
         updated = IntegrationConnection(
             id=existing.id,
@@ -1032,6 +1040,10 @@ def _build_integrations_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Integration not found: {connection_id}",
             )
+        if existing.slug == "mcp":
+            if credential_store is None:
+                raise HTTPException(503, "Credential store unavailable")
+            await credential_store.delete("user", existing.owner_id, existing.credential_name)
         await integration_repo.delete_connection(connection_id)
 
     @router.post(
@@ -1060,6 +1072,38 @@ def _build_integrations_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Integration not found: {connection_id}",
             )
+
+        if existing.slug == "mcp":
+            try:
+                if credential_store is None or registry is None:
+                    raise ValueError("MCP credential store unavailable")
+                credential = await credential_store.get(
+                    "user", existing.owner_id, existing.credential_name
+                )
+                spec = registry.mcp_spec(existing)
+                if (
+                    credential is None
+                    or spec is None
+                    or credential.metadata.get("mcp_url") != spec.url
+                    or credential.metadata.get("tenant_id") != principal.tenant_id
+                ):
+                    raise ValueError("MCP credential binding mismatch")
+                values = await credential_store.get_value(
+                    "user", existing.owner_id, existing.credential_name
+                )
+                token = (values or {}).get(spec.token_field)
+                if not token:
+                    raise ValueError("MCP access token missing")
+                await MCPOAuthDiscovery(request_timeout=PROBE_TIMEOUT_SECONDS).initialize(
+                    spec.url, {spec.auth_header: spec.auth_prefix + token}
+                )
+            except Exception:
+                return IntegrationTestResult(
+                    success=False,
+                    provider="MCP",
+                    error="MCP initialization failed; check the endpoint or reconnect",
+                )
+            return IntegrationTestResult(success=True, provider="MCP", detail="MCP initialized")
 
         try:
             if existing.integration_type == IntegrationType.ISSUE_TRACKER:

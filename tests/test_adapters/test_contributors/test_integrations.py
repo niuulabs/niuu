@@ -439,3 +439,34 @@ async def test_builtin_linear_uses_official_http_and_projected_credential(sessio
     assert server["credential_file"].startswith("/run/secrets/mcp/")
     assert "headers" not in server
     assert "command" not in server
+
+
+@pytest.mark.parametrize("runtime_backend", ["kubernetes", "openshell"])
+async def test_generic_mcp_uses_existing_runtime_credential_delivery(
+    session, principal, runtime_backend
+):
+    from dataclasses import replace
+
+    registry = IntegrationRegistry(
+        definitions_from_config(
+            [definition.model_dump() for definition in Settings().integrations.definitions]
+        )
+    )
+    connection = replace(
+        _linear_connection(), slug="mcp", config={"mcp_url": "https://tools.example/mcp"}
+    )
+    result = await IntegrationContributor(integration_registry=registry).contribute(
+        session,
+        SessionContext(
+            principal=principal,
+            integration_connections=(connection,),
+            runtime_backend=runtime_backend,
+        ),
+    )
+    server = result.values["mcpServers"][0]
+    assert server["url"] == "https://tools.example/mcp"
+    assert server["name"] == "mcp-conn-linear"
+    assert server["auth_header"] == "Authorization"
+    assert server["auth_prefix"] == "Bearer "
+    assert "headers" not in server
+    assert ("credential_env" if runtime_backend == "openshell" else "credential_file") in server

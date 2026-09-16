@@ -93,8 +93,8 @@ class IntegrationContributor(SessionContributor):
                 env_vars.append({"name": env_var, "value": str(value)})
 
             # MCP server integration
-            if defn.mcp_server is not None:
-                spec = defn.mcp_server
+            spec = self._registry.mcp_spec(conn)
+            if spec is not None:
                 # MCP env mappings go into the manifest too
                 for env_var, cred_key in spec.env_from_credentials.items():
                     manifest["env"][env_var] = {

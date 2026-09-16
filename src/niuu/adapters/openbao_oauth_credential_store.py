@@ -38,6 +38,7 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
         oauth_mount_path: str,
         oauth_servers: dict[str, str] | None = None,
         manage_oauth_applications: bool = False,
+        mcp_resource_indicators: bool = False,
         minimum_seconds: int = 120,
         maximum_expiry_seconds: int = 3600,
         codex_oauth_server: str = "",
@@ -52,6 +53,7 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
         self._oauth_mount = oauth_mount_path
         self._oauth_servers = dict(oauth_servers or {})
         self._manage_apps = manage_oauth_applications
+        self._mcp_resource_indicators = mcp_resource_indicators
         if self._manage_apps and self._oauth_servers:
             raise ValueError("Choose managed OAuth applications or manual oauth_servers mappings")
         self._minimum_seconds = minimum_seconds
@@ -69,6 +71,10 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
     def manages_oauth_applications(self) -> bool:
         return self._manage_apps
 
+    @property
+    def supports_resource_indicators(self) -> bool:
+        return self._mcp_resource_indicators
+
     async def configure_oauth_application(
         self,
         *,
@@ -78,9 +84,13 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
         client_secret: str,
         authorize_url: str,
         token_url: str,
+        token_endpoint_auth_method: str = "client_secret_post",
+        public_endpoints_only: bool = False,
     ) -> None:
         if not self._manage_apps:
             raise ValueError("Managed OAuth application provisioning is disabled")
+        if token_endpoint_auth_method not in {"none", "client_secret_post", "client_secret_basic"}:
+            raise ValueError("Unsupported OAuth token endpoint authentication method")
         if not all(url.startswith("https://") for url in (authorize_url, token_url)):
             raise ValueError("Managed OAuth applications require HTTPS provider endpoints")
         server = oauth_application_name(slug, app)
@@ -92,9 +102,14 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
                 "client_id": client_id,
                 "client_secret": client_secret,
                 "provider_options": {
+                    **({"public_endpoints_only": "true"} if public_endpoints_only else {}),
                     "auth_code_url": authorize_url,
                     "token_url": token_url,
-                    "auth_style": "in_params",
+                    "auth_style": (
+                        "in_header"
+                        if token_endpoint_auth_method == "client_secret_basic"
+                        else "in_params"
+                    ),
                 },
             },
         )
@@ -144,6 +159,8 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
             raise ValueError("OAuth enrollment requires a user-owned integration")
         path = self._oauth_path(owner_id, name, meta)
         if data.get("refresh_token"):
+            if meta.get("mcp_resource") and not self._mcp_resource_indicators:
+                raise ValueError("MCP OAuth requires an engine with resource indicator support")
             server = self._oauth_server(meta)
             field = str(meta.get("oauth_token_field") or "token")
             if field in {"refresh_token", "expires_at"}:
@@ -156,6 +173,11 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
                     "grant_type": "refresh_token",
                     "refresh_token": data["refresh_token"],
                     "maximum_expiry_seconds": self._maximum_expiry_seconds,
+                    **(
+                        {"provider_options": {"resource": meta["mcp_resource"]}}
+                        if meta.get("mcp_resource")
+                        else {}
+                    ),
                 },
             )
             if response.status_code >= 400:

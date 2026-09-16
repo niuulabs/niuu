@@ -732,3 +732,20 @@ class TestIntegrationConnectionSlug:
             slug="linear",
         )
         assert conn.slug == "linear"
+
+
+def test_generic_mcp_uses_connection_endpoint_without_static_server(sample_connection):
+    from dataclasses import replace
+
+    connection = replace(
+        sample_connection, slug="mcp", config={"mcp_url": "https://tools.example/mcp"}
+    )
+    registry = IntegrationRegistry()
+    assert registry.build_mcp_server_config(connection, {"access_token": "test-access"}) == {
+        "name": "mcp-conn-1",
+        "type": "http",
+        "url": "https://tools.example/mcp",
+        "headers": {"Authorization": "Bearer test-access"},
+    }
+    with pytest.raises(ValueError, match="reconnect"):
+        registry.build_mcp_server_config(connection, {})
