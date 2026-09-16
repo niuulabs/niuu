@@ -26,7 +26,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { lane: unit, python: "3.11", flags: "--coverage" }
+          # Match the platform minimum in pyproject.toml (Python >=3.12).
           - { lane: unit, python: "3.12", flags: "--coverage" }
           - { lane: tmux, python: "3.12", flags: "" }
     steps:
