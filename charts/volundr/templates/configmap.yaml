@@ -66,6 +66,9 @@ data:
 
     pod_manager:
       adapter: {{ .Values.podManager.adapter | quote }}
+      {{- if .Values.podManager.runtimeBackend }}
+      runtime_backend: {{ .Values.podManager.runtimeBackend | quote }}
+      {{- end }}
       kwargs: {{ .Values.podManager.kwargs | toJson }}
       {{- if .Values.podManager.secretKwargs }}
       secret_kwargs_env:
@@ -75,6 +78,10 @@ data:
       {{- else }}
       secret_kwargs_env: {}
       {{- end }}
+
+    {{- if .Values.compute }}
+    compute: {{ .Values.compute | toJson }}
+    {{- end }}
 
     codex_credential_broker:
       adapter: {{ .Values.codexCredentialBroker.adapter | quote }}

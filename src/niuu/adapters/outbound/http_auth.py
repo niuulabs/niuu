@@ -255,3 +255,26 @@ class RequestBearerTokenAuthAdapter(HttpAuthPort):
 
     def invalidate(self) -> bool:
         return False
+
+
+class FileBearerTokenAuthAdapter(HttpAuthPort):
+    """Read an operator-mounted bearer credential for every request.
+
+    Projected service-account tokens and atomically replaced secret mounts can
+    rotate without restarting the caller. The file content is never logged.
+    """
+
+    def __init__(self, *, token_file: str) -> None:
+        if not token_file:
+            raise ValueError("Bearer authentication requires token_file")
+        self._path = Path(token_file).expanduser()
+
+    def headers(self) -> dict[str, str]:
+        token = self._path.read_text(encoding="utf-8").strip()
+        if not token or any(char.isspace() for char in token):
+            raise ValueError("Bearer token file is empty or contains invalid whitespace")
+        return {"Authorization": f"Bearer {token}"}
+
+    def invalidate(self) -> bool:
+        # A rejection permits one reread in case the token was just rotated.
+        return True

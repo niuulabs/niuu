@@ -43,6 +43,7 @@ from niuu.config_models import (
     default_session_definitions,
 )
 from ravn.config import PersonaSourceConfig
+from volundr.compute.config import ComputeConfig
 from volundr.domain.models import (
     IntegrationType,
     ResidentBackend,
@@ -253,6 +254,10 @@ class PodManagerConfig(BaseModel):
     adapter: str = Field(
         default="volundr.adapters.outbound.flux.FluxPodManager",
         description="Fully-qualified class path for the PodManager adapter.",
+    )
+    runtime_backend: str | None = Field(
+        default=None,
+        description="Explicit contributor backend identity; VM deployments use vm.",
     )
     kwargs: dict[str, Any] = Field(
         default_factory=dict,
@@ -1920,6 +1925,7 @@ class Settings(BaseSettings):
     )
 
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    compute: ComputeConfig | None = None
     server_host: str = Field(
         default="127.0.0.1",
         validation_alias=AliasChoices("server_host", "NIUU_SERVER_HOST"),
