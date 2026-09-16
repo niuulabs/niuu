@@ -210,11 +210,16 @@ For the tested dev image, the live proof used 2 CPUs, 4096 MiB and 16 GiB disk.
 Keep enough disk space for the image, workspace and Docker extraction.
 
 The runtime accepts an empty workspace or Git source and literal session
-environment settings. Kubernetes mounts, projected service-account identity,
-sidecars and host-path sources are rejected. Configure compatible session
+environment settings. It also carries read-only hostPath **files** from the
+existing session secret injector into guest Docker binds at the same paths.
+Skuld consumes `/run/secrets/env.sh` and credential files normally. Credential
+files live outside the archived workspace/home and are deleted with the VM.
+Directories, writable mounts, Kubernetes volumes, projected service-account
+identity, sidecars and workspace host-path sources are rejected. Configure compatible session
 contributors explicitly; the development proof disables projected workload
-identity and uses the existing development identity adapter. Production OIDC
-and workload token renewal require separate integration and verification.
+identity and uses the existing development identity adapter. Production sessions
+must use the deployment's existing identity and OpenBao configuration; the local
+development proof does not establish production authentication.
 
 While running, workspace/home live on guest local disk. Forge stop archives both
 to `data_dir/<session-id>/session.tar` on the controller, then deletes the VM.
@@ -239,3 +244,23 @@ running, then recovered the same allocation and HTTP/WebSocket connectivity.
 Run one controller for this local-disk configuration. Multi-controller routing,
 continuous inventory recovery and durable provisioning retry deadlines remain
 unverified or unimplemented; this is not yet an unattended warm-pool deployment.
+
+### Reuse existing session credentials
+
+VM Skuld uses the same `BrokeredCredentialPodManager` helper as Docker and
+Kubernetes. The default Codex adapter is
+`skuld.codex_auth.VolundrCodexAuthProvider`: it requests access-only tokens from
+the existing Völundr credential broker, which delegates renewal to the configured
+OpenBao credential store. The selected integration's credential name/field are
+preserved. No provider refresh-token implementation is added to the VM backend.
+`compute.runtime.kwargs.codex_auth_adapter` and `codex_auth_kwargs` provide the
+same explicit overrides as Docker; per-session broker settings take precedence.
+
+Broker-only Codex connections require no mounted secret file or OpenBao agent.
+For credentials normally supplied as static files (including Claude setup-token
+environment files), select the existing session file injection adapter. The VM
+runtime transports its output and binds it read-only. This is not continuous
+OpenBao agent projection: managed OAuth file mappings still require a compatible
+continuous injector and are rejected when it is absent. Keep using the configured
+credential store, integration selection and existing broker authentication flow;
+no separate VM login/refresh protocol is required.

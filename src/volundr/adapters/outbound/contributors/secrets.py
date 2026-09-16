@@ -321,6 +321,13 @@ class SecretInjectionContributor(SessionContributor):
         if not mappings:
             return SessionContribution()
 
+        codex_values = _codex_auth_values(context, self._registry)
+        brokered_name = (
+            codex_values.get("broker", {})
+            .get("codexAuth", {})
+            .get("kwargs", {})
+            .get("credential_name")
+        )
         if self._credential_store:
             checked = []
             for mapping in mappings:
@@ -345,9 +352,17 @@ class SecretInjectionContributor(SessionContributor):
                 if stored and stored.metadata.get("renewal_owner") == OAUTH_ENGINE:
                     if stored.metadata.get("tenant_id") != session.tenant_id:
                         raise ValueError("OAuth credential does not belong to the session tenant")
-                    if context.runtime_backend != "openshell" and (
-                        not self._secret_injection
-                        or not self._secret_injection.supports_managed_oauth
+                    if (
+                        not (
+                            mapping.credential_name == brokered_name
+                            and not mapping.env_mappings
+                            and not mapping.file_mappings
+                        )
+                        and context.runtime_backend != "openshell"
+                        and (
+                            not self._secret_injection
+                            or not self._secret_injection.supports_managed_oauth
+                        )
                     ):
                         raise ValueError(
                             "Managed OAuth credentials require continuous OpenBao injection"
@@ -392,10 +407,21 @@ class SecretInjectionContributor(SessionContributor):
             mappings = checked
 
         values = _openshell_credential_values(mappings)
-        codex_values = _codex_auth_values(context, self._registry)
         if codex_values:
             values.update(codex_values)
         if context.runtime_backend == "openshell":
+            return SessionContribution(values=values)
+
+        # Brokered providers such as Codex fetch access tokens through Skuld's
+        # existing authenticated client; there is nothing to mount in the guest.
+        mappings = [
+            mapping
+            for mapping in mappings
+            if mapping.credential_name != brokered_name
+            or mapping.env_mappings
+            or mapping.file_mappings
+        ]
+        if not mappings:
             return SessionContribution(values=values)
 
         if not self._secret_injection:

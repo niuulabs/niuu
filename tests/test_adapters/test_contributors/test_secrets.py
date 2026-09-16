@@ -688,3 +688,52 @@ async def test_openshell_managed_http_mcp_uses_dynamic_provider(session):
     assert mapping["provider"]["endpoints"][0]["host"] == "mcp.example.test"
     assert mapping["provider"]["authStyle"] == "bearer"
     assert "private-access" not in repr(result)
+
+
+@pytest.mark.parametrize("backend", ["vm", "docker", "kubernetes"])
+async def test_brokered_codex_does_not_require_file_or_agent_injection(session, backend):
+    from dataclasses import replace
+
+    from niuu.domain.oauth_credentials import OAUTH_ENGINE
+    from volundr.domain.models import CredentialEnrollmentSpec
+
+    definition = replace(
+        _definition(slug="codex"),
+        credential_enrollment=CredentialEnrollmentSpec(
+            method="codex_device",
+            credential_field="auth.json",
+            default_credential_name="codex-default",
+        ),
+    )
+    store = AsyncMock()
+    store.get.return_value = StoredCredential(
+        id="credential-test",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        name="selected-codex",
+        secret_type=SecretType.OAUTH_TOKEN,
+        owner_type="user",
+        owner_id=session.owner_id,
+        keys=["auth.json"],
+        metadata={
+            "renewal_owner": OAUTH_ENGINE,
+            "tenant_id": session.tenant_id,
+            "oauth_token_field": "auth.json",
+        },
+    )
+    store.get_value.return_value = {"auth.json": "explicit-test-preflight"}
+    contributor = SecretInjectionContributor(
+        credential_store=store,
+        integration_registry=_registry([definition]),
+    )
+    result = await contributor.contribute(
+        session,
+        SessionContext(
+            runtime_backend=backend,
+            integration_connections=(_connection("selected-codex", "codex"),),
+        ),
+    )
+    assert result.pod_spec is None
+    assert result.values["broker"]["codexAuth"]["kwargs"]["credential_name"] == "selected-codex"
+    assert "explicit-test-preflight" not in repr(result)
+    store.get_value.assert_awaited_once_with("user", session.owner_id, "selected-codex")

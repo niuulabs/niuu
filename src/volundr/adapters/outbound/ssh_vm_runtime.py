@@ -15,13 +15,17 @@ import shlex
 import socket
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import httpx
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from niuu.ports.session_proxy import SessionProxyTarget
+from volundr.adapters.outbound.brokered_credentials import (
+    DEFAULT_CODEX_AUTH_ADAPTER,
+    BrokeredCredentialPodManager,
+)
 from volundr.adapters.outbound.local_process import LocalProcessPodManager
 from volundr.domain.compute import BootstrapFile, ComputeLease, MachineBootstrap
 from volundr.domain.models import Session, SessionSpec
@@ -64,10 +68,12 @@ if p['repo'] and not (workspace/'.git').exists():
     run(*args)
 run('chown','-R','1000:1000',str(root))
 env_args=[arg for key in p['environment'] for arg in ('--env',key)]
+secret_mounts=[arg for mount in p.get('secret_mounts',[]) for arg in
+    ('--mount','type=bind,src='+mount['source']+',dst='+mount['target']+',readonly')]
 run('docker','pull',p['image'])
 run('docker','run','--detach','--init','--name',name,'--network','host',
     '--label','compute.niuu.io/allocation='+p['allocation_id'],
-    *env_args,
+    *env_args,*secret_mounts,
     '--mount','type=bind,src='+str(workspace)+',dst=/workspace',
     '--mount','type=bind,src='+str(home)+',dst=/home/skuld',p['image'],
     env={**os.environ,**p['environment']})
@@ -109,7 +115,7 @@ subprocess.run(['docker','stop','--time',sys.argv[2],'niuu-skuld'],check=True,st
 """
 
 
-class SshContainerVmRuntime(VmRuntime):
+class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
     def __init__(
         self,
         *,
@@ -117,6 +123,8 @@ class SshContainerVmRuntime(VmRuntime):
         ssh_public_key_file: str,
         data_dir: str,
         skuld_image: str,
+        codex_auth_adapter: str = DEFAULT_CODEX_AUTH_ADAPTER,
+        codex_auth_kwargs: dict | None = None,
         platform_host: str = "127.0.0.1",
         platform_port: int = 8080,
         guest_platform_port: int = 18080,
@@ -152,6 +160,9 @@ class SshContainerVmRuntime(VmRuntime):
         self._data = Path(data_dir).expanduser().resolve()
         self._data.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._image = skuld_image
+        self._configure_brokered_credentials(
+            codex_auth_adapter=codex_auth_adapter, codex_auth_kwargs=codex_auth_kwargs
+        )
         self._platform_host, self._platform_port = platform_host, platform_port
         self._guest_platform_port = guest_platform_port
         self._ssh_user, self._ssh_port = ssh_user, ssh_port
@@ -170,8 +181,6 @@ class SshContainerVmRuntime(VmRuntime):
         pod = spec.pod_spec
         if any(
             (
-                pod.volumes,
-                pod.volume_mounts,
                 pod.service_account,
                 pod.init_containers,
                 pod.extra_containers,
@@ -179,7 +188,7 @@ class SshContainerVmRuntime(VmRuntime):
         ):
             raise ValueError(
                 "SSH VM sessions require local-disk storage; "
-                "Kubernetes mounts and sidecars are unsupported"
+                "Kubernetes service accounts and sidecars are unsupported"
             )
         if session.source.type != "git":
             raise ValueError(
@@ -189,7 +198,10 @@ class SshContainerVmRuntime(VmRuntime):
             raise ValueError(
                 "SSH VM runtime cannot silently replace configured storage or flock topology"
             )
-        env = LocalProcessPodManager._session_env(spec, Path("/workspace"))
+        secret_files, secret_mounts = self._secret_files(spec)
+        brokered = self._with_brokered_credentials(spec)
+        env = LocalProcessPodManager._session_env(brokered, Path("/workspace"))
+        env.update(self._brokered_credential_environment(brokered))
         for entry in pod.env:
             if "valueFrom" in entry or "value" not in entry or not entry.get("name"):
                 raise ValueError("SSH VM session env must contain literal name/value entries")
@@ -239,6 +251,7 @@ class SshContainerVmRuntime(VmRuntime):
                 "environment": env,
                 "repo": session.source.repo,
                 "branch": session.source.branch,
+                "secret_mounts": secret_mounts,
             }
         )
         files = (
@@ -250,6 +263,7 @@ class SshContainerVmRuntime(VmRuntime):
                 permissions="0644",
             ),
             BootstrapFile(path=_LAUNCH, content=payload),
+            *secret_files,
         )
         paths = [f.path for f in (*defaults.files, *files)]
         if len(paths) != len(set(paths)):
@@ -259,6 +273,48 @@ class SshContainerVmRuntime(VmRuntime):
             commands=(*defaults.commands, ("systemctl", "restart", "ssh")),
             ssh_authorized_keys=(*defaults.ssh_authorized_keys, self._public_key),
         )
+
+    @staticmethod
+    def _secret_files(spec: SessionSpec) -> tuple[list[BootstrapFile], list[dict[str, str]]]:
+        """Carry the existing injector's read-only files to guest Docker binds.
+
+        Credentials stay outside archived workspace/home, and use Skuld's normal
+        env.sh/file readers. Kubernetes agent injection cannot be snapshotted.
+        """
+        volumes = {v.get("name"): v for v in spec.pod_spec.volumes}
+        if len(volumes) != len(spec.pod_spec.volumes):
+            raise ValueError("Duplicate VM volume names")
+        files, mounts, used = [], [], set()
+        for mount in spec.pod_spec.volume_mounts:
+            name = mount.get("name")
+            volume = volumes.get(name, {})
+            host = volume.get("hostPath", {})
+            target = str(mount.get("mountPath", ""))
+            if (
+                not mount.get("readOnly")
+                or mount.get("subPath")
+                or mount.get("subPathExpr")
+                or host.get("type") != "File"
+                or not target.startswith("/")
+                or target == "/"
+                or ".." in PurePosixPath(target).parts
+                or any(char in target for char in (",", "\x00"))
+            ):
+                raise ValueError(
+                    "VM secret mounts require read-only hostPath files and absolute targets"
+                )
+            source = Path(host["path"]).expanduser()
+            if not source.is_file():
+                raise ValueError("VM secret source is not an existing file")
+            guest = f"/etc/niuu/session-secrets/{len(files)}"
+            files.append(BootstrapFile(path=guest, content=source.read_text(), permissions="0644"))
+            mounts.append({"source": guest, "target": target})
+            used.add(name)
+        if used != set(volumes):
+            raise ValueError("VM runtime cannot ignore unmounted or unsupported volumes")
+        if len({m["target"] for m in mounts}) != len(mounts):
+            raise ValueError("Duplicate VM secret mount targets")
+        return files, mounts
 
     def _ssh(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> list[str]:
         if not lease.machine or not lease.machine.addresses:
