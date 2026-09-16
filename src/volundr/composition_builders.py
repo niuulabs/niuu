@@ -217,6 +217,8 @@ def _create_resident_session_controllers(
 
 
 def _runtime_backend(settings: Settings) -> str:
+    if settings.pod_manager.runtime_backend:
+        return settings.pod_manager.runtime_backend
     adapter = settings.pod_manager.adapter.rsplit(".", 1)[-1].lower()
     if "openshell" in adapter:
         return "openshell"

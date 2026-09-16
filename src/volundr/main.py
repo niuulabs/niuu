@@ -1,6 +1,7 @@
 """Application factory for Volundr API."""
 
 import asyncio
+import inspect
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -598,6 +599,48 @@ def create_app(
 
             # Credential store (pluggable: memory, Vault, Infisical)
             credential_store = _create_credential_store(settings)
+            compute_provider = None
+            if settings.compute is not None:
+                from volundr.adapters.outbound.postgres_compute_leases import (
+                    PostgresComputeLeaseRepository,
+                )
+                from volundr.compute.main import build_provider
+                from volundr.domain.services.compute_leases import ComputeLeaseService
+                from volundr.domain.vm_runtime import VmRuntime
+
+                compute = settings.compute
+                if compute.runtime is None or not hasattr(pod_manager, "configure_compute"):
+                    raise ValueError(
+                        "Compute sessions require a VM PodManager and a runtime adapter"
+                    )
+                if compute.database is not None and compute.database != settings.database:
+                    raise ValueError("Forge compute leases must use the Forge database")
+                runtime_cls = import_class(compute.runtime.adapter)
+                runtime = runtime_cls(
+                    **resolve_secret_kwargs(
+                        compute.runtime.kwargs, compute.runtime.secret_kwargs_env
+                    )
+                )
+                if not isinstance(runtime, VmRuntime):
+                    raise TypeError("Compute runtime must implement VmRuntime")
+                compute_provider = build_provider(compute)
+                compute_repository = PostgresComputeLeaseRepository(pool)
+                compute_service = ComputeLeaseService(
+                    compute_repository,
+                    compute_provider,
+                    pool_id=compute.pool_id,
+                    max_machines=compute.max_machines,
+                    bootstrap=compute.bootstrap,
+                    bootstrap_store=credential_store,
+                )
+                pod_manager.configure_compute(
+                    compute_service,
+                    compute_repository,
+                    runtime,
+                    compute.bootstrap,
+                    pool_id=compute.pool_id,
+                    max_machines=compute.max_machines,
+                )
             codex_credential_broker = _create_codex_credential_broker(
                 settings,
                 credential_store=credential_store,
@@ -798,7 +841,8 @@ def create_app(
                         return None
                     session = await repository.get(resource_id)
                     if session is not None:
-                        return pod_manager.session_proxy_target(session)
+                        target = pod_manager.session_proxy_target(session)
+                        return await target if inspect.isawaitable(target) else target
                     return await resident_runtime_service.proxy_target(resource_id)
 
                 skuld_reg.set_target_resolver(_resolve_session_proxy_target)
@@ -1324,6 +1368,8 @@ def create_app(
                 await event_ingestion.close_all()
                 if hasattr(pod_manager, "close"):
                     await pod_manager.close()
+                if compute_provider is not None:
+                    await compute_provider.close()
                 for controller in resident_controllers:
                     if controller is not pod_manager and hasattr(controller, "close"):
                         await controller.close()

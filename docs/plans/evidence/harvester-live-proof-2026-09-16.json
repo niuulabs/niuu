@@ -1,0 +1,88 @@
+{
+  "harvester_version": "v1.8.2",
+  "kubernetes_version": "v1.35.7+rke2r1",
+  "provider": {
+    "adapter": "volundr.adapters.outbound.harvester.HarvesterMachineProvider",
+    "kwargs": {
+      "base_url": "https://harvester.vanaheim.niuu.world",
+      "installation_id": "niuu-compute-live-proof",
+      "namespace": "asgard",
+      "profiles": {
+        "ubuntu-proof": {
+          "cpu": 2,
+          "disk_gib": 8,
+          "image": "ginnungagap/ubuntu-24.04-server-cloudimg-amd64",
+          "memory_mib": 2048,
+          "network": "asgard/asgard-10gb-1"
+        }
+      }
+    }
+  },
+  "bootstrap": {
+    "commands": [
+      [
+        "sh",
+        "-ec",
+        "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-guest-agent && systemctl enable --now qemu-guest-agent"
+      ]
+    ]
+  },
+  "authentication": "Operator-supplied bearer token, read from a private temporary file; TLS verified using the system trust store.",
+  "database": "Isolated real PostgreSQL, migration 000066, Unix socket only.",
+  "events": [
+    {
+      "event": "proof_started",
+      "pool_id": "vanaheim-asgard-live-proof",
+      "session_id": "b7f2ab7f-a76a-4e48-8fb3-cf2b2d8ef9f3"
+    },
+    {
+      "event": "allocation_created",
+      "lease_id": "dbbc0db0-f1b7-410e-b94e-c7ee08101685",
+      "state": "provisioning",
+      "machine": {
+        "allocation_id": "dbbc0db0-f1b7-410e-b94e-c7ee08101685",
+        "resource_id": "niuu-dbbc0db0f1b7410eb94ec7ee08101685",
+        "state": "provisioning",
+        "addresses": []
+      }
+    },
+    {
+      "event": "vm_ready",
+      "lease_id": "dbbc0db0-f1b7-410e-b94e-c7ee08101685",
+      "machine": {
+        "allocation_id": "dbbc0db0-f1b7-410e-b94e-c7ee08101685",
+        "resource_id": "niuu-dbbc0db0f1b7410eb94ec7ee08101685",
+        "state": "running",
+        "addresses": [
+          "192.168.90.7"
+        ]
+      }
+    },
+    {
+      "event": "cleanup_started",
+      "lease_id": "dbbc0db0-f1b7-410e-b94e-c7ee08101685"
+    },
+    {
+      "event": "cleanup_verified",
+      "lease_id": "dbbc0db0-f1b7-410e-b94e-c7ee08101685"
+    },
+    {
+      "event": "proof_passed",
+      "session_id": "b7f2ab7f-a76a-4e48-8fb3-cf2b2d8ef9f3",
+      "scope": "VM lifecycle only; no agent runtime tested"
+    }
+  ],
+  "final_database_state": "released",
+  "final_inventory": {
+    "checked_at": "2026-09-16T11:35:28.563131+00:00",
+    "namespace": "asgard",
+    "installation_id": "niuu-compute-live-proof",
+    "resources": {
+      "virtualmachines": [],
+      "virtualmachineinstances": [],
+      "persistentvolumeclaims": [],
+      "secrets": []
+    }
+  },
+  "scope": "VM allocation, readiness with reported guest IP, durable lease lifecycle, deletion. No Forge/Skuld or agent-session proof."
+}

@@ -307,7 +307,11 @@ bifrost:
     # -- Secret-backed kwargs forwarded through env indirection
     secretKwargs: []
 
+compute: null
+
 podManager:
+  # -- Explicit contributor backend identity; set vm for VmPodManager
+  runtimeBackend: ""
   # -- Fully-qualified class path for the PodManager adapter
   adapter: "volundr.adapters.outbound.flux.FluxPodManager"
   # -- Existing secret containing the backend API token (mounted as POD_MANAGER_TOKEN)
