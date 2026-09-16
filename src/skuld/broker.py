@@ -405,6 +405,7 @@ class Broker(
         self._archive_store = archive_store_cls(**self._settings.archive_store.kwargs)
         self.volundr_api_url = self._settings.volundr_api_url
         self._transport: CLITransport | None = None
+        self._transport_start_lock = asyncio.Lock()
         self.service_manager: ServiceManager | None = None
         self._channels = ChannelRegistry()
         self._http_client: httpx.AsyncClient | None = None
@@ -4472,9 +4473,7 @@ class Broker(
         outbound = self._format_room_message_for_skuld(content)
         self._pending_explicit_human_messages.append((content, outbound))
         self._pending_explicit_human_response_count += 1
-        if not self._transport.is_alive:
-            logger.info("Starting transport for explicit human room message")
-            await self._transport.start()
+        await self._ensure_transport_started()
         await self._transport.send_message(outbound)
 
     def _format_room_message_for_skuld(self, content: str) -> str:

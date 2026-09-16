@@ -97,6 +97,14 @@ class TransportLifecycleMixin:
         logger.info("Using %s (adapter: %s)", cls.__name__, adapter_path)
         return cls(**filtered)
 
+    async def _ensure_transport_started(self) -> None:
+        """Join any in-flight startup before accepting messages on any channel."""
+        async with self._transport_start_lock:
+            if self._transport is None:
+                raise RuntimeError("Transport not initialized")
+            if not self._transport.is_alive:
+                await self._transport.start()
+
     async def _auto_start_transport(self) -> None:
         """Background-task wrapper around ``self._transport.start()``.
 
@@ -124,7 +132,7 @@ class TransportLifecycleMixin:
                 logger.debug("Initial-prompt user_confirmed broadcast failed", exc_info=True)
 
         try:
-            await self._transport.start()
+            await self._ensure_transport_started()
             logger.info("Transport auto-started successfully")
         except Exception:
             logger.error("Transport auto-start failed", exc_info=True)

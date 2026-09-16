@@ -110,6 +110,36 @@ class TestBroker:
         settings.session.workspace_dir = str(tmp_path)
         return Broker(settings=settings)
 
+    async def test_background_resume_and_channel_start_join_one_handshake(self, test_broker):
+        entered, finish = asyncio.Event(), asyncio.Event()
+        transport = MagicMock(is_alive=False)
+
+        async def start():
+            entered.set()
+            # Codex becomes alive before its thread resume handshake completes.
+            transport.is_alive = True
+            await finish.wait()
+
+        transport.start = AsyncMock(side_effect=start)
+        test_broker._transport = transport
+        background = asyncio.create_task(test_broker._auto_start_transport())
+        await entered.wait()
+        channel = asyncio.create_task(test_broker._ensure_transport_started())
+        await asyncio.sleep(0)
+        assert not channel.done()
+        finish.set()
+        await asyncio.gather(background, channel)
+        transport.start.assert_awaited_once()
+
+    async def test_transport_start_failure_does_not_hold_start_lock(self, test_broker):
+        transport = MagicMock(is_alive=False)
+        transport.start = AsyncMock(side_effect=[RuntimeError("startup failed"), None])
+        test_broker._transport = transport
+        with pytest.raises(RuntimeError, match="startup failed"):
+            await test_broker._ensure_transport_started()
+        await test_broker._ensure_transport_started()
+        assert transport.start.await_count == 2
+
     def test_init_from_settings(self, test_broker, tmp_path):
         assert test_broker.session_id == "test-session-123"
         assert test_broker.workspace_dir == str(tmp_path)

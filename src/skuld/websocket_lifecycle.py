@@ -174,33 +174,17 @@ class WebSocketLifecycleMixin:
                 await self._safe_browser_send_json(websocket, _transport_err)
                 return
 
-            # Lazy-start transport on first browser connection
-            if not self._transport.is_alive:
-                if self._is_room_routed_session():
-                    logger.info(
-                        "handle_websocket: room-routed session detected; "
-                        "skipping transport lazy-start"
-                    )
-                else:
-                    logger.info("handle_websocket: transport not alive, starting...")
-                    try:
-                        await self._transport.start()
-                        logger.info("handle_websocket: transport started successfully")
-                    except Exception as e:
-                        logger.error(
-                            "handle_websocket: transport.start() failed: %r",
-                            e,
-                            exc_info=True,
-                        )
-                        _start_err = {
-                            "type": "error",
-                            "content": f"Transport start failed: {e}",
-                        }
-                        self._enqueue_event_log(_start_err)
-                        await self._safe_browser_send_json(websocket, _start_err)
-                        return
-            else:
-                logger.debug("handle_websocket: transport already alive")
+            # Join background resume even when the transport reports alive before
+            # completing its handshake. Every start path uses the same lock.
+            if not self._is_room_routed_session():
+                try:
+                    await self._ensure_transport_started()
+                except Exception as e:
+                    logger.error("handle_websocket: transport start failed: %r", e, exc_info=True)
+                    _start_err = {"type": "error", "content": f"Transport start failed: {e}"}
+                    self._enqueue_event_log(_start_err)
+                    await self._safe_browser_send_json(websocket, _start_err)
+                    return
 
             # Report session start to timeline (once, on first connection)
             asyncio.create_task(self._report_session_start())
