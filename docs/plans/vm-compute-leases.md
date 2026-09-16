@@ -6,7 +6,8 @@ implemented. Live Harvester VM lifecycle proof passed on 2026-09-16. Forge
 runtime integration now includes a generic VmPodManager and a pinned-SSH Docker
 runtime, with local-disk archive/restore. Live Codex execution through the
 existing Niuu credential broker passed. Production deployment authentication,
-permanent provider credentials and deployment-scale load remain operational acceptance items.
+permanent provider credentials and sustained load beyond ten simultaneous VMs remain
+operational acceptance items. The ten-VM load and replacement proof passed.
 Provider-neutral warm pools and their admin settings are now implemented.
 Verified on 2026-09-16 against local `dev`, HEAD `302507990`, including the
 existing uncommitted working-tree changes. Those changes were left intact.
@@ -23,8 +24,12 @@ Source discussion: https://chatgpt.com/share/6aaa7520-9028-83ea-88f2-0e71daaa28c
 - Added after review: adapter-owned profile revisions prevent assignment of a
   stale spare after a profile definition changes. Legacy unversioned spares are
   replaced; already-bound sessions remain on their existing allocation.
-- Pending operator input: a durable Harvester credential source and the maximum
-  VM count for the next live load/churn run. The pool remains paused and drained.
+- Complete: operator-authorized ten-VM run at one CPU and 1024 MiB each, real
+  Codex turns on all ten, capacity rejection, and five archived-session restores
+  on replacement guests. Two recovery bugs found during the run were fixed and
+  verified live; see the load evidence below.
+- Pending operational setup: a durable Harvester credential source beyond the
+  supplied temporary token. The verified local pool is paused and drained.
 - Pending deployment selection: production gateway/identity and credential-store
   verification. The chosen loopback installation uses existing development
   identity and the existing Spark credential broker; it cannot certify a different
@@ -534,8 +539,8 @@ The existing Ting HTTP adapter discovered Guild's target and claimed a spare.
 Focused validation includes 114 compute/application/migration tests, 80 existing
 credential/routing/Ting tests, 19 mounted-settings UI tests and three Playwright
 checks (save, server error, loading/denied, keyboard activation). The focused
-compute modules meet the 85% coverage gate. Load evidence is deliberately bounded
-to two VMs; it does not certify hundreds of sessions or production OIDC/OpenBao.
+compute modules meet the 85% coverage gate. This earlier proof was bounded to two VMs. The ten-VM follow-up below extends
+load evidence; neither run certifies hundreds of sessions or production OIDC/OpenBao.
 
 The permanent local installation is under `~/.niuu/compute-controller`, with
 PostgreSQL and the standard Niuu root application supervised by user LaunchAgents.
@@ -560,3 +565,47 @@ by this two-machine, local-identity proof.
 Concurrent pool maintenance can hold the allocation lock during stop. The stop
 path retries this contention within its configured cleanup timeout, without
 repeating a successful workspace archive or reporting a false failure.
+
+## Ten-VM load and replacement proof (2026-09-16)
+
+The authorized run used ten Harvester guests, each configured with one CPU,
+1024 MiB RAM and a 16 GiB root disk. After the two-guest pilot, eight simultaneous
+warm assignments reached running in 8.16–8.18 seconds. Preparing those eight
+spares took 395.98 seconds with at most four machines provisioning concurrently.
+All ten sessions completed real Codex shell turns and wrote distinct workspace
+markers. An eleventh launch returned HTTP 409; observed allocations never
+exceeded ten. Provider manifests and independent SSH checks confirmed the
+resource limits and all ten markers, with no container OOM kills or restarts.
+
+Stopping and replacing five guests exposed two real recovery defects:
+
+- Background history resume and the first WebSocket could start the same Skuld
+  transport concurrently. Commit `7eda1bee3` serializes shared startup through
+  completion, including the Codex handshake.
+- A stale Codex temporary directory contained absolute executable symlinks,
+  correctly rejected by safe archive extraction. Commit `29618c94e` adds explicit
+  relative archive exclusions to the generic SSH runtime and permits normal
+  cleanup of failed sessions. This installation excludes `home/.codex/tmp`;
+  workspace extraction retains the standard safety filter. Allocation markers
+  are recreated only after successful preparation.
+
+All five archived sessions subsequently resumed on replacement allocations and
+read their original markers in real model turns. Independent checks on every
+restored guest verified the patched transport source, preserved files and zero
+container OOM kills/restarts. Cleanup of the failed guest preserved the original
+archive byte-for-byte. The evidence retains the initial failures as well as the
+successful retries.
+
+The shared transport fix passed 302 broker tests and its full Dev CI run. The
+archive/failed-session cleanup fix passed 181 focused tests; its CI was still running
+at evidence publication. The local broad backend run reached 85.92% combined
+coverage after installing the missing optional telemetry dependency and rerunning
+its tests; it emitted eight pre-existing SQLite resource warnings on Python 3.13.
+No coverage gate was lowered.
+
+Sanitized measurements are in
+[`evidence/harvester-load-10vm-2026-09-16.json`](evidence/harvester-load-10vm-2026-09-16.json).
+The final check confirms all ten sessions stopped, zero owned provider VMs and
+zero active allocations. The controller/admin UI remain available; the pool is
+paused and drained. This is a bounded load/churn proof, not a sustained-capacity
+or production identity certification.
