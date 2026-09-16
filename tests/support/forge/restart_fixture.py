@@ -161,6 +161,7 @@ def serve(config_path: Path):
         patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
         patch("volundr.main.database_pool", database),
         patch("volundr.main.PostgresSessionRepository", return_value=repo),
+        patch("volundr.main.seed_development_identity", new=AsyncMock()),
         patch(
             "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
             new=AsyncMock(return_value=[]),

@@ -36,10 +36,10 @@ def _identity(pid):
     return {"pid": pid, "start_ticks": fields[19]}
 
 
-def _wait_http(url, process):
+def _wait_http(url, process, log_path):
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
-        assert process.poll() is None, "API exited before ready; inspect fixture api.log"
+        assert process.poll() is None, log_path.read_text()
         try:
             response = httpx.get(url, timeout=0.5, trust_env=False)
             if response.status_code == 200:
@@ -132,10 +132,10 @@ def test_full_api_restart_preserves_processes_turn_and_proxy_reconnect(tmp_path,
 
         try:
             api = launch()
-            initial = _wait_http(rest + "/fixture/status", api)
+            initial = _wait_http(rest + "/fixture/status", api, tmp_path / "api.log")
             assert initial["backend"] == "process"
             assert initial["session"] == session.model_dump(mode="json")
-            _wait_http(f"http://127.0.0.1:{gateway_port}/health", api)
+            _wait_http(f"http://127.0.0.1:{gateway_port}/health", api, tmp_path / "api.log")
             gateway_pid = json.loads(Path(config["state_file"]).read_text())[str(session.id)]["pid"]
             gateway_identity = _identity(gateway_pid)
             with connect(ws_url, proxy=None) as first:
@@ -151,7 +151,7 @@ def test_full_api_restart_preserves_processes_turn_and_proxy_reconnect(tmp_path,
             assert _identity(gateway_pid) == gateway_identity
             assert _identity(native_pid) == native_identity
             api = launch()
-            assert _wait_http(rest + "/fixture/status", api) == initial
+            assert _wait_http(rest + "/fixture/status", api, tmp_path / "api.log") == initial
             with connect(ws_url, proxy=None) as second:
                 _receive_until(second, "BEFORE_RESTART")
                 # Also exercise abrupt API death: both restarts must rebuild
@@ -164,7 +164,7 @@ def test_full_api_restart_preserves_processes_turn_and_proxy_reconnect(tmp_path,
                 assert time.monotonic() < deadline, "Owned turn did not progress during API outage"
                 time.sleep(0.05)
             api = launch()
-            assert _wait_http(rest + "/fixture/status", api) == initial
+            assert _wait_http(rest + "/fixture/status", api, tmp_path / "api.log") == initial
             with connect(ws_url, proxy=None) as third:
                 _receive_until(third, "DURING_API_OUTAGE")
                 # Allow the real periodic startup-reconciliation loop to run

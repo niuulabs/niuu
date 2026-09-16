@@ -5,9 +5,18 @@ const config = JSON.parse(
   readFileSync(new URL('../apps/niuu/public/config.json', import.meta.url), 'utf8'),
 );
 
+config.services.setup = { mode: 'http', baseUrl: '/api/v1/niuu/setup' };
+config.services.integrations = { mode: 'http', baseUrl: '/api/v1/integrations' };
+
 // Use the checked-in mock services so the functional gate needs neither a live
 // platform nor provider credentials. Transport/replay wires have separate tests.
 test.beforeEach(async ({ page }) => {
+  // These contracts describe an already configured installation in Advanced mode.
+  await page.addInitScript(() => localStorage.setItem('niuu.compactUx.mode', 'advanced'));
+  await page.route('**/api/v1/niuu/setup', (route) =>
+    route.fulfill({ json: { enabled: false, completed: true, steps: [], completedSteps: [] } }),
+  );
+  await page.route('**/api/v1/integrations{,/**}', (route) => route.fulfill({ json: [] }));
   await page.route('**/config.json', (route) => route.fulfill({ json: config }));
 });
 
