@@ -199,7 +199,9 @@ class RootServer(Service):
                         logger.debug("No migrations found for %s", variant)
                         continue
                     sql_files = ordered_migration_files(mig_dir)
-                    await apply_startup_migrations(volundr_conn, sql_files)
+                    await apply_startup_migrations(
+                        volundr_conn, sql_files, namespace="ting" if variant == "ting" else ""
+                    )
                     logger.info("Verified %d %s migrations", len(sql_files), variant)
             finally:
                 await volundr_conn.close()
