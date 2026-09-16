@@ -98,17 +98,24 @@ async def test_a_provider_can_have_an_application_per_account(store) -> None:
 
 
 @pytest.mark.asyncio
-async def test_only_device_flow_integrations_take_an_application(store) -> None:
+async def test_oauth_integrations_take_an_application(store) -> None:
     registry = _registry(store)
     await registry.load()
     assert registry.supports("github")
     assert registry.supports("gitlab")
+    assert registry.supports("jira")
+    assert not registry.has_usable("jira")
     assert not registry.supports("anthropic")
     assert not registry.supports("nope")
     with pytest.raises(OAuthClientError, match="does not sign in through"):
         await registry.register("anthropic", "x")
     with pytest.raises(OAuthClientError, match="client id is required"):
         await registry.register("github", "   ")
+    with pytest.raises(OAuthClientError, match="client secret is required"):
+        await registry.register("jira", "jira-client")
+    jira = await registry.register("jira", "jira-client", "jira-secret")
+    assert jira.client_secret == "jira-secret"
+    assert registry.has_usable("jira")
 
 
 @pytest.mark.asyncio

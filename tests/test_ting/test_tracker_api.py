@@ -528,6 +528,18 @@ def _build_test_client(
     return TestClient(app)
 
 
+def _build_multi_tracker_client(trackers: list[MockTracker]) -> TestClient:
+    app = FastAPI()
+    app.state.authorization = AllowAllAuthorizationAdapter()
+    app.state.legacy_route_hits = {}
+    app.include_router(create_canonical_tracker_router())
+    app.include_router(create_tracker_router())
+    app.dependency_overrides[resolve_trackers] = lambda: trackers
+    app.state.saga_repo = MockSagaRepo()
+    app.state.settings = MagicMock(auth=AuthConfig(allow_anonymous_dev=True))
+    return TestClient(app)
+
+
 class _FailingTracker(MockTracker):
     async def list_projects(self) -> list[TrackerProject]:
         raise RuntimeError("tracker down")
@@ -599,6 +611,29 @@ class TestGetProject:
     def test_not_found(self, client: TestClient):
         resp = client.get("/api/v1/ting/tracker/projects/nonexistent")
         assert resp.status_code == 404
+
+    def test_same_project_id_requires_connection_when_multiple_trackers_match(self):
+        first = MockTracker()
+        second = MockTracker()
+        first.bind_connection(connection_id="jira-a", provider="jira", name="Acme Jira")
+        second.bind_connection(connection_id="jira-b", provider="jira", name="Beta Jira")
+        first.projects = [
+            TrackerProject("SHARED", "Acme", "", "started", "https://a", 0, 1)
+        ]
+        second.projects = [
+            TrackerProject("SHARED", "Beta", "", "started", "https://b", 0, 2)
+        ]
+        multi_client = _build_multi_tracker_client([first, second])
+
+        ambiguous = multi_client.get("/api/v1/tracker/projects/SHARED")
+        selected = multi_client.get(
+            "/api/v1/tracker/projects/SHARED?tracker_connection_id=jira-b"
+        )
+
+        assert ambiguous.status_code == 409
+        assert selected.status_code == 200
+        assert selected.json()["name"] == "Beta"
+        assert selected.json()["tracker_connection_id"] == "jira-b"
 
 
 class TestListMilestones:
@@ -679,6 +714,31 @@ class TestImportProject:
             },
         )
         assert resp.status_code == 404
+
+    def test_import_persists_selected_tracker_connection(self):
+        first = MockTracker()
+        second = MockTracker()
+        first.bind_connection(connection_id="jira-a", provider="jira", name="Acme Jira")
+        second.bind_connection(connection_id="jira-b", provider="jira", name="Beta Jira")
+        first.projects = [TrackerProject("P1", "Acme", "", "started", "", 0, 0)]
+        second.projects = [TrackerProject("P1", "Beta", "", "started", "", 0, 0)]
+        multi_client = _build_multi_tracker_client([first, second])
+
+        response = multi_client.post(
+            "/api/v1/tracker/import",
+            json={
+                "project_id": "P1",
+                "tracker_connection_id": "jira-b",
+                "repos": ["org/repo"],
+                "base_branch": "main",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["tracker_connection_id"] == "jira-b"
+        assert response.json()["tracker_type"] == "jira"
+        saved = multi_client.app.state.saga_repo.sagas[0]
+        assert saved.tracker_connection_id == "jira-b"
 
     def test_duplicate_slug_returns_409(self, client: TestClient):
         client.app.state.saga_repo.sagas.append(

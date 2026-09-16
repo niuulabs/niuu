@@ -25,6 +25,7 @@ export const setupPlugin = definePlugin({
 
 export { SetupGate, isSetupPath, SETUP_PATH, READY_PATH } from './ui/SetupGate';
 export { SETUP_SERVICE_KEY } from './ui/hooks';
+export { AddProviderDialog } from './ui/AddProviderDialog';
 export { buildSetupHttpAdapter } from './adapters/http';
 export { createMockSetupService, MOCK_CATALOG, MOCK_SYSTEM } from './adapters/mock';
 export type { ISetupService } from './ports';
@@ -41,7 +42,9 @@ export type {
   StackView,
   IntegrationConnection,
   IntegrationTestResult,
+  ProviderGroup,
   SetupState,
   SystemCheck,
   SystemReport,
 } from './domain/setup';
+export { providerGroupsForType } from './domain/setup';

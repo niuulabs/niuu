@@ -30,6 +30,28 @@ class TrackerFactory(Protocol):
 class TrackerPort(ABC):
     """Abstract interface for tracker integration (Linear, Jira, etc.)."""
 
+    _tracker_connection_id: str = ""
+    _tracker_provider: str = ""
+    _tracker_name: str = ""
+
+    def bind_connection(self, *, connection_id: str, provider: str, name: str) -> None:
+        """Attach the integration identity used to construct this adapter."""
+        self._tracker_connection_id = connection_id
+        self._tracker_provider = provider
+        self._tracker_name = name
+
+    @property
+    def connection_id(self) -> str:
+        return self._tracker_connection_id
+
+    @property
+    def provider(self) -> str:
+        return self._tracker_provider
+
+    @property
+    def connection_name(self) -> str:
+        return self._tracker_name
+
     # -- CRUD: create entities in the external tracker --
 
     @abstractmethod

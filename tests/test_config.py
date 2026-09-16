@@ -1158,3 +1158,23 @@ def test_git_hosts_sign_the_cli_tools_in():
     by_slug = {entry.slug: entry for entry in _default_integration_definitions()}
     assert by_slug["github"].env_from_credentials == {"GH_TOKEN": "token"}
     assert by_slug["gitlab"].env_from_credentials == {"GITLAB_TOKEN": "token"}
+
+
+def test_jira_catalog_supports_api_tokens_and_oauth_authorization_code():
+    from volundr.config import _default_integration_definitions
+
+    jira = next(entry for entry in _default_integration_definitions() if entry.slug == "jira")
+    assert jira.credential_schema["required"] == ["email", "api_token"]
+    assert jira.config_schema["required"] == ["site_url"]
+    assert "cloud_id" in jira.config_schema["properties"]
+    assert jira.config_schema["properties"]["project_keys"]["type"] == "string[]"
+    assert jira.config_schema["properties"]["labels"]["type"] == "string[]"
+    assert jira.credential_enrollment == {
+        "method": "oauth_authorization_code",
+        "credential_field": "access_token",
+        "default_credential_name": "jira-signin",
+    }
+    assert jira.oauth is not None
+    assert jira.oauth.token_request_format == "json"
+    assert jira.oauth.client_secret_required is True
+    assert "offline_access" in jira.oauth.scopes

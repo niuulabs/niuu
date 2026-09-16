@@ -292,11 +292,12 @@ const KEY_HELP_URLS: Record<string, string> = {
   deepseek: 'https://platform.deepseek.com/api_keys',
   github: 'https://github.com/settings/tokens',
   gitlab: 'https://gitlab.com/-/user_settings/personal_access_tokens',
+  jira: 'https://id.atlassian.com/manage-profile/security/api-tokens',
   linear: 'https://linear.app/settings/api',
 };
 
-function defaultKeyLabel(step: WizardStep): string {
-  return step.integrationType === 'source_control' ? 'Use a token' : 'Use an API key';
+function defaultKeyLabel(integrationType: string): string {
+  return integrationType === 'source_control' ? 'Use a token' : 'Use an API key';
 }
 
 const GROUP_SPECS: readonly GroupSpec[] = [
@@ -331,6 +332,15 @@ const GROUP_SPECS: readonly GroupSpec[] = [
     keySlug: 'deepseek',
   },
   {
+    key: 'jira',
+    title: 'Jira Cloud',
+    description: 'Search tickets, inspect issues, and update workflow status',
+    keySlug: 'jira',
+    signInSlug: 'jira',
+    signInLabel: 'Sign in with Atlassian',
+    keyLabel: 'Use an API token',
+  },
+  {
     key: 'github',
     title: 'GitHub',
     description: 'Clone, push, open pull requests, MCP server',
@@ -350,9 +360,12 @@ const GROUP_SPECS: readonly GroupSpec[] = [
   },
 ];
 
-/** Panes for a step: known pairings first, then any other catalog entry on its own. */
-export function providerGroups(entries: CatalogEntry[], step: WizardStep): ProviderGroup[] {
-  const forStep = catalogForStep(entries, step);
+/** Provider panes for one integration category, shared by setup and Settings. */
+export function providerGroupsForType(
+  entries: CatalogEntry[],
+  integrationType: string,
+): ProviderGroup[] {
+  const forStep = entries.filter((entry) => entry.integrationType === integrationType);
   const used = new Set<string>();
   const groups: ProviderGroup[] = [];
   for (const spec of GROUP_SPECS) {
@@ -375,7 +388,7 @@ export function providerGroups(entries: CatalogEntry[], step: WizardStep): Provi
       signInEntry,
       unavailable: spec.unavailable ?? [],
       signInLabel: spec.signInLabel ?? 'Sign in',
-      keyLabel: spec.keyLabel ?? defaultKeyLabel(step),
+      keyLabel: spec.keyLabel ?? defaultKeyLabel(integrationType),
       keyHelpUrl: spec.keyHelpUrl ?? (keyEntry ? KEY_HELP_URLS[keyEntry.slug] : undefined),
     });
   }
@@ -389,11 +402,17 @@ export function providerGroups(entries: CatalogEntry[], step: WizardStep): Provi
       signInEntry: signInOffered(entry) ? entry : undefined,
       unavailable: [],
       signInLabel: `Sign in with ${entry.name}`,
-      keyLabel: defaultKeyLabel(step),
+      keyLabel: defaultKeyLabel(integrationType),
       keyHelpUrl: KEY_HELP_URLS[entry.slug],
     });
   }
   return groups;
+}
+
+/** Panes for a setup step: known pairings first, then other catalog entries. */
+export function providerGroups(entries: CatalogEntry[], step: WizardStep): ProviderGroup[] {
+  if (!step.integrationType) return [];
+  return providerGroupsForType(entries, step.integrationType);
 }
 
 /** True when this catalog entry has a usable connection. */
@@ -491,6 +510,7 @@ export interface CatalogFieldSchema {
   label: string;
   type: string;
   default?: string;
+  description?: string;
 }
 
 export interface CatalogSchema {
@@ -518,6 +538,10 @@ export interface CatalogEntry {
   signInAvailable?: boolean;
   /** The sign-in runs through an OAuth application the install owns, and none is registered yet. */
   signInNeedsApp?: boolean;
+  /** Whether the provider rejects OAuth applications without a client secret. */
+  oauthClientSecretRequired?: boolean;
+  /** OAuth scopes requested during interactive sign-in. */
+  oauthScopes?: string[];
 }
 
 /** The OAuth application a person registers for GitHub or GitLab sign-in. */
@@ -560,6 +584,10 @@ export interface OAuthAppHelp {
   secretLabel: string;
   /** Empty when the provider's device flow never needs a secret. */
   secretHint: string;
+  /** Whether the app registration form should offer a self-hosted provider origin. */
+  supportsCustomHost?: boolean;
+  /** Whether the provider application must register Niuu's callback URL. */
+  usesCallback?: boolean;
 }
 
 const OAUTH_APP_HELP: Record<string, OAuthAppHelp> = {
@@ -572,6 +600,7 @@ const OAUTH_APP_HELP: Record<string, OAuthAppHelp> = {
     idLabel: 'Client ID',
     secretLabel: 'Client secret',
     secretHint: 'Optional. Only needed when the app issues expiring tokens; leave empty otherwise.',
+    supportsCustomHost: true,
   },
   gitlab: {
     createUrl: 'https://gitlab.com/-/user_settings/applications',
@@ -581,6 +610,18 @@ const OAUTH_APP_HELP: Record<string, OAuthAppHelp> = {
     idLabel: 'Application ID',
     secretLabel: 'Secret',
     secretHint: '',
+    supportsCustomHost: true,
+  },
+  jira: {
+    createUrl: 'https://developer.atlassian.com/console/myapps/',
+    createLabel: 'Create an OAuth 2.0 integration in Atlassian',
+    createHint:
+      'Add Jira API permissions for the scopes shown by Niuu, then configure the callback URL below.',
+    steps: ['Copy the Client ID and Secret from the application settings.'],
+    idLabel: 'Client ID',
+    secretLabel: 'Client secret',
+    secretHint: 'Required by Atlassian for authorization-code and refresh-token exchanges.',
+    usesCallback: true,
   },
 };
 
@@ -936,6 +977,17 @@ export function missingCredentialKeys(
   values: Record<string, string>,
 ): string[] {
   return requiredCredentialKeys(entry).filter((key) => !(values[key] ?? '').trim());
+}
+
+export function requiredConfigKeys(entry: CatalogEntry): string[] {
+  return entry.configSchema.required ?? [];
+}
+
+export function missingConfigKeys(entry: CatalogEntry, values: Record<string, string>): string[] {
+  return requiredConfigKeys(entry).filter((key) => {
+    const schema = entry.configSchema.properties?.[key];
+    return !((values[key] ?? '').trim() || schema?.default?.trim());
+  });
 }
 
 /** Config values to send: typed inputs, with schema defaults filled in when blank. */

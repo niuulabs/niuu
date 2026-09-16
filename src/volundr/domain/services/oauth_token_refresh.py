@@ -1,4 +1,4 @@
-"""Keep device-flow sign-in tokens alive by refreshing them before they expire.
+"""Keep OAuth sign-in tokens alive by refreshing them before they expire.
 
 GitLab user tokens live two hours and GitHub App tokens eight (when the app
 issues expiring tokens); both come with a refresh token. This service walks
@@ -18,14 +18,13 @@ from typing import Any
 
 import httpx
 
-from volundr.domain.models import IntegrationConnection, SecretType
+from volundr.domain.models import IntegrationConnection, OAuthSpec, SecretType
 from volundr.domain.ports import CredentialStorePort, IntegrationRepository
 from volundr.domain.services.integration_registry import IntegrationRegistry
 from volundr.domain.services.oauth_clients import DEFAULT_APP, OAuthClientRegistry
 
 logger = logging.getLogger(__name__)
 
-OAUTH_DEVICE_METHOD = "oauth_device"
 DEFAULT_REFRESH_SKEW_SECONDS = 600
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 15.0
 REFRESH_LOOP_INTERVAL_SECONDS = 300.0
@@ -39,7 +38,7 @@ class RefreshReport:
 
 
 class OAuthTokenRefreshService:
-    """Refresh expiring device-flow tokens through each provider's token endpoint."""
+    """Refresh expiring OAuth tokens through each provider's token endpoint."""
 
     def __init__(
         self,
@@ -67,13 +66,7 @@ class OAuthTokenRefreshService:
         await self._clients.load()
         for connection in await self._repository.list_connections_global(enabled_only=True):
             definition = self._registry.get_definition(connection.slug)
-            spec = definition.credential_enrollment if definition is not None else None
-            if (
-                definition is None
-                or spec is None
-                or spec.method != OAUTH_DEVICE_METHOD
-                or definition.oauth is None
-            ):
+            if definition is None or definition.oauth is None:
                 continue
             values = await self._store.get_value(
                 "user", connection.owner_id, connection.credential_name
@@ -85,7 +78,7 @@ class OAuthTokenRefreshService:
                 continue
             label = f"{connection.slug}/{connection.owner_id}/{connection.credential_name}"
             try:
-                await self._refresh(connection, definition.oauth.token_url, values, now)
+                await self._refresh(connection, definition.oauth, values, now)
             except Exception as exc:
                 logger.error("Token refresh for %s failed: %s", label, exc)
                 await self._mark(
@@ -99,7 +92,7 @@ class OAuthTokenRefreshService:
     async def _refresh(
         self,
         connection: IntegrationConnection,
-        token_url: str,
+        oauth: OAuthSpec,
         values: dict[str, str],
         now: datetime,
     ) -> None:
@@ -110,17 +103,23 @@ class OAuthTokenRefreshService:
                 f"no OAuth application {app!r} is registered for {connection.slug}; register "
                 "one from the setup wizard or set oauth.clients"
             )
-        token_url = client.endpoint(token_url)
+        token_url = client.endpoint(oauth.token_url)
         form = {
             "grant_type": "refresh_token",
             "refresh_token": values["refresh_token"],
             "client_id": client.client_id,
         }
+        form.update(oauth.extra_token_params)
         if client.client_secret:
             form["client_secret"] = client.client_secret
         async with httpx.AsyncClient(timeout=self._timeout) as client:
+            request_body = (
+                {"json": form} if oauth.token_request_format == "json" else {"data": form}
+            )
             response = await client.post(
-                token_url, data=form, headers={"Accept": "application/json"}
+                token_url,
+                **request_body,
+                headers={"Accept": "application/json"},
             )
         data: dict[str, Any] = {}
         if "json" in response.headers.get("content-type", ""):
@@ -130,7 +129,15 @@ class OAuthTokenRefreshService:
             reason = data.get("error_description") or data.get("error") or response.text[:200]
             raise ValueError(f"provider answered HTTP {response.status_code}: {reason}")
         updated = dict(values)
-        updated["token"] = str(data["access_token"])
+        credential_field = next(
+            (
+                field
+                for field, token_field in oauth.token_field_mapping.items()
+                if token_field == "access_token"
+            ),
+            "token" if "token" in values else "access_token",
+        )
+        updated[credential_field] = str(data["access_token"])
         if data.get("refresh_token"):
             updated["refresh_token"] = str(data["refresh_token"])
         if data.get("expires_in"):

@@ -64,10 +64,10 @@ class NativeTrackerAdapter(TrackerPort):
                 (id, tracker_id, tracker_type, slug, name,
                  repos, feature_branch, base_branch, status, confidence, created_at,
                  owner_id, workflow_id, workflow_version, workflow_snapshot, instance_id,
-                 repo_branches, target_tags, target_match)
+                 repo_branches, target_tags, target_match, tracker_connection_id)
             VALUES
                 ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16::uuid,
-                 $17::jsonb, $18, $19)
+                 $17::jsonb, $18, $19, $20)
             ON CONFLICT (id) DO UPDATE SET
                 tracker_id = EXCLUDED.tracker_id,
                 tracker_type = EXCLUDED.tracker_type,
@@ -85,7 +85,8 @@ class NativeTrackerAdapter(TrackerPort):
                 instance_id = EXCLUDED.instance_id,
                 repo_branches = EXCLUDED.repo_branches,
                 target_tags = EXCLUDED.target_tags,
-                target_match = EXCLUDED.target_match
+                target_match = EXCLUDED.target_match,
+                tracker_connection_id = EXCLUDED.tracker_connection_id
             """,
             saga.id,
             tracker_id,
@@ -106,6 +107,7 @@ class NativeTrackerAdapter(TrackerPort):
             json.dumps(saga.repo_branches),
             saga.target_tags,
             saga.target_match,
+            "native",
         )
         return tracker_id
 
@@ -162,7 +164,15 @@ class NativeTrackerAdapter(TrackerPort):
 
     async def update_run_state(self, run_id: str, state: RunStatus) -> None:
         result = await self._pool.execute(
-            "UPDATE runs SET status = $1, updated_at = $2 WHERE tracker_id = $3",
+            """
+            UPDATE runs r SET status = $1, updated_at = $2
+            WHERE r.tracker_id = $3
+              AND EXISTS (
+                  SELECT 1 FROM phases p
+                  JOIN sagas s ON s.id = p.saga_id
+                  WHERE p.id = r.phase_id AND s.tracker_type = 'native'
+              )
+            """,
             state.value,
             datetime.now(UTC),
             run_id,
@@ -176,19 +186,37 @@ class NativeTrackerAdapter(TrackerPort):
     # -- Read: domain entities --
 
     async def get_saga(self, saga_id: str) -> Saga:
-        row = await self._pool.fetchrow("SELECT * FROM sagas WHERE tracker_id = $1", saga_id)
+        row = await self._pool.fetchrow(
+            "SELECT * FROM sagas WHERE tracker_id = $1 AND tracker_type = 'native'",
+            saga_id,
+        )
         if row is None:
             raise LookupError(f"Saga not found: {saga_id}")
         return self._row_to_saga(row)
 
     async def get_phase(self, tracker_id: str) -> Phase:
-        row = await self._pool.fetchrow("SELECT * FROM phases WHERE tracker_id = $1", tracker_id)
+        row = await self._pool.fetchrow(
+            """
+            SELECT p.* FROM phases p
+            JOIN sagas s ON s.id = p.saga_id
+            WHERE p.tracker_id = $1 AND s.tracker_type = 'native'
+            """,
+            tracker_id,
+        )
         if row is None:
             raise LookupError(f"Phase not found: {tracker_id}")
         return self._row_to_phase(row)
 
     async def get_run(self, tracker_id: str) -> Run:
-        row = await self._pool.fetchrow("SELECT * FROM runs WHERE tracker_id = $1", tracker_id)
+        row = await self._pool.fetchrow(
+            """
+            SELECT r.* FROM runs r
+            JOIN phases p ON p.id = r.phase_id
+            JOIN sagas s ON s.id = p.saga_id
+            WHERE r.tracker_id = $1 AND s.tracker_type = 'native'
+            """,
+            tracker_id,
+        )
         if row is None:
             raise LookupError(f"Run not found: {tracker_id}")
         return self._row_to_run(row)
@@ -196,10 +224,13 @@ class NativeTrackerAdapter(TrackerPort):
     async def list_pending_runs(self, phase_id: str) -> list[Run]:
         rows = await self._pool.fetch(
             """
-            SELECT * FROM runs
-            WHERE phase_id = (SELECT id FROM phases WHERE tracker_id = $1)
-              AND status IN ($2, $3)
-            ORDER BY created_at
+            SELECT r.* FROM runs r
+            JOIN phases p ON p.id = r.phase_id
+            JOIN sagas s ON s.id = p.saga_id
+            WHERE p.tracker_id = $1
+              AND s.tracker_type = 'native'
+              AND r.status IN ($2, $3)
+            ORDER BY r.created_at
             """,
             phase_id,
             RunStatus.PENDING.value,
@@ -210,11 +241,16 @@ class NativeTrackerAdapter(TrackerPort):
     # -- Browsing --
 
     async def list_projects(self) -> list[TrackerProject]:
-        rows = await self._pool.fetch("SELECT * FROM sagas ORDER BY created_at DESC")
+        rows = await self._pool.fetch(
+            "SELECT * FROM sagas WHERE tracker_type = 'native' ORDER BY created_at DESC"
+        )
         return [await self._saga_row_to_project(r) for r in rows]
 
     async def get_project(self, project_id: str) -> TrackerProject:
-        row = await self._pool.fetchrow("SELECT * FROM sagas WHERE tracker_id = $1", project_id)
+        row = await self._pool.fetchrow(
+            "SELECT * FROM sagas WHERE tracker_id = $1 AND tracker_type = 'native'",
+            project_id,
+        )
         if row is None:
             raise LookupError(f"Project not found: {project_id}")
         return await self._saga_row_to_project(row)
@@ -224,7 +260,7 @@ class NativeTrackerAdapter(TrackerPort):
             """
             SELECT p.* FROM phases p
             JOIN sagas s ON s.id = p.saga_id
-            WHERE s.tracker_id = $1
+            WHERE s.tracker_id = $1 AND s.tracker_type = 'native'
             ORDER BY p.number
             """,
             project_id,
@@ -243,7 +279,7 @@ class NativeTrackerAdapter(TrackerPort):
                 FROM runs r
                 JOIN phases p ON p.id = r.phase_id
                 JOIN sagas s ON s.id = p.saga_id
-                WHERE s.tracker_id = $1 AND p.tracker_id = $2
+                WHERE s.tracker_id = $1 AND s.tracker_type = 'native' AND p.tracker_id = $2
                 ORDER BY r.created_at
                 """,
                 project_id,
@@ -256,7 +292,7 @@ class NativeTrackerAdapter(TrackerPort):
                 FROM runs r
                 JOIN phases p ON p.id = r.phase_id
                 JOIN sagas s ON s.id = p.saga_id
-                WHERE s.tracker_id = $1
+                WHERE s.tracker_id = $1 AND s.tracker_type = 'native'
                 ORDER BY r.created_at
                 """,
                 project_id,
@@ -298,6 +334,11 @@ class NativeTrackerAdapter(TrackerPort):
                 review_round        = COALESCE($11, review_round),
                 updated_at          = NOW()
             WHERE tracker_id = $1
+              AND EXISTS (
+                  SELECT 1 FROM phases p
+                  JOIN sagas s ON s.id = p.saga_id
+                  WHERE p.id = runs.phase_id AND s.tracker_type = 'native'
+              )
             RETURNING *
             """,
             tracker_id,
@@ -322,7 +363,7 @@ class NativeTrackerAdapter(TrackerPort):
             SELECT r.* FROM runs r
             JOIN phases p ON p.id = r.phase_id
             JOIN sagas s ON s.id = p.saga_id
-            WHERE s.tracker_id = $1
+            WHERE s.tracker_id = $1 AND s.tracker_type = 'native'
             ORDER BY r.created_at
             """,
             saga_tracker_id,
@@ -331,7 +372,12 @@ class NativeTrackerAdapter(TrackerPort):
 
     async def get_run_by_session(self, session_id: str) -> Run | None:
         row = await self._pool.fetchrow(
-            "SELECT * FROM runs WHERE session_id = $1",
+            """
+            SELECT r.* FROM runs r
+            JOIN phases p ON p.id = r.phase_id
+            JOIN sagas s ON s.id = p.saga_id
+            WHERE r.session_id = $1 AND s.tracker_type = 'native'
+            """,
             session_id,
         )
         if row is None:
@@ -340,13 +386,27 @@ class NativeTrackerAdapter(TrackerPort):
 
     async def list_runs_by_status(self, status: RunStatus) -> list[Run]:
         rows = await self._pool.fetch(
-            "SELECT * FROM runs WHERE status = $1 ORDER BY updated_at",
+            """
+            SELECT r.* FROM runs r
+            JOIN phases p ON p.id = r.phase_id
+            JOIN sagas s ON s.id = p.saga_id
+            WHERE r.status = $1 AND s.tracker_type = 'native'
+            ORDER BY r.updated_at
+            """,
             status.value,
         )
         return [self._row_to_run(r) for r in rows]
 
     async def get_run_by_id(self, run_id: UUID) -> Run | None:
-        row = await self._pool.fetchrow("SELECT * FROM runs WHERE id = $1", run_id)
+        row = await self._pool.fetchrow(
+            """
+            SELECT r.* FROM runs r
+            JOIN phases p ON p.id = r.phase_id
+            JOIN sagas s ON s.id = p.saga_id
+            WHERE r.id = $1 AND s.tracker_type = 'native'
+            """,
+            run_id,
+        )
         if row is None:
             return None
         return self._row_to_run(row)
@@ -367,7 +427,15 @@ class NativeTrackerAdapter(TrackerPort):
             event.created_at,
         )
         await self._pool.execute(
-            "UPDATE runs SET confidence = $2, updated_at = $3 WHERE tracker_id = $1",
+            """
+            UPDATE runs SET confidence = $2, updated_at = $3
+            WHERE tracker_id = $1
+              AND EXISTS (
+                  SELECT 1 FROM phases p
+                  JOIN sagas s ON s.id = p.saga_id
+                  WHERE p.id = runs.phase_id AND s.tracker_type = 'native'
+              )
+            """,
             tracker_id,
             event.score_after,
             event.created_at,
@@ -378,7 +446,9 @@ class NativeTrackerAdapter(TrackerPort):
             """
             SELECT ce.* FROM confidence_events ce
             JOIN runs r ON r.id = ce.run_id
-            WHERE r.tracker_id = $1
+            JOIN phases p ON p.id = r.phase_id
+            JOIN sagas s ON s.id = p.saga_id
+            WHERE r.tracker_id = $1 AND s.tracker_type = 'native'
             ORDER BY ce.created_at
             """,
             tracker_id,
@@ -403,7 +473,8 @@ class NativeTrackerAdapter(TrackerPort):
             SELECT count(*) FILTER (WHERE r.status != 'MERGED') AS remaining
             FROM runs r
             JOIN phases p ON p.id = r.phase_id
-            WHERE p.tracker_id = $1
+            JOIN sagas s ON s.id = p.saga_id
+            WHERE p.tracker_id = $1 AND s.tracker_type = 'native'
             """,
             phase_tracker_id,
         )
@@ -414,7 +485,7 @@ class NativeTrackerAdapter(TrackerPort):
             """
             SELECT p.* FROM phases p
             JOIN sagas s ON s.id = p.saga_id
-            WHERE s.tracker_id = $1
+            WHERE s.tracker_id = $1 AND s.tracker_type = 'native'
             ORDER BY p.number
             """,
             saga_tracker_id,
@@ -424,7 +495,12 @@ class NativeTrackerAdapter(TrackerPort):
     async def update_phase_status(self, phase_tracker_id: str, status: PhaseStatus) -> Phase | None:
         row = await self._pool.fetchrow(
             """
-            UPDATE phases SET status = $2 WHERE tracker_id = $1
+            UPDATE phases p SET status = $2
+            WHERE p.tracker_id = $1
+              AND EXISTS (
+                  SELECT 1 FROM sagas s
+                  WHERE s.id = p.saga_id AND s.tracker_type = 'native'
+              )
             RETURNING *
             """,
             phase_tracker_id,
@@ -442,7 +518,7 @@ class NativeTrackerAdapter(TrackerPort):
             SELECT s.* FROM sagas s
             JOIN phases p ON p.saga_id = s.id
             JOIN runs r ON r.phase_id = p.id
-            WHERE r.tracker_id = $1
+            WHERE r.tracker_id = $1 AND s.tracker_type = 'native'
             """,
             tracker_id,
         )
@@ -455,7 +531,8 @@ class NativeTrackerAdapter(TrackerPort):
             """
             SELECT p.* FROM phases p
             JOIN runs r ON r.phase_id = p.id
-            WHERE r.tracker_id = $1
+            JOIN sagas s ON s.id = p.saga_id
+            WHERE r.tracker_id = $1 AND s.tracker_type = 'native'
             """,
             tracker_id,
         )
@@ -469,7 +546,7 @@ class NativeTrackerAdapter(TrackerPort):
             SELECT s.owner_id FROM sagas s
             JOIN phases p ON p.saga_id = s.id
             JOIN runs r ON r.phase_id = p.id
-            WHERE r.tracker_id = $1
+            WHERE r.tracker_id = $1 AND s.tracker_type = 'native'
             """,
             tracker_id,
         )
@@ -498,7 +575,9 @@ class NativeTrackerAdapter(TrackerPort):
             """
             SELECT sm.* FROM session_messages sm
             JOIN runs r ON r.id = sm.run_id
-            WHERE r.tracker_id = $1
+            JOIN phases p ON p.id = r.phase_id
+            JOIN sagas s ON s.id = p.saga_id
+            WHERE r.tracker_id = $1 AND s.tracker_type = 'native'
             ORDER BY sm.created_at
             """,
             tracker_id,
@@ -534,6 +613,7 @@ class NativeTrackerAdapter(TrackerPort):
             id=row["id"],
             tracker_id=row["tracker_id"],
             tracker_type=row.get("tracker_type", "native") or "native",
+            tracker_connection_id=row.get("tracker_connection_id") or "native",
             slug=slug,
             name=row["name"],
             repos=list(row["repos"]),

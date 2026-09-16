@@ -54,6 +54,8 @@ export interface CatalogEntryWire {
   } | null;
   sign_in_available?: boolean;
   sign_in_needs_app?: boolean;
+  oauth_client_secret_required?: boolean;
+  oauth_scopes?: string[];
 }
 
 /** Wire shape of `GET /api/v1/integrations/oauth-clients` rows. */
@@ -136,6 +138,8 @@ export function mapCatalogEntry(entry: CatalogEntryWire): CatalogEntry {
       : null,
     signInAvailable: entry.sign_in_available ?? false,
     signInNeedsApp: entry.sign_in_needs_app ?? false,
+    oauthClientSecretRequired: entry.oauth_client_secret_required ?? false,
+    oauthScopes: entry.oauth_scopes ?? [],
   };
 }
 
@@ -231,6 +235,21 @@ export function buildSetupHttpAdapter(clients: SetupHttpClients): ISetupService 
         { code },
       );
       return mapEnrollment(row);
+    },
+    async startOAuthAuthorization(
+      slug: string,
+      credentialName: string,
+      oauthApp: string,
+      config: Record<string, unknown>,
+    ): Promise<{ url: string }> {
+      return clients.integrations.post<{ url: string }>(
+        `/oauth/${encodeURIComponent(slug)}/authorize`,
+        {
+          credential_name: credentialName,
+          oauth_app: oauthApp,
+          config,
+        },
+      );
     },
     async registerOAuthClient(slug: string, input: OAuthClientInput): Promise<void> {
       await clients.integrations.put(`/oauth-clients/${encodeURIComponent(slug)}`, {

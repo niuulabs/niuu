@@ -146,6 +146,19 @@ def test_registration_is_refused_for_non_oauth_integrations_and_empty_ids(tmp_pa
     assert (
         client.put("/api/v1/integrations/oauth-clients/github", json={"client_id": "  "})
     ).status_code == 422
+    jira = _catalog_entry(client, "jira")
+    assert jira["sign_in_needs_app"] is True
+    assert jira["oauth_client_secret_required"] is True
+    assert (
+        client.put("/api/v1/integrations/oauth-clients/jira", json={"client_id": "jira-app"})
+    ).status_code == 422
+    assert (
+        client.put(
+            "/api/v1/integrations/oauth-clients/jira",
+            json={"client_id": "jira-app", "client_secret": "jira-secret"},
+        )
+    ).status_code == 200
+    assert _catalog_entry(client, "jira")["sign_in_available"] is True
 
 
 def test_removal_forgets_registered_applications_only(tmp_path) -> None:

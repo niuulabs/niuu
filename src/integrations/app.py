@@ -143,6 +143,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     integration_registry=integration_registry,
                     credential_store=credential_store,
                     integration_repo=integration_repo,
+                    oauth_clients=oauth_clients,
                 )
             )
 

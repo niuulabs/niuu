@@ -619,6 +619,118 @@ describe('SettingsPage', () => {
     expect(screen.queryByText('Create a new credential')).toBeNull();
   });
 
+  it('offers Jira sign-in or API token setup with project and label scope', async () => {
+    routerMocks.params = { providerId: 'integrations', sectionId: 'connections' };
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/settings') {
+        return {
+          title: 'Integrations',
+          scope: 'user',
+          sections: [
+            {
+              id: 'connections',
+              label: 'Connections',
+              fields: [],
+              resources: [
+                {
+                  id: 'integration_connections',
+                  type: 'integrations',
+                  label: 'Integration connections',
+                  listPath: '/api/v1/integrations',
+                  catalogPath: '/api/v1/integrations/catalog',
+                  createPath: '/api/v1/integrations',
+                  deletePath: '/api/v1/integrations/{id}',
+                  credentialListPath: '/api/v1/credentials/user',
+                  testPath: '/api/v1/integrations/{id}/test',
+                  oauthAuthorizePath: '/api/v1/integrations/oauth/{slug}/authorize',
+                  oauthDisconnectPath: '/api/v1/integrations/oauth/{slug}/disconnect',
+                },
+              ],
+            },
+          ],
+        };
+      }
+      if (path === '/api/v1/credentials/user') return { credentials: [] };
+      if (path === '/api/v1/integrations') return [];
+      if (path === '/api/v1/integrations/catalog') {
+        return [
+          {
+            id: 'jira',
+            slug: 'jira',
+            name: 'Jira Cloud',
+            description: 'Jira Cloud issue tracking',
+            integration_type: 'issue_tracker',
+            auth_type: 'api_key',
+            credential_schema: {
+              required: ['email', 'api_token'],
+              properties: {
+                email: { label: 'Atlassian account email', type: 'string' },
+                api_token: { label: 'API token', type: 'password' },
+              },
+            },
+            config_schema: {
+              required: ['site_url'],
+              properties: {
+                site_url: { label: 'Jira site URL', type: 'url' },
+                project_keys: { label: 'Allowed project keys', type: 'string[]' },
+                labels: { label: 'Allowed issue labels', type: 'string[]' },
+              },
+            },
+            credential_enrollment: {
+              method: 'oauth_authorization_code',
+              credential_field: 'access_token',
+              default_credential_name: 'jira-signin',
+            },
+            sign_in_available: true,
+            oauth_client_secret_required: true,
+          },
+        ];
+      }
+      throw new Error(`Unexpected GET ${path}`);
+    });
+
+    wrap(<SettingsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up Jira Cloud' }));
+    expect(screen.getByRole('button', { name: /Sign in with Atlassian/ })).toBeTruthy();
+    const tokenMode = screen.getByRole('button', { name: /Use an API token/ });
+    expect(tokenMode).toBeTruthy();
+    fireEvent.click(tokenMode);
+
+    fireEvent.change(await screen.findByTestId('setup-input-jira-email'), {
+      target: { value: 'ada@example.com' },
+    });
+    fireEvent.change(screen.getByTestId('setup-input-jira-api_token'), {
+      target: { value: 'secret' },
+    });
+    fireEvent.change(screen.getByTestId('setup-config-jira-site_url'), {
+      target: { value: 'https://example.atlassian.net' },
+    });
+    fireEvent.change(screen.getByTestId('setup-config-jira-project_keys'), {
+      target: { value: 'PROJ, OPS' },
+    });
+    fireEvent.change(screen.getByTestId('setup-config-jira-labels'), {
+      target: { value: 'auth, security' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect Jira Cloud' }));
+
+    await waitFor(() =>
+      expect(apiMocks.post).toHaveBeenCalledWith('/api/v1/integrations', {
+        slug: 'jira',
+        enabled: true,
+        credential: {
+          name: 'jira-setup',
+          data: { email: 'ada@example.com', api_token: 'secret' },
+        },
+        config: {
+          site_url: 'https://example.atlassian.net',
+          project_keys: ['PROJ', 'OPS'],
+          labels: ['auth', 'security'],
+        },
+      }),
+    );
+  });
+
   it.each(['codex', 'claude-code'])('connects %s through shared Integrations', async (slug) => {
     const isClaude = slug === 'claude-code';
     const label = isClaude ? 'Claude Code' : 'Codex';

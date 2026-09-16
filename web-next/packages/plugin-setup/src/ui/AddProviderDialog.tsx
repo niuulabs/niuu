@@ -6,7 +6,6 @@ import {
   availableModes,
   connectionLabel,
   groupConnections,
-  signInNeedsApp,
   type CatalogEntry,
   type ConnectIntegrationInput,
   type ConnectMode,
@@ -65,14 +64,20 @@ function entryFor(group: ProviderGroup, mode: ConnectMode | null): CatalogEntry 
 
 function modeIntro(group: ProviderGroup, mode: ConnectMode) {
   if (mode === 'signin') {
+    const authorizationCode =
+      group.signInEntry?.credentialEnrollment?.method === 'oauth_authorization_code';
     return (
       <div className="setup-pane__intro" data-testid="setup-add-intro-signin">
         <p>
-          Niuu starts {group.title}&apos;s own sign-in on this machine and shows you the link.
-          Nothing to copy except a short code.
+          Niuu opens {group.title}&apos;s own sign-in and stores the resulting credential for this
+          account.
         </p>
         <ol className="setup-pane__steps">
-          <li>Open the link and enter the code.</li>
+          <li>
+            {authorizationCode
+              ? 'Choose the provider workspace this account should use.'
+              : 'Open the link and enter the short code.'}
+          </li>
           <li>Approve the sign-in in your browser.</li>
           <li>Come back here. This page updates by itself.</li>
         </ol>
@@ -111,7 +116,7 @@ interface SignInPaneProps {
 
 /**
  * The sign-in pane. A provider that signs in through an OAuth application
- * (GitHub, GitLab) first needs one; with several registered, each account
+ * (GitHub, GitLab, Jira) first needs one; with several registered, each account
  * picks the application it signs in through, or registers its own.
  */
 function SignInPane({
@@ -122,9 +127,13 @@ function SignInPane({
   accountField,
   disabled,
 }: SignInPaneProps) {
-  const usesApp = entry.credentialEnrollment?.method === 'oauth_device';
+  const usesApp = ['oauth_device', 'oauth_authorization_code'].includes(
+    entry.credentialEnrollment?.method ?? '',
+  );
   const clients = useOAuthClients();
-  const apps = (clients.data ?? []).filter((app) => app.slug === entry.slug);
+  const apps = (clients.data ?? []).filter(
+    (app) => app.slug === entry.slug && (!entry.oauthClientSecretRequired || app.hasSecret),
+  );
   const [chosenApp, setChosenApp] = useState<string | null>(
     connection ? ((connection.config.oauth_app as string | undefined) ?? null) : null,
   );
@@ -134,7 +143,10 @@ function SignInPane({
   if (usesApp && !clients.data && !clients.error) {
     return <div className="setup-note">Loading applications…</div>;
   }
-  if (usesApp && (apps.length === 0 || signInNeedsApp(entry))) {
+  // The catalog is fetched independently from the application list and can
+  // still carry signInNeedsApp=true immediately after an app is registered.
+  // Once the fresh list has loaded, its usable entries are authoritative.
+  if (usesApp && apps.length === 0) {
     return <OAuthAppForm entry={entry} existingApps={apps} onRegistered={setChosenApp} />;
   }
   if (usesApp && registering) {
@@ -260,6 +272,9 @@ export function AddProviderDialog({
   const finishingConnection = finishing
     ? existing.find((connection) => connection.credentialName === initialCredentialName)
     : undefined;
+  const selectedConnection =
+    finishingConnection ??
+    existing.find((connection) => connection.credentialName === credentialName);
 
   const select = (key: string | null, next: ConnectMode | null, name: string = accountName) => {
     setChosenKey(key);
@@ -366,7 +381,11 @@ export function AddProviderDialog({
                     </span>
                     <span className="setup-option__desc">
                       {candidate === 'signin'
-                        ? 'Approve in your browser; nothing to copy except a short code.'
+                        ? candidate === 'signin' &&
+                          group.signInEntry?.credentialEnrollment?.method ===
+                            'oauth_authorization_code'
+                          ? 'Approve access in the provider’s browser window.'
+                          : 'Approve in your browser; nothing to copy except a short code.'
                         : 'Paste a key you created in the provider’s settings.'}
                     </span>
                   </span>
@@ -378,7 +397,7 @@ export function AddProviderDialog({
             <SignInPane
               group={group}
               entry={group.signInEntry}
-              connection={finishingConnection}
+              connection={selectedConnection}
               credentialName={credentialName ?? undefined}
               accountField={accountField}
               disabled={taken}

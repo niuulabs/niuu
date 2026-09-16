@@ -51,6 +51,8 @@ export const sagaSchema = z.object({
   trackerId: z.string(),
   /** Tracker system type (e.g. "linear", "github"). */
   trackerType: z.string(),
+  /** Stable integration connection that owns this saga's external project. */
+  trackerConnectionId: z.string().optional(),
   /** External tracker URL. */
   url: z.string().optional(),
   /** URL-safe slug derived from saga name. */

@@ -217,6 +217,10 @@ class CatalogEntryResponse(BaseModel):
         description="OAuth scopes if auth_type is OAuth",
         examples=[["read", "write"]],
     )
+    oauth_client_secret_required: bool = Field(
+        default=False,
+        description="Whether interactive OAuth sign-in requires an application client secret",
+    )
     credential_enrollment: dict[str, str] | None = Field(
         default=None,
         description="Interactive credential enrollment metadata when supported",
@@ -272,6 +276,9 @@ class CatalogEntryResponse(BaseModel):
             mcp_server=mcp,
             auth_type=defn.auth_type,
             oauth_scopes=oauth_scopes,
+            oauth_client_secret_required=(
+                defn.oauth.client_secret_required if defn.oauth is not None else False
+            ),
             credential_enrollment=(
                 {
                     "method": defn.credential_enrollment.method,
@@ -568,12 +575,19 @@ def _build_integrations_router(
         entries = []
         for definition in definitions:
             entry = CatalogEntryResponse.from_definition(definition)
-            if credential_enrollment_service is not None:
+            enrollment_method = (
+                definition.credential_enrollment.method
+                if definition.credential_enrollment is not None
+                else ""
+            )
+            if enrollment_method == "oauth_authorization_code" and oauth_clients is not None:
+                entry.sign_in_available = oauth_clients.has_usable(definition.slug)
+            elif credential_enrollment_service is not None:
                 entry.sign_in_available = credential_enrollment_service.available(definition.slug)
             if oauth_clients is not None and not entry.sign_in_available:
                 entry.sign_in_needs_app = oauth_clients.supports(
                     definition.slug
-                ) and not oauth_clients.has_any(definition.slug)
+                ) and not oauth_clients.has_usable(definition.slug)
             entries.append(entry)
         return entries
 
@@ -843,10 +857,11 @@ def _build_integrations_router(
                 definition.credential_schema,
                 credential_data,
             )
-            if credential_errors:
+            config_errors = _validate_required_fields(definition.config_schema, data.config)
+            if credential_errors or config_errors:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail=credential_errors,
+                    detail=credential_errors + config_errors,
                 )
             # Storing under a name another connection of the same provider
             # already uses would silently overwrite that account's secret.

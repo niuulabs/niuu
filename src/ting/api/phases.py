@@ -13,6 +13,7 @@ from ting.adapters.inbound.auth import extract_principal
 from ting.api.sagas import resolve_saga_repo
 from ting.api.tracker import resolve_trackers
 from ting.domain.models import PhaseStatus, RunStatus, TrackerIssue, TrackerMilestone
+from ting.domain.tracker_routing import select_tracker_for_saga
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.tracker import TrackerPort
 
@@ -279,15 +280,14 @@ def create_saga_phases_router() -> APIRouter:
 
         phases = await repo.get_phases_by_saga(parsed_saga_id)
         if not phases and saga.tracker_id:
-            for tracker in trackers:
-                try:
-                    return await _hydrate_tracker_backed_phases(
-                        tracker,
-                        saga_id=str(saga.id),
-                        tracker_project_id=saga.tracker_id,
-                    )
-                except Exception:
-                    continue
+            tracker = select_tracker_for_saga(trackers, saga)
+            return await _hydrate_tracker_backed_phases(
+                tracker,
+                saga_id=str(saga.id),
+                tracker_project_id=saga.tracker_id,
+            )
+
+        saga_tracker = select_tracker_for_saga(trackers, saga) if trackers else None
 
         responses: list[SagaPhaseItemResponse] = []
         for phase in phases:
@@ -298,7 +298,7 @@ def create_saga_phases_router() -> APIRouter:
                 url = run.url
                 if run.tracker_id and (not identifier or not url):
                     tracker_identifier, tracker_url = await _tracker_run_metadata(
-                        trackers,
+                        [saga_tracker] if saga_tracker is not None else [],
                         run.tracker_id,
                     )
                     identifier = identifier or tracker_identifier

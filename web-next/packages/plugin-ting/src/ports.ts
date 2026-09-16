@@ -76,6 +76,7 @@ export interface CommitSagaRequest {
     }[];
   }[];
   transcript?: string;
+  trackerConnectionId?: string;
 }
 
 export interface PlanSession {
@@ -241,9 +242,13 @@ export interface ITingSessionService {
  */
 export interface ITrackerBrowserService {
   listProjects(): Promise<TrackerProject[]>;
-  getProject(projectId: string): Promise<TrackerProject>;
-  listMilestones(projectId: string): Promise<TrackerMilestone[]>;
-  listIssues(projectId: string, milestoneId?: string): Promise<TrackerIssue[]>;
+  getProject(projectId: string, trackerConnectionId?: string): Promise<TrackerProject>;
+  listMilestones(projectId: string, trackerConnectionId?: string): Promise<TrackerMilestone[]>;
+  listIssues(
+    projectId: string,
+    milestoneId?: string,
+    trackerConnectionId?: string,
+  ): Promise<TrackerIssue[]>;
   importProject(
     projectId: string,
     repos: string[],
@@ -256,6 +261,7 @@ export interface ITrackerBrowserService {
 export interface ImportProjectOptions {
   repoRefs?: { repo: string; branch: string }[];
   target?: SagaTargetSelection;
+  trackerConnectionId?: string;
 }
 
 export type SagaTargetSelection =

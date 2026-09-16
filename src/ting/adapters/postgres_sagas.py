@@ -118,13 +118,14 @@ class PostgresSagaRepository(SagaRepository):
                 (id, tracker_id, tracker_type, slug, name,
                  repos, feature_branch, base_branch, status, confidence, created_at, owner_id,
                  workflow_id, workflow_version, workflow_snapshot, instance_id,
-                 repo_branches, target_tags, target_match, tenant_id)
+                 repo_branches, target_tags, target_match, tenant_id, tracker_connection_id)
             VALUES
                 ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16::uuid,
-                 $17::jsonb, $18, $19, $20)
+                 $17::jsonb, $18, $19, $20, $21)
             ON CONFLICT (id) DO UPDATE SET
                 tracker_id = EXCLUDED.tracker_id,
                 tracker_type = EXCLUDED.tracker_type,
+                tracker_connection_id = EXCLUDED.tracker_connection_id,
                 slug = EXCLUDED.slug,
                 name = EXCLUDED.name,
                 repos = EXCLUDED.repos,
@@ -163,6 +164,7 @@ class PostgresSagaRepository(SagaRepository):
             saga.target_tags,
             saga.target_match,
             saga.tenant_id,
+            saga.tracker_connection_id,
         )
         if result == "INSERT 0 0":
             raise AuthorizationDeniedError("Resource ownership is immutable")
@@ -217,7 +219,7 @@ class PostgresSagaRepository(SagaRepository):
         owner_filter = " AND owner_id = $2" if owner_id is not None else ""
         query = f"""
             WITH target_saga AS (
-                SELECT id, tracker_id
+                SELECT id, tracker_id, tracker_connection_id
                 FROM sagas
                 WHERE id = $1{owner_filter}
             ),
@@ -241,20 +243,23 @@ class PostgresSagaRepository(SagaRepository):
             ),
             del_run_session_messages AS (
                 DELETE FROM run_session_messages
-                WHERE run_id IN (SELECT id FROM target_runs)
-                   OR tracker_id IN (SELECT tracker_id FROM target_runs)
+                WHERE tracker_connection_id IN (SELECT tracker_connection_id FROM target_saga)
+                  AND (run_id IN (SELECT id FROM target_runs)
+                   OR tracker_id IN (SELECT tracker_id FROM target_runs))
             ),
             del_run_confidence_events AS (
                 DELETE FROM run_confidence_events
-                WHERE run_id IN (SELECT id FROM target_runs)
-                   OR tracker_id IN (SELECT tracker_id FROM target_runs)
+                WHERE tracker_connection_id IN (SELECT tracker_connection_id FROM target_saga)
+                  AND (run_id IN (SELECT id FROM target_runs)
+                   OR tracker_id IN (SELECT tracker_id FROM target_runs))
             ),
             del_run_progress AS (
                 DELETE FROM run_progress
-                WHERE saga_tracker_id IN (SELECT tracker_id FROM target_saga)
+                WHERE tracker_connection_id IN (SELECT tracker_connection_id FROM target_saga)
+                  AND (saga_tracker_id IN (SELECT tracker_id FROM target_saga)
                    OR phase_tracker_id IN (SELECT tracker_id FROM target_phases)
                    OR run_id IN (SELECT id FROM target_runs)
-                   OR tracker_id IN (SELECT tracker_id FROM target_runs)
+                   OR tracker_id IN (SELECT tracker_id FROM target_runs))
             ),
             del_runs AS (
                 DELETE FROM runs
@@ -477,6 +482,7 @@ class PostgresSagaRepository(SagaRepository):
             id=row["id"],
             tracker_id=row["tracker_id"],
             tracker_type=row["tracker_type"],
+            tracker_connection_id=row.get("tracker_connection_id") or "",
             slug=slug,
             name=row["name"],
             repos=list(row["repos"]),

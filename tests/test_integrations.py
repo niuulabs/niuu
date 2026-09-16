@@ -690,6 +690,7 @@ class TestIntegrationEndpoints:
                 },
                 "auth_type": "oauth2_authorization_code",
                 "oauth_scopes": ["read", "write"],
+                "oauth_client_secret_required": False,
                 "credential_enrollment": None,
                 "sign_in_available": False,
                 "sign_in_needs_app": False,

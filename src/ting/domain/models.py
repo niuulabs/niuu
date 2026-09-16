@@ -113,6 +113,7 @@ class Saga:
     confidence: float
     created_at: datetime
     base_branch: str
+    tracker_connection_id: str = ""
     repo_branches: dict[str, str] = field(default_factory=dict)
     owner_id: str = ""
     tenant_id: str = ""
@@ -318,6 +319,9 @@ class TrackerProject:
     progress: float = 0.0
     start_date: str | None = None
     target_date: str | None = None
+    tracker_connection_id: str = ""
+    tracker_type: str = ""
+    tracker_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -331,6 +335,9 @@ class TrackerMilestone:
     sort_order: int
     progress: float
     target_date: str | None = None
+    tracker_connection_id: str = ""
+    tracker_type: str = ""
+    tracker_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -350,6 +357,9 @@ class TrackerIssue:
     estimate: float | None = None
     url: str = ""
     milestone_id: str | None = None
+    tracker_connection_id: str = ""
+    tracker_type: str = ""
+    tracker_name: str = ""
 
 
 # ---------------------------------------------------------------------------

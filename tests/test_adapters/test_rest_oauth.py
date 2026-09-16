@@ -9,8 +9,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from volundr.adapters.inbound.rest_oauth import create_oauth_router
+from volundr.adapters.outbound.oauth2_provider import OAuth2Provider
 from volundr.config import OAuthClientConfig, OAuthConfig
 from volundr.domain.models import (
+    CredentialEnrollmentSpec,
     IntegrationConnection,
     IntegrationDefinition,
     IntegrationType,
@@ -212,6 +214,71 @@ class TestCallback:
         assert store_kwargs[1]["data"] == {"api_key": "oauth-tok-123"}
         integration_repo.save_connection.assert_called_once()
 
+    def test_named_account_keeps_config_and_oauth_expiry(self):
+        from unittest.mock import patch as _patch
+
+        defn = IntegrationDefinition(
+            slug="jira",
+            name="Jira Cloud",
+            description="Issue tracker",
+            integration_type=IntegrationType.ISSUE_TRACKER,
+            adapter="volundr.adapters.outbound.jira.JiraAdapter",
+            config_schema={"required": ["site_url"]},
+            oauth=OAuthSpec(
+                authorize_url="https://auth.atlassian.com/authorize",
+                token_url="https://auth.atlassian.com/oauth/token",
+                client_secret_required=True,
+                token_request_format="json",
+            ),
+            credential_enrollment=CredentialEnrollmentSpec(
+                method="oauth_authorization_code",
+                credential_field="access_token",
+                default_credential_name="jira-signin",
+            ),
+        )
+        clients = {"jira": OAuthClientConfig(client_id="cid", client_secret="csec")}
+        app, credential_store, integration_repo = _make_app(definitions=[defn], clients=clients)
+        integration_repo.list_connections.return_value = []
+        client = TestClient(app, raise_server_exceptions=False)
+
+        missing = client.post(
+            f"{PREFIX}/jira/authorize",
+            headers=AUTH,
+            json={"credential_name": "jira-work", "config": {}},
+        )
+        assert missing.status_code == 422
+
+        auth_resp = client.post(
+            f"{PREFIX}/jira/authorize",
+            headers=AUTH,
+            json={
+                "credential_name": "jira-work",
+                "oauth_app": "default",
+                "config": {"site_url": "https://work.atlassian.net"},
+            },
+        )
+        from urllib.parse import parse_qs, urlparse
+
+        state = parse_qs(urlparse(auth_resp.json()["url"]).query)["state"][0]
+        credentials = {
+            "access_token": "oauth-access",
+            "refresh_token": "oauth-refresh",
+            "expires_at": "2026-09-15T18:00:00+00:00",
+        }
+        with _patch.object(OAuth2Provider, "exchange_code", AsyncMock(return_value=credentials)):
+            callback = client.get(f"{PREFIX}/callback?code=auth-code&state={state}")
+
+        assert callback.status_code == 200
+        stored = credential_store.store.call_args.kwargs
+        assert stored["name"] == "jira-work"
+        assert stored["data"] == credentials
+        assert stored["metadata"]["auth_expires_at"] == credentials["expires_at"]
+        connection = integration_repo.save_connection.call_args.args[0]
+        assert connection.config == {
+            "site_url": "https://work.atlassian.net",
+            "oauth_app": "default",
+        }
+
 
 class TestDisconnect:
     def test_404_for_missing_connection(self):
@@ -254,6 +321,44 @@ class TestDisconnect:
         assert resp.status_code == 204
         credential_store.delete.assert_called_once_with("user", "u1", "linear-oauth-token")
         integration_repo.delete_connection.assert_called_once_with("conn-1")
+
+    def test_disconnect_selects_the_requested_provider_account(self):
+        now = datetime.now(UTC)
+        connections = [
+            IntegrationConnection(
+                id=connection_id,
+                owner_id="u1",
+                integration_type=IntegrationType.ISSUE_TRACKER,
+                adapter="volundr.adapters.linear.LinearProvider",
+                credential_name=credential_name,
+                config={},
+                enabled=True,
+                created_at=now,
+                updated_at=now,
+                slug="linear",
+            )
+            for connection_id, credential_name in [
+                ("conn-work", "linear-work"),
+                ("conn-personal", "linear-personal"),
+            ]
+        ]
+        app, credential_store, integration_repo = _make_app(
+            definitions=[_make_definition(slug="linear")],
+            clients={"linear": OAuthClientConfig(client_id="cid", client_secret="csec")},
+        )
+        integration_repo.list_connections.return_value = connections
+        credential_store.get_value.return_value = {}
+        client = TestClient(app)
+
+        resp = client.post(
+            f"{PREFIX}/linear/disconnect",
+            headers=AUTH,
+            json={"connection_id": "conn-personal"},
+        )
+
+        assert resp.status_code == 204
+        credential_store.delete.assert_called_once_with("user", "u1", "linear-personal")
+        integration_repo.delete_connection.assert_called_once_with("conn-personal")
 
     def test_disconnect_without_oauth_config_still_deletes(self):
         now = datetime.now(UTC)

@@ -64,6 +64,7 @@ interface RawSaga {
   id: string;
   tracker_id: string;
   tracker_type?: string;
+  tracker_connection_id?: string;
   slug?: string;
   name: string;
   repos: string[];
@@ -195,6 +196,9 @@ interface RawTrackerProject {
   milestone_count: number;
   issue_count: number;
   slug?: string;
+  tracker_connection_id?: string;
+  tracker_type?: string;
+  tracker_name?: string;
 }
 
 interface RawTrackerMilestone {
@@ -204,6 +208,9 @@ interface RawTrackerMilestone {
   description: string;
   sort_order: number;
   progress: number;
+  tracker_connection_id?: string;
+  tracker_type?: string;
+  tracker_name?: string;
 }
 
 interface RawTrackerIssue {
@@ -217,6 +224,9 @@ interface RawTrackerIssue {
   priority: number;
   url: string;
   milestone_id: string | null;
+  tracker_connection_id?: string;
+  tracker_type?: string;
+  tracker_name?: string;
 }
 
 interface RawDispatchQueueItem {
@@ -475,6 +485,7 @@ function toSaga(raw: RawSaga): Saga {
     id: raw.id,
     trackerId: raw.tracker_id,
     trackerType: raw.tracker_type ?? 'linear',
+    trackerConnectionId: raw.tracker_connection_id ?? '',
     url: raw.url || undefined,
     slug:
       raw.slug ??
@@ -572,6 +583,9 @@ function toTrackerProject(raw: RawTrackerProject): TrackerProject {
     milestoneCount: raw.milestone_count,
     issueCount: raw.issue_count,
     slug: raw.slug ?? '',
+    trackerConnectionId: raw.tracker_connection_id ?? '',
+    trackerType: raw.tracker_type ?? '',
+    trackerName: raw.tracker_name ?? '',
   };
 }
 
@@ -583,6 +597,9 @@ function toTrackerMilestone(raw: RawTrackerMilestone): TrackerMilestone {
     description: raw.description,
     sortOrder: raw.sort_order,
     progress: raw.progress,
+    trackerConnectionId: raw.tracker_connection_id ?? '',
+    trackerType: raw.tracker_type ?? '',
+    trackerName: raw.tracker_name ?? '',
   };
 }
 
@@ -598,6 +615,9 @@ function toTrackerIssue(raw: RawTrackerIssue): TrackerIssue {
     priority: raw.priority,
     url: raw.url,
     milestoneId: raw.milestone_id,
+    trackerConnectionId: raw.tracker_connection_id ?? '',
+    trackerType: raw.tracker_type ?? '',
+    trackerName: raw.tracker_name ?? '',
   };
 }
 
@@ -667,6 +687,7 @@ function toCommitRequestBody(req: CommitSagaRequest): Record<string, unknown> {
       })),
     })),
     transcript: req.transcript,
+    tracker_connection_id: req.trackerConnectionId,
   };
 }
 
@@ -1138,22 +1159,31 @@ export function buildTrackerHttpAdapter(client: ApiClient): ITrackerBrowserServi
       return raw.map(toTrackerProject);
     },
 
-    async getProject(projectId: string) {
+    async getProject(projectId: string, trackerConnectionId?: string) {
+      const query = trackerConnectionId
+        ? `?tracker_connection_id=${encodeURIComponent(trackerConnectionId)}`
+        : '';
       const raw = await client.get<RawTrackerProject>(
-        `/tracker/projects/${encodeURIComponent(projectId)}`,
+        `/tracker/projects/${encodeURIComponent(projectId)}${query}`,
       );
       return toTrackerProject(raw);
     },
 
-    async listMilestones(projectId: string) {
+    async listMilestones(projectId: string, trackerConnectionId?: string) {
+      const query = trackerConnectionId
+        ? `?tracker_connection_id=${encodeURIComponent(trackerConnectionId)}`
+        : '';
       const raw = await client.get<RawTrackerMilestone[]>(
-        `/tracker/projects/${encodeURIComponent(projectId)}/milestones`,
+        `/tracker/projects/${encodeURIComponent(projectId)}/milestones${query}`,
       );
       return raw.map(toTrackerMilestone);
     },
 
-    async listIssues(projectId: string, milestoneId?: string) {
-      const query = milestoneId ? `?milestone_id=${encodeURIComponent(milestoneId)}` : '';
+    async listIssues(projectId: string, milestoneId?: string, trackerConnectionId?: string) {
+      const params = new URLSearchParams();
+      if (milestoneId) params.set('milestone_id', milestoneId);
+      if (trackerConnectionId) params.set('tracker_connection_id', trackerConnectionId);
+      const query = params.size > 0 ? `?${params.toString()}` : '';
       const raw = await client.get<RawTrackerIssue[]>(
         `/tracker/projects/${encodeURIComponent(projectId)}/issues${query}`,
       );
@@ -1170,6 +1200,7 @@ export function buildTrackerHttpAdapter(client: ApiClient): ITrackerBrowserServi
       const target = options?.target;
       const raw = await client.post<RawSaga>('/tracker/import', {
         project_id: projectId,
+        tracker_connection_id: options?.trackerConnectionId,
         repos: options?.repoRefs?.map((ref) => ref.repo) ?? repos,
         base_branch: options?.repoRefs?.[0]?.branch ?? baseBranch,
         repo_refs: options?.repoRefs,

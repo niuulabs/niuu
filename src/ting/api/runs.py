@@ -74,7 +74,13 @@ async def _authorize_tracker_run(request: Request, principal: Principal, tracker
     matches = [
         s
         for s in candidates
-        if s.tracker_id == parent.tracker_id and s.tenant_id == principal.tenant_id
+        if s.tracker_id == parent.tracker_id
+        and s.tenant_id == principal.tenant_id
+        and (
+            not s.tracker_connection_id
+            or not getattr(tracker, "connection_id", "")
+            or s.tracker_connection_id == tracker.connection_id
+        )
     ]
     # Tracker UUIDs and imported local saga UUIDs need not be the same.
     # Ambiguous registrations never establish authority for a mutation.

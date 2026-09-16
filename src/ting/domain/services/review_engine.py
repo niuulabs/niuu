@@ -32,6 +32,7 @@ from ting.domain.models import (
 )
 from ting.domain.services.dispatch_service import DispatchService
 from ting.domain.services.session_transcript import attach_session_transcript
+from ting.domain.tracker_routing import select_tracker_for_run
 from ting.ports.event_bus import EventBusPort, TingEvent
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.tracker import TrackerFactory, TrackerPort
@@ -224,7 +225,7 @@ class ReviewEngine:
         trackers = await self._tracker_factory.for_owner(owner_id)
         if not trackers:
             raise ValueError(f"No tracker adapter found for owner {owner_id}")
-        tracker = trackers[0]
+        tracker = await select_tracker_for_run(trackers, tracker_id, owner_id=owner_id)
 
         run = await tracker.get_run(tracker_id)
         if run.status != RunStatus.REVIEW:
@@ -259,7 +260,7 @@ class ReviewEngine:
         trackers = await self._tracker_factory.for_owner(owner_id)
         if not trackers:
             raise ValueError(f"No tracker adapter found for owner {owner_id}")
-        tracker = trackers[0]
+        tracker = await select_tracker_for_run(trackers, tracker_id, owner_id=owner_id)
 
         run = await tracker.get_run(tracker_id)
 
@@ -393,7 +394,11 @@ class ReviewEngine:
 
         # Trigger auto-continue after merge (and after phase unlock)
         if saga_tid:
-            await self._try_auto_continue(owner_id, saga_tid)
+            await self._try_auto_continue(
+                owner_id,
+                saga_tid,
+                saga.tracker_connection_id if saga else "",
+            )
 
         return ReviewDecision(
             run=updated,
@@ -561,7 +566,7 @@ class ReviewEngine:
                 )
 
             # Phase unlock may unblock new issues — trigger auto-continue
-            await self._try_auto_continue(owner_id, saga.tracker_id)
+            await self._try_auto_continue(owner_id, saga.tracker_id, saga.tracker_connection_id)
 
         return True
 
@@ -586,7 +591,7 @@ class ReviewEngine:
             )
             return False
 
-        tracker = adapters[0]
+        tracker = await select_tracker_for_run(adapters, tracker_id, owner_id=owner_id)
         saga = await tracker.get_saga_for_run(tracker_id)
 
         await tracker.update_run_progress(tracker_id, status=RunStatus.MERGED)
@@ -599,7 +604,7 @@ class ReviewEngine:
         )
 
         if saga is not None:
-            await self._try_auto_continue(owner_id, saga.tracker_id)
+            await self._try_auto_continue(owner_id, saga.tracker_id, saga.tracker_connection_id)
 
         logger.info(
             "Workflow completion finalized for run %s (phase_gate_unlocked=%s)",
@@ -631,7 +636,7 @@ class ReviewEngine:
             )
             return False
 
-        tracker = adapters[0]
+        tracker = await select_tracker_for_run(adapters, tracker_id, owner_id=owner_id)
         await tracker.update_run_progress(
             tracker_id,
             status=RunStatus.FAILED,
@@ -649,7 +654,7 @@ class ReviewEngine:
 
         saga = await tracker.get_saga_for_run(tracker_id)
         if saga is not None:
-            await self._try_auto_continue(owner_id, saga.tracker_id)
+            await self._try_auto_continue(owner_id, saga.tracker_id, saga.tracker_connection_id)
 
         logger.info(
             "Run failure finalized for %s (saga=%s)",
@@ -720,12 +725,24 @@ class ReviewEngine:
 
     # -- Auto-continue --
 
-    async def _try_auto_continue(self, owner_id: str, saga_tracker_id: str) -> None:
+    async def _try_auto_continue(
+        self,
+        owner_id: str,
+        saga_tracker_id: str,
+        tracker_connection_id: str = "",
+    ) -> None:
         """Delegate auto-continue to DispatchService if available."""
         if self._dispatch_service is None:
             return
         try:
-            await self._dispatch_service.try_auto_continue(owner_id, saga_tracker_id)
+            if tracker_connection_id:
+                await self._dispatch_service.try_auto_continue(
+                    owner_id,
+                    saga_tracker_id,
+                    tracker_connection_id=tracker_connection_id,
+                )
+            else:
+                await self._dispatch_service.try_auto_continue(owner_id, saga_tracker_id)
         except Exception:
             logger.warning(
                 "Auto-continue failed for owner %s (saga=%s)",

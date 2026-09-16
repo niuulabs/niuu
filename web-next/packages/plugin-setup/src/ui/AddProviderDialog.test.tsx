@@ -207,6 +207,33 @@ describe('AddProviderDialog', () => {
     );
   });
 
+  it('uses a registered application when the catalog still says one is needed', async () => {
+    const catalog = MOCK_CATALOG.map((entry) =>
+      entry.slug === 'github' ? { ...entry, signInAvailable: false, signInNeedsApp: true } : entry,
+    );
+    const service = createMockSetupService({ latencyMs: 0, catalog });
+    await service.registerOAuthClient('github', {
+      app: 'niuu-org',
+      clientId: 'Iv1.org',
+    });
+    const groups = providerGroups(catalog, git);
+
+    renderWithSetup(
+      <AddProviderDialog
+        {...base}
+        noun="Git host"
+        groups={groups}
+        initialGroupKey="github"
+        initialMode="signin"
+      />,
+      { service },
+    );
+
+    const choice = await screen.findByTestId('setup-oauth-app-choice-github');
+    expect(choice).toHaveTextContent('niuu-org');
+    expect(screen.queryByTestId('setup-oauth-app-github')).not.toBeInTheDocument();
+  });
+
   it('lets each account pick its own application or register another', async () => {
     const service = createMockSetupService({ latencyMs: 0 });
     await service.registerOAuthClient('github', { app: 'niuu-org', clientId: 'Iv1.org' });

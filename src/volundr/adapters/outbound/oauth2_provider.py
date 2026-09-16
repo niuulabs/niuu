@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
 import httpx
@@ -65,13 +66,20 @@ class OAuth2Provider:
         payload.update(self._spec.extra_token_params)
 
         async with httpx.AsyncClient() as client:
+            request_body = (
+                {"json": payload}
+                if self._spec.token_request_format == "json"
+                else {"data": payload}
+            )
             resp = await client.post(
                 self._spec.token_url,
-                data=payload,
+                **request_body,
                 headers={"Accept": "application/json"},
             )
             resp.raise_for_status()
             token_data = resp.json()
+        if not isinstance(token_data, dict) or not token_data.get("access_token"):
+            raise ValueError("OAuth token response did not include an access token")
 
         result: dict[str, str] = {}
         for cred_field, token_field in self._spec.token_field_mapping.items():
@@ -80,7 +88,15 @@ class OAuth2Provider:
                 result[cred_field] = value
 
         if not result:
-            result["access_token"] = token_data.get("access_token", "")
+            result["access_token"] = str(token_data["access_token"])
+
+        mapped_token_fields = set(self._spec.token_field_mapping.values())
+        refresh_token = token_data.get("refresh_token")
+        if refresh_token and "refresh_token" not in mapped_token_fields:
+            result["refresh_token"] = str(refresh_token)
+        if token_data.get("expires_in"):
+            expires_at = datetime.now(UTC) + timedelta(seconds=float(token_data["expires_in"]))
+            result["expires_at"] = expires_at.isoformat()
 
         return result
 

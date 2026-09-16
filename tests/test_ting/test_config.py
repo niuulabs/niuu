@@ -45,6 +45,15 @@ class TestSettings:
         settings = Settings(database=DatabaseConfig(host="custom-host"))
         assert settings.database.host == "custom-host"
 
+    def test_shared_integrations_accepts_platform_env_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("INTEGRATIONS__DATABASE_NAME", "niuu_shared")
+
+        settings = Settings()
+
+        assert settings.shared_integrations.database_name == "niuu_shared"
+
     def test_server_and_platform_legacy_aliases(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HOST", "127.0.0.2")
         monkeypatch.setenv("PORT", "8181")

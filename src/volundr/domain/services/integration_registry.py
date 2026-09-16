@@ -128,6 +128,8 @@ def definitions_from_config(
                 extra_authorize_params=oauth_raw.get("extra_authorize_params", {}),
                 extra_token_params=oauth_raw.get("extra_token_params", {}),
                 device_authorization_url=oauth_raw.get("device_authorization_url", ""),
+                token_request_format=oauth_raw.get("token_request_format", "form"),
+                client_secret_required=oauth_raw.get("client_secret_required", False),
             )
 
         enrollment_raw = item.get("credential_enrollment")

@@ -175,6 +175,30 @@ class TestExchangeCode:
         post_data = mock_client.post.call_args[1]["data"]
         assert post_data["audience"] == "https://api.example.com"
 
+    async def test_json_token_endpoint_keeps_refresh_and_expiry(self):
+        spec = _make_spec(token_request_format="json")
+        provider = _make_provider(spec=spec)
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "access_token": "at-123",
+            "refresh_token": "rt-456",
+            "expires_in": 3600,
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(_HTTPX_CLIENT, return_value=mock_client):
+            result = await provider.exchange_code("code", "https://app/cb")
+
+        assert result["access_token"] == "at-123"
+        assert result["refresh_token"] == "rt-456"
+        assert result["expires_at"]
+        assert "json" in mock_client.post.call_args.kwargs
+        assert "data" not in mock_client.post.call_args.kwargs
+
 
 class TestRevokeToken:
     async def test_no_op_when_revoke_url_empty(self):

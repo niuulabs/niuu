@@ -19,6 +19,9 @@ export const trackerProjectSchema = z.object({
   milestoneCount: z.number().int().nonnegative(),
   issueCount: z.number().int().nonnegative(),
   slug: z.string().default(''),
+  trackerConnectionId: z.string().optional(),
+  trackerType: z.string().optional(),
+  trackerName: z.string().optional(),
 });
 export type TrackerProject = z.infer<typeof trackerProjectSchema>;
 
@@ -29,6 +32,9 @@ export const trackerMilestoneSchema = z.object({
   description: z.string(),
   sortOrder: z.number().int().nonnegative(),
   progress: z.number().min(0).max(100),
+  trackerConnectionId: z.string().optional(),
+  trackerType: z.string().optional(),
+  trackerName: z.string().optional(),
 });
 export type TrackerMilestone = z.infer<typeof trackerMilestoneSchema>;
 
@@ -43,6 +49,9 @@ export const trackerIssueSchema = z.object({
   priority: z.number().int().nonnegative(),
   url: z.string(),
   milestoneId: z.string().nullable(),
+  trackerConnectionId: z.string().optional(),
+  trackerType: z.string().optional(),
+  trackerName: z.string().optional(),
 });
 export type TrackerIssue = z.infer<typeof trackerIssueSchema>;
 

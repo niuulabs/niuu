@@ -1071,6 +1071,8 @@ class OAuthSpec:
     # RFC 8628 device authorization endpoint; empty when the provider has none.
     device_authorization_url: str = ""
     extra_token_params: dict[str, str] = ()  # type: ignore[assignment]
+    token_request_format: Literal["form", "json"] = "form"
+    client_secret_required: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.scopes, tuple):

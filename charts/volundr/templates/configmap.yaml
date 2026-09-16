@@ -487,6 +487,9 @@ data:
         {{ $slug }}:
           client_id: {{ $client.clientId | quote }}
           client_secret: {{ $client.clientSecret | quote }}
+          {{- if $client.baseUrl }}
+          base_url: {{ $client.baseUrl | quote }}
+          {{- end }}
         {{- end }}
       {{- else }}
       clients: {}

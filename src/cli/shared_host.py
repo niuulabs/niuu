@@ -302,6 +302,7 @@ def create_app(
                     integration_registry=integration_registry,
                     credential_store=credential_store,
                     integration_repo=integration_repo,
+                    oauth_clients=oauth_clients,
                 )
             )
             app.include_router(create_canonical_tracker_router(tracker_service=tracker_service))

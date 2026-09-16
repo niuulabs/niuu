@@ -716,10 +716,17 @@ def create_app(
             app.dependency_overrides[resolve_git] = _resolve_git
             app.dependency_overrides[sagas_resolve_git] = _resolve_git
 
-            # Wire tracker for runs (uses first available tracker)
+            # Resolve each run through its connection-scoped operational state.
             async def _resolve_runs_tracker_dep(
+                request: Request,
                 principal: Principal = Depends(extract_principal),
             ) -> TrackerPort:
+                from ting.domain.tracker_routing import (
+                    TrackerRoutingError,
+                    select_tracker,
+                    select_tracker_for_run,
+                )
+
                 trackers = await app.state.tracker_factory.for_owner(principal.user_id)
                 if not trackers:
                     from fastapi import HTTPException, status
@@ -728,7 +735,20 @@ def create_app(
                         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                         detail="No tracker configured",
                     )
-                return trackers[0]
+                run_id = str(request.path_params.get("run_id") or "")
+                try:
+                    if run_id:
+                        return await select_tracker_for_run(
+                            trackers, run_id, owner_id=principal.user_id
+                        )
+                    return select_tracker(trackers)
+                except TrackerRoutingError as exc:
+                    from fastapi import HTTPException, status
+
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=str(exc),
+                    ) from exc
 
             app.dependency_overrides[resolve_runs_tracker] = _resolve_runs_tracker_dep
 

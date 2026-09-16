@@ -19,6 +19,8 @@ def _resolve_tracker_adapter(adapter: str) -> str | None:
     """Map shared tracker adapters onto Ting-owned implementations."""
     if adapter == "volundr.adapters.outbound.linear.LinearAdapter":
         return "ting.adapters.linear.LinearTrackerAdapter"
+    if adapter == "volundr.adapters.outbound.jira.JiraAdapter":
+        return "ting.adapters.jira.JiraTrackerAdapter"
     if adapter.startswith("volundr."):
         return None
     return adapter
@@ -83,7 +85,13 @@ class TrackerAdapterFactory:
                 kwargs = {**_normalize_tracker_credentials(resolved_adapter, cred), **conn.config}
                 if self._pool is not None:
                     kwargs["pool"] = self._pool
-                adapters.append(cls(**kwargs))
+                tracker = cls(**kwargs)
+                tracker.bind_connection(
+                    connection_id=str(conn.id),
+                    provider=str(conn.slug),
+                    name=str(conn.config.get("name") or conn.config.get("site_url") or conn.slug),
+                )
+                adapters.append(tracker)
             except (ImportError, TypeError, ValueError, AttributeError) as exc:
                 logger.error(
                     "Failed to create tracker adapter for connection %s: %s",
@@ -96,11 +104,14 @@ class TrackerAdapterFactory:
                     conn.id,
                     exc_info=True,
                 )
-        if not adapters and self._pool is not None:
-            logger.info(
-                "No tracker integrations configured for owner %s; "
-                "using NativeTrackerAdapter fallback",
-                owner_id,
-            )
-            adapters.append(NativeTrackerAdapter(pool=self._pool))
+        if self._pool is not None:
+            if not adapters:
+                logger.info(
+                    "No external tracker integrations configured for owner %s; "
+                    "using the native tracker",
+                    owner_id,
+                )
+            native = NativeTrackerAdapter(pool=self._pool)
+            native.bind_connection(connection_id="native", provider="native", name="Niuu")
+            adapters.append(native)
         return adapters

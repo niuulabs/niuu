@@ -1,0 +1,11 @@
+DROP INDEX IF EXISTS idx_run_session_messages_connection_tracker;
+DROP INDEX IF EXISTS idx_run_confidence_events_connection_tracker;
+DROP INDEX IF EXISTS idx_run_progress_connection_session;
+DROP INDEX IF EXISTS idx_run_progress_connection_status;
+ALTER TABLE run_progress DROP CONSTRAINT IF EXISTS run_progress_pkey;
+ALTER TABLE run_progress ADD CONSTRAINT run_progress_pkey PRIMARY KEY (tracker_id);
+ALTER TABLE run_session_messages DROP COLUMN IF EXISTS tracker_connection_id;
+ALTER TABLE run_confidence_events DROP COLUMN IF EXISTS tracker_connection_id;
+ALTER TABLE run_progress DROP COLUMN IF EXISTS tracker_connection_id;
+DROP INDEX IF EXISTS idx_sagas_tracker_connection;
+ALTER TABLE sagas DROP COLUMN IF EXISTS tracker_connection_id;

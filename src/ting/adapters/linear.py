@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import math
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4, uuid5
 
@@ -584,7 +585,10 @@ class LinearTrackerAdapter(TrackerPort):
         project = data.get("project")
         if project is None:
             raise GraphQLError(f"Project not found: {saga_id}")
-        return self._project_to_saga(project)
+        return replace(
+            self._project_to_saga(project),
+            tracker_connection_id=self.connection_id,
+        )
 
     async def get_phase(self, tracker_id: str) -> Phase:
         if self._pool is not None:
@@ -757,11 +761,11 @@ class LinearTrackerAdapter(TrackerPort):
             INSERT INTO run_progress
                 (tracker_id, status, session_id, confidence, pr_url, pr_id,
                  retry_count, reason, owner_id, phase_tracker_id, saga_tracker_id,
-                 chronicle_summary, reviewer_session_id, review_round)
+                 chronicle_summary, reviewer_session_id, review_round, tracker_connection_id)
             VALUES ($1, COALESCE($2, 'PENDING'), $3, $4, $5, $6,
                     COALESCE($7, 0), $8, $9, $10, $11, $12, $13,
-                    COALESCE($14, 0))
-            ON CONFLICT (tracker_id) DO UPDATE SET
+                    COALESCE($14, 0), $15)
+            ON CONFLICT (tracker_connection_id, tracker_id) DO UPDATE SET
                 status              = COALESCE($2, run_progress.status),
                 session_id          = COALESCE($3, run_progress.session_id),
                 confidence          = COALESCE($4, run_progress.confidence),
@@ -791,6 +795,7 @@ class LinearTrackerAdapter(TrackerPort):
             chronicle_summary,
             reviewer_session_id,
             review_round,
+            self.connection_id,
         )
         if status is not None:
             try:
@@ -819,8 +824,10 @@ class LinearTrackerAdapter(TrackerPort):
                 logger.exception("Failed to fetch run %s", row["tracker_id"])
         if stale_ids and self._pool is not None:
             await self._pool.execute(
-                "DELETE FROM run_progress WHERE tracker_id = ANY($1::text[])",
+                "DELETE FROM run_progress WHERE tracker_id = ANY($1::text[]) "
+                "AND tracker_connection_id = $2",
                 stale_ids,
+                self.connection_id,
             )
             logger.info("Cleaned up %d stale run_progress entries", len(stale_ids))
         return runs
@@ -829,8 +836,10 @@ class LinearTrackerAdapter(TrackerPort):
         if self._pool is None:
             return []
         rows = await self._pool.fetch(
-            "SELECT tracker_id FROM run_progress WHERE saga_tracker_id = $1",
+            "SELECT tracker_id FROM run_progress WHERE saga_tracker_id = $1 "
+            "AND tracker_connection_id = $2",
             saga_tracker_id,
+            self.connection_id,
         )
         return await self._collect_runs(rows)
 
@@ -838,8 +847,10 @@ class LinearTrackerAdapter(TrackerPort):
         if self._pool is None:
             return None
         row = await self._pool.fetchrow(
-            "SELECT tracker_id FROM run_progress WHERE session_id = $1",
+            "SELECT tracker_id FROM run_progress WHERE session_id = $1 "
+            "AND tracker_connection_id = $2",
             session_id,
+            self.connection_id,
         )
         if row is None:
             return None
@@ -849,8 +860,10 @@ class LinearTrackerAdapter(TrackerPort):
         if self._pool is None:
             return []
         rows = await self._pool.fetch(
-            "SELECT tracker_id FROM run_progress WHERE status = $1 ORDER BY updated_at",
+            "SELECT tracker_id FROM run_progress WHERE status = $1 "
+            "AND tracker_connection_id = $2 ORDER BY updated_at",
             status.value,
+            self.connection_id,
         )
         return await self._collect_runs(rows)
 
@@ -858,7 +871,10 @@ class LinearTrackerAdapter(TrackerPort):
         if self._pool is None:
             return None
         # Scan progress table for a tracker_id whose uuid5 matches run_id
-        rows = await self._pool.fetch("SELECT tracker_id FROM run_progress")
+        rows = await self._pool.fetch(
+            "SELECT tracker_id FROM run_progress WHERE tracker_connection_id = $1",
+            self.connection_id,
+        )
         for row in rows:
             if uuid5(UUID(int=0), row["tracker_id"]) == run_id:
                 return await self.get_run(row["tracker_id"])
@@ -872,8 +888,9 @@ class LinearTrackerAdapter(TrackerPort):
         await self._pool.execute(
             """
             INSERT INTO run_confidence_events
-                (id, run_id, tracker_id, event_type, delta, score_after, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                (id, run_id, tracker_id, event_type, delta, score_after, created_at,
+                 tracker_connection_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             """,
             event.id,
             event.run_id,
@@ -882,11 +899,14 @@ class LinearTrackerAdapter(TrackerPort):
             event.delta,
             event.score_after,
             event.created_at,
+            self.connection_id,
         )
         await self._pool.execute(
-            "UPDATE run_progress SET confidence = $2, updated_at = NOW() WHERE tracker_id = $1",
+            "UPDATE run_progress SET confidence = $2, updated_at = NOW() "
+            "WHERE tracker_id = $1 AND tracker_connection_id = $3",
             tracker_id,
             event.score_after,
+            self.connection_id,
         )
 
     async def get_confidence_events(self, tracker_id: str) -> list[ConfidenceEvent]:
@@ -895,10 +915,11 @@ class LinearTrackerAdapter(TrackerPort):
         rows = await self._pool.fetch(
             """
             SELECT ce.* FROM run_confidence_events ce
-            WHERE ce.tracker_id = $1
+            WHERE ce.tracker_id = $1 AND ce.tracker_connection_id = $2
             ORDER BY ce.created_at
             """,
             tracker_id,
+            self.connection_id,
         )
         return [
             ConfidenceEvent(
@@ -928,9 +949,10 @@ class LinearTrackerAdapter(TrackerPort):
             """
             SELECT count(*) FILTER (WHERE status != 'MERGED') AS remaining
             FROM run_progress
-            WHERE phase_tracker_id = $1
+            WHERE phase_tracker_id = $1 AND tracker_connection_id = $2
             """,
             phase_tracker_id,
+            self.connection_id,
         )
         return row is not None and row["remaining"] == 0
 
@@ -940,10 +962,11 @@ class LinearTrackerAdapter(TrackerPort):
                 """
                 SELECT p.* FROM phases p
                 JOIN sagas s ON s.id = p.saga_id
-                WHERE s.tracker_id = $1
+                WHERE s.tracker_id = $1 AND s.tracker_connection_id = $2
                 ORDER BY p.number
                 """,
                 saga_tracker_id,
+                self.connection_id,
             )
             if rows:
                 phases = [self._row_to_phase(row) for row in rows]
@@ -951,9 +974,11 @@ class LinearTrackerAdapter(TrackerPort):
                     """
                     SELECT count(*) FROM run_progress
                     WHERE saga_tracker_id = $1
+                      AND tracker_connection_id = $2
                       AND (phase_tracker_id IS NULL OR phase_tracker_id = '')
                     """,
                     saga_tracker_id,
+                    self.connection_id,
                 )
                 if unassigned_count:
                     phases.append(
@@ -1013,16 +1038,19 @@ class LinearTrackerAdapter(TrackerPort):
             SELECT s.*
             FROM sagas s
             JOIN run_progress rp ON rp.saga_tracker_id = s.tracker_id
-            WHERE rp.tracker_id = $1
+            WHERE rp.tracker_id = $1 AND rp.tracker_connection_id = $2
             """,
             tracker_id,
+            self.connection_id,
         )
         if row is not None:
             return self._row_to_saga(row)
 
         row = await self._pool.fetchrow(
-            "SELECT saga_tracker_id FROM run_progress WHERE tracker_id = $1",
+            "SELECT saga_tracker_id FROM run_progress WHERE tracker_id = $1 "
+            "AND tracker_connection_id = $2",
             tracker_id,
+            self.connection_id,
         )
         if row is None or not row["saga_tracker_id"]:
             return None
@@ -1035,9 +1063,10 @@ class LinearTrackerAdapter(TrackerPort):
             """
             SELECT phase_tracker_id, saga_tracker_id
             FROM run_progress
-            WHERE tracker_id = $1
+            WHERE tracker_id = $1 AND tracker_connection_id = $2
             """,
             tracker_id,
+            self.connection_id,
         )
         if row is None:
             return None
@@ -1051,8 +1080,10 @@ class LinearTrackerAdapter(TrackerPort):
         if self._pool is None:
             return None
         row = await self._pool.fetchrow(
-            "SELECT owner_id FROM run_progress WHERE tracker_id = $1",
+            "SELECT owner_id FROM run_progress WHERE tracker_id = $1 "
+            "AND tracker_connection_id = $2",
             tracker_id,
+            self.connection_id,
         )
         if row is None:
             return None
@@ -1065,7 +1096,10 @@ class LinearTrackerAdapter(TrackerPort):
             raise RuntimeError("pool is required for save_session_message")
         # Resolve tracker_id from run UUID
         tracker_id = str(message.run_id)
-        rows = await self._pool.fetch("SELECT tracker_id FROM run_progress")
+        rows = await self._pool.fetch(
+            "SELECT tracker_id FROM run_progress WHERE tracker_connection_id = $1",
+            self.connection_id,
+        )
         for row in rows:
             if uuid5(UUID(int=0), row["tracker_id"]) == message.run_id:
                 tracker_id = row["tracker_id"]
@@ -1073,8 +1107,9 @@ class LinearTrackerAdapter(TrackerPort):
         await self._pool.execute(
             """
             INSERT INTO run_session_messages
-                (id, run_id, tracker_id, session_id, content, sender, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                (id, run_id, tracker_id, session_id, content, sender, created_at,
+                 tracker_connection_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             """,
             message.id,
             message.run_id,
@@ -1083,6 +1118,7 @@ class LinearTrackerAdapter(TrackerPort):
             message.content,
             message.sender,
             message.created_at,
+            self.connection_id,
         )
 
     async def get_session_messages(self, tracker_id: str) -> list[SessionMessage]:
@@ -1091,10 +1127,11 @@ class LinearTrackerAdapter(TrackerPort):
         rows = await self._pool.fetch(
             """
             SELECT * FROM run_session_messages
-            WHERE tracker_id = $1
+            WHERE tracker_id = $1 AND tracker_connection_id = $2
             ORDER BY created_at
             """,
             tracker_id,
+            self.connection_id,
         )
         return [
             SessionMessage(
@@ -1114,8 +1151,9 @@ class LinearTrackerAdapter(TrackerPort):
         if self._pool is None:
             return None
         row = await self._pool.fetchrow(
-            "SELECT * FROM run_progress WHERE tracker_id = $1",
+            "SELECT * FROM run_progress WHERE tracker_id = $1 AND tracker_connection_id = $2",
             tracker_id,
+            self.connection_id,
         )
         return dict(row) if row else None
 
@@ -1261,6 +1299,7 @@ class LinearTrackerAdapter(TrackerPort):
             id=row["id"],
             tracker_id=row["tracker_id"],
             tracker_type=row["tracker_type"],
+            tracker_connection_id=row.get("tracker_connection_id") or "",
             slug=slug,
             name=row["name"],
             repos=list(row["repos"]),

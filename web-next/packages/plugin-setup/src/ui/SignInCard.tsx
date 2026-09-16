@@ -1,11 +1,14 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Field, Input } from '@niuulabs/ui';
 import {
   connectionNeedsSignIn,
+  buildConfigPayload,
   credentialNameFor,
   enrollmentFailureMessage,
   errorMessage,
   isEnrollmentActive,
+  missingConfigKeys,
   type CatalogEntry,
   type Enrollment,
   type IntegrationConnection,
@@ -14,10 +17,13 @@ import {
 import { TestOutcome } from './TestOutcome';
 import { AlertIcon, CheckIcon } from './icons';
 import {
+  ENROLLMENT_POLL_MS,
   useCancelEnrollment,
   useEnrollment,
   useStartEnrollment,
+  useStartOAuthAuthorization,
   useSubmitEnrollmentCode,
+  setupKeys,
 } from './hooks';
 
 export interface SignInCardProps {
@@ -39,11 +45,154 @@ export interface SignInCardProps {
 /**
  * A catalog entry that is connected by signing in through the provider.
  *
- * The platform runs the official CLI in a sealed helper; the wizard shows the
- * link (and device code) it produces, polls until the provider confirms, and
- * for Claude passes the authorization code the browser hands back.
+ * The wizard either runs the provider's device/CLI enrollment or opens its
+ * standard OAuth authorization-code flow, then waits for the resulting
+ * per-user connection.
  */
-export function SignInCard({
+export function SignInCard(props: SignInCardProps) {
+  if (props.entry.credentialEnrollment?.method === 'oauth_authorization_code') {
+    return <OAuthAuthorizationCard {...props} />;
+  }
+  return <EnrollmentSignInCard {...props} />;
+}
+
+function inputType(type: string): string {
+  if (type === 'password') return 'password';
+  if (type === 'url') return 'url';
+  return 'text';
+}
+
+function OAuthAuthorizationCard({
+  entry,
+  connection,
+  headless = false,
+  credentialName: requestedName,
+  disabled = false,
+  oauthApp = '',
+  testResult,
+  testing = false,
+  onTest,
+}: SignInCardProps) {
+  const [config, setConfig] = useState<Record<string, string>>({});
+  const [touched, setTouched] = useState(false);
+  const [waiting, setWaiting] = useState(false);
+  const authorize = useStartOAuthAuthorization();
+  const queryClient = useQueryClient();
+  const missingConfig = missingConfigKeys(entry, config);
+
+  useEffect(() => {
+    if (!waiting || connection) return;
+    const interval = window.setInterval(() => {
+      void queryClient.invalidateQueries({ queryKey: setupKeys.integrations });
+    }, ENROLLMENT_POLL_MS);
+    return () => window.clearInterval(interval);
+  }, [connection, queryClient, waiting]);
+
+  const begin = () => {
+    setTouched(true);
+    if (missingConfig.length > 0) return;
+    const credentialName =
+      requestedName ??
+      connection?.credentialName ??
+      entry.credentialEnrollment?.defaultCredentialName ??
+      credentialNameFor(entry.slug);
+    const popup = window.open('', `${entry.slug}-oauth`, 'popup,width=720,height=840');
+    authorize.mutate(
+      {
+        slug: entry.slug,
+        credentialName,
+        oauthApp,
+        config: buildConfigPayload(entry, config),
+      },
+      {
+        onSuccess: ({ url }) => {
+          setWaiting(true);
+          if (popup) popup.location.href = url;
+          else window.open(url, `${entry.slug}-oauth`, 'popup,width=720,height=840');
+        },
+        onError: () => popup?.close(),
+      },
+    );
+  };
+
+  const connected = connection !== undefined && !connectionNeedsSignIn(connection);
+  const Wrapper = headless ? 'div' : 'section';
+  return (
+    <Wrapper
+      className={headless ? 'setup-col' : 'setup-card'}
+      data-testid={`setup-integration-${entry.slug}`}
+    >
+      {Object.entries(entry.configSchema.properties ?? {}).map(([key, schema]) => (
+        <Field
+          key={key}
+          label={schema.label}
+          required={(entry.configSchema.required ?? []).includes(key)}
+          hint={
+            [schema.description, schema.type === 'string[]' ? 'Comma-separated.' : '']
+              .filter(Boolean)
+              .join(' ') || undefined
+          }
+          error={touched && missingConfig.includes(key) ? `${schema.label} is required` : undefined}
+        >
+          <Input
+            type={inputType(schema.type)}
+            placeholder={schema.default ?? ''}
+            value={config[key] ?? ''}
+            onChange={(event) =>
+              setConfig((current) => ({ ...current, [key]: event.target.value }))
+            }
+            data-testid={`setup-config-${entry.slug}-${key}`}
+          />
+        </Field>
+      ))}
+      <div className="setup-form__actions">
+        {connected ? (
+          <>
+            <span className="setup-note">
+              <CheckIcon size={13} /> Signed in · credential {connection.credentialName}
+            </span>
+            {onTest ? (
+              <button
+                type="button"
+                className="setup-btn"
+                onClick={() => onTest(connection.id)}
+                disabled={testing}
+                data-testid={`setup-test-${entry.slug}`}
+              >
+                {testing ? 'Testing…' : 'Test connection'}
+              </button>
+            ) : null}
+          </>
+        ) : (
+          <button
+            type="button"
+            className="setup-btn"
+            onClick={begin}
+            disabled={authorize.isPending || waiting || disabled}
+            data-testid={`setup-signin-start-${entry.slug}`}
+          >
+            {authorize.isPending
+              ? 'Opening…'
+              : waiting
+                ? 'Waiting for approval…'
+                : `Sign in to ${entry.name}`}
+          </button>
+        )}
+        {authorize.error ? (
+          <span className="setup-error" role="alert">
+            {errorMessage(authorize.error)}
+          </span>
+        ) : null}
+        {waiting && !connected ? (
+          <span className="setup-note">Finish approval in the provider window.</span>
+        ) : null}
+        {testResult ? <TestOutcome slug={entry.slug} result={testResult} /> : null}
+      </div>
+    </Wrapper>
+  );
+}
+
+function EnrollmentSignInCard({
   entry,
   connection,
   headless = false,

@@ -41,6 +41,13 @@ export interface ISetupService {
   cancelEnrollment(enrollmentId: string): Promise<Enrollment>;
   /** Hand a browser authorization code back to a sign-in that asked for one. */
   submitEnrollmentCode(enrollmentId: string, code: string): Promise<Enrollment>;
+  /** Start a browser OAuth authorization-code flow for one named account. */
+  startOAuthAuthorization(
+    slug: string,
+    credentialName: string,
+    oauthApp: string,
+    config: Record<string, unknown>,
+  ): Promise<{ url: string }>;
   /** Register the person's own OAuth application for a provider's sign-in (GitHub, GitLab). */
   registerOAuthClient(slug: string, input: OAuthClientInput): Promise<void>;
   /** The OAuth applications this install signs in through, all providers. */

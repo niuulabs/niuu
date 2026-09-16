@@ -49,6 +49,7 @@ from ting.domain.models import (
     WorkflowScope,
 )
 from ting.domain.templates import BUNDLED_TEMPLATES_DIR, TemplatePhase, load_template
+from ting.domain.tracker_routing import select_tracker_for_saga
 from ting.domain.utils import _slugify
 from ting.domain.workflow_snapshot import (
     workflow_mimir_from_snapshot,
@@ -575,15 +576,20 @@ class DispatchService:
 
         running_runs = 0
         if trackers:
-            try:
-                running = await trackers[0].list_runs_by_status(RunStatus.RUNNING)
-                running_runs = len(running)
-            except Exception:
-                logger.warning(
-                    "Failed to list tracker RUNNING runs for owner %s while checking capacity",
-                    owner_id[:8],
-                    exc_info=True,
-                )
+            results = await asyncio.gather(
+                *(tracker.list_runs_by_status(RunStatus.RUNNING) for tracker in trackers),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.warning(
+                        "Failed to list tracker RUNNING runs for owner %s "
+                        "while checking capacity: %s",
+                        owner_id[:8],
+                        result,
+                    )
+                else:
+                    running_runs += len(result)
 
         occupied_slots = max(active_sessions, running_runs)
         available_slots = max(state.max_concurrent_runs - occupied_slots, 0)
@@ -596,6 +602,7 @@ class DispatchService:
         principal: Principal | None = None,
         auth_token: str | None = None,
         saga_tracker_id: str | None = None,
+        tracker_connection_id: str | None = None,
     ) -> list[QueueItem]:
         """Find all dispatchable issues, optionally scoped to one saga."""
         adapters = await self._tracker_factory.for_owner(owner_id)
@@ -609,7 +616,14 @@ class DispatchService:
 
         sagas = await self._saga_repo.list_sagas(owner_id=owner_id)
         if saga_tracker_id:
-            sagas = [s for s in sagas if s.tracker_id == saga_tracker_id]
+            sagas = [
+                saga
+                for saga in sagas
+                if saga.tracker_id == saga_tracker_id
+                and (
+                    not tracker_connection_id or saga.tracker_connection_id == tracker_connection_id
+                )
+            ]
         # Only process active sagas — completed/failed ones have no dispatchable work
         active_sagas = [s for s in sagas if s.status == SagaStatus.ACTIVE]
         if not active_sagas:
@@ -728,7 +742,7 @@ class DispatchService:
                 logger.warning("Saga not found: %s", item.saga_id)
                 continue
 
-            issue = item.issue or issue_cache.get(item.issue_id)
+            issue = item.issue or issue_cache.get((str(saga.id), item.issue_id))
             if issue is None:
                 logger.warning("Issue not found: %s", item.issue_id)
                 continue
@@ -790,7 +804,7 @@ class DispatchService:
                 item=item,
                 saga=saga,
                 issue=issue,
-                adapters=adapters,
+                adapter=select_tracker_for_saga(adapters, saga),
                 effective_model=effective_model,
                 effective_prompt=effective_prompt,
                 integration_ids=integration_ids,
@@ -809,6 +823,7 @@ class DispatchService:
         self,
         owner_id: str,
         saga_tracker_id: str,
+        tracker_connection_id: str | None = None,
     ) -> list[DispatchResult]:
         """Dispatch newly unblocked issues if auto_continue is enabled.
 
@@ -859,7 +874,11 @@ class DispatchService:
                 )
                 return []
 
-            ready = await self.find_ready_issues(owner_id, saga_tracker_id=saga_tracker_id)
+            ready = await self.find_ready_issues(
+                owner_id,
+                saga_tracker_id=saga_tracker_id,
+                tracker_connection_id=tracker_connection_id,
+            )
             if not ready:
                 logger.info(
                     "Auto-continue skipped for owner %s: no ready issues (saga=%s)",
@@ -940,6 +959,7 @@ class DispatchService:
             id=saga_id,
             tracker_id=str(saga_id),
             tracker_type="native",
+            tracker_connection_id="native",
             slug=slug,
             name=template.name,
             repos=template.repos,
@@ -1211,58 +1231,58 @@ class DispatchService:
         }
         has_persisted_phases = bool(phases)
 
-        for adapter in adapters:
-            try:
-                project, milestones, issues = await self._fetch_saga_data(adapter, saga)
+        adapter = select_tracker_for_saga(adapters, saga)
+        try:
+            project, milestones, issues = await self._fetch_saga_data(adapter, saga)
 
-                if project is not None and project.status in _COMPLETED_LINEAR_STATES:
-                    return [], True
+            if project is not None and project.status in _COMPLETED_LINEAR_STATES:
+                return [], True
 
-                milestone_names = {m.id: m.name for m in milestones}
-                blocked_identifiers = await self._get_blocked_safe(adapter, saga)
+            milestone_names = {m.id: m.name for m in milestones}
+            blocked_identifiers = await self._get_blocked_safe(adapter, saga)
 
-                items: list[QueueItem] = []
-                for issue in issues:
-                    if has_persisted_phases and issue.milestone_id not in active_phase_tracker_ids:
-                        continue
-                    if not is_ready(issue, active_issue_ids, blocked_identifiers):
-                        continue
-                    items.append(
-                        QueueItem(
-                            saga_id=str(saga.id),
-                            saga_name=saga.name,
-                            saga_slug=saga.slug,
-                            repos=saga.repos,
-                            feature_branch=saga.feature_branch,
-                            phase_name=milestone_names.get(issue.milestone_id or "", "Unassigned"),
-                            issue_id=issue.id,
-                            identifier=issue.identifier,
-                            title=issue.title,
-                            description=issue.description,
-                            status=issue.status,
-                            status_type=issue.status_type,
-                            priority=issue.priority,
-                            priority_label=issue.priority_label,
-                            estimate=issue.estimate,
-                            url=issue.url,
-                            milestone_id=issue.milestone_id,
-                            workflow_id=str(saga.workflow_id) if saga.workflow_id else None,
-                            workflow=workflow_name_from_snapshot(saga.workflow_snapshot),
-                            workflow_version=(
-                                str(saga.workflow_snapshot.get("version"))
-                                if saga.workflow_snapshot
-                                and saga.workflow_snapshot.get("version") is not None
-                                else None
-                            ),
-                            instance_id=saga.instance_id,
-                            target_tags=tuple(saga.target_tags),
-                            target_match=saga.target_match,
-                        )
+            items: list[QueueItem] = []
+            for issue in issues:
+                if has_persisted_phases and issue.milestone_id not in active_phase_tracker_ids:
+                    continue
+                if not is_ready(issue, active_issue_ids, blocked_identifiers):
+                    continue
+                items.append(
+                    QueueItem(
+                        saga_id=str(saga.id),
+                        saga_name=saga.name,
+                        saga_slug=saga.slug,
+                        repos=saga.repos,
+                        feature_branch=saga.feature_branch,
+                        phase_name=milestone_names.get(issue.milestone_id or "", "Unassigned"),
+                        issue_id=issue.id,
+                        identifier=issue.identifier,
+                        title=issue.title,
+                        description=issue.description,
+                        status=issue.status,
+                        status_type=issue.status_type,
+                        priority=issue.priority,
+                        priority_label=issue.priority_label,
+                        estimate=issue.estimate,
+                        url=issue.url,
+                        milestone_id=issue.milestone_id,
+                        workflow_id=str(saga.workflow_id) if saga.workflow_id else None,
+                        workflow=workflow_name_from_snapshot(saga.workflow_snapshot),
+                        workflow_version=(
+                            str(saga.workflow_snapshot.get("version"))
+                            if saga.workflow_snapshot
+                            and saga.workflow_snapshot.get("version") is not None
+                            else None
+                        ),
+                        instance_id=saga.instance_id,
+                        target_tags=tuple(saga.target_tags),
+                        target_match=saga.target_match,
                     )
-                return items, False
-            except Exception:
-                logger.error("Failed to fetch issues for saga %s", saga.id, exc_info=True)
-        return [], False
+                )
+            return items, False
+        except Exception:
+            logger.error("Failed to fetch issues for saga %s", saga.id, exc_info=True)
+            return [], False
 
     @staticmethod
     async def _get_blocked_safe(adapter: TrackerPort, saga: Saga) -> set[str]:
@@ -1303,25 +1323,23 @@ class DispatchService:
     @staticmethod
     async def _build_issue_cache(
         adapters: list[TrackerPort], sagas: list[Saga], max_cached_issues: int
-    ) -> dict[str, TrackerIssue]:
+    ) -> dict[tuple[str, str], TrackerIssue]:
         """Build a lookup of issue details for prompt generation."""
-        issue_cache: dict[str, TrackerIssue] = {}
+        issue_cache: dict[tuple[str, str], TrackerIssue] = {}
         for saga in sagas:
-            for adapter in adapters:
-                try:
-                    issues = await adapter.list_issues(saga.tracker_id)
-                    for issue in issues:
-                        if len(issue_cache) >= max_cached_issues:
-                            logger.warning(
-                                "Issue cache limit reached (%d), skipping remaining issues",
-                                max_cached_issues,
-                            )
-                            break
-                        issue_cache[issue.id] = issue
-                    break
-                except Exception:
-                    logger.warning("Failed to fetch issues for saga %s", saga.id, exc_info=True)
-                    continue
+            adapter = select_tracker_for_saga(adapters, saga)
+            try:
+                issues = await adapter.list_issues(saga.tracker_id)
+                for issue in issues:
+                    if len(issue_cache) >= max_cached_issues:
+                        logger.warning(
+                            "Issue cache limit reached (%d), skipping remaining issues",
+                            max_cached_issues,
+                        )
+                        break
+                    issue_cache[(str(saga.id), issue.id)] = issue
+            except Exception:
+                logger.warning("Failed to fetch issues for saga %s", saga.id, exc_info=True)
         return issue_cache
 
     def _build_spawn_request(
@@ -1510,7 +1528,7 @@ class DispatchService:
         item: DispatchItem,
         saga: Saga,
         issue: TrackerIssue,
-        adapters: list[TrackerPort],
+        adapter: TrackerPort,
         effective_model: str,
         effective_prompt: str,
         integration_ids: list[str],
@@ -1543,40 +1561,34 @@ class DispatchService:
             session = await target_volundr.spawn_session(**spawn_kwargs)
 
             # Record run progress and set tracker issue to In Progress
+            adapter_name = type(adapter).__name__
+            await adapter.update_run_progress(
+                issue.id,
+                status=RunStatus.RUNNING,
+                session_id=session.id,
+                owner_id=owner_id,
+                phase_tracker_id=issue.milestone_id,
+                saga_tracker_id=saga.tracker_id,
+            )
             logger.info(
-                "Dispatch: updating %d tracker adapters for issue %s",
-                len(adapters),
+                "Dispatch: %s.update_run_progress OK for %s",
+                adapter_name,
                 issue.id,
             )
-            for adapter in adapters:
-                adapter_name = type(adapter).__name__
-                await adapter.update_run_progress(
-                    issue.id,
-                    status=RunStatus.RUNNING,
-                    session_id=session.id,
-                    owner_id=owner_id,
-                    phase_tracker_id=issue.milestone_id,
-                    saga_tracker_id=saga.tracker_id,
-                )
+            try:
+                await adapter.update_run_state(issue.id, RunStatus.RUNNING)
                 logger.info(
-                    "Dispatch: %s.update_run_progress OK for %s",
+                    "Dispatch: %s.update_run_state OK for %s → In Progress",
                     adapter_name,
                     issue.id,
                 )
-                try:
-                    await adapter.update_run_state(issue.id, RunStatus.RUNNING)
-                    logger.info(
-                        "Dispatch: %s.update_run_state OK for %s → In Progress",
-                        adapter_name,
-                        issue.id,
-                    )
-                except Exception:
-                    logger.error(
-                        "FAILED: %s.update_run_state for %s",
-                        adapter_name,
-                        issue.id,
-                        exc_info=True,
-                    )
+            except Exception:
+                logger.error(
+                    "FAILED: %s.update_run_state for %s",
+                    adapter_name,
+                    issue.id,
+                    exc_info=True,
+                )
 
             logger.info("Dispatched %s → session %s", issue.identifier, session.id)
             if self._event_bus is not None:

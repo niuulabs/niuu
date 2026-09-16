@@ -1013,6 +1013,7 @@ class Settings(BaseSettings):
         yaml_file_encoding="utf-8",
         env_nested_delimiter="__",
         extra="ignore",
+        loc_by_alias=False,
     )
 
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
@@ -1031,7 +1032,10 @@ class Settings(BaseSettings):
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     planner: PlannerConfig = Field(default_factory=PlannerConfig)
     credential_store: CredentialStoreConfig = Field(default_factory=CredentialStoreConfig)
-    shared_integrations: SharedIntegrationsConfig = Field(default_factory=SharedIntegrationsConfig)
+    shared_integrations: SharedIntegrationsConfig = Field(
+        default_factory=SharedIntegrationsConfig,
+        validation_alias=AliasChoices("shared_integrations", "integrations"),
+    )
     guild_registry: GuildRegistryConfig = Field(default_factory=GuildRegistryConfig)
     authorization: AuthorizationAdapterConfig = Field(default_factory=AuthorizationAdapterConfig)
     pat: PATConfig = Field(default_factory=PATConfig)

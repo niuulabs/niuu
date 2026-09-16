@@ -5,6 +5,7 @@ import {
   credentialNameFor,
   errorMessage,
   isConnectableFromWizard,
+  missingConfigKeys,
   missingCredentialKeys,
   type CatalogEntry,
   type ConnectIntegrationInput,
@@ -56,11 +57,12 @@ export function IntegrationCard({
   const [touched, setTouched] = useState(false);
   const connectable = isConnectableFromWizard(entry);
   const missing = missingCredentialKeys(entry, credential);
+  const missingConfig = missingConfigKeys(entry, config);
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setTouched(true);
-    if (missing.length > 0) return;
+    if (missing.length > 0 || missingConfig.length > 0) return;
     onConnect({
       slug: entry.slug,
       credentialName: credentialName ?? credentialNameFor(entry.slug),
@@ -131,7 +133,15 @@ export function IntegrationCard({
             <Field
               key={key}
               label={schema.label}
-              hint={schema.type === 'string[]' ? 'Comma-separated' : undefined}
+              required={(entry.configSchema.required ?? []).includes(key)}
+              hint={
+                [schema.description, schema.type === 'string[]' ? 'Comma-separated.' : '']
+                  .filter(Boolean)
+                  .join(' ') || undefined
+              }
+              error={
+                touched && missingConfig.includes(key) ? `${schema.label} is required` : undefined
+              }
             >
               <Input
                 type={inputType(schema.type)}

@@ -244,6 +244,7 @@ class EventTriggerAdapter:
             id=saga_id,
             tracker_id=str(saga_id),
             tracker_type="native",
+            tracker_connection_id="native",
             slug=slug,
             name=template.name,
             repos=template.repos,

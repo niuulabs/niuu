@@ -51,6 +51,11 @@ from ting.domain.models import (
     WorkflowDefinition,
     WorkflowScope,
 )
+from ting.domain.tracker_routing import (
+    TrackerRoutingError,
+    select_tracker,
+    select_tracker_for_saga,
+)
 from ting.domain.utils import _session_name, _slugify
 from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_name_from_snapshot
 from ting.ports.git import GitPort
@@ -678,6 +683,7 @@ class SagaListItem(BaseModel):
     id: str
     tracker_id: str
     tracker_type: str
+    tracker_connection_id: str = ""
     slug: str
     name: str
     repos: list[str]
@@ -706,6 +712,7 @@ class SagaDetailResponse(BaseModel):
     id: str
     tracker_id: str
     tracker_type: str
+    tracker_connection_id: str = ""
     slug: str
     name: str
     description: str = ""
@@ -880,6 +887,7 @@ class CommitRequest(BaseModel):
     phases: list[PhaseSpecRequest]
     transcript: str | None = None
     workflow_id: str | None = None
+    tracker_connection_id: str | None = None
 
 
 class CommittedRunResponse(BaseModel):
@@ -902,6 +910,7 @@ class CommittedSagaResponse(BaseModel):
     id: str
     tracker_id: str
     tracker_type: str
+    tracker_connection_id: str = ""
     slug: str
     name: str
     repos: list[str]
@@ -973,16 +982,23 @@ async def _resolve_git_for_request(request: Request) -> GitPort:
 
 
 async def _find_project(
-    tracker_id: str,
+    saga: Saga | str,
     adapters: list[TrackerPort],
 ) -> TrackerProject | None:
-    """Find a project across all tracker adapters."""
-    for adapter in adapters:
-        try:
-            return await adapter.get_project(tracker_id)
-        except Exception:
-            continue
-    return None
+    """Find a project through the connection that owns the saga."""
+    if isinstance(saga, str):
+        for adapter in adapters:
+            try:
+                return await adapter.get_project(saga)
+            except Exception:
+                continue
+        return None
+    try:
+        adapter = select_tracker_for_saga(adapters, saga)
+        return await adapter.get_project(saga.tracker_id)
+    except Exception:
+        logger.warning("Failed to hydrate tracker project for saga %s", saga.id, exc_info=True)
+        return None
 
 
 async def _build_phase_summary(
@@ -1060,18 +1076,24 @@ def create_sagas_router() -> APIRouter:
         sagas = await repo.list_sagas(owner_id=principal.user_id)
 
         # Fetch all projects once and index by ID
-        all_projects: dict[str, TrackerProject] = {}
+        all_projects: dict[tuple[str, str], TrackerProject] = {}
         for adapter in adapters:
             try:
                 projects = await adapter.list_projects()
                 for p in projects:
-                    all_projects[p.id] = p
+                    all_projects[(adapter.connection_id, p.id)] = p
             except Exception:
                 logger.warning("Failed to list projects from adapter", exc_info=True)
 
         items: list[SagaListItem] = []
         for saga in sagas:
-            project = all_projects.get(saga.tracker_id)
+            project = all_projects.get((saga.tracker_connection_id, saga.tracker_id))
+            if project is None and not saga.tracker_connection_id:
+                try:
+                    owning_adapter = select_tracker_for_saga(adapters, saga)
+                    project = all_projects.get((owning_adapter.connection_id, saga.tracker_id))
+                except TrackerRoutingError:
+                    logger.warning("Cannot route legacy saga %s to one tracker", saga.id)
             phase_summary = await _build_phase_summary(repo, saga.id)
             instance_name = await _resolve_instance_name(request, principal, saga.instance_id)
             items.append(
@@ -1079,6 +1101,7 @@ def create_sagas_router() -> APIRouter:
                     id=str(saga.id),
                     tracker_id=saga.tracker_id,
                     tracker_type=saga.tracker_type,
+                    tracker_connection_id=saga.tracker_connection_id,
                     slug=saga.slug,
                     name=project.name if project else saga.name,
                     repos=saga.repos,
@@ -1153,19 +1176,16 @@ def create_sagas_router() -> APIRouter:
         milestones = []
         issues = []
         if saga.tracker_id:
-            for adapter in adapters:
-                try:
-                    if hasattr(adapter, "get_project_full"):
-                        project, milestones, issues = await adapter.get_project_full(
-                            saga.tracker_id
-                        )
-                    else:
-                        project = await adapter.get_project(saga.tracker_id)
-                        milestones = await adapter.list_milestones(saga.tracker_id)
-                        issues = await adapter.list_issues(saga.tracker_id)
-                    break
-                except Exception:
-                    continue
+            try:
+                adapter = select_tracker_for_saga(adapters, saga)
+                if hasattr(adapter, "get_project_full"):
+                    project, milestones, issues = await adapter.get_project_full(saga.tracker_id)
+                else:
+                    project = await adapter.get_project(saga.tracker_id)
+                    milestones = await adapter.list_milestones(saga.tracker_id)
+                    issues = await adapter.list_issues(saga.tracker_id)
+            except Exception:
+                logger.warning("Failed to hydrate saga %s from its tracker", saga.id, exc_info=True)
 
         # Group issues by milestone
         issues_by_milestone: dict[str | None, list] = {}
@@ -1226,6 +1246,7 @@ def create_sagas_router() -> APIRouter:
             id=str(saga.id),
             tracker_id=saga.tracker_id,
             tracker_type=saga.tracker_type,
+            tracker_connection_id=saga.tracker_connection_id,
             slug=saga.slug,
             name=project.name if project else saga.name,
             description=project.description if project else "",
@@ -1655,7 +1676,7 @@ def create_sagas_router() -> APIRouter:
 
         await repo.update_saga_status(parsed_id, new_status)
 
-        project = await _find_project(saga.tracker_id, adapters)
+        project = await _find_project(saga, adapters)
         return SagaListItem(
             id=str(saga.id),
             tracker_id=saga.tracker_id,
@@ -1725,7 +1746,7 @@ def create_sagas_router() -> APIRouter:
         updated = await repo.get_saga(parsed_id, owner_id=principal.user_id)
         assert updated is not None
 
-        project = await _find_project(updated.tracker_id, adapters)
+        project = await _find_project(updated, adapters)
         phase_summary = await _build_phase_summary(repo, updated.id)
         instance_name = await _resolve_instance_name(request, principal, updated.instance_id)
         return SagaListItem(
@@ -1806,7 +1827,7 @@ def create_sagas_router() -> APIRouter:
         )
         await repo.save_saga(updated_saga)
 
-        project = await _find_project(updated_saga.tracker_id, adapters)
+        project = await _find_project(updated_saga, adapters)
         phase_summary = await _build_phase_summary(repo, updated_saga.id)
         instance_name = await _resolve_instance_name(request, principal, updated_saga.instance_id)
         return SagaListItem(
@@ -1891,7 +1912,7 @@ def create_sagas_router() -> APIRouter:
         updated = await repo.get_saga(parsed_id, owner_id=principal.user_id)
         assert updated is not None
 
-        project = await _find_project(updated.tracker_id, adapters)
+        project = await _find_project(updated, adapters)
         phase_summary = await _build_phase_summary(repo, updated.id)
         return SagaListItem(
             id=str(updated.id),
@@ -1976,12 +1997,21 @@ def create_sagas_router() -> APIRouter:
                 detail="At least one phase is required",
             )
 
-        tracker = adapters[0] if adapters else None
-        if tracker is None:
+        if not adapters:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="No tracker configured",
             )
+        try:
+            tracker = select_tracker(
+                adapters,
+                connection_id=body.tracker_connection_id or "",
+            )
+        except TrackerRoutingError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
 
         review_cfg: ReviewConfig = getattr(
             getattr(request.app.state, "settings", None),
@@ -2006,6 +2036,7 @@ def create_sagas_router() -> APIRouter:
             id=saga_id,
             tracker_id="",
             tracker_type="",
+            tracker_connection_id=tracker.connection_id,
             slug=body.slug,
             name=body.name,
             repos=body.repos,
@@ -2040,7 +2071,7 @@ def create_sagas_router() -> APIRouter:
             raise HTTPException(status_code=403, detail="Saga creation denied")
 
         # 1. Create saga in tracker — this MUST succeed or we abort
-        tracker_type = type(tracker).__name__
+        tracker_type = tracker.provider or type(tracker).__name__
         try:
             tracker_saga_id = await tracker.create_saga(saga, description=body.description)
         except Exception as exc:
@@ -2217,7 +2248,14 @@ def create_sagas_router() -> APIRouter:
         dispatch_service = getattr(request.app.state, "dispatch_service", None)
         if dispatch_service is not None:
             try:
-                await dispatch_service.try_auto_continue(principal.user_id, saga.tracker_id)
+                if saga.tracker_connection_id:
+                    await dispatch_service.try_auto_continue(
+                        principal.user_id,
+                        saga.tracker_id,
+                        tracker_connection_id=saga.tracker_connection_id,
+                    )
+                else:
+                    await dispatch_service.try_auto_continue(principal.user_id, saga.tracker_id)
             except Exception:
                 msg = f"Failed to kick off initial dispatch for saga '{_sanitize_log(body.slug)}'"
                 logger.warning(
@@ -2231,6 +2269,7 @@ def create_sagas_router() -> APIRouter:
             id=str(saga.id),
             tracker_id=saga.tracker_id,
             tracker_type=saga.tracker_type,
+            tracker_connection_id=saga.tracker_connection_id,
             slug=saga.slug,
             name=saga.name,
             repos=saga.repos,

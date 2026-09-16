@@ -8,6 +8,7 @@ via a FastAPI dependency. Supports multiple trackers in parallel.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -24,6 +25,11 @@ from ting.domain.models import (
     TrackerMilestone,
     TrackerProject,
     WorkflowScope,
+)
+from ting.domain.tracker_routing import (
+    TrackerRoutingError,
+    select_tracker,
+    select_tracker_for_saga,
 )
 from ting.domain.utils import _slugify
 from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_name_from_snapshot
@@ -104,6 +110,10 @@ class ImportRequest(BaseModel):
     """Request body for importing a project as a saga."""
 
     project_id: str = Field(description="External tracker project ID")
+    tracker_connection_id: str | None = Field(
+        default=None,
+        description="Integration connection that owns the external project",
+    )
     repos: list[str] = Field(description="Repositories (org/repo)")
     base_branch: str = Field(description="Branch to create feature branch from")
     repo_refs: list[dict[str, str]] = Field(
@@ -137,6 +147,8 @@ class SagaResponse(BaseModel):
 
     id: str
     tracker_id: str
+    tracker_connection_id: str = ""
+    tracker_type: str = ""
     name: str
     repos: list[str]
     base_branch: str = "main"
@@ -169,6 +181,83 @@ async def resolve_trackers() -> list[TrackerPort]:
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="Tracker adapters not configured",
+    )
+
+
+def _provider(adapter: TrackerPort) -> str:
+    if adapter.provider:
+        return adapter.provider
+    name = type(adapter).__name__.lower()
+    for provider in ("jira", "linear", "native"):
+        if provider in name:
+            return provider
+    return name
+
+
+def _with_project_source(project: TrackerProject, adapter: TrackerPort) -> TrackerProject:
+    return replace(
+        project,
+        tracker_connection_id=adapter.connection_id,
+        tracker_type=_provider(adapter),
+        tracker_name=adapter.connection_name or _provider(adapter),
+    )
+
+
+def _with_milestone_source(milestone: TrackerMilestone, adapter: TrackerPort) -> TrackerMilestone:
+    return replace(
+        milestone,
+        tracker_connection_id=adapter.connection_id,
+        tracker_type=_provider(adapter),
+        tracker_name=adapter.connection_name or _provider(adapter),
+    )
+
+
+def _with_issue_source(issue: TrackerIssue, adapter: TrackerPort) -> TrackerIssue:
+    return replace(
+        issue,
+        tracker_connection_id=adapter.connection_id,
+        tracker_type=_provider(adapter),
+        tracker_name=adapter.connection_name or _provider(adapter),
+    )
+
+
+async def _resolve_project_source(
+    adapters: list[TrackerPort],
+    project_id: str,
+    connection_id: str | None,
+) -> tuple[TrackerPort, TrackerProject]:
+    if connection_id:
+        try:
+            adapter = select_tracker(adapters, connection_id=connection_id)
+        except TrackerRoutingError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        try:
+            return adapter, await adapter.get_project(project_id)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found on tracker connection '{connection_id}': {project_id}",
+            ) from exc
+
+    matches: list[tuple[TrackerPort, TrackerProject]] = []
+    for adapter in adapters:
+        try:
+            matches.append((adapter, await adapter.get_project(project_id)))
+        except Exception:
+            continue
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Project ID '{project_id}' exists in multiple tracker connections; "
+                "tracker_connection_id is required"
+            ),
+        )
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Project not found: {project_id}",
     )
 
 
@@ -220,7 +309,7 @@ def _build_tracker_router(
             try:
                 projects = await adapter.list_projects()
                 results.extend(
-                    project
+                    _with_project_source(project, adapter)
                     for project in projects
                     if not _is_terminal_project_status(project.status)
                 )
@@ -243,30 +332,25 @@ def _build_tracker_router(
         request: Request,
         response: Response,
         project_id: str,
+        tracker_connection_id: str | None = Query(default=None),
         principal: Principal = Depends(extract_principal),
         adapters: list[TrackerPort] = Depends(resolve_trackers),
     ) -> TrackerProject:
         """Get a single project by ID, searching across connected trackers."""
-        for adapter in adapters:
-            try:
-                project = await adapter.get_project(project_id)
-                if deprecated:
-                    warn_on_legacy_route(
-                        request,
-                        response,
-                        LegacyRouteNotice(
-                            legacy_path=f"{prefix}/projects/{project_id}",
-                            canonical_path=f"{canonical_prefix}/projects/{project_id}",
-                        ),
-                        route_logger=logger,
-                    )
-                return project
-            except Exception:
-                continue
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Project not found: {project_id}",
+        adapter, project = await _resolve_project_source(
+            adapters, project_id, tracker_connection_id
         )
+        if deprecated:
+            warn_on_legacy_route(
+                request,
+                response,
+                LegacyRouteNotice(
+                    legacy_path=f"{prefix}/projects/{project_id}",
+                    canonical_path=f"{canonical_prefix}/projects/{project_id}",
+                ),
+                route_logger=logger,
+            )
+        return _with_project_source(project, adapter)
 
     @router.get(
         "/projects/{project_id}/milestones",
@@ -276,27 +360,24 @@ def _build_tracker_router(
         request: Request,
         response: Response,
         project_id: str,
+        tracker_connection_id: str | None = Query(default=None),
         principal: Principal = Depends(extract_principal),
         adapters: list[TrackerPort] = Depends(resolve_trackers),
     ) -> list[TrackerMilestone]:
         """List milestones for a project."""
-        for adapter in adapters:
-            try:
-                milestones = await adapter.list_milestones(project_id)
-                if deprecated:
-                    warn_on_legacy_route(
-                        request,
-                        response,
-                        LegacyRouteNotice(
-                            legacy_path=f"{prefix}/projects/{project_id}/milestones",
-                            canonical_path=f"{canonical_prefix}/projects/{project_id}/milestones",
-                        ),
-                        route_logger=logger,
-                    )
-                return milestones
-            except Exception:
-                continue
-        return []
+        adapter, _ = await _resolve_project_source(adapters, project_id, tracker_connection_id)
+        milestones = await adapter.list_milestones(project_id)
+        if deprecated:
+            warn_on_legacy_route(
+                request,
+                response,
+                LegacyRouteNotice(
+                    legacy_path=f"{prefix}/projects/{project_id}/milestones",
+                    canonical_path=f"{canonical_prefix}/projects/{project_id}/milestones",
+                ),
+                route_logger=logger,
+            )
+        return [_with_milestone_source(item, adapter) for item in milestones]
 
     @router.get(
         "/projects/{project_id}/issues",
@@ -307,27 +388,24 @@ def _build_tracker_router(
         response: Response,
         project_id: str,
         milestone_id: str | None = Query(default=None),
+        tracker_connection_id: str | None = Query(default=None),
         principal: Principal = Depends(extract_principal),
         adapters: list[TrackerPort] = Depends(resolve_trackers),
     ) -> list[TrackerIssue]:
         """List issues for a project, optionally filtered by milestone."""
-        for adapter in adapters:
-            try:
-                issues = await adapter.list_issues(project_id, milestone_id)
-                if deprecated:
-                    warn_on_legacy_route(
-                        request,
-                        response,
-                        LegacyRouteNotice(
-                            legacy_path=f"{prefix}/projects/{project_id}/issues",
-                            canonical_path=f"{canonical_prefix}/projects/{project_id}/issues",
-                        ),
-                        route_logger=logger,
-                    )
-                return issues
-            except Exception:
-                continue
-        return []
+        adapter, _ = await _resolve_project_source(adapters, project_id, tracker_connection_id)
+        issues = await adapter.list_issues(project_id, milestone_id)
+        if deprecated:
+            warn_on_legacy_route(
+                request,
+                response,
+                LegacyRouteNotice(
+                    legacy_path=f"{prefix}/projects/{project_id}/issues",
+                    canonical_path=f"{canonical_prefix}/projects/{project_id}/issues",
+                ),
+                route_logger=logger,
+            )
+        return [_with_issue_source(item, adapter) for item in issues]
 
     @router.post("/import", response_model=SagaResponse)
     async def import_project(
@@ -343,19 +421,9 @@ def _build_tracker_router(
         execution context. All display data is fetched live from the
         tracker at read time.
         """
-        project: TrackerProject | None = None
-        for adapter in adapters:
-            try:
-                project = await adapter.get_project(body.project_id)
-                break
-            except Exception:
-                continue
-
-        if project is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Project not found: {body.project_id}",
-            )
+        adapter, project = await _resolve_project_source(
+            adapters, body.project_id, body.tracker_connection_id
+        )
 
         workflow_id, workflow_version, workflow_snapshot = await _resolve_import_workflow(
             request=request,
@@ -411,21 +479,45 @@ def _build_tracker_router(
             request.app.state.saga_repo, authorization, principal, read_action="update"
         )
         owner_sagas = await saga_repo.list_sagas(owner_id=principal.user_id)
-        existing = next((saga for saga in owner_sagas if saga.tracker_id == project.id), None)
+
+        def _belongs_to_selected_connection(candidate: Saga) -> bool:
+            if candidate.tracker_id != project.id:
+                return False
+            if candidate.tracker_connection_id:
+                return candidate.tracker_connection_id == adapter.connection_id
+            try:
+                return select_tracker_for_saga(adapters, candidate) is adapter
+            except TrackerRoutingError:
+                return False
+
+        existing = next(
+            (saga for saga in owner_sagas if _belongs_to_selected_connection(saga)),
+            None,
+        )
         conflicting_slug = next((saga for saga in owner_sagas if saga.slug == slug), None)
         if conflicting_slug is not None and (
             existing is None or conflicting_slug.id != existing.id
         ):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Saga with slug '{slug}' already exists",
-            )
+            try:
+                conflicting_adapter = select_tracker_for_saga(adapters, conflicting_slug)
+            except TrackerRoutingError:
+                conflicting_adapter = None
+            if conflicting_adapter is None or conflicting_adapter is adapter:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Saga with slug '{slug}' already exists on this tracker connection",
+                )
+            slug = f"{slug}-{_provider(adapter)}"
+            if any(saga.slug == slug for saga in owner_sagas):
+                suffix = adapter.connection_id[:8] or "tracker"
+                slug = f"{slug}-{suffix}"
 
         saga = Saga(
             tenant_id=existing.tenant_id if existing is not None else principal.tenant_id,
             id=existing.id if existing is not None else uuid4(),
             tracker_id=project.id,
-            tracker_type="linear",
+            tracker_type=_provider(adapter),
+            tracker_connection_id=adapter.connection_id,
             slug=slug,
             name=project.name,
             repos=repos,
@@ -449,7 +541,14 @@ def _build_tracker_router(
         warnings: list[str] = []
         if body.start_immediately and dispatch_service is not None:
             try:
-                await dispatch_service.try_auto_continue(principal.user_id, saga.tracker_id)
+                if saga.tracker_connection_id:
+                    await dispatch_service.try_auto_continue(
+                        principal.user_id,
+                        saga.tracker_id,
+                        tracker_connection_id=saga.tracker_connection_id,
+                    )
+                else:
+                    await dispatch_service.try_auto_continue(principal.user_id, saga.tracker_id)
             except Exception:
                 msg = f"Failed to kick off initial dispatch for imported saga '{slug}'"
                 logger.warning(msg, exc_info=True)
@@ -474,6 +573,8 @@ def _build_tracker_router(
         return SagaResponse(
             id=str(saga.id),
             tracker_id=saga.tracker_id,
+            tracker_connection_id=saga.tracker_connection_id,
+            tracker_type=saga.tracker_type,
             name=saga.name,
             repos=saga.repos,
             base_branch=saga.base_branch,

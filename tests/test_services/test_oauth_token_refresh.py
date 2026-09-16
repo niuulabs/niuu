@@ -32,6 +32,7 @@ from volundr.domain.services.oauth_token_refresh import (
 
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GITLAB_TOKEN_URL = "https://gitlab.com/oauth/token"
+JIRA_TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 
 
 class _CredentialStore:
@@ -194,6 +195,48 @@ async def test_github_refresh_carries_the_app_secret_when_configured(repo, store
     item = store.items[("user", "user-1", "github-signin")]
     # GitHub answers without a new refresh token; the old one stays usable.
     assert item["data"]["refresh_token"] == "old-refresh"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_jira_refresh_uses_json_and_updates_the_access_token_field(repo, store) -> None:
+    await repo.save_connection(_connection("jira", "jira-signin"))
+    await store.store(
+        "user",
+        "user-1",
+        "jira-signin",
+        SecretType.OAUTH_TOKEN,
+        {
+            "access_token": "old-access",
+            "refresh_token": "old-refresh",
+            "expires_at": (datetime.now(UTC) + timedelta(minutes=1)).isoformat(),
+        },
+        {"source": "oauth2", "auth_state": "active"},
+    )
+    route = respx.post(JIRA_TOKEN_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "access_token": "new-access",
+                "refresh_token": "new-refresh",
+                "expires_in": 3600,
+            },
+        )
+    )
+
+    report = await _service(
+        repo,
+        store,
+        client_ids={"jira": "jira-client"},
+        client_secrets={"jira": "jira-secret"},
+    ).refresh_due()
+
+    assert report.refreshed == ["jira/user-1/jira-signin"]
+    assert route.calls.last.request.headers["content-type"] == "application/json"
+    assert route.calls.last.request.content
+    item = store.items[("user", "user-1", "jira-signin")]
+    assert item["data"]["access_token"] == "new-access"
+    assert item["data"]["refresh_token"] == "new-refresh"
 
 
 @pytest.mark.asyncio

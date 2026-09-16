@@ -137,7 +137,13 @@ async def test_tracker_run_maps_to_stored_project_not_tracker_uuid(principal):
 
     repo, tracker = AsyncMock(), AsyncMock()
     tracker.get_saga_for_run.return_value = SimpleNamespace(id=uuid4(), tracker_id="project-1")
-    saga = SimpleNamespace(id=uuid4(), tracker_id="project-1", owner_id="alice", tenant_id="acme")
+    saga = SimpleNamespace(
+        id=uuid4(),
+        tracker_id="project-1",
+        owner_id="alice",
+        tenant_id="acme",
+        tracker_connection_id="",
+    )
     repo.list_sagas.return_value = [saga]
     request = SimpleNamespace(
         app=SimpleNamespace(

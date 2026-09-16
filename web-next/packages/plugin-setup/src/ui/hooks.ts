@@ -134,6 +134,24 @@ export function useStartEnrollment() {
   });
 }
 
+/** Opens a provider-owned OAuth authorization-code flow in a browser popup. */
+export function useStartOAuthAuthorization() {
+  const service = useSetupService();
+  return useMutation({
+    mutationFn: ({
+      slug,
+      credentialName,
+      oauthApp,
+      config,
+    }: {
+      slug: string;
+      credentialName: string;
+      oauthApp: string;
+      config: Record<string, unknown>;
+    }) => service.startOAuthAuthorization(slug, credentialName, oauthApp, config),
+  });
+}
+
 /** Polls a sign-in while it is running; refreshes connections once it completes. */
 export function useEnrollment(enrollmentId: string | null) {
   const service = useSetupService();

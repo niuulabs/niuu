@@ -103,6 +103,7 @@ def create_oauth_client_registry(
                 client_id=client.client_id,
                 client_secret=client.client_secret,
                 source=SOURCE_CONFIGURED,
+                base_url=client.base_url,
             )
             for slug, client in settings.oauth.clients.items()
         },
@@ -116,7 +117,7 @@ def create_oauth_token_refresh_service(
     credential_store: CredentialStorePort,
     oauth_clients: OAuthClientRegistry,
 ) -> OAuthTokenRefreshService:
-    """Refresher for device-flow sign-in tokens (GitLab, GitHub)."""
+    """Refresher for OAuth sign-in tokens (device and authorization-code grants)."""
     return OAuthTokenRefreshService(
         integration_repository=integration_repository,
         integration_registry=integration_registry,

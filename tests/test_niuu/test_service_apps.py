@@ -341,10 +341,11 @@ def test_integrations_service_app_seeds_connections_and_linear(monkeypatch) -> N
     async def _no_registered_clients() -> None:
         return None
 
+    oauth_client_registry = SimpleNamespace(load=_no_registered_clients)
     monkeypatch.setattr(
         integrations_app,
         "create_oauth_client_registry",
-        lambda _settings, **kwargs: SimpleNamespace(load=_no_registered_clients),
+        lambda _settings, **kwargs: oauth_client_registry,
     )
     monkeypatch.setattr(
         integrations_app,
@@ -379,13 +380,16 @@ def test_integrations_service_app_seeds_connections_and_linear(monkeypatch) -> N
         "create_canonical_integrations_router",
         _capture_integrations_router,
     )
+
+    def _capture_oauth_router(**kwargs) -> APIRouter:
+        captured["oauth_router_registry"] = kwargs["integration_registry"]
+        captured["oauth_router_clients"] = kwargs["oauth_clients"]
+        return _probe_router("/api/v1/integrations/oauth-probe")
+
     monkeypatch.setattr(
         integrations_app,
         "create_canonical_oauth_router",
-        lambda oauth_config, integration_registry, credential_store, integration_repo: (
-            captured.setdefault("oauth_router_registry", integration_registry),
-            _probe_router("/api/v1/integrations/oauth-probe"),
-        )[-1],
+        _capture_oauth_router,
     )
     monkeypatch.setattr(
         integrations_app,
@@ -406,6 +410,7 @@ def test_integrations_service_app_seeds_connections_and_linear(monkeypatch) -> N
     # The shared integrations API owns interactive enrollment: without the service
     # the Codex device login answers 503 no matter how the cluster is configured.
     assert captured["integrations_router_enrollment_service"] is not None
+    assert captured["oauth_router_clients"] is oauth_client_registry
     enrollment_kwargs = captured["enrollment_service_kwargs"]
     assert enrollment_kwargs["repository"][0] == "credential-enrollments"  # type: ignore[index]
     assert enrollment_kwargs["integration_repository"][0] == "integrations"  # type: ignore[index]

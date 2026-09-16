@@ -1,7 +1,7 @@
 """The OAuth applications this install signs in through.
 
-Every install uses applications its people own: a GitHub OAuth App or a
-GitLab application with the device grant enabled. A provider can have
+Every install uses applications its people own: for example a GitHub OAuth App,
+a GitLab device application, or an Atlassian 3LO integration. A provider can have
 several, one per account when the accounts live in different organisations
 or need different apps; each account remembers which application it signed
 in through. Client ids come from configuration (``oauth.clients``, the
@@ -21,6 +21,8 @@ from volundr.domain.ports import CredentialStorePort
 from volundr.domain.services.integration_registry import IntegrationRegistry
 
 logger = logging.getLogger(__name__)
+
+OAUTH_APPLICATION_METHODS = frozenset({"oauth_device", "oauth_authorization_code"})
 
 APP_REGISTRY_OWNER_TYPE = "system"
 APP_REGISTRY_OWNER_ID = "oauth-clients"
@@ -129,6 +131,19 @@ class OAuthClientRegistry:
     def has_any(self, slug: str) -> bool:
         return any(client.slug == slug for client in self.list())
 
+    def has_usable(self, slug: str) -> bool:
+        """Whether at least one application satisfies this provider's client requirements."""
+        definition = self._registry.get_definition(slug)
+        requires_secret = bool(
+            definition is not None
+            and definition.oauth is not None
+            and definition.oauth.client_secret_required
+        )
+        return any(
+            client.slug == slug and (not requires_secret or bool(client.client_secret))
+            for client in self.list()
+        )
+
     def list(self) -> list[OAuthClient]:
         merged = dict(self._configured)
         merged.update(self._registered)
@@ -143,7 +158,8 @@ class OAuthClientRegistry:
         return (
             definition is not None
             and definition.oauth is not None
-            and bool(definition.oauth.device_authorization_url)
+            and definition.credential_enrollment is not None
+            and definition.credential_enrollment.method in OAUTH_APPLICATION_METHODS
         )
 
     async def register(
@@ -159,6 +175,15 @@ class OAuthClientRegistry:
         client_id = client_id.strip()
         if not client_id:
             raise OAuthClientError("A client id is required")
+        definition = self._registry.get_definition(slug)
+        client_secret = client_secret.strip()
+        if (
+            definition is not None
+            and definition.oauth is not None
+            and definition.oauth.client_secret_required
+            and not client_secret
+        ):
+            raise OAuthClientError("A client secret is required for this provider")
         app = app or DEFAULT_APP
         if not _APP_KEY.match(app):
             raise OAuthClientError(
@@ -182,7 +207,7 @@ class OAuthClientRegistry:
         client = OAuthClient(
             slug=slug,
             client_id=client_id,
-            client_secret=client_secret.strip(),
+            client_secret=client_secret,
             app=app,
             base_url=base_url,
         )

@@ -63,12 +63,13 @@ def test_create_app_mounts_shared_identity_features_and_personas(monkeypatch) ->
     async def _no_registered_clients() -> None:
         return None
 
+    oauth_client_registry = SimpleNamespace(
+        load=_no_registered_clients, get=lambda _slug, _app="default": None
+    )
     monkeypatch.setattr(
         niuu_main,
         "create_oauth_client_registry",
-        lambda _settings, **kwargs: SimpleNamespace(
-            load=_no_registered_clients, get=lambda _s: None
-        ),
+        lambda _settings, **kwargs: oauth_client_registry,
     )
     monkeypatch.setattr(
         niuu_main, "with_oauth_device_runner", lambda runner, _clients, _registry: runner
@@ -133,6 +134,15 @@ def test_create_app_mounts_shared_identity_features_and_personas(monkeypatch) ->
 
     monkeypatch.setattr(niuu_main, "create_canonical_integrations_router", _spy_router)
 
+    oauth_router_registries: list[object] = []
+    real_oauth_router = niuu_main.create_canonical_oauth_router
+
+    def _spy_oauth_router(*args, **kwargs):
+        oauth_router_registries.append(kwargs.get("oauth_clients"))
+        return real_oauth_router(*args, **kwargs)
+
+    monkeypatch.setattr(niuu_main, "create_canonical_oauth_router", _spy_oauth_router)
+
     app = niuu_main.create_app(
         git_config=GitConfig(),
         settings=Settings(
@@ -173,6 +183,7 @@ def test_create_app_mounts_shared_identity_features_and_personas(monkeypatch) ->
         assert "/api/v1/integrations/enrollments" in paths
         assert "/internal/api/v1/integrations/enrollments" in paths
         assert enrollment_services and all(s is not None for s in enrollment_services)
+        assert oauth_router_registries == [oauth_client_registry]
         assert "/api/v1/integrations/catalog" in paths
         assert "/api/v1/tracker/status" in paths
         assert "/api/v1/tracker/issues" in paths

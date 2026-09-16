@@ -4,6 +4,15 @@ import { useParams, useRouter } from '@tanstack/react-router';
 import { createApiClient } from '@niuulabs/query';
 import { cn } from '@niuulabs/ui';
 import {
+  AddProviderDialog,
+  providerGroupsForType,
+  type CatalogEntry,
+  type ConnectIntegrationInput,
+  type IntegrationConnection,
+  type IntegrationTestResult,
+  type ProviderGroup,
+} from '@niuulabs/plugin-setup';
+import {
   useMountedSettingsProviders,
   type MountedSettingsProvider,
   type RemoteSettingsCredentialsResource,
@@ -123,6 +132,14 @@ interface IntegrationCatalogEntry {
   configSchema?: IntegrationCatalogSchema;
   credential_enrollment?: CredentialEnrollmentCatalogSpec | null;
   credentialEnrollment?: CredentialEnrollmentCatalogSpec | null;
+  sign_in_available?: boolean;
+  signInAvailable?: boolean;
+  sign_in_needs_app?: boolean;
+  signInNeedsApp?: boolean;
+  oauth_client_secret_required?: boolean;
+  oauthClientSecretRequired?: boolean;
+  oauth_scopes?: string[];
+  oauthScopes?: string[];
 }
 
 interface CredentialEnrollmentCatalogSpec {
@@ -279,15 +296,62 @@ function normalizeCatalogSchema(
   };
 }
 
+function normalizeCatalogEntry(entry: IntegrationCatalogEntry): CatalogEntry {
+  const spec = enrollmentSpec(entry);
+  const setupSchema = (schema: IntegrationCatalogSchema | undefined) => ({
+    required: schema?.required ?? [],
+    properties: Object.fromEntries(
+      Object.entries(schema?.properties ?? {}).map(([key, property]) => [
+        key,
+        {
+          label: property.label ?? key,
+          type: property.type ?? 'string',
+          ...(typeof property.default === 'string' ? { default: property.default } : {}),
+          ...(property.description ? { description: property.description } : {}),
+        },
+      ]),
+    ),
+  });
+  return {
+    slug: entry.slug ?? entry.id,
+    name: entry.name,
+    description: entry.description ?? '',
+    integrationType: entry.integrationType ?? entry.integration_type ?? 'integration',
+    authType: entry.authType ?? entry.auth_type ?? 'api_key',
+    credentialSchema: setupSchema(entry.credentialSchema ?? entry.credential_schema),
+    configSchema: setupSchema(entry.configSchema ?? entry.config_schema),
+    credentialEnrollment: spec
+      ? {
+          method: spec.method,
+          credentialField: spec.credentialField ?? spec.credential_field ?? '',
+          defaultCredentialName:
+            spec.defaultCredentialName ??
+            spec.default_credential_name ??
+            `${entry.slug ?? entry.id}-setup`,
+        }
+      : null,
+    signInAvailable: entry.signInAvailable ?? entry.sign_in_available ?? false,
+    signInNeedsApp: entry.signInNeedsApp ?? entry.sign_in_needs_app ?? false,
+    oauthClientSecretRequired:
+      entry.oauthClientSecretRequired ?? entry.oauth_client_secret_required ?? false,
+    oauthScopes: entry.oauthScopes ?? entry.oauth_scopes ?? [],
+  };
+}
+
 function isOauthIntegration(entry: IntegrationCatalogEntry | null): boolean {
   if (!entry) return false;
   const authType = entry.authType ?? entry.auth_type;
-  return authType === 'oauth2_authorization_code' || authType === 'oauth_token';
+  return (
+    authType === 'oauth2_authorization_code' ||
+    authType === 'oauth_token' ||
+    enrollmentSpec(entry)?.method === 'oauth_authorization_code'
+  );
 }
 
 function isDeviceCodeIntegration(entry: IntegrationCatalogEntry | null): boolean {
   if (!entry) return false;
-  return Boolean(enrollmentSpec(entry));
+  const spec = enrollmentSpec(entry);
+  return spec != null && spec.method !== 'oauth_authorization_code';
 }
 
 function enrollmentSpec(
@@ -330,6 +394,7 @@ function normalizeIntegrationRecord(integration: IntegrationConnectionRecord) {
     integrationType: integration.integrationType ?? integration.integration_type ?? 'integration',
     credentialName: integration.credentialName ?? integration.credential_name ?? '',
     enabled: integration.enabled !== false,
+    config: integration.config ?? {},
     createdAt: integration.createdAt ?? integration.created_at ?? '',
     updatedAt: integration.updatedAt ?? integration.updated_at ?? '',
     credentialExpiresAt: integration.credentialExpiresAt ?? integration.credential_expires_at,
@@ -1065,6 +1130,7 @@ function IntegrationsResourceCard({
   const [authorizationCode, setAuthorizationCode] = useState('');
   const [codeSubmitted, setCodeSubmitted] = useState(false);
   const [lastTestStatus, setLastTestStatus] = useState<Record<string, string>>({});
+  const [providerDialogGroup, setProviderDialogGroup] = useState<ProviderGroup | null>(null);
 
   const catalogQuery = useQuery({
     queryKey: ['settings-resource', providerId, resource.id, 'integration-catalog'],
@@ -1077,6 +1143,7 @@ function IntegrationsResourceCard({
       const rows = await client.get<IntegrationConnectionRecord[]>(resource.listPath);
       return rows.map(normalizeIntegrationRecord);
     },
+    refetchInterval: providerDialogGroup ? CREDENTIAL_ENROLLMENT_STATUS_INTERVAL_MS : false,
   });
 
   const credentialsQuery = useQuery({
@@ -1089,10 +1156,29 @@ function IntegrationsResourceCard({
     },
   });
 
-  const catalogEntries = catalogQuery.data ?? [];
+  const catalogEntries = useMemo(() => catalogQuery.data ?? [], [catalogQuery.data]);
+  const setupCatalogEntries = useMemo(
+    () => catalogEntries.map(normalizeCatalogEntry),
+    [catalogEntries],
+  );
+  const providerGroups = useMemo(() => {
+    const integrationTypes = [
+      ...new Set(setupCatalogEntries.map((entry) => entry.integrationType)),
+    ];
+    return integrationTypes.flatMap((integrationType) =>
+      providerGroupsForType(setupCatalogEntries, integrationType),
+    );
+  }, [setupCatalogEntries]);
   const selectedCatalogId = selectedId || (catalogEntries[0]?.slug ?? catalogEntries[0]?.id ?? '');
   const selectedEntry =
     catalogEntries.find((entry) => (entry.slug ?? entry.id) === selectedCatalogId) ?? null;
+  const selectedProviderGroup =
+    providerGroups.find(
+      (group) =>
+        group.key === selectedCatalogId ||
+        group.keyEntry?.slug === selectedCatalogId ||
+        group.signInEntry?.slug === selectedCatalogId,
+    ) ?? null;
 
   const selectedConnection =
     integrationsQuery.data?.find((integration) => (integration.slug ?? '') === selectedCatalogId) ??
@@ -1189,13 +1275,32 @@ function IntegrationsResourceCard({
     },
   });
 
+  const sharedConnectMutation = useMutation({
+    mutationFn: async (input: ConnectIntegrationInput) => {
+      return client.post(resource.createPath, {
+        slug: input.slug,
+        config: input.config,
+        enabled: true,
+        credential: {
+          name: input.credentialName,
+          data: input.credential,
+        },
+      });
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ['settings-resource', providerId, resource.id, 'integrations'],
+      });
+      setProviderDialogGroup(null);
+    },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: async (integration: { id: string; slug?: string; oauth: boolean }) => {
       if (integration.oauth && integration.slug) {
-        return client.post<void>(
-          resource.oauthDisconnectPath.replace('{slug}', integration.slug),
-          {},
-        );
+        return client.post<void>(resource.oauthDisconnectPath.replace('{slug}', integration.slug), {
+          connection_id: integration.id,
+        });
       }
       return client.delete<void>(resource.deletePath.replace('{id}', integration.id));
     },
@@ -1208,13 +1313,10 @@ function IntegrationsResourceCard({
 
   const testMutation = useMutation({
     mutationFn: async (integrationId: string) => {
-      return client.post<{
-        success: boolean;
-        provider: string;
-        workspace?: string | null;
-        user?: string | null;
-        error?: string | null;
-      }>(resource.testPath.replace('{id}', integrationId), {});
+      return client.post<IntegrationTestResult>(
+        resource.testPath.replace('{id}', integrationId),
+        {},
+      );
     },
     onSuccess: (result, integrationId) => {
       setLastTestStatus((current) => ({
@@ -1234,7 +1336,15 @@ function IntegrationsResourceCard({
 
   const oauthMutation = useMutation({
     mutationFn: async (slug: string) => {
-      return client.get<{ url: string }>(resource.oauthAuthorizePath.replace('{slug}', slug));
+      const config = Object.fromEntries(
+        Object.entries(effectiveConfigValues)
+          .map(([key, value]) => [key, value.trim()])
+          .filter(([, value]) => value !== ''),
+      );
+      return client.post<{ url: string }>(resource.oauthAuthorizePath.replace('{slug}', slug), {
+        credential_name: effectiveCredentialName,
+        config,
+      });
     },
     onSuccess: (payload, slug) => {
       setOauthPendingSlug(slug);
@@ -1334,6 +1444,12 @@ function IntegrationsResourceCard({
 
   const selectedIsOauth = isOauthIntegration(selectedEntry);
   const selectedIsDeviceCode = isDeviceCodeIntegration(selectedEntry);
+  const selectedUsesProviderDialog = Boolean(
+    selectedProviderGroup &&
+    (selectedProviderGroup.signInEntry?.credentialEnrollment?.method ===
+      'oauth_authorization_code' ||
+      (selectedProviderGroup.signInEntry && selectedProviderGroup.keyEntry)),
+  );
   const selectedCredentialReady = ['active', 'configured'].includes(
     selectedConnection?.credentialStatus ?? '',
   );
@@ -1421,7 +1537,27 @@ function IntegrationsResourceCard({
             </div>
           </div>
 
-          {selectedIsDeviceCode ? (
+          {selectedUsesProviderDialog && selectedProviderGroup ? (
+            <div className="settings-resource__actions settings-resource__actions--login">
+              {selectedConnection ? (
+                <span className="settings-shell__status settings-shell__status--success">
+                  Connected as {selectedConnection.credentialName}
+                </span>
+              ) : null}
+              <p className="settings-resource__copy">
+                Choose provider sign-in or a token, then configure the account and its access scope.
+              </p>
+              <button
+                type="button"
+                className="settings-shell__save-button settings-shell__save-button--secondary"
+                onClick={() => setProviderDialogGroup(selectedProviderGroup)}
+              >
+                {selectedConnection
+                  ? `Add another ${selectedEntry.name} account`
+                  : `Set up ${selectedEntry.name}`}
+              </button>
+            </div>
+          ) : selectedIsDeviceCode ? (
             <div className="settings-resource__actions settings-resource__actions--login">
               {selectedConnection ? (
                 <span
@@ -1571,25 +1707,40 @@ function IntegrationsResourceCard({
               ) : null}
             </div>
           ) : selectedIsOauth ? (
-            <div className="settings-resource__actions">
-              {selectedConnection ? (
-                <span className="settings-shell__status settings-shell__status--success">
-                  Connected as {selectedConnection.credentialName}
-                </span>
-              ) : null}
-              {oauthPendingSlug === (selectedEntry.slug ?? selectedEntry.id) ? (
-                <span className="settings-shell__status">Waiting for OAuth confirmation…</span>
-              ) : null}
-              <button
-                type="button"
-                className="settings-shell__save-button settings-shell__save-button--secondary"
-                disabled={oauthMutation.isPending || !!selectedConnection}
-                onClick={() => {
-                  oauthMutation.mutate(selectedEntry.slug ?? selectedEntry.id);
+            <div className="settings-resource__composer settings-resource__composer--stacked">
+              <IntegrationSchemaFields
+                label="Connection config"
+                schema={configSchema}
+                values={effectiveConfigValues}
+                onChange={(key, value) => {
+                  setConfigValues((current) => ({ ...current, [key]: value }));
                 }}
-              >
-                {oauthMutation.isPending ? 'Opening…' : 'Connect with OAuth'}
-              </button>
+              />
+              <div className="settings-resource__actions">
+                {selectedConnection ? (
+                  <span className="settings-shell__status settings-shell__status--success">
+                    Connected as {selectedConnection.credentialName}
+                  </span>
+                ) : null}
+                {oauthPendingSlug === (selectedEntry.slug ?? selectedEntry.id) ? (
+                  <span className="settings-shell__status">Waiting for OAuth confirmation…</span>
+                ) : null}
+                <button
+                  type="button"
+                  className="settings-shell__save-button settings-shell__save-button--secondary"
+                  disabled={oauthMutation.isPending || !!selectedConnection}
+                  onClick={() => {
+                    oauthMutation.mutate(selectedEntry.slug ?? selectedEntry.id);
+                  }}
+                >
+                  {oauthMutation.isPending ? 'Opening…' : 'Connect with OAuth'}
+                </button>
+                {oauthMutation.isError ? (
+                  <span className="settings-shell__status settings-shell__status--error">
+                    Could not start OAuth sign-in.
+                  </span>
+                ) : null}
+              </div>
             </div>
           ) : (
             <>
@@ -1702,6 +1853,40 @@ function IntegrationsResourceCard({
             </>
           )}
         </form>
+      ) : null}
+
+      {providerDialogGroup ? (
+        <AddProviderDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setProviderDialogGroup(null);
+          }}
+          noun="integration"
+          groups={[providerDialogGroup]}
+          initialGroupKey={providerDialogGroup.key}
+          connections={(integrationsQuery.data ?? []).map((connection): IntegrationConnection => ({
+            id: connection.id,
+            slug: connection.slug ?? '',
+            integrationType: connection.integrationType,
+            credentialName: connection.credentialName,
+            enabled: connection.enabled,
+            config: connection.config,
+            credentialStatus: connection.credentialStatus,
+            credentialExpiresAt: connection.credentialExpiresAt ?? null,
+            credentialErrorCode: connection.credentialErrorCode ?? null,
+          }))}
+          connectingSlug={
+            sharedConnectMutation.isPending ? (sharedConnectMutation.variables?.slug ?? null) : null
+          }
+          connectErrorSlug={
+            sharedConnectMutation.isError ? (sharedConnectMutation.variables?.slug ?? null) : null
+          }
+          connectError={sharedConnectMutation.error}
+          testingId={testMutation.isPending ? (testMutation.variables ?? null) : null}
+          testResults={{}}
+          onConnect={(input) => sharedConnectMutation.mutate(input)}
+          onTest={(connectionId) => testMutation.mutate(connectionId)}
+        />
       ) : null}
 
       <div className="settings-resource__list">

@@ -15,7 +15,7 @@ All configuration MUST flow through the Settings class.
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import (
@@ -922,6 +922,14 @@ class OAuthSpecConfig(BaseModel):
     token_field_mapping: dict[str, str] = Field(default_factory=dict)
     extra_authorize_params: dict[str, str] = Field(default_factory=dict)
     extra_token_params: dict[str, str] = Field(default_factory=dict)
+    token_request_format: Literal["form", "json"] = Field(
+        default="form",
+        description="Encoding used by the provider's token endpoint.",
+    )
+    client_secret_required: bool = Field(
+        default=False,
+        description="Whether every OAuth application must provide a client secret.",
+    )
     device_authorization_url: str = Field(
         default="",
         description="RFC 8628 device authorization endpoint; enables sign-in without a callback.",
@@ -937,6 +945,7 @@ class OAuthClientConfig(BaseModel):
 
     client_id: str
     client_secret: str = ""
+    base_url: str = ""
 
 
 class OAuthConfig(BaseModel):
@@ -1098,6 +1107,78 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "method": "oauth_device",
                 "credential_field": "token",
                 "default_credential_name": "gitlab-signin",
+            },
+        ),
+        IntegrationDefinitionConfig(
+            slug="jira",
+            name="Jira Cloud",
+            description="Jira Cloud issue tracking — search, issue browsing, and status updates",
+            integration_type="issue_tracker",
+            adapter="volundr.adapters.outbound.jira.JiraAdapter",
+            icon="jira",
+            credential_schema={
+                "required": ["email", "api_token"],
+                "properties": {
+                    "email": {"label": "Atlassian account email", "type": "string"},
+                    "api_token": {"label": "API token", "type": "password"},
+                },
+            },
+            config_schema={
+                "required": ["site_url"],
+                "properties": {
+                    "site_url": {
+                        "label": "Jira site URL",
+                        "type": "url",
+                    },
+                    "cloud_id": {
+                        "label": "Cloud ID (scoped API tokens only)",
+                        "type": "string",
+                    },
+                    "project_keys": {
+                        "label": "Allowed project keys",
+                        "type": "string[]",
+                        "description": (
+                            "Optional. Only expose issues from these Jira projects, "
+                            "for example NIUU, PLATFORM."
+                        ),
+                    },
+                    "labels": {
+                        "label": "Allowed issue labels",
+                        "type": "string[]",
+                        "description": (
+                            "Optional. Only expose issues carrying at least one of these labels."
+                        ),
+                    },
+                    "issue_type": {
+                        "label": "Issue type for new work",
+                        "type": "string",
+                        "description": (
+                            "Issue type used when Ting creates Jira work. Defaults to Task."
+                        ),
+                    },
+                },
+            },
+            auth_type="api_key",
+            oauth=OAuthSpecConfig(
+                authorize_url="https://auth.atlassian.com/authorize",
+                token_url="https://auth.atlassian.com/oauth/token",
+                scopes=[
+                    "read:jira-work",
+                    "write:jira-work",
+                    "read:jira-user",
+                    "offline_access",
+                ],
+                extra_authorize_params={
+                    "audience": "api.atlassian.com",
+                    "prompt": "consent",
+                },
+                token_request_format="json",
+                client_secret_required=True,
+            ),
+            credential_enrollment={
+                "method": "oauth_authorization_code",
+                "credential_field": "access_token",
+                "default_credential_name": "jira-signin",
             },
         ),
         IntegrationDefinitionConfig(

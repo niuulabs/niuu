@@ -133,6 +133,46 @@ export const MOCK_CATALOG: CatalogEntry[] = [
     signInAvailable: true,
   },
   {
+    slug: 'jira',
+    name: 'Jira Cloud',
+    description: 'Jira Cloud issue tracking — search, issue browsing, and status updates',
+    integrationType: 'issue_tracker',
+    authType: 'api_key',
+    credentialSchema: {
+      required: ['email', 'api_token'],
+      properties: {
+        email: { label: 'Atlassian account email', type: 'string' },
+        api_token: { label: 'API token', type: 'password' },
+      },
+    },
+    configSchema: {
+      required: ['site_url'],
+      properties: {
+        site_url: { label: 'Jira site URL', type: 'url' },
+        cloud_id: { label: 'Cloud ID (scoped API tokens only)', type: 'string' },
+        project_keys: {
+          label: 'Allowed project keys',
+          type: 'string[]',
+          description: 'Optional. Only expose issues from these Jira projects.',
+        },
+        labels: {
+          label: 'Allowed issue labels',
+          type: 'string[]',
+          description: 'Optional. Only expose issues carrying at least one of these labels.',
+        },
+      },
+    },
+    credentialEnrollment: {
+      method: 'oauth_authorization_code',
+      credentialField: 'access_token',
+      defaultCredentialName: 'jira-signin',
+    },
+    signInAvailable: false,
+    signInNeedsApp: true,
+    oauthClientSecretRequired: true,
+    oauthScopes: ['read:jira-work', 'write:jira-work', 'read:jira-user', 'offline_access'],
+  },
+  {
     slug: 'linear',
     name: 'Linear',
     description: 'Linear issue tracker — issue browsing, status updates, and MCP server',
@@ -437,10 +477,18 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
     async registerOAuthClient(slug, input) {
       await wait();
       const entry = catalog.find((candidate) => candidate.slug === slug);
-      if (!entry || entry.credentialEnrollment?.method !== 'oauth_device') {
+      if (
+        !entry ||
+        !['oauth_device', 'oauth_authorization_code'].includes(
+          entry.credentialEnrollment?.method ?? '',
+        )
+      ) {
         throw new Error(`${slug} does not sign in through an OAuth application`);
       }
       if (!input.clientId.trim()) throw new Error('A client id is required');
+      if (entry.oauthClientSecretRequired && !input.clientSecret?.trim()) {
+        throw new Error('A client secret is required for this provider');
+      }
       const apps = registeredApps.get(slug) ?? new Map<string, string>();
       apps.set(input.app || 'default', input.clientId.trim());
       registeredApps.set(slug, apps);
@@ -452,7 +500,9 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
       const configured = catalog
         .filter(
           (entry) =>
-            entry.credentialEnrollment?.method === 'oauth_device' &&
+            ['oauth_device', 'oauth_authorization_code'].includes(
+              entry.credentialEnrollment?.method ?? '',
+            ) &&
             entry.signInAvailable !== false &&
             !registeredApps.get(entry.slug)?.has('default'),
         )
@@ -508,6 +558,20 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
         detail: sourceControl ? '2 repositories reachable' : 'Key works · 12 models available',
         repositories: sourceControl ? ['niuulabs/volundr', 'niuulabs/skuld'] : [],
       };
+    },
+    async startOAuthAuthorization(slug, credentialName, oauthApp, config) {
+      await wait();
+      const entry = catalog.find((candidate) => candidate.slug === slug);
+      if (!entry || entry.credentialEnrollment?.method !== 'oauth_authorization_code') {
+        throw new Error(`${slug} does not support authorization-code sign-in`);
+      }
+      if (!registeredApps.get(slug)?.has(oauthApp || 'default')) {
+        throw new Error(
+          `No OAuth application '${oauthApp || 'default'}' is registered for ${slug}`,
+        );
+      }
+      addConnection(entry, credentialName, config);
+      return { url: `https://auth.example.test/${slug}` };
     },
     async startEnrollment(slug, credentialName, oauthApp = '') {
       await wait();

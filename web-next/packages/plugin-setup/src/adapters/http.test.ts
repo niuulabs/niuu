@@ -62,6 +62,23 @@ describe('OAuth applications over HTTP', () => {
       oauth_app: 'niuu-org',
     });
   });
+
+  it('starts a named authorization-code account with its connection config', async () => {
+    const c = clients();
+    c.integrations.post.mockResolvedValueOnce({ url: 'https://auth.atlassian.com/authorize' });
+    const adapter = buildSetupHttpAdapter(c);
+
+    await expect(
+      adapter.startOAuthAuthorization('jira', 'jira-work', 'default', {
+        site_url: 'https://work.atlassian.net',
+      }),
+    ).resolves.toEqual({ url: 'https://auth.atlassian.com/authorize' });
+    expect(c.integrations.post).toHaveBeenCalledWith('/oauth/jira/authorize', {
+      credential_name: 'jira-work',
+      oauth_app: 'default',
+      config: { site_url: 'https://work.atlassian.net' },
+    });
+  });
 });
 
 describe('buildSetupHttpAdapter', () => {
@@ -116,6 +133,8 @@ describe('buildSetupHttpAdapter', () => {
       credentialEnrollment: null,
       signInAvailable: false,
       signInNeedsApp: false,
+      oauthClientSecretRequired: false,
+      oauthScopes: [],
     });
     const [connection] = await adapter.listIntegrations();
     expect(connection).toEqual({

@@ -18,7 +18,7 @@ export interface OAuthAppFormProps {
 }
 
 /**
- * Sign-in through GitHub or GitLab runs through an OAuth application the
+ * Provider sign-in runs through an OAuth application the
  * person owns, never one someone else registered. This form takes the
  * application's client id; the platform keeps it and the sign-in card takes
  * over. A provider can have several applications, one per account, so once
@@ -30,11 +30,11 @@ export function OAuthAppForm({ entry, existingApps = [], onRegistered }: OAuthAp
   const [appName, setAppName] = useState('');
   const [clientId, setClientId] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
-  const defaultHost = new URL(help.createUrl).origin;
+  const defaultHost = help.createUrl ? new URL(help.createUrl).origin : '';
   let createUrl = help.createUrl;
   try {
     const host = new URL(baseUrl || defaultHost);
-    if (['https:', 'http:'].includes(host.protocol)) {
+    if (help.supportsCustomHost && ['https:', 'http:'].includes(host.protocol)) {
       createUrl = new URL(new URL(help.createUrl).pathname, host.origin).href;
     }
   } catch {
@@ -46,11 +46,16 @@ export function OAuthAppForm({ entry, existingApps = [], onRegistered }: OAuthAp
   const appKey = oauthAppKey(appName);
   const nameTaken = appName.trim() !== '' && existingApps.some((app) => app.app === appKey);
   const nameMissing = needsName && !appName.trim();
+  const secretMissing = entry.oauthClientSecretRequired === true && !clientSecret.trim();
+  const callbackUrl =
+    typeof window === 'undefined'
+      ? '/api/v1/integrations/oauth/callback'
+      : `${window.location.origin}/api/v1/integrations/oauth/callback`;
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setTouched(true);
-    if (!clientId.trim() || nameMissing || nameTaken) return;
+    if (!clientId.trim() || secretMissing || nameMissing || nameTaken) return;
     register.mutate(
       {
         slug: entry.slug,
@@ -82,22 +87,34 @@ export function OAuthAppForm({ entry, existingApps = [], onRegistered }: OAuthAp
           {help.steps.map((step) => (
             <li key={step}>{step}</li>
           ))}
+          {entry.oauthScopes && entry.oauthScopes.length > 0 ? (
+            <li>
+              Add these scopes: <code>{entry.oauthScopes.join(' ')}</code>.
+            </li>
+          ) : null}
+          {help.usesCallback ? (
+            <li>
+              Set the callback URL to <code>{callbackUrl}</code>.
+            </li>
+          ) : null}
           <li>Paste the {help.idLabel} below.</li>
         </ol>
       </div>
       <form className="setup-form" onSubmit={submit}>
-        <Field
-          label="Git host URL"
-          hint="Use your self-hosted GitLab or GitHub Enterprise address."
-        >
-          <Input
-            type="url"
-            value={baseUrl}
-            placeholder={defaultHost}
-            onChange={(event) => setBaseUrl(event.target.value)}
-            data-testid={`setup-oauth-app-host-${entry.slug}`}
-          />
-        </Field>
+        {help.supportsCustomHost ? (
+          <Field
+            label="Git host URL"
+            hint="Use your self-hosted GitLab or GitHub Enterprise address."
+          >
+            <Input
+              type="url"
+              value={baseUrl}
+              placeholder={defaultHost}
+              onChange={(event) => setBaseUrl(event.target.value)}
+              data-testid={`setup-oauth-app-host-${entry.slug}`}
+            />
+          </Field>
+        ) : null}
         {needsName ? (
           <Field
             label="Name for this application"
@@ -131,8 +148,13 @@ export function OAuthAppForm({ entry, existingApps = [], onRegistered }: OAuthAp
             data-testid={`setup-oauth-app-id-${entry.slug}`}
           />
         </Field>
-        {help.secretHint ? (
-          <Field label={help.secretLabel} hint={help.secretHint}>
+        {help.secretHint || entry.oauthClientSecretRequired ? (
+          <Field
+            label={help.secretLabel}
+            hint={help.secretHint}
+            required={entry.oauthClientSecretRequired}
+            error={touched && secretMissing ? `${help.secretLabel} is required` : undefined}
+          >
             <Input
               type="password"
               autoComplete="off"

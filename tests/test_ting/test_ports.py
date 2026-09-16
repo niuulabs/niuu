@@ -17,6 +17,7 @@ class TestTrackerPort:
 
     def test_methods_exist(self) -> None:
         methods = {
+            "bind_connection",
             "create_saga",
             "create_phase",
             "create_run",

@@ -333,8 +333,9 @@ async def test_pool_injected_into_adapter() -> None:
         pool=pool,
     )
     result = await factory.for_owner("owner-1")
-    assert len(result) == 1
+    assert len(result) == 2
     assert result[0].kwargs["pool"] is pool
+    assert isinstance(result[1], NativeTrackerAdapter)
 
 
 @pytest.mark.asyncio
@@ -368,8 +369,37 @@ async def test_maps_shared_linear_adapter_to_ting_linear_tracker() -> None:
 
     result = await factory.for_owner("owner-1")
 
-    assert len(result) == 1
+    assert len(result) == 2
     assert result[0].__class__.__name__ == "LinearTrackerAdapter"
+    assert isinstance(result[1], NativeTrackerAdapter)
+
+
+@pytest.mark.asyncio
+async def test_maps_shared_jira_adapter_to_ting_jira_tracker() -> None:
+    conn = _make_connection(
+        adapter="volundr.adapters.outbound.jira.JiraAdapter",
+        credential_name="jira-signin",
+        config={
+            "site_url": "https://example.atlassian.net",
+            "project_keys": ["platform"],
+            "labels": ["agent-work"],
+        },
+    )
+    factory = TrackerAdapterFactory(
+        integration_repo=StubIntegrationRepo(connections=[conn]),
+        credential_store=StubCredentialStore(
+            values={"user:owner-1:jira-signin": {"access_token": "jira-token"}}
+        ),
+        pool=object(),
+    )
+
+    result = await factory.for_owner("owner-1")
+
+    assert len(result) == 2
+    assert result[0].__class__.__name__ == "JiraTrackerAdapter"
+    assert result[0]._project_keys == ("PLATFORM",)
+    assert isinstance(result[1], NativeTrackerAdapter)
+    await result[0].close()
 
 
 @pytest.mark.asyncio
@@ -388,6 +418,8 @@ async def test_falls_back_to_native_tracker_when_no_connections_and_pool_availab
 
     assert len(result) == 1
     assert isinstance(result[0], NativeTrackerAdapter)
+    assert result[0].connection_id == "native"
+    assert result[0].provider == "native"
 
 
 @pytest.mark.asyncio

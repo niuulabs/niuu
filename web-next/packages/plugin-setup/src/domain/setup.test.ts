@@ -35,6 +35,7 @@ import {
   isConnectableFromWizard,
   isStepDone,
   missingCredentialKeys,
+  missingConfigKeys,
   nextStep,
   previousStep,
   requiredCredentialKeys,
@@ -111,6 +112,7 @@ describe('catalog helpers', () => {
     expect(signInNeedsApp(undefined)).toBe(false);
     expect(oauthAppHelp('github').createUrl).toContain('github.com/settings/applications/new');
     expect(oauthAppHelp('gitlab').secretHint).toBe('');
+    expect(oauthAppHelp('jira').usesCallback).toBe(true);
     expect(oauthAppHelp('other').idLabel).toBe('Client ID');
   });
 
@@ -161,6 +163,20 @@ describe('catalog helpers', () => {
       base_url: 'https://ghe.example',
     });
     expect(buildConfigPayload(claudeCode, {})).toEqual({});
+    const jira = MOCK_CATALOG.find((entry) => entry.slug === 'jira')!;
+    expect(missingConfigKeys(jira, {})).toEqual(['site_url']);
+    expect(missingConfigKeys(jira, { site_url: 'https://example.atlassian.net' })).toEqual([]);
+    expect(
+      buildConfigPayload(jira, {
+        site_url: 'https://example.atlassian.net',
+        project_keys: 'NIUU, PLATFORM',
+        labels: 'agent, backend',
+      }),
+    ).toEqual({
+      site_url: 'https://example.atlassian.net',
+      project_keys: ['NIUU', 'PLATFORM'],
+      labels: ['agent', 'backend'],
+    });
   });
 
   it('normalises credential names', () => {
@@ -362,6 +378,14 @@ describe('connection credential state', () => {
       'default',
     );
     expect(connectionLabel({ ...second, credentialName: 'odd-name' }, anthropic)).toBe('odd name');
+  });
+
+  it('offers Jira OAuth and API-token modes together', () => {
+    const tracker = WIZARD_STEPS.find((step) => step.id === 'tracker')!;
+    const jira = providerGroups(MOCK_CATALOG, tracker).find((group) => group.key === 'jira')!;
+    expect(availableModes(jira)).toEqual(['signin', 'key']);
+    expect(jira.signInLabel).toBe('Sign in with Atlassian');
+    expect(jira.keyLabel).toBe('Use an API token');
   });
 
   it('names each account its own credential', () => {

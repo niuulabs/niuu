@@ -70,6 +70,10 @@ function trackerProjectSlug(project: TrackerProject): string {
     .replace(/^-+|-+$/g, '');
 }
 
+function trackerSourceKey(trackerId: string, connectionId?: string): string {
+  return `${connectionId ?? ''}:${trackerId}`;
+}
+
 function downloadJson(filename: string, data: string): void {
   const blob = new Blob([data], { type: 'application/json' });
   const objectUrl = URL.createObjectURL(blob);
@@ -224,7 +228,11 @@ function SagasPageContent() {
   const selectedSagaId = selectedSagaIdState ?? allSagas[0]?.id ?? null;
   const importedTrackerIds = useMemo(
     () =>
-      new Set(allSagas.filter((saga) => saga.status !== 'complete').map((saga) => saga.trackerId)),
+      new Set(
+        allSagas
+          .filter((saga) => saga.status !== 'complete')
+          .map((saga) => trackerSourceKey(saga.trackerId, saga.trackerConnectionId)),
+      ),
     [allSagas],
   );
   const existingSagaSlugs = useMemo(() => new Set(allSagas.map((saga) => saga.slug)), [allSagas]);
@@ -262,17 +270,32 @@ function SagasPageContent() {
     [targetTagsDraft],
   );
   const effectiveBaseBranch = selectedRepoRefs[0]?.branch ?? baseBranch;
+  const defaultSelectedProject =
+    trackerProjects.find(
+      (project) =>
+        !importedTrackerIds.has(trackerSourceKey(project.id, project.trackerConnectionId)),
+    ) ?? trackerProjects[0];
   const effectiveSelectedProjectId =
-    showImportModal && !selectedProjectId && trackerProjects.length > 0
-      ? (
-          trackerProjects.find((project) => !importedTrackerIds.has(project.id)) ??
-          trackerProjects[0]!
-        ).id
+    showImportModal && !selectedProjectId && defaultSelectedProject
+      ? trackerSourceKey(defaultSelectedProject.id, defaultSelectedProject.trackerConnectionId)
       : selectedProjectId;
   const effectiveSelectedProject =
-    trackerProjects.find((project) => project.id === effectiveSelectedProjectId) ?? null;
+    trackerProjects.find(
+      (project) =>
+        trackerSourceKey(project.id, project.trackerConnectionId) === effectiveSelectedProjectId,
+    ) ?? null;
   const selectedProjectHasSlugConflict =
     effectiveSelectedProject !== null &&
+    allSagas.some(
+      (saga) =>
+        saga.slug === trackerProjectSlug(effectiveSelectedProject) &&
+        (!saga.trackerConnectionId ||
+          !effectiveSelectedProject.trackerConnectionId ||
+          saga.trackerConnectionId === effectiveSelectedProject.trackerConnectionId),
+    );
+  const selectedProjectNeedsSourceSuffix =
+    effectiveSelectedProject !== null &&
+    !selectedProjectHasSlugConflict &&
     existingSagaSlugs.has(trackerProjectSlug(effectiveSelectedProject));
   const selectedProjectSlug = effectiveSelectedProject
     ? trackerProjectSlug(effectiveSelectedProject)
@@ -283,7 +306,9 @@ function SagasPageContent() {
     selectedRepoRefs.every((entry) => entry.repo.trim() && entry.branch.trim()) &&
     (targetMode !== 'instance' || Boolean(selectedInstanceId.trim())) &&
     (targetMode !== 'tags' || targetTags.length > 0) &&
-    !importedTrackerIds.has(effectiveSelectedProject.id) &&
+    !importedTrackerIds.has(
+      trackerSourceKey(effectiveSelectedProject.id, effectiveSelectedProject.trackerConnectionId),
+    ) &&
     !selectedProjectHasSlugConflict &&
     !isImporting;
 
@@ -373,6 +398,7 @@ function SagasPageContent() {
         targetMode === 'instance' ? selectedInstanceId || undefined : undefined,
         {
           repoRefs: selectedRepoRefs,
+          trackerConnectionId: effectiveSelectedProject.trackerConnectionId,
           target:
             targetMode === 'tags'
               ? { mode: 'tags', tags: targetTags, match: targetMatch }
@@ -606,14 +632,23 @@ function SagasPageContent() {
                   />
                 ) : (
                   trackerProjects.map((project: TrackerProject) => {
-                    const imported = importedTrackerIds.has(project.id);
-                    const slugConflict = existingSagaSlugs.has(trackerProjectSlug(project));
-                    const selected = effectiveSelectedProjectId === project.id;
+                    const sourceKey = trackerSourceKey(project.id, project.trackerConnectionId);
+                    const imported = importedTrackerIds.has(sourceKey);
+                    const slugConflict = allSagas.some(
+                      (saga) =>
+                        saga.slug === trackerProjectSlug(project) &&
+                        (!saga.trackerConnectionId ||
+                          !project.trackerConnectionId ||
+                          saga.trackerConnectionId === project.trackerConnectionId),
+                    );
+                    const needsSourceSuffix =
+                      !slugConflict && existingSagaSlugs.has(trackerProjectSlug(project));
+                    const selected = effectiveSelectedProjectId === sourceKey;
                     return (
                       <button
-                        key={project.id}
+                        key={sourceKey}
                         type="button"
-                        onClick={() => setSelectedProjectId(project.id)}
+                        onClick={() => setSelectedProjectId(sourceKey)}
                         className={[
                           'niuu:w-full niuu:rounded-lg niuu:border niuu:p-3 niuu:text-left niuu:transition-colors',
                           selected
@@ -630,14 +665,19 @@ function SagasPageContent() {
                               <span className="niuu:rounded niuu:bg-bg-elevated niuu:px-2 niuu:py-0.5 niuu:text-[11px] niuu:font-mono niuu:text-text-muted">
                                 {project.status}
                               </span>
+                              {(project.trackerName || project.trackerType) && (
+                                <span className="niuu:rounded niuu:bg-bg-elevated niuu:px-2 niuu:py-0.5 niuu:text-[11px] niuu:font-mono niuu:text-text-muted">
+                                  {project.trackerName || project.trackerType}
+                                </span>
+                              )}
                               {imported && (
                                 <span className="niuu:rounded niuu:bg-brand/15 niuu:px-2 niuu:py-0.5 niuu:text-[11px] niuu:font-mono niuu:text-brand">
                                   imported
                                 </span>
                               )}
-                              {!imported && slugConflict && (
+                              {!imported && (slugConflict || needsSourceSuffix) && (
                                 <span className="niuu:rounded niuu:bg-amber-500/15 niuu:px-2 niuu:py-0.5 niuu:text-[11px] niuu:font-mono niuu:text-amber-300">
-                                  slug conflict
+                                  {slugConflict ? 'slug conflict' : 'name adjusted'}
                                 </span>
                               )}
                             </div>
@@ -850,11 +890,18 @@ function SagasPageContent() {
                     </div>
 
                     <div className="niuu:rounded-md niuu:bg-bg-tertiary niuu:p-3 niuu:text-xs niuu:leading-5 niuu:text-text-secondary">
-                      {importedTrackerIds.has(effectiveSelectedProject.id)
+                      {importedTrackerIds.has(
+                        trackerSourceKey(
+                          effectiveSelectedProject.id,
+                          effectiveSelectedProject.trackerConnectionId,
+                        ),
+                      )
                         ? 'This tracker project is already imported into Ting.'
                         : selectedProjectHasSlugConflict
                           ? `A saga with slug "${selectedProjectSlug}" already exists in Ting.`
-                          : 'Select one or more repositories to bind the imported saga to.'}
+                          : selectedProjectNeedsSourceSuffix
+                            ? `The saga name "${selectedProjectSlug}" already exists; Ting will add the tracker source.`
+                            : 'Select one or more repositories to bind the imported saga to.'}
                     </div>
                   </>
                 ) : (
