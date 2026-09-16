@@ -19,8 +19,6 @@ from volundr.session_archive import (
 
 logger = logging.getLogger(__name__)
 
-logger = logging.getLogger(__name__)
-
 if TYPE_CHECKING:
     from uuid import UUID
 
@@ -364,9 +362,9 @@ class SessionArchiveService:
             after_seq = latest - max_frames
             logger.warning(
                 "Event-log rebuild for session %s truncated to the last %d of %d frames",
-                session_id,
-                max_frames,
-                latest,
+                str(session_id).replace("\n", "\\n").replace("\r", "\\r"),
+                int(max_frames),
+                int(latest),
             )
 
         all_entries: list = []

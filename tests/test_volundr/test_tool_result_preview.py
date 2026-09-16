@@ -614,3 +614,14 @@ def test_generate_preview_flattens_alpha_and_scales() -> None:
 def test_generate_preview_undecodable_bytes_raise_value_error() -> None:
     with pytest.raises(ValueError):
         generate_preview_jpeg(b"definitely not an image")
+
+
+@pytest.mark.parametrize("session_id", ["../outside", "/tmp/outside", "a/../../outside"])
+@pytest.mark.parametrize("tool_use_id", ["../image", "/tmp/image", "a/../../image"])
+def test_preview_cache_contains_untrusted_identifiers(tmp_path, session_id, tool_use_id):
+    cache = PreviewCache(tmp_path / "cache")
+    cache.put(session_id, tool_use_id, b"preview")
+    assert cache.get(session_id, tool_use_id) == b"preview"
+    assert cache.has(session_id, tool_use_id)
+    assert cache._path(session_id, tool_use_id).resolve().is_relative_to(cache.root.resolve())
+    assert list(tmp_path.iterdir()) == [cache.root]

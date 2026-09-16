@@ -3229,7 +3229,7 @@ def create_router(
                         logger.info(
                             "[seam] after_id mismatch session=%s after=%d held=%s server=%s",
                             _sanitize_log(session_id),
-                            after,
+                            int(after),
                             _sanitize_log(after_id),
                             _sanitize_log(anchor_id),
                         )

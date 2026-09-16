@@ -141,9 +141,9 @@ def generate_preview_jpeg(raw: bytes, *, max_edge: int = PREVIEW_MAX_EDGE) -> by
 class PreviewCache:
     """Disk cache of generated previews + the async single-flight machinery.
 
-    Layout: ``{root}/{session_id}/{sha256(tool_use_id)[:40]}-e{max_edge}.jpg``.
-    Hashing the (model-generated, client-supplied) tool_use_id kills any path
-    traversal; the session_id path segment is a validated UUID at the REST tier.
+    Layout: ``{root}/{sha256(session_id)}/{sha256(tool_use_id)[:40]}-e{max_edge}.jpg``.
+    Hash both client-supplied identifiers so filesystem safety does not depend
+    on validation in callers.
     Writes are tmp + ``os.replace`` (atomic, safe across processes). mtime is
     touched on read so pruning evicts least-recently-USED entries when the cache
     exceeds ``max_entries`` / ``max_bytes``. The cache survives platform
@@ -170,7 +170,8 @@ class PreviewCache:
 
     def _path(self, session_id: str, tool_use_id: str) -> Path:
         digest = hashlib.sha256(tool_use_id.encode("utf-8")).hexdigest()[:40]
-        return self.root / str(session_id) / f"{digest}-e{self.max_edge}.jpg"
+        session_digest = hashlib.sha256(str(session_id).encode("utf-8")).hexdigest()
+        return self.root / session_digest / f"{digest}-e{self.max_edge}.jpg"
 
     # -- disk cache --------------------------------------------------------
 
