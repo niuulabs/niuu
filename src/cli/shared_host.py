@@ -20,6 +20,7 @@ from niuu.adapters.inbound.rest_repos import create_repos_router
 from niuu.adapters.inbound.rest_setup import create_setup_router
 from niuu.adapters.outbound.git_registry import create_git_registry
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
+from niuu.adapters.postgres_credential_refresh_lock import PostgresCredentialRefreshLock
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.adapters.postgres_realms import PostgresRealmRepository
@@ -303,6 +304,7 @@ def create_app(
                     credential_store=credential_store,
                     integration_repo=integration_repo,
                     oauth_clients=oauth_clients,
+                    credential_lock=PostgresCredentialRefreshLock(pool),
                 )
             )
             app.include_router(create_canonical_tracker_router(tracker_service=tracker_service))

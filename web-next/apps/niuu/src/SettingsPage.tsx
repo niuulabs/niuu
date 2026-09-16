@@ -24,6 +24,7 @@ import {
   type RemoteSettingsTokensResource,
 } from './SettingsRegistry';
 import './SettingsPage.css';
+import { MCPConnectionForm } from './MCPConnectionForm';
 
 function isRemoteProvider(
   provider: MountedSettingsProvider,
@@ -1514,7 +1515,20 @@ function IntegrationsResourceCard({
         })}
       </div>
 
-      {selectedEntry ? (
+      {(selectedEntry?.slug ?? selectedEntry?.id) === 'mcp' ? (
+        <MCPConnectionForm
+          connections={(integrationsQuery.data ?? []).filter((item) => item.slug === 'mcp')}
+          discover={(serverUrl) =>
+            client.post('/api/v1/integrations/oauth/mcp/discover', { server_url: serverUrl })
+          }
+          connect={(input) => client.post('/api/v1/integrations/oauth/mcp/connect', input)}
+          onConnected={() => {
+            void queryClient.invalidateQueries({
+              queryKey: ['settings-resource', providerId, resource.id],
+            });
+          }}
+        />
+      ) : selectedEntry ? (
         <form
           className="settings-resource__composer settings-resource__composer--stacked"
           onSubmit={(event) => {

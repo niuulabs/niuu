@@ -53,6 +53,20 @@ class IntegrationRegistry:
 
     # --- MCP helpers -----------------------------------------------
 
+    def mcp_spec(self, connection: IntegrationConnection) -> MCPServerSpec | None:
+        """Resolve user-connected MCP endpoints without modifying the shared catalog."""
+        if connection.slug == "mcp":
+            return MCPServerSpec(
+                name=f"mcp-{connection.id}",
+                transport="http",
+                url=str(connection.config.get("mcp_url", "")),
+                token_field="access_token",
+                auth_header=str(connection.config.get("auth_header", "Authorization")),
+                auth_prefix=str(connection.config.get("auth_prefix", "Bearer ")),
+            )
+        definition = self.get_definition(connection.slug)
+        return definition.mcp_server if definition else None
+
     def build_mcp_env(
         self,
         connection: IntegrationConnection,
@@ -63,12 +77,12 @@ class IntegrationRegistry:
         Returns ``None`` if the connection's definition has no MCP
         server spec.
         """
-        defn = self._by_slug.get(connection.slug)
-        if defn is None or defn.mcp_server is None:
+        spec = self.mcp_spec(connection)
+        if spec is None:
             return None
 
         env: dict[str, str] = {}
-        for env_var, cred_field in defn.mcp_server.env_from_credentials.items():
+        for env_var, cred_field in spec.env_from_credentials.items():
             value = credentials.get(cred_field, "")
             if not value:
                 value = connection.config.get(cred_field, "")
@@ -85,12 +99,11 @@ class IntegrationRegistry:
         Returns ``None`` if the connection's definition has no MCP
         server spec.
         """
-        defn = self._by_slug.get(connection.slug)
-        if defn is None or defn.mcp_server is None:
+        spec = self.mcp_spec(connection)
+        if spec is None:
             return None
 
         env = self.build_mcp_env(connection, credentials)
-        spec = defn.mcp_server
         if spec.transport != "stdio":
             config = {"name": spec.name, "type": spec.transport, "url": spec.url}
             if spec.token_field:

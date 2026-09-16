@@ -61,6 +61,33 @@ Deleting a stored grant does not itself revoke an already-issued upstream token.
 See [OpenBao renewal operations](https://github.com/niuulabs/niuu/blob/dev/docs/operations/openbao-oauth.md) for configuration,
 recovery, historical KV-version retention, and live rotation/isolation checks.
 
+### MCP discovery and browser authorization
+
+MCP connections use the same credential store and selected-connection workload
+policies as other integrations. Each grant is bound to its user, tenant, and MCP
+URL. Changing that URL requires a new connection; a different user or tenant
+cannot reconnect an existing one. The runtime gets access tokens through the
+existing Agent projection or OpenShell broker, never the refresh token or OAuth
+client secret.
+
+Discovery validates protected-resource and issuer metadata and requires PKCE
+S256. Registration identities are cached separately per tenant, user, issuer,
+and callback URL. Pending authorization state and PKCE verifiers are stored in
+the vault so callbacks can reach another replica; callbacks reject expired or
+consumed state. Callback code/state query parameters are removed from application
+access logs. Configure upstream access logs to omit OAuth callback query strings
+as well. Client metadata and callback GETs are public; starting discovery or a
+connection requires an authenticated platform user.
+
+Discovered endpoints are restricted to public HTTPS addresses. Both the platform
+and patched OpenBao plugin validate DNS at connection time, reject private and
+special-use addresses, and do not follow redirects. The plugin also retains the
+grant's RFC 8707 `resource` parameter during refresh. Set
+`mcp_resource_indicators: true` only when this plugin revision is deployed; the
+application refuses MCP OAuth enrollment with an unpatched engine.
+
+These MCP changes do not enable the legacy global refresh scanner.
+
 ### Mini-mode's legacy refresh scan
 
 The shared host retains an optional application-level refresh loop for local

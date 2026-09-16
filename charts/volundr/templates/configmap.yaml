@@ -482,6 +482,8 @@ data:
     oauth:
       mini_mode_refresh_enabled: {{ .Values.oauth.miniModeRefreshEnabled }}
       redirect_base_url: {{ .Values.oauth.redirectBaseUrl | default "" | quote }}
+      mcp_request_timeout_seconds: {{ .Values.oauth.mcpRequestTimeoutSeconds }}
+      mcp_state_ttl_seconds: {{ .Values.oauth.mcpStateTtlSeconds }}
       {{- if .Values.oauth.clients }}
       clients:
         {{- range $slug, $client := .Values.oauth.clients }}

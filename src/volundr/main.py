@@ -998,6 +998,7 @@ def create_app(
                     credential_store=credential_store,
                     integration_repo=integration_repo,
                     oauth_clients=oauth_clients,
+                    credential_lock=PostgresCredentialRefreshLock(pool),
                 )
             )
             app.include_router(create_canonical_tracker_router(tracker_service=tracker_service))

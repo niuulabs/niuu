@@ -69,13 +69,12 @@ are rejected at launch. Use an HTTP endpoint, or configure a server that reads i
 credential file on demand through the integration's existing file mounts. Restart
 static stdio sessions after replacing credentials.
 
-The built-in GitHub and GitLab MCP definitions currently use stdio. Their legacy
-`@modelcontextprotocol/server-*` packages are deprecated; configure a maintained
-server appropriate to the Git host. The platform does not silently send a
-self-hosted Git credential to a public MCP endpoint. Merely
-connecting a renewable GitLab OAuth account does not convert its MCP server to
-HTTP. An operator must configure a compatible endpoint/file-aware server before
-that renewable MCP path can launch. Ordinary API keys remain supported.
+GitHub and GitLab source-control connections continue to supply `gh` and `glab`,
+which are installed in the runtime image. Connect their MCP services using the
+generic MCP form below. This gives the MCP server its own grant and audience;
+GitLab's `mcp` scope is distinct from a CLI application's `api` scope. The runtime
+no longer launches the deprecated `@modelcontextprotocol/server-github` or
+`@modelcontextprotocol/server-gitlab` packages.
 
 Linear uses its [official HTTP MCP endpoint](https://linear.app/docs/mcp),
 `https://mcp.linear.app/mcp`, with the existing `api_key` field as a bearer header.
@@ -84,15 +83,40 @@ No separate MCP login is required. This replaces the nonexistent
 
 ## Adding another MCP integration
 
-Use the existing configurable integration catalog and OAuth application registry:
-register the actual provider endpoints, required scopes and client, configure the
-MCP transport and credential mapping, connect the account in Integrations, and
-attach that connection to a session. No new global renewal service is required.
+In **Settings → Integrations → MCP server**, enter the server's HTTPS URL and
+choose **Sign in with OAuth** or **API token**. OAuth discovery shows the issuer
+and requested permissions before sign-in. The platform supports protected-resource
+metadata, OAuth/OIDC authorization-server metadata, PKCE S256, client metadata
+documents, dynamic client registration, and pre-registered clients. Servers that
+require a registered client expose the client ID and authentication fields.
 
-An arbitrary MCP URL is not currently sufficient to complete this flow. Automatic
-MCP authorization-server discovery and dynamic client registration are not part of
-the integration wizard. Configure the provider's OAuth application explicitly;
-do not assume a runtime-local interactive login will work in remote sessions.
+The URL suggestions include GitHub (`https://api.githubcopilot.com/mcp/`), GitLab
+(`https://gitlab.com/api/v4/mcp`), and Linear (`https://mcp.linear.app/mcp`). Other
+standards-compliant MCP endpoints use the same flow. GitLab must have its MCP
+server enabled by the group or instance administrator. Select **Reconnect** for
+an existing connection when its grant expires or is revoked; changing the server
+URL requires a new connection. Attach the completed connection to a session.
+
+API tokens can use a configurable header and prefix. The **Test** action performs
+MCP initialization without listing tools or reading user data. Operator-configured
+stdio servers continue to use catalog environment/file mappings.
+
+Discovered endpoints must resolve to public addresses. Discovery, token exchange,
+and engine refresh pin validated DNS results and reject private/special-use
+addresses and redirects. A publicly reachable self-hosted MCP endpoint works;
+private-only endpoints are not admitted by this discovery flow.
+
+Set `oauth.redirect_base_url` to the install's external HTTPS origin (Helm:
+`oauth.redirectBaseUrl`). Allow unauthenticated GETs to the MCP callback and client
+metadata document at `/api/v1/integrations/oauth/mcp/{callback,client-metadata}`;
+discovery and connection creation still require the user's platform identity.
+
+MCP renewal requires oauthapp with the RFC 8707 resource refresh extension and
+public-endpoint restriction. The infrastructure image `openbao-oauthapp` carries
+the reviewed patch over upstream 3.4.0. Set the credential adapter's
+`mcp_resource_indicators: true` only with that plugin installed. An unpatched
+engine is rejected before OAuth enrollment. Refresh remains inside OpenBao;
+no application-wide token scanner is added.
 
 ## Migrating existing renewable grants
 
