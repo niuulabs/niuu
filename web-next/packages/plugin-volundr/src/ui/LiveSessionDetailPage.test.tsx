@@ -593,6 +593,7 @@ function mockChatState(overrides: Partial<ReturnType<typeof chatHooks.useSkuldCh
 
 describe('LiveSessionDetailPage', () => {
   beforeEach(() => {
+    localStorage.clear();
     vi.clearAllMocks();
     navigate.mockReset();
     global.fetch = vi.fn(async (input: string | URL | Request) => {
@@ -877,6 +878,7 @@ describe('LiveSessionDetailPage', () => {
     });
 
     it('shows session id chip', async () => {
+      localStorage.setItem('niuu.forge.details', '1');
       wrap('test-session-id-1234');
       const chip = await screen.findByTestId('session-id-label');
       expect(chip).toBeInTheDocument();
@@ -908,6 +910,7 @@ describe('LiveSessionDetailPage', () => {
     });
 
     it('shows a distinct session handle and linked tracker issue', async () => {
+      localStorage.setItem('niuu.forge.details', '1');
       wrap('test-session-id-1234', {
         session: {
           ...RUNNING_SESSION,
@@ -952,6 +955,7 @@ describe('LiveSessionDetailPage', () => {
     });
 
     it('suppresses the handle when the ravn id matches the session id', async () => {
+      localStorage.setItem('niuu.forge.details', '1');
       wrap('test-session-id-1234', {
         sessionStore: {
           getSession: vi.fn().mockResolvedValue({
@@ -1998,7 +2002,7 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(
-        screen.getByRole('button', { name: /Show tool calls and results/i }),
+        screen.getByRole('button', { name: /Hide tool calls and results/i }),
       ).toBeInTheDocument();
       expect(screen.queryByText(/^res$/i)).not.toBeInTheDocument();
     });

@@ -62,3 +62,14 @@ export {
   validateTextReceipt,
 } from './hooks/orderedPublicText';
 export type { PublicTextEvent } from './hooks/orderedPublicText';
+
+export {
+  ConversationResourceProvider,
+  ConversationLink,
+  ConversationImage,
+  PresentedFileCard,
+} from './components/ConversationResources';
+export type {
+  ConversationResource,
+  ConversationResourcePort,
+} from './components/ConversationResources';

@@ -20,6 +20,8 @@ import { ToolBlock, ToolGroupBlock, groupContentBlocks } from '../ToolBlock';
 import type { ChatMessage, ChatMessagePart } from '../../types';
 import type { ContentBlock as ToolContentBlock } from '../ToolBlock';
 import './ChatMessages.css';
+import { PresentedFileCard } from '../ConversationResources';
+import { isPresentedFileTool } from '../ToolBlock/groupContentBlocks';
 
 const formatTime = (date: Date): string =>
   date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -294,7 +296,7 @@ function AssistantContentWithTools({
   isStreaming?: boolean;
 }) {
   const blocks = partsToContentBlocks(parts);
-  const grouped = groupContentBlocks(blocks);
+  const grouped = groupContentBlocks(blocks, true);
   // Older histories retain tool positions but only aggregate prose. Preserve that prose once;
   // its original position cannot be recovered here. Structured text parts remain authoritative.
   const hasText = grouped.some((item) => item.kind === 'text' && item.text.trim().length > 0);
@@ -320,6 +322,8 @@ function AssistantContentWithTools({
           );
         }
         if (item.kind === 'single') {
+          if (isPresentedFileTool(item.block.name))
+            return <PresentedFileCard key={`file:${item.block.id}`} block={item.block} />;
           return (
             <ToolBlock key={`tool:${item.block.id}`} block={item.block} result={item.result} />
           );

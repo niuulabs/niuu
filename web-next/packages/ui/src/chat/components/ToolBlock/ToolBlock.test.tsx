@@ -309,3 +309,41 @@ describe('getToolCategory', () => {
     expect(getToolCategory('Unknown')).toBe('default');
   });
 });
+
+describe('hierarchical tool groups', () => {
+  it('coalesces mixed adjacent calls without crossing prose or file delivery', () => {
+    const blocks: ContentBlock[] = [
+      { type: 'text', text: 'Before', id: 'before' },
+      bashBlock,
+      { type: 'tool_use', id: 'read', name: 'Read', input: { file_path: 'README.md' } },
+      { type: 'tool_result', tool_use_id: '1', content: 'Bash output' },
+      { type: 'text', text: 'After', id: 'after' },
+      { type: 'tool_use', id: 'delivery', name: 'present_file', input: { file_id: 'report' } },
+      { ...bashBlock, id: 'next' },
+    ];
+    const grouped = groupContentBlocks(blocks, true);
+    expect(grouped.map((item) => item.kind)).toEqual(['text', 'group', 'text', 'single', 'single']);
+    expect(grouped[1]).toMatchObject({
+      blocks: [
+        { block: { id: '1' }, result: { content: 'Bash output' } },
+        { block: { id: 'read' } },
+      ],
+    });
+  });
+  it('unmounts collapsed children, pages calls and supports keyboard disclosure', () => {
+    const blocks = Array.from({ length: 30 }, (_, i) => ({
+      block: { ...bashBlock, id: `call-${i}`, input: { command: `command-${i}` } },
+      result: { type: 'tool_result' as const, tool_use_id: `call-${i}`, content: `result-${i}` },
+    }));
+    render(<ToolGroupBlock toolName="Bash" blocks={blocks} />);
+    const group = screen.getByRole('button', { name: /Expand 30 tool calls/ });
+    expect(screen.queryAllByTestId('tool-block')).toHaveLength(0);
+    fireEvent.keyDown(group, { key: 'ArrowRight' });
+    expect(screen.getAllByTestId('tool-block')).toHaveLength(25);
+    expect(screen.queryByText('result-0')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Show 5 more calls/ }));
+    expect(screen.getAllByTestId('tool-block')).toHaveLength(30);
+    fireEvent.keyDown(group, { key: 'Escape' });
+    expect(screen.queryAllByTestId('tool-block')).toHaveLength(0);
+  });
+});

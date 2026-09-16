@@ -8,7 +8,8 @@ const config = JSON.parse(
 // Use the checked-in mock services so the functional gate needs neither a live
 // platform nor provider credentials. Transport/replay wires have separate tests.
 test.beforeEach(async ({ page }) => {
-  await page.route('**/config.json', (route) => route.fulfill({ json: config }));
+  await page.addInitScript(() => localStorage.setItem('niuu.forge.details', '1'));
+  await page.route(/\/config(?:\.live)?\.json$/, (route) => route.fulfill({ json: config }));
 });
 
 test('Forge entry survives a hard reload', async ({ page }) => {

@@ -38,6 +38,11 @@ export interface IFileSystemPort {
    */
   readFile(sessionId: string, path: string): Promise<string>;
 
+  /** Download real bytes; optional for consumers providing a text-only filesystem. */
+  downloadFile?(sessionId: string, path: string, signal?: AbortSignal): Promise<Blob>;
+  /** Download a broker-staged artifact by opaque id, never by arbitrary host path. */
+  downloadPresentedFile?(sessionId: string, fileId: string, signal?: AbortSignal): Promise<Blob>;
+
   /** Write or overwrite a file in the session workspace. */
   writeFile(sessionId: string, path: string, content: string): Promise<void>;
 

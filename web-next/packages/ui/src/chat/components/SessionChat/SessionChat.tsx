@@ -1,3 +1,4 @@
+import { isPresentedFileTool } from '../ToolBlock/groupContentBlocks';
 import {
   useCallback,
   useMemo,
@@ -380,7 +381,7 @@ export function SessionChat({
     visibleMessages,
     collapsedThreads,
     toggleThread,
-  } = useRoomState(messages, participants);
+  } = useRoomState(messages, participants, internalVisibility ?? false);
 
   useEffect(() => {
     if (internalVisibility === undefined) return;
@@ -960,7 +961,18 @@ export function SessionChat({
               {isStreaming && (
                 <StreamingMessage
                   content={streamingContent ?? ''}
-                  parts={streamingParts}
+                  parts={
+                    showInternal
+                      ? streamingParts
+                      : streamingParts?.filter(
+                          (part) =>
+                            part.type === 'text' ||
+                            part.type === 'reasoning' ||
+                            (part.type === 'tool_use' &&
+                              part.name &&
+                              isPresentedFileTool(part.name)),
+                        )
+                  }
                   model={streamingModel}
                 />
               )}

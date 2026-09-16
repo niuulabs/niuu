@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback } from 'react';
 import type { ChatMessage, ChatMessagePart, RoomParticipant } from '../types';
+import { isPresentedFileTool } from '../components/ToolBlock/groupContentBlocks';
 
 export interface UseRoomStateReturn {
   isRoomMode: boolean;
@@ -33,7 +34,11 @@ function stripInternalParts(msg: ChatMessage): ChatMessage | null {
   if (!msg.parts || msg.parts.length === 0) {
     return msg;
   }
-  const kept = msg.parts.filter((p) => !INTERNAL_PART_TYPES.has(p.type));
+  const kept = msg.parts.filter(
+    (p) =>
+      !INTERNAL_PART_TYPES.has(p.type) ||
+      (p.type === 'tool_use' && p.name && isPresentedFileTool(p.name)),
+  );
   if (kept.length === msg.parts.length) {
     return msg;
   }
@@ -57,9 +62,10 @@ function stripInternalParts(msg: ChatMessage): ChatMessage | null {
 export function useRoomState(
   messages: readonly ChatMessage[],
   participants: ReadonlyMap<string, RoomParticipant>,
+  initialShowInternal = false,
 ): UseRoomStateReturn {
   const [activeFilter, setActiveFilter] = useState<string>(FILTER_ALL);
-  const [showInternal, setShowInternal] = useState(false);
+  const [showInternal, setShowInternal] = useState(initialShowInternal);
   const [expandedThreads, setExpandedThreads] = useState<ReadonlySet<string>>(new Set());
 
   const isRoomMode = participants.size > 1;

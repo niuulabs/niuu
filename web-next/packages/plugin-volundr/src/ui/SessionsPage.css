@@ -1,0 +1,172 @@
+.forge-session-list {
+  background: var(--color-bg-primary);
+}
+.forge-session-row {
+  position: relative;
+}
+.forge-session-row__select {
+  min-height: 62px;
+}
+.forge-session-row__actions {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  opacity: 0;
+  pointer-events: none;
+}
+.forge-session-row:hover .forge-session-row__actions,
+.forge-session-row:focus-within .forge-session-row__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.forge-session-row__actions button {
+  display: grid;
+  place-items: center;
+  min-width: 30px;
+  min-height: 30px;
+  color: var(--color-text-secondary);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.forge-session-row__actions button:hover {
+  color: var(--color-brand);
+  background: var(--color-bg-tertiary);
+}
+.forge-session-row__actions button:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
+.forge-session-row__actions svg {
+  width: 15px;
+  height: 15px;
+}
+.forge-session-state {
+  align-self: flex-start;
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1.6;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+}
+.forge-session-state[data-state='running'] {
+  color: var(--color-brand);
+}
+.forge-session-state[data-state='awaiting_input'] {
+  color: var(--status-attention);
+}
+.forge-session-state[data-state='failed'] {
+  color: var(--color-critical);
+}
+.forge-session-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 8px 10px;
+}
+.forge-session-filters button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-subtle);
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+.forge-session-filters button[aria-pressed='true'] {
+  color: var(--color-brand);
+  border-color: var(--color-brand);
+  background: var(--color-bg-tertiary);
+}
+.forge-session-filters button span {
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+.forge-session-resizer {
+  flex: 0 0 7px;
+  cursor: col-resize;
+  touch-action: none;
+  border: 0;
+  background: var(--color-border-subtle);
+  padding: 0;
+}
+.forge-session-resizer:hover,
+.forge-session-resizer:focus-visible {
+  background: var(--color-brand);
+  outline: none;
+}
+.forge-session-list button:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: -2px;
+}
+.forge-session-maintenance {
+  padding: 8px 10px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.forge-session-maintenance summary {
+  cursor: pointer;
+  margin-bottom: 6px;
+}
+@media (hover: none) {
+  .forge-session-row__actions {
+    position: static;
+    opacity: 1;
+    pointer-events: auto;
+    border: 0;
+    justify-content: flex-end;
+  }
+  .forge-session-row__actions button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .forge-session-filters button {
+    min-height: 36px;
+  }
+}
+.forge-session-back {
+  display: none;
+}
+@media (max-width: 760px) {
+  .forge-sessions .forge-session-list {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    flex-basis: 100% !important;
+  }
+  .forge-session-resizer,
+  .forge-session-detail,
+  .forge-sessions [data-testid='pod-sidebar-toggle'] {
+    display: none;
+  }
+  .forge-sessions[data-detail-open='true'] .forge-session-list {
+    display: none;
+  }
+  .forge-sessions[data-detail-open='true'] .forge-session-detail {
+    display: flex;
+  }
+  .forge-session-back {
+    display: block;
+    text-align: left;
+    min-height: 44px;
+    padding: 8px 12px;
+    color: var(--color-brand);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+}
+
+.forge-session-list input[type='checkbox'] {
+  appearance: auto;
+  width: 14px;
+  height: 14px;
+  accent-color: var(--color-brand);
+}

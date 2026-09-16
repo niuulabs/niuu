@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
@@ -94,9 +94,14 @@ function wrap(ui: React.ReactNode) {
 // Tests
 // ---------------------------------------------------------------------------
 
+beforeEach(() => localStorage.clear());
+
 describe('VolundrSessionRoute', () => {
   it('renders the session page with the param sessionId', async () => {
     wrap(<VolundrSessionRoute />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Show session details', exact: true }),
+    );
     const label = await screen.findByTestId('session-id-label');
     expect(label).toHaveTextContent('sess-rou');
   });
@@ -111,6 +116,9 @@ describe('VolundrSessionRoute', () => {
 describe('VolundrArchivedRoute', () => {
   it('renders the session page with the param sessionId', async () => {
     wrap(<VolundrArchivedRoute />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Show session details', exact: true }),
+    );
     const label = await screen.findByTestId('session-id-label');
     expect(label).toHaveTextContent('sess-rou');
   });

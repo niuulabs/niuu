@@ -2408,3 +2408,45 @@ describe('buildVolundrHttpAdapter — full method sweep', () => {
     expect(client.delete).toHaveBeenCalled();
   });
 });
+
+describe('session resource byte downloads', () => {
+  it('preserves bytes, bearer auth, escaped file identifiers and abort signals', async () => {
+    const fetchImpl = vi.fn().mockImplementation(
+      async () =>
+        new Response(new Uint8Array([0, 255, 13, 10]), {
+          headers: { 'Content-Type': 'image/png' },
+        }),
+    );
+    const fs = buildVolundrFileSystemHttpAdapter({
+      baseUrl: 'https://thor.test/api/v1/forge',
+      fetchImpl,
+    });
+    const signal = new AbortController().signal;
+    const file = await fs.downloadFile!('session-1', '/workspace/docs/a b.png', signal);
+    expect(new Uint8Array(await file.arrayBuffer())).toEqual(new Uint8Array([0, 255, 13, 10]));
+    expect(file.type).toBe('image/png');
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      'https://thor.test/api/v1/forge/sessions/session-1/files/download?root=workspace&path=docs%2Fa+b.png',
+    );
+    expect(fetchImpl.mock.calls[0]?.[1].signal).toBe(signal);
+    expect(fetchImpl.mock.calls[0]?.[1].headers.get('Authorization')).toBe('Bearer token-123');
+    await fs.downloadPresentedFile!('session-1', 'id/with spaces', signal);
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe(
+      'https://thor.test/api/v1/forge/sessions/session-1/files/presented/id%2Fwith%20spaces',
+    );
+  });
+  it('propagates failed or cancelled downloads', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('File not found', { status: 404 }))
+      .mockRejectedValueOnce(new DOMException('Cancelled', 'AbortError'));
+    const fs = buildVolundrFileSystemHttpAdapter({
+      baseUrl: 'https://thor.test/api/v1/forge',
+      fetchImpl,
+    });
+    await expect(fs.downloadFile!('s', '/workspace/missing')).rejects.toThrow();
+    await expect(fs.downloadPresentedFile!('s', 'missing')).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+  });
+});

@@ -179,6 +179,16 @@ export function ToolBlock({ block, result, defaultOpen = false }: ToolBlockProps
         className="niuu-chat-tool-header"
         onClick={() => setIsOpen((prev) => !prev)}
         aria-expanded={isOpen}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowRight') {
+            event.preventDefault();
+            setIsOpen(true);
+          }
+          if (event.key === 'ArrowLeft' || event.key === 'Escape') {
+            event.preventDefault();
+            setIsOpen(false);
+          }
+        }}
       >
         <ToolIcon toolName={block.name} className="niuu-chat-tool-icon" />
         <span className="niuu-chat-tool-label">{label}</span>

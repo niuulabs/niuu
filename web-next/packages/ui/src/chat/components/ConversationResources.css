@@ -1,0 +1,47 @@
+.niuu-chat-resource-image {
+  display: block;
+  max-width: 100%;
+  margin-block: 8px;
+  cursor: zoom-in;
+}
+.niuu-chat-resource-image img {
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 8px;
+  object-fit: contain;
+}
+.niuu-chat-resource-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-muted);
+}
+.niuu-chat-resource-error {
+  color: var(--color-critical);
+}
+.niuu-chat-presented-file {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-block: 12px;
+  padding: 14px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 10px;
+  background: var(--color-bg-secondary);
+}
+.niuu-chat-presented-file strong {
+  overflow-wrap: anywhere;
+}
+.niuu-chat-presented-file p {
+  margin-block: 5px;
+  color: var(--color-text-secondary);
+}
+.niuu-chat-presented-file button {
+  color: var(--color-brand);
+  text-decoration: underline;
+}
+.niuu-chat-presented-file span {
+  display: block;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}

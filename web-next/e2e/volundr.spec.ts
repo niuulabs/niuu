@@ -1,4 +1,11 @@
 import { test, expect } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+const config = JSON.parse(
+  readFileSync(new URL('../apps/niuu/public/config.json', import.meta.url), 'utf8'),
+);
+test.beforeEach(async ({ page }) => {
+  await page.route(/\/config(?:\.live)?\.json$/, (route) => route.fulfill({ json: config }));
+});
 
 test('navigate to /volundr redirects to the forge page', async ({ page }) => {
   await page.goto('/volundr');
@@ -86,18 +93,14 @@ test('session detail page renders the live diff surface', async ({ page }) => {
   await expect(page.getByTestId('diffs-tab')).toBeVisible();
 });
 
-test('session id copy chip is shown in the header', async ({ page }) => {
+test('session id copy chip is available in header details', async ({ page }) => {
   await page.goto('/volundr/session/ds-1');
+  await page.getByRole('button', { name: 'Show session details', exact: true }).click();
   await expect(page.getByTestId('session-id-label')).toHaveAttribute(
     'title',
     /^ds-1 · click to copy$/,
-    {
-      timeout: 8_000,
-    },
   );
-  await expect(page.getByTestId('session-id-label')).toHaveText('ds-1', {
-    timeout: 8_000,
-  });
+  await expect(page.getByTestId('session-id-label')).toHaveText('ds-1');
 });
 
 test('session detail shows the default diff viewer state', async ({ page }) => {

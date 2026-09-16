@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
@@ -82,6 +82,7 @@ function makeSession(
 ): Session {
   return {
     id: overrides.id,
+    name: overrides.name,
     ravnId: overrides.ravnId ?? `ravn-${overrides.id}`,
     personaName: overrides.personaName,
     templateId: overrides.templateId ?? 'tpl-default',
@@ -137,6 +138,7 @@ function createSessionStoreWithSessions(sessions: Session[]): ISessionStore {
 
 describe('SessionsPage', () => {
   beforeEach(() => {
+    localStorage.clear();
     navigate.mockClear();
   });
 
@@ -185,11 +187,13 @@ describe('SessionsPage', () => {
   });
 
   it('renders ERROR group with failed sessions', async () => {
+    localStorage.setItem('niuu.forge.filter', 'all');
     wrap();
     await waitFor(() => expect(screen.getByTestId('pod-group-error')).toBeInTheDocument());
   });
 
   it('renders ARCHIVED group when archived sessions are present', async () => {
+    localStorage.setItem('niuu.forge.filter', 'all');
     const store = createSessionStoreWithSessions([
       makeSession({ id: 'arch-1', personaName: 'archiver', state: 'archived' }),
     ]);
@@ -260,6 +264,7 @@ describe('SessionsPage', () => {
   });
 
   it('can group sessions by repo', async () => {
+    localStorage.setItem('niuu.forge.filter', 'all');
     const store = createSessionStoreWithSessions([
       makeSession({
         id: 'alpha-1',
@@ -292,6 +297,7 @@ describe('SessionsPage', () => {
   });
 
   it('can group sessions by forge', async () => {
+    localStorage.setItem('niuu.forge.filter', 'all');
     const store = createSessionStoreWithSessions([
       makeSession({
         id: 'alpha-1',
@@ -338,6 +344,7 @@ describe('SessionsPage', () => {
   });
 
   it('renders session row metadata without crashing', async () => {
+    localStorage.setItem('niuu.forge.details', '1');
     wrap();
     await waitFor(() =>
       expect(screen.getByTestId('pod-entry-laptop-volundr-local')).toBeInTheDocument(),
@@ -348,6 +355,7 @@ describe('SessionsPage', () => {
   });
 
   it('renders the forge label when a session has an instance name', async () => {
+    localStorage.setItem('niuu.forge.details', '1');
     const store = createSessionStoreWithSessions([
       makeSession({
         id: 'forge-1',
@@ -529,5 +537,110 @@ describe('SessionsPage', () => {
     await waitFor(() =>
       expect(navigate).toHaveBeenCalledWith({ to: '/volundr/sessions', replace: true }),
     );
+  });
+});
+
+describe('Forge session review controls', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    navigate.mockClear();
+  });
+  const sessions = [
+    makeSession({
+      id: 'working',
+      name: 'Release review',
+      personaName: 'dev-user',
+      state: 'running',
+      clusterName: 'Thor',
+      preview: '/home/thor/repos/niuu',
+    }),
+    makeSession({ id: 'waiting', personaName: 'Ready for input', state: 'awaiting_input' }),
+    makeSession({ id: 'idle', personaName: 'Idle session', state: 'idle' }),
+    makeSession({ id: 'stopped', personaName: 'Stopped session', state: 'terminated' }),
+    makeSession({ id: 'archived', personaName: 'Old session', state: 'archived' }),
+  ];
+  it('defaults to live sessions, counts filters, preserves selection and composes search', async () => {
+    wrap(createSessionStoreWithSessions(sessions));
+    await screen.findByTestId('pod-entry-working');
+    expect(screen.getByTestId('session-filter-live')).toHaveTextContent('Live3');
+    expect(screen.queryByTestId('pod-entry-stopped')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pod-entry-archived')).not.toBeInTheDocument();
+    expect(screen.getByTestId('pod-entry-working')).not.toHaveTextContent('dev-user');
+    expect(screen.getByTestId('pod-entry-working')).not.toHaveTextContent('Thor');
+    fireEvent.click(screen.getByTestId('session-filter-all'));
+    expect(screen.getByTestId('pod-entry-archived')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('pod-search'), { target: { value: 'Release review' } });
+    expect(screen.getByTestId('pod-entry-working')).toBeInTheDocument();
+    expect(screen.queryByTestId('pod-entry-idle')).not.toBeInTheDocument();
+    expect(navigate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Show session details' }));
+    expect(screen.getByTestId('pod-entry-working')).toHaveTextContent('Thor');
+  });
+  it('persists keyboard resizing and collapsed groups', async () => {
+    wrap(createSessionStoreWithSessions(sessions));
+    await screen.findByTestId('pod-entry-working');
+    const separator = screen.getByRole('separator', { name: 'Resize session list' });
+    expect(separator).toHaveAttribute('aria-valuenow', '340');
+    fireEvent.keyDown(separator, { key: 'ArrowRight' });
+    expect(localStorage.getItem('niuu.forge.sidebarWidth')).toBe('360');
+    fireEvent.keyDown(separator, { key: 'End' });
+    expect(separator).toHaveAttribute('aria-valuenow', '640');
+    fireEvent.keyDown(separator, { key: 'ArrowRight' });
+    expect(separator).toHaveAttribute('aria-valuenow', '640');
+    fireEvent.doubleClick(separator);
+    expect(separator).toHaveAttribute('aria-valuenow', '340');
+    fireEvent.click(
+      within(screen.getByTestId('pod-group-active')).getByRole('button', { expanded: true }),
+    );
+    expect(screen.queryByTestId('pod-entry-working')).not.toBeInTheDocument();
+    expect(localStorage.getItem('niuu.forge.group.ACTIVE')).toBe('1');
+  });
+  it('reports a failed stop and does not proceed to archive or change selection', async () => {
+    const service = createMockVolundrService();
+    service.stopSession = vi.fn().mockRejectedValue(new Error('Thor could not stop this session'));
+    service.archiveSession = vi.fn();
+    wrap(createSessionStoreWithSessions(sessions), service);
+    fireEvent.click(await screen.findByTestId('pod-entry-working-archive'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Thor could not stop this session');
+    expect(service.archiveSession).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+  it('stops before archiving and restores an archived record', async () => {
+    const calls: string[] = [];
+    const service = createMockVolundrService();
+    service.stopSession = vi.fn(async () => {
+      calls.push('stop');
+    });
+    service.archiveSession = vi.fn(async () => {
+      calls.push('archive');
+    });
+    service.restoreSession = vi.fn().mockResolvedValue(undefined);
+    wrap(createSessionStoreWithSessions(sessions), service);
+    fireEvent.click(await screen.findByTestId('pod-entry-working-archive'));
+    await waitFor(() => expect(calls).toEqual(['stop', 'archive']));
+    fireEvent.click(screen.getByTestId('session-filter-archived'));
+    fireEvent.click(screen.getByRole('button', { name: 'Restore Old session' }));
+    await waitFor(() => expect(service.restoreSession).toHaveBeenCalledWith('archived'));
+  });
+  it('requires explicit delete confirmation and leaves failures visible for retry', async () => {
+    const service = createMockVolundrService();
+    service.deleteSession = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Deletion rejected'))
+      .mockResolvedValue(undefined);
+    wrap(createSessionStoreWithSessions(sessions), service);
+    fireEvent.click(await screen.findByTestId('pod-entry-working-delete'));
+    expect(service.deleteSession).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel', exact: true }));
+    expect(service.deleteSession).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('pod-entry-working-delete'));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
+    await waitFor(() =>
+      expect(screen.getAllByRole('alert')[0]).toHaveTextContent('Deletion rejected'),
+    );
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(service.deleteSession).toHaveBeenCalledTimes(2);
   });
 });

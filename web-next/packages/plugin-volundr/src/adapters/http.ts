@@ -1119,6 +1119,32 @@ export function buildVolundrFileSystemHttpAdapter(options: {
       return response.text();
     },
 
+    async downloadFile(sessionId: string, path: string, signal?: AbortSignal): Promise<Blob> {
+      const { root, relativePath } = splitSessionPath(path);
+      const params = new URLSearchParams({ root, path: relativePath });
+      const response = await ensureOk(
+        await fetchImpl(`${sessionApi(sessionId)}/files/download?${params}`, {
+          headers: withAuthHeaders(),
+          signal,
+        }),
+      );
+      return response.blob();
+    },
+
+    async downloadPresentedFile(
+      sessionId: string,
+      fileId: string,
+      signal?: AbortSignal,
+    ): Promise<Blob> {
+      const response = await ensureOk(
+        await fetchImpl(`${sessionApi(sessionId)}/files/presented/${encodeURIComponent(fileId)}`, {
+          headers: withAuthHeaders(),
+          signal,
+        }),
+      );
+      return response.blob();
+    },
+
     async writeFile(sessionId: string, path: string, content: string): Promise<void> {
       const { root, relativePath } = splitSessionPath(path);
       const segments = relativePath.split('/').filter(Boolean);

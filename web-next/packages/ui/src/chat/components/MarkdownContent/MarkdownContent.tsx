@@ -4,6 +4,7 @@ import { cn } from '../../../utils/cn';
 import { OutcomeCard, extractOutcomeBlock } from '../OutcomeCard';
 import { useCopyFeedback } from '../../hooks/useCopyFeedback';
 import './MarkdownContent.css';
+import { ConversationLink, ConversationImage } from '../ConversationResources';
 
 const CURSOR_CHAR = '▊';
 
@@ -439,23 +440,23 @@ function renderInline(text: string): React.ReactNode {
       }
     }
 
-    if (text[cursor] === '[') {
-      const labelEnd = text.indexOf('](', cursor + 1);
+    if (text[cursor] === '[' || text.startsWith('![', cursor)) {
+      const isImage = text.startsWith('![', cursor);
+      const labelStart = cursor + (isImage ? 2 : 1);
+      const labelEnd = text.indexOf('](', labelStart);
       if (labelEnd !== -1) {
         const urlEnd = text.indexOf(')', labelEnd + 2);
         if (urlEnd !== -1) {
-          const label = text.slice(cursor + 1, labelEnd);
+          const label = text.slice(labelStart, labelEnd);
           const href = text.slice(labelEnd + 2, urlEnd);
           parts.push(
-            <a
-              key={key++}
-              href={href}
-              className="niuu-chat-md-link"
-              target="_blank"
-              rel="noreferrer"
-            >
-              {label}
-            </a>,
+            isImage ? (
+              <ConversationImage key={key++} href={href} alt={label} />
+            ) : (
+              <ConversationLink key={key++} href={href}>
+                {label}
+              </ConversationLink>
+            ),
           );
           cursor = urlEnd + 1;
           continue;
@@ -534,6 +535,7 @@ function findNextInlineToken(text: string, startAt: number): number {
     text.indexOf('**', startAt),
     text.indexOf('`', startAt),
     text.indexOf('[', startAt),
+    text.indexOf('![', startAt),
   ].filter((index) => index !== -1);
 
   if (candidates.length === 0) {

@@ -171,3 +171,22 @@ describe('useRoomState — thread collapsing', () => {
     expect(result.current.collapsedThreads.size).toBe(0);
   });
 });
+
+it('keeps delivered-file cards when ordinary tools are hidden', () => {
+  const message = makeMsg({
+    content: '',
+    parts: [
+      { type: 'tool_use', id: 'command', name: 'Bash', input: { command: 'true' } },
+      {
+        type: 'tool_use',
+        id: 'file',
+        name: 'present_file',
+        input: { file_id: 'delivered', name: 'report.pdf' },
+      },
+    ],
+  });
+  const { result } = renderHook(() => useRoomState([message], new Map(), true));
+  expect(result.current.visibleMessages[0]?.parts).toHaveLength(2);
+  act(() => result.current.setShowInternal(false));
+  expect(result.current.visibleMessages[0]?.parts).toEqual([message.parts![1]]);
+});
