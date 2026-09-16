@@ -13,7 +13,6 @@ from volundr.domain.ports import (
     AuthorizationPort,
     CodexCredentialBrokerPort,
     CredentialEnrollmentRunnerPort,
-    CredentialRefreshLockPort,
     CredentialStorePort,
     ExternalSessionProvider,
     GatewayPort,
@@ -53,7 +52,6 @@ def _create_codex_credential_broker(
     settings: Settings,
     *,
     credential_store: CredentialStorePort,
-    refresh_lock: CredentialRefreshLockPort,
 ) -> CodexCredentialBrokerPort:
     """Create the configured central Codex token broker adapter."""
     config = settings.codex_credential_broker
@@ -61,7 +59,6 @@ def _create_codex_credential_broker(
     kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
     instance = cls(
         credential_store=credential_store,
-        refresh_lock=refresh_lock,
         **kwargs,
     )
     if not isinstance(instance, CodexCredentialBrokerPort):

@@ -58,8 +58,9 @@ OpenBao backend. Völundr validates the sandbox/session/owner/provider relations
 before returning the requested grant. The provider profile controls the HTTP
 endpoints where it may be used.
 
-Codex subscription support uses the configured OpenBao credential and token-refresh
-path. Claude Code's built-in OpenShell provider profile supports API keys; local
+Codex subscription support uses an OpenBao `oauthapp` grant. OpenBao owns renewal;
+the authenticated broker delivers access tokens and account metadata. See
+[credential renewal](security-and-permissions.md#codex-subscription-credentials). Claude Code's built-in OpenShell provider profile supports API keys; local
 Claude subscription OAuth state is not a supported dynamic provider grant. Host
 login success therefore does not validate an OpenShell Claude session.
 

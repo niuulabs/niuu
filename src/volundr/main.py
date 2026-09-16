@@ -12,7 +12,6 @@ from niuu.adapters.inbound.rest_credentials_settings import create_credentials_s
 from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
 from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.adapters.inbound.rest_realms import create_realms_router
-from niuu.adapters.postgres_credential_refresh_lock import PostgresCredentialRefreshLock
 from niuu.adapters.postgres_realms import PostgresRealmRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.realm import RealmService
@@ -475,7 +474,6 @@ def create_app(
             workload_identity_service = create_workload_identity_service(settings.workload_identity)
             pod_manager = _create_pod_manager(settings)
             resident_controllers = _create_resident_controllers(settings, pod_manager)
-            credential_refresh_lock = PostgresCredentialRefreshLock(pool)
             if hasattr(pod_manager, "set_session_repository"):
                 pod_manager.set_session_repository(repository)
             if hasattr(pod_manager, "set_workload_token_issuer"):
@@ -601,7 +599,6 @@ def create_app(
             codex_credential_broker = _create_codex_credential_broker(
                 settings,
                 credential_store=credential_store,
-                refresh_lock=credential_refresh_lock,
             )
             credential_enrollment_runner = _create_credential_enrollment_runner(settings)
             credential_service = CredentialService(

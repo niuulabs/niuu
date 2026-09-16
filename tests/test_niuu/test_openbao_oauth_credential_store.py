@@ -262,3 +262,157 @@ async def test_managed_application_mode_import_uses_deterministic_server(store):
         c for c in adapter._request.call_args_list if c.args[0] == "post" and "/creds/" in c.args[1]
     )
     assert imported.kwargs["json"]["server"] == oauth_application_name("gitlab", "default")
+
+
+def codex_document(account="account", refresh="private-refresh"):
+    import time
+
+    import jwt
+
+    token = jwt.encode(
+        {
+            "exp": int(time.time()) + 3600,
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": account,
+                "chatgpt_plan_type": "pro",
+            },
+        },
+        key="",
+        algorithm="none",
+    )
+    return json.dumps(
+        {
+            "tokens": {
+                "access_token": token,
+                "refresh_token": refresh,
+                "id_token": "private-id",
+                "account_id": account,
+            }
+        }
+    )
+
+
+async def enroll_codex(store, **metadata):
+    return await store.store(
+        "user",
+        "alice",
+        "codex",
+        SecretType.OAUTH_TOKEN,
+        {"auth.json": codex_document(), "config.toml": 'model = "gpt-5"'},
+        {
+            "enrollment_method": "codex_device",
+            "tenant_id": "tenant-a",
+            "oauth_token_field": "auth.json",
+            **metadata,
+        },
+    )
+
+
+@pytest.fixture
+def codex_store(store):
+    adapter, kv, engine = store
+    adapter._codex_server = "niuu-codex-subscription"
+    engine.update(
+        server=adapter._codex_server,
+        access_token=json.loads(codex_document())["tokens"]["access_token"],
+    )
+    return adapter, kv, engine
+
+
+async def test_codex_import_strips_login_tokens_and_preserves_configuration(codex_store):
+    adapter, kv, engine = codex_store
+    stored = await enroll_codex(adapter)
+    assert stored.metadata["oauth_format"] == "codex_auth"
+    serialized = json.dumps(kv)
+    for secret in ("private-refresh", "private-id", engine["access_token"]):
+        assert secret not in serialized
+    assert "config.toml" in (await adapter.get("user", "alice", "codex")).keys
+    values = await adapter.get_value("user", "alice", "codex")
+    assert values["config.toml"] == 'model = "gpt-5"'
+    assert json.loads(values["auth.json"])["tokens"] == {
+        "access_token": engine["access_token"],
+        "account_id": "account",
+    }
+    adapter._request.reset_mock()
+    await adapter.store(
+        "user", "alice", "codex", SecretType.OAUTH_TOKEN, {}, {"auth_state": "pending"}
+    )
+    assert all("/creds/" not in c.args[1] for c in adapter._request.call_args_list)
+    assert (await adapter.get("user", "alice", "codex")).metadata["codex_account_id"] == "account"
+
+
+async def test_codex_tenant_cannot_change(codex_store):
+    adapter, _, _ = codex_store
+    await enroll_codex(adapter)
+    with pytest.raises(ValueError, match="identity"):
+        await enroll_codex(adapter, tenant_id="other")
+
+
+async def test_codex_account_mismatch_is_rejected(codex_store):
+    adapter, _, engine = codex_store
+    engine["access_token"] = json.loads(codex_document(account="other"))["tokens"]["access_token"]
+    with pytest.raises(ValueError, match="account"):
+        await enroll_codex(adapter)
+
+
+async def test_codex_requires_configured_server(codex_store):
+    adapter, _, _ = codex_store
+    adapter._codex_server = ""
+    with pytest.raises(ValueError, match="codex_oauth_server"):
+        await enroll_codex(adapter)
+
+
+async def test_codex_migration_resumes_engine_import_without_reusing_refresh_token(codex_store):
+    from niuu.adapters.openbao_credential_store import OpenBaoCredentialStore
+
+    adapter, kv, _ = codex_store
+    await OpenBaoCredentialStore.store(
+        adapter,
+        "user",
+        "alice",
+        "codex",
+        SecretType.GENERIC,
+        {"auth.json": codex_document(), "config.toml": "config"},
+        {"integration": "codex"},
+    )
+    adapter._request.reset_mock()
+    assert await adapter.migrate_codex_credential(
+        owner_id="alice", tenant_id="tenant-a", name="codex"
+    )
+    assert not any(
+        c.args[0] == "post" and "/creds/" in c.args[1] for c in adapter._request.call_args_list
+    )
+    assert "private-refresh" not in json.dumps(kv)
+    assert not await adapter.migrate_codex_credential(
+        owner_id="alice", tenant_id="tenant-a", name="codex"
+    )
+    with pytest.raises(ValueError, match="tenant"):
+        await adapter.migrate_codex_credential(owner_id="alice", tenant_id="other", name="codex")
+
+
+async def test_codex_migration_clears_legacy_reconnect_status(codex_store):
+    from niuu.adapters.openbao_credential_store import OpenBaoCredentialStore
+
+    adapter, _, _ = codex_store
+    await OpenBaoCredentialStore.store(
+        adapter,
+        "user",
+        "alice",
+        "codex",
+        SecretType.GENERIC,
+        {"auth.json": codex_document()},
+        {"auth_state": "auth_required", "auth_error_code": "refresh_failed"},
+    )
+    await adapter.migrate_codex_credential(owner_id="alice", tenant_id="tenant-a", name="codex")
+    metadata = (await adapter.get("user", "alice", "codex")).metadata
+    assert metadata["auth_state"] == "active"
+    assert "auth_error_code" not in metadata
+
+
+async def test_metadata_outage_is_reported_as_unavailable(store):
+    adapter, _, _ = store
+    adapter._request.side_effect = httpx.ConnectError("private provider context")
+    with pytest.raises(OAuthCredentialUnavailableError) as exc:
+        await adapter.get("user", "alice", "codex")
+    assert not exc.value.reconnect
+    assert "private" not in str(exc.value)

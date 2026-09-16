@@ -231,6 +231,7 @@ class CredentialEnrollmentService:
                         "oauth_app": str(connection.config.get("oauth_app") or DEFAULT_APP),
                         "oauth_token_field": spec.credential_field,
                         "source": "credential_enrollment",
+                        "enrollment_method": enrollment.method,
                         "integration": enrollment.provider_slug,
                         "auth_type": definition.auth_type,
                         "auth_state": "active",

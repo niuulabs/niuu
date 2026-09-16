@@ -170,3 +170,47 @@ rotation, provider revocation/reconnect, Agent restart, and OpenBao leader failo
 Verify no refresh/client secret reaches the pod and a session cannot read another
 owner's or tenant's grant. Unit tests cover the API contracts, scoping, projection,
 runtime helpers and mini-mode gating; they do not replace this deployment check.
+
+## Codex subscription migration
+
+Codex subscription refresh is delegated to the same engine. The token delivery
+endpoint remains, but no application process exchanges the provider refresh token.
+New device-login enrollment imports its nested `auth.json` grant and retains account
+metadata and unrelated configuration in KV. Session responses contain no refresh or
+ID token. Tenant membership and credential ownership are checked before grant reads.
+
+1. Provision `oauthapp/servers/niuu-codex-subscription` as a `custom` provider with
+   Codex's public client ID `app_EMoamEEZ73f0CkXaXp7hrann`, token URL
+   `https://auth.openai.com/oauth/token`, and `auth_style: in_params`. No client
+   secret is used. The infrastructure reconciler manages this definition.
+2. Set `codex_oauth_server: niuu-codex-subscription` in every OAuth store's kwargs.
+   `codex_maximum_expiry_seconds` defaults to 3600 and bounds the engine's cached
+   lifetime even when the provider omits `expires_in`. Keep it below the provider's
+   actual token lifetime and above `minimum_seconds`.
+3. Roll out the new broker to **all clusters and replicas before importing grants**.
+   Verify no legacy broker still refreshes nested KV credentials. Pause concurrent
+   enrollment for the account during this one-time operation.
+4. Verify the owner and tenant against the identity/connection records. Run
+   `scripts/openbao/migrate_codex.py` with the existing application's workload-auth
+   config and explicit `--owner`, `--tenant`, and `--credential`. The default checks
+   eligibility only. Add `--apply` to import and rotate. Run one operator invocation
+   per credential; do not run concurrent migrations in different clusters.
+5. Verify token delivery through each cluster, account metadata, provider acceptance,
+   and that the current KV version no longer contains `auth.json`. The plugin test
+   at `tests/integration/openbao/test_codex_renewal.py` exercises actual engine
+   rotation, concurrent readers, grant ACLs, and revocation using an isolated test
+   OAuth provider. It does not prove acceptance by OpenAI; verify the live grant too.
+
+The importer checks for an existing engine grant before exchanging a legacy refresh
+token, so an interrupted KV metadata write can be resumed. It validates the engine
+server and account before completing the KV update. An already-managed credential
+is validated without reimport. Old rotating tokens must never be replayed blindly.
+There is no atomic transaction between the upstream provider and OpenBao storage;
+if a provider exchange succeeds but the plugin cannot persist it, reconnect.
+Historical KV versions remain until the operator applies the retention policy.
+
+Unmigrated grants fail with a reconnect/migration response. Missing or revoked grants
+require reconnection; transient engine failures return HTTP 503. `oauthapp` v3.4.0
+has no force-refresh API: a 401 retry receives a newly rotated token only if the
+engine has rotated it already, otherwise reconnect is required. The legacy mini-mode
+scanner cannot renew managed Codex grants and is not needed for this path.

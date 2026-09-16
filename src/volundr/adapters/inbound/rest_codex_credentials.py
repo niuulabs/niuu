@@ -43,6 +43,7 @@ def create_codex_credentials_router(
         try:
             tokens = await broker.get_tokens(
                 owner_id=principal.user_id,
+                tenant_id=principal.tenant_id,
                 credential_name=body.credential_name,
                 credential_field=body.credential_field,
                 force_refresh=body.force_refresh,
@@ -50,7 +51,11 @@ def create_codex_credentials_router(
             )
         except CodexCredentialBrokerError as exc:
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
+                status_code=(
+                    status.HTTP_409_CONFLICT
+                    if exc.reconnect
+                    else status.HTTP_503_SERVICE_UNAVAILABLE
+                ),
                 detail=str(exc),
                 headers={"Cache-Control": "no-store"},
             ) from exc

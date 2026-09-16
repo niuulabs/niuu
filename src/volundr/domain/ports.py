@@ -24,7 +24,7 @@ from credentials.ports import (  # noqa: F401
 from identity.models import Resource  # noqa: F401
 from identity.ports import AuthorizationPort, TenantRepository, UserRepository  # noqa: F401
 from niuu.domain.outcome import OutcomeField
-from niuu.ports.credentials import CredentialRefreshLockPort, CredentialStorePort  # noqa: F401
+from niuu.ports.credentials import CredentialStorePort  # noqa: F401
 from niuu.ports.git import (
     GitAuthError,  # noqa: F401
     GitProvider,  # noqa: F401
@@ -99,7 +99,6 @@ from volundr.domain.models import (  # noqa: F401
 __all__ = [
     "AuthorizationPort",
     "CredentialStorePort",
-    "CredentialRefreshLockPort",
     "GitAuthError",
     "GitProvider",
     "GitRepoNotFoundError",
@@ -180,13 +179,14 @@ class CodexAuthTokens:
 
 
 class CodexCredentialBrokerPort(ABC):
-    """Resolve and rotate a user's Codex credential without exposing its refresh token."""
+    """Resolve a user's managed Codex credential without exposing its refresh token."""
 
     @abstractmethod
     async def get_tokens(
         self,
         *,
         owner_id: str,
+        tenant_id: str,
         credential_name: str,
         credential_field: str,
         force_refresh: bool = False,
