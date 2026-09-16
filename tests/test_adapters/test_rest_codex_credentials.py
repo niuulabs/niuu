@@ -65,6 +65,7 @@ def test_route_scopes_broker_exchange_to_authenticated_user() -> None:
     assert broker.calls == [
         {
             "owner_id": "owner-1",
+            "tenant_id": "tenant-1",
             "credential_name": "codex-main",
             "credential_field": "auth.json",
             "force_refresh": True,
@@ -83,3 +84,15 @@ def test_route_returns_reconnect_conflict_without_refresh_token() -> None:
     assert response.headers["cache-control"] == "no-store"
     assert response.json() == {"detail": "Codex authentication requires reconnection"}
     assert "refresh" not in response.text.lower()
+
+
+def test_route_distinguishes_vault_outage_from_reconnection() -> None:
+    class UnavailableBroker(_Broker):
+        async def get_tokens(self, **kwargs):
+            raise CodexCredentialBrokerError("Vault unavailable", reconnect=False)
+
+    response = _client(UnavailableBroker()).post(
+        "/api/v1/internal/credentials/codex/tokens", json={}
+    )
+    assert response.status_code == 503
+    assert response.headers["cache-control"] == "no-store"

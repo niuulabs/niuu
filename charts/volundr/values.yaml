@@ -330,14 +330,11 @@ podManager:
   # Each entry: { kwarg: "name", secretName: "k8s-secret", secretKey: "key" }
   secretKwargs: []
 
-# Codex subscription credentials are centrally refreshed by Völundr. Session
-# workloads receive only the access token and account metadata.
+# OpenBao oauthapp owns Codex subscription renewal. The broker delivers only
+# access tokens and account metadata from the configured OAuth credential store.
 codexCredentialBroker:
   adapter: "volundr.adapters.outbound.codex_credential_broker.OpenBaoCodexCredentialBroker"
-  kwargs:
-    oauth_token_url: "https://auth.openai.com/oauth/token"
-    oauth_client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
-    refresh_skew_seconds: 300
+  kwargs: {}
   secretKwargs: []
 
 # Trusted login runner is independent of the selected session pod manager.
