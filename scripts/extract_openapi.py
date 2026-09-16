@@ -143,7 +143,7 @@ def build_openapi_app() -> FastAPI:
     app.include_router(create_prompts_router(mock))
     app.include_router(create_git_router(mock))
     app.include_router(create_tenants_router(mock))
-    app.include_router(create_admin_settings_router())
+    app.include_router(create_admin_settings_router(mock, home_volumes_supported=True))
     app.include_router(create_credentials_router(mock))
     app.include_router(create_events_router(mock, mock))
     app.include_router(

@@ -109,7 +109,8 @@ def engine(tmp_path, request):
             self.wfile.write(json.dumps(payload).encode())
 
     server = ThreadingHTTPServer(("0.0.0.0", 0), Provider)
-    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    tls.minimum_version = ssl.TLSVersion.TLSv1_2
     tls.load_cert_chain(tmp_path / "cert.pem", tmp_path / "key.pem")
     server.socket = tls.wrap_socket(server.socket, server_side=True)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
