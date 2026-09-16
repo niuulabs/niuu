@@ -379,7 +379,7 @@ spec:
       initContainers:
         {{- if .Values.migrations.enabled }}
         - name: migration-lineage
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: {{ include "volundr.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["python", "-m", "volundr.schema_bridge"]
           args: ["--migrations-dir", "/migrations"]

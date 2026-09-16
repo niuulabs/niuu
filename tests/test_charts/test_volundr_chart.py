@@ -525,7 +525,20 @@ class TestConfigMapTemplate:
 
         assert config["resident_runtimes"]["profiles"] == []
 
-    def test_ci_values_run_resident_runtime_migrations(self):
+    @pytest.mark.parametrize(
+        "overrides,expected_image",
+        [
+            (["--set", "image.tag=pr-993"], "ghcr.io/niuulabs/niuu:pr-993"),
+            (
+                [
+                    "--set",
+                    "global.image.registry=registry.example,global.image.repository=niuu,global.image.tag=release",
+                ],
+                "registry.example/niuu:release",
+            ),
+        ],
+    )
+    def test_ci_values_run_resident_runtime_migrations(self, overrides, expected_image):
         result = subprocess.run(
             [
                 "helm",
@@ -534,6 +547,7 @@ class TestConfigMapTemplate:
                 str(CHART_DIR),
                 "-f",
                 str(CHART_DIR / "ci-values.yaml"),
+                *overrides,
             ],
             check=True,
             capture_output=True,
@@ -542,6 +556,9 @@ class TestConfigMapTemplate:
         documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
         deployment = next(doc for doc in documents if doc.get("kind") == "Deployment")
         init_containers = deployment["spec"]["template"]["spec"].get("initContainers", [])
+        lineage = next(c for c in init_containers if c["name"] == "migration-lineage")
+        app = deployment["spec"]["template"]["spec"]["containers"][0]
+        assert lineage["image"] == app["image"] == expected_image
         migrations = next(
             container for container in init_containers if container["name"] == "migrate"
         )
