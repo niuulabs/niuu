@@ -144,7 +144,10 @@ codex_credential_broker:
   kwargs: {}
 ```
 
-Restart the mini-mode host after changing the adapter. Brokered Codex sessions
+For the generated Docker bundle, override `CODEX_CREDENTIAL_BROKER` in its Compose
+environment with the equivalent JSON object; the generated environment setting
+takes precedence over application YAML. Restart the mini-mode host after changing
+the adapter. Brokered Codex sessions
 then require configuring the OpenBao path; disabling a broker does not revoke the
 provider grant or disable a runtime's separate host login. Production deployments
 select `OpenBaoCodexCredentialBroker` and do not construct the mini-mode lock.
