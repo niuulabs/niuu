@@ -1,15 +1,17 @@
 # Forge integration — 16 September 2026
 
-Source: `xteo/forge/dev-integration` at `6512419c730a14de117b438028beede00486e8e4`.
+Source: `xteo/forge/dev-integration` at `45ea08f69bca5fb8c63ed2ef4d98bcf707aa2029`.
 Target base: `niuulabs/dev` at `242603e00ed55cdd2d916d903c9bc1a154b98b70`.
 Integration branch: `codex/forge-integration-20260916`.
 
-This is a full branch merge. Source history has 200 commits absent by identity from
-target (193 non-merge, seven merges), including foundation work previously squash-merged
+This is a full branch merge. Source history has 201 commits absent by identity from
+target (194 non-merge, seven merges), including foundation work previously squash-merged
 into dev. The net changes were reconciled; those historical identities were not treated
-as 200 missing features. The original dirty dev checkout was left untouched.
+as 201 missing features. The original dirty dev checkout was left untouched.
 
-The [full source assessment](forge-source-assessment-20260916.md) includes the 200-commit ledger.
+The [full source assessment](forge-source-assessment-20260916.md) includes the original
+200-commit ledger. A final upstream refresh adds `45ea08f69`: single-key tmux
+controls now survive the real broker boundary, with nine regression cases.
 
 ## Included work
 
@@ -129,3 +131,16 @@ renders are evidence of wiring, not proof of a deployed end-to-end model turn. T
 PI probe covered RPC startup without credentials; the native Muse check covered startup
 and resume without a model turn. All three production images were rebuilt locally; they have not been published or deployed.
 Linux amd64 artifacts are pinned but were not built on this arm64 host.
+
+
+## Release gate corrections
+
+CI now uses the declared Python 3.12 minimum. Stability fixtures provide a completed
+setup state and select Advanced mode; the database-free restart fixture also replaces
+development identity seeding. All five browser cases and four Linux API restart cases
+passed locally; the complete Forge Stability workflow then passed in CI.
+
+Preview cache directory names now hash session identifiers as well as tool identifiers,
+so filesystem containment does not rely on REST validation. Recovery logs sanitize
+identifiers and coerce numeric fields. All 59 focused cache/archive/conversation tests
+passed, including traversal inputs.
