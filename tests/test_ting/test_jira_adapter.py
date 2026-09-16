@@ -148,9 +148,7 @@ async def test_project_outside_scope_is_rejected_after_id_resolution() -> None:
         ("Done", "done", "completed"),
     ],
 )
-def test_status_type_uses_ting_vocabulary(
-    name: str, category: str, expected: str
-) -> None:
+def test_status_type_uses_ting_vocabulary(name: str, category: str, expected: str) -> None:
     status = {"name": name, "statusCategory": {"key": category}}
 
     assert JiraTrackerAdapter._status_type(status) == expected

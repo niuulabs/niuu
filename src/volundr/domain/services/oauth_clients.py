@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from niuu.ports.credentials import OAuthApplicationStorePort
 from volundr.domain.models import SecretType
 from volundr.domain.ports import CredentialStorePort
 from volundr.domain.services.integration_registry import IntegrationRegistry
@@ -87,8 +88,10 @@ class OAuthClientRegistry:
         credential_store: CredentialStorePort,
         integration_registry: IntegrationRegistry,
         configured: dict[str, OAuthClient] | None = None,
+        application_store: OAuthApplicationStorePort | None = None,
     ) -> None:
         self._store = credential_store
+        self._application_store = application_store
         self._registry = integration_registry
         self._configured: dict[tuple[str, str], OAuthClient] = {
             (slug, DEFAULT_APP): OAuthClient(
@@ -121,6 +124,8 @@ class OAuthClientRegistry:
                 app=app,
                 base_url=values.get("base_url", ""),
             )
+        for client in {**self._configured, **registered}.values():
+            await self._provision(client)
         self._registered = registered
 
     def get(self, slug: str, app: str = DEFAULT_APP) -> OAuthClient | None:
@@ -211,6 +216,7 @@ class OAuthClientRegistry:
             app=app,
             base_url=base_url,
         )
+        await self._provision(client)
         await self._store.store(
             APP_REGISTRY_OWNER_TYPE,
             APP_REGISTRY_OWNER_ID,
@@ -227,6 +233,21 @@ class OAuthClientRegistry:
         # The slug and app name come from the request; the log names neither.
         logger.info("OAuth application registered; %d registered now", len(self._registered))
         return client
+
+    async def _provision(self, client: OAuthClient) -> None:
+        if self._application_store is None:
+            return
+        definition = self._registry.get_definition(client.slug)
+        if definition is None or definition.oauth is None:
+            raise OAuthClientError("OAuth application has no configured provider endpoints")
+        await self._application_store.configure_oauth_application(
+            slug=client.slug,
+            app=client.app,
+            client_id=client.client_id,
+            client_secret=client.client_secret,
+            authorize_url=client.endpoint(definition.oauth.authorize_url),
+            token_url=client.endpoint(definition.oauth.token_url),
+        )
 
     async def remove(self, slug: str, app: str = DEFAULT_APP) -> None:
         app = app or DEFAULT_APP

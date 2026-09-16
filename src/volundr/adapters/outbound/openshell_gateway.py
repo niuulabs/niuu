@@ -36,6 +36,7 @@ from openshell._proto import datamodel_pb2, openshell_pb2, openshell_pb2_grpc, s
 
 from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
 from niuu.domain.models import Principal
+from niuu.domain.oauth_credentials import OAUTH_ENGINE
 from niuu.domain.services.token_scope import (
     OPENSHELL_RESIDENT_TOKEN_USE,
     OPENSHELL_SESSION_TOKEN_USE,
@@ -2247,6 +2248,12 @@ class OpenShellGatewayPodManager(
 
         if self._credential_store is None:
             raise ValueError("credential store is unavailable")
+        stored = await self._credential_store.get("user", workload.owner_id, credential_name)
+        if stored and stored.metadata.get("renewal_owner") == OAUTH_ENGINE:
+            if stored.metadata.get("tenant_id") != workload.tenant_id:
+                raise ValueError("OAuth credential does not belong to this workload tenant")
+            if credential_field != stored.metadata.get("oauth_token_field"):
+                raise ValueError("OAuth credential grants may expose only the access token")
         values = await self._credential_store.get_value("user", workload.owner_id, credential_name)
         value = values.get(credential_field) if values else None
         if not value or "\x00" in value or "\r" in value or "\n" in value:
@@ -2254,7 +2261,16 @@ class OpenShellGatewayPodManager(
         basic_username = str(config.get("volundr_basic_auth_username") or "")
         if basic_username:
             value = "Basic " + base64.b64encode(f"{basic_username}:{value}".encode()).decode()
-        return OpenShellCredentialGrantToken(access_token=value)
+        token = OpenShellCredentialGrantToken(access_token=value)
+        if values and values.get("expires_at"):
+            expiry = datetime.fromisoformat(values["expires_at"])
+            if expiry.tzinfo is None:
+                raise ValueError("OAuth credential expiry must include a timezone")
+            remaining = int((expiry - datetime.now(UTC)).total_seconds())
+            if remaining <= 0:
+                raise ValueError("OAuth credential expired; reconnect the integration")
+            token = replace(token, expires_in=min(token.expires_in, remaining))
+        return token
 
     def _issue_platform_token(
         self,
@@ -2458,6 +2474,15 @@ class OpenShellGatewayPodManager(
             raise RuntimeError(
                 f"Credential {credential_name!r} not found for OpenShell session launch"
             )
+        if stored.metadata.get("renewal_owner") == OAUTH_ENGINE:
+            if stored.metadata.get("tenant_id") != subject.tenant_id:
+                raise RuntimeError("OAuth credential does not belong to this workload tenant")
+            if (
+                file_mappings
+                or mapping.get("materializeEnvironment")
+                or mapping.get("materialize_environment")
+            ):
+                raise RuntimeError("Managed OAuth credentials require dynamic provider injection")
         requested_fields = set(env_mappings.values()) | set(file_mappings.values())
         missing_fields = sorted(requested_fields - set(stored.keys))
         if missing_fields:

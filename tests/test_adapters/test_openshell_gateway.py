@@ -2465,10 +2465,12 @@ def test_credential_file_path_rejects_escape(monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("managed", [False, True])
 @pytest.mark.parametrize("basic_username", ["", "x-access-token"])
 async def test_credential_grant_binds_svid_sandbox_provider_session_and_openbao(
     monkeypatch: pytest.MonkeyPatch,
     basic_username: str,
+    managed: bool,
 ) -> None:
     adapter = _import_adapter(monkeypatch)
     session = _session()
@@ -2502,9 +2504,24 @@ async def test_credential_grant_binds_svid_sandbox_provider_session_and_openbao(
     client.grant_profile = types.SimpleNamespace(credentials=[Credential()])
     manager = adapter.OpenShellGatewayPodManager(client=client)
     manager.set_session_repository(_FakeSessionRepository(session))
-    manager.set_credential_store(
-        _FakeCredentialStore({"openai-cred": {"api_key": "sk-from-openbao"}})
-    )
+    store = _FakeCredentialStore({"openai-cred": {"api_key": "sk-from-openbao"}})
+    if managed:
+        from datetime import UTC, datetime, timedelta
+        from unittest.mock import AsyncMock
+
+        store.values["openai-cred"]["expires_at"] = (
+            datetime.now(UTC) + timedelta(seconds=120)
+        ).isoformat()
+        store.get = AsyncMock(
+            return_value=types.SimpleNamespace(
+                metadata={
+                    "renewal_owner": "openbao_oauthapp",
+                    "tenant_id": session.tenant_id,
+                    "oauth_token_field": "api_key",
+                }
+            )
+        )
+    manager.set_credential_store(store)
 
     class Verifier:
         async def verify(self, _token: str):
@@ -2524,7 +2541,19 @@ async def test_credential_grant_binds_svid_sandbox_provider_session_and_openbao(
     if basic_username:
         expected = "Basic " + base64.b64encode(f"{basic_username}:{expected}".encode()).decode()
     assert token.access_token == expected
-    assert token.expires_in == 300
+    if managed:
+        assert 0 < token.expires_in <= 120
+        store.get.return_value.metadata["tenant_id"] = "other-tenant"
+        with pytest.raises(ValueError, match="tenant"):
+            await manager.exchange_credential_grant(
+                client_assertion="signed-svid",
+                client_assertion_type=adapter.OAUTH_CLIENT_ASSERTION_TYPE,
+                grant_type="client_credentials",
+                audience=audience,
+                scope="",
+            )
+    else:
+        assert token.expires_in == 300
 
 
 @pytest.mark.asyncio

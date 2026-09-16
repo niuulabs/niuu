@@ -336,3 +336,14 @@ async def test_loop_runs_until_cancelled_and_survives_an_iteration_error() -> No
 
     assert service.refresh_due.call_count >= 3
     assert naps[:2] == [7, 7]
+
+
+async def test_legacy_refresher_never_reads_engine_managed_tokens(repo, store):
+    await _seed(repo, store, "gitlab", "gitlab-signin", expires_in=timedelta(seconds=0))
+    store.items[("user", "user-1", "gitlab-signin")]["metadata"]["renewal_owner"] = (
+        "openbao_oauthapp"
+    )
+    store.get_value = AsyncMock(side_effect=AssertionError("Engine owns renewal"))
+    report = await _service(repo, store).refresh_due()
+    assert report.refreshed == report.failed == []
+    store.get_value.assert_not_called()

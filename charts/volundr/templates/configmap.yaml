@@ -480,6 +480,7 @@ data:
 
     {{- if .Values.oauth }}
     oauth:
+      mini_mode_refresh_enabled: {{ .Values.oauth.miniModeRefreshEnabled }}
       redirect_base_url: {{ .Values.oauth.redirectBaseUrl | default "" | quote }}
       {{- if .Values.oauth.clients }}
       clients:

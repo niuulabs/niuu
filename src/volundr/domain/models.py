@@ -1043,11 +1043,22 @@ class MCPServerSpec:
     """
 
     name: str
-    command: str
+    command: str = ""
+    transport: str = "stdio"
+    url: str = ""
+    token_field: str = ""
+    auth_header: str = "Authorization"
+    auth_prefix: str = "Bearer "
     args: tuple[str, ...] = ()
     env_from_credentials: dict[str, str] = ()  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
+        if self.transport not in {"stdio", "http", "sse"}:
+            raise ValueError("Unsupported MCP transport")
+        if self.transport != "stdio" and not self.url.startswith("https://"):
+            raise ValueError("Remote integration MCP servers require an HTTPS URL")
+        if self.transport == "stdio" and self.token_field:
+            raise ValueError("MCP token_field requires an HTTP transport; use stdio env mappings")
         if not isinstance(self.args, tuple):
             object.__setattr__(self, "args", tuple(self.args))
         if not isinstance(self.env_from_credentials, dict):
@@ -1200,6 +1211,11 @@ class CredentialMapping:
     credential_name: str
     env_mappings: dict[str, str] = ()  # type: ignore[assignment]
     file_mappings: dict[str, str] = ()  # type: ignore[assignment]
+
+    oauth_tenant_id: str = ""
+    oauth_token_field: str = ""
+    oauth_token_documents: tuple[str, ...] = ()
+    provider: dict | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.env_mappings, dict):

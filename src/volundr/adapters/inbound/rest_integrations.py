@@ -14,6 +14,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from niuu.adapters.inbound.rest_integration_models import IntegrationResponse
 from niuu.domain.models import SecretType
+from niuu.domain.oauth_credentials import OAUTH_ENGINE, OAuthCredentialUnavailableError
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from volundr.adapters.inbound.auth import extract_principal
 from volundr.domain.models import (
@@ -535,15 +536,26 @@ def _build_integrations_router(
         metadata = credential.metadata
         expires_at = metadata.get("auth_expires_at")
         auth_state = str(metadata.get("auth_state") or "configured")
+        error_code = metadata.get("auth_error_code")
+        if metadata.get("renewal_owner") == OAUTH_ENGINE:
+            # Check on demand, under the existing authorized connection request.
+            # A vault outage must not be reported as a revoked user grant.
+            expires_at = None
+            try:
+                current = await credential_store.get_value(
+                    "user", connection.owner_id, connection.credential_name
+                )
+                expires_at = (current or {}).get("expires_at")
+            except OAuthCredentialUnavailableError as exc:
+                auth_state = "auth_required" if exc.reconnect else "unavailable"
+                error_code = "oauth_reconnect_required" if exc.reconnect else "oauth_unavailable"
         if expires_at and datetime.fromisoformat(str(expires_at)) <= datetime.now(UTC):
             auth_state = "auth_required"
         return IntegrationResponse.from_connection(
             connection,
             credential_status=auth_state,
             credential_expires_at=str(expires_at) if expires_at else None,
-            credential_error_code=(
-                str(metadata["auth_error_code"]) if metadata.get("auth_error_code") else None
-            ),
+            credential_error_code=str(error_code) if error_code else None,
             credential_status_updated_at=(
                 str(metadata["auth_state_updated_at"])
                 if metadata.get("auth_state_updated_at")
@@ -882,15 +894,31 @@ def _build_integrations_router(
                 secret_type=_secret_type_for_definition(definition),
                 data={str(key): str(value) for key, value in credential_data.items()},
                 metadata={
+                    **(
+                        credential_metadata
+                        if isinstance(credential_metadata, dict)
+                        else {"metadata": str(credential_metadata)}
+                    ),
                     "source": "integration",
                     "integration": definition.slug,
                     "integration_type": str(definition.integration_type),
                     "auth_type": definition.auth_type,
                     "auth_state": "active",
-                    **(
-                        credential_metadata
-                        if isinstance(credential_metadata, dict)
-                        else {"metadata": str(credential_metadata)}
+                    "tenant_id": principal.tenant_id,
+                    "oauth_app": str(data.config.get("oauth_app") or "default"),
+                    "oauth_token_field": (
+                        definition.credential_enrollment.credential_field
+                        if definition.credential_enrollment
+                        else next(
+                            (
+                                k
+                                for k, v in definition.oauth.token_field_mapping.items()
+                                if v == "access_token"
+                            ),
+                            "access_token",
+                        )
+                        if definition.oauth
+                        else "token"
                     ),
                 },
             )

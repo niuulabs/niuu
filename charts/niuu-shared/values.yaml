@@ -344,3 +344,7 @@ authorization:
   adapter: "identity.adapters.cedar.CedarAuthorizationAdapter"
   kwargs: {}
   secret_kwargs_env: {}
+
+# Provider OAuth refresh is owned by the configured credential store in clusters.
+oauth:
+  miniModeRefreshEnabled: false

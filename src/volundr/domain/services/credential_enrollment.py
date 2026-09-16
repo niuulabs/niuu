@@ -91,6 +91,8 @@ class CredentialEnrollmentService:
         )
         active = await self._repository.find_active(connection.id)
         if active is not None:
+            if active.tenant_id != principal.tenant_id:
+                raise CredentialEnrollmentError("Credential enrollment not found")
             return active
 
         now = datetime.now(UTC)
@@ -156,7 +158,11 @@ class CredentialEnrollmentService:
 
     async def get(self, enrollment_id: UUID, principal: Principal) -> CredentialEnrollment:
         enrollment = await self._repository.get(enrollment_id)
-        if enrollment is None or enrollment.owner_id != principal.user_id:
+        if (
+            enrollment is None
+            or enrollment.owner_id != principal.user_id
+            or enrollment.tenant_id != principal.tenant_id
+        ):
             raise CredentialEnrollmentError("Credential enrollment not found")
         if enrollment.state not in {
             CredentialEnrollmentState.PENDING,
@@ -207,16 +213,23 @@ class CredentialEnrollmentService:
                     enrollment.owner_id,
                     enrollment.credential_name,
                 )
-                existing_values = await self._credential_store.get_value(
-                    "user",
-                    enrollment.owner_id,
-                    enrollment.credential_name,
+                existing_values = (
+                    {}
+                    if stored and stored.metadata.get("renewal_owner")
+                    else await self._credential_store.get_value(
+                        "user",
+                        enrollment.owner_id,
+                        enrollment.credential_name,
+                    )
                 )
                 updated_values = dict(existing_values or {})
                 updated_values.update(poll.credential_data)
                 metadata = dict(stored.metadata) if stored is not None else {}
                 metadata.update(
                     {
+                        "tenant_id": enrollment.tenant_id,
+                        "oauth_app": str(connection.config.get("oauth_app") or DEFAULT_APP),
+                        "oauth_token_field": spec.credential_field,
                         "source": "credential_enrollment",
                         "integration": enrollment.provider_slug,
                         "auth_type": definition.auth_type,
@@ -271,7 +284,11 @@ class CredentialEnrollmentService:
 
     async def cancel(self, enrollment_id: UUID, principal: Principal) -> CredentialEnrollment:
         enrollment = await self._repository.get(enrollment_id)
-        if enrollment is None or enrollment.owner_id != principal.user_id:
+        if (
+            enrollment is None
+            or enrollment.owner_id != principal.user_id
+            or enrollment.tenant_id != principal.tenant_id
+        ):
             raise CredentialEnrollmentError("Credential enrollment not found")
         if enrollment.state in {
             CredentialEnrollmentState.PENDING,
@@ -350,8 +367,10 @@ class CredentialEnrollmentService:
                 or connection.slug != slug
             ):
                 raise CredentialEnrollmentError("Integration connection not found")
+            await self._check_credential_tenant(principal, connection.credential_name)
             return connection
 
+        await self._check_credential_tenant(principal, credential_name)
         # One connection per account: the same slug with another credential
         # name is a second account, never the first one signed in again.
         existing = await self._integration_repository.list_connections(principal.user_id)
@@ -389,6 +408,15 @@ class CredentialEnrollmentService:
         )
         return await self._integration_repository.save_connection(connection)
 
+    async def _check_credential_tenant(self, principal: Principal, name: str) -> None:
+        stored = await self._credential_store.get("user", principal.user_id, name)
+        if (
+            stored
+            and stored.metadata.get("tenant_id")
+            and stored.metadata["tenant_id"] != principal.tenant_id
+        ):
+            raise CredentialEnrollmentError("Integration connection not found")
+
     async def _mark_credential_state(
         self,
         connection: IntegrationConnection,
@@ -401,10 +429,14 @@ class CredentialEnrollmentService:
             connection.owner_id,
             connection.credential_name,
         )
-        values = await self._credential_store.get_value(
-            "user",
-            connection.owner_id,
-            connection.credential_name,
+        values = (
+            {}
+            if stored and stored.metadata.get("renewal_owner")
+            else await self._credential_store.get_value(
+                "user",
+                connection.owner_id,
+                connection.credential_name,
+            )
         )
         metadata = dict(stored.metadata) if stored is not None else {}
         definition = self._integration_registry.get_definition(connection.slug)
