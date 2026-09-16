@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
+from niuu.ports.credentials import CredentialRefreshLockPort
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class, resolve_secret_kwargs
 from volundr.config import Settings
@@ -52,6 +53,7 @@ def _create_codex_credential_broker(
     settings: Settings,
     *,
     credential_store: CredentialStorePort,
+    refresh_lock: CredentialRefreshLockPort | None = None,
 ) -> CodexCredentialBrokerPort:
     """Create the configured central Codex token broker adapter."""
     config = settings.codex_credential_broker
@@ -59,6 +61,8 @@ def _create_codex_credential_broker(
     kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
     instance = cls(
         credential_store=credential_store,
+        mini_mode=settings.local_mounts.mini_mode,
+        refresh_lock=refresh_lock,
         **kwargs,
     )
     if not isinstance(instance, CodexCredentialBrokerPort):

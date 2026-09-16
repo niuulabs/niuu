@@ -122,6 +122,11 @@ async def test_metadata_update_does_not_reimport_refresh_token(store):
         (400, ["invalid_grant private-secret"], True),
         (403, [], False),
         (500, [], False),
+        (500, ["oauth2: invalid_grant private-secret"], True),
+        (500, ["401 Unauthorized: refresh_token_expired private-secret"], True),
+        (500, ["refresh_token_reused private-secret"], True),
+        (500, ["refresh_token_invalidated private-secret"], True),
+        (500, ["invalid_client private-secret"], False),
         (404, [], True),
     ],
 )
@@ -416,3 +421,22 @@ async def test_metadata_outage_is_reported_as_unavailable(store):
         await adapter.get("user", "alice", "codex")
     assert not exc.value.reconnect
     assert "private" not in str(exc.value)
+
+
+async def test_codex_import_reports_wrapped_provider_expiry_without_leaking(codex_store):
+    adapter, kv, _ = codex_store
+    original = adapter._request.side_effect
+
+    async def request(method, path, **kwargs):
+        if method == "post" and "/creds/" in path:
+            return httpx.Response(
+                500, json={"errors": ["401 Unauthorized: refresh_token_expired private-secret"]}
+            )
+        return await original(method, path, **kwargs)
+
+    adapter._request.side_effect = request
+    with pytest.raises(OAuthCredentialUnavailableError) as exc:
+        await enroll_codex(adapter)
+    assert exc.value.reconnect
+    assert "private-secret" not in str(exc.value)
+    assert not kv

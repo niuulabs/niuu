@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import AbstractAsyncContextManager
 
 from niuu.domain.models import SecretType, StoredCredential
 
@@ -61,6 +62,14 @@ class CredentialStorePort(ABC):
     @abstractmethod
     async def health_check(self) -> bool:
         """Check if the credential store backend is reachable."""
+
+
+class CredentialRefreshLockPort(ABC):
+    """Serialize mini-mode credential rotation across processes sharing a database."""
+
+    @abstractmethod
+    def hold(self, owner_type: str, owner_id: str, name: str) -> AbstractAsyncContextManager[None]:
+        """Hold a credential's lock for one refresh transaction."""
 
 
 class OAuthApplicationStorePort(ABC):

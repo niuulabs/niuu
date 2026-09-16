@@ -11,7 +11,7 @@ import yaml
 
 from niuu.adapters.openbao_oauth_credential_store import OpenBaoOAuthCredentialStore
 from niuu.domain.codex_credentials import CODEX_AUTH_FORMAT, parse_codex_auth_document
-from niuu.domain.oauth_credentials import OAUTH_ENGINE
+from niuu.domain.oauth_credentials import OAUTH_ENGINE, OAuthCredentialUnavailableError
 
 
 async def migrate(args):
@@ -56,6 +56,8 @@ def main():
     args = parser.parse_args()
     try:
         asyncio.run(migrate(args))
+    except OAuthCredentialUnavailableError as exc:
+        raise SystemExit(str(exc)) from None
     except Exception as exc:
         # Provider/transport errors must never dump credential-bearing bodies.
         raise SystemExit(

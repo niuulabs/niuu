@@ -279,7 +279,8 @@ async def test_import_rotation_parallel_readers_and_revocation(engine):
             ).status_code == 403
         state["revoked"] = True
         await asyncio.sleep(5)
-        with pytest.raises(CodexCredentialBrokerError):
+        with pytest.raises(CodexCredentialBrokerError) as exc:
             await broker.get_tokens(**kwargs)
+        assert exc.value.reconnect
     finally:
         await store.close()

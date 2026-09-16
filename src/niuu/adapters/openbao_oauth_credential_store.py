@@ -198,17 +198,7 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
         except httpx.RequestError:
             raise OAuthCredentialUnavailableError() from None
         if response.status_code >= 400:
-            # Do not reflect provider error bodies (which may contain secrets).
-            errors = []
-            if response.status_code == 400:
-                try:
-                    errors = response.json().get("errors", [])
-                except ValueError:
-                    pass
-            reconnect = response.status_code == 404 or any(
-                message == "token expired" or "invalid_grant" in str(message) for message in errors
-            )
-            raise OAuthCredentialUnavailableError(reconnect=reconnect)
+            raise self._unavailable(response)
         data = response.json().get("data", {})
         if not data.get("access_token"):
             raise OAuthCredentialUnavailableError(reconnect=True)
@@ -230,6 +220,26 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
         if data.get("expire_time"):
             result["expires_at"] = str(data["expire_time"])
         return result
+
+    @staticmethod
+    def _unavailable(response: httpx.Response) -> OAuthCredentialUnavailableError:
+        # oauthapp can wrap provider 401/invalid_grant responses in HTTP 500.
+        # Classify known grant errors without reflecting provider bodies.
+        try:
+            errors = str(response.json().get("errors", "")).lower()
+        except (ValueError, AttributeError):
+            errors = ""
+        reconnect = response.status_code == 404 or any(
+            marker in errors
+            for marker in (
+                "token expired",
+                "invalid_grant",
+                "refresh_token_expired",
+                "refresh_token_reused",
+                "refresh_token_invalidated",
+            )
+        )
+        return OAuthCredentialUnavailableError(reconnect=reconnect)
 
     @staticmethod
     def _check_codex_account(token: str, account_id: str) -> None:
@@ -263,7 +273,7 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
         if resume:
             response = await self._request("get", f"/v1/{path}")
             if response.status_code not in {200, 404}:
-                raise OAuthCredentialUnavailableError()
+                raise self._unavailable(response)
         if response is None or response.status_code == 404:
             response = await self._request(
                 "post",
@@ -276,10 +286,10 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
                 },
             )
             if response.status_code >= 400:
-                raise OAuthCredentialUnavailableError(reconnect=response.status_code == 400)
+                raise self._unavailable(response)
             response = await self._request("get", f"/v1/{path}")
         if response.status_code >= 400:
-            raise OAuthCredentialUnavailableError()
+            raise self._unavailable(response)
         grant = response.json().get("data", {})
         if grant.get("server") != self._codex_server:
             raise ValueError("Codex credential belongs to a different OAuth server")

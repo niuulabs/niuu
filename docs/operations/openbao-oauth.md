@@ -174,7 +174,7 @@ runtime helpers and mini-mode gating; they do not replace this deployment check.
 ## Codex subscription migration
 
 Codex subscription refresh is delegated to the same engine. The token delivery
-endpoint remains, but no application process exchanges the provider refresh token.
+endpoint remains, but the production broker never exchanges the provider refresh token.
 New device-login enrollment imports its nested `auth.json` grant and retains account
 metadata and unrelated configuration in KV. Session responses contain no refresh or
 ID token. Tenant membership and credential ownership are checked before grant reads.
@@ -214,3 +214,10 @@ require reconnection; transient engine failures return HTTP 503. `oauthapp` v3.4
 has no force-refresh API: a 401 retry receives a newly rotated token only if the
 engine has rotated it already, otherwise reconnect is required. The legacy mini-mode
 scanner cannot renew managed Codex grants and is not needed for this path.
+
+Docker mini mode retains an explicitly selected `MiniModeCodexCredentialBroker`
+for file-backed credentials. It is guarded by `local_mounts.mini_mode`, uses the
+existing database advisory lock, and rejects engine-managed grants. This preserves
+local compatibility without adding a production refresh fallback. Its on-demand
+refresh is separate from the optional mini-mode integration scan; see the published
+[security guide](https://docs.niuu.cloud/operations/security-and-permissions/).

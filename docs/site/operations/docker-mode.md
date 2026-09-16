@@ -262,7 +262,7 @@ can require signing in again:
 | Provider | Token lifetime | Who renews it |
 |---|---|---|
 | Claude Code (subscription) | About a year | Sign in again from the same row when the wizard shows *Token expired*. |
-| OpenAI Codex (ChatGPT) | Hours | Brokered sessions require an OpenBao-managed grant; the engine refreshes it and the broker delivers access tokens. Host-authenticated mini-mode sessions use their local Codex login. |
+| OpenAI Codex (ChatGPT) | Hours | Docker mini mode uses its explicit on-demand mini-mode broker for file-backed grants. OpenBao-managed deployments use engine renewal; host-native mini mode uses the local Codex login. |
 | Grok Build | 7 days, no refresh token | Sign in again from the same row when the wizard shows *Token expired*. The file is mounted read-only at `~/.grok/auth.json`; the CLI hot-reloads it, so a new sign-in reaches running sessions on their next start. |
 | GitHub (App sign-in) | 8 hours when the app issues expiring tokens, otherwise unlimited | OpenBao for managed grants; the optional mini-mode refresher for unmanaged grants. Add `docker.sign_in_client_secrets.github` for refresh, or turn off *Expire user authorization tokens* on the app. |
 | GitLab (device sign-in) | 2 hours | OpenBao for managed grants; the optional mini-mode refresher for unmanaged grants, with the public client id alone. |
