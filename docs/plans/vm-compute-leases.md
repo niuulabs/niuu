@@ -89,8 +89,14 @@ restore into a replacement VM, and reconnection after graceful controller restar
 See [Forge runtime evidence](evidence/harvester-forge-proof-2026-09-16.json) for
 cleanup results and the limits of this proof.
 
+Follow-up crash recovery now supervises SSH lifetime through a controller-owned
+pipe and persists runtime-start completion. Reconciliation resumes interrupted
+startup in a tracked background task; failures retain capacity and remain visible.
+Live SIGKILL tests recovered both provisioning and running sessions on the same
+allocation. See [crash-recovery evidence](evidence/harvester-crash-recovery-2026-09-16.json).
+
 Remaining plan work includes production workload identity/token renewal, model
-execution proof, unattended recovery (including abrupt controller death), and
+execution proof, unattended inventory recovery and durable retry deadlines, and
 warm-pool reset/reuse. The local proof uses the existing development identity
 adapter and does not establish production end-user authentication.
 

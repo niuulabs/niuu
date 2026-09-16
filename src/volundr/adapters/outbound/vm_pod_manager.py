@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from uuid import UUID
 
 from niuu.ports.session_proxy import SessionProxyTarget
@@ -17,6 +18,8 @@ from volundr.domain.models import Session, SessionSpec, SessionStatus
 from volundr.domain.ports import PodManager, PodStartResult, SessionCapacity
 from volundr.domain.services.compute_leases import ComputeLeaseService
 from volundr.domain.vm_runtime import VmRuntime, VmRuntimeUnavailableError
+
+logger = logging.getLogger(__name__)
 
 
 class VmPodManager(PodManager):
@@ -49,6 +52,7 @@ class VmPodManager(PodManager):
         self._runtime: VmRuntime | None = None
         self._defaults = MachineBootstrap()
         self._locks: dict[UUID, asyncio.Lock] = {}
+        self._recoveries: dict[UUID, asyncio.Task] = {}
 
     def configure_compute(
         self,
@@ -117,19 +121,9 @@ class VmPodManager(PodManager):
                         and lease.machine.addresses
                     ):
                         try:
-                            async with repository.operation(lease.id):
-                                lease = await repository.get(lease.id)
-                                if lease is None or lease.state not in {
-                                    LeaseState.READY,
-                                    LeaseState.BUSY,
-                                }:
-                                    raise RuntimeError("VM claim changed before runtime startup")
-                                await runtime.prepare(lease, bootstrap)
-                                lease = lease.model_copy(update={"runtime_data_started": True})
-                                await repository.save(lease)
-                                await runtime.start(lease, bootstrap)
+                            await self._start_runtime(lease.id, bootstrap)
                             break
-                        except VmRuntimeUnavailableError:
+                        except (VmRuntimeUnavailableError, ComputeLeaseBusyError):
                             pass  # Retry the same pinned guest while SSH finishes booting.
                     await asyncio.sleep(self._poll)
             return PodStartResult(
@@ -137,6 +131,45 @@ class VmPodManager(PodManager):
                 code_endpoint=None,
                 pod_name=str(lease.id),
             )
+
+    async def _start_runtime(self, lease_id: UUID, bootstrap: MachineBootstrap) -> None:
+        _, repository, runtime = self._configured()
+        async with repository.operation(lease_id):
+            lease = await repository.get(lease_id)
+            if lease is None or lease.state not in {LeaseState.READY, LeaseState.BUSY}:
+                raise RuntimeError("VM claim changed before runtime startup")
+            try:
+                async with asyncio.timeout(self._provisioning_timeout):
+                    await runtime.prepare(lease, bootstrap)
+                    lease = lease.model_copy(update={"runtime_data_started": True})
+                    await repository.save(lease)
+                    await runtime.start(lease, bootstrap)
+                    await repository.save(lease.model_copy(update={"runtime_started": True}))
+            except VmRuntimeUnavailableError:
+                raise
+            except Exception:
+                await repository.save(
+                    lease.model_copy(
+                        update={
+                            "state": LeaseState.FAILED,
+                            "error": "Runtime startup failed; inspect guest and stop session",
+                        }
+                    )
+                )
+                raise
+
+    async def _recover_runtime(self, lease_id: UUID, bootstrap: MachineBootstrap) -> None:
+        try:
+            await self._start_runtime(lease_id, bootstrap)
+        except (VmRuntimeUnavailableError, ComputeLeaseBusyError):
+            # Booting/busy claims are retried by the next reconciliation.
+            return
+        except Exception:
+            # _start_runtime persists failure while holding the claim lock.
+            # Do not log exception data, which may include adapter credentials.
+            logger.error("VM runtime recovery failed for allocation %s", lease_id)
+        finally:
+            self._recoveries.pop(lease_id, None)
 
     async def session_proxy_target(self, session: Session) -> SessionProxyTarget | None:
         service, repository, runtime = self._configured()
@@ -165,7 +198,17 @@ class VmPodManager(PodManager):
             return SessionStatus.PROVISIONING
         if not lease.machine or not lease.machine.addresses:
             return SessionStatus.PROVISIONING
-        if not await runtime.ready(lease, await service.bootstrap_for(lease)):
+        bootstrap = await service.bootstrap_for(lease)
+        if not lease.runtime_started:
+            # A controller can die after allocation or any guest startup step.
+            # Replay the persisted bootstrap under the same claim lock; start is
+            # idempotent and never restores over an initialized allocation.
+            if lease.id not in self._recoveries:
+                self._recoveries[lease.id] = asyncio.create_task(
+                    self._recover_runtime(lease.id, bootstrap)
+                )
+            return SessionStatus.PROVISIONING
+        if not await runtime.ready(lease, bootstrap):
             return SessionStatus.PROVISIONING
         await service.mark_busy(lease.id)
         return SessionStatus.RUNNING
@@ -187,6 +230,10 @@ class VmPodManager(PodManager):
             lease = await repository.active_for_session(self._pool_id, session.id)
             if lease is None:
                 return True
+            recovery = self._recoveries.get(lease.id)
+            if recovery is not None:
+                recovery.cancel()
+                await asyncio.gather(recovery, return_exceptions=True)
             async with asyncio.timeout(self._cleanup_timeout):
                 if lease.state != LeaseState.DRAINING:
                     # Archive failures deliberately prevent destructive VM cleanup.
@@ -208,5 +255,10 @@ class VmPodManager(PodManager):
             return True
 
     async def close(self) -> None:
+        pending = list(self._recoveries.values())
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         if self._runtime is not None:
             await self._runtime.close()

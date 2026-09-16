@@ -108,6 +108,7 @@ class ComputeLease(BaseModel):
     request_fingerprint: str
     bootstrap_ref: str | None = None
     runtime_data_started: bool = False
+    runtime_started: bool = False
     state: LeaseState = LeaseState.PROVISIONING
     machine: Machine | None = None
     error: str | None = None

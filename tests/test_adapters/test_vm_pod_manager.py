@@ -180,3 +180,72 @@ async def test_cancel_before_guest_control_releases_without_touching_archive(set
     assert await manager.stop(session)
     runtime.stop.assert_not_awaited()
     assert not provider.machines
+
+
+async def test_reconcile_resumes_cancelled_start_without_new_allocation(setup):
+    import asyncio
+
+    manager, service, repository, provider, runtime, store, session = setup
+    runtime.start.side_effect = asyncio.CancelledError
+    with pytest.raises(asyncio.CancelledError):
+        await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    lease = next(iter(repository.leases.values()))
+    assert lease.runtime_data_started and not lease.runtime_started
+    runtime.start.side_effect = None
+    recovered = VmPodManager(profile="small", pool_id="pool", max_machines=1)
+    recovered.configure_compute(
+        service, repository, runtime, MachineBootstrap(), pool_id="pool", max_machines=1
+    )
+    assert await recovered.status(session) == SessionStatus.PROVISIONING
+    await recovered._recoveries[lease.id]
+    assert await recovered.status(session) == SessionStatus.RUNNING
+    assert len(repository.leases) == len(provider.machines) == 1
+    assert repository.leases[lease.id].runtime_started
+    assert runtime.start.await_count == 2
+    await recovered.status(session)
+    assert runtime.start.await_count == 2
+
+
+async def test_background_recovery_failure_is_visible_and_retains_capacity(setup):
+    manager, service, repository, provider, runtime, store, session = setup
+    lease = await service.acquire(
+        session_id=session.id,
+        owner_id=session.owner_id,
+        tenant_id=session.tenant_id,
+        profile="small",
+        bootstrap=MachineBootstrap(),
+    )
+    runtime.start.side_effect = RuntimeError("sensitive remote error")
+    assert await manager.status(session) == SessionStatus.PROVISIONING
+    await manager._recoveries[lease.id]
+    assert await manager.status(session) == SessionStatus.FAILED
+    assert (await manager.capacity()).available == 0
+    assert "sensitive" not in repository.leases[lease.id].error
+    assert len(provider.machines) == 1
+
+
+async def test_stop_cancels_recovery_before_guest_data_is_touched(setup):
+    import asyncio
+
+    manager, service, repository, provider, runtime, store, session = setup
+    lease = await service.acquire(
+        session_id=session.id,
+        owner_id=session.owner_id,
+        tenant_id=session.tenant_id,
+        profile="small",
+        bootstrap=MachineBootstrap(),
+    )
+    entered = asyncio.Event()
+
+    async def booting(*args):
+        entered.set()
+        await asyncio.Future()
+
+    runtime.prepare.side_effect = booting
+    assert await manager.status(session) == SessionStatus.PROVISIONING
+    await entered.wait()
+    assert await manager.stop(session)
+    assert repository.leases[lease.id].state == LeaseState.RELEASED
+    runtime.stop.assert_not_awaited()
+    assert not manager._recoveries
+    assert not provider.machines

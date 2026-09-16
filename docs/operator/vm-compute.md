@@ -225,7 +225,17 @@ not continuous replication or protection against unexpected guest disk loss.
 Do not use the standalone infrastructure `release` command on a Forge allocation:
 it does not invoke runtime archiving.
 
-Graceful controller shutdown closes tunnels without deleting live VMs. A restarted
+Graceful controller shutdown closes tunnels without deleting live VMs. A tunnel
+supervisor also closes SSH when the controller dies abruptly: controller pipe EOF
+causes bounded SSH termination, releasing the guest reverse listener. A restarted
 controller reconstructs connections from durable leases and credential storage.
-Abrupt-process-death tunnel recovery and multi-controller runtime routing are
-not yet established; run one controller for this local-disk configuration.
+If runtime startup was interrupted, reconciliation replays the saved bootstrap
+under the allocation lock in a background task. Initialized workspace contents
+are not overwritten. Startup failures remain visible on the lease and retain
+capacity; stopping a session cancels its local recovery task before archiving.
+
+Live tests killed the controller both during provisioning and while Skuld was
+running, then recovered the same allocation and HTTP/WebSocket connectivity.
+Run one controller for this local-disk configuration. Multi-controller routing,
+continuous inventory recovery and durable provisioning retry deadlines remain
+unverified or unimplemented; this is not yet an unattended warm-pool deployment.

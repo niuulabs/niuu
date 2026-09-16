@@ -13,6 +13,7 @@ import json
 import os
 import shlex
 import socket
+import sys
 import tempfile
 from pathlib import Path
 
@@ -364,11 +365,18 @@ class SshContainerVmRuntime(VmRuntime):
                 "-R",
                 f"127.0.0.1:{self._guest_platform_port}:{self._platform_host}:{self._platform_port}",
             ]
+            # EOF on this pipe also occurs after SIGKILL of the controller. The
+            # supervisor then reaps SSH, releasing the guest's reverse listener.
             process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-m",
+                "volundr.adapters.outbound.ssh_tunnel",
+                str(self._poll),
+                str(self._connect_timeout),
                 *argv[:-1],
                 *options,
                 argv[-1],
-                stdin=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
