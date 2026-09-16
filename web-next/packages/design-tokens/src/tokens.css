@@ -417,7 +417,11 @@ kbd {
   --brand-800: #1e40af;
   --brand-900: #1e3a5f;
   --color-brand: #6ba1f8;
-  --color-code-surface: #0b1120;
+  --color-code-surface: #080c16;
+  --color-panel-quiet: #0c111e;
+  --color-border-quiet: #1a2335;
+  --color-selection-surface: #101725;
+  --color-selection-edge: #344862;
   --color-sent-surface: #213050;
   --color-emphasis: #fdba74;
   --color-tool-agent: var(--brand-300);
@@ -428,7 +432,7 @@ kbd {
   --color-accent-on-fill: #ffffff;
   --shadow-sm: inset 0 1px 0 rgb(184 209 255 / 0.04), 0 2px 5px rgb(0 3 12 / 0.2);
   --shadow-md: inset 0 1px 0 rgb(184 209 255 / 0.06), 0 8px 24px rgb(0 3 12 / 0.28);
-  --shadow-lg: inset 0 1px 0 rgb(184 209 255 / 0.08), 0 24px 80px rgb(0 3 12 / 0.55);
+  --shadow-lg: 0 20px 60px rgb(0 3 12 / 0.4);
   --font-sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
   --ops-surface-1: var(--color-bg-secondary);
   --ops-surface-2: var(--color-bg-tertiary);

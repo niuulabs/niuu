@@ -497,3 +497,27 @@
   opacity: 1;
   vertical-align: middle;
 }
+
+[data-theme='xteo'] .niuu-chat-md-codeblock {
+  border-color: var(--color-border-quiet);
+  box-shadow: none;
+}
+[data-theme='xteo'] .niuu-chat-md-codeblock-header {
+  min-height: 34px;
+  padding: 2px 10px;
+  background: var(--color-panel-quiet);
+  border-bottom-color: var(--color-border-quiet);
+}
+[data-theme='xteo'] .niuu-chat-md-codeblock-pre {
+  padding: 20px 22px;
+}
+[data-theme='xteo'] .niuu-chat-md-codeblock-btn {
+  width: 28px;
+  height: 28px;
+}
+@media (pointer: coarse) {
+  [data-theme='xteo'] .niuu-chat-md-codeblock-btn {
+    width: 36px;
+    height: 36px;
+  }
+}

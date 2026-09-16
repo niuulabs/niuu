@@ -43,3 +43,12 @@
 .niuu-popover-arrow {
   fill: var(--color-border);
 }
+
+[data-theme='xteo'] .niuu-popover-content {
+  background: var(--color-panel-quiet);
+  border-color: var(--color-border-quiet);
+  box-shadow: var(--shadow-lg);
+}
+[data-theme='xteo'] .niuu-popover-arrow {
+  fill: var(--color-border-quiet);
+}

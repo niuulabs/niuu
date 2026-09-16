@@ -237,3 +237,14 @@
 .forge-resource-image-canvas img {
   max-width: none;
 }
+
+[data-theme='xteo'] .forge-resource-toolbar,
+[data-theme='xteo'] .forge-resource-document {
+  background: var(--color-panel-quiet);
+  border-color: var(--color-border-quiet);
+  box-shadow: none;
+}
+[data-theme='xteo'] .forge-resource-footer,
+[data-theme='xteo'] .forge-resource-modes {
+  border-color: var(--color-border-quiet);
+}

@@ -249,3 +249,24 @@
   min-height: 0;
   height: auto;
 }
+
+/* Quiet xTeo rows: selection is a left marker, without a horizontal frame. */
+[data-theme='xteo'] .forge-session-list {
+  background: var(--color-panel-quiet);
+}
+[data-theme='xteo'] .forge-session-row__select {
+  border-left-width: 3px;
+  border-bottom-color: transparent;
+}
+[data-theme='xteo'] .forge-session-row__select--selected {
+  background: var(--color-selection-surface);
+  border-color: transparent;
+  border-left-color: var(--color-selection-edge);
+  box-shadow: none;
+}
+[data-theme='xteo'] .forge-session-row__select:hover {
+  background: var(--color-selection-surface);
+}
+[data-theme='xteo'] .forge-session-row__actions {
+  background: var(--color-panel-quiet);
+}

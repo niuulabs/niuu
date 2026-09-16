@@ -222,14 +222,14 @@
 }
 
 [data-theme='xteo'] .niuu-chat-input-wrapper {
-  background: var(--color-bg-tertiary);
-  box-shadow: var(--shadow-md);
-  border-color: var(--color-border);
+  background: var(--color-panel-quiet);
+  box-shadow: none;
+  border-color: var(--color-border-quiet);
   padding: 14px 16px 12px;
   gap: 14px;
 }
 [data-theme='xteo'] .niuu-chat-input-wrapper:focus-within {
-  border-color: var(--color-brand);
+  border-color: var(--color-border-subtle);
 }
 [data-theme='xteo'] .niuu-chat-textarea {
   font-size: 15px;

@@ -122,3 +122,11 @@
 .niuu-dialog-body {
   padding: var(--space-5) var(--space-6) var(--space-6);
 }
+
+[data-theme='xteo'] .niuu-dialog-content {
+  border-color: var(--color-border-quiet);
+  box-shadow: var(--shadow-lg);
+}
+[data-theme='xteo'] .niuu-dialog-header {
+  border-bottom-color: var(--color-border-quiet);
+}

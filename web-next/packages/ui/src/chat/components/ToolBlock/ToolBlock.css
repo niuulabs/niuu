@@ -259,14 +259,40 @@
   padding: var(--space-2);
 }
 
-[data-theme='xteo'] .niuu-chat-tool-group {
-  box-shadow: var(--shadow-sm);
+[data-theme='xteo'] .niuu-chat-tool-group,
+[data-theme='xteo'] .niuu-chat-tool-block {
+  margin: 12px 0;
+  border-color: var(--color-border-quiet);
+  background: var(--color-code-surface);
+  box-shadow: none;
 }
-[data-theme='xteo'] .niuu-chat-tool-group-header {
-  padding: 10px 14px;
-  min-height: 42px;
-  background: var(--color-bg-tertiary);
+[data-theme='xteo'] .niuu-chat-tool-group-header,
+[data-theme='xteo'] .niuu-chat-tool-header {
+  padding: 5px 12px;
+  min-height: 32px;
+  background: var(--color-panel-quiet);
+  gap: 8px;
+}
+[data-theme='xteo'] .niuu-chat-tool-group-header:hover,
+[data-theme='xteo'] .niuu-chat-tool-header:hover {
+  background: var(--color-bg-secondary);
+}
+[data-theme='xteo'] .niuu-chat-tool-group-items {
+  padding: 12px;
   gap: 10px;
+  background: var(--color-code-surface);
+}
+[data-theme='xteo'] .niuu-chat-tool-group-items .niuu-chat-tool-block {
+  margin: 0;
+}
+[data-theme='xteo'] .niuu-chat-tool-detail {
+  padding: 18px 20px;
+  gap: 12px;
+  background: var(--color-code-surface);
+}
+[data-theme='xteo'] .niuu-chat-tool-output {
+  padding-top: 14px;
+  border-color: var(--color-border-quiet);
 }
 [data-theme='xteo'] .niuu-chat-tool-group-header .niuu-chat-tool-label {
   font-family: var(--font-sans);
@@ -278,5 +304,12 @@
   margin-left: auto;
   font-size: 11px;
   min-width: 22px;
-  height: 20px;
+  height: 18px;
+}
+
+@media (pointer: coarse) {
+  [data-theme='xteo'] .niuu-chat-tool-group-header,
+  [data-theme='xteo'] .niuu-chat-tool-header {
+    min-height: 36px;
+  }
 }
