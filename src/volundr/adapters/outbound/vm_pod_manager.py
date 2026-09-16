@@ -303,25 +303,37 @@ class VmPodManager(PodManager):
                 recovery.cancel()
                 await asyncio.gather(recovery, return_exceptions=True)
             async with asyncio.timeout(self._cleanup_timeout):
-                if lease.state != LeaseState.DRAINING:
-                    # Archive failures deliberately prevent destructive VM cleanup.
-                    async with repository.operation(lease.id):
-                        lease = await repository.get(lease.id)
-                        if lease is None:
-                            raise RuntimeError("VM claim disappeared during stop")
-                        if lease.state == LeaseState.RELEASED:
-                            return True
+                while True:
+                    lease = await repository.get(lease.id)
+                    if lease is None:
+                        raise RuntimeError("VM claim disappeared during stop")
+                    if lease.state == LeaseState.RELEASED:
+                        return True
+                    try:
                         if lease.state != LeaseState.DRAINING:
-                            lease = lease.model_copy(update={"stop_requested": True})
-                            await repository.save(lease)
-                            if lease.runtime_data_started:
-                                await runtime.stop(lease, await service.bootstrap_for(lease))
-                            lease = lease.model_copy(update={"state": LeaseState.DRAINING})
-                            await repository.save(lease)
-                    lease = await service.release(lease.id)
-                while lease.state != LeaseState.RELEASED:
+                            # Archive failures deliberately prevent destructive VM cleanup.
+                            async with repository.operation(lease.id):
+                                lease = await repository.get(lease.id)
+                                if lease is None:
+                                    raise RuntimeError("VM claim disappeared during stop")
+                                if lease.state == LeaseState.RELEASED:
+                                    return True
+                                if lease.state != LeaseState.DRAINING:
+                                    lease = lease.model_copy(update={"stop_requested": True})
+                                    await repository.save(lease)
+                                    if lease.runtime_data_started:
+                                        await runtime.stop(
+                                            lease, await service.bootstrap_for(lease)
+                                        )
+                                    lease = lease.model_copy(update={"state": LeaseState.DRAINING})
+                                    await repository.save(lease)
+                            lease = await service.release(lease.id)
+                        lease = await service.reconcile(lease.id)
+                    except ComputeLeaseBusyError:
+                        # Maintenance or another controller owns the operation.
+                        # Retry within the existing cleanup deadline.
+                        pass
                     await asyncio.sleep(self._poll)
-                    lease = await service.reconcile(lease.id)
             return True
 
     async def close(self) -> None:

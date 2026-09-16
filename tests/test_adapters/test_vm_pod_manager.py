@@ -1,5 +1,6 @@
 """VM lifecycle tests with explicit in-memory infrastructure ports."""
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -9,7 +10,7 @@ from niuu.adapters.memory_credential_store import MemoryCredentialStore
 from niuu.ports.session_proxy import SessionProxyTarget
 from tests.compute_fakes import LeaseRepository, Provider
 from volundr.adapters.outbound.vm_pod_manager import VmPodManager
-from volundr.domain.compute import LeaseState, MachineBootstrap, MachineState
+from volundr.domain.compute import ComputeLeaseBusyError, LeaseState, MachineBootstrap, MachineState
 from volundr.domain.models import PodSpecAdditions, Session, SessionSpec, SessionStatus
 from volundr.domain.services.compute_leases import ComputeLeaseService
 from volundr.domain.vm_runtime import VmRuntimeUnavailableError
@@ -286,3 +287,25 @@ async def test_manager_claims_standby_without_provisioning_another_machine(setup
     await pool.configure((await pool.policy()).model_copy(update={"paused": True}))
     assert (await manager.capacity()).available == 0
     assert manager.profile == "small"
+
+
+async def test_stop_retries_when_maintenance_owns_allocation(setup):
+    manager, _, repository, _, runtime, _, session = setup
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    operation = repository.operation
+    attempts = 0
+
+    @asynccontextmanager
+    async def contested(lease_id):
+        nonlocal attempts
+        attempts += 1
+        # Contend before archiving and again after stop persisted draining.
+        if attempts in {1, 3}:
+            raise ComputeLeaseBusyError("maintenance")
+        async with operation(lease_id):
+            yield
+
+    repository.operation = contested
+    assert await manager.stop(session)
+    runtime.stop.assert_awaited_once()
+    assert await manager.status(session) == SessionStatus.STOPPED
