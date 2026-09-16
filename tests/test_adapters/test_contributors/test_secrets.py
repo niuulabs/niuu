@@ -658,3 +658,36 @@ async def test_managed_oauth_projection_preflights_and_checks_scope(session, fai
     assert mapping.file_mappings == {mcp_token_path(connection.id): "token"}
     assert "private-access-token" not in repr(mapping)
     store.get_value.assert_awaited_once()
+
+
+async def test_openshell_managed_http_mcp_uses_dynamic_provider(session):
+    from types import SimpleNamespace
+
+    from niuu.domain.oauth_credentials import OAUTH_ENGINE, mcp_token_env
+
+    session.tenant_id = "tenant-a"
+    store = AsyncMock()
+    store.get.return_value = SimpleNamespace(
+        metadata={
+            "renewal_owner": OAUTH_ENGINE,
+            "tenant_id": "tenant-a",
+            "oauth_token_field": "token",
+        }
+    )
+    store.get_value.return_value = {"token": "private-access"}
+    spec = MCPServerSpec(
+        name="remote", transport="http", url="https://mcp.example.test/mcp", token_field="token"
+    )
+    c = SecretInjectionContributor(
+        credential_store=store, integration_registry=_registry([_definition(mcp_server=spec)])
+    )
+    result = await c.contribute(
+        session,
+        SessionContext(runtime_backend="openshell", integration_connections=(_connection(),)),
+    )
+    mapping = result.values["openshell"]["credentialMappings"][0]
+    assert mapping["envMappings"] == {mcp_token_env("conn-1"): "token"}
+    assert mapping["fileMappings"] == {}
+    assert mapping["provider"]["endpoints"][0]["host"] == "mcp.example.test"
+    assert mapping["provider"]["authStyle"] == "bearer"
+    assert "private-access" not in repr(result)

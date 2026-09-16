@@ -1215,6 +1215,7 @@ class CredentialMapping:
     oauth_tenant_id: str = ""
     oauth_token_field: str = ""
     oauth_token_documents: tuple[str, ...] = ()
+    provider: dict | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.env_mappings, dict):

@@ -32,7 +32,13 @@ def normalize_mcp_servers(raw_servers: object) -> list[dict[str, Any]]:
             entry["env"] = {str(k): str(v) for k, v in raw["env"].items()}
         if isinstance(raw.get("headers"), dict):
             entry["headers"] = {str(k): str(v) for k, v in raw["headers"].items()}
-        for key in ("credential_file", "credential_format", "auth_header", "auth_prefix"):
+        for key in (
+            "credential_file",
+            "credential_env",
+            "credential_format",
+            "auth_header",
+            "auth_prefix",
+        ):
             if key in raw:
                 entry[key] = str(raw[key])
         if raw.get("description"):
@@ -106,7 +112,7 @@ def build_codex_mcp_overrides(raw_servers: object) -> list[tuple[str, str]]:
         base = f"mcp_servers.{server['name']}"
         if server.get("url"):
             overrides.append((f"{base}.url", json.dumps(server["url"])))
-            if server.get("credential_file"):
+            if server.get("credential_file") or server.get("credential_env"):
                 overrides.append(
                     (f"{base}.http_headers_helper", json.dumps(_header_helper(server)))
                 )
@@ -131,8 +137,8 @@ def _header_helper(server: dict[str, Any]) -> str:
         "python3",
         "-m",
         "skuld.mcp_credentials",
-        "--file",
-        server["credential_file"],
+        "--env" if server.get("credential_env") else "--file",
+        server.get("credential_env") or server["credential_file"],
         "--header",
         server.get("auth_header", "Authorization"),
         "--prefix",
@@ -144,7 +150,7 @@ def _header_helper(server: dict[str, Any]) -> str:
 
 
 def _claude_auth(server: dict[str, Any]) -> dict[str, Any]:
-    if server.get("credential_file"):
+    if server.get("credential_file") or server.get("credential_env"):
         return {"headersHelper": _header_helper(server)}
     if server.get("headers"):
         return {"headers": server["headers"]}

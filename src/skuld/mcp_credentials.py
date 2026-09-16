@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,13 +26,21 @@ def read_headers(path: str, header: str, prefix: str, oauth: bool = False) -> di
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--file", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--file")
+    source.add_argument("--env")
     parser.add_argument("--header", default="Authorization")
     parser.add_argument("--prefix", default="Bearer ")
     parser.add_argument("--oauth", action="store_true")
     args = parser.parse_args()
     try:
-        headers = read_headers(args.file, args.header, args.prefix, args.oauth)
+        if args.env:
+            token = os.environ[args.env]
+            if not token or any(char in token + args.header + args.prefix for char in "\r\n"):
+                raise ValueError("MCP credential is malformed")
+            headers = {args.header: args.prefix + token}
+        else:
+            headers = read_headers(args.file, args.header, args.prefix, args.oauth)
     except (OSError, ValueError, KeyError, TypeError):
         print(
             "MCP credential unavailable; check injection or reconnect the integration",

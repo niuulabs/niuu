@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from niuu.domain.oauth_credentials import OAUTH_ENGINE, mcp_token_path
+from niuu.domain.oauth_credentials import OAUTH_ENGINE, mcp_token_env, mcp_token_path
 from volundr.domain.models import Session
 from volundr.domain.ports import (
     CredentialStorePort,
@@ -114,10 +114,13 @@ class IntegrationContributor(SessionContributor):
                 else:
                     server = {"name": spec.name, "type": spec.transport, "url": spec.url}
                     if spec.token_field:
-                        server["credential_file"] = mcp_token_path(conn.id)
+                        if context.runtime_backend == "openshell":
+                            server["credential_env"] = mcp_token_env(conn.id)
+                        else:
+                            server["credential_file"] = mcp_token_path(conn.id)
                         server["auth_header"] = spec.auth_header
                         server["auth_prefix"] = spec.auth_prefix
-                        if self._credential_store:
+                        if self._credential_store and context.runtime_backend != "openshell":
                             stored = await self._credential_store.get(
                                 "user", session.owner_id, conn.credential_name
                             )

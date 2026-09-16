@@ -32,3 +32,7 @@ class OAuthCredentialUnavailableError(RuntimeError):
 def oauth_application_name(slug: str, app: str) -> str:
     identity = json.dumps([slug, app], separators=(",", ":"))
     return "niuu-" + hashlib.sha256(identity.encode()).hexdigest()
+
+
+def mcp_token_env(connection_id: str) -> str:
+    return "NIUU_MCP_" + hashlib.sha256(connection_id.encode()).hexdigest().upper()

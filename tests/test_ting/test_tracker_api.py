@@ -617,18 +617,12 @@ class TestGetProject:
         second = MockTracker()
         first.bind_connection(connection_id="jira-a", provider="jira", name="Acme Jira")
         second.bind_connection(connection_id="jira-b", provider="jira", name="Beta Jira")
-        first.projects = [
-            TrackerProject("SHARED", "Acme", "", "started", "https://a", 0, 1)
-        ]
-        second.projects = [
-            TrackerProject("SHARED", "Beta", "", "started", "https://b", 0, 2)
-        ]
+        first.projects = [TrackerProject("SHARED", "Acme", "", "started", "https://a", 0, 1)]
+        second.projects = [TrackerProject("SHARED", "Beta", "", "started", "https://b", 0, 2)]
         multi_client = _build_multi_tracker_client([first, second])
 
         ambiguous = multi_client.get("/api/v1/tracker/projects/SHARED")
-        selected = multi_client.get(
-            "/api/v1/tracker/projects/SHARED?tracker_connection_id=jira-b"
-        )
+        selected = multi_client.get("/api/v1/tracker/projects/SHARED?tracker_connection_id=jira-b")
 
         assert ambiguous.status_code == 409
         assert selected.status_code == 200

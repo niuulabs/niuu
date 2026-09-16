@@ -90,3 +90,23 @@ def test_static_headers_are_preserved():
     assert ('mcp_servers.remote.http_headers."X-Key"', '"test"') in build_codex_mcp_overrides(
         config
     )
+
+
+def test_openshell_opaque_environment_credential(monkeypatch, capsys):
+    monkeypatch.setenv("NIUU_MCP_TEST", "opaque-provider-credential")
+    monkeypatch.setattr("sys.argv", ["helper", "--env", "NIUU_MCP_TEST"])
+    main()
+    assert json.loads(capsys.readouterr().out) == {
+        "Authorization": "Bearer opaque-provider-credential"
+    }
+    config = [
+        {"name": "remote", "url": "https://mcp.example.test", "credential_env": "NIUU_MCP_TEST"}
+    ]
+    helper = json.loads(build_claude_mcp_config(config))["mcpServers"]["remote"]["headersHelper"]
+    assert "--env NIUU_MCP_TEST" in helper
+    assert (
+        json.loads(
+            dict(build_codex_mcp_overrides(config))["mcp_servers.remote.http_headers_helper"]
+        )
+        == helper
+    )

@@ -131,8 +131,12 @@ MCP configurations continue unchanged.
 Renewable stdio MCPs with credentials in their environment are rejected at launch:
 a running process cannot pick up an updated environment. Use HTTP or a stdio server
 that reads a configured credential file on demand. File-aware stdio and non-MCP
-integrations remain responsible for reloading their own files. OpenShell projection
-is not supported for engine-managed grants and is rejected explicitly.
+integrations remain responsible for reloading their own files. OpenShell sessions use their existing SPIFFE-bound dynamic provider broker instead
+of Agent projection. The broker reads the current access token from the engine,
+checks the tenant and permitted token field, and caps its cache lifetime at the
+provider token expiry. HTTP MCP configs read the opaque provider environment
+credential; OpenShell supplies the real header for the selected endpoint. Managed
+static-file/materialized-environment projection remains unsupported on OpenShell.
 
 ## Rollout and recovery
 
