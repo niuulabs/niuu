@@ -40,7 +40,7 @@ def process_identity(pid: int) -> dict | None:
         if current[19] != fields[19]:
             raise OwnedProcessError("Process incarnation changed during identity inspection")
         return identity
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
 
 

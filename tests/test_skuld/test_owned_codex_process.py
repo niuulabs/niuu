@@ -16,6 +16,18 @@ from skuld.transports.codex_ws import CodexWebSocketTransport
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux process ownership")
 
 
+@pytest.mark.parametrize("error", [FileNotFoundError, ProcessLookupError])
+def test_process_identity_handles_exit_during_proc_read(monkeypatch, error):
+    monkeypatch.setattr(owned.Path, "read_text", MagicMock(side_effect=error()))
+    assert owned.process_identity(123) is None
+
+
+def test_process_identity_preserves_permission_errors(monkeypatch):
+    monkeypatch.setattr(owned.Path, "read_text", MagicMock(side_effect=PermissionError()))
+    with pytest.raises(PermissionError):
+        owned.process_identity(123)
+
+
 @pytest.fixture
 def lease(tmp_path, monkeypatch):
     manager = owned.OwnedCodexProcess("session-a", str(tmp_path), tmp_path / "state")
