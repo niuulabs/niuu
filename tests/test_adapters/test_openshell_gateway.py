@@ -2854,7 +2854,8 @@ def test_linear_api_key_uses_scoped_inspected_header_route():
     assert not getattr(endpoint, "allow_uninspected_credentials", False)
 
 
-def test_create_sandbox_wraps_storage_in_public_driver_envelope(monkeypatch):
+@pytest.mark.parametrize("driver", ["kubernetes", "docker"])
+def test_create_sandbox_wraps_storage_in_public_driver_envelope(monkeypatch, driver):
     from unittest.mock import Mock
 
     adapter = _import_adapter(monkeypatch)
@@ -2866,18 +2867,32 @@ def test_create_sandbox_wraps_storage_in_public_driver_envelope(monkeypatch):
         ),
     )
     monkeypatch.setattr(adapter, "_sandbox_from_proto", lambda raw: raw)
-    client = adapter.OpenShellGatewayClient(token_provider=Mock())
+    client = adapter.OpenShellGatewayClient(token_provider=Mock(), compute_driver=driver)
     client._stub = Mock()
     config = adapter._driver_config_from_values(
         {"persistence": {"existingClaim": "forge-workspace", "mountPath": "/sandbox/workspace"}}
     )
+    if driver == "docker":
+        config = {
+            "mounts": [
+                {
+                    "type": "bind",
+                    "source": "/data",
+                    "target": "/sandbox/workspace",
+                    "read_only": False,
+                }
+            ]
+        }
     client.create_sandbox(
         name="forge-test", image="sandbox:test", env={}, labels={}, driver_config=config
     )
     request = client._stub.CreateSandbox.call_args.args[0]
     envelope = request.spec.template.driver_config
-    assert set(envelope) == {"kubernetes"}
-    selected = envelope["kubernetes"]
+    assert set(envelope) == {driver}
+    selected = envelope[driver]
+    if driver == "docker":
+        assert selected == config
+        return
     assert selected["volumes"][0]["name"] == "forge-workspace"
     assert selected["volumes"][0]["persistent_volume_claim"]["claim_name"] == "forge-workspace"
     assert selected["containers"]["agent"]["volume_mounts"][0]["mount_path"] == "/sandbox/workspace"
@@ -3107,5 +3122,53 @@ async def test_peer_containers_reject_materialized_credentials_before_create(mon
                 values={"openshell": {"workloads": [{"command": ["python"]}]}},
                 pod_spec=PodSpecAdditions(),
             ),
+        )
+    assert client.created is None
+
+
+def test_gateway_waits_for_native_channel_readiness(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    calls = []
+    channel = object()
+    monkeypatch.setattr(
+        adapter.grpc,
+        "channel_ready_future",
+        lambda value: types.SimpleNamespace(
+            result=lambda *, timeout: calls.append((value, timeout))
+        ),
+        raising=False,
+    )
+    client = adapter.OpenShellGatewayClient.__new__(adapter.OpenShellGatewayClient)
+    client._channel = channel
+    client.wait_for_ready(7)
+    assert calls == [(channel, 7)]
+
+
+async def test_operator_driver_mounts_reach_sandbox_request(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    mounts = {
+        "mounts": [
+            {
+                "type": "bind",
+                "source": "/var/lib/session/workspace",
+                "target": "/sandbox/workspace",
+                "read_only": False,
+            }
+        ]
+    }
+    manager = adapter.OpenShellGatewayPodManager(client=client, driver_config=mounts)
+    await manager.start(_session(), SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    assert client.created["driver_config"] == mounts
+
+
+async def test_conflicting_operator_and_session_driver_options_are_rejected(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client, driver_config={"pod": {}})
+    with pytest.raises(ValueError, match="overlap"):
+        await manager.start(
+            _session(),
+            SessionSpec(values={"nodeSelector": {"pool": "one"}}, pod_spec=PodSpecAdditions()),
         )
     assert client.created is None

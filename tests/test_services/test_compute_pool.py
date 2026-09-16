@@ -51,7 +51,13 @@ async def test_warm_bind_preserves_identity_then_replaces_used_machine(setup):
         await pool.dispose(bound.id)
     async with repo.operation(bound.id):
         await repo.save(
-            bound.model_copy(update={"runtime_data_started": True, "stop_requested": True})
+            bound.model_copy(
+                update={
+                    "runtime_data_started": True,
+                    "runtime_started": True,
+                    "stop_requested": True,
+                }
+            )
         )
     await pool.maintain()
     runtime.stop.assert_awaited_once()
@@ -71,7 +77,13 @@ async def test_archive_failure_never_deletes_guest_and_retries_stop_intent(setup
     lease = await leases.acquire(session_id=uuid4(), owner_id="o", tenant_id="t", profile="small")
     async with repo.operation(lease.id):
         await repo.save(
-            lease.model_copy(update={"runtime_data_started": True, "stop_requested": True})
+            lease.model_copy(
+                update={
+                    "runtime_data_started": True,
+                    "runtime_started": True,
+                    "stop_requested": True,
+                }
+            )
         )
     runtime.stop.side_effect = RuntimeError("archive failed")
     with pytest.raises(RuntimeError, match="archive failed"):
@@ -187,3 +199,133 @@ async def test_profile_revision_change_retires_spares_but_preserves_bound_guests
     )
     assert replacement.profile_revision == "revision-2"
     assert "profile_revision" not in str(await pool.snapshot())
+
+
+async def test_reuse_preserves_machine_clears_binding_and_expires_idle(setup):
+    pool, leases, repo, provider, runtime, store = setup
+    runtime.supports_reuse = True
+    await pool.configure((await pool.policy()).model_copy(update={"reuse_policy": "reuse"}))
+    lease = await warm(setup)
+    async with repo.operation(lease.id):
+        bound = await leases.bind(lease, uuid4(), "one", "tenant", MachineBootstrap(), 120)
+        await repo.save(
+            bound.model_copy(
+                update={
+                    "runtime_data_started": True,
+                    "runtime_started": True,
+                    "stop_requested": True,
+                }
+            )
+        )
+    await pool.maintain()
+    idle = repo.leases[lease.id]
+    assert idle.state == LeaseState.IDLE
+    assert idle.session_id is None and idle.owner_id == "" and idle.tenant_id == ""
+    assert not idle.runtime_started and not idle.runtime_data_started and not idle.stop_requested
+    assert idle.machine == lease.machine and lease.id in provider.machines
+    runtime.stop.assert_awaited_once()
+    runtime.recycle.assert_awaited_once()
+    assert (
+        await store.get_value("compute", bound.bootstrap_owner, bound.session_bootstrap_ref) is None
+    )
+    # A different session claims exactly the same guest, without old credentials.
+    async with repo.operation(idle.id):
+        second = await leases.bind(idle, uuid4(), "two", "tenant", MachineBootstrap(), 120)
+        await repo.save(
+            second.model_copy(
+                update={
+                    "runtime_data_started": True,
+                    "runtime_started": True,
+                    "stop_requested": True,
+                }
+            )
+        )
+    await pool.maintain()
+    assert repo.leases[lease.id].state == LeaseState.IDLE
+    # Keep surplus reused capacity until idle expiry; do not immediately delete it.
+    await pool.configure((await pool.policy()).model_copy(update={"warm_min": 0}))
+    await pool.maintain()
+    assert lease.id in provider.machines
+    async with repo.operation(lease.id):
+        await repo.save(
+            repo.leases[lease.id].model_copy(
+                update={"idle_since": datetime.now(UTC) - timedelta(days=1)}
+            )
+        )
+    await pool.maintain()
+    assert repo.leases[lease.id].state == LeaseState.RELEASED
+    assert lease.id not in provider.machines
+
+
+async def test_failed_recycle_keeps_session_bound_until_retry(setup):
+    pool, leases, repo, provider, runtime, _ = setup
+    runtime.supports_reuse = True
+    await pool.configure((await pool.policy()).model_copy(update={"reuse_policy": "reuse"}))
+    lease = await warm(setup)
+    async with repo.operation(lease.id):
+        bound = await leases.bind(lease, uuid4(), "owner", "tenant", MachineBootstrap(), 120)
+        await repo.save(
+            bound.model_copy(
+                update={
+                    "runtime_data_started": True,
+                    "runtime_started": True,
+                    "stop_requested": True,
+                }
+            )
+        )
+    runtime.recycle.side_effect = RuntimeError("cleanup failed")
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        await pool.maintain()
+    assert repo.leases[lease.id].session_id == bound.session_id
+    assert repo.leases[lease.id].stop_requested
+    assert lease.id in provider.machines
+    runtime.recycle.side_effect = None
+    await pool.maintain()
+    assert repo.leases[lease.id].state == LeaseState.IDLE
+
+
+async def test_reuse_requires_runtime_capability(setup):
+    pool, _, _, _, runtime, _ = setup
+    runtime.supports_reuse = False
+    with pytest.raises(ValueError, match="does not support"):
+        await pool.configure((await pool.policy()).model_copy(update={"reuse_policy": "reuse"}))
+
+
+async def test_stale_stop_snapshot_cannot_stop_next_session_on_reused_vm(setup):
+    pool, leases, repo, _, runtime, _ = setup
+    runtime.supports_reuse = True
+    await pool.configure((await pool.policy()).model_copy(update={"reuse_policy": "reuse"}))
+    lease = await warm(setup)
+    async with repo.operation(lease.id):
+        first = await leases.bind(lease, uuid4(), "one", "tenant", MachineBootstrap(), 120)
+        stale = first.model_copy(
+            update={"runtime_data_started": True, "runtime_started": True, "stop_requested": True}
+        )
+        await repo.save(stale)
+    await pool.maintain()
+    async with repo.operation(lease.id):
+        second = await leases.bind(
+            repo.leases[lease.id], uuid4(), "two", "tenant", MachineBootstrap(), 120
+        )
+    runtime.stop.reset_mock()
+    await pool._maintain_lease(stale, await pool.policy())
+    runtime.stop.assert_not_called()
+    assert repo.leases[lease.id].session_id == second.session_id
+
+
+async def test_unstarted_allocation_can_be_deleted_without_bootstrap_secret(setup):
+    pool, leases, repo, provider, runtime, store = setup
+    bound = await leases.acquire(
+        session_id=uuid4(),
+        owner_id="owner",
+        tenant_id="tenant",
+        profile="small",
+        bootstrap=MachineBootstrap(),
+    )
+    await store.delete("compute", bound.bootstrap_owner, bound.bootstrap_ref)
+    async with repo.operation(bound.id):
+        await repo.save(bound.model_copy(update={"stop_requested": True}))
+    await pool.maintain()
+    assert repo.leases[bound.id].state == LeaseState.RELEASED
+    assert bound.id not in provider.machines
+    runtime.stop.assert_not_called()

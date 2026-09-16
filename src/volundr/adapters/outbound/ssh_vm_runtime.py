@@ -476,13 +476,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                 sock.bind(("127.0.0.1", 0))
                 port = sock.getsockname()[1]
             argv = self._ssh(lease, bootstrap)
-            options = [
-                "-N",
-                "-L",
-                f"127.0.0.1:{port}:127.0.0.1:{self._broker_port}",
-                "-R",
-                f"127.0.0.1:{self._guest_platform_port}:{self._platform_host}:{self._platform_port}",
-            ]
+            options = self._tunnel_options(port)
             # EOF on this pipe also occurs after SIGKILL of the controller. The
             # supervisor then reaps SSH, releasing the guest's reverse listener.
             process = await asyncio.create_subprocess_exec(
@@ -503,6 +497,15 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                 service_url=f"http://127.0.0.1:{port}", connect_host="127.0.0.1", connect_port=port
             )
 
+    def _tunnel_options(self, port: int) -> list[str]:
+        return [
+            "-N",
+            "-L",
+            f"127.0.0.1:{port}:127.0.0.1:{self._broker_port}",
+            "-R",
+            f"127.0.0.1:{self._guest_platform_port}:{self._platform_host}:{self._platform_port}",
+        ]
+
     async def prepare(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
         ssh = self._ssh(lease, bootstrap)
         # cloud-init finishes before Docker and the pinned host key are used.
@@ -520,6 +523,14 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             if f.path == _LAUNCH or f.path.startswith("/etc/niuu/session-secrets/")
         ]
         await self._run([*ssh, self._python(_SESSION_FILES)], data=json.dumps(files).encode())
+        await self._restore_data(lease, bootstrap)
+        await self.target(lease, bootstrap)
+        payload = json.loads(next(f.content for f in bootstrap.files if f.path == _LAUNCH))
+        payload["allocation_id"] = str(lease.id)
+        await self._run([*ssh, self._python(_START)], data=json.dumps(payload).encode())
+
+    async def _restore_data(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+        ssh = self._ssh(lease, bootstrap)
         archive = self._data / str(lease.session_id) / "session.tar"
         if archive.exists():
             with archive.open("rb") as src:
@@ -541,10 +552,6 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                     ),
                 ]
             )
-        await self.target(lease, bootstrap)
-        payload = json.loads(next(f.content for f in bootstrap.files if f.path == _LAUNCH))
-        payload["allocation_id"] = str(lease.id)
-        await self._run([*ssh, self._python(_START)], data=json.dumps(payload).encode())
 
     async def ready(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> bool:
         target = await self.target(lease, bootstrap)
@@ -565,6 +572,11 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             # Cancelled before storage restore: retain any previous local archive.
             await self._close_tunnel(str(lease.id))
             return
+        await self._archive_data(lease, bootstrap)
+        await self._close_tunnel(str(lease.id))
+
+    async def _archive_data(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+        ssh = self._ssh(lease, bootstrap)
         directory = self._data / str(lease.session_id or lease.id)
         fd, temporary = tempfile.mkstemp(prefix="session-", suffix=".tar", dir=directory)
         try:
@@ -595,7 +607,6 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             os.replace(temporary, directory / "session.tar")
         finally:
             Path(temporary).unlink(missing_ok=True)
-        await self._close_tunnel(str(lease.id))
 
     async def _close_tunnel(self, key: str) -> None:
         current = self._tunnels.pop(key, None)

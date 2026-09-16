@@ -51,11 +51,16 @@ class ComputePoolService:
         self.last_reconciled: datetime | None = None
 
     async def policy(self) -> ComputePoolPolicy:
-        return await self.repository.policy(self.pool_id, self.defaults)
+        policy = await self.repository.policy(self.pool_id, self.defaults)
+        if policy.reuse_policy == "reuse" and not self.runtime.supports_reuse:
+            raise ValueError("Configured runtime does not support in-place VM reuse")
+        return policy
 
     async def configure(self, policy: ComputePoolPolicy) -> ComputePoolPolicy:
         if policy.profile not in {profile.name for profile in await self.provider.profiles()}:
             raise ValueError("Select a machine profile configured by the provider adapter")
+        if policy.reuse_policy == "reuse" and not self.runtime.supports_reuse:
+            raise ValueError("Configured runtime does not support in-place VM reuse")
         await self.repository.set_policy(self.pool_id, policy)
         return policy
 
@@ -126,7 +131,7 @@ class ComputePoolService:
         # Retire surplus spares after policy reductions, without touching bound guests.
         spares = [lease for lease in leases if lease.state == LeaseState.IDLE]
         surplus = max(
-            len(spares) - policy.warm_min,
+            len(spares) - policy.warm_min if policy.reuse_policy == "replace" else 0,
             sum(lease.state != LeaseState.RELEASED for lease in leases) - policy.max_machines,
         )
         for spare in spares[: max(0, surplus)]:
@@ -181,13 +186,16 @@ class ComputePoolService:
         if lease.stop_requested and lease.state != LeaseState.RELEASED:
             async with self.repository.operation(lease.id):
                 current = await self.repository.get(lease.id)
-                if current is None or current.state in {LeaseState.RELEASED, LeaseState.DRAINING}:
+                if (
+                    current is None
+                    or not current.stop_requested
+                    or current.session_id != lease.session_id
+                    or current.state in {LeaseState.RELEASED, LeaseState.DRAINING}
+                ):
                     return
-                if current.runtime_data_started:
-                    await self.runtime.stop(current, await self.leases.bootstrap_for(current))
-                await self.repository.save(
-                    current.model_copy(update={"state": LeaseState.DRAINING})
-                )
+                current = await self.finish_stop(current)
+                if current.state == LeaseState.IDLE:
+                    return
             await self.leases.reconcile(lease.id)
             return
         if lease.session_id is not None or lease.state in {
@@ -240,6 +248,24 @@ class ComputePoolService:
                     }
                 )
             )
+
+    async def finish_stop(self, lease: ComputeLease) -> ComputeLease:
+        """Archive and reset or dispose, under the caller's allocation lock."""
+        if lease.runtime_data_started:
+            await self.runtime.stop(lease, await self.leases.bootstrap_for(lease))
+        policy = await self.policy()
+        if (
+            policy.reuse_policy == "reuse"
+            and not policy.drain
+            and lease.runtime_started
+            and lease.state in {LeaseState.READY, LeaseState.BUSY}
+            and await self.leases.compatible(lease)
+        ):
+            await self.runtime.recycle(lease, await self.leases.bootstrap_for(lease))
+            return await self.leases.return_idle(lease)
+        lease = lease.model_copy(update={"state": LeaseState.DRAINING})
+        await self.repository.save(lease)
+        return lease
 
     async def dispose(self, allocation_id: UUID) -> None:
         async with self.repository.operation(allocation_id):

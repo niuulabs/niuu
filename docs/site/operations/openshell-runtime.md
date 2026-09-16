@@ -10,7 +10,9 @@ OpenShell on a VM does not require installing Kubernetes inside that VM. The
 `OpenShellGatewayPodManager` name refers to Niuu's session lifecycle port; it does
 not select the gateway's compute driver.
 
-For a plain VM, install Docker and run the OpenShell gateway with
+For managed VM provisioning, reuse and automatic cleanup, configure
+`OpenShellVmRuntime` through the [VM compute lifecycle](../../operator/vm-compute.md#openshell-on-managed-vms).
+For an independently managed plain VM, install Docker and run the OpenShell gateway with
 `compute_driver = "docker"` under `[openshell.gateway]` in its version 2 TOML
 configuration. Configure `[openshell.drivers.docker]` with the sandbox image,
 matching supervisor image, Docker network and gateway callback endpoint. Connect
@@ -33,6 +35,7 @@ Configure these adapter kwargs in the Völundr service, or under
 | Field | Supply from your deployment |
 | --- | --- |
 | `gateway_endpoint` | Reachable gateway gRPC host and port |
+| `compute_driver` | Driver configuration envelope: `kubernetes` by default; select `docker` for Docker mounts |
 | `token_url` | OIDC client-credentials token endpoint |
 | `client_id` | Gateway machine-client identifier |
 | `sandbox_image` | Pinned image containing the required supervisor and session runtime |

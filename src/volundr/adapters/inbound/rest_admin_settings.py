@@ -163,6 +163,10 @@ def create_admin_settings_router(
             snapshot = await compute_pool.snapshot()
             policy = snapshot["policy"]
             labels = {
+                "reuse_policy": (
+                    "After session stop",
+                    "Reuse a cleaned guest or replace it with a fresh machine.",
+                ),
                 "profile": (
                     "Machine profile",
                     "Choose a configured preset; open Machine profiles to inspect its definition. "
@@ -182,7 +186,7 @@ def create_admin_settings_router(
                 ),
                 "idle_timeout_seconds": (
                     "Spare lifetime (seconds)",
-                    "Replace unused spare machines after this interval.",
+                    "Delete idle spares after this interval; replenish the configured minimum.",
                 ),
                 "provisioning_timeout_seconds": (
                     "Provisioning timeout (seconds)",
@@ -204,8 +208,8 @@ def create_admin_settings_router(
                     path="/admin/settings/compute",
                     description=(
                         f"Pool {compute_pool.pool_id}. "
-                        "Session files are archived before used machines are deleted. "
-                        "Ready spares are created as fresh machines."
+                        "Session files are archived before cleanup. "
+                        "The stop policy controls reuse or replacement of used machines."
                     ),
                     save_label="Save pool settings",
                     fields=[
@@ -219,9 +223,14 @@ def create_admin_settings_router(
                                 for p in snapshot["profiles"]
                             ]
                             if key == "profile"
+                            else [
+                                SettingsOptionSchema(label="Reuse cleaned VM", value="reuse"),
+                                SettingsOptionSchema(label="Replace VM", value="replace"),
+                            ]
+                            if key == "reuse_policy"
                             else None,
                             type="select"
-                            if key == "profile"
+                            if key in {"profile", "reuse_policy"}
                             else "boolean"
                             if isinstance(value, bool)
                             else "number"

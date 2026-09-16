@@ -1,0 +1,37 @@
+{
+  "date": "2026-09-16",
+  "provider": "Harvester",
+  "pool_managed": true,
+  "runtime": "OpenShell native Docker gateway",
+  "vm": {
+    "cpus": 2,
+    "memory_mib": 2048,
+    "max_machines": 1,
+    "allocation_id": "07b12108-dcde-40e8-8fc0-a940bc1d6a25",
+    "boot_id": "2a33c8a0-431d-4e61-b8ea-0468eac3607c",
+    "kubernetes_installed": false
+  },
+  "proof": {
+    "sessions": [
+      "34ef3fec-c9dd-4744-ba6b-94b5aa7884ad",
+      "9ee7c5d2-e7b9-400f-a839-fde21121a567"
+    ],
+    "real_codex_turns": 3,
+    "same_vm_and_boot_across_sessions": true,
+    "workspace_bind_mount_independently_verified": true,
+    "second_session_cannot_see_first_workspace": true,
+    "first_session_restores_workspace_and_codex_history": true,
+    "stop_removes_sandbox_and_guest_session_data": true,
+    "idle_expiry_removes_vm_and_owned_resources": true,
+    "idle_expiry_confirmation_seconds": 36.26,
+    "idle_proof_policy": {
+      "warm_min": 0,
+      "idle_timeout_seconds": 10
+    }
+  },
+  "limits": [
+    "Sequential sessions on one VM; no concurrent load test",
+    "Gateway OIDC authenticated; local UI uses development identity",
+    "Existing Spark credential broker used; SPIFFE mode not exercised"
+  ]
+}

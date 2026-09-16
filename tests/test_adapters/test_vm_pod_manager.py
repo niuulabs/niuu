@@ -52,7 +52,10 @@ def setup():
         bootstrap_store=store,
     )
     runtime = AsyncMock()
-    runtime.bootstrap = lambda session, spec, defaults: MachineBootstrap(commands=(("true",),))
+    runtime.machine_bootstrap = lambda defaults: defaults
+    runtime.session_bootstrap = lambda session, spec, defaults: MachineBootstrap(
+        commands=(("true",),)
+    )
     runtime.ready.return_value = True
     runtime.target.return_value = SessionProxyTarget("http://127.0.0.1:9000", "127.0.0.1", 9000)
     manager = VmPodManager(
@@ -78,7 +81,7 @@ async def test_start_proxy_stop_preserves_before_disposal_and_resumes(setup):
     assert (await manager.session_proxy_target(session)).connect_port == 9000
     assert "bootstrap" not in lease.model_dump_json().replace("bootstrap_ref", "").replace(
         "bootstrap_owner", ""
-    )
+    ).replace("session_bootstrap_ref", "")
     # Starting the same session uses its existing, persisted bootstrap and allocation.
     await manager.start(session, spec)
     assert len(repository.leases) == 1
@@ -130,7 +133,7 @@ async def test_restart_uses_bootstrap_store_and_enforces_owner(setup):
     with pytest.raises(ValueError, match="ownership"):
         await manager.start(session.model_copy(update={"owner_id": "other"}), spec)
     lease = next(iter(repository.leases.values()))
-    await store.delete("compute", lease.bootstrap_owner or "pool", lease.bootstrap_ref)
+    await store.delete("compute", lease.bootstrap_owner or "pool", lease.session_bootstrap_ref)
     with pytest.raises(RuntimeError, match="missing"):
         await manager.status(session)
 
@@ -318,3 +321,18 @@ async def test_stop_retries_when_maintenance_owns_allocation(setup):
     assert await manager.stop(session)
     runtime.stop.assert_awaited_once()
     assert await manager.status(session) == SessionStatus.STOPPED
+
+
+async def test_cold_machine_bootstrap_never_contains_session_content(setup):
+    manager, service, repository, _, runtime, _, session = setup
+    spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+    await manager.start(session, spec)
+    lease = next(iter(repository.leases.values()))
+    assert (await service.machine_bootstrap_for(lease)).commands == ()
+    assert (await service.bootstrap_for(lease)).commands == (("true",),)
+
+
+async def test_pending_background_start_is_not_reconciled_to_stopped(setup):
+    manager, _, _, _, _, _, session = setup
+    pending = session.model_copy(update={"status": SessionStatus.STARTING})
+    assert await manager.status(pending) == SessionStatus.STARTING

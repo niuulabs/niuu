@@ -1,5 +1,7 @@
 """Explicit configuration for generic VM allocation administration."""
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from niuu.config import DynamicAdapterConfig, HttpAuthAdapterConfig
@@ -19,6 +21,7 @@ class ComputeConfig(BaseModel):
     bootstrap: MachineBootstrap = Field(default_factory=MachineBootstrap)
     provisioning_timeout_seconds: float = Field(default=600, gt=0)
     cleanup_timeout_seconds: float = Field(default=300, gt=0)
+    reuse_policy: Literal["replace", "reuse"] = "replace"
     warm_min: int = Field(default=0, ge=0)
     max_provisioning: int = Field(default=1, gt=0)
     idle_timeout_seconds: float = Field(default=3600, gt=0)

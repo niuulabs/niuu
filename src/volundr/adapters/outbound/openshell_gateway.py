@@ -272,9 +272,11 @@ class OpenShellGatewayClient:
         *,
         endpoint: str = DEFAULT_GATEWAY_ENDPOINT,
         token_provider: ClientCredentialsTokenProvider,
+        compute_driver: str = "kubernetes",
         plaintext: bool = True,
         timeout: float = 30.0,
     ) -> None:
+        self._compute_driver = compute_driver
         self._endpoint = _endpoint_hostport(endpoint)
         self._token_provider = token_provider
         self._timeout = float(timeout)
@@ -290,6 +292,10 @@ class OpenShellGatewayClient:
     def close(self) -> None:
         self._channel.close()
         self._token_provider.close()
+
+    def wait_for_ready(self, timeout: float) -> None:
+        """Wait for the native channel after establishing a new guest tunnel."""
+        grpc.channel_ready_future(self._channel).result(timeout=timeout)
 
     def create_sandbox(
         self,
@@ -312,7 +318,7 @@ class OpenShellGatewayClient:
         if resources:
             template.resources.CopyFrom(_protobuf_struct(resources))
         if driver_config:
-            template.driver_config.CopyFrom(_protobuf_struct({"kubernetes": driver_config}))
+            template.driver_config.CopyFrom(_protobuf_struct({self._compute_driver: driver_config}))
         spec = openshell_pb2.SandboxSpec(
             environment=env,
             template=template,
@@ -792,6 +798,7 @@ class OpenShellGatewayPodManager(
         *,
         gateway_endpoint: str = DEFAULT_GATEWAY_ENDPOINT,
         gateway_public_url: str = "",
+        compute_driver: str = "kubernetes",
         token_url: str = DEFAULT_TOKEN_URL,
         client_id: str = DEFAULT_CLIENT_ID,
         client_secret: str = "",
@@ -824,6 +831,7 @@ class OpenShellGatewayPodManager(
         codex_auth_adapter: str = "skuld.codex_auth.VolundrCodexAuthProvider",
         codex_auth_kwargs: dict | None = None,
         sandbox_policy: dict[str, Any] | None = None,
+        driver_config: dict[str, Any] | None = None,
         client: OpenShellGatewayClient | None = None,
         **_extra: object,
     ) -> None:
@@ -837,6 +845,7 @@ class OpenShellGatewayPodManager(
         self._gateway_connect_host = gateway_host.strip("[]")
         self._gateway_connect_port = int(gateway_port)
         self._gateway_connect_secure = not plaintext
+        self._driver_config = deepcopy(driver_config or {})
         self._sandbox_image = sandbox_image
         self._sandbox_command = _normalize_command(sandbox_command) or DEFAULT_SANDBOX_COMMAND
         self._sandbox_workspace = sandbox_workspace
@@ -871,6 +880,7 @@ class OpenShellGatewayPodManager(
         )
         self._client = client or OpenShellGatewayClient(
             endpoint=gateway_endpoint,
+            compute_driver=compute_driver,
             token_provider=ClientCredentialsTokenProvider(
                 token_url=token_url,
                 client_id=client_id,
@@ -1304,6 +1314,9 @@ class OpenShellGatewayPodManager(
                 workload_start_file=workload_start_file,
                 workload_environment=env,
             )
+            if self._driver_config.keys() & driver_config.keys():
+                raise ValueError("OpenShell operator and session driver configuration overlap")
+            driver_config = {**self._driver_config, **driver_config}
             provider_names = (*platform_providers, *credential_context.providers)
             grants = tuple(
                 OpenShellProviderGrant(provider_name=name, profile_id=name)

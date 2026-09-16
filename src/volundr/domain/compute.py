@@ -7,6 +7,7 @@ provider-specific manifests never cross this boundary.
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -196,6 +197,7 @@ class ComputePoolPolicy(BaseModel):
 
     profile: str = Field(min_length=1)
     max_machines: int = Field(gt=0)
+    reuse_policy: Literal["replace", "reuse"] = "replace"
     warm_min: int = Field(default=0, ge=0)
     max_provisioning: int = Field(default=1, gt=0)
     idle_timeout_seconds: float = Field(default=3600, gt=0)

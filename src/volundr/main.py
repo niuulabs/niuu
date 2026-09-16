@@ -659,6 +659,7 @@ def create_app(
                         profile=pod_manager.profile,
                         max_machines=compute.max_machines,
                         warm_min=compute.warm_min,
+                        reuse_policy=compute.reuse_policy,
                         max_provisioning=compute.max_provisioning,
                         idle_timeout_seconds=compute.idle_timeout_seconds,
                         provisioning_timeout_seconds=compute.provisioning_timeout_seconds,

@@ -102,3 +102,21 @@ def test_unknown_profile_rejected_without_changing_pool(app, setup):
         assert result.status_code == 422
         assert "configured" in result.json()["detail"]
         assert setup[2].policies["pool"].profile == current["profile"]
+
+
+def test_reuse_policy_is_editable_in_admin_settings(app, setup):
+    setup[4].supports_reuse = True
+    with TestClient(app) as client:
+        schema = client.get("/api/v1/forge/settings").json()
+        section = next(s for s in schema["sections"] if s["id"] == "compute")
+        field = next(f for f in section["fields"] if f["key"] == "reuse_policy")
+        assert field["type"] == "select"
+        assert {o["value"] for o in field["options"]} == {"reuse", "replace"}
+        fields = {f["key"]: f["value"] for f in section["fields"]}
+        fields["reuse_policy"] = "reuse"
+        response = client.patch("/api/v1/forge/admin/settings/compute", json=fields)
+        assert response.status_code == 200
+        assert (
+            client.get("/api/v1/forge/admin/settings/compute").json()["policy"]["reuse_policy"]
+            == "reuse"
+        )

@@ -1,9 +1,9 @@
 # VM compute allocations
 
 The generic VM backend supports Forge/Skuld sessions and an infrastructure-only
-operator CLI. There is no warm pool. Root disks are disposable: infrastructure
-release deletes the VM, disk and cloud-init Secret. Forge stop preserves session
-workspace/home to the configured controller-local archive before release.
+operator CLI, with a provider-neutral warm pool. Infrastructure release deletes
+the VM, disk and cloud-init Secret. Forge stop preserves workspace/home to the
+configured controller-local archive before replacing or recycling its guest.
 
 ## Provider and authentication configuration
 
@@ -293,14 +293,19 @@ access to the same controller key and local workspace disk.
 
 A spare has its own pinned SSH identity but no session binding, launch payload,
 model credentials, session container or workspace. A transaction assigns it
-exactly once. Reset means replacement: stop archives the workspace/home, deletes
-the guest and root disk, then replenishes with a clean allocation. No used disk
-or host identity is reassigned to another session. This avoids a provider-specific
-reimage/reset API and the risk of incomplete guest filesystem scrubbing.
+to one session at a time. The default `replace` policy archives the workspace/home,
+deletes the guest and root disk, then replenishes with a clean allocation. The
+`reuse` policy requires explicit runtime support: after archival and sandbox/data
+cleanup, the same guest returns to the pool with its previous binding cleared.
+OpenShell on Docker implements this path; the direct Docker runtime retains the
+replacement policy. Failed or incompletely started guests are disposed after
+preserving any session data.
 
 Pause rejects new assignments and provisioning without interrupting sessions.
-Drain additionally removes unbound spares. Lowering capacity or the spare target
-retires excess idle guests; it never terminates active sessions. Failed,
+Drain additionally removes unbound spares. Lowering capacity retires excess idle
+guests; it never terminates active sessions. With replacement policy, reducing
+the spare target also retires excess spares immediately. Reuse policy retains
+excess spares until idle expiry, within maximum capacity. Failed,
 quarantined and deleting allocations continue consuming capacity. The database
 admission lock applies policy across concurrent controllers, not just one process.
 
@@ -394,3 +399,66 @@ configured exclusions fail loudly. Allocation completion markers are never
 restored from an archive, so a partial extraction cannot masquerade as a completed
 restore. A failed session can be stopped through the normal Forge API to preserve
 its data and release its machine before retrying.
+
+## OpenShell on managed VMs
+
+Use `VmPodManager` with
+`volundr.adapters.outbound.openshell_vm_runtime.OpenShellVmRuntime` as
+`compute.runtime.adapter`. The machine provider remains independent of this
+runtime. Harvester delivers its generated bootstrap through cloud-init; another
+provider implements the same `MachineBootstrap` contract.
+
+The image or provider bootstrap must supply Docker, Python 3.12+, OpenSSH and
+OpenSSL. The runtime bootstrap installs the native gateway from `gateway_image`,
+creates its Docker network and signing keys, validates `gateway_config` with
+OpenShell's preflight, and starts the systemd service. No Kubernetes installation
+is involved. Warm readiness requires an authenticated gateway RPC and a cached
+sandbox image, before a session can claim the guest.
+
+Alongside the SSH runtime's key paths, local `data_dir`, `skuld_image`, timeout
+and callback settings, configure:
+
+| Runtime kwarg | Purpose |
+| --- | --- |
+| `gateway_image` | Gateway image matching the supervisor and SDK versions |
+| `gateway_config` | OpenShell version 2 TOML, selecting the Docker driver |
+| `network_subnet` | Dedicated Docker bridge subnet inside each guest |
+| `gateway_kwargs` | Existing OpenShell policy, OIDC token URL/client ID, sandbox command and resource limits |
+| `gateway_client_secret` | OIDC client secret; supply through `compute.runtime.secret_kwargs_env` |
+
+The TOML must require OIDC authentication, bind its plaintext endpoint to the
+configured Docker bridge address, and enable Docker bind mounts. Controller
+traffic travels through pinned SSH. Configure the gateway signing-key paths as
+`/var/lib/openshell/jwt/signing.pem`, `public.pem`, and `kid`. The runtime owns the
+per-guest endpoint and workspace/home mounts; do not duplicate those in
+`gateway_kwargs`. Allow the bridge callback address and required model/broker
+endpoints in the sandbox policy.
+
+The guest has one session at a time. Workspace and CLI state live under
+`/var/lib/niuu/session` and are mounted under `/sandbox/workspace` and
+`/sandbox/home`. Session credentials are delivered only after binding, separately
+from machine bootstrap. The existing Skuld credential broker and read-only secret
+file injection apply. This VM runtime does not configure SPIFFE infrastructure;
+OpenShell dynamic provider grants requiring it must use a deployment that supplies
+that infrastructure.
+
+### Stop, reuse and idle deletion
+
+`compute.reuse_policy` initializes the pool policy. Admin settings expose the same
+choice as **After session stop**:
+
+- `reuse`: stop the sandbox, archive workspace/home to the controller's local disk,
+  delete the OpenShell sandbox, remove guest session files, then clear the binding
+  and return the same VM to idle capacity. New sessions receive fresh storage;
+  restarting a previous session restores its own archive.
+- `replace` (the backward-compatible default): archive the session and delete its
+  VM. The warm minimum determines whether to provision a replacement.
+
+Reuse requires a runtime that explicitly implements cleanup. A failed archive or
+reset retains the binding and stop request for retry; the VM is never offered as
+idle after incomplete cleanup. The provider and allocation record remain the
+same across successful reuse. Retained surplus VMs expire after
+`idle_timeout_seconds`; lowering maximum capacity or draining the pool can remove
+them sooner. The warm minimum replenishes expired spares while the pool is active.
+Closing a browser tab does not stop a session. Explicit stop, archive, and delete
+operations use the session lifecycle's cleanup path.

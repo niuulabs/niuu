@@ -51,6 +51,14 @@ class VmRuntime(ABC):
     async def stop(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
         """Stop execution and durably preserve session data before machine disposal."""
 
+    @property
+    def supports_reuse(self) -> bool:
+        return False
+
+    async def recycle(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+        """Remove stopped session resources after durable archival; idempotent."""
+        raise NotImplementedError("This runtime does not support in-place guest reuse")
+
     @abstractmethod
     async def close(self) -> None:
         """Close controller connections, without deleting machines or session data."""

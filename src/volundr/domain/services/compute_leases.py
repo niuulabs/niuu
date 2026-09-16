@@ -1,8 +1,8 @@
 """Provider-neutral durable allocation lifecycle.
 
 This layer tracks machines, not runtime readiness or guest credentials. Only
-confirmed deletion frees capacity. Standby guests bind once; used guests are
-replaced after preservation, so reset never depends on a filesystem scrub.
+confirmed deletion frees machine capacity. A runtime may explicitly support
+returning a scrubbed guest to standby after durable session preservation.
 """
 
 from __future__ import annotations
@@ -75,6 +75,7 @@ class ComputeLeaseService:
         profile: str,
         bootstrap: MachineBootstrap | None = None,
         timeout_seconds: float | None = None,
+        session_bootstrap: MachineBootstrap | None = None,
     ) -> ComputeLease:
         if session_id is not None and (not tenant_id or not owner_id):
             raise ValueError("Compute claims require tenant_id and owner_id")
@@ -118,6 +119,22 @@ class ComputeLeaseService:
                         SecretType.GENERIC,
                         {"bootstrap": bootstrap.model_dump_json()},
                     )
+        if session_bootstrap is not None:
+            if self._bootstrap_store is None or lease.session_id is None:
+                raise ValueError("Session bootstrap requires a bound lease and credential store")
+            async with self._repository.operation(lease.id):
+                lease = await self._get(lease.id)
+                if lease.session_bootstrap_ref is None:
+                    reference = f"{lease.id}-session-{lease.session_id}"
+                    await self._bootstrap_store.store(
+                        "compute",
+                        lease.bootstrap_owner or self._pool_id,
+                        reference,
+                        SecretType.GENERIC,
+                        {"bootstrap": session_bootstrap.model_dump_json()},
+                    )
+                    lease = lease.model_copy(update={"session_bootstrap_ref": reference})
+                    await self._repository.save(lease)
         if lease.retry_after is not None:
             async with self._repository.operation(lease.id):
                 lease = await self._get(lease.id)
@@ -353,6 +370,34 @@ class ComputeLeaseService:
                 "compute", lease.bootstrap_owner or self._pool_id, reference
             )
             raise
+
+    async def return_idle(self, lease: ComputeLease) -> ComputeLease:
+        """Called under the allocation lock, only after the runtime was scrubbed."""
+        updated = lease.model_copy(
+            update={
+                "session_id": None,
+                "owner_id": "",
+                "tenant_id": "",
+                "session_bootstrap_ref": None,
+                "runtime_data_started": False,
+                "runtime_started": False,
+                "stop_requested": False,
+                "state": LeaseState.IDLE,
+                "idle_since": datetime.now(UTC),
+                "provision_deadline": None,
+                "error": None,
+                "retry_after": None,
+                "failures": 0,
+            }
+        )
+        await self._repository.save(updated)
+        # The binding is cleared before removing its secret. A crash must never
+        # leave a bound session without the bootstrap needed to retry cleanup.
+        if lease.session_bootstrap_ref is not None:
+            await self._bootstrap_store.delete(
+                "compute", lease.bootstrap_owner or self._pool_id, lease.session_bootstrap_ref
+            )
+        return updated
 
     def _retry(self, lease: ComputeLease) -> dict:
         delay = min(self._retry_max, self._retry_interval * 2 ** min(lease.failures, 20))
