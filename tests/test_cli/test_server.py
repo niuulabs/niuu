@@ -2041,6 +2041,16 @@ class TestRootServerRunMigrations:
             "CREATE TABLE IF NOT EXISTS t0 (id INT);",
             "CREATE TABLE IF NOT EXISTS t2 (id INT);",
         ]
+        ledger_keys = [
+            call.args[1]
+            for call in mock_conn.execute.await_args_list
+            if "INSERT INTO volundr_schema_history" in call.args[0]
+        ]
+        assert ledger_keys == [
+            "000001_init.up.sql",
+            "ting/000025_legacy_schema_compat.up.sql",
+            "ting/000001_init.up.sql",
+        ]
         mock_conn.close.assert_awaited_once()
 
     @pytest.mark.asyncio

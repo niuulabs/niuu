@@ -46,6 +46,7 @@ _PRESET_COLUMNS = {
 }
 _PRESET_ADDITIONS = {"source", "integration_ids", "setup_scripts"}
 _RENAME_DEPENDENT_FILES = {
+    "000002_integration_connections.up.sql",
     "000011_volundr_presets.up.sql",
     "000014_integration_connections.up.sql",
     "000017_preset_source_integrations_scripts.up.sql",
@@ -95,14 +96,30 @@ def _preset_indexes(table: str) -> list[tuple[str, str, list[str], bool]]:
 async def _legacy_plan(conn: asyncpg.Connection, filename: str, sql: str) -> _LegacyPlan:
     """Execute old additive DDL against verified canonical names after historical renames.
 
-    Original SQL/checksums remain immutable. Only these five known rename-dependent files
-    need adaptation: all other unapplied migrations execute normally. Each plan checks its
+    Original SQL/checksums remain immutable. Known rename/drop-dependent files
+    need adaptation; all other unapplied migrations execute normally. Each plan checks its
     actual schema postconditions in the same transaction before recording the source checksum.
     """
     plan = _LegacyPlan(sql)
+    if filename == "000025_legacy_schema_compat.up.sql":
+        columns = await _columns(conn, "workflows")
+        if columns and "definition_yaml" not in columns:
+            # Ting 28 removed the YAML copy after workflows became graph-only.
+            # Preserve the remaining legacy content updates without recreating it.
+            required = {"id", "name", "description", "graph_json"}
+            if not required <= columns:
+                raise RuntimeError("Cannot adopt Ting workflows without the canonical graph schema")
+            plan.sql = "\n".join(
+                line
+                for line in sql.split("\n")
+                if not line.strip().startswith(("definition_yaml =", "OR definition_yaml ILIKE"))
+            )
+            plan.columns = {"workflows": required}
+        return plan
     if filename not in _RENAME_DEPENDENT_FILES:
         return plan
     if filename in {
+        "000002_integration_connections.up.sql",
         "000014_integration_connections.up.sql",
         "000024_rename_user_id_to_owner_id.up.sql",
     }:
@@ -115,7 +132,10 @@ async def _legacy_plan(conn: asyncpg.Connection, filename: str, sql: str) -> _Le
             raise RuntimeError(
                 "Conflicting integration user_id and owner_id values; adoption refused"
             )
-        if filename.startswith("000014"):
+        if filename in {
+            "000002_integration_connections.up.sql",
+            "000014_integration_connections.up.sql",
+        }:
             if renamed:
                 plan.sql = sql.replace("user_id", "owner_id").replace(
                     "idx_integration_connections_user", "idx_integration_connections_owner"
@@ -246,13 +266,14 @@ def _lineage_aliases(sql_files: list[Path]) -> dict[str, list[dict[str, str]]]:
 
 
 async def _already_applied_alias(
-    conn: asyncpg.Connection, checksum: str, aliases: list[dict[str, str]]
+    conn: asyncpg.Connection, checksum: str, aliases: list[dict[str, str]], prefix: str = ""
 ) -> bool:
     """Recognize identical historical SQL without modifying its original ledger row."""
     adopted = False
     for alias in aliases:
         existing = await conn.fetchval(
-            "SELECT sha256 FROM volundr_schema_history WHERE filename = $1", alias["filename"]
+            "SELECT sha256 FROM volundr_schema_history WHERE filename = $1",
+            prefix + alias["filename"],
         )
         if existing is None:
             continue
@@ -265,26 +286,32 @@ async def _already_applied_alias(
     return adopted
 
 
-async def apply_startup_migrations(conn: asyncpg.Connection, sql_files: list[Path]) -> None:
+async def apply_startup_migrations(
+    conn: asyncpg.Connection, sql_files: list[Path], *, namespace: str = ""
+) -> None:
     """Apply each file exactly once, recording its checksum in the same transaction.
 
-    An installation without a ledger executes every migration once, adapting the five
-    historical rename dependencies only after checking canonical schema postconditions.
+    An installation without a ledger executes every migration once, adapting known
+    historical rename/drop dependencies only after checking canonical schema postconditions.
     Ambiguous legacy user data blocks adoption without deleting or choosing a copy.
-    The session advisory lock also serializes independent platform processes.
+    Namespaces separate streams sharing a database and filenames. The empty namespace
+    preserves existing Volundr ledger keys. The session advisory lock also serializes
+    independent platform processes.
     """
+    prefix = f"{namespace}/" if namespace else ""
     aliases = _lineage_aliases(sql_files)
     await conn.execute("SELECT pg_advisory_lock(hashtext($1))", SCHEMA_LOCK)
     try:
         await conn.execute(LEDGER_SQL)
         for sql_file in sql_files:
+            migration_key = prefix + sql_file.name
             sql = sql_file.read_text()
             checksum = hashlib.sha256(sql.encode()).hexdigest()
             try:
                 async with conn.transaction():
                     existing = await conn.fetchval(
                         "SELECT sha256 FROM volundr_schema_history WHERE filename = $1",
-                        sql_file.name,
+                        migration_key,
                     )
                     if existing is not None:
                         if existing != checksum:
@@ -293,7 +320,7 @@ async def apply_startup_migrations(conn: asyncpg.Connection, sql_files: list[Pat
                             )
                         continue
                     adopted = await _already_applied_alias(
-                        conn, checksum, aliases.get(sql_file.name, [])
+                        conn, checksum, aliases.get(sql_file.name, []), prefix
                     )
                     if not adopted:
                         plan = await _legacy_plan(conn, sql_file.name, sql)
@@ -302,7 +329,7 @@ async def apply_startup_migrations(conn: asyncpg.Connection, sql_files: list[Pat
                     await conn.execute(
                         """INSERT INTO volundr_schema_history (filename, sha256)
                            VALUES ($1, $2)""",
-                        sql_file.name,
+                        migration_key,
                         checksum,
                     )
                 logger.info("Applied startup migration %s (%s)", sql_file.name, checksum)

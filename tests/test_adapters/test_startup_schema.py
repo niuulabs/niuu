@@ -71,3 +71,80 @@ async def test_new_migration_and_checksum_share_transaction(tmp_path):
     ledger = [c for c in conn.execute.await_args_list if "INSERT INTO" in c.args[0]]
     assert ledger[0].args[1:] == (path.name, hashlib.sha256(path.read_bytes()).hexdigest())
     conn.transaction.return_value.__aexit__.assert_awaited_once_with(None, None, None)
+
+
+@pytest.mark.parametrize("has_yaml", [False, True])
+async def test_ting_adoption_preserves_graph_updates_after_yaml_column_drop(has_yaml):
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from niuu.adapters.postgres_schema import _legacy_plan
+
+    path = Path(__file__).parents[2] / "migrations/ting/000025_legacy_schema_compat.up.sql"
+    sql = path.read_text()
+    columns = {"id", "name", "description", "graph_json"}
+    if has_yaml:
+        columns.add("definition_yaml")
+    with patch("niuu.adapters.postgres_schema._columns", AsyncMock(return_value=columns)):
+        plan = await _legacy_plan(connection(), path.name, sql)
+    assert ("definition_yaml" in plan.sql) is has_yaml
+    assert "graph_json = replace(" in plan.sql
+    assert "UPDATE workflows" in plan.sql
+    if has_yaml:
+        assert plan.sql == sql
+    else:
+        assert plan.columns == {"workflows": columns}
+        assert len(sql.splitlines()) - len(plan.sql.splitlines()) == 3
+
+
+async def test_ting_adoption_rejects_incomplete_graph_schema():
+    from unittest.mock import patch
+
+    from niuu.adapters.postgres_schema import _legacy_plan
+
+    with patch("niuu.adapters.postgres_schema._columns", AsyncMock(return_value={"id"})):
+        with pytest.raises(RuntimeError, match="canonical graph schema"):
+            await _legacy_plan(connection(), "000025_legacy_schema_compat.up.sql", "SQL")
+
+
+async def test_independent_streams_with_same_filename_have_distinct_ledger_keys(tmp_path):
+    ledger = {}
+    conn = connection()
+    conn.fetchval.side_effect = lambda sql, key: ledger.get(key)
+
+    async def execute(sql, *args):
+        if "INSERT INTO volundr_schema_history" in sql:
+            ledger[args[0]] = args[1]
+
+    conn.execute.side_effect = execute
+    path = tmp_path / "000001_initial_schema.up.sql"
+    path.write_text("CREATE TABLE forge_data (id INT)")
+    await apply_startup_migrations(conn, [path])
+    forge_checksum = ledger[path.name]
+    path.write_text("CREATE TABLE ting_data (id INT)")
+    await apply_startup_migrations(conn, [path], namespace="ting")
+    await apply_startup_migrations(conn, [path], namespace="ting")
+    assert ledger[path.name] == forge_checksum
+    assert ledger["ting/" + path.name] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert sum(call.args[0] == path.read_text() for call in conn.execute.await_args_list) == 1
+
+
+async def test_ting_shared_integration_table_adopts_owner_column():
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from niuu.adapters.postgres_schema import _legacy_plan
+
+    path = Path(__file__).parents[2] / "migrations/ting/000002_integration_connections.up.sql"
+    with patch("niuu.adapters.postgres_schema._columns", AsyncMock(return_value={"owner_id"})):
+        plan = await _legacy_plan(connection(), path.name, path.read_text())
+    assert "user_id" not in plan.sql
+    assert "ON integration_connections(owner_id, integration_type)" in plan.sql
+    assert plan.indexes == [
+        (
+            "idx_integration_connections_owner",
+            "integration_connections",
+            ["owner_id", "integration_type"],
+            False,
+        )
+    ]
