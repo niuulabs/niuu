@@ -67,6 +67,7 @@ async def _wait_until(predicate, timeout: float = 5.0) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_c1_interrupt_cancels_active_turn() -> None:
     """C1: an in-flight long turn is cancelled — C-c is sent, turn ends interrupted."""
@@ -112,6 +113,7 @@ async def test_c1_interrupt_cancels_active_turn() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_c2_interrupt_then_resume_keeps_session_usable() -> None:
     """C2: after an interrupt, a fresh message starts and completes a new turn."""
@@ -165,6 +167,7 @@ async def test_c2_interrupt_then_resume_keeps_session_usable() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_c3_interrupt_with_no_active_turn_is_safe_noop() -> None:
     """C3: interrupting an idle session is a no-op — no spurious result frame."""

@@ -10,7 +10,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path as FilePath
 from typing import Any
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import httpx
@@ -18,11 +18,33 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Res
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from niuu.domain.history_paging import InvalidHistoryCursorError
+from niuu.domain.json_text import json_text_safe
 from niuu.domain.services.token_scope import OPENSHELL_SESSION_TOKEN_USE, require_scope
 from niuu.domain.session_endpoint import public_session_endpoint
-from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turns
+from niuu.domain.text_projection import projection_revision
+from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turns, is_elided_input
+from skuld.conversation_snapshot import (
+    ConversationSnapshotTooLargeError,
+    prepare_history_page,
+    prepare_recent_snapshot,
+)
+from skuld.tool_result_preview import (
+    PreviewCache,
+    PreviewUnavailableError,
+    extract_image_bytes,
+    generate_preview_jpeg,
+    warm_previews_from_turns,
+)
 from volundr.adapters.inbound.auth import extract_principal, require_role
+from volundr.adapters.inbound.rest_projects import create_projects_router, project_result
 from volundr.config import PermissionAutoApprovalConfig
+from volundr.domain.history_import import (
+    HistoryImportConflictError,
+    HistoryImportError,
+    HistoryImportSessionNotFoundError,
+    HistoryImportValidationError,
+)
 from volundr.domain.models import (
     Chronicle,
     ChronicleStatus,
@@ -50,6 +72,7 @@ from volundr.domain.ports import (
     GitRepoNotFoundError,
     PricingProvider,
 )
+from volundr.domain.projects import SessionCoordination
 from volundr.domain.services import (
     ChronicleNotFoundError,
     ChronicleService,
@@ -89,6 +112,15 @@ OPENSHELL_SERVICE_HOST_SUFFIX = ".openshell.localhost"
 # number; the broker — not this grace — owns the delivery durability guarantee, so
 # a short grace is correct: a no-ACK is reported as pending/accepted, never "sent".
 SEND_MESSAGE_ACK_GRACE_SECONDS = 3.0
+
+# Disk root for generated tool-result image previews. ~/.niuu is the platform's
+# durable local-state home (workspaces, forge-state.json), so previews survive
+# restarts by construction. Tests inject their own PreviewCache via create_router.
+_PREVIEW_CACHE_ROOT = FilePath("~/.niuu/preview-cache").expanduser()
+
+# A tool_use_id's result is immutable — a regenerated preview is byte-equivalent —
+# so previews are safely long-lived cacheable at every layer (incl. URLSession).
+_PREVIEW_RESPONSE_HEADERS = {"Cache-Control": "public, max-age=31536000, immutable"}
 
 
 def _public_session_endpoint(
@@ -190,23 +222,49 @@ def _workspace_dir_from_session(session: Session) -> FilePath | None:
     return None
 
 
-# FAULT-C durable-count cache: `session_id -> (event_log_seq, durable_turn_count)`. The FAULT-C
-# reconciliation needs the durable turn count to detect a desynced (short) live body, but rebuilding
-# the whole durable transcript on every poll is ~4s on a big session (profiled). The count is stable
-# while the event log hasn't grown, so we key the cached count on MAX(seq): a hit at the same seq
-# skips the rebuild entirely; a new seq (or a short live body) falls back to the exact rebuild.
-_DURABLE_COUNT_CACHE: dict[str, tuple[int, int]] = {}
+# FAULT-C durable cache: `session_id -> (event_log_seq, durable_turn_count, durable_tail_id)`.
+# The FAULT-C reconciliation needs the durable turn count to detect a desynced (short) live body,
+# but rebuilding the whole durable transcript on every poll is ~4s on a big session (profiled).
+# The count is stable while the event log hasn't grown, so we key the cached values on MAX(seq):
+# a hit at the same seq skips the rebuild entirely; a new seq (or a short live body) falls back
+# to the exact rebuild. `durable_tail_id` is the id of the rebuild's last non-in-progress turn —
+# the SEGMENTATION-vs-DESYNC discriminator (see the tail-id gate at the decision site).
+_DURABLE_COUNT_CACHE: dict[str, tuple[int, int, str | None]] = {}
 _DURABLE_COUNT_CACHE_MAX = 512
 
 
-def _durable_count_cache_put(session_id: str, seq: int, count: int) -> None:
+def _durable_count_cache_put(session_id: str, seq: int, count: int, tail_id: str | None) -> None:
     if (
         len(_DURABLE_COUNT_CACHE) >= _DURABLE_COUNT_CACHE_MAX
         and session_id not in _DURABLE_COUNT_CACHE
     ):
         # Crude bound: drop an arbitrary existing entry (FIFO-ish via iteration order).
         _DURABLE_COUNT_CACHE.pop(next(iter(_DURABLE_COUNT_CACHE)), None)
-    _DURABLE_COUNT_CACHE[session_id] = (seq, count)
+    _DURABLE_COUNT_CACHE[session_id] = (seq, count, tail_id)
+
+
+def _last_settled_turn_id(turns: object) -> str | None:
+    """Id of the last turn that is NOT an in-progress row (the comparable transcript tail).
+
+    Used by the FAULT-C tail-id gate: a broker that is genuinely BEHIND the durable log
+    (resumed from a stale snapshot) is missing trailing turns, so its settled tail id differs
+    from the rebuild's. A broker whose body merely SEGMENTS the same content differently
+    (e.g. `present_file` deliveries folded vs standalone) still ends on the same settled turn.
+    Interrupted-flush rows count as real tail (a crashed turn the live body lost IS a desync).
+    """
+    if not isinstance(turns, list):
+        return None
+    for t in reversed(turns):
+        if not isinstance(t, dict):
+            continue
+        if t.get("in_progress") is True:
+            continue
+        metadata = t.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("status") == "in_progress":
+            continue
+        tid = str(t.get("id") or "").strip()
+        return tid or None
+    return None
 
 
 # Sessions with an in-flight background durable-count warm (dedup so a burst of cold polls spawns
@@ -223,7 +281,12 @@ async def _warm_durable_count(
     try:
         durable = await forge.get_transcript(session_id)
         turns = durable.get("turns") if isinstance(durable, dict) else None
-        _durable_count_cache_put(sid_str, seq, len(turns) if isinstance(turns, list) else 0)
+        _durable_count_cache_put(
+            sid_str,
+            seq,
+            len(turns) if isinstance(turns, list) else 0,
+            _last_settled_turn_id(turns),
+        )
     except Exception:  # pragma: no cover - a background warmer must never crash the loop
         pass
     finally:
@@ -354,6 +417,9 @@ _RFC1123_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 class SessionCreate(BaseModel):
     """Request model for creating a session."""
+
+    coordination: SessionCoordination | None = None
+    dispatch_id: UUID | None = None
 
     name: str = Field(
         ...,
@@ -688,6 +754,15 @@ class ActivityReport(BaseModel):
             "Optional for backward-compat with older brokers that omit it."
         ),
     )
+    turn_started_at: datetime | None = Field(
+        default=None,
+        description=(
+            "ISO8601 UTC timestamp of when the CURRENT turn started (the user's "
+            "prompt landing). Stable across intra-turn state flips; null when no "
+            "turn is in flight. Optional (older brokers omit it → null persisted, "
+            "clients fall back to state_since)."
+        ),
+    )
     metadata: dict = Field(default_factory=dict, description="Activity metadata")
 
     @field_validator("metadata", mode="before")
@@ -740,6 +815,8 @@ class DeviceResponse(BaseModel):
 
 class SessionResponse(BaseModel):
     """Response model for a session."""
+
+    coordination: SessionCoordination | None = None
 
     id: UUID = Field(description="Unique session identifier")
     name: str = Field(description="Human-readable session name")
@@ -823,6 +900,15 @@ class SessionResponse(BaseModel):
             "accurate elapsed time for the current state."
         ),
     )
+    turn_started_at: str | None = Field(
+        default=None,
+        description=(
+            "ISO 8601 UTC timestamp of when the CURRENT turn started (the user's "
+            "prompt landing). Stable across intra-turn active/tool_executing "
+            "flips; null when no turn is in flight. Clients anchor the RUNNING "
+            "elapsed to this (falling back to activity_state_since when null)."
+        ),
+    )
     activity_metadata: dict = Field(
         default_factory=dict,
         description="Metadata from the latest activity report",
@@ -887,6 +973,7 @@ class SessionResponse(BaseModel):
         """Create response from domain model."""
         return cls(
             id=session.id,
+            coordination=session.coordination,
             name=session.name,
             model=session.model,
             persona_name=str(session.workload_config.get("persona") or ""),
@@ -944,6 +1031,9 @@ class SessionResponse(BaseModel):
             activity_state=(session.activity_state.value if session.activity_state else None),
             activity_state_since=(
                 session.activity_state_since.isoformat() if session.activity_state_since else None
+            ),
+            turn_started_at=(
+                session.turn_started_at.isoformat() if session.turn_started_at else None
             ),
             activity_metadata=session.activity_metadata,
             needs_attention=session.needs_attention,
@@ -1424,9 +1514,15 @@ def create_router(
     prefix: str = "/api/v1/forge",
     server_public_host: str = "127.0.0.1",
     openshell_internal_gateway_url: str = DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL,
+    preview_cache: PreviewCache | None = None,
+    project_service=None,
+    history_max_turns: int = 15,
+    history_max_bytes: int = 256 * 1024,
 ) -> APIRouter:
     """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
     router = APIRouter(prefix=prefix)
+    if preview_cache is None:
+        preview_cache = PreviewCache(_PREVIEW_CACHE_ROOT)
 
     def _session_response(session: Session) -> SessionResponse:
         return SessionResponse.from_session(session, public_host=server_public_host)
@@ -1455,6 +1551,7 @@ def create_router(
         repo_service=repo_service,
         chronicle_service=chronicle_service,
         archive_service=archive_service,
+        project_service=project_service,
     )
 
     def _require_bound_workload_session(request: Request, session_id: UUID) -> None:
@@ -1505,6 +1602,13 @@ def create_router(
 
         return not isinstance(identity, AllowAllIdentityAdapter)
 
+    if project_service is not None:
+
+        async def project_principal(request: Request):
+            return await _optional_principal(request)
+
+        router.include_router(create_projects_router(project_service, project_principal))
+
     @router.get("/feature-flags", tags=["Features"])
     async def get_feature_flags(request: Request) -> dict:
         """Return feature flags derived from server configuration.
@@ -1521,6 +1625,9 @@ def create_router(
             "home_volumes_supported": storage.supports_home_volumes,
             "mini_mode": settings.local_mounts.mini_mode,
             "local_mounts_allowed_prefixes": settings.local_mounts.allowed_prefixes,
+            "projects_enabled": project_service is not None,
+            "project_contract_version": 1 if project_service is not None else 0,
+            "project_instance_id": project_service.instance_id if project_service else None,
         }
 
     @router.get("/repos/branches", response_model=list[str], tags=["Repositories"])
@@ -1570,6 +1677,10 @@ def create_router(
         include_archived: bool = Query(
             default=False, description="Include archived sessions in results"
         ),
+        project_id: UUID | None = Query(default=None),
+        role: str | None = Query(default=None),
+        parent_session_id: UUID | None = Query(default=None),
+        parent_instance_id: str | None = Query(default=None),
     ) -> list[SessionResponse]:
         """List all sessions. Archived sessions are excluded by default."""
         principal = await _optional_principal(request)
@@ -1580,6 +1691,27 @@ def create_router(
             include_archived=include_archived,
             principal=principal,
         )
+        if project_id is not None:
+            sessions = [
+                s for s in sessions if s.coordination and s.coordination.project_id == project_id
+            ]
+        if role is not None:
+            sessions = [s for s in sessions if s.coordination and s.coordination.role == role]
+        if parent_session_id is not None or parent_instance_id is not None:
+            sessions = [
+                s
+                for s in sessions
+                if s.coordination
+                and s.coordination.parent
+                and (
+                    parent_session_id is None
+                    or s.coordination.parent.session_id == parent_session_id
+                )
+                and (
+                    parent_instance_id is None
+                    or s.coordination.parent.instance_id == parent_instance_id
+                )
+            ]
         return [_session_response(s) for s in sessions]
 
     @router.get(
@@ -1753,7 +1885,38 @@ def create_router(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(e),
             )
+        except HistoryImportValidationError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        except HistoryImportError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
         return _session_response(session)
+
+    @router.post("/sessions/{session_id}/history/import", tags=["Sessions"])
+    async def import_session_history(request: Request, session_id: UUID) -> dict:
+        """Backfill a recovered native session before starting it.
+
+        Uses the session's stored provider and native ID. Existing conversation
+        data or an active writer causes a conflict; identical retries are safe.
+        """
+        if external_session_service is None:
+            raise HTTPException(status_code=503, detail="External session discovery not available")
+        principal = await _optional_principal(request)
+        try:
+            return await external_session_service.backfill_session(session_id, principal)
+        except (SessionAccessDeniedError, ExternalSessionPathNotAllowedError) as e:
+            raise HTTPException(status_code=403, detail=str(e)) from e
+        except (
+            HistoryImportSessionNotFoundError,
+            ExternalSessionProviderNotFoundError,
+            ExternalSessionNotFoundError,
+        ) as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except HistoryImportConflictError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        except (HistoryImportValidationError, ExternalSessionWorkspaceError) as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        except HistoryImportError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
 
     @router.post(
         "/sessions",
@@ -1781,7 +1944,9 @@ def create_router(
         """
         principal = await _optional_principal(request)
         try:
-            started = await forge.create_and_start_session(data, principal=principal)
+            started = await project_result(
+                forge.create_and_start_session(data, principal=principal)
+            )
         except RepoValidationError as e:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -2077,7 +2242,11 @@ def create_router(
         )
         try:
             updated = await forge.update_activity(
-                session_id, activity_state, data.metadata, state_since=data.state_since
+                session_id,
+                activity_state,
+                data.metadata,
+                state_since=data.state_since,
+                turn_started_at=data.turn_started_at,
             )
             logger.info(
                 "Activity updated: session=%s state=%s broadcaster=%s",
@@ -2699,11 +2868,19 @@ def create_router(
         from websockets.asyncio.client import connect
 
         content = body.get("content", "")
-        if not content:
+        if not isinstance(content, str) or not content.strip():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="content is required",
             )
+
+        # Keep the caller's identity across a timeout/retry. The broker atomically
+        # claims it in durable storage before dispatching to the native process.
+        import re
+
+        req_id = body.get("request_id") or str(uuid4())
+        if not isinstance(req_id, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", req_id):
+            raise HTTPException(status_code=400, detail="Invalid request_id")
 
         # Verify the caller owns this session
         principal = await extract_principal(request)
@@ -2727,6 +2904,19 @@ def create_router(
 
         # Build WS URL with access token
         ws_url = session.chat_endpoint
+        # An instruction sender needs delivery ACKs, not the whole conversation.
+        # Old proxies only forward history=recent, still avoiding full replay;
+        # protocol2 gateways honor none and omit history entirely. Never resend.
+        endpoint = urlsplit(ws_url)
+        query = [
+            (k, v)
+            for k, v in parse_qsl(endpoint.query, keep_blank_values=True)
+            if k not in {"history", "history_protocol", "history_delivery"}
+        ]
+        query.extend(
+            (("history", "recent"), ("history_protocol", "2"), ("history_delivery", "none"))
+        )
+        ws_url = urlunsplit(endpoint._replace(query=urlencode(query)))
         auth = request.headers.get("authorization", "")
         token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
         if token:
@@ -2754,13 +2944,14 @@ def create_router(
         # If no ACK arrives within the grace, the broker has ACCEPTED the message and its
         # retry loop is still driving delivery: we report 202 "pending" (NOT "sent"), so
         # the caller never reads an undelivered message as success.
-        req_id = str(uuid4())
         delivery: dict[str, Any] | None = None
+        dispatch_attempted = False
         try:
             async with connect(ws_url, **connect_kwargs) as ws:
                 # Send immediately. Draining startup traffic *before* sending can
                 # delay or drop the first user turn for transports that emit
                 # welcome or capability events while still coming online.
+                dispatch_attempted = True
                 await ws.send(
                     json.dumps({"type": "user", "content": content, "request_id": req_id})
                 )
@@ -2779,7 +2970,13 @@ def create_router(
                         if (
                             isinstance(frame, dict)
                             and frame.get("request_id") == req_id
-                            and frame.get("type") in ("user_delivered", "user_delivery_failed")
+                            and frame.get("type")
+                            in (
+                                "user_delivered",
+                                "user_delivery_failed",
+                                "user_delivery_pending",
+                                "error",
+                            )
                         ):
                             return frame
 
@@ -2788,6 +2985,20 @@ def create_router(
                         _await_ack(), timeout=SEND_MESSAGE_ACK_GRACE_SECONDS
                     )
         except Exception as e:
+            if dispatch_attempted:
+                # The send may have reached the broker before the socket failed.
+                # Preserve the identity so the caller can inspect/retry that same
+                # claim without executing a new instruction.
+                return JSONResponse(
+                    status_code=status.HTTP_202_ACCEPTED,
+                    content={
+                        "status": "pending",
+                        "delivery": "pending",
+                        "session_id": str(session_id),
+                        "request_id": req_id,
+                        "message": "Delivery is unconfirmed; check this request before retrying.",
+                    },
+                )
             # The endpoint looked live (chat_endpoint set) but the broker socket
             # is unreachable — the pod is gone. Reconcile the row so its stale
             # RUNNING/endpoint self-heals, then fail deterministically (409) so
@@ -2804,6 +3015,24 @@ def create_router(
                 detail=detail,
             )
 
+        if isinstance(delivery, dict) and delivery.get("type") == "error":
+            code = delivery.get("code")
+            error_status = {
+                "request_id_conflict": status.HTTP_409_CONFLICT,
+                "message_claim_unavailable": status.HTTP_503_SERVICE_UNAVAILABLE,
+            }.get(code, status.HTTP_502_BAD_GATEWAY)
+            return JSONResponse(
+                status_code=error_status,
+                content={
+                    "status": "failed",
+                    "delivery": "failed",
+                    "request_id": req_id,
+                    "session_id": str(session_id),
+                    "code": code,
+                    "message": delivery.get("content") or "Message was not accepted",
+                },
+            )
+
         # Terminal failure: the broker exhausted its bounded retry and the transport
         # rejected the message. Surface as an error — never a 200 "sent" (INV-7).
         if isinstance(delivery, dict) and delivery.get("type") == "user_delivery_failed":
@@ -2818,7 +3047,7 @@ def create_router(
         # No ACK within the grace: the broker ACCEPTED the message and its retry loop
         # is still driving delivery. This is NOT a confirmed send — report 202 pending
         # so the caller can tell it is in flight, not delivered (INV-7).
-        if not isinstance(delivery, dict):
+        if not isinstance(delivery, dict) or delivery.get("type") == "user_delivery_pending":
             return JSONResponse(
                 status_code=status.HTTP_202_ACCEPTED,
                 content={
@@ -2871,6 +3100,37 @@ def create_router(
             ge=0,
             description="Skip N turns from the end before applying `limit` (Show-earlier paging).",
         ),
+        after: int = Query(
+            -1,
+            ge=-1,
+            description=(
+                "P2 incremental fetch (2026-07-12): return only turns with ABSOLUTE index > "
+                "`after` (-1 = disabled). Sessions are append-only, so a client that cached the "
+                "settled prefix asks for `after=<lastCachedIndex>` and pays only for new turns. "
+                "Takes precedence over limit/before; window_offset = after+1 keeps absolute "
+                "indices derivable."
+            ),
+        ),
+        max_bytes: int = Query(
+            0,
+            ge=0,
+            description="Optional recent-activity byte budget; 0 returns the complete page. "
+            "Oversized single turns are marked history_preview and remain loadable on demand.",
+        ),
+        after_id: str | None = Query(
+            None,
+            description=(
+                "Seam identity echo for `after` (2026-07-12): the id the client holds for the "
+                "turn AT index `after`. If the server's turn at that index has a different id, "
+                "the client's cached index space no longer matches (transcript re-segmented or "
+                "rewritten) — the response then carries empty turns with window_offset=-1, which "
+                "the client's seam guard rejects, triggering a clean windowed refetch instead of "
+                "appending re-served turns as phantom messages."
+            ),
+        ),
+        history_protocol: int = Query(0),
+        cursor: str | None = Query(None),
+        turn_id: str | None = Query(None),
     ) -> dict:
         """Return conversation history from a live session or stopped-session workspace.
 
@@ -2879,6 +3139,15 @@ def create_router(
         and the durable-log rebuild fallback (elided here), so the shape is
         identical regardless of which path served the transcript.
         """
+        if cursor and history_protocol != 2:
+            raise HTTPException(400, "cursor requires history_protocol=2")
+        if history_protocol == 2 and (before or after >= 0 or after_id or turn_id):
+            raise HTTPException(
+                400, "Protocol2 cursors cannot be mixed with legacy seek parameters"
+            )
+        if history_protocol == 2:
+            limit = min(limit or history_max_turns, history_max_turns)
+            max_bytes = min(max_bytes or history_max_bytes, history_max_bytes)
         shallow = detail == SHALLOW_DETAIL
         timings: dict[str, float] = {}
 
@@ -2892,8 +3161,81 @@ def create_router(
             if not isinstance(payload, dict) or not isinstance(payload.get("turns"), list):
                 return payload
             all_turns = payload["turns"]
+            if turn_id is not None:
+                turn = next((t for t in all_turns if t.get("id") == turn_id), None)
+                if turn is None:
+                    raise HTTPException(404, "History item no longer exists in this projection")
+                return {
+                    "turn": json_text_safe(turn),
+                    "projection_revision": payload.get("projection_revision")
+                    or projection_revision(all_turns),
+                }
+            if history_protocol == 2:
+                if payload.get("history_protocol") == 2:
+                    # The gateway applied the cursor to the COMPLETE projection.
+                    # Re-slicing this page would corrupt offsets/fingerprints.
+                    return payload
+                try:
+                    return prepare_history_page(
+                        {
+                            **payload,
+                            "head_seq": payload.get("head_seq"),
+                            "history_source": "legacy_gateway"
+                            if fetch_ms is not None
+                            else "archive",
+                        },
+                        session_id=str(session_id),
+                        max_turns=limit,
+                        max_bytes=max_bytes,
+                        cursor=cursor,
+                    )
+                except InvalidHistoryCursorError as exc:
+                    raise HTTPException(
+                        409,
+                        {
+                            "code": "history_cursor_invalid",
+                            "recovery": "recent",
+                            "history_protocol": 2,
+                        },
+                    ) from exc
+                except ConversationSnapshotTooLargeError as exc:
+                    raise HTTPException(
+                        413, {"code": "history_page_too_large", "recovery": "retry"}
+                    ) from exc
+                except ValueError as exc:
+                    raise HTTPException(400, "Malformed history cursor") from exc
+            # Compute over the complete prefix BEFORE pagination/shallow elision.
+            payload = {
+                **payload,
+                "projection_revision": projection_revision(all_turns),
+            }
             total = len(all_turns)
-            if limit > 0:
+            if after >= 0:
+                # P2 incremental window: everything past the client's cached prefix. An `after`
+                # at/beyond the end returns an empty list with the true total — the no-op poll.
+                start = min(after + 1, total)
+                turns = all_turns[start:]
+                window_offset = start
+                if after_id and after < total:
+                    anchor = all_turns[after]
+                    anchor_id = (
+                        str(anchor.get("id") or "").strip() if isinstance(anchor, dict) else ""
+                    )
+                    if anchor_id and anchor_id != after_id:
+                        # Seam identity mismatch: the turn at the client's cached seam is not
+                        # the turn the client cached (re-segmentation / rewrite). Return an
+                        # explicitly-invalid window; the client's `window_offset == seam`
+                        # guard rejects it and falls back to a clean windowed refetch.
+                        logger.info(
+                            "[seam] after_id mismatch session=%s after=%d held=%s server=%s",
+                            _sanitize_log(session_id),
+                            after,
+                            _sanitize_log(after_id),
+                            _sanitize_log(anchor_id),
+                        )
+                        turns = []
+                        window_offset = -1
+            elif limit > 0:
                 end = max(0, total - before)
                 start = max(0, end - limit)
                 turns = all_turns[start:end]
@@ -2901,6 +3243,7 @@ def create_router(
             else:
                 turns = all_turns
                 window_offset = 0
+            turns = json_text_safe(turns)
             reelide_ms = 0.0
             if shallow:
                 t = time.perf_counter()
@@ -2918,6 +3261,8 @@ def create_router(
                 "window_offset": window_offset,
                 "_prep": prep,
             }
+            if max_bytes and turns and window_offset >= 0:
+                out = prepare_recent_snapshot(out, max_bytes=max_bytes, max_turns=len(turns))
             logger.info(
                 "[perf] conversation session=%s shallow=%s fetch=%sms reelide=%.1fms "
                 "broker_build=%sms broker_elide=%sms turns=%s",
@@ -2940,6 +3285,12 @@ def create_router(
                 detail=f"Session not found: {session_id}",
             )
 
+        principal = await _optional_principal(request)
+        try:
+            await forge.ensure_access(session, principal)
+        except SessionAccessDeniedError as exc:
+            raise HTTPException(403, f"Access denied to session {session_id}") from exc
+
         try:
             if session.chat_endpoint:
                 t_tgt = time.perf_counter()
@@ -2956,18 +3307,43 @@ def create_router(
                     _session_proxy_url(base_url, "api", "conversation", "history")
                 )
                 headers.update(routing_headers)
-                async with httpx.AsyncClient(timeout=10.0) as client:
+                # WEDGE GRACE (2026-07-12): a huge session's broker can stall for seconds
+                # mid-append (it synchronously rewrites its whole conversation snapshot — a
+                # 496MB file on lexi-frontend-presentation), and a 10s read timeout here sent
+                # the client to the durable fallback, flipping the served turn space under a
+                # cached client. Give a busy-but-alive broker 20s to answer; a DEAD pod still
+                # fails fast (3s connect).
+                params: dict[str, str | int] = {"detail": detail}
+                if history_protocol == 2:
+                    params.update(history_protocol=2, limit=limit, max_bytes=max_bytes)
+                    if cursor:
+                        params["cursor"] = cursor
+                if turn_id is not None:
+                    params["turn_id"] = turn_id
+                async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=3.0)) as client:
                     response = await client.get(
                         proxy_url,
                         headers=headers,
-                        params={"detail": detail},
+                        params=params,
                     )
+                    if history_protocol == 2 and response.status_code != 200:
+                        # A typed stale/busy response must not silently select a
+                        # different history source and pretend its cursor worked.
+                        try:
+                            error = response.json().get("detail", "History unavailable")
+                        except (ValueError, AttributeError):
+                            error = "History unavailable"
+                        raise HTTPException(response.status_code, error)
                     response.raise_for_status()
                     live = response.json()
                     # Broker round-trip: build + (source) elide + serialize + localhost transfer +
                     # JSON parse. For an old broker that ignores `detail` this is the FULL payload.
                     fetch_ms = (time.perf_counter() - t_fetch) * 1000.0
-                    if _live_transcript_is_renderable(live):
+                    if isinstance(live, dict) and (
+                        _live_transcript_is_renderable(live)
+                        or live.get("history_protocol") == 2
+                        or (turn_id is not None and live.get("turns"))
+                    ):
                         # FAULT C: a resumed/restarted broker can be desynced from
                         # the durable log and serve FEWER turns than the durable
                         # rebuild (partial history for a running session). Only when
@@ -2987,9 +3363,16 @@ def create_router(
                             isinstance(live, dict)
                             and (live.get("is_active") or (live.get("last_activity") or ""))
                         )
-                        if not (is_streaming or _live_body_has_in_progress_turn(live)):
+                        if not (
+                            is_streaming
+                            or live.get("history_has_in_progress")
+                            or _live_body_has_in_progress_turn(live)
+                            or turn_id is not None
+                        ):
                             live_turns = live.get("turns") if isinstance(live, dict) else None
                             live_count = len(live_turns) if isinstance(live_turns, list) else 0
+                            if live.get("history_protocol") == 2:
+                                live_count = live["total_turns"]
                             # CHEAP GATE + OPTIMISTIC OPEN: detecting a desync (broker serving
                             # fewer turns than the durable log) needs the durable turn count, but
                             # rebuilding the whole transcript for it is ~4s on a big session. Cache
@@ -3000,10 +3383,13 @@ def create_router(
                             sid_str = str(session_id)
                             seq = await forge.durable_latest_seq(session_id)
                             cached = _DURABLE_COUNT_CACHE.get(sid_str)
-                            durable_count = (
-                                cached[1]
-                                if (cached is not None and seq > 0 and cached[0] == seq)
-                                else None
+                            warm = cached is not None and seq > 0 and cached[0] == seq
+                            durable_count = cached[1] if warm and cached else None
+                            durable_tail = cached[2] if warm and cached else None
+                            live_tail = (
+                                live.get("history_settled_tail_id")
+                                if live.get("history_protocol") == 2
+                                else _last_settled_turn_id(live_turns)
                             )
                             if durable_count is None:
                                 # COLD: serve live immediately; warm the count off the request path.
@@ -3013,8 +3399,20 @@ def create_router(
                                     asyncio.create_task(
                                         _warm_durable_count(forge, session_id, seq, sid_str)
                                     )
-                            elif durable_count > live_count:
+                            elif durable_count > live_count and durable_tail != live_tail:
                                 # WARM + desync: rebuild to return the fuller durable body (rare).
+                                #
+                                # TAIL-ID GATE (2026-07-12, the flip-flop fix): a higher durable
+                                # count alone is NOT a desync. The rebuild can legitimately SEGMENT
+                                # the same content into more turns than the live body (verified:
+                                # `present_file` deliveries were durable-only standalone turns, 31
+                                # vs 25 on the same session) — preferring durable then FLIPS the
+                                # served index space on every idle↔active transition, which a
+                                # windowed client renders as a full reshuffle and an incremental
+                                # (`after=`) client renders as PHANTOM re-appended turns. A broker
+                                # that is genuinely BEHIND (resumed from a stale snapshot, crashed
+                                # tail) ends on a DIFFERENT last settled turn — so only a tail-id
+                                # mismatch, not a count surplus, selects the durable body.
                                 t_dur = time.perf_counter()
                                 try:
                                     durable = await forge.get_transcript(session_id)
@@ -3029,19 +3427,28 @@ def create_router(
                                 rebuilt = (
                                     len(durable_turns) if isinstance(durable_turns, list) else 0
                                 )
-                                _durable_count_cache_put(sid_str, seq, rebuilt)
-                                if durable is not None and rebuilt > live_count:
+                                rebuilt_tail = _last_settled_turn_id(durable_turns)
+                                _durable_count_cache_put(sid_str, seq, rebuilt, rebuilt_tail)
+                                if (
+                                    durable is not None
+                                    and rebuilt > live_count
+                                    and rebuilt_tail != live_tail
+                                ):
                                     logger.info(
                                         "Live conversation for session %s is short "
-                                        "(%d turns) vs durable rebuild (%d turns); "
-                                        "preferring durable (FAULT C desync)",
+                                        "(%d turns, tail=%s) vs durable rebuild "
+                                        "(%d turns, tail=%s); preferring durable "
+                                        "(FAULT C desync)",
                                         _sanitize_log(session_id),
                                         live_count,
+                                        _sanitize_log(live_tail),
                                         rebuilt,
+                                        _sanitize_log(rebuilt_tail),
                                     )
                                     return _maybe_elide(durable)
                             else:
-                                # Warm + live complete (durable not ahead) — no rebuild.
+                                # Warm + live complete (durable not ahead, or same settled
+                                # tail = segmentation-only difference) — no rebuild, serve live.
                                 timings["fault_c_cached"] = 1.0
                         # A freshly-restarted broker already elided at the source;
                         # re-eliding here is idempotent (placeholders have no
@@ -3079,6 +3486,158 @@ def create_router(
                 detail=str(e),
             )
 
+    @router.get("/sessions/{session_id}/conversation/turns/{turn_id}", tags=["Sessions"])
+    async def get_conversation_item(request: Request, session_id: UUID, turn_id: str) -> dict:
+        """Explicit full-item expansion, never used for automatic history recovery."""
+        return await get_conversation(
+            request=request,
+            session_id=session_id,
+            detail="full",
+            limit=0,
+            before=0,
+            after=-1,
+            max_bytes=0,
+            after_id=None,
+            history_protocol=0,
+            cursor=None,
+            turn_id=turn_id,
+        )
+
+    async def _fetch_full_tool_result(
+        request: Request,
+        session: Session,
+        session_id: UUID,
+        tool_use_id: str,
+    ) -> tuple[dict | None, list | None]:
+        """Resolve one FULL tool_result block through three sources, in order:
+
+        1. the live pod's per-id lazy-load endpoint (``api/conversation/tool-result/{id}``):
+           new brokers only; a 200 short-circuits and returns ``(result, None)``;
+        2. the live pod's FULL conversation-history (``api/conversation/history?detail=full``):
+           the recovery path for an OLD broker that predates the per-id endpoint. An old
+           broker ignores ``detail`` and serves every tool_result inline, so its history
+           carries the large image results a durable rebuild can MISS. This is load-bearing:
+           on the lexi-frontend-presentation session the per-id endpoint 404s and the durable
+           rebuild misses 69/70 image ids, yet all are present full-base64 in the history;
+        3. the durable-log rebuild (``forge.get_transcript``) -> workspace fallback: for
+           stopped/seed-only sessions with no reachable pod.
+
+        Returns ``(result, warm_turns)`` where ``result`` is the
+        ``{tool_use_id, content, is_error}`` dict (or None when absent) and ``warm_turns`` is
+        the turn list the caller's preview warm-pass should reuse: the live-history turns
+        (source 2) or the rebuilt durable turns (source 3), whichever it fell through to. It
+        is None ONLY when the per-id endpoint (source 1) answered directly (nothing to warm).
+        """
+
+        def _scan(turns: list) -> dict | None:
+            # P1 input elision (2026-07-12): the response also carries the matching tool_use's
+            # FULL ``input`` so an elided-input card can expand from the same lazy fetch. The
+            # use and result blocks live in DIFFERENT turns (assistant emits the use; the
+            # result rides the next user event), so collect both across the whole scan. An
+            # input-only hit (tool still running, result not yet emitted) now answers 200 with
+            # empty content instead of 404 — the expand shows the input immediately.
+            found_result: dict | None = None
+            found_input = None
+            for turn in turns:
+                parts = turn.get("parts") if isinstance(turn, dict) else None
+                for block in parts or []:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_use" and block.get("id") == tool_use_id:
+                        candidate = block.get("input")
+                        if candidate is not None and not is_elided_input(candidate):
+                            found_input = candidate
+                    elif (
+                        block.get("type") == "tool_result"
+                        and block.get("tool_use_id") == tool_use_id
+                    ):
+                        found_result = block
+                if found_result is not None and found_input is not None:
+                    break
+            if found_result is None and found_input is None:
+                return None
+            out = {
+                "tool_use_id": tool_use_id,
+                "content": (found_result or {}).get("content", ""),
+                "is_error": bool((found_result or {}).get("is_error", False)),
+            }
+            if found_input is not None:
+                out["input"] = found_input
+            return out
+
+        # Live-history turns recovered from an old broker (source 2). Handed back as the warm-pass
+        # source even when the specific id was not found there, since they are still a richer source
+        # than the durable rebuild (which may be a rebuild-miss for big images).
+        live_turns: list | None = None
+
+        if session.chat_endpoint:
+            try:
+                _, base_url = await forge.get_session_proxy_target(session_id)
+                headers = {}
+                auth = request.headers.get("authorization")
+                if auth:
+                    headers["Authorization"] = auth
+                tool_result_url, routing_headers = _http_proxy_target(
+                    _session_proxy_url(base_url, "api", "conversation", "tool-result", tool_use_id)
+                )
+                headers.update(routing_headers)
+                # Generous timeout: source 2 pulls the WHOLE inline transcript from an old
+                # broker (tens of MB for an image-heavy session), which the tight 10s
+                # conversation timeout can clip. Paid once per session (single-flight + warm).
+                async with httpx.AsyncClient(timeout=45.0) as client:
+                    # (1) Fast path: the per-id lazy-load endpoint (new brokers only).
+                    response = await client.get(
+                        tool_result_url,
+                        headers=headers,
+                    )
+                    if response.status_code != status.HTTP_404_NOT_FOUND:
+                        response.raise_for_status()
+                        payload = response.json()
+                        if isinstance(payload, dict):
+                            return payload, None
+                    # (2) 404: an OLD broker that never had the per-id endpoint. Its FULL
+                    # conversation-history still carries every tool_result inline (it ignores
+                    # `detail`), and it is the ONLY live source for the large image results a
+                    # durable rebuild misses. Scan it, and hand the turns back so the caller's
+                    # warm-pass fills the whole session from this one fetch.
+                    history_url, history_routing_headers = _http_proxy_target(
+                        _session_proxy_url(base_url, "api", "conversation", "history")
+                    )
+                    history_headers = {**headers, **history_routing_headers}
+                    history = await client.get(
+                        history_url, headers=history_headers, params={"detail": "full"}
+                    )
+                    if history.status_code != status.HTTP_404_NOT_FOUND:
+                        history.raise_for_status()
+                        body = history.json()
+                        turns = body.get("turns") if isinstance(body, dict) else None
+                        if isinstance(turns, list):
+                            live_turns = turns
+                            found = _scan(turns)
+                            if found is not None:
+                                return found, turns
+            except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
+                logger.info(
+                    "Live tool-result fetch failed for session %s; trying durable log: %s",
+                    _sanitize_log(session_id),
+                    _sanitize_log(e),
+                )
+
+        # (3) Durable-log rebuild → workspace fallback (stopped/seed-only sessions).
+        try:
+            transcript = await forge.get_transcript(session_id)
+        except (RuntimeError, ValueError):
+            transcript = _fallback_workspace_transcript(session) or {"turns": []}
+        turns = transcript.get("turns", []) if isinstance(transcript, dict) else []
+        found = _scan(turns)
+        if found is not None:
+            return found, turns
+        # Not in the durable log either. Prefer the live-history turns for the warm-pass when we
+        # have them (they carry the big inline images the durable rebuild dropped).
+        if live_turns is not None:
+            return None, live_turns
+        return None, turns
+
     @router.get(
         "/sessions/{session_id}/tool-result/{tool_use_id}",
         tags=["Sessions"],
@@ -3099,22 +3658,62 @@ def create_router(
         session pod; falls back to scanning the durable transcript for
         stopped/seed-only sessions. 404 when the result is absent.
         """
+        session = await forge.get_session(session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        found, _ = await _fetch_full_tool_result(request, session, session_id, tool_use_id)
+        if found is not None:
+            return found
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"tool_result not found: {tool_use_id}",
+        )
 
-        def _scan(turns: list) -> dict | None:
-            for turn in turns:
-                parts = turn.get("parts") if isinstance(turn, dict) else None
-                for block in parts or []:
-                    if (
-                        isinstance(block, dict)
-                        and block.get("type") == "tool_result"
-                        and block.get("tool_use_id") == tool_use_id
-                    ):
-                        return {
-                            "tool_use_id": tool_use_id,
-                            "content": block.get("content", ""),
-                            "is_error": bool(block.get("is_error", False)),
-                        }
-            return None
+    @router.get(
+        "/sessions/{session_id}/tool-result/{tool_use_id}/preview",
+        tags=["Sessions"],
+        responses={
+            404: {"model": ErrorResponse},
+            501: {"model": ErrorResponse},
+            502: {"model": ErrorResponse},
+        },
+    )
+    async def get_tool_result_preview(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+        tool_use_id: str = Path(description="tool_use_id of the image result"),
+    ) -> Response:
+        """Return a scaled-down JPEG preview of an image tool_result.
+
+        Generated on FIRST request (full envelope resolved via the same
+        live-pod → durable-fallback chain as ``get_tool_result``, then
+        Pillow-downscaled to a ~400px longest edge) and cached on disk keyed by
+        tool_use_id — later connects serve it in milliseconds. When the miss was
+        served by a durable-transcript rebuild, that one rebuild warms previews
+        for EVERY image tool_result in the session. 404 when the result is
+        absent or not an image (the client falls back to the full fetch);
+        501 when Pillow is unavailable.
+        """
+        sid = str(session_id)
+
+        def _jpeg_response(data: bytes) -> Response:
+            return Response(
+                content=data,
+                media_type="image/jpeg",
+                headers=dict(_PREVIEW_RESPONSE_HEADERS),
+            )
+
+        cached = preview_cache.get(sid, tool_use_id)
+        if cached is not None:
+            return _jpeg_response(cached)
+        if preview_cache.is_non_image(sid, tool_use_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"tool_result is not an image: {tool_use_id}",
+            )
 
         session = await forge.get_session(session_id)
         if session is None:
@@ -3123,45 +3722,80 @@ def create_router(
                 detail=f"Session not found: {session_id}",
             )
 
-        if session.chat_endpoint:
-            try:
-                _, base_url = await forge.get_session_proxy_target(session_id)
-                headers = {}
-                auth = request.headers.get("authorization")
-                if auth:
-                    headers["Authorization"] = auth
-                proxy_url, routing_headers = _http_proxy_target(
-                    _session_proxy_url(base_url, "api", "conversation", "tool-result", tool_use_id)
-                )
-                headers.update(routing_headers)
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    response = await client.get(
-                        proxy_url,
-                        headers=headers,
-                    )
-                    if response.status_code != status.HTTP_404_NOT_FOUND:
-                        response.raise_for_status()
-                        return response.json()
-                    # 404 from the live pod → fall through to the durable scan
-                    # (the pod may have rebooted with a seed-only transcript).
-            except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
-                logger.info(
-                    "Live tool-result fetch failed for session %s; trying durable log: %s",
-                    _sanitize_log(session_id),
-                    _sanitize_log(e),
-                )
+        # Single-flight per session: the client fires 3-4 preview requests in
+        # parallel, and each old-broker cache miss costs a multi-second durable
+        # rebuild — the first holder pays it once (and warms the whole session);
+        # the waiters wake into cache hits.
+        async with preview_cache.session_lock(sid):
+            cached = preview_cache.get(sid, tool_use_id)
+            if cached is not None:
+                return _jpeg_response(cached)
 
-        try:
-            transcript = await forge.get_transcript(session_id)
-        except (RuntimeError, ValueError):
-            transcript = _fallback_workspace_transcript(session) or {"turns": []}
-        found = _scan(transcript.get("turns", []) if isinstance(transcript, dict) else [])
-        if found is not None:
-            return found
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"tool_result not found: {tool_use_id}",
-        )
+            found, durable_turns = await _fetch_full_tool_result(
+                request, session, session_id, tool_use_id
+            )
+            try:
+                if durable_turns is not None:
+                    # WARM PASS: reuse the single expensive durable rebuild for
+                    # every image in the session (Pillow work off the event loop).
+                    warmed = await asyncio.to_thread(
+                        warm_previews_from_turns, preview_cache, sid, durable_turns
+                    )
+                    if warmed:
+                        logger.info(
+                            "Warmed %d tool-result preview(s) for session %s",
+                            warmed,
+                            _sanitize_log(session_id),
+                        )
+                    cached = preview_cache.get(sid, tool_use_id)
+                    if cached is not None:
+                        return _jpeg_response(cached)
+
+                if found is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"tool_result not found: {tool_use_id}",
+                    )
+
+                try:
+                    extracted = extract_image_bytes(found.get("content"))
+                except ValueError:
+                    logger.warning(
+                        "Corrupt image base64 in tool_result %s (session %s)",
+                        _sanitize_log(tool_use_id),
+                        _sanitize_log(session_id),
+                    )
+                    extracted = None
+                if extracted is None:
+                    preview_cache.mark_non_image(sid, tool_use_id)
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"tool_result is not an image: {tool_use_id}",
+                    )
+                try:
+                    jpeg = await asyncio.to_thread(
+                        generate_preview_jpeg,
+                        extracted[0],
+                        max_edge=preview_cache.max_edge,
+                    )
+                except ValueError:
+                    logger.warning(
+                        "Undecodable image tool_result %s (session %s)",
+                        _sanitize_log(tool_use_id),
+                        _sanitize_log(session_id),
+                    )
+                    preview_cache.mark_non_image(sid, tool_use_id)
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"tool_result image is undecodable: {tool_use_id}",
+                    ) from None
+            except PreviewUnavailableError:
+                raise HTTPException(
+                    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                    detail="Preview generation unavailable: Pillow is not installed",
+                ) from None
+            preview_cache.put(sid, tool_use_id, jpeg)
+            return _jpeg_response(jpeg)
 
     @router.get(
         "/sessions/{session_id}/workflow/gates",

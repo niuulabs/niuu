@@ -3172,3 +3172,25 @@ async def test_conflicting_operator_and_session_driver_options_are_rejected(monk
             SessionSpec(values={"nodeSelector": {"pool": "one"}}, pod_spec=PodSpecAdditions()),
         )
     assert client.created is None
+
+
+def test_forge_controls_reach_openshell_sandbox(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
+    spec = SessionSpec(
+        values={
+            "session": {"reasoningEffort": "high"},
+            "broker": {
+                "historyHydrationEnabled": False,
+                "codexReceiveMaxBytes": 123456,
+                "pi": {"binary": "/opt/pi"},
+            },
+        },
+        pod_spec=PodSpecAdditions(),
+    )
+    env = manager._build_env(_session(), spec)
+    assert env["SKULD__SESSION__REASONING_EFFORT"] == "high"
+    assert env["SKULD__HISTORY_HYDRATION_ENABLED"] == "false"
+    assert env["SKULD__CODEX_RECEIVE_MAX_BYTES"] == "123456"
+    assert json.loads(env["SKULD__PI"])["binary"] == "/opt/pi"
+    assert manager.runtime_backend == "openshell"

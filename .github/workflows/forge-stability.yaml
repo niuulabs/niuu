@@ -1,0 +1,136 @@
+name: Forge Stability
+
+on:
+  pull_request:
+  push:
+    branches: [dev, dev-integration, "skuld-*", "lexi/**", "Lexi/**"]
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forge-stability-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
+
+jobs:
+  python:
+    name: Forge ${{ matrix.lane }} / Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { lane: unit, python: "3.11", flags: "--coverage" }
+          - { lane: unit, python: "3.12", flags: "--coverage" }
+          - { lane: tmux, python: "3.12", flags: "" }
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: ./.github/actions/setup-python-env
+        with:
+          python-version: ${{ matrix.python }}
+          extras: "--frozen --all-extras --dev"
+      - name: Install real tmux
+        if: matrix.lane == 'tmux'
+        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Run required gate
+        env:
+          REPEATS: ${{ github.event_name == 'schedule' && matrix.lane == 'tmux' && '10' || '1' }}
+        run: >-
+          uv run --frozen --python ${{ matrix.python }} python scripts/verify_forge.py
+          ${{ matrix.lane }} ${{ matrix.flags }} --repeat "$REPEATS"
+      - name: Retain execution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: forge-${{ matrix.lane }}-python-${{ matrix.python }}
+          path: .forge-results/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 14
+
+  database:
+    name: Forge PostgreSQL boundaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: volundr_test
+          POSTGRES_PASSWORD: volundr_test
+          POSTGRES_DB: volundr_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: ./.github/actions/setup-python-env
+        with:
+          extras: "--frozen --all-extras --dev"
+      - name: Exercise actual database and HTTP/SSE boundaries
+        env:
+          TEST_DATABASE_HOST: localhost
+          TEST_DATABASE_PORT: "5432"
+          TEST_DATABASE_USER: volundr_test
+          TEST_DATABASE_PASSWORD: volundr_test
+          TEST_DATABASE_NAME: volundr_test
+          FORGE_HISTORY_TEST_DATABASE_URL: postgresql://volundr_test:volundr_test@localhost:5432/volundr_test
+        run: uv run --frozen python scripts/verify_forge.py database
+      - name: Retain execution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: forge-database
+          path: .forge-results/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 14
+
+  web:
+    name: Forge browser and web contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        with:
+          version: 9
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web-next/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: web-next
+      - run: python3 scripts/verify_forge.py web
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: web-next
+      - run: pnpm exec playwright test --config=playwright.forge.config.ts
+        working-directory: web-next
+      - name: Retain execution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: forge-web
+          path: |
+            .forge-results/
+            web-next/test-results/forge/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 14

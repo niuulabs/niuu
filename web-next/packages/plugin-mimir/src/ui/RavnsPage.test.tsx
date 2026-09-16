@@ -1,10 +1,26 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, waitFor, fireEvent } from '@testing-library/react';
 import { RavnsPage } from './RavnsPage';
 import { createMimirMockAdapter } from '../adapters/mock';
 import type { IRavnWardenService, RavnWardenSummary } from '../application/useRavns';
 import type { IMimirService } from '../ports';
 import { renderWithMimir } from '../testing/renderWithMimir';
+
+// These are page/service tests; never open a connection to a local resident.
+beforeEach(() => {
+  vi.stubGlobal(
+    'WebSocket',
+    class {
+      static OPEN = 1;
+      readyState = 0;
+      close = vi.fn();
+      send = vi.fn();
+      addEventListener = vi.fn();
+      removeEventListener = vi.fn();
+    },
+  );
+});
+afterEach(() => vi.unstubAllGlobals());
 
 const wrap = renderWithMimir;
 

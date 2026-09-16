@@ -35,12 +35,70 @@ _BETA_INTERLEAVED_THINKING = "interleaved-thinking-2025-05-14"
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503})
 _DEFAULT_BASE_URL = "https://api.anthropic.com"
 
+# Everything the Messages API accepts inside a tool_result block. Any other key
+# is rejected outright ("tool_result.name: Extra inputs are not permitted"), so
+# history carrying one — an old checkpoint, another adapter's shape — has to be
+# pruned before it goes back on the wire.
+_TOOL_RESULT_KEYS = frozenset(
+    {"type", "tool_use_id", "content", "is_error", "cache_control", "citations"}
+)
 
-def _without_reasoning(messages: list[dict]) -> list[dict]:
-    """Remove prior internal reasoning from Anthropic input messages."""
-    return [
-        {key: value for key, value in message.items() if key != "reasoning"} for message in messages
-    ]
+
+# Models that still take the fixed-budget thinking shape. Everything else —
+# including anything released after this list was written — gets adaptive
+# thinking. That default direction is deliberate: `budget_tokens` is a hard 400
+# from Opus 4.7 onward, so treating an unknown model as legacy would break it on
+# the day it ships, while treating a legacy model as adaptive degrades to a
+# model that simply thinks less.
+_LEGACY_THINKING_MODELS: tuple[str, ...] = (
+    "claude-3",
+    "claude-sonnet-4-0",
+    "claude-sonnet-4-5",
+    "claude-haiku-4-5",
+    "claude-opus-4-0",
+    "claude-opus-4-1",
+    "claude-opus-4-5",
+)
+
+
+def _uses_legacy_thinking(model: str) -> bool:
+    """True when *model* wants {"type": "enabled", "budget_tokens": N}."""
+    return model.startswith(_LEGACY_THINKING_MODELS)
+
+
+def _thinking_for_model(thinking: dict, model: str) -> dict:
+    """Translate a fixed-budget thinking request into the shape *model* accepts.
+
+    Callers ask for thinking in one vocabulary — a token budget — because that
+    is what the config exposes. Newer models replaced the budget with adaptive
+    thinking plus output_config.effort and reject the old field outright.
+    """
+    if thinking.get("type") != "enabled":
+        return thinking
+    if _uses_legacy_thinking(model):
+        return thinking
+    return {"type": "adaptive"}
+
+
+def _pruned_block(block: object) -> object:
+    """Drop non-schema keys from a tool_result content block."""
+    if not isinstance(block, dict):
+        return block
+    if block.get("type") != "tool_result":
+        return block
+    return {key: value for key, value in block.items() if key in _TOOL_RESULT_KEYS}
+
+
+def _for_api(messages: list[dict]) -> list[dict]:
+    """Strip internal reasoning and non-schema tool_result keys."""
+    cleaned: list[dict] = []
+    for message in messages:
+        out = {key: value for key, value in message.items() if key != "reasoning"}
+        content = out.get("content")
+        if isinstance(content, list):
+            out["content"] = [_pruned_block(block) for block in content]
+        cleaned.append(out)
+    return cleaned
 
 
 class AnthropicAdapter(LLMPort):
@@ -79,9 +137,11 @@ class AnthropicAdapter(LLMPort):
         self._retry_base_delay = retry_base_delay
         self._timeout = timeout
 
-    def _headers(self, *, thinking_enabled: bool = False) -> dict[str, str]:
+    def _headers(self, *, thinking_enabled: bool = False, model: str = "") -> dict[str, str]:
         betas = [_BETA_PROMPT_CACHING]
-        if thinking_enabled:
+        # Adaptive thinking interleaves on its own; the beta is only meaningful
+        # for the models that still take a fixed budget.
+        if thinking_enabled and _uses_legacy_thinking(model or self._default_model):
             betas.append(_BETA_INTERLEAVED_THINKING)
         return {
             "x-api-key": self._api_key,
@@ -125,7 +185,7 @@ class AnthropicAdapter(LLMPort):
         body: dict = {
             "model": model or self._default_model,
             "max_tokens": effective_max_tokens,
-            "messages": _without_reasoning(messages),
+            "messages": _for_api(messages),
             "stream": stream,
         }
         system_blocks = self._build_system(system)
@@ -134,7 +194,7 @@ class AnthropicAdapter(LLMPort):
         if tools:
             body["tools"] = tools
         if thinking is not None:
-            body["thinking"] = thinking
+            body["thinking"] = _thinking_for_model(thinking, body["model"])
         return body
 
     async def _post_with_retry(
@@ -208,7 +268,7 @@ class AnthropicAdapter(LLMPort):
         )
 
         async with httpx.AsyncClient(
-            headers=self._headers(thinking_enabled=thinking_enabled),
+            headers=self._headers(thinking_enabled=thinking_enabled, model=model),
             timeout=self._timeout,
         ) as client:
             response = await self._post_with_retry(client, payload, stream=True)
@@ -339,7 +399,7 @@ class AnthropicAdapter(LLMPort):
         )
 
         async with httpx.AsyncClient(
-            headers=self._headers(thinking_enabled=thinking_enabled),
+            headers=self._headers(thinking_enabled=thinking_enabled, model=model),
             timeout=self._timeout,
         ) as client:
             response = await self._post_with_retry(client, payload, stream=False)

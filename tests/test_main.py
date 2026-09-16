@@ -2,7 +2,7 @@
 
 from contextlib import asynccontextmanager
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -94,6 +94,18 @@ class TestLifespan:
     """Tests for app lifespan startup/shutdown (mocked infrastructure)."""
 
     @pytest.mark.asyncio
+    async def test_empty_migration_bundle_refuses_startup_before_database_connect(
+        self, tmp_path: Path
+    ) -> None:
+        with (
+            patch("cli.resources.migration_dir", return_value=tmp_path),
+            patch("asyncpg.connect", new_callable=AsyncMock) as connect,
+            pytest.raises(RuntimeError, match="migration directory is empty"),
+        ):
+            await _bootstrap_startup_schema(Settings())
+        connect.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_bootstrap_startup_schema_applies_volundr_migrations(
         self,
         tmp_path: Path,
@@ -104,6 +116,8 @@ class TestLifespan:
         (mig_dir / "000002_more.up.sql").write_text("CREATE TABLE IF NOT EXISTS b (id INT);")
 
         mock_conn = AsyncMock()
+        mock_conn.transaction = MagicMock(return_value=AsyncMock())
+        mock_conn.fetchval.return_value = None
 
         with (
             patch("asyncpg.connect", new_callable=AsyncMock, return_value=mock_conn),
@@ -111,7 +125,12 @@ class TestLifespan:
         ):
             await _bootstrap_startup_schema(Settings())
 
-        executed_sql = [call.args[0] for call in mock_conn.execute.await_args_list]
+        executed_sql = [
+            call.args[0]
+            for call in mock_conn.execute.await_args_list
+            if call.args[0].startswith("CREATE TABLE IF NOT EXISTS a")
+            or call.args[0].startswith("CREATE TABLE IF NOT EXISTS b")
+        ]
         assert executed_sql == [
             "CREATE TABLE IF NOT EXISTS a (id INT);",
             "CREATE TABLE IF NOT EXISTS b (id INT);",
@@ -124,6 +143,7 @@ class TestLifespan:
 
         events: list[str] = []
         mock_pool = AsyncMock()
+        mock_pool.get_max_size = MagicMock(return_value=10)
 
         @asynccontextmanager
         async def _mock_db_pool(_config):
@@ -169,6 +189,7 @@ class TestLifespan:
         from fastapi.testclient import TestClient
 
         mock_pool = AsyncMock()
+        mock_pool.get_max_size = MagicMock(return_value=10)
 
         @asynccontextmanager
         async def _mock_db_pool(_config):
@@ -204,6 +225,7 @@ class TestLifespan:
         from fastapi.testclient import TestClient
 
         mock_pool = AsyncMock()
+        mock_pool.get_max_size = MagicMock(return_value=10)
 
         @asynccontextmanager
         async def _mock_db_pool(_config):
@@ -254,6 +276,7 @@ class TestLifespan:
         from fastapi.testclient import TestClient
 
         mock_pool = AsyncMock()
+        mock_pool.get_max_size = MagicMock(return_value=10)
 
         @asynccontextmanager
         async def _mock_db_pool(_config):
@@ -341,6 +364,7 @@ class TestLifespan:
         from fastapi.testclient import TestClient
 
         mock_pool = AsyncMock()
+        mock_pool.get_max_size = MagicMock(return_value=10)
 
         @asynccontextmanager
         async def _mock_db_pool(_config):
@@ -411,6 +435,7 @@ class TestLifespan:
         from fastapi.testclient import TestClient
 
         mock_pool = AsyncMock()
+        mock_pool.get_max_size = MagicMock(return_value=10)
 
         @asynccontextmanager
         async def _mock_db_pool(_config):
@@ -521,6 +546,7 @@ class TestBifrostCatalogLoading:
         from fastapi.testclient import TestClient
 
         mock_pool = AsyncMock()
+        mock_pool.get_max_size = MagicMock(return_value=10)
 
         @asynccontextmanager
         async def _mock_db_pool(_config):
@@ -550,3 +576,36 @@ class TestBifrostCatalogLoading:
             with TestClient(app) as client:
                 response = client.get("/health")
                 assert response.status_code == 200
+
+
+async def test_validation_logging_omits_credentials_and_private_input():
+    from fastapi import Request
+    from fastapi.exceptions import RequestValidationError
+
+    app = create_app()
+    error = RequestValidationError(
+        [
+            {
+                "type": "string_type",
+                "loc": ("body", "api_key"),
+                "msg": "invalid private-test-key",
+                "input": "private-test-key",
+            }
+        ],
+        body={"api_key": "private-test-key"},
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/credentials",
+            "headers": [],
+            "query_string": b"",
+        }
+    )
+    with patch("volundr.main.logger.warning") as warning:
+        response = await app.exception_handlers[RequestValidationError](request, error)
+    assert response.status_code == 422
+    warning.assert_called_once()
+    assert "string_type" in str(warning.call_args)
+    assert "private-test-key" not in str(warning.call_args)

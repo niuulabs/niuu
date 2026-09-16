@@ -559,7 +559,9 @@ class TestConfigMapTemplate:
         assert "000059_resident_session_events.up.sql" in migration_config["data"]
 
         migration_dir = CHART_DIR.parent.parent / "migrations"
-        expected_migrations = {path.name for path in migration_dir.glob("*.sql")}
+        expected_migrations = {path.name for path in migration_dir.glob("*.sql")} | {
+            "lineage-aliases.json"
+        }
         assert set(migration_config["data"]) == expected_migrations
 
     def test_resident_session_controllers_render_with_backend_binding(self):

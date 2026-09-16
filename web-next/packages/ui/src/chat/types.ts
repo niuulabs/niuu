@@ -22,11 +22,17 @@ export interface ChatMessagePart {
   readonly type: 'text' | 'tool_use' | 'tool_result' | 'reasoning';
   readonly text?: string;
   readonly id?: string;
+  /** Native public text identity; phase is preserved even when a provider adds a new value. */
+  readonly phase?: string;
+  readonly turn_id?: string;
+  readonly thread_id?: string;
+  readonly index?: number;
+  readonly complete?: boolean;
+  readonly id_source?: string;
   readonly name?: string;
   readonly input?: Record<string, unknown>;
   readonly tool_use_id?: string;
   readonly content?: string;
-  readonly phase?: 'commentary' | 'final_answer';
 }
 
 export interface ParticipantMeta {

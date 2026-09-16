@@ -1108,7 +1108,14 @@ def _build_integrations_router(
         try:
             if existing.integration_type == IntegrationType.ISSUE_TRACKER:
                 adapter = await tracker_factory.create(existing)
-                conn_status = await adapter.check_connection()
+                try:
+                    conn_status = await adapter.check_connection()
+                finally:
+                    # This endpoint owns the short-lived adapter it creates.
+                    # Stateless third-party adapters may have no close method.
+                    close = getattr(adapter, "close", None)
+                    if close is not None:
+                        await close()
                 return IntegrationTestResult(
                     success=conn_status.connected,
                     provider=conn_status.provider,

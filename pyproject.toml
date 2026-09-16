@@ -37,6 +37,8 @@ dependencies = [
     "docker>=7.2.0",
     "xds-protos>=1.78.0,<2",
     "grpcio>=1.78.0,<2",
+
+    "pillow>=12.3.0",
 ]
 
 [project.optional-dependencies]
@@ -117,6 +119,7 @@ dev = [
 
 [project.scripts]
 niuu = "niuu.__main__:main"
+forge = "volundr.cli:main"
 guild = "guild.main:main"
 audit = "audit.main:main"
 identity = "identity.main:main"
@@ -173,9 +176,11 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "-v --tb=short -m 'not integration and not broker and not kind_integration'"
+addopts = "-v --tb=short -m 'not integration and not broker and not kind_integration and not live_cli'"
 markers = [
     "integration: tests that require a real PostgreSQL database",
+    "tmux: tests that drive a real isolated tmux server with the fake Claude CLI",
+    "live_cli: opt-in tests requiring installed provider CLIs (FORGE_LIVE_CLI=1)",
     "broker: tests that require real message broker services (NATS, RabbitMQ, Redis)",
     "ravn: tests for the Ravn agent module",
     "e2e: end-to-end tests for full agent conversation flows",

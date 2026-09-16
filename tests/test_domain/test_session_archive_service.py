@@ -339,6 +339,74 @@ async def test_session_archive_service_uses_durable_event_log_when_workspace_mis
 
 
 @pytest.mark.asyncio
+async def test_event_log_rebuild_over_ceiling_keeps_the_newest_frames(
+    session_repository,
+    archive_store,
+):
+    """TAIL-BOUNDED rebuild (2026-07-12): when the durable log exceeds ``max_frames``,
+    the bounded read must keep the NEWEST frames, not the oldest. The old head-read
+    served a huge session's transcript as it looked DAYS ago (lexi-frontend-presentation:
+    the first 50k of 216,918 frames = 27 of 112 turns), which a caching client then
+    persisted as current."""
+    session = Session(
+        name="tail-bounded",
+        model="gpt-5.5",
+        status=SessionStatus.STOPPED,
+    )
+    await session_repository.create(session)
+
+    class MissingStorage:
+        def resolve_session_workspace_path(self, _session_id: str) -> str | None:
+            return None
+
+        async def get_workspace_by_session(self, _session_id: str):
+            return None
+
+    session_service = SessionService(
+        repository=session_repository,
+        pod_manager=MockPodManager(),
+        validate_repos=False,
+    )
+    entries = [
+        SessionLogEntry(
+            session_id=session.id,
+            seq=n,
+            kind="conversation.turn",
+            payload={
+                "turn": {
+                    "id": f"turn-{n}",
+                    "role": "assistant",
+                    "content": f"reply {n}",
+                }
+            },
+            ts=datetime.now(UTC),
+            role="assistant",
+        )
+        for n in range(1, 31)
+    ]
+    archive_service = SessionArchiveService(
+        session_service,
+        MissingStorage(),
+        archive_store,
+        event_log_repository=InMemorySessionEventLog(entries),
+    )
+
+    transcript = await archive_service._load_event_log_transcript(session.id, max_frames=10)
+
+    assert transcript is not None
+    ids = [t["id"] for t in transcript["turns"]]
+    # The rebuild covers the log TAIL: the newest turn is present, the oldest is not.
+    assert "turn-30" in ids
+    assert "turn-1" not in ids
+    assert len(ids) == 10
+    # Unbounded (default ceiling far above 30 frames) still returns everything.
+    full = await archive_service._load_event_log_transcript(session.id)
+    assert full is not None
+    assert [t["id"] for t in full["turns"]][0] == "turn-1"
+    assert len(full["turns"]) == 30
+
+
+@pytest.mark.asyncio
 async def test_session_archive_service_rebuilds_tmux_crash_transcript(
     session_repository,
     archive_store,

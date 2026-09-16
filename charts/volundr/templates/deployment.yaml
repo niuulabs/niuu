@@ -378,6 +378,36 @@ spec:
       {{- if or .Values.migrations.enabled .Values.initContainers }}
       initContainers:
         {{- if .Values.migrations.enabled }}
+        - name: migration-lineage
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "volundr.schema_bridge"]
+          args: ["--migrations-dir", "/migrations"]
+          env:
+            - name: DATABASE_HOST
+              value: {{ include "volundr.databaseHost" . | quote }}
+            - name: DATABASE_PORT
+              value: {{ include "volundr.databasePort" . | quote }}
+            - name: DATABASE_NAME
+              value: {{ .Values.database.name | quote }}
+            - name: DATABASE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "volundr.databaseSecretName" . }}
+                  key: {{ .Values.database.userKey | default "username" }}
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "volundr.databaseSecretName" . }}
+                  key: {{ .Values.database.passwordKey | default "password" }}
+          {{- with .Values.migrations.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
         - name: migrate
           image: "{{ .Values.migrations.image.repository }}:{{ .Values.migrations.image.tag }}"
           imagePullPolicy: {{ .Values.migrations.image.pullPolicy }}

@@ -1,5 +1,6 @@
 """FastAPI composition and HTTP route handlers for the Skuld broker."""
 
+import json
 import logging
 import mimetypes
 import os
@@ -21,8 +22,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from niuu.build_identity import build_identity
+from niuu.domain.history_paging import InvalidHistoryCursorError
+from niuu.domain.json_text import json_text_safe
+from niuu.domain.text_projection import projection_revision
 from skuld.conversation_models import ConversationTurn
-from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turn
+from skuld.conversation_read import conversation_rows, wait_history_quiet
+from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turn, is_elided_input
+from skuld.conversation_snapshot import ConversationSnapshotTooLargeError, prepare_history_page
 from skuld.event_log import FORGE_SESSIONS_PATH
 from skuld.file_routes import register_file_routes
 from skuld.path_security import (
@@ -37,6 +44,7 @@ WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
 WORKFLOW_GATE_INTENT_RESOLVE = "resolve"
 
 logger = logging.getLogger("skuld.broker")
+_BUILD_IDENTITY = build_identity()
 _broker_getter: Callable[[], Any] | None = None
 _log_buffer: deque[dict] = deque()
 
@@ -131,7 +139,7 @@ app.add_middleware(
 @app.get("/health")
 async def health() -> dict:
     """Health check endpoint."""
-    return {"status": "healthy", "session_id": broker.session_id}
+    return {"status": "healthy", "session_id": broker.session_id, **_BUILD_IDENTITY}
 
 
 @app.get("/ready")
@@ -257,13 +265,27 @@ async def get_aggregate_logs(
 
 
 @app.get("/api/conversation/history")
-async def get_conversation_history(detail: str = "full") -> dict:
+async def get_conversation_history(
+    detail: str = "full",
+    history_protocol: int = 0,
+    limit: int = 0,
+    max_bytes: int = 0,
+    cursor: str | None = None,
+    turn_id: str | None = None,
+) -> dict:
     """Return the conversation history with activity state.
 
     ``detail=shallow`` elides heavy ``tool_result`` content to lazy-load
     placeholders (see ``conversation_shallow``); the client fetches an
     individual result on demand via ``/api/conversation/tool-result/{id}``.
     """
+    if history_protocol == 2:
+        try:
+            await wait_history_quiet(broker)
+        except TimeoutError as exc:
+            raise HTTPException(
+                503, {"code": "history_busy", "recovery": "retry"}, headers={"Retry-After": "1"}
+            ) from exc
     shallow = detail == SHALLOW_DETAIL
     is_active = (
         broker._transport is not None
@@ -279,35 +301,27 @@ async def get_conversation_history(detail: str = "full") -> dict:
         elif broker._pending_reasoning_text:
             last_activity = "Thinking..."
 
-    def _serialize_turn(turn: ConversationTurn) -> dict:
-        d = asdict(turn)
-        # Omit optional participant fields when absent to keep JSON backward-compatible
-        if d["participant_id"] is None:
-            del d["participant_id"]
-        if d["participant_meta"] is None:
-            del d["participant_meta"]
-        if d["thread_id"] is None:
-            del d["thread_id"]
-        # Always include visibility so clients can rely on it being present
-        return d
-
-    # PERF PROFILE (server-side): the open latency the client sees is mostly here. Time the two
-    # phases SEPARATELY — the `asdict` BUILD (a deep copy of every turn incl. the heavy tool_result
-    # content) vs the shallow ELIDE — because `asdict` runs on the FULL payload BEFORE the elide
-    # shrinks it, so a shallow request still pays the full build/serialize cost. If build_ms
-    # dominates, the real fix is eliding BEFORE asdict (never materialize the heavy content), not
-    # the transfer size. `_prep` rides in the response so volundr + the client see the breakdown.
     t_build = time.perf_counter()
-    turns = [_serialize_turn(t) for t in broker._conversation_turns]
-    # Whole-truth unification: append the in-flight turn so a first connect / other device sees
-    # the running turn's tools+text immediately (not just the is_active/last_activity snippet).
-    in_progress_turn = broker._serialize_in_progress_turn()
-    if in_progress_turn is not None:
-        turns.append(in_progress_turn)
+    turns = conversation_rows(broker, omit_empty_participants=True)
+    revision = projection_revision(turns)
+    settled = [
+        t
+        for t in turns
+        if not t.get("in_progress") and (t.get("metadata") or {}).get("status") != "in_progress"
+    ]
+    history_state = {
+        "history_has_in_progress": len(settled) != len(turns),
+        "history_settled_tail_id": settled[-1].get("id") if settled else None,
+    }
+    if turn_id is not None:
+        turns = [turn for turn in turns if turn.get("id") == turn_id]
+        if not turns:
+            raise HTTPException(404, "History item no longer exists in this projection")
+    last_activity = json_text_safe(last_activity)
     build_ms = (time.perf_counter() - t_build) * 1000.0
 
     elide_ms = 0.0
-    if shallow:
+    if shallow and history_protocol != 2:
         t_elide = time.perf_counter()
         turns = [elide_turn(d) for d in turns]
         elide_ms = (time.perf_counter() - t_elide) * 1000.0
@@ -326,8 +340,10 @@ async def get_conversation_history(detail: str = "full") -> dict:
         build_ms,
         elide_ms,
     )
-    return {
+    result = {
         "turns": turns,
+        "projection_revision": revision,
+        "head_seq": broker._event_log_seq,
         "is_active": is_active,
         "last_activity": last_activity,
         "_prep": prep,
@@ -336,7 +352,43 @@ async def get_conversation_history(detail: str = "full") -> dict:
         # next SSE/activity report to know whether the session is active/idle/etc.
         "activity_state": broker._activity_state,
         "activity_state_since": broker._state_since_iso(broker._activity_state_since),
+        # The stable turn anchor for the running elapsed (null ⇔ no turn in
+        # flight). Mirrors the /activity report so a reconnect's first paint can
+        # anchor "running Ns" to the prompt instant, not the coarse _since.
+        "turn_started_at": (
+            broker._state_since_iso(broker._turn_started_at)
+            if broker._turn_started_at is not None
+            else None
+        ),
     }
+    if history_protocol != 2:
+        if cursor:
+            raise HTTPException(400, "cursor requires history_protocol=2")
+        return json_text_safe(result)
+    if turn_id is not None or limit < 0 or max_bytes < 0:
+        raise HTTPException(400, "Invalid history page request")
+    try:
+        return prepare_history_page(
+            {**result, **history_state, "history_source": "gateway"},
+            session_id=broker.session_id,
+            max_turns=min(
+                limit or broker._settings.conversation_recent_max_turns,
+                broker._settings.conversation_recent_max_turns,
+            ),
+            max_bytes=min(
+                max_bytes or broker._settings.conversation_recent_max_bytes,
+                broker._settings.conversation_recent_max_bytes,
+            ),
+            cursor=cursor,
+        )
+    except InvalidHistoryCursorError as exc:
+        raise HTTPException(
+            409, {"code": "history_cursor_invalid", "recovery": "recent", "history_protocol": 2}
+        ) from exc
+    except ConversationSnapshotTooLargeError as exc:
+        raise HTTPException(413, {"code": "history_page_too_large", "recovery": "retry"}) from exc
+    except ValueError as exc:
+        raise HTTPException(400, "Malformed history cursor") from exc
 
 
 @app.get("/api/conversation/tool-result/{tool_use_id}")
@@ -350,31 +402,123 @@ async def get_tool_result(tool_use_id: str) -> dict:
     tool_result exists in this session.
     """
 
-    def _find(parts: list[dict]) -> dict | None:
+    # P1 input elision (2026-07-12): the response also carries the matching tool_use's FULL
+    # ``input`` so an elided-input card expands from the same lazy fetch. Use and result live
+    # in DIFFERENT turns (assistant emits the use; the result rides the next user event), so
+    # collect both across all sources. An input-only hit (tool still running) answers 200 with
+    # empty content instead of 404 — the expand shows the input immediately.
+    found_result: dict | None = None
+    found_input = None
+
+    sources = [turn.parts for turn in broker._conversation_turns]
+    sources.append(list(broker._live_tool_details.get(tool_use_id, {}).values()))
+    in_progress = broker._serialize_in_progress_turn()
+    if in_progress is not None:
+        sources.append(in_progress.get("parts", []))
+
+    for parts in sources:
         for block in parts:
-            if (
-                isinstance(block, dict)
-                and block.get("type") == "tool_result"
-                and block.get("tool_use_id") == tool_use_id
-            ):
-                return block
-        return None
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and block.get("id") == tool_use_id:
+                candidate = block.get("input")
+                if candidate is not None and not is_elided_input(candidate):
+                    found_input = candidate
+            elif block.get("type") == "tool_result" and block.get("tool_use_id") == tool_use_id:
+                found_result = block
+        if found_result is not None and found_input is not None:
+            break
+
+    if found_result is not None or found_input is not None:
+        out = {
+            "tool_use_id": tool_use_id,
+            "content": (found_result or {}).get("content", ""),
+            "is_error": bool((found_result or {}).get("is_error", False)),
+        }
+        if found_input is not None:
+            out["input"] = found_input
+        return out
+
+    raise HTTPException(status_code=404, detail=f"tool_result not found: {tool_use_id}")
+
+
+@app.get("/api/conversation/tool-result/{tool_use_id}/files/{file_uuid}")
+async def download_send_user_file(tool_use_id: str, file_uuid: str) -> FileResponse:
+    """Serve a file from a matched native ``SendUserFile`` call/result pair."""
+    try:
+        canonical_uuid = str(uuid.UUID(file_uuid))
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="SendUserFile attachment not found") from None
+    if canonical_uuid != file_uuid.lower():
+        raise HTTPException(status_code=404, detail="SendUserFile attachment not found")
 
     sources = [turn.parts for turn in broker._conversation_turns]
     in_progress = broker._serialize_in_progress_turn()
     if in_progress is not None:
         sources.append(in_progress.get("parts", []))
 
+    call: dict[str, Any] | None = None
+    result: dict[str, Any] | None = None
     for parts in sources:
-        found = _find(parts)
-        if found is not None:
-            return {
-                "tool_use_id": tool_use_id,
-                "content": found.get("content", ""),
-                "is_error": bool(found.get("is_error", False)),
-            }
+        for block in parts:
+            if not isinstance(block, dict):
+                continue
+            if (
+                block.get("type") == "tool_use"
+                and block.get("id") == tool_use_id
+                and str(block.get("name") or "").lower() == "senduserfile"
+            ):
+                call = block
+            elif (
+                block.get("type") == "tool_result"
+                and block.get("tool_use_id") == tool_use_id
+                and not bool(block.get("is_error", False))
+            ):
+                result = block
 
-    raise HTTPException(status_code=404, detail=f"tool_result not found: {tool_use_id}")
+    if call is None or result is None:
+        raise HTTPException(status_code=404, detail="SendUserFile attachment not found")
+
+    payload = result.get("content", {})
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            payload = {}
+    attachments = payload.get("attachments", []) if isinstance(payload, dict) else []
+    attachment = next(
+        (
+            item
+            for item in attachments
+            if isinstance(item, dict) and str(item.get("file_uuid") or "").lower() == canonical_uuid
+        ),
+        None,
+    )
+    if attachment is None:
+        raise HTTPException(status_code=404, detail="SendUserFile attachment not found")
+
+    raw_path = attachment.get("path")
+    if not isinstance(raw_path, str) or not raw_path:
+        raise HTTPException(status_code=404, detail="SendUserFile attachment not found")
+
+    call_input = call.get("input") if isinstance(call.get("input"), dict) else {}
+    requested = call_input.get("files", [])
+    if not isinstance(requested, list) or raw_path not in requested:
+        raise HTTPException(status_code=404, detail="SendUserFile attachment not found")
+
+    try:
+        resolved = Path(raw_path).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=410, detail="file no longer available") from None
+    if not resolved.is_file():
+        raise HTTPException(status_code=410, detail="file no longer available")
+    if resolved.stat().st_size > broker._settings.max_presented_file_bytes:
+        raise HTTPException(status_code=413, detail="file exceeds max_presented_file_bytes")
+
+    media_type = str(attachment.get("media_type") or "").strip()
+    if not media_type:
+        media_type = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
+    return FileResponse(resolved, filename=resolved.name, media_type=media_type)
 
 
 # --- Capabilities API ---
@@ -407,10 +551,47 @@ async def get_plan() -> dict:
     return {"tasks": plan.get("tasks", []), "counts": plan.get("counts", {})}
 
 
+@app.get("/api/runtime-options")
+async def get_runtime_options(refresh: bool = False) -> dict:
+    """Native, session-scoped model/effort/tier catalog; never the TUI menu."""
+    if not broker._transport:
+        raise HTTPException(status_code=503, detail="Transport not initialized")
+    if not broker._transport.capabilities.runtime_options:
+        raise HTTPException(status_code=409, detail="Runtime options not supported")
+    try:
+        return await broker._transport.get_runtime_options(refresh=refresh)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+class _RuntimeOptionsRequest(BaseModel):
+    options: dict[str, Any]
+    request_id: str | None = None
+
+
+@app.post("/api/runtime-options")
+async def set_runtime_options(body: _RuntimeOptionsRequest) -> dict:
+    """Acknowledge next-turn settings, not a changed in-flight model or completed turn."""
+    if not broker._transport:
+        raise HTTPException(status_code=503, detail="Transport not initialized")
+    if not broker._transport.capabilities.runtime_options:
+        raise HTTPException(status_code=409, detail="Runtime options not supported")
+    try:
+        return await broker.handle_runtime_options(body.options, request_id=body.request_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.get("/api/agents")
-async def get_agents() -> dict:
-    """Agents/sub-processes running in this session: Task subagents + teammate panes."""
-    return {"agents": list(broker._running_agents.values())}
+async def get_agents(include_finished: bool = False) -> dict:
+    """Return active agents, optionally including recently completed subagents."""
+    broker._reap_dead_teammates()
+    agents = [broker._enrich_agent_row(agent) for agent in broker._running_agents.values()]
+    if include_finished:
+        agents.extend(broker._finished_agents)
+    return {"agents": agents}
 
 
 @app.get("/api/slash-commands")
@@ -418,28 +599,43 @@ async def get_slash_commands(refresh: bool = Query(True)) -> dict[str, Any]:
     """Return slash commands available in the active CLI session."""
     if not broker._transport:
         raise HTTPException(status_code=503, detail="Transport not initialized")
-    if not broker._transport.capabilities.slash_commands:
-        raise HTTPException(status_code=501, detail="Slash commands not supported")
     commands = await broker.discover_slash_commands(refresh=refresh)
     return {"commands": commands, "count": len(commands)}
 
 
 @app.post("/api/slash-commands/send")
 async def send_slash_command(body: _SlashCommandRequest) -> dict[str, str]:
-    """Send a slash command to the active CLI session as terminal input."""
+    """Dispatch a supported native action; `sent` is acceptance, not turn completion."""
     if not broker._transport:
         raise HTTPException(status_code=503, detail="Transport not initialized")
+    command_text = "/" + body.command.strip().lstrip("/") + " " + body.arguments
+    from skuld.effort import effort_argument
+
+    argument = effort_argument(command_text)
+    if argument is not None:
+        try:
+            await broker.handle_effort(argument)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"status": "sent", "command": "/effort"}
     if not broker._transport.capabilities.slash_commands:
         raise HTTPException(status_code=501, detail="Slash commands not supported")
     command = body.command.strip()
     if not command:
         raise HTTPException(status_code=400, detail="Command is required")
-    await broker._transport.send_control(
-        "slash_command",
-        command=command,
-        arguments=body.arguments,
-        pane_id=body.pane_id,
-    )
+    try:
+        await broker._transport.send_control(
+            "slash_command",
+            command=command,
+            arguments=body.arguments,
+            pane_id=body.pane_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (RuntimeError, TimeoutError) as exc:
+        # A timeout may have crossed the native boundary. Never retry a command
+        # automatically (fork/review/compact may already have been accepted).
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     name = command.split(maxsplit=1)[0]
     if not name.startswith("/"):
         name = f"/{name}"
@@ -620,7 +816,9 @@ async def present_file(body: dict) -> dict:
         raise HTTPException(500, "could not stage file") from None
     _presented_registry[file_id] = str(dest)
 
-    await broker._emit_broker_frame(_build_present_file_turn(file_id, name, mime, size, caption))
+    turn = _build_present_file_turn(file_id, name, mime, size, caption)
+    broker._append_turn(turn)
+    await broker._channels.broadcast({"type": "conversation.turn", "turn": asdict(turn)})
     logger.info(
         "present-file: staged %s (%d bytes) as %s",
         repr(name),
@@ -632,28 +830,19 @@ async def present_file(body: dict) -> dict:
 
 def _build_present_file_turn(
     file_id: str, name: str, mime: str, size: int, caption: str | None
-) -> dict:
-    """A self-contained assistant `conversation.turn` carrying the file as a `present_file` tool_use
-    part (no inline bytes). PASS-1 authoritative → survives reconnect + the durable rebuild."""
+) -> ConversationTurn:
+    """Build a turn shared by live memory, durable log, and broadcast paths."""
     tool_input: dict = {"file_id": file_id, "name": name, "mime": mime, "size": size}
     if caption:
         tool_input["caption"] = caption
     part = {"id": file_id, "name": "present_file", "type": "tool_use", "input": tool_input}
-    return {
-        "type": "conversation.turn",
-        "turn": {
-            "id": str(uuid.uuid4()),
-            "role": "assistant",
-            "parts": [part],
-            "content": caption or name,
-            "metadata": {"cost": None, "model": None, "usage": {}, "present_file": True},
-            "thread_id": None,
-            "created_at": datetime.now(UTC).isoformat(),
-            "visibility": "public",
-            "participant_id": None,
-            "participant_meta": None,
-        },
-    }
+    return ConversationTurn(
+        id=str(uuid.uuid4()),
+        role="assistant",
+        parts=[part],
+        content=caption or name,
+        metadata={"cost": None, "model": None, "usage": {}, "present_file": True},
+    )
 
 
 @app.get("/api/files/presented/{file_id}")
@@ -1045,3 +1234,18 @@ class _TokenRedactFilter(logging.Filter):
         elif isinstance(record.args, dict):
             record.args = {key: self._redact(value) for key, value in record.args.items()}
         return True
+
+
+@app.get("/api/control-state")
+async def get_control_state() -> dict:
+    """Expose live controls and retained, explicitly non-answerable recovery cards."""
+    return {
+        "questions": [
+            *broker._unrestored_questions.values(),
+            *broker._pending_ask_user_questions.values(),
+        ],
+        "permissions": [
+            *broker._unrestored_permissions.values(),
+            *broker._pending_permission_requests.values(),
+        ],
+    }

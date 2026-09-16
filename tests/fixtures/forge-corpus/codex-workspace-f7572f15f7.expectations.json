@@ -1,0 +1,289 @@
+{
+  "schema_version": 1,
+  "fixture": "codex-workspace-f7572f15f7.frames.json",
+  "sha256": "f7572f15f783a90947104c8fb2ae25ee7f97e8168c5e49af234601fc63004772",
+  "source_slice_sha256": "f7572f15f783a90947104c8fb2ae25ee7f97e8168c5e49af234601fc63004772",
+  "redacted": true,
+  "source": "live-provider",
+  "provider": "codex",
+  "model": "gpt-6-astra",
+  "scenario": {
+    "scenario": "workspace",
+    "passed": true,
+    "checks": [
+      {
+        "name": "terminal-result",
+        "passed": true,
+        "detail": 1
+      },
+      {
+        "name": "correlated-completion",
+        "passed": true,
+        "detail": 1
+      },
+      {
+        "name": "successful-result",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "tool-pairs",
+        "passed": true,
+        "detail": {
+          "unpaired_calls": [],
+          "orphan_results": []
+        }
+      },
+      {
+        "name": "tool:command",
+        "passed": true,
+        "detail": 2
+      },
+      {
+        "name": "tool-output:FORGE_SUM=42",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "file:answer.json",
+        "passed": true,
+        "detail": {
+          "sum": 42
+        }
+      }
+    ],
+    "observed": {
+      "calls": {
+        "exec-35437589-5b12-4077-b58b-7d268e644acb": {
+          "id": "exec-35437589-5b12-4077-b58b-7d268e644acb",
+          "name": "Bash",
+          "type": "tool_use",
+          "input": {
+            "command": "/bin/bash -lc \"cat TASK.md && printf '\\\\n--- numbers.json ---\\\\n' && cat numbers.json\""
+          }
+        },
+        "exec-dd931cd7-076d-4da0-a792-e699b6cb6e41": {
+          "id": "exec-dd931cd7-076d-4da0-a792-e699b6cb6e41",
+          "name": "Bash",
+          "type": "tool_use",
+          "input": {
+            "command": "/bin/bash -lc \"python3 - <<'PY'\nimport json\nfrom pathlib import Path\nnumbers = json.loads(Path('numbers.json').read_text())\ntotal = sum(numbers)\nprint(f'FORGE_SUM={total}')\nPath('answer.json').write_text(json.dumps({'sum': total}) + '\\\\n')\nPY\ncat answer.json\""
+          }
+        }
+      },
+      "results": {
+        "exec-35437589-5b12-4077-b58b-7d268e644acb": {
+          "type": "tool_result",
+          "content": "# Forge acceptance workspace\n\nOnly synthetic data lives here. Use this directory for all task files. Do not inspect parent directories, credentials, environment variables, or unrelated repositories. Do not publish, commit, push, or contact people. Native worker agents may read these task files. Public documentation search is allowed.\n\n--- numbers.json ---\n[8, 13, 21]\n",
+          "ended_at": "2026-09-07T16:55:18.393689+00:00",
+          "tool_use_id": "exec-35437589-5b12-4077-b58b-7d268e644acb"
+        },
+        "exec-dd931cd7-076d-4da0-a792-e699b6cb6e41": {
+          "type": "tool_result",
+          "content": "FORGE_SUM=42\n{\"sum\": 42}\n",
+          "ended_at": "2026-09-07T16:55:26.981635+00:00",
+          "tool_use_id": "exec-dd931cd7-076d-4da0-a792-e699b6cb6e41"
+        }
+      },
+      "tool_families": {
+        "command": 2
+      },
+      "agent_ids": [],
+      "assistant_text": "FORGE_SUM=42. Wrote and read back `answer.json`: `{\"sum\": 42}`.\n\n[FORGE_DONE:c742b759e60b4dbcb988600eb6346054:workspace]",
+      "unpaired_calls": [],
+      "orphan_results": [],
+      "event_counts": {
+        "user": 3,
+        "user_confirmed": 1,
+        "user_delivered": 1,
+        "assistant": 3,
+        "user_consumed": 1,
+        "user_active": 1,
+        "content_block_start": 5,
+        "content_block_delta": 48,
+        "content_block_stop": 5,
+        "message_delta": 3,
+        "result": 1
+      }
+    },
+    "prompt": "Read TASK.md and numbers.json using tools. Use a command to calculate the sum of the numbers; print FORGE_SUM=<sum>. Write answer.json containing exactly an object with key sum and that numeric value. Read the file back with a tool. Actually execute these actions, then briefly report the result.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:c742b759e60b4dbcb988600eb6346054:workspace]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+    "after_seq": 4,
+    "through_seq": 78,
+    "duration_seconds": 22.062
+  },
+  "review": {
+    "status": "accepted",
+    "reviewer": "Codex project-review agent, 2026-09-07",
+    "source_frames_sha256": "1504dfbbaf9fa090966365ac8c9802e4440b2b4e8c1486da0fb4ba05e7f414ad",
+    "notes": [
+      "Reviewed prompt and captured interval (4, 78]. All scenario action assertions passed; tool IDs pair with results.",
+      "PostgreSQL raw rows project to these REST frames exactly. Full and cursor fixture replay match. The captured live stream is preserved in database order.",
+      "The running platform's public replay WebSocket remains unavailable until the facade fix is deployed; this fixture certifies the captured scenario, not that deployment.",
+      "The command computed FORGE_SUM=42 from [8,13,21]; the runner independently read answer.json and confirmed its sole numeric sum key."
+    ]
+  },
+  "checkpoints": [
+    {
+      "after_seq": 77,
+      "event_type": "result",
+      "turn_count": 2,
+      "partial": false,
+      "turns_sha256": "1d3c995bef00b7bf0d68d7944fcfb86058ad36e7a597f6e50c2e89e67fb7491e"
+    }
+  ],
+  "expected_turns": [
+    {
+      "id": "28ba2c46-3693-4ad7-9380-9585b53a1070",
+      "role": "user",
+      "content": "Read TASK.md and numbers.json using tools. Use a command to calculate the sum of the numbers; print FORGE_SUM=<sum>. Write answer.json containing exactly an object with key sum and that numeric value. Read the file back with a tool. Actually execute these actions, then briefly report the result.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:c742b759e60b4dbcb988600eb6346054:workspace]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+      "parts": [],
+      "created_at": "2026-09-07T16:55:12.816044+00:00",
+      "metadata": {
+        "steering_state": "active"
+      },
+      "visibility": "public"
+    },
+    {
+      "id": "41da6848-bffa-58bb-b688-f2cdebd4cf46",
+      "role": "assistant",
+      "content": "FORGE_SUM=42. Wrote and read back `answer.json`: `{\"sum\": 42}`.\n\n[FORGE_DONE:c742b759e60b4dbcb988600eb6346054:workspace]",
+      "parts": [
+        {
+          "type": "tool_use",
+          "id": "exec-35437589-5b12-4077-b58b-7d268e644acb",
+          "name": "Bash",
+          "input": {
+            "command": "/bin/bash -lc \"cat TASK.md && printf '\\\\n--- numbers.json ---\\\\n' && cat numbers.json\""
+          },
+          "started_at": "2026-09-07T16:55:18.375172+00:00",
+          "ended_at": "2026-09-07T16:55:18.393689+00:00",
+          "duration_ms": 18
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "exec-35437589-5b12-4077-b58b-7d268e644acb",
+          "content": "# Forge acceptance workspace\n\nOnly synthetic data lives here. Use this directory for all task files. Do not inspect parent directories, credentials, environment variables, or unrelated repositories. Do not publish, commit, push, or contact people. Native worker agents may read these task files. Public documentation search is allowed.\n\n--- numbers.json ---\n[8, 13, 21]\n",
+          "is_error": false,
+          "ended_at": "2026-09-07T16:55:18.393689+00:00"
+        },
+        {
+          "type": "tool_use",
+          "id": "exec-dd931cd7-076d-4da0-a792-e699b6cb6e41",
+          "name": "Bash",
+          "input": {
+            "command": "/bin/bash -lc \"python3 - <<'PY'\nimport json\nfrom pathlib import Path\nnumbers = json.loads(Path('numbers.json').read_text())\ntotal = sum(numbers)\nprint(f'FORGE_SUM={total}')\nPath('answer.json').write_text(json.dumps({'sum': total}) + '\\\\n')\nPY\ncat answer.json\""
+          },
+          "started_at": "2026-09-07T16:55:26.972462+00:00",
+          "ended_at": "2026-09-07T16:55:26.981635+00:00",
+          "duration_ms": 9
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "exec-dd931cd7-076d-4da0-a792-e699b6cb6e41",
+          "content": "FORGE_SUM=42\n{\"sum\": 42}\n",
+          "is_error": false,
+          "ended_at": "2026-09-07T16:55:26.981635+00:00"
+        },
+        {
+          "type": "text",
+          "id": "legacy-text-4",
+          "text": "FORGE_SUM=42. Wrote and read back `answer.json`: `{\"sum\": 42}`.\n\n[FORGE_DONE:c742b759e60b4dbcb988600eb6346054:workspace]",
+          "complete": true,
+          "id_source": "synthetic",
+          "index": 4
+        }
+      ],
+      "created_at": "2026-09-07T16:55:32.380090+00:00",
+      "metadata": {
+        "usage": {
+          "gpt-6-astra": {
+            "inputTokens": 12641,
+            "outputTokens": 50,
+            "cacheReadInputTokens": 12288,
+            "cacheCreationInputTokens": 0
+          }
+        },
+        "cost": null,
+        "model": "gpt-6-astra",
+        "stop_reason": "end_turn"
+      },
+      "visibility": "public"
+    }
+  ],
+  "expected_partial": false,
+  "source_run": {
+    "run_id": "codex-ec1e9d9723",
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "passed": false,
+    "errors": [
+      "harvest: InvalidStatus: server rejected WebSocket connection: HTTP 403"
+    ]
+  },
+  "observed": {
+    "calls": {
+      "exec-35437589-5b12-4077-b58b-7d268e644acb": {
+        "id": "exec-35437589-5b12-4077-b58b-7d268e644acb",
+        "name": "Bash",
+        "type": "tool_use",
+        "input": {
+          "command": "/bin/bash -lc \"cat TASK.md && printf '\\\\n--- numbers.json ---\\\\n' && cat numbers.json\""
+        }
+      },
+      "exec-dd931cd7-076d-4da0-a792-e699b6cb6e41": {
+        "id": "exec-dd931cd7-076d-4da0-a792-e699b6cb6e41",
+        "name": "Bash",
+        "type": "tool_use",
+        "input": {
+          "command": "/bin/bash -lc \"python3 - <<'PY'\nimport json\nfrom pathlib import Path\nnumbers = json.loads(Path('numbers.json').read_text())\ntotal = sum(numbers)\nprint(f'FORGE_SUM={total}')\nPath('answer.json').write_text(json.dumps({'sum': total}) + '\\\\n')\nPY\ncat answer.json\""
+        }
+      }
+    },
+    "results": {
+      "exec-35437589-5b12-4077-b58b-7d268e644acb": {
+        "type": "tool_result",
+        "content": "# Forge acceptance workspace\n\nOnly synthetic data lives here. Use this directory for all task files. Do not inspect parent directories, credentials, environment variables, or unrelated repositories. Do not publish, commit, push, or contact people. Native worker agents may read these task files. Public documentation search is allowed.\n\n--- numbers.json ---\n[8, 13, 21]\n",
+        "ended_at": "2026-09-07T16:55:18.393689+00:00",
+        "tool_use_id": "exec-35437589-5b12-4077-b58b-7d268e644acb"
+      },
+      "exec-dd931cd7-076d-4da0-a792-e699b6cb6e41": {
+        "type": "tool_result",
+        "content": "FORGE_SUM=42\n{\"sum\": 42}\n",
+        "ended_at": "2026-09-07T16:55:26.981635+00:00",
+        "tool_use_id": "exec-dd931cd7-076d-4da0-a792-e699b6cb6e41"
+      }
+    },
+    "tool_families": {
+      "command": 2
+    },
+    "agent_ids": [],
+    "assistant_text": "FORGE_SUM=42. Wrote and read back `answer.json`: `{\"sum\": 42}`.\n\n[FORGE_DONE:c742b759e60b4dbcb988600eb6346054:workspace]",
+    "unpaired_calls": [],
+    "orphan_results": [],
+    "event_counts": {
+      "user": 3,
+      "user_confirmed": 1,
+      "user_delivered": 1,
+      "assistant": 3,
+      "user_consumed": 1,
+      "user_active": 1,
+      "content_block_start": 5,
+      "content_block_delta": 48,
+      "content_block_stop": 5,
+      "message_delta": 3,
+      "result": 1
+    }
+  },
+  "projection_review": {
+    "schema_version": 1,
+    "status": "accepted",
+    "reviewer": "Codex integration review, 2026-09-08",
+    "source_frames_sha256": "f7572f15f783a90947104c8fb2ae25ee7f97e8168c5e49af234601fc63004772",
+    "previous_projection_sha256": "1d3c995bef00b7bf0d68d7944fcfb86058ad36e7a597f6e50c2e89e67fb7491e",
+    "projection_sha256": "4d772fd2a5512c19ab92fd5e167f6eba0be7d9e54ec8718c64f37e466ad898c2",
+    "notes": [
+      "Captured final text deltas now produce one ordered text part after the tool burst.",
+      "Exact final prose, every nontext part, turn identity and accounting unchanged.",
+      "Original raw frames and original capture review remain unchanged."
+    ]
+  }
+}

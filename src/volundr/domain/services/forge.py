@@ -44,6 +44,7 @@ class ForgeService:
         chronicle_service: ChronicleService | None = None,
         archive_service: SessionArchiveService | None = None,
         workspace_service: WorkspaceService | None = None,
+        project_service=None,
     ) -> None:
         self._session_service = session_service
         self._stats_service = stats_service
@@ -53,6 +54,7 @@ class ForgeService:
         self._chronicle_service = chronicle_service
         self._archive_service = archive_service
         self._workspace_service = workspace_service
+        self._project_service = project_service
 
     @property
     def has_broadcaster(self) -> bool:
@@ -68,6 +70,7 @@ class ForgeService:
             chronicle_service=self._chronicle_service,
             archive_service=self._archive_service,
             workspace_service=workspace_service,
+            project_service=self._project_service,
         )
 
     async def list_sessions(
@@ -92,11 +95,23 @@ class ForgeService:
         *,
         principal: Principal | None = None,
     ) -> Session:
+        if getattr(data, "coordination", None) is not None:
+            if self._project_service is None:
+                raise ValueError("Projects are not enabled on this Forge host")
+            async with self._project_service.dispatch(data, principal) as (existing, options):
+                if existing is not None and existing.status.value != "created":
+                    return existing
+                return await self._launch_session(data, principal, existing, options)
+        if getattr(data, "dispatch_id", None) is not None:
+            raise ValueError("dispatch_id currently requires project coordination metadata")
+        return await self._launch_session(data, principal)
+
+    async def _launch_session(self, data, principal, existing=None, project_options=None):
         resolved_definition = self._resolve_session_definition(data.model, data.definition)
         # No slot, no record: a session created only to fail would sit in the
         # list as an error the person did not ask for.
         await self._session_service.ensure_capacity()
-        session = await self._session_service.create_session(
+        session = existing or await self._session_service.create_session(
             name=data.name,
             model=data.model,
             source=data.source,
@@ -106,6 +121,7 @@ class ForgeService:
             workspace_id=data.workspace_id,
             tracker_issue_id=data.issue_id,
             issue_tracker_url=data.issue_url,
+            **(project_options or {}),
         )
         workload_config = dict(data.workload_config or {})
         persona_name = getattr(data, "persona_name", "")
@@ -221,18 +237,26 @@ class ForgeService:
         activity_state: SessionActivityState,
         metadata: dict | None,
         state_since: datetime | None = None,
+        turn_started_at: datetime | None = None,
     ) -> Session:
         # FAULT A: the REST endpoint passes ``state_since=`` (the broker-stamped
         # UTC transition time). The facade previously dropped it, so the kwarg
         # raised TypeError on EVERY activity report — swallowed into a false 204,
         # so activity_state never persisted and the SSE never fired. Forward it.
+        # ``turn_started_at`` (the stable turn anchor) hit the same trap: added to
+        # the REST endpoint and the deep service but not this facade, so every
+        # activity report raised TypeError → 500. Any new activity kwarg MUST be
+        # threaded through here too.
         # Forward only when present so existing 3-positional callers/mocks stay
-        # exactly equivalent (the deep method defaults state_since itself).
+        # exactly equivalent (the deep method defaults both kwargs itself).
+        kwargs: dict = {}
         if state_since is not None:
-            return await self._session_service.update_activity(
-                session_id, activity_state, metadata, state_since=state_since
-            )
-        return await self._session_service.update_activity(session_id, activity_state, metadata)
+            kwargs["state_since"] = state_since
+        if turn_started_at is not None:
+            kwargs["turn_started_at"] = turn_started_at
+        return await self._session_service.update_activity(
+            session_id, activity_state, metadata, **kwargs
+        )
 
     async def archive_session(
         self,

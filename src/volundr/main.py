@@ -7,7 +7,10 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from uuid import UUID
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from niuu.adapters.inbound.rest_credentials_settings import create_credentials_settings_router
 from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
@@ -48,6 +51,7 @@ from volundr.adapters.inbound.rest_events import create_events_router
 from volundr.adapters.inbound.rest_git import create_git_router
 from volundr.adapters.inbound.rest_integrations import create_canonical_integrations_router
 from volundr.adapters.inbound.rest_issues import create_canonical_issues_router
+from volundr.adapters.inbound.rest_message_delivery import create_message_delivery_router
 from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router
 from volundr.adapters.inbound.rest_openshell_credentials import (
     create_openshell_credentials_router,
@@ -70,6 +74,7 @@ from volundr.adapters.outbound.git_registry import create_git_registry
 from volundr.adapters.outbound.linear import LinearAdapter
 from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
+from volundr.adapters.outbound.pg_message_delivery import PostgresMessageDelivery
 from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
 from volundr.adapters.outbound.postgres import PostgresSessionRepository
 from volundr.adapters.outbound.postgres_admin_settings import PostgresAdminSettingsRepository
@@ -196,16 +201,17 @@ async def _bootstrap_startup_schema(settings: Settings) -> None:
     import asyncpg
 
     from cli.resources import migration_dir, ordered_migration_files
+    from volundr.adapters.outbound.startup_schema import apply_startup_migrations
 
     try:
         mig_dir = migration_dir("volundr")
     except FileNotFoundError:
-        logger.debug("No Volundr migrations available for startup bootstrap")
-        return
+        logger.error("Volundr startup migrations are missing; refusing an unverified schema")
+        raise
 
     sql_files = ordered_migration_files(mig_dir)
     if not sql_files:
-        return
+        raise RuntimeError("Volundr startup migration directory is empty; schema is unverified")
 
     conn = await asyncpg.connect(
         host=settings.database.host,
@@ -215,11 +221,7 @@ async def _bootstrap_startup_schema(settings: Settings) -> None:
         database=settings.database.name,
     )
     try:
-        for sql_file in sql_files:
-            try:
-                await conn.execute(sql_file.read_text())
-            except Exception:
-                logger.debug("Migration %s skipped", sql_file.name, exc_info=True)
+        await apply_startup_migrations(conn, sql_files)
     finally:
         await conn.close()
 
@@ -406,6 +408,19 @@ def create_app(
         settings = Settings()
 
     app = build_app_shell(settings)
+
+    # Keep schema mismatch diagnostics without copying credentials or prompts into logs.
+    @app.exception_handler(RequestValidationError)
+    async def _log_request_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        logger.warning(
+            "422 request validation: %s %s error_types=%s",
+            request.method,
+            request.url.path,
+            [error["type"] for error in exc.errors()],
+        )
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
 
     # Bifrost is its own service/plugin. Volundr no longer co-hosts it; it consumes
     # the model catalog over HTTP from settings.bifrost.url for cost/pricing only.
@@ -818,7 +833,7 @@ def create_app(
                 public_origin=public_origin,
                 session_communication_port=session_room_port,
                 attention_notifier=attention_notifier,
-                runtime_backend=_runtime_backend(settings),
+                runtime_backend=_runtime_backend(settings, pod_manager),
                 span_repository=span_repository,
             )
             # Local-process brokers notify the session service when they exit so
@@ -990,7 +1005,39 @@ def create_app(
                     session_service,
                     allowed_workspace_prefixes=settings.local_mounts.allowed_prefixes,
                     allow_root_workspace=settings.local_mounts.allow_root_mount,
+                    event_log_repository=session_event_log,
                 )
+
+            # Projects add durable coordination metadata to ordinary Forge sessions.
+            project_service = None
+            if settings.projects.enabled:
+                from volundr.domain.project_ports import ProjectRepository, ProjectWorkspace
+                from volundr.domain.services.projects import ProjectService
+
+                project_config = settings.projects
+                project_repository = import_class(project_config.repository_adapter)(
+                    pool=pool,
+                    dispatch_wait_seconds=project_config.dispatch_wait_seconds,
+                    dispatch_poll_seconds=project_config.dispatch_poll_seconds,
+                    **project_config.repository_kwargs,
+                )
+                project_workspace = import_class(project_config.workspace_adapter)(
+                    allowed_prefixes=settings.local_mounts.allowed_prefixes,
+                    context_bytes=project_config.context_bytes,
+                    git_timeout=project_config.git_timeout_seconds,
+                    **project_config.workspace_kwargs,
+                )
+                if not isinstance(project_repository, ProjectRepository):
+                    raise TypeError("Project repository adapter must implement ProjectRepository")
+                if not isinstance(project_workspace, ProjectWorkspace):
+                    raise TypeError("Project workspace adapter must implement ProjectWorkspace")
+                project_service = ProjectService(
+                    project_repository,
+                    project_workspace,
+                    session_service,
+                    instance_id=project_config.instance_id or settings.server_public_host,
+                )
+                app.state.project_service = project_service
 
             # Create and include routers
             forge_router = create_router(
@@ -1007,6 +1054,9 @@ def create_app(
                 prefix="/api/v1/forge",
                 server_public_host=settings.server_public_host,
                 openshell_internal_gateway_url=settings.openshell_internal_gateway_url,
+                project_service=project_service,
+                history_max_turns=settings.conversation_recent_max_turns,
+                history_max_bytes=settings.conversation_recent_max_bytes,
             )
             app.include_router(forge_router)
             app.include_router(create_resident_runtimes_router(resident_runtime_service))
@@ -1259,6 +1309,9 @@ def create_app(
                 default_show_internal=settings.replay.default_show_internal,
             )
             app.include_router(session_log_router)
+            app.include_router(
+                create_message_delivery_router(PostgresMessageDelivery(pool), session_service)
+            )
 
             # Replay-as-live: paced re-emit of recorded frames over a WebSocket,
             # speaking the live-session frame protocol so existing clients

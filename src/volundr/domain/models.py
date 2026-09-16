@@ -26,6 +26,7 @@ from identity.models import (  # noqa: F401
 )
 from niuu.domain import models as shared_models
 from tracker.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue  # noqa: F401
+from volundr.domain.projects import SessionCoordination
 
 CIStatus = shared_models.CIStatus
 GitProviderType = shared_models.GitProviderType
@@ -352,6 +353,8 @@ SessionSource = Annotated[
 class Session(BaseModel):
     """A Claude Code coding session."""
 
+    coordination: SessionCoordination | None = None
+
     id: UUID = Field(
         default_factory=uuid4,
         description="Unique session identifier",
@@ -452,8 +455,17 @@ class Session(BaseModel):
         default=None,
         description=(
             "Timestamp (UTC) when the session ENTERED its current activity_state. "
-            "Stamped only on a real state change (not on re-asserting the same "
-            "state), so clients can render an accurate 'active for Ns' elapsed."
+            "Stamped only on a real (coarse-bucket) change, so clients can render "
+            "an accurate 'active for Ns' elapsed without an intra-turn reset."
+        ),
+    )
+    turn_started_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Timestamp (UTC) when the CURRENT turn started (the user's prompt "
+            "landing). Stable across intra-turn active/tool_executing flips; "
+            "None when no turn is in flight. Clients anchor RUNNING elapsed to "
+            "this, falling back to activity_state_since for older brokers."
         ),
     )
     activity_metadata: dict = Field(
@@ -496,7 +508,7 @@ class Session(BaseModel):
         default=None,
         max_length=255,
         description=(
-            "Session definition (runtime type, e.g. skuldClaude / skuldGrok) the "
+            "Session definition (runtime type, e.g. skuldClaude / skuldGrok / skuldMuse) the "
             "session was launched with, persisted so restarts re-apply the same "
             "transport instead of falling back to the platform default."
         ),

@@ -1064,7 +1064,9 @@ class TestBroker:
     async def test_backstop_flips_pending_on_result_for_non_native(self, test_broker):
         """A non-native transport that finishes a turn has consumed any still-pending steer."""
         test_broker._transport = AsyncMock()
-        test_broker._transport.capabilities = TransportCapabilities(steering_mode="live")
+        test_broker._transport.capabilities = TransportCapabilities(
+            steering_mode="interrupt_resume"
+        )
         mock_channel = self._pending_user_turn(test_broker, "m-2")
 
         await test_broker._handle_cli_event({"type": "result", "stop_reason": "end_turn"})
@@ -1098,10 +1100,12 @@ class TestBroker:
 
     @pytest.mark.asyncio
     async def test_backstop_empty_assistant_frame_does_not_flip(self, test_broker):
-        """Codex's empty turn/started assistant frame (content: []) must NOT trip the backstop;
+        """An empty legacy assistant frame (content: []) must NOT trip the backstop;
         a frame with real content does."""
         test_broker._transport = AsyncMock()
-        test_broker._transport.capabilities = TransportCapabilities(steering_mode="live")
+        test_broker._transport.capabilities = TransportCapabilities(
+            steering_mode="interrupt_resume"
+        )
         self._pending_user_turn(test_broker, "m-4")
 
         await test_broker._handle_cli_event({"type": "assistant", "message": {"content": []}})
@@ -1118,13 +1122,13 @@ class TestBroker:
     async def test_backstop_flips_pending_on_error_for_non_native(self, test_broker):
         """A terminal error on a non-native transport must not strand the steer pending forever."""
         test_broker._transport = AsyncMock()
-        test_broker._transport.capabilities = TransportCapabilities(steering_mode="live")
+        test_broker._transport.capabilities = TransportCapabilities(
+            steering_mode="interrupt_resume"
+        )
         mock_channel = self._pending_user_turn(test_broker, "m-err")
 
         with patch.object(
-            test_broker,
-            "_report_activity_state",
-            new=AsyncMock(),
+            test_broker, "_report_activity_state", new_callable=AsyncMock
         ) as report_activity:
             await test_broker._handle_cli_event({"type": "error", "error": "boom"})
             await asyncio.sleep(0)
@@ -2375,6 +2379,7 @@ class TestDispatchBrowserMessage:
                 "content": "hello",
                 "request_id": "req-1",
                 "steering_state": "pending",
+                "created_at": test_broker._conversation_turns[-1].created_at,
             }
         )
         # BUG-3: a delivery ack is emitted so the HTTP /messages bridge can confirm the
@@ -2425,6 +2430,7 @@ class TestDispatchBrowserMessage:
                 "content": expected,
                 "request_id": None,
                 "steering_state": "pending",
+                "created_at": test_broker._conversation_turns[-1].created_at,
             }
         )
 
@@ -2460,6 +2466,7 @@ class TestDispatchBrowserMessage:
                 "content": expected,
                 "request_id": None,
                 "steering_state": "pending",
+                "created_at": test_broker._conversation_turns[-1].created_at,
             }
         )
 
@@ -2847,10 +2854,10 @@ class TestDispatchBrowserMessage:
         )
 
     @pytest.mark.asyncio
-    async def test_dispatch_no_transport_noop(self, test_broker):
+    async def test_dispatch_no_transport_rejects_instead_of_dropping_message(self, test_broker):
         test_broker._transport = None
-        # Should not raise
-        await test_broker._dispatch_browser_message({"content": "hello"})
+        with pytest.raises(RuntimeError, match="transport is not ready"):
+            await test_broker._dispatch_browser_message({"content": "hello"})
 
     @pytest.mark.asyncio
     async def test_dispatch_guard_blocks_unsupported_control(self, test_broker):
@@ -2885,7 +2892,6 @@ class TestDispatchBrowserMessage:
             "terminal_key",
             "terminal_resize",
             "slash_command",
-            "discover_slash_commands",
         ]
         for msg_type in guarded:
             sender_ws = AsyncMock()
@@ -2987,14 +2993,21 @@ class TestDispatchBrowserMessage:
                 "type": "slash_commands",
                 "commands": [
                     {
+                        "name": "/effort",
+                        "command": "effort",
+                        "kind": "command",
+                        "source": "forge",
+                        "description": "Show effort or set a supported level: /effort xhigh",
+                    },
+                    {
                         "name": "/workflows",
                         "command": "workflows",
                         "description": "Browse workflows",
                         "kind": "command",
                         "source": "tmux_autocomplete",
-                    }
+                    },
                 ],
-                "count": 1,
+                "count": 2,
             }
         )
 
@@ -3174,6 +3187,10 @@ class TestFastAPIEndpoints:
         data = response.json()
         assert data["status"] == "healthy"
         assert data["session_id"] == "test-123"
+        assert len(data["source_sha256"]) == 64
+        assert data["revision"]
+        assert isinstance(data["dirty"], bool)
+        assert data["build"]
 
     def test_ready_endpoint_not_ready(self, client):
         broker._transport = None
@@ -3281,9 +3298,10 @@ class TestFastAPIEndpoints:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["count"] == 1
-        assert data["commands"][0]["name"] == "/deep-research"
-        assert data["commands"][0]["kind"] == "workflow"
+        assert data["count"] == 2
+        assert data["commands"][0]["name"] == "/effort"
+        assert data["commands"][1]["name"] == "/deep-research"
+        assert data["commands"][1]["kind"] == "workflow"
         mock_transport.discover_slash_commands.assert_awaited_once_with(refresh=True)
         broker._transport = None
 
@@ -3309,15 +3327,17 @@ class TestFastAPIEndpoints:
         )
         broker._transport = None
 
-    def test_slash_commands_endpoint_501_when_unsupported(self, client):
-        """Slash command APIs report unsupported transports clearly."""
+    def test_slash_commands_endpoint_keeps_forge_effort_without_native_discovery(self, client):
+        """Forge effort remains discoverable without querying unsupported native controls."""
         mock_transport = MagicMock()
         mock_transport.capabilities = TransportCapabilities()
         broker._transport = mock_transport
 
         response = client.get("/api/slash-commands")
 
-        assert response.status_code == 501
+        assert response.status_code == 200
+        assert [item["name"] for item in response.json()["commands"]] == ["/effort"]
+        mock_transport.discover_slash_commands.assert_not_called()
         broker._transport = None
 
     def test_logs_endpoint_level_filter(self, client):
@@ -4258,6 +4278,23 @@ class TestShutdownEdgeCases:
         await test_broker.shutdown()
 
     @pytest.mark.asyncio
+    async def test_startup_with_volundr_api_url(self, test_broker):
+        """Startup verifies the durable head before warming the transport."""
+        client = AsyncMock()
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"latest_seq": 41}
+        client.get.return_value = response
+        with patch.object(test_broker, "_get_http_client", AsyncMock(return_value=client)):
+            try:
+                await test_broker.startup()
+                assert test_broker._transport is not None
+                assert test_broker.service_manager is not None
+                assert test_broker._event_log_seq == 41
+            finally:
+                await test_broker.shutdown()
+
+    @pytest.mark.asyncio
     async def test_startup_with_unreachable_volundr_fails_loudly(self, test_broker):
         """A configured durable log that cannot start is fatal, not degraded.
 
@@ -4300,6 +4337,7 @@ class TestHandleWebSocket:
     async def test_handle_websocket_no_transport(self, test_broker):
         """Returns error JSON when transport is not initialized."""
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         test_broker._transport = None
 
         await test_broker.handle_websocket(mock_ws)
@@ -4319,6 +4357,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         # First receive_json returns a message, second raises disconnect
         mock_ws.receive_json = AsyncMock(side_effect=[{"content": "hello"}, WebSocketDisconnect()])
 
@@ -4341,6 +4380,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
         await test_broker.handle_websocket(mock_ws)
@@ -4377,6 +4417,7 @@ class TestHandleWebSocket:
         test_broker._event_log_seq = 42
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
         await test_broker.handle_websocket(mock_ws)
@@ -4405,6 +4446,7 @@ class TestHandleWebSocket:
         test_broker._pending_permission_requests["perm-replay"] = pending
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
         await test_broker.handle_websocket(mock_ws)
@@ -4423,6 +4465,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         # Bad frame (non-JSON) -> valid message -> disconnect. The valid message after
         # the bad one MUST still be dispatched.
         mock_ws.receive_json = AsyncMock(
@@ -4458,6 +4501,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(
             side_effect=RuntimeError('WebSocket is not connected. Need to call "accept" first.')
         )
@@ -4479,6 +4523,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.send_json = AsyncMock(
             side_effect=RuntimeError('Cannot call "send" once a close message has been sent.')
         )
@@ -4497,6 +4542,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
         await test_broker.handle_websocket(mock_ws)
@@ -4530,6 +4576,7 @@ class TestHandleWebSocket:
         broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
         await broker.handle_websocket(mock_ws)
@@ -4557,6 +4604,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=[{"content": "hello"}, WebSocketDisconnect()])
 
         with caplog.at_level("ERROR"):
@@ -4584,6 +4632,7 @@ class TestHandleWebSocket:
         test_broker._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=RuntimeError("boom"))
 
         await test_broker.handle_websocket(mock_ws)
@@ -6203,6 +6252,7 @@ class TestBrokerRoomAdapter:
         b._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
         await b.handle_websocket(mock_ws)
@@ -6221,6 +6271,7 @@ class TestBrokerRoomAdapter:
         b._transport = mock_transport
 
         mock_ws = AsyncMock()
+        mock_ws.query_params = {}
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
         await b.handle_websocket(mock_ws)

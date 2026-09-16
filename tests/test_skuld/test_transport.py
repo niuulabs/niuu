@@ -1291,7 +1291,8 @@ class TestSdkWebSocketTransport:
             assert env["RAVN_WORKSPACE_DIR"] == str(tmp_path)
 
     @pytest.mark.asyncio
-    async def test_spawn_without_agent_teams_no_env(self, tmp_path):
+    async def test_spawn_without_agent_teams_no_env(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", raising=False)
         t = SdkWebSocketTransport(
             workspace_dir=str(tmp_path),
             sdk_port=8081,
@@ -1913,7 +1914,10 @@ class TestCodexSubprocessTransport:
 
         assistant_calls = [c for c in callback.call_args_list if c[0][0].get("type") == "assistant"]
         assert len(assistant_calls) == 1
-        assert assistant_calls[0][0][0]["message"]["content"] == "READY"
+        blocks = assistant_calls[0][0][0]["message"]["content"]
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "text" and blocks[0]["text"] == "READY"
+        assert blocks[0]["id"] == "item_0" and blocks[0]["complete"] is True
         assert transport.last_result is not None
         assert transport.last_result["type"] == "result"
         usage = transport.last_result["modelUsage"]["o4-mini"]

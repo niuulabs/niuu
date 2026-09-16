@@ -21,6 +21,13 @@ import type { SlashCommand } from '../utils/slashCommands';
 import type { FileAttachment } from './useFileAttachments';
 import { useWebSocket } from './useWebSocket';
 import { wsUrlToHttpBase } from '../transport';
+import { repairCanonicalText } from './canonicalTextRepair';
+import {
+  foldPublicText,
+  publicTextContent,
+  upsertToolPart,
+  validateTextReceipt,
+} from './orderedPublicText';
 
 const HISTORY_RETRY_DELAY_MS = 1000;
 
@@ -50,22 +57,44 @@ type CliStreamEvent = {
   type: string;
   subtype?: string;
   id?: string;
+  item_id?: string;
+  index?: number;
+  phase?: string;
+  turn_id?: string;
+  projection_revision?: string;
+  complete?: boolean;
+  text_bytes?: number;
+  text_sha256?: string;
   content?: string | Array<{ type: string; text?: string }>;
   result?: string;
   error?: string | { message?: string };
   message?: {
     model?: string;
     usage?: { input_tokens?: number; output_tokens?: number };
-    content?: Array<{ type: string; text?: string }>;
+    content?: Array<{
+      type: string;
+      text?: string;
+      id?: string;
+      phase?: string;
+      turn_id?: string;
+      thread_id?: string;
+      index?: number;
+      name?: string;
+      input?: Record<string, unknown>;
+    }>;
   };
   content_block?: {
     type?: string;
     text?: string;
     id?: string;
+    phase?: string;
+    turn_id?: string;
+    thread_id?: string;
+    index?: number;
     name?: string;
     tool_use_id?: string;
+    input?: Record<string, unknown>;
     content?: string;
-    phase?: 'commentary' | 'final_answer';
   };
   delta?: {
     type?: string;
@@ -146,6 +175,7 @@ export interface ConversationTurn {
   participant_meta?: Record<string, unknown>;
   thread_id?: string;
   visibility?: 'visible' | 'internal';
+  in_progress?: boolean;
 }
 
 interface UseSkuldChatResult {
@@ -185,6 +215,7 @@ const STORAGE_PREFIX = 'niuu.skuldChat.v2.';
 
 type PersistedAgentEvent = Omit<AgentInternalEvent, 'timestamp'> & { timestamp?: string };
 type PersistedChatState = {
+  projectionRevision?: string;
   messages?: Array<Omit<ChatMessage, 'createdAt'> & { createdAt: string }>;
   meshEvents?: Array<
     Omit<MeshEvent, 'timestamp'> & {
@@ -454,7 +485,7 @@ export function transformTurns(turns: ConversationTurn[]): ChatMessage[] {
       content: imageContent.text,
       attachments: imageContent.attachments.length ? imageContent.attachments : undefined,
       createdAt: new Date(turn.created_at),
-      status: metadataStatus === 'error' ? 'error' : 'done',
+      status: metadataStatus === 'error' ? 'error' : turn.in_progress ? 'running' : 'done',
       parts: turn.parts as ChatMessagePart[] | undefined,
       metadata,
       participant: parseParticipantMeta(
@@ -665,6 +696,10 @@ export function useSkuldChat(
 
   const historyLoaded = historyLoadedForUrl === url;
   const participantsRef = useRef(participants);
+  const messagesRef = useRef(messages);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
   const agentEventsRef = useRef(agentEvents);
   const hydratedCacheUrlRef = useRef(url);
   const internalStreamsRef = useRef<Map<string, InternalParticipantStream>>(new Map());
@@ -675,6 +710,19 @@ export function useSkuldChat(
   const streamingTextRef = useRef('');
   const streamingPartsRef = useRef<ChatMessagePart[]>([]);
   const streamingModelRef = useRef('');
+  const activeNativeTurnRef = useRef<string | undefined>(undefined);
+  const closedNativeTurnsRef = useRef(new Set<string>());
+  const historyEvidenceRef = useRef(0);
+  const snapshotEvidenceRef = useRef(0);
+  const projectionRevisionRef = useRef<string | undefined>(undefined);
+  const currentUrlRef = useRef(url);
+  useEffect(() => {
+    currentUrlRef.current = url;
+    return () => {
+      currentUrlRef.current = null;
+    };
+  }, [url]);
+  const textRepairsRef = useRef(new Set<string>());
   const streamingInputTokensRef = useRef<number | undefined>(undefined);
   const streamingOutputTokensRef = useRef<number | undefined>(undefined);
   const historyRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -719,6 +767,7 @@ export function useSkuldChat(
     streamingTextRef.current = '';
     streamingPartsRef.current = [];
     streamingModelRef.current = '';
+    activeNativeTurnRef.current = undefined;
     setStreamingContent('');
     setStreamingParts([]);
     setStreamingModel('');
@@ -727,6 +776,34 @@ export function useSkuldChat(
     streamingInputTokensRef.current = undefined;
     streamingOutputTokensRef.current = undefined;
   }, []);
+
+  const seedStreamingHistory = useCallback(
+    (turns: ConversationTurn[], revision?: string) => {
+      // Every accepted server snapshot replaces the cache projection, including repaired old turns.
+      projectionRevisionRef.current = revision;
+      const active = [...turns].reverse().find((turn) => turn.in_progress);
+      for (const turn of turns) {
+        if (turn.in_progress) continue;
+        for (const part of turn.parts ?? []) {
+          if (typeof part.turn_id === 'string') closedNativeTurnsRef.current.add(part.turn_id);
+        }
+      }
+      while (closedNativeTurnsRef.current.size > 256) {
+        closedNativeTurnsRef.current.delete(closedNativeTurnsRef.current.values().next().value!);
+      }
+      resetStreaming();
+      if (!active) return;
+      streamingMessageIdRef.current = active.id;
+      streamingPartsRef.current = (active.parts ?? []) as unknown as ChatMessagePart[];
+      streamingTextRef.current = active.content;
+      activeNativeTurnRef.current = streamingPartsRef.current.find((part) => part.turn_id)?.turn_id;
+      if (activeNativeTurnRef.current)
+        closedNativeTurnsRef.current.delete(activeNativeTurnRef.current);
+      setStreamingParts([...streamingPartsRef.current]);
+      setStreamingContent(active.content);
+    },
+    [resetStreaming],
+  );
 
   const clearHistoryRetryTimer = useCallback(() => {
     if (historyRetryTimerRef.current !== null) {
@@ -737,7 +814,7 @@ export function useSkuldChat(
 
   const finalizeStreaming = useCallback(
     (status: ChatMessage['status'] = 'done', overrideContent?: string) => {
-      const content = overrideContent ?? streamingTextRef.current;
+      const content = overrideContent || streamingTextRef.current;
       const parts =
         streamingPartsRef.current.length > 0 ? [...streamingPartsRef.current] : undefined;
       const model = streamingModelRef.current;
@@ -837,6 +914,8 @@ export function useSkuldChat(
 
     const base = httpBase.endsWith('/') ? httpBase : `${httpBase}/`;
     const historyUrl = new URL('api/conversation/history', base);
+    const evidenceAtStart = historyEvidenceRef.current;
+    const snapshotAtStart = snapshotEvidenceRef.current;
 
     fetch(historyUrl.href, { headers })
       .then(async (res) => {
@@ -848,6 +927,24 @@ export function useSkuldChat(
       .then((data) => {
         if (cancelled) return;
         clearHistoryRetryTimer();
+        // A socket snapshot or live frame can win the initial GET. Never roll it back with this body.
+        if (snapshotAtStart !== snapshotEvidenceRef.current) {
+          setHistoryLoadedForUrl(url);
+          return;
+        }
+        if (evidenceAtStart !== historyEvidenceRef.current) {
+          // Recover the completed prefix without overwriting a newer socket tail.
+          const prefix = transformTurns(
+            (data.turns ?? []).filter((turn: ConversationTurn) => !turn.in_progress),
+          );
+          setMessages((prev) => {
+            const liveIDs = new Set(prev.map((message) => message.id));
+            return [...prefix.filter((message) => !liveIDs.has(message.id)), ...prev];
+          });
+          setHistoryLoadedForUrl(url);
+          return;
+        }
+        seedStreamingHistory(data.turns ?? [], data.projection_revision);
         const nextMessages = data.turns?.length ? transformTurns(data.turns) : [];
         const historyParticipants = data.turns?.length ? participantsFromTurns(data.turns) : null;
         const historyMeshEvents = data.turns?.length ? meshEventsFromTurns(data.turns) : null;
@@ -887,11 +984,19 @@ export function useSkuldChat(
       cancelled = true;
       clearHistoryRetryTimer();
     };
-  }, [clearHistoryRetryTimer, ensureSingleParticipant, historyLoaded, historyMode, url]);
+  }, [
+    clearHistoryRetryTimer,
+    ensureSingleParticipant,
+    historyLoaded,
+    historyMode,
+    seedStreamingHistory,
+    url,
+  ]);
 
   useEffect(() => {
     if (!url) return;
     safeSessionStorageSet(url, {
+      projectionRevision: projectionRevisionRef.current,
       messages: serializeMessages(messages),
       meshEvents: serializeMeshEvents(meshEvents),
       participants: Array.from(participants.values()),
@@ -939,6 +1044,106 @@ export function useSkuldChat(
         );
       };
 
+      const matchesText = (part: ChatMessagePart, event: CliStreamEvent) =>
+        part.type === 'text' &&
+        part.id === event.item_id &&
+        (!event.turn_id || !part.turn_id || event.turn_id === part.turn_id) &&
+        (!event.thread_id || !part.thread_id || event.thread_id === part.thread_id);
+
+      const applyTextRepair = (event: CliStreamEvent, turn: ConversationTurn) => {
+        if (!event.item_id) return;
+        const canonical = (turn.parts ?? []) as unknown as ChatMessagePart[];
+        const anchorKey = (part: ChatMessagePart) => {
+          const id = part.type === 'tool_result' ? part.tool_use_id : part.id;
+          return id ? `${part.type}:${id}` : undefined;
+        };
+        const anchors = new Map<string, ChatMessagePart[]>();
+        for (const part of canonical) {
+          const key = anchorKey(part);
+          if (key) anchors.set(key, [...(anchors.get(key) ?? []), part]);
+        }
+        const score = (parts: readonly ChatMessagePart[]) =>
+          parts.reduce((count, part) => {
+            const key = anchorKey(part);
+            return (
+              count +
+              (key &&
+              anchors
+                .get(key)
+                ?.some(
+                  (other) =>
+                    (!part.turn_id || !other.turn_id || part.turn_id === other.turn_id) &&
+                    (!part.thread_id || !other.thread_id || part.thread_id === other.thread_id),
+                )
+                ? 1
+                : 0)
+            );
+          }, 0);
+        // Bind a server turn through actual shared anchors, never native turn ID alone: steering
+        // may have produced more than one public fragment for the same native turn.
+        const candidates = messagesRef.current
+          .filter((message) => message.role === 'assistant')
+          .map((message) => ({
+            id: message.id,
+            score: message.id === turn.id ? Number.MAX_SAFE_INTEGER : score(message.parts ?? []),
+          }))
+          .filter((candidate) => candidate.score > 0)
+          .sort((a, b) => b.score - a.score);
+        const owner = candidates[0];
+        if (!owner || candidates[1]?.score === owner.score) return;
+        const target = {
+          item_id: event.item_id,
+          turn_id: event.turn_id,
+          thread_id: event.thread_id,
+        };
+        if (owner.id === streamingMessageIdRef.current) {
+          const parts = repairCanonicalText(canonical, streamingPartsRef.current, target);
+          if (parts) {
+            streamingPartsRef.current = parts;
+            streamingTextRef.current = publicTextContent(parts);
+            setStreamingParts([...parts]);
+            setStreamingContent(streamingTextRef.current);
+          }
+        }
+        setMessages((prev) =>
+          prev.map((message) => {
+            if (message.id !== owner.id) return message;
+            const parts = repairCanonicalText(canonical, message.parts ?? [], target);
+            return parts ? { ...message, parts, content: publicTextContent(parts) } : message;
+          }),
+        );
+      };
+
+      const repairTextFromHistory = async (event: CliStreamEvent) => {
+        const key = JSON.stringify([event.thread_id, event.turn_id, event.item_id]);
+        if (!url || textRepairsRef.current.has(key)) return;
+        const base = wsUrlToHttpBase(url);
+        if (!base) return;
+        textRepairsRef.current.add(key);
+        try {
+          const response = await fetch(
+            new URL('api/conversation/history', base.endsWith('/') ? base : `${base}/`),
+            { headers: Object.fromEntries(getAuthHeaders().entries()) },
+          );
+          if (!response.ok || currentUrlRef.current !== url) return;
+          const history = (await response.json()) as { turns?: ConversationTurn[] };
+          if (currentUrlRef.current !== url) return;
+          for (const turn of history.turns ?? []) {
+            const block = turn.parts?.find((part) =>
+              matchesText(part as unknown as ChatMessagePart, event),
+            );
+            if (block?.complete === true && typeof block.text === 'string') {
+              applyTextRepair(event, turn);
+              return;
+            }
+          }
+        } catch {
+          /* Keep the observed incomplete text; the next snapshot can repair it. */
+        } finally {
+          textRepairsRef.current.delete(key);
+        }
+      };
+
       const finalizeParticipantStream = (
         peerId: string,
         status: ChatMessage['status'] = 'done',
@@ -966,6 +1171,124 @@ export function useSkuldChat(
       };
 
       for (const event of events) {
+        if (
+          [
+            'assistant',
+            'content_block_start',
+            'content_block_delta',
+            'result',
+            'user',
+            'user_confirmed',
+            'conversation_history',
+          ].includes(event.type)
+        ) {
+          historyEvidenceRef.current += 1;
+        }
+        if (
+          event.turn_id &&
+          closedNativeTurnsRef.current.has(event.turn_id) &&
+          event.type !== 'conversation_history'
+        )
+          continue;
+        if (
+          event.turn_id &&
+          activeNativeTurnRef.current &&
+          event.turn_id !== activeNativeTurnRef.current &&
+          ['assistant', 'content_block_start', 'content_block_delta'].includes(event.type)
+        ) {
+          closedNativeTurnsRef.current.add(activeNativeTurnRef.current);
+          finalizeStreaming();
+        }
+        if (event.type === 'content_block_start' && !streamingMessageIdRef.current) {
+          const id = generateId();
+          streamingMessageIdRef.current = id;
+          activeNativeTurnRef.current = event.turn_id;
+          setMessages((prev) => [
+            ...prev,
+            {
+              id,
+              role: 'assistant',
+              content: '',
+              createdAt: new Date(),
+              status: 'running',
+              participant: getDefaultAssistantParticipant(),
+            },
+          ]);
+        }
+        if (
+          event.type === 'content_block_stop' &&
+          event.complete &&
+          event.item_id &&
+          (event.text_bytes !== undefined || event.text_sha256)
+        ) {
+          const part = streamingPartsRef.current.find((part) => matchesText(part, event));
+          if (!part) {
+            void repairTextFromHistory(event);
+            continue;
+          }
+          // A whole authoritative completion already supplied these bytes. Only optimized
+          // stops (whose item remains open) need a receipt check or expensive history repair.
+          if (part.complete === true) continue;
+          const captured = part.text ?? '';
+          void validateTextReceipt(captured, event).then((valid) => {
+            if (currentUrlRef.current !== url) return;
+            if (!valid) {
+              void repairTextFromHistory(event);
+              return;
+            }
+            // Validation used immutable captured bytes. Do not overwrite intervening progress.
+            const current = streamingPartsRef.current.find((part) => matchesText(part, event));
+            if (current && current.text !== captured) return;
+            setMessages((prev) =>
+              prev.map((message) => {
+                if (
+                  !message.parts?.some((part) => matchesText(part, event) && part.text === captured)
+                )
+                  return message;
+                return { ...message, parts: foldPublicText(message.parts, event)! };
+              }),
+            );
+            if (current) {
+              streamingPartsRef.current = foldPublicText(streamingPartsRef.current, event)!;
+              setStreamingParts([...streamingPartsRef.current]);
+              syncStreamingMessage();
+            }
+          });
+          continue;
+        }
+        const orderedText = foldPublicText(streamingPartsRef.current, event);
+        if (orderedText) {
+          if (event.turn_id && closedNativeTurnsRef.current.has(event.turn_id)) continue;
+          if (
+            event.turn_id &&
+            activeNativeTurnRef.current &&
+            event.turn_id !== activeNativeTurnRef.current
+          ) {
+            finalizeStreaming();
+          }
+          activeNativeTurnRef.current = event.turn_id ?? activeNativeTurnRef.current;
+          if (!streamingMessageIdRef.current) {
+            const messageId = generateId();
+            streamingMessageIdRef.current = messageId;
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: messageId,
+                role: 'assistant',
+                content: '',
+                createdAt: new Date(),
+                status: 'running',
+                participant: getDefaultAssistantParticipant(),
+              },
+            ]);
+          }
+          streamingPartsRef.current = foldPublicText(streamingPartsRef.current, event)!;
+          streamingTextRef.current = publicTextContent(streamingPartsRef.current);
+          setStreamingContent(streamingTextRef.current);
+          setStreamingParts([...streamingPartsRef.current]);
+          syncStreamingMessage();
+          continue;
+        }
         switch (event.type) {
           case 'assistant': {
             const explicitParticipant = parseParticipantMeta(event.participant);
@@ -978,6 +1301,67 @@ export function useSkuldChat(
               });
             } else {
               ensureSingleParticipant();
+            }
+            const blocks = event.message?.content;
+            if (
+              event.turn_id &&
+              blocks?.length &&
+              blocks.every((block) => block.type === 'tool_use')
+            ) {
+              if (!streamingMessageIdRef.current) {
+                const id = generateId();
+                streamingMessageIdRef.current = id;
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id,
+                    role: 'assistant',
+                    content: '',
+                    createdAt: new Date(),
+                    status: 'running',
+                    participant: getDefaultAssistantParticipant(),
+                  },
+                ]);
+              }
+              activeNativeTurnRef.current = event.turn_id;
+              for (const block of blocks) {
+                streamingPartsRef.current = upsertToolPart(streamingPartsRef.current, {
+                  type: 'tool_use',
+                  turn_id: event.turn_id,
+                  thread_id: event.thread_id,
+                  id: block.id,
+                  name: block.name,
+                  input: block.input ?? {},
+                });
+              }
+              setStreamingParts([...streamingPartsRef.current]);
+              syncStreamingMessage();
+              break;
+            }
+            if (
+              streamingMessageIdRef.current &&
+              blocks?.length &&
+              blocks.every(
+                (block) =>
+                  block.type === 'tool_use' &&
+                  block.id &&
+                  streamingPartsRef.current.some(
+                    (part) => part.type === 'tool_use' && part.id === block.id,
+                  ),
+              )
+            ) {
+              // Native tool completion can enrich the original call after its input
+              // block closed. Keep that refresh in the same message and tool card.
+              const updates = new Map(blocks.map((block) => [block.id, block]));
+              streamingPartsRef.current = streamingPartsRef.current.map((part) => {
+                const update = part.type === 'tool_use' ? updates.get(part.id) : undefined;
+                return update && part.type === 'tool_use'
+                  ? { ...part, name: update.name ?? part.name, input: update.input ?? part.input }
+                  : part;
+              });
+              setStreamingParts([...streamingPartsRef.current]);
+              syncStreamingMessage();
+              break;
             }
             if (streamingMessageIdRef.current) finalizeStreaming();
             const initialContent =
@@ -1040,28 +1424,24 @@ export function useSkuldChat(
             } else if (blockType === 'tool_use') {
               toolIdRef.current = event.content_block?.id ?? '';
               toolJsonRef.current = '';
-              streamingPartsRef.current = [
-                ...streamingPartsRef.current,
-                {
-                  type: 'tool_use',
-                  id: event.content_block?.id ?? '',
-                  name: event.content_block?.name ?? '',
-                  input: {},
-                },
-              ];
+              streamingPartsRef.current = upsertToolPart(streamingPartsRef.current, {
+                type: 'tool_use',
+                turn_id: event.turn_id,
+                thread_id: event.thread_id,
+                id: event.content_block?.id ?? '',
+                name: event.content_block?.name ?? '',
+                input: event.content_block?.input ?? {},
+              });
               setStreamingParts([...streamingPartsRef.current]);
               syncStreamingMessage();
             } else if (blockType === 'tool_result') {
               const toolUseId = event.content_block?.tool_use_id ?? '';
               if (toolUseId) {
-                streamingPartsRef.current = [
-                  ...streamingPartsRef.current,
-                  {
-                    type: 'tool_result',
-                    tool_use_id: toolUseId,
-                    content: event.content_block?.content ?? '',
-                  },
-                ];
+                streamingPartsRef.current = upsertToolPart(streamingPartsRef.current, {
+                  type: 'tool_result',
+                  tool_use_id: toolUseId,
+                  content: event.content_block?.content ?? '',
+                });
                 setStreamingParts([...streamingPartsRef.current]);
                 syncStreamingMessage();
               }
@@ -1100,8 +1480,10 @@ export function useSkuldChat(
             const next = [...streamingPartsRef.current];
             const last = next[next.length - 1];
             const separator =
-              last?.type === 'text' && !last.text && streamingTextRef.current ? '\n\n' : '';
-            streamingTextRef.current = `${streamingTextRef.current}${separator}${textChunk}`;
+              last?.type === 'text' && last.id && !last.text && streamingTextRef.current
+                ? '\n\n'
+                : '';
+            streamingTextRef.current += separator + textChunk;
             setStreamingContent(streamingTextRef.current);
             if (last?.type === 'text') {
               next[next.length - 1] = { ...last, text: `${last.text ?? ''}${textChunk}` };
@@ -1136,10 +1518,16 @@ export function useSkuldChat(
             break;
           }
           case 'result': {
-            finalizeStreaming(
-              event.is_error ? 'error' : 'done',
-              event.result ? event.result : undefined,
-            );
+            if (event.turn_id && closedNativeTurnsRef.current.has(event.turn_id)) break;
+            if (activeNativeTurnRef.current) {
+              closedNativeTurnsRef.current.add(activeNativeTurnRef.current);
+              if (closedNativeTurnsRef.current.size > 256) {
+                closedNativeTurnsRef.current.delete(
+                  closedNativeTurnsRef.current.values().next().value!,
+                );
+              }
+            }
+            finalizeStreaming(event.is_error ? 'error' : 'done', event.result ?? undefined);
             break;
           }
           case 'error': {
@@ -1198,6 +1586,8 @@ export function useSkuldChat(
             break;
           }
           case 'conversation_history': {
+            snapshotEvidenceRef.current += 1;
+            seedStreamingHistory(event.turns ?? [], event.projection_revision);
             const nextMessages = event.turns?.length ? transformTurns(event.turns) : [];
             const historyParticipants = event.turns?.length
               ? participantsFromTurns(event.turns)
@@ -1641,6 +2031,7 @@ export function useSkuldChat(
       finalizeStreaming,
       getDefaultAssistantParticipant,
       storeAvailableCommands,
+      seedStreamingHistory,
       url,
     ],
   );

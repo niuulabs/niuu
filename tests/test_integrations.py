@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -559,7 +560,22 @@ class TestIntegrationEndpoints:
         )
         assert response.status_code == 404
 
-    def test_test_integration(self, integration_client: TestClient):
+    @pytest.mark.parametrize("fails", [False, True])
+    def test_test_integration(
+        self, integration_client: TestClient, tracker_factory: TrackerFactory, monkeypatch, fails
+    ):
+        check = AsyncMock(
+            return_value=SimpleNamespace(
+                connected=True, provider="linear", workspace=None, user=None
+            ),
+            side_effect=RuntimeError("connection failed") if fails else None,
+        )
+        close = AsyncMock()
+        monkeypatch.setattr(
+            tracker_factory,
+            "create",
+            AsyncMock(return_value=SimpleNamespace(check_connection=check, close=close)),
+        )
         create_resp = integration_client.post(
             "/api/v1/integrations",
             json={
@@ -570,15 +586,14 @@ class TestIntegrationEndpoints:
         )
         conn_id = create_resp.json()["id"]
 
-        # Test will fail since we're not actually connecting
         response = integration_client.post(
             f"/api/v1/integrations/{conn_id}/test",
         )
         assert response.status_code == 200
         data = response.json()
-        # It returns a result (success or failure depends on network)
-        assert "success" in data
+        assert data["success"] is not fails
         assert "provider" in data
+        close.assert_awaited_once()
 
     def test_test_not_found(self, integration_client: TestClient):
         response = integration_client.post(
@@ -605,10 +620,12 @@ class TestIntegrationEndpoints:
         integration_client: TestClient,
         integration_repo: InMemoryIntegrationRepository,
         sample_connection: IntegrationConnection,
+        respx_mock,
     ):
         import asyncio
 
         asyncio.run(integration_repo.save_connection(sample_connection))
+        respx_mock.post().mock(return_value=httpx.Response(401, json={"error": "fixture"}))
 
         response = integration_client.post(
             f"/api/v1/integrations/{sample_connection.id}/test",

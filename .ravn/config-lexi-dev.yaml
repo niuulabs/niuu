@@ -1,0 +1,123 @@
+# ~/.ravn/config-lexi-dev.yaml — the DEV Ravn gateway for LexiChat adapter work.
+#
+# This is the iteration target for the Ravn -> OpenClaw adapter (Phases 0-2).
+# It exists so that the live Travis on 127.0.0.1:7477 — which is wired to
+# Damien's real Telegram thread and holds RAM-only session history — is never
+# the thing we restart while developing.
+#
+# Differences from ~/.ravn/config.yaml, and why:
+#   telegram.enabled: false   — this instance must never touch the real thread.
+#                               Telegram also allows exactly ONE long-poller per
+#                               bot token, so a second poller would fight Travis.
+#   http.port: 7478           — a second gateway beside 7477, not instead of it.
+#   every writable path       — redirected under ~/.ravn-dev/ so dev turns cannot
+#                               pollute Travis's episodic memory, Mimir KB, or
+#                               prompt cache.
+#   budget.daily_cap_usd      — its own small cap; the live cap is shared across
+#                               Telegram + HTTP and dev traffic must not starve it.
+#
+# Start with:  ~/.ravn/start-lexi-dev.sh
+#
+# Precedence: env vars (RAVN_ prefix, __ for nesting) > this file > defaults.
+
+llm:
+  model: claude-opus-5
+  max_tokens: 16000
+  timeout: 300
+  provider:
+    adapter: ravn.adapters.llm.anthropic.AnthropicAdapter
+    secret_kwargs_env:
+      api_key: ANTHROPIC_API_KEY
+
+# --- isolated state -------------------------------------------------------
+memory:
+  backend: sqlite
+  path: ~/.ravn-dev/memory.db
+  reflection_model: claude-haiku-4-5
+  input_token_cost_per_million: 5.0
+  output_token_cost_per_million: 25.0
+
+embedding:
+  enabled: true
+  adapter: ravn.adapters.embedding.ollama.OllamaEmbeddingAdapter
+  kwargs:
+    model: nomic-embed-text
+    base_url: http://localhost:11434
+
+mimir:
+  enabled: true
+  path: ~/.ravn-dev/mimir
+  auto_distill: false          # dev turns are throwaway; don't distil them
+  ingest:
+    entity_detection: false
+    entity_model: claude-haiku-4-5
+
+skills:
+  path: ~/.ravn-dev/skills.db
+
+# --- workspace containment ------------------------------------------------
+# The dev instance runs with permission_mode: workspace_write (from the travis
+# persona) and the workspace defaults to CWD — which is the niuu checkout. That
+# would let a captured test turn edit the repo. Pin it to a scratch tree so the
+# blast radius of any dev turn is a throwaway directory.
+permission:
+  workspace_root: /home/thor/.ravn-dev/workspace
+
+tools:
+  bash:
+    workspace_root: /home/thor/.ravn-dev/workspace
+
+context_management:
+  prompt_cache_dir: ~/.ravn-dev/prompt_cache
+
+budget:
+  daily_cap_usd: 2.0
+  input_token_cost_per_million: 5.0
+  output_token_cost_per_million: 25.0
+  warn_at_percent: 80
+
+trust:
+  reading: free
+  writing_notes: free
+  sandbox_experiments: free
+  consulting_peers: free
+  drafting_tickets: free
+  producing_recaps: free
+  opening_tickets: approval
+  closing_tickets: approval
+  pushing_branches: approval
+  pushing_main: never
+  external_messages: never     # harder than live: a dev turn must never message out
+  spending_beyond_cap: approval
+
+# No autonomous loops on the dev instance — it should only ever act when a
+# test drives it.
+wakefulness:
+  enabled: false
+thread:
+  enabled: false
+recap:
+  enabled: false
+dream_cycle:
+  enabled: false
+
+gateway:
+  enabled: true
+  channels:
+    telegram:
+      enabled: false
+    http:
+      enabled: true
+      host: 127.0.0.1
+      port: 7478
+    # The OpenClaw-protocol shim, on a DEV port. Validates the wire before the
+    # live Travis process is asked to carry it.
+    openclaw:
+      enabled: true
+      host: 127.0.0.1
+      port: 18791
+      agent_id: travis
+      store_path: ~/.ravn-dev/openclaw/state.db
+
+logging:
+  level: info

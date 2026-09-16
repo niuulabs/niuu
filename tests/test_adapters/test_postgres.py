@@ -464,6 +464,58 @@ class TestActivityStatePersistence:
         assert result.activity_state_since is not None
         assert result.activity_state_since.tzinfo is not None
 
+    async def test_create_persists_turn_started_at(
+        self, repository: PostgresSessionRepository, mock_pool, awaiting_session: Session
+    ):
+        from datetime import UTC, datetime
+
+        turn_start = datetime(2026, 7, 5, 8, 49, 5, tzinfo=UTC)
+        awaiting_session.turn_started_at = turn_start
+        await repository.create(awaiting_session)
+
+        call_args = mock_pool.execute.call_args[0]
+        assert "turn_started_at" in call_args[0]
+        assert call_args[30] == turn_start
+
+    async def test_update_persists_turn_started_at(
+        self, repository: PostgresSessionRepository, mock_pool, awaiting_session: Session
+    ):
+        from datetime import UTC, datetime
+
+        turn_start = datetime(2026, 7, 5, 8, 49, 5, tzinfo=UTC)
+        awaiting_session.turn_started_at = turn_start
+        await repository.update(awaiting_session)
+
+        call_args = mock_pool.execute.call_args[0]
+        assert "turn_started_at = $29" in call_args[0]
+        assert call_args[29] == turn_start
+
+    async def test_row_round_trips_turn_started_at(
+        self, repository: PostgresSessionRepository, sample_row
+    ):
+        from datetime import UTC, datetime
+
+        turn_start = datetime(2026, 7, 5, 8, 49, 5, tzinfo=UTC)
+        sample_row["turn_started_at"] = turn_start
+        result = repository._row_to_session(sample_row)
+        assert result.turn_started_at == turn_start
+
+    async def test_row_normalizes_naive_turn_started_at_to_utc(
+        self, repository: PostgresSessionRepository, sample_row
+    ):
+        from datetime import datetime
+
+        sample_row["turn_started_at"] = datetime(2026, 7, 5, 8, 49, 5)
+        result = repository._row_to_session(sample_row)
+        assert result.turn_started_at is not None
+        assert result.turn_started_at.tzinfo is not None
+
+    async def test_row_defaults_turn_started_at_when_absent(
+        self, repository: PostgresSessionRepository, sample_row
+    ):
+        result = repository._row_to_session(sample_row)
+        assert result.turn_started_at is None
+
 
 class TestSessionQueryArity:
     """Placeholder count and argument count must match — mocked pools can't

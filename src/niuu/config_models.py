@@ -69,7 +69,7 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 "files and MCP tools. The usual choice for Claude."
             ),
             labels=["session", "claude"],
-            default_model="claude-opus-4-8",
+            default_model="claude-opus-5",
             compatible_providers=["anthropic", "local"],
             defaults={
                 "broker": {
@@ -89,7 +89,7 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 "when you want the CLI itself rather than the chat workspace."
             ),
             labels=["session", "claude", "interactive"],
-            default_model="claude-sonnet-4-6",
+            default_model="claude-opus-5",
             compatible_providers=["anthropic", "local"],
             defaults={
                 "broker": {
@@ -111,7 +111,11 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 "The usual choice for OpenAI."
             ),
             labels=["session", "codex"],
-            default_model="",
+            # Astra is the default Codex model (Damien, 2026-09-05). It was empty, which
+            # left the choice entirely to whatever the caller happened to pass — the app
+            # always sends one, but a REST/tool launch that omitted it got no model at
+            # all.
+            default_model="gpt-6-astra",
             compatible_providers=["openai", "local"],
             defaults={
                 "broker": {
@@ -129,7 +133,7 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
                 "for hands-on work pick OpenAI Codex."
             ),
             labels=["session", "codex", "batch"],
-            default_model="",
+            default_model="gpt-6-astra",
             compatible_providers=["openai"],
             defaults={
                 "broker": {
@@ -144,12 +148,47 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
             display_name="xAI Grok Build",
             description="xAI's Grok Build coding agent, signed in with your Grok account.",
             labels=["session", "grok"],
-            default_model="grok-build",
+            default_model="grok-4.6",
             compatible_providers=["xai"],
             defaults={
                 "broker": {
                     "cliType": "grok",
                     "transportAdapter": "skuld.transports.grok.GrokACPTransport",
+                    "agentTeams": False,
+                },
+            },
+        ),
+        "skuldMuse": SessionDefinitionConfig(
+            enabled=True,
+            display_name="Meta Muse Code",
+            description=(
+                "Meta's coding agent with streaming chat, tools and resumable sessions. "
+                "Steer its work while it runs."
+            ),
+            labels=["session", "muse"],
+            # Muse Spark 1.3 shipped 2026-09-02 and is what `muse` serves by default in
+            # Muse Code 1.0.2; the id is exactly what the Meta Model API accepts.
+            default_model="muse-spark-1.3",
+            compatible_providers=["meta"],
+            defaults={
+                "broker": {
+                    "cliType": "muse",
+                    "transportAdapter": "skuld.transports.muse.MuseMSPTransport",
+                    "agentTeams": False,
+                },
+            },
+        ),
+        "skuldPi": SessionDefinitionConfig(
+            enabled=True,
+            display_name="PI",
+            description="PI coding agent with streaming chat, tools and resumable sessions",
+            labels=["session", "pi"],
+            default_model="openai-codex/gpt-6-astra",
+            compatible_providers=[],
+            defaults={
+                "broker": {
+                    "cliType": "pi",
+                    "transportAdapter": "skuld.transports.pi.PiRpcTransport",
                     "agentTeams": False,
                 },
             },

@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -9,9 +10,10 @@ from volundr.domain.models import (
     ExternalSessionRecord,
     LocalMountSource,
     Session,
+    SessionLogEntry,
     SessionSpec,
 )
-from volundr.domain.ports import ExternalSessionProvider
+from volundr.domain.ports import ExternalSessionProvider, SessionEventLogRepository
 from volundr.domain.services import SessionService
 from volundr.domain.services.external_sessions import (
     ExternalSessionAlreadyImportedError,
@@ -38,6 +40,18 @@ class FakeProvider(ExternalSessionProvider):
     @property
     def harness(self) -> str:
         return self._harness
+
+    async def read_transcript(self, external_id, session_id):
+        return [
+            SessionLogEntry(
+                session_id=session_id,
+                seq=1,
+                kind="user",
+                role="user",
+                payload={"type": "user", "message": {"content": "Recovered request"}},
+                ts=datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
+            )
+        ]
 
     async def list_sessions(self) -> list[ExternalSessionRecord]:
         return list(self._records)
@@ -108,7 +122,14 @@ class TestListExternalSessions:
                 )
             ],
         )
-        service = ExternalSessionService([claude, codex], repository, session_service)
+        service = ExternalSessionService(
+            [claude, codex],
+            repository,
+            session_service,
+            event_log_repository=AsyncMock(
+                spec=SessionEventLogRepository, import_history=AsyncMock(return_value=1)
+            ),
+        )
 
         records = await service.list_external_sessions()
 
@@ -123,14 +144,28 @@ class TestListExternalSessions:
             [_record("claude-code", "claude", "claude-1", workspace)],
         )
         codex = FakeProvider("codex", "codex", [])
-        service = ExternalSessionService([claude, codex], repository, session_service)
+        service = ExternalSessionService(
+            [claude, codex],
+            repository,
+            session_service,
+            event_log_repository=AsyncMock(
+                spec=SessionEventLogRepository, import_history=AsyncMock(return_value=1)
+            ),
+        )
 
         records = await service.list_external_sessions(provider="claude-code")
 
         assert [r.external_id for r in records] == ["claude-1"]
 
     async def test_unknown_provider_raises(self, repository, session_service) -> None:
-        service = ExternalSessionService([], repository, session_service)
+        service = ExternalSessionService(
+            [],
+            repository,
+            session_service,
+            event_log_repository=AsyncMock(
+                spec=SessionEventLogRepository, import_history=AsyncMock(return_value=1)
+            ),
+        )
 
         with pytest.raises(ExternalSessionProviderNotFoundError):
             await service.list_external_sessions(provider="nope")
@@ -152,7 +187,14 @@ class TestListExternalSessions:
             source=LocalMountSource(local_path=str(workspace)),
         )
         await repository.create(existing)
-        service = ExternalSessionService([provider], repository, session_service)
+        service = ExternalSessionService(
+            [provider],
+            repository,
+            session_service,
+            event_log_repository=AsyncMock(
+                spec=SessionEventLogRepository, import_history=AsyncMock(return_value=1)
+            ),
+        )
 
         records = await service.list_external_sessions()
 
@@ -170,7 +212,14 @@ class TestImportSession:
             "claude",
             [_record("claude-code", "claude", "claude-1", workspace)],
         )
-        service = ExternalSessionService([provider], repository, session_service)
+        service = ExternalSessionService(
+            [provider],
+            repository,
+            session_service,
+            event_log_repository=AsyncMock(
+                spec=SessionEventLogRepository, import_history=AsyncMock(return_value=1)
+            ),
+        )
 
         session = await service.import_session("claude-code", "claude-1")
 
@@ -190,21 +239,42 @@ class TestImportSession:
             "claude",
             [_record("claude-code", "claude", "claude-1", workspace)],
         )
-        service = ExternalSessionService([provider], repository, session_service)
+        service = ExternalSessionService(
+            [provider],
+            repository,
+            session_service,
+            event_log_repository=AsyncMock(
+                spec=SessionEventLogRepository, import_history=AsyncMock(return_value=1)
+            ),
+        )
 
         session = await service.import_session("claude-code", "claude-1", name="my-import")
 
         assert session.name == "my-import"
 
     async def test_unknown_provider_raises(self, repository, session_service) -> None:
-        service = ExternalSessionService([], repository, session_service)
+        service = ExternalSessionService(
+            [],
+            repository,
+            session_service,
+            event_log_repository=AsyncMock(
+                spec=SessionEventLogRepository, import_history=AsyncMock(return_value=1)
+            ),
+        )
 
         with pytest.raises(ExternalSessionProviderNotFoundError):
             await service.import_session("nope", "id-1")
 
     async def test_unknown_session_raises(self, repository, session_service) -> None:
         provider = FakeProvider("claude-code", "claude", [])
-        service = ExternalSessionService([provider], repository, session_service)
+        service = ExternalSessionService(
+            [provider],
+            repository,
+            session_service,
+            event_log_repository=AsyncMock(
+                spec=SessionEventLogRepository, import_history=AsyncMock(return_value=1)
+            ),
+        )
 
         with pytest.raises(ExternalSessionNotFoundError):
             await service.import_session("claude-code", "missing")
@@ -219,7 +289,14 @@ class TestImportSession:
             "claude",
             [_record("claude-code", "claude", "claude-1", workspace)],
         )
-        service = ExternalSessionService([provider], repository, session_service)
+        service = ExternalSessionService(
+            [provider],
+            repository,
+            session_service,
+            event_log_repository=AsyncMock(
+                spec=SessionEventLogRepository, import_history=AsyncMock(return_value=1)
+            ),
+        )
         first = await service.import_session("claude-code", "claude-1")
 
         with pytest.raises(ExternalSessionAlreadyImportedError) as exc_info:
@@ -235,7 +312,14 @@ class TestImportSession:
             "claude",
             [_record("claude-code", "claude", "claude-1", tmp_path / "gone")],
         )
-        service = ExternalSessionService([provider], repository, session_service)
+        service = ExternalSessionService(
+            [provider],
+            repository,
+            session_service,
+            event_log_repository=AsyncMock(
+                spec=SessionEventLogRepository, import_history=AsyncMock(return_value=1)
+            ),
+        )
 
         with pytest.raises(ExternalSessionWorkspaceError):
             await service.import_session("claude-code", "claude-1")
@@ -259,6 +343,9 @@ class TestMountPrefixPolicy:
             repository,
             session_service,
             allowed_workspace_prefixes=[str(allowed)],
+            event_log_repository=AsyncMock(
+                spec=SessionEventLogRepository, import_history=AsyncMock(return_value=1)
+            ),
         )
 
         with pytest.raises(ExternalSessionPathNotAllowedError):
@@ -279,6 +366,9 @@ class TestMountPrefixPolicy:
             repository,
             session_service,
             allowed_workspace_prefixes=[str(tmp_path / "allowed")],
+            event_log_repository=AsyncMock(
+                spec=SessionEventLogRepository, import_history=AsyncMock(return_value=1)
+            ),
         )
 
         session = await service.import_session("claude-code", "claude-1")
@@ -305,6 +395,9 @@ class TestMountPrefixPolicy:
             repository,
             session_service,
             allowed_workspace_prefixes=[str(allowed)],
+            event_log_repository=AsyncMock(
+                spec=SessionEventLogRepository, import_history=AsyncMock(return_value=1)
+            ),
         )
 
         records = await service.list_external_sessions()
@@ -322,7 +415,14 @@ class TestMountPrefixPolicy:
             "claude",
             [_record("claude-code", "claude", "claude-1", workspace)],
         )
-        service = ExternalSessionService([provider], repository, session_service)
+        service = ExternalSessionService(
+            [provider],
+            repository,
+            session_service,
+            event_log_repository=AsyncMock(
+                spec=SessionEventLogRepository, import_history=AsyncMock(return_value=1)
+            ),
+        )
 
         records = await service.list_external_sessions()
 

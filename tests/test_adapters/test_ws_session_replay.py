@@ -346,6 +346,7 @@ def test_after_cursor_emits_conversation_history_then_tail():
     assert [f["type"] for f in body] == ["conversation_history", "assistant", "result"]
     history = body[0]
     assert isinstance(history["turns"], list)
+    assert history["projection_revision"] == "text-items-1:0"
     # The reconstructed prefix carries the user prompt from seq 1.
     assert any(
         t.get("role") == "user" and "do the thing" in t.get("content", "") for t in history["turns"]

@@ -1,0 +1,13 @@
+←  ☒ Tone  ☐ Texture  ✔ Submit  →
+
+Which texture?
+
+  1. Matte
+     Matte texture
+  2. Glossy
+     Glossy texture
+❯ 3. Copper multi café 東京
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in Vim · Esc to cancel

@@ -1,7 +1,13 @@
 import { ExternalLink } from 'lucide-react';
 import { cn } from '../../../utils/cn';
 import { resolveParticipantColor } from '../../utils/participantColor';
-import { UserMessage, AssistantMessage, StreamingMessage, SystemMessage } from '../ChatMessages';
+import {
+  UserMessage,
+  AssistantMessage,
+  StreamingMessage,
+  SystemMessage,
+  hasNativeMessageParts,
+} from '../ChatMessages';
 import type { ChatMessage } from '../../types';
 import './RoomMessage.css';
 
@@ -80,12 +86,13 @@ export function RoomMessage({
       )}
       {message.metadata?.messageType !== 'system' &&
         message.role === 'assistant' &&
-        message.status === 'running' && (
+        message.status === 'running' &&
+        !hasNativeMessageParts(message.parts) && (
           <StreamingMessage content={message.content} parts={message.parts} />
         )}
       {message.metadata?.messageType !== 'system' &&
         message.role === 'assistant' &&
-        message.status !== 'running' && (
+        (message.status !== 'running' || hasNativeMessageParts(message.parts)) && (
           <AssistantMessage
             message={message}
             onCopy={onCopy}

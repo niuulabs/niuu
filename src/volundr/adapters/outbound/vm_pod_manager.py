@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 
 class VmPodManager(PodManager):
+    @property
+    def runtime_backend(self) -> str:
+        return "vm"
+
     def __init__(
         self,
         *,

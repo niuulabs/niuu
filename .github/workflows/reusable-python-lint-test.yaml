@@ -110,6 +110,7 @@ jobs:
           output_file="$(mktemp)"
           uv run pytest ${{ matrix.pkg.paths }} -v --tb=short \
             --override-ini="addopts=" \
+            -m 'not integration and not broker and not kind_integration and not live_cli' \
             ${{ matrix.pkg.cov }} \
             --cov-report=term-missing \
             --cov-report=xml \

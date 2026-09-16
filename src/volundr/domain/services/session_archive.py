@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+from niuu.domain.text_projection import projection_revision
 from volundr.domain.models import LocalMountSource
 from volundr.domain.services.transcript_rebuild import rebuild_turns
 from volundr.log_aggregate import aggregate_workspace_logs
@@ -14,6 +16,10 @@ from volundr.session_archive import (
     load_workspace_transcript,
     resolve_contained_path,
 )
+
+logger = logging.getLogger(__name__)
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -323,23 +329,48 @@ class SessionArchiveService:
 
         return session, candidates
 
-    async def _load_event_log_transcript(self, session_id: UUID) -> dict[str, Any] | None:
+    async def _load_event_log_transcript(
+        self, session_id: UUID, max_frames: int = 50_000
+    ) -> dict[str, Any] | None:
         """Rebuild a stopped-session transcript from the durable event log.
 
         BUG-2: the durable ``session_event_log`` holds the COMPLETE work (assistant /
         content_block_delta / result / terminal_frame frames), not just finished
         ``conversation.turn`` rows. A tmux session that crashes mid-turn never produces a
         ``conversation.turn`` for its open work, so the old "conversation.turn-only" read
-        returned nothing. Page in the full ordered frame list and hand it to the pure
+        returned nothing. Page in the ordered frame list and hand it to the pure
         reducer (which mirrors the broker's live folding and surfaces interrupted turns).
+
+        TAIL-BOUNDED (2026-07-12, the "stale first-50k transcript" fix): the ``max_frames``
+        ceiling used to keep the FIRST 50k frames — on a huge session (lexi-frontend-
+        presentation: 216,918 frames) the fallback served the transcript as it looked DAYS
+        ago (27 turns of a 112-turn session, verified against the phone's poisoned cache
+        anchor). A bounded read must keep the NEWEST frames: when the log exceeds the
+        ceiling, start from ``latest_seq - max_frames`` so the rebuild covers the recent
+        tail. The leading cut can land mid-turn — the reducer's normal interrupted-turn
+        handling absorbs that fragment; ``total_turns`` under-reports deep history (the
+        windowed client shows fewer "earlier" turns in this degraded mode), which is the
+        right trade against showing days-stale content as current.
         """
         if self._event_log_repository is None:
             return None
 
-        all_entries: list = []
         after_seq = 0
+        try:
+            latest = await self._event_log_repository.latest_seq(session_id)
+        except Exception:  # tolerate repos without a fast MAX(seq) — fall back to head read
+            latest = 0
+        if latest > max_frames:
+            after_seq = latest - max_frames
+            logger.warning(
+                "Event-log rebuild for session %s truncated to the last %d of %d frames",
+                session_id,
+                max_frames,
+                latest,
+            )
+
+        all_entries: list = []
         limit = 5000
-        max_frames = 50_000  # hard ceiling — bounded read for huge sessions
         while True:
             entries = await self._event_log_repository.read_after(
                 session_id,
@@ -359,6 +390,7 @@ class SessionArchiveService:
             return None  # preserve the existing None -> fall-through contract
         return {
             "turns": result.turns,
+            "projection_revision": projection_revision(result.turns),
             "is_active": False,
             "last_activity": "",
         }

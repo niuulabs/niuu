@@ -1,4 +1,7 @@
-"""INV-7 delivery integrity at the LIVE-BROKER frame tier (Epic F gap).
+"""INV-7 delivery integrity for correlated, durably claimed user messages.
+
+Definite native refusals may retry under the same durable claim. Ambiguous
+provider outcomes remain pending and are exercised in test_broker_review_regressions.
 
 The delivery-integrity invariant is already pinned at two other tiers:
 
@@ -29,6 +32,7 @@ build settings explicitly (no env-derived fields) to be belt-and-suspenders safe
 from __future__ import annotations
 
 import asyncio
+import importlib
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -40,12 +44,25 @@ from niuu.domain.transcript_reducer import (
 )
 from skuld.broker import Broker
 from skuld.config import SkuldSettings
+from skuld.delivery_errors import DeliveryNotAcceptedError
 from skuld.transports import TransportCapabilities
 
 # Retry budget for the terminal-failure path: small but >1 so the bounded retry is exercised.
 _MAX_ATTEMPTS = 3
 # Zero backoff so the test never pays retry latency (the loop still runs MAX_ATTEMPTS times).
 _NO_BACKOFF = 0.0
+
+
+@pytest.fixture(autouse=True)
+def delivery_claim_api(monkeypatch):
+    module = importlib.import_module("skuld.broker")
+
+    async def claim(*args, **kwargs):
+        return {"claimed": True, "status": "pending", "request_id": kwargs["request_id"]}
+
+    monkeypatch.setattr(module, "claim_message", claim)
+    monkeypatch.setattr(module, "settle_message", AsyncMock())
+    monkeypatch.setattr(Broker, "_get_http_client", AsyncMock())
 
 
 # --------------------------------------------------------------------------- local fixtures
@@ -172,10 +189,12 @@ class TestTerminalDeliveryFailureSteeringState:
         durable buffer BEFORE it is broadcast (persist-first superset), and it is present in the
         log exactly once with the failing error attached."""
         b = _broker(tmp_path)
-        b._transport.send_message = AsyncMock(side_effect=RuntimeError("wedged forever"))
+        b._transport.send_message = AsyncMock(
+            side_effect=DeliveryNotAcceptedError("wedged forever")
+        )
         broadcasts = _instrument_broadcast(b)
 
-        await b._dispatch_browser_message({"content": "steer it", "request_id": "rq-fail"})
+        await b._dispatch_browser_message({"content": "steer it", "request_id": "req-live"})
         await _settle_delivery()
 
         assert b._transport.send_message.await_count == _MAX_ATTEMPTS, (
@@ -211,9 +230,11 @@ class TestTerminalDeliveryFailureSteeringState:
         steering_state=failed — proving the turn is NEVER left stuck pending and NEVER delivered.
         """
         b = _broker(tmp_path)
-        b._transport.send_message = AsyncMock(side_effect=RuntimeError("input channel wedged"))
+        b._transport.send_message = AsyncMock(
+            side_effect=DeliveryNotAcceptedError("input channel wedged")
+        )
 
-        await b._dispatch_browser_message({"content": "do it", "request_id": "rq-1"})
+        await b._dispatch_browser_message({"content": "do it", "request_id": "req-live"})
         await _settle_delivery()
 
         payloads = _buffer_payloads(b)
@@ -256,10 +277,10 @@ class TestTerminalDeliveryFailureSteeringState:
         present in the durable buffer (broadcast set ⊆ logged set) — the failure path adds no
         client-visible frame that escapes the log."""
         b = _broker(tmp_path)
-        b._transport.send_message = AsyncMock(side_effect=RuntimeError("nope"))
+        b._transport.send_message = AsyncMock(side_effect=DeliveryNotAcceptedError("nope"))
         broadcasts = _instrument_broadcast(b)
 
-        await b._dispatch_browser_message({"content": "hello", "request_id": "rq-7"})
+        await b._dispatch_browser_message({"content": "hello", "request_id": "req-live"})
         await _settle_delivery()
 
         broadcast_kinds = [frame.get("type") for frame, _snap in broadcasts]
@@ -308,11 +329,11 @@ class TestBackstopExcludesInFlightDelivery:
                 # Out-of-band terminal-ish transport frame for some OTHER activity; in the buggy
                 # code this trips the backstop and falsely "consumes" the pending steer.
                 await b._handle_cli_event({"type": "error", "content": "unrelated transport blip"})
-            raise RuntimeError("input channel wedged")
+            raise DeliveryNotAcceptedError("input channel wedged")
 
         b._transport.send_message = AsyncMock(side_effect=_failing_send)
 
-        await b._dispatch_browser_message({"content": "steer mid-flight", "request_id": "rq-mf"})
+        await b._dispatch_browser_message({"content": "steer mid-flight", "request_id": "req-live"})
         await _settle_delivery()
 
         # Every attempt ran (bounded retry exhausted) and the backstop fired at least once.
@@ -354,7 +375,7 @@ class TestBackstopExcludesInFlightDelivery:
         b = _broker(tmp_path)
         b._transport.send_message = AsyncMock(return_value=None)
 
-        await b._dispatch_browser_message({"content": "lands cleanly", "request_id": "rq-ok"})
+        await b._dispatch_browser_message({"content": "lands cleanly", "request_id": "req-live"})
         await _settle_delivery()
 
         live_turn = next(t for t in b._conversation_turns if t.role == "user")
@@ -395,12 +416,12 @@ class TestMalformedInboundDoesNotTearDown:
         b._transport.send_message.assert_not_called()
 
         # The follow-up VALID message must still be delivered — the socket/broker survived.
-        await b._dispatch_browser_message({"content": "still here", "request_id": "after-bad"})
+        await b._dispatch_browser_message({"content": "still here", "request_id": "req-live"})
         await _settle_delivery()
         b._transport.send_message.assert_awaited_once()
         args, kwargs = b._transport.send_message.await_args
         assert args[0] == "still here"
-        assert kwargs.get("request_id") == "after-bad"
+        assert kwargs.get("request_id") == "req-live"
 
     @pytest.mark.asyncio
     async def test_malformed_frame_does_not_corrupt_durable_log(self, tmp_path):
@@ -420,7 +441,7 @@ class TestMalformedInboundDoesNotTearDown:
         )
 
         # The subsequent valid message rebuilds to exactly one clean user turn.
-        await b._dispatch_browser_message({"content": "real one", "request_id": "ok"})
+        await b._dispatch_browser_message({"content": "real one", "request_id": "req-live"})
         await _settle_delivery()
         result = reduce_frames(_frames_from_buffer(b))
         user_turns = [t for t in result.turns if t["role"] == "user"]

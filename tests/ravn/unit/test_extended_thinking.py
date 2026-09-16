@@ -176,7 +176,7 @@ def test_anthropic_adapter_headers_without_thinking():
 
 def test_anthropic_adapter_headers_with_thinking():
     adapter = AnthropicAdapter(api_key="sk-test")
-    headers = adapter._headers(thinking_enabled=True)
+    headers = adapter._headers(thinking_enabled=True, model="claude-sonnet-4-5")
     assert "interleaved-thinking-2025-05-14" in headers["anthropic-beta"]
     assert "prompt-caching-2024-07-31" in headers["anthropic-beta"]
 
@@ -212,7 +212,7 @@ def test_anthropic_adapter_build_request_with_thinking():
         stream=False,
         thinking=thinking,
     )
-    assert req["thinking"] == thinking
+    assert req["thinking"] == {"type": "adaptive"}
 
 
 def test_anthropic_adapter_does_not_send_prior_reasoning_as_message_field():

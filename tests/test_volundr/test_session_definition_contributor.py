@@ -16,7 +16,7 @@ def _mock_session():
     session = MagicMock()
     session.id = "test-session-id"
     session.name = "test-session"
-    session.model = "claude-sonnet-4-6"
+    session.model = "claude-opus-5"
     return session
 
 
@@ -26,7 +26,7 @@ DEFINITIONS = {
         display_name="Claude Code",
         description="Anthropic Claude",
         labels=["session"],
-        default_model="claude-sonnet-4-6",
+        default_model="claude-opus-5",
         defaults={
             "broker": {
                 "cliType": "claude",
@@ -106,7 +106,7 @@ class TestSessionDefinitionContributor:
         result = await contributor.contribute(_mock_session(), context)
 
         assert result.values["broker"]["cliType"] == "claude"
-        assert result.values["model"] == "claude-sonnet-4-6"
+        assert result.values["model"] == "claude-opus-5"
 
     @pytest.mark.asyncio
     async def test_explicit_definition_overrides_default(self):
@@ -159,7 +159,7 @@ class TestSessionDefinitionConfig:
             display_name="Claude Code",
             description="Test",
             labels=["session"],
-            default_model="claude-sonnet-4-6",
+            default_model="claude-opus-5",
             defaults={"broker": {"cliType": "claude"}},
         )
         assert config.display_name == "Claude Code"
@@ -188,7 +188,7 @@ class TestDefaultSessionDefinitions:
     def test_claude_interactive_defaults(self):
         interactive = default_session_definitions()["skuldClaudeInteractive"]
         assert interactive.display_name == "Claude Code Interactive"
-        assert interactive.default_model == "claude-sonnet-4-6"
+        assert interactive.default_model == "claude-opus-5"
         assert interactive.defaults["broker"]["cliType"] == "claude"
         assert interactive.defaults["broker"]["transport"] == "tmux-interactive"
         assert (
@@ -225,4 +225,4 @@ class TestDefaultSessionDefinitions:
         context = SessionContext()
         result = await contributor.contribute(_mock_session(), context)
         assert result.values["broker"]["cliType"] == "claude"
-        assert result.values["model"] == "claude-opus-4-8"
+        assert result.values["model"] == "claude-opus-5"

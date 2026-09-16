@@ -129,37 +129,31 @@ function SessionSummaryCard({ payload }: { payload: SessionSummaryPayload }) {
 
 function parseSegments(text: string): Segment[] {
   const segments: Segment[] = [];
+  // Only a line-delimited fence starts code. Keep an unfinished fence as one growing code
+  // block; it must not duplicate the preceding prose or reinterpret code as a Markdown list.
+  const opener = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)\r?\n/gm;
   let cursor = 0;
-
-  while (cursor < text.length) {
-    const fenceStart = text.indexOf('```', cursor);
-    if (fenceStart === -1) break;
-
-    if (fenceStart > cursor) {
-      pushTextLikeSegment(segments, text.slice(cursor, fenceStart));
-    }
-
-    const languageStart = fenceStart + 3;
-    const newlineIndex = text.indexOf('\n', languageStart);
-    if (newlineIndex === -1) break;
-
-    const fenceEnd = text.indexOf('```', newlineIndex + 1);
-    if (fenceEnd === -1) break;
-
-    const lang = text.slice(languageStart, newlineIndex).trim();
-    const code = text.slice(newlineIndex + 1, fenceEnd);
-    if (lang === 'outcome') {
-      segments.push({ type: 'outcome', raw: code.trim() });
-    } else {
-      segments.push({ type: 'code', language: lang, content: code });
-    }
-    cursor = fenceEnd + 3;
+  let match: RegExpExecArray | null;
+  while ((match = opener.exec(text))) {
+    if (match.index < cursor) continue;
+    const marker = match[1]!;
+    const language = match[2]!.trim();
+    if (marker[0] === '`' && language.includes('`')) continue;
+    const codeStart = opener.lastIndex;
+    const closer = new RegExp(
+      `^ {0,3}${marker[0] === '`' ? '`' : '~'}{${marker.length},}[ \t]*(?:\r?\n|$)`,
+      'gm',
+    );
+    closer.lastIndex = codeStart;
+    const close = closer.exec(text);
+    if (match.index > cursor) pushTextLikeSegment(segments, text.slice(cursor, match.index));
+    const code = text.slice(codeStart, close?.index ?? text.length);
+    if (language === 'outcome' && close) segments.push({ type: 'outcome', raw: code.trim() });
+    else segments.push({ type: 'code', language, content: code });
+    cursor = close ? closer.lastIndex : text.length;
+    opener.lastIndex = cursor;
   }
-
-  if (cursor < text.length) {
-    pushTextLikeSegment(segments, text.slice(cursor));
-  }
-
+  if (cursor < text.length) pushTextLikeSegment(segments, text.slice(cursor));
   return segments;
 }
 
@@ -254,6 +248,18 @@ function TextSegment({ content, isStreaming }: { content: string; isStreaming?: 
       continue;
     }
 
+    // A fence header without its terminating newline is still arriving. Show it literally;
+    // interpreting its backticks as inline code would hide bytes and change the block twice.
+    if (/^ {0,3}(?:`{3,}|~{3,})/.test(line)) {
+      elements.push(
+        <p key={i} className="niuu-chat-md-p">
+          {line}
+        </p>,
+      );
+      i++;
+      continue;
+    }
+
     // Heading
     const headingMatch = parseHeading(line);
     if (headingMatch) {
@@ -324,17 +330,26 @@ function TextSegment({ content, isStreaming }: { content: string; isStreaming?: 
     // Unordered list item
     const unorderedItem = parseUnorderedListItem(line);
     if (unorderedItem !== null) {
+      const listStart = i;
       const listItems: string[] = [];
       while (i < lines.length) {
         const ln = lines[i];
-        if (!ln) break;
+        if (!ln?.trim()) {
+          let next = i + 1;
+          while (next < lines.length && !lines[next]?.trim()) next++;
+          if (parseUnorderedListItem(lines[next] ?? '') !== null) {
+            i = next;
+            continue;
+          }
+          break;
+        }
         const item = parseUnorderedListItem(ln);
         if (item === null) break;
         listItems.push(item);
         i++;
       }
       elements.push(
-        <ul key={`ul-${i}`} className="niuu-chat-md-ul">
+        <ul key={`ul-${listStart}`} className="niuu-chat-md-ul">
           {listItems.map((item, idx) => (
             <li key={idx}>{renderInline(item)}</li>
           ))}
@@ -346,17 +361,26 @@ function TextSegment({ content, isStreaming }: { content: string; isStreaming?: 
     // Ordered list item
     const orderedItem = parseOrderedListItem(line);
     if (orderedItem !== null) {
+      const listStart = i;
       const listItems: string[] = [];
       while (i < lines.length) {
         const ln = lines[i];
-        if (!ln) break;
+        if (!ln?.trim()) {
+          let next = i + 1;
+          while (next < lines.length && !lines[next]?.trim()) next++;
+          if (parseOrderedListItem(lines[next] ?? '') !== null) {
+            i = next;
+            continue;
+          }
+          break;
+        }
         const item = parseOrderedListItem(ln);
         if (item === null) break;
         listItems.push(item);
         i++;
       }
       elements.push(
-        <ol key={`ol-${i}`} className="niuu-chat-md-ol">
+        <ol key={`ol-${listStart}`} className="niuu-chat-md-ol">
           {listItems.map((item, idx) => (
             <li key={idx}>{renderInline(item)}</li>
           ))}

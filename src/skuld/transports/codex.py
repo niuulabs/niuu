@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+import uuid
 from pathlib import Path
 
 from niuu.adapters.cli.runtime import (
@@ -124,6 +125,9 @@ class CodexSubprocessTransport(CLITransport):
         self._process: asyncio.subprocess.Process | None = None
         self._last_result: dict | None = None
         self._pending_text: list[str] = []
+        self._completed_text_items: dict[str, str] = {}
+        self._text_item_indexes: dict[str, int] = {}
+        self._native_thread_id: str | None = None
         self._env = dict(os.environ)
         _ensure_codex_home(self._env)
 
@@ -151,6 +155,8 @@ class CodexSubprocessTransport(CLITransport):
     ) -> None:
         self._last_result = None
         self._pending_text = []
+        self._completed_text_items.clear()
+        self._text_item_indexes.clear()
         codex_cli = resolve_codex_cli()
         cmd = [
             codex_cli,
@@ -241,6 +247,9 @@ class CodexSubprocessTransport(CLITransport):
         event_type = data.get("type", "")
         logger.debug("Codex event: type=%s", event_type)
 
+        if event_type == "thread.started" and isinstance(data.get("thread_id"), str):
+            self._native_thread_id = data["thread_id"]
+
         # --- Current Codex CLI agent message item ---
         if event_type == "item.completed":
             item = data.get("item", {})
@@ -248,14 +257,49 @@ class CodexSubprocessTransport(CLITransport):
                 return
             if item.get("type") == "agent_message":
                 text = item.get("text", "")
-                if isinstance(text, str) and text:
+                phase = item.get("phase") or item.get("channel")
+                if phase == "analysis":
+                    return
+                native_id = item.get("id")
+                native_id = native_id if isinstance(native_id, str) and native_id else None
+                identifier = native_id or f"codex-text-{uuid.uuid4()}"
+                if isinstance(text, str) and self._completed_text_items.get(identifier) != text:
+                    index = self._text_item_indexes.setdefault(
+                        identifier, len(self._text_item_indexes)
+                    )
+                    block = {
+                        "type": "text",
+                        "id": identifier,
+                        "text": text,
+                        "complete": True,
+                        "id_source": "native" if native_id else "synthetic",
+                        "index": index,
+                    }
+                    if phase in ("commentary", "final_answer"):
+                        block["phase"] = phase
+                    if self._native_thread_id:
+                        block["thread_id"] = self._native_thread_id
                     await self._emit(
                         {
                             "type": "assistant",
-                            "message": {"content": text},
+                            "message": {"content": [block]},
                             "content": text,
+                            "item_id": identifier,
+                            "index": index,
+                            **(
+                                {"thread_id": self._native_thread_id}
+                                if self._native_thread_id
+                                else {}
+                            ),
+                            **({"phase": phase} if phase in ("commentary", "final_answer") else {}),
+                            **(
+                                {"metadata": {"text_identity_source": "synthetic"}}
+                                if not native_id
+                                else {}
+                            ),
                         }
                     )
+                    self._completed_text_items[identifier] = text
                 return
 
         # --- Streaming text output ---

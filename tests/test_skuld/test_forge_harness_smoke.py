@@ -59,6 +59,7 @@ def _terminal_frames(events: list[dict]) -> list[str]:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_a2_synthetic_turn_closes_via_idle_watchdog() -> None:
     """A2: no hooks — idle watchdog closes exactly one turn; frame carries text."""
@@ -85,6 +86,7 @@ async def test_a2_synthetic_turn_closes_via_idle_watchdog() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_a3_hook_turn_closes_on_stop_with_model_usage() -> None:
     """A3: hooks on — the Stop hook closes the turn; result.modelUsage is non-empty."""
@@ -120,6 +122,7 @@ async def test_a3_hook_turn_closes_on_stop_with_model_usage() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_a1_capabilities_handshake() -> None:
     """A1: the handshake advertises terminal controls + emits pane/init frames."""
@@ -157,6 +160,7 @@ async def test_a1_capabilities_handshake() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_e2e_message_broadcasts_and_rebuilds_from_log() -> None:
     """E2E: a browser message round-trips, broadcasts, logs, and rebuilds."""

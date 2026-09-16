@@ -28,6 +28,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
+from niuu.domain.text_projection import projection_revision
 from niuu.domain.transcript_reducer import is_read_path_excluded
 from niuu.ports.cli.transport import TransportCapabilities
 from skuld.channels import filter_internal_blocks
@@ -74,7 +75,11 @@ def _mid_cursor_history_frame(prefix: list[SessionLogEntry]) -> dict:
     seq/kind/role/request_id/payload/ts frames the tail streams).
     """
     rebuilt = rebuild_turns(prefix)
-    return {"type": "conversation_history", "turns": rebuilt.turns}
+    return {
+        "type": "conversation_history",
+        "turns": rebuilt.turns,
+        "projection_revision": projection_revision(rebuilt.turns),
+    }
 
 
 class _VisibilityGate:

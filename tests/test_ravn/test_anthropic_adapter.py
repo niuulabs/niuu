@@ -82,6 +82,138 @@ class TestAnthropicAdapterBuildRequest:
         )
         assert body["stream"] is True
 
+    def test_tool_result_keeps_only_schema_keys(self) -> None:
+        """A tool_result carrying extra keys is a 400 — prune before sending."""
+        adapter = AnthropicAdapter(api_key="k")
+        body = adapter._build_request(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "name": "read_file",
+                            "content": "ok",
+                            "is_error": False,
+                        }
+                    ],
+                }
+            ],
+            tools=[],
+            system="",
+            model="m",
+            max_tokens=100,
+            stream=False,
+        )
+        block = body["messages"][0]["content"][0]
+        assert "name" not in block
+        assert block == {
+            "type": "tool_result",
+            "tool_use_id": "toolu_1",
+            "content": "ok",
+            "is_error": False,
+        }
+
+    def test_other_blocks_pass_through(self) -> None:
+        adapter = AnthropicAdapter(api_key="k")
+        body = adapter._build_request(
+            [
+                {
+                    "role": "assistant",
+                    "reasoning": "internal",
+                    "content": [
+                        {"type": "text", "text": "hi"},
+                        {"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {}},
+                    ],
+                }
+            ],
+            tools=[],
+            system="",
+            model="m",
+            max_tokens=100,
+            stream=False,
+        )
+        message = body["messages"][0]
+        assert "reasoning" not in message
+        assert message["content"][0] == {"type": "text", "text": "hi"}
+        assert message["content"][1]["name"] == "read_file"
+
+    def test_thinking_budget_becomes_adaptive_on_current_models(self) -> None:
+        """budget_tokens is a 400 from Opus 4.7 onward."""
+        adapter = AnthropicAdapter(api_key="k")
+        for model in ("claude-opus-5", "claude-opus-4-8", "claude-sonnet-5", "claude-fable-5"):
+            body = adapter._build_request(
+                [],
+                tools=[],
+                system="",
+                model=model,
+                max_tokens=100,
+                stream=False,
+                thinking={"type": "enabled", "budget_tokens": 8000},
+            )
+            assert body["thinking"] == {"type": "adaptive"}, model
+
+    def test_thinking_budget_kept_on_legacy_models(self) -> None:
+        adapter = AnthropicAdapter(api_key="k")
+        for model in ("claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-5"):
+            body = adapter._build_request(
+                [],
+                tools=[],
+                system="",
+                model=model,
+                max_tokens=100,
+                stream=False,
+                thinking={"type": "enabled", "budget_tokens": 8000},
+            )
+            assert body["thinking"] == {"type": "enabled", "budget_tokens": 8000}, model
+
+    def test_unknown_model_defaults_to_adaptive(self) -> None:
+        """A model released after this code was written must not get budget_tokens."""
+        adapter = AnthropicAdapter(api_key="k")
+        body = adapter._build_request(
+            [],
+            tools=[],
+            system="",
+            model="claude-something-7",
+            max_tokens=100,
+            stream=False,
+            thinking={"type": "enabled", "budget_tokens": 8000},
+        )
+        assert body["thinking"] == {"type": "adaptive"}
+
+    def test_adaptive_passed_through_unchanged(self) -> None:
+        adapter = AnthropicAdapter(api_key="k")
+        body = adapter._build_request(
+            [],
+            tools=[],
+            system="",
+            model="claude-opus-5",
+            max_tokens=100,
+            stream=False,
+            thinking={"type": "adaptive"},
+        )
+        assert body["thinking"] == {"type": "adaptive"}
+
+    def test_interleaved_beta_only_for_legacy_thinking(self) -> None:
+        adapter = AnthropicAdapter(api_key="k")
+        current = adapter._headers(thinking_enabled=True, model="claude-opus-5")
+        legacy = adapter._headers(thinking_enabled=True, model="claude-sonnet-4-5")
+        assert "interleaved-thinking" not in current["anthropic-beta"]
+        assert "interleaved-thinking" in legacy["anthropic-beta"]
+
+    def test_string_content_untouched(self) -> None:
+        adapter = AnthropicAdapter(api_key="k")
+        body = adapter._build_request(
+            [{"role": "user", "content": "plain"}],
+            tools=[],
+            system="",
+            model="m",
+            max_tokens=100,
+            stream=False,
+        )
+        assert body["messages"][0]["content"] == "plain"
+
 
 @respx.mock
 async def test_generate_success() -> None:

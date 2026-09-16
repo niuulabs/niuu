@@ -1,0 +1,318 @@
+{
+  "schema_version": 1,
+  "fixture": "codex-interleaving-0e6245cb5f.frames.json",
+  "sha256": "0e6245cb5fab1f052a299f051b08ef6d4a64eaf4279f3f1d0d760312ae137fa4",
+  "source_slice_sha256": "5df68f5ecde21d40d859fda6ad29e74700bc31002f52b0b9bcd6a2c520ce3c8d",
+  "redacted": true,
+  "source": "live-provider",
+  "provider": "codex",
+  "model": "gpt-6-astra",
+  "scenario": {
+    "scenario": "interleaving",
+    "passed": true,
+    "after_seq": 152,
+    "through_seq": 283,
+    "prompt": "Run a short transcript ordering test in /workspace/forge-interleaving/codex. Say a brief public progress message explaining the next command, then execute `sleep 2; printf \"gamma\\n\" > third.txt; cat third.txt`. After it finishes, say a brief progress message reporting the result and introducing the next command, then separately execute `sleep 2; printf \"delta\\n\" > fourth.txt; cat fourth.txt`. Finish with two short paragraphs, a numbered list of the two observed outputs, and a Python code fence with print(\"café 東京\"). End the final answer with exact marker [LIVE_ORDER_DONE:2797778222]. Use no other tools, workers, search, questions, or files. Never inspect source symlinks. The progress text can use your own wording.",
+    "checks": [
+      {
+        "name": "exact_observed_native_order",
+        "passed": true
+      },
+      {
+        "name": "exact_native_text_bytes",
+        "passed": true
+      },
+      {
+        "name": "native_identity_unchanged",
+        "passed": true
+      }
+    ],
+    "observed_text_parts": 3,
+    "observed_tool_pairs": 2
+  },
+  "review": {
+    "status": "accepted",
+    "reviewer": "Codex transport/corpus review agent, 2026-09-08",
+    "reviewed_at": "2026-09-08T22:25:46.349029+00:00",
+    "source_frames_sha256": "b283d8804497b11bccf77f2b3d9d3db5828ed4ef0004fdc43c1757e801ef61e7",
+    "notes": [
+      "Reviewed only synthetic requests and gamma/delta file commands. No search, private files, agents, credentials or retained-session inputs were used in this interval.",
+      "The exact observed native order is public text, command, result, public text, command, result, final public text. All three text bodies match native bytes; phase and native item identity are preserved where the provider supplies them.",
+      "The two commands each sleep for two seconds. Final native prose includes paragraphs, a numbered list, and a Python fence with café 東京. The expectation records what the provider actually produced, without requiring canned commentary wording.",
+      "The frozen complete-session raw database projects exactly to captured public rows and live public replay. Full and cursor fixture replay pass; recorded live events form an ordered persisted subsequence, excluding reconnect-only snapshots.",
+      "Only the final passing interval is promoted. Original collector and chronology failures remain in private provenance with hashes below; no earlier failure was edited or converted into a pass.",
+      "Literal redactions replace only the owned workspace and local test home path. Review covers the source interval before redaction. No tool output or public prose bytes are otherwise changed.",
+      "This corpus certifies capture/replay and ordered projection, not completed iOS visual acceptance; the simulator recording is a separately reviewed artifact.",
+      "Native exec wrappers are a separate native trace layer. The capture comparison matches actual CommandExecution IDs and results; it does not count wrapper and command as duplicated public tool cards."
+    ],
+    "native_oracle": {
+      "session_id": "01a08305-62b5-7882-8d39-8dc5b03710a6",
+      "public_import_sha256": "8e059d6e3873f83ecdb52a94939b995a8d45e0f9ea40617d1b186a9a3afadd83",
+      "public_conversation_sha256": "047dd957c8331f15d9097049ebd992d6cb4fa6c201ebf61cf9013de0632fa0f0",
+      "text_items": [
+        {
+          "id": "msg_029be78623a29c8f016aa088d0b20087d2b9267d2ee9d677d4",
+          "phase": "commentary",
+          "turn_id": "01a08316-64bb-7301-9ab7-f6cbafe1a7fd",
+          "thread_id": "01a08305-62b5-7882-8d39-8dc5b03710a6",
+          "text_sha256": "271f48dce02c5b4468aa535040bbd4847e147348b9022e4bbe5e143e74cba0e5",
+          "text_bytes": 86
+        },
+        {
+          "id": "msg_029be78623a29c8f016aa088d7b5a487d2b66bb7cdd3693420",
+          "phase": "commentary",
+          "turn_id": "01a08316-64bb-7301-9ab7-f6cbafe1a7fd",
+          "thread_id": "01a08305-62b5-7882-8d39-8dc5b03710a6",
+          "text_sha256": "9670390d4b84f1601a798b90543b77246e49e16497f1a76191d4bc8c16b0e6c6",
+          "text_bytes": 118
+        },
+        {
+          "id": "msg_029be78623a29c8f016aa088defb6c87d28b5341b7d5bddcb5",
+          "phase": "final_answer",
+          "turn_id": "01a08316-64bb-7301-9ab7-f6cbafe1a7fd",
+          "thread_id": "01a08305-62b5-7882-8d39-8dc5b03710a6",
+          "text_sha256": "23bea5f923dfba11c35bb224eef11ccc67430db4a0506ddb8d824218e11269b0",
+          "text_bytes": 186
+        }
+      ],
+      "observed_order": [
+        [
+          "text",
+          "271f48dce02c5b4468aa535040bbd4847e147348b9022e4bbe5e143e74cba0e5"
+        ],
+        [
+          "tool_use",
+          "exec-bd312279-4189-4266-b15d-3bcd27f6131d"
+        ],
+        [
+          "tool_result",
+          "exec-bd312279-4189-4266-b15d-3bcd27f6131d"
+        ],
+        [
+          "text",
+          "9670390d4b84f1601a798b90543b77246e49e16497f1a76191d4bc8c16b0e6c6"
+        ],
+        [
+          "tool_use",
+          "exec-8da12ff8-157c-4355-8d49-dda5845a8928"
+        ],
+        [
+          "tool_result",
+          "exec-8da12ff8-157c-4355-8d49-dda5845a8928"
+        ],
+        [
+          "text",
+          "23bea5f923dfba11c35bb224eef11ccc67430db4a0506ddb8d824218e11269b0"
+        ]
+      ]
+    },
+    "capture_proof": {
+      "acceptance_sha256": "de3dbc25edd94643424628ea5f1f6230741cc68be1898be02cbf48ed57d6a4c1",
+      "database_file_sha256": "e66aab66874230ad7b3712927c3cedc7e96b593e0d0fba68a351f4e6b9688765",
+      "live_file_sha256": "c1e12c6f6234cd126cb00a86303051cc59c9ff1cd383c0e6c50af60ae2824594",
+      "public_file_sha256": "c721ab826fa6f26e9a2af5846495072e8e845953c5c33d25ed9ce8ec7bc71c00",
+      "raw_rows": 283,
+      "public_frames": 269,
+      "db_public_parity": {
+        "passed": true,
+        "expected_count": 269,
+        "actual_count": 269
+      },
+      "replay_parity": {
+        "passed": true,
+        "expected_count": 269,
+        "actual_count": 269
+      }
+    },
+    "source_modules": {
+      "src/skuld/broker.py": "7672a2ac1925a88943893fa85b875f300ad9219ccbc2e04714e9fec36b1793a1",
+      "src/skuld/transports/codex_ws.py": "2b14f82a31377fdee143eedbd4a493222db8342dc684422894879bc342f95ce4",
+      "src/skuld/transports/tmux_interactive.py": "5d4640be1cd12f1d767e4ba7ab4d79d4a5788c31d46e5a1d35cc63550c4a68d6",
+      "src/niuu/domain/transcript_reducer.py": "1c9ccc299b041b5cbbc3c65fedbb44b0656196b3cc65d76af04e67a28870d3f2"
+    },
+    "prior_run_provenance": [
+      {
+        "artifact": "controller.log",
+        "sha256": "09fce88aa6392f035445babbf2c841f86a114760484395aeecd65cbd26e3437a"
+      },
+      {
+        "artifact": "codex-6a1bc2f6/acceptance-after-collector-fix.json",
+        "sha256": "a726f87e11646ac0ccb368a3d14fa65add1b157221ade73b46b5dfc69c87efd8"
+      }
+    ]
+  },
+  "checkpoints": [
+    {
+      "after_seq": 282,
+      "event_type": "result",
+      "turn_count": 2,
+      "partial": false,
+      "turns_sha256": "474669e2eae5f263efefdd35c2f34265870d6e08836c36d6d8a9e4f9591543ff"
+    }
+  ],
+  "expected_turns": [
+    {
+      "id": "ceaad609-e10a-448a-9caa-673dfb0256c4",
+      "role": "user",
+      "content": "Run a short transcript ordering test in /workspace/forge-interleaving/codex. Say a brief public progress message explaining the next command, then execute `sleep 2; printf \"gamma\\n\" > third.txt; cat third.txt`. After it finishes, say a brief progress message reporting the result and introducing the next command, then separately execute `sleep 2; printf \"delta\\n\" > fourth.txt; cat fourth.txt`. Finish with two short paragraphs, a numbered list of the two observed outputs, and a Python code fence with print(\"café 東京\"). End the final answer with exact marker [LIVE_ORDER_DONE:2797778222]. Use no other tools, workers, search, questions, or files. Never inspect source symlinks. The progress text can use your own wording.",
+      "parts": [],
+      "created_at": "2026-09-08T22:14:37.986612+00:00",
+      "metadata": {
+        "steering_state": "active"
+      },
+      "visibility": "public"
+    },
+    {
+      "id": "6b031096-1977-58f9-9eb8-2d86121e46cc",
+      "role": "assistant",
+      "content": "The next command will wait two seconds, write `gamma` to `third.txt`, and display it.\n\n\nThe command displayed `gamma`. The next command will wait two seconds, write `delta` to `fourth.txt`, and display it.\n\n\nBoth commands completed in the requested order.\n\n1. `gamma`\n2. `delta`\n\n```python\nprint(\"café 東京\")\n```\n\nThe observed outputs matched the written values. [LIVE_ORDER_DONE:2797778222]",
+      "parts": [
+        {
+          "type": "text",
+          "id": "msg_029be78623a29c8f016aa088d0b20087d2b9267d2ee9d677d4",
+          "text": "The next command will wait two seconds, write `gamma` to `third.txt`, and display it.\n",
+          "complete": true,
+          "phase": "commentary",
+          "turn_id": "01a08316-64bb-7301-9ab7-f6cbafe1a7fd",
+          "thread_id": "01a08305-62b5-7882-8d39-8dc5b03710a6",
+          "index": 0,
+          "id_source": "native"
+        },
+        {
+          "type": "tool_use",
+          "id": "exec-bd312279-4189-4266-b15d-3bcd27f6131d",
+          "name": "Bash",
+          "input": {
+            "command": "/bin/bash -c \"sleep 2; printf \\\"gamma\\\\n\\\" > third.txt; cat third.txt\""
+          },
+          "started_at": "2026-09-08T22:14:43.723227+00:00",
+          "ended_at": "2026-09-08T22:14:45.575234+00:00",
+          "duration_ms": 1852
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "exec-bd312279-4189-4266-b15d-3bcd27f6131d",
+          "content": "gamma\n",
+          "is_error": false,
+          "ended_at": "2026-09-08T22:14:45.575234+00:00"
+        },
+        {
+          "type": "text",
+          "id": "msg_029be78623a29c8f016aa088d7b5a487d2b66bb7cdd3693420",
+          "text": "The command displayed `gamma`. The next command will wait two seconds, write `delta` to `fourth.txt`, and display it.\n",
+          "complete": true,
+          "phase": "commentary",
+          "turn_id": "01a08316-64bb-7301-9ab7-f6cbafe1a7fd",
+          "thread_id": "01a08305-62b5-7882-8d39-8dc5b03710a6",
+          "index": 3,
+          "id_source": "native"
+        },
+        {
+          "type": "tool_use",
+          "id": "exec-8da12ff8-157c-4355-8d49-dda5845a8928",
+          "name": "Bash",
+          "input": {
+            "command": "/bin/bash -c \"sleep 2; printf \\\"delta\\\\n\\\" > fourth.txt; cat fourth.txt\""
+          },
+          "started_at": "2026-09-08T22:14:50.883985+00:00",
+          "ended_at": "2026-09-08T22:14:52.735396+00:00",
+          "duration_ms": 1851
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "exec-8da12ff8-157c-4355-8d49-dda5845a8928",
+          "content": "delta\n",
+          "is_error": false,
+          "ended_at": "2026-09-08T22:14:52.735396+00:00"
+        },
+        {
+          "type": "text",
+          "id": "msg_029be78623a29c8f016aa088defb6c87d28b5341b7d5bddcb5",
+          "text": "Both commands completed in the requested order.\n\n1. `gamma`\n2. `delta`\n\n```python\nprint(\"café 東京\")\n```\n\nThe observed outputs matched the written values. [LIVE_ORDER_DONE:2797778222]",
+          "complete": true,
+          "phase": "final_answer",
+          "turn_id": "01a08316-64bb-7301-9ab7-f6cbafe1a7fd",
+          "thread_id": "01a08305-62b5-7882-8d39-8dc5b03710a6",
+          "index": 6,
+          "id_source": "native"
+        }
+      ],
+      "created_at": "2026-09-08T22:14:56.471011+00:00",
+      "metadata": {
+        "usage": {
+          "gpt-6-astra": {
+            "inputTokens": 13388,
+            "outputTokens": 51,
+            "cacheReadInputTokens": 12928,
+            "cacheCreationInputTokens": 0
+          }
+        },
+        "cost": null,
+        "model": "gpt-6-astra",
+        "stop_reason": "end_turn"
+      },
+      "visibility": "public"
+    }
+  ],
+  "expected_partial": false,
+  "source_run": {
+    "run_id": "followup-codex-2379254e",
+    "session_id": "a47b9a7f-b7e6-402f-806f-5b169e7b449f",
+    "passed": true,
+    "errors": []
+  },
+  "observed": {
+    "calls": {
+      "exec-bd312279-4189-4266-b15d-3bcd27f6131d": {
+        "id": "exec-bd312279-4189-4266-b15d-3bcd27f6131d",
+        "name": "Bash",
+        "type": "tool_use",
+        "input": {
+          "command": "/bin/bash -c \"sleep 2; printf \\\"gamma\\\\n\\\" > third.txt; cat third.txt\""
+        }
+      },
+      "exec-8da12ff8-157c-4355-8d49-dda5845a8928": {
+        "id": "exec-8da12ff8-157c-4355-8d49-dda5845a8928",
+        "name": "Bash",
+        "type": "tool_use",
+        "input": {
+          "command": "/bin/bash -c \"sleep 2; printf \\\"delta\\\\n\\\" > fourth.txt; cat fourth.txt\""
+        }
+      }
+    },
+    "results": {
+      "exec-bd312279-4189-4266-b15d-3bcd27f6131d": {
+        "type": "tool_result",
+        "content": "gamma\n",
+        "ended_at": "2026-09-08T22:14:45.575234+00:00",
+        "tool_use_id": "exec-bd312279-4189-4266-b15d-3bcd27f6131d"
+      },
+      "exec-8da12ff8-157c-4355-8d49-dda5845a8928": {
+        "type": "tool_result",
+        "content": "delta\n",
+        "ended_at": "2026-09-08T22:14:52.735396+00:00",
+        "tool_use_id": "exec-8da12ff8-157c-4355-8d49-dda5845a8928"
+      }
+    },
+    "tool_families": {
+      "command": 2
+    },
+    "agent_ids": [],
+    "assistant_text": "The next command will wait two seconds, write `gamma` to `third.txt`, and display it.\nThe next command will wait two seconds, write `gamma` to `third.txt`, and display it.\nThe command displayed `gamma`. The next command will wait two seconds, write `delta` to `fourth.txt`, and display it.\nThe command displayed `gamma`. The next command will wait two seconds, write `delta` to `fourth.txt`, and display it.\nBoth commands completed in the requested order.\n\n1. `gamma`\n2. `delta`\n\n```python\nprint(\"café 東京\")\n```\n\nThe observed outputs matched the written values. [LIVE_ORDER_DONE:2797778222]Both commands completed in the requested order.\n\n1. `gamma`\n2. `delta`\n\n```python\nprint(\"café 東京\")\n```\n\nThe observed outputs matched the written values. [LIVE_ORDER_DONE:2797778222]",
+    "unpaired_calls": [],
+    "orphan_results": [],
+    "event_counts": {
+      "user": 3,
+      "user_confirmed": 1,
+      "user_delivered": 1,
+      "assistant": 6,
+      "user_consumed": 1,
+      "user_active": 1,
+      "content_block_start": 7,
+      "content_block_delta": 98,
+      "content_block_stop": 7,
+      "message_delta": 3,
+      "result": 1
+    }
+  }
+}

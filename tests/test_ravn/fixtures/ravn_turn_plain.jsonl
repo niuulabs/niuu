@@ -1,0 +1,4 @@
+{"__meta__": {"captured_at": "2026-08-12T18:49:07+0000", "base_url": "http://127.0.0.1:7478", "session_id": "capture-plain", "message": "Reply with exactly: pong. Do not use any tools.", "note": "verbatim SSE frames from POST /chat; one per line"}}
+{"type": "thought", "payload": {"text": "p"}, "source": "ravn-53697b17", "session_id": "a0f83d0b-1bb2-4a07-9e1a-a8181fe81a12", "timestamp": "2026-08-12T18:49:09.444798+00:00", "__offset_ms__": 2095}
+{"type": "thought", "payload": {"text": "ong"}, "source": "ravn-53697b17", "session_id": "a0f83d0b-1bb2-4a07-9e1a-a8181fe81a12", "timestamp": "2026-08-12T18:49:10.116501+00:00", "__offset_ms__": 2767}
+{"type": "response", "payload": {"text": "pong"}, "source": "ravn-53697b17", "session_id": "a0f83d0b-1bb2-4a07-9e1a-a8181fe81a12", "timestamp": "2026-08-12T18:49:10.132845+00:00", "__offset_ms__": 2798}

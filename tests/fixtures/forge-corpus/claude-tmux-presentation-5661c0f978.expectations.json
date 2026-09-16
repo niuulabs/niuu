@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "fixture": "claude-tmux-presentation-5661c0f978.frames.json",
+  "sha256": "5661c0f978a46e11e0a73cb2a856b59bf7cee77fe2aee153f06063082c12f6d1",
+  "source_slice_sha256": "def525eb3c876aadb076ac659613b899fe172d4c3ca7e74a04be59ceb21cd134",
+  "redacted": true,
+  "source": "live-provider",
+  "provider": "claude-tmux",
+  "model": "claude-opus-5",
+  "scenario": {
+    "scenario": "presentation",
+    "passed": true,
+    "checks": [
+      {
+        "name": "terminal-result",
+        "passed": true,
+        "detail": 1
+      },
+      {
+        "name": "correlated-completion",
+        "passed": true,
+        "detail": 1
+      },
+      {
+        "name": "successful-result",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "tool-pairs",
+        "passed": true,
+        "detail": {
+          "unpaired_calls": [],
+          "orphan_results": []
+        }
+      },
+      {
+        "name": "assistant:```python",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "assistant:café",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "assistant:東京",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "assistant:🛠",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "assistant:docs.python.org",
+        "passed": true,
+        "detail": null
+      }
+    ],
+    "observed": {
+      "calls": {},
+      "results": {},
+      "tool_families": {},
+      "agent_ids": [],
+      "assistant_text": "# Forge UI Rendering Sample\n\nThis paragraph is the first of two. It exists to show how ordinary prose wraps and spaces in the terminal renderer, with no special formatting applied.\n\nThis is the second paragraph. It follows the first with a blank line between them, so the two should render as distinct blocks rather than one run-on passage.\n\n- First bullet item\n- Second bullet item\n\n```python\nprint(\"forge\")\n```\n\n| Component | Status |\n| --- | --- |\n| Heading | Rendered |\n| Table | Rendered |\n\nSee the [Python 3 documentation](https://docs.python.org/3/).\n\ncafé — 東京 🛠️\n\n[FORGE_DONE:ea8d66ec1f534576a4baaf9dc1558270:presentation]",
+      "unpaired_calls": [],
+      "orphan_results": [],
+      "event_counts": {
+        "terminal_frame": 14,
+        "user": 1,
+        "user_confirmed": 1,
+        "terminal_input_sent": 1,
+        "terminal_key_sent": 1,
+        "user_delivered": 1,
+        "claude_hook": 8,
+        "terminal_prompt_submitted": 1,
+        "user_active": 1,
+        "assistant": 1,
+        "result": 1
+      }
+    },
+    "prompt": "Return a compact UI rendering sample: a heading; two paragraphs; a two-item bullet list; a fenced Python block containing print(\"forge\"); a two-column Markdown table with two data rows; a link to https://docs.python.org/3/; and exactly this Unicode text: café — 東京 🛠️. Do not execute commands for this turn.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:ea8d66ec1f534576a4baaf9dc1558270:presentation]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+    "after_seq": 736,
+    "through_seq": 769,
+    "duration_seconds": 6.532
+  },
+  "review": {
+    "status": "accepted",
+    "reviewer": "Codex project-review agent, 2026-09-07",
+    "source_frames_sha256": "2149d1bd67e044968a034a4bcdd97d8b783adbc27e1cefec3818a2e6eec705a6",
+    "notes": [
+      "Reviewed prompt and captured interval (736, 769]. All scenario action assertions passed; tool IDs pair with results.",
+      "PostgreSQL raw rows project to these REST frames exactly. Full and cursor fixture replay match. The captured live stream is preserved in database order.",
+      "The running platform's public replay WebSocket remains unavailable until the facade fix is deployed; this fixture certifies the captured scenario, not that deployment.",
+      "Inspected Markdown text: Python fence, two-row table, list, link, café and Tokyo Unicode/emoji survive capture. Device layout remains to be tested on iOS."
+    ]
+  },
+  "checkpoints": [
+    {
+      "after_seq": 764,
+      "event_type": "result",
+      "turn_count": 3,
+      "partial": false,
+      "turns_sha256": "d49d29be18d627e769dda5d8618e9457ce7b490497575121d84fda491b00370f"
+    }
+  ],
+  "expected_turns": [
+    {
+      "id": "0b6b1196-7efd-5306-8f02-f97f0c116909",
+      "role": "assistant",
+      "content": "● sum-worker is idle and done. Still waiting on\n  verify-worker.\n\n› Message from @verify-worker (ctrl+o to expand)\n\n● Both workers finished. They agree.\n\n  sum-worker (never opened answer.json)\n  - numbers.json = [8, 13, 21], 3 values\n  - Computed with python3: sum = 42\n\n  verify-worker (cross-checked both files)\n  - (a) answer.json parses as valid JSON — PASS\n  - (b) object with exactly one key, \"sum\" — PASS\n  - (c) value is a number (int 42), not a string — PASS\n  - (d) value equals sum of numbers.json (42 == 42) — PASS\n  - Verdict: MATCH\n\n  Agreement: both independently arrived at 42, matching the\n  FORGE_SUM=42 I computed earlier and the contents of\n  answer.json. No disagreement. Both stayed read-only inside\n  the workspace — no writes, no git, no network.\n\n  [FORGE_DONE:cf5144dc2fef40c1b58b9b2491dc96de:agents]\n\n● Teammate @verify-worker finished\n  Report sent to team-lead. Summary:…\n\n● That's verify-worker signing off idle — same MATCH verdict\n  already reported. Both workers are now finished and idle;\n  nothing further to do.\n\n❯ Exercise a harmless tool failure and recovery. First run\n  python3 -c 'import sys; print(\"FORGE_EXPECTED_FAILURE\");\n  sys.exit(7)' as its own command. Observe the failed tool\n  result, then run a separate successful command that\n  prints FORGE_RECOVERED. Do not hide the first exit status\n  with a shell fallback. Explain that the failure was\n  intentional.\n\n  Acceptance controller: after all requested work and all\n  workers have finished (or you have explained an\n  unavailable capability), append this exact completion\n  marker to your final response:\n  [FORGE_DONE:cffd34aaf84643fe9d03fb671f99e421:recovery].\n  Never put this marker in worker instructions or interim\n  updates. It identifies completion of this request only.\n\n● Bash(python3 -c 'import sys;\n      print(\"FORGE_EXPECTED_FAILURE\"); sys.exit(7)')\n  ⎿  Error: Exit code 7\n     FORGE_EXPECTED_FAILURE\n\n● Bash(echo FORGE_RECOVERED)\n  ⎿  FORGE_RECOVERED\n\n● Both steps ran as separate commands, with no || true or\n  other fallback masking the status.\n\n  1. Intentional failure — python3 -c 'import sys;\n     print(\"FORGE_EXPECTED_FAILURE\"); sys.exit(7)' printed\n     FORGE_EXPECTED_FAILURE and returned exit code 7,\n     surfaced to me as a failed tool result.\n  2. Recovery — a separate echo FORGE_RECOVERED succeeded\n     with exit code 0, printing FORGE_RECOVERED.\n\n  The first failure was deliberate: you asked for a harmless\n  non-zero exit so the error path could be observed.\n  Nothing is broken in the workspace — sys.exit(7) is the\n  script's own chosen status, not a tool or environment\n  fault, and the following command ran normally.\n\n  Unrelated note: the paper MCP server failed to connect\n  this session (CONNECT_TIMEOUT — version negotiation probe\n  timed out after 5000ms). It didn't affect this task, but\n  it's a connection failure worth retrying if you need it.\n\n  [FORGE_DONE:cffd34aaf84643fe9d03fb671f99e421:recovery]\n\n❯ Retry the paper MCP server connection\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for a…\n                                                       /rc\n\n  ● main\n  ◯ sum-worker     Read-only task, stay strictly insi… 44s\n  ◯ verify-worker  Read-only task, stay strictly insi… 40s",
+      "parts": [],
+      "created_at": "2026-09-07T16:45:11.306221+00:00",
+      "metadata": {
+        "provenance": "terminal_scrape"
+      },
+      "visibility": "public"
+    },
+    {
+      "id": "6452b1bc-0040-4427-9711-0387554e3f33",
+      "role": "user",
+      "content": "Return a compact UI rendering sample: a heading; two paragraphs; a two-item bullet list; a fenced Python block containing print(\"forge\"); a two-column Markdown table with two data rows; a link to https://docs.python.org/3/; and exactly this Unicode text: café — 東京 🛠️. Do not execute commands for this turn.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:ea8d66ec1f534576a4baaf9dc1558270:presentation]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+      "parts": [],
+      "created_at": "2026-09-07T16:45:11.439009+00:00",
+      "metadata": {
+        "steering_state": "active"
+      },
+      "visibility": "public"
+    },
+    {
+      "id": "3536e069-40af-5773-a9c6-8c00a1433fbb",
+      "role": "assistant",
+      "content": "# Forge UI Rendering Sample\n\nThis paragraph is the first of two. It exists to show how ordinary prose wraps and spaces in the terminal renderer, with no special formatting applied.\n\nThis is the second paragraph. It follows the first with a blank line between them, so the two should render as distinct blocks rather than one run-on passage.\n\n- First bullet item\n- Second bullet item\n\n```python\nprint(\"forge\")\n```\n\n| Component | Status |\n| --- | --- |\n| Heading | Rendered |\n| Table | Rendered |\n\nSee the [Python 3 documentation](https://docs.python.org/3/).\n\ncafé — 東京 🛠️\n\n[FORGE_DONE:ea8d66ec1f534576a4baaf9dc1558270:presentation]",
+      "parts": [
+        {
+          "type": "text",
+          "text": "# Forge UI Rendering Sample\n\nThis paragraph is the first of two. It exists to show how ordinary prose wraps and spaces in the terminal renderer, with no special formatting applied.\n\nThis is the second paragraph. It follows the first with a blank line between them, so the two should render as distinct blocks rather than one run-on passage.\n\n- First bullet item\n- Second bullet item\n\n```python\nprint(\"forge\")\n```\n\n| Component | Status |\n| --- | --- |\n| Heading | Rendered |\n| Table | Rendered |\n\nSee the [Python 3 documentation](https://docs.python.org/3/).\n\ncafé — 東京 🛠️\n\n[FORGE_DONE:ea8d66ec1f534576a4baaf9dc1558270:presentation]"
+        }
+      ],
+      "created_at": "2026-09-07T16:45:15.476439+00:00",
+      "metadata": {
+        "usage": {
+          "claude-opus-5": {
+            "inputTokens": 167,
+            "outputTokens": 157,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0
+          }
+        },
+        "cost": null,
+        "model": "claude-opus-5",
+        "stop_reason": "stop"
+      },
+      "visibility": "public"
+    }
+  ],
+  "expected_partial": false,
+  "source_run": {
+    "run_id": "claude-tmux-ad948830dc",
+    "session_id": "aba314d5-aafe-4487-afd1-b8306e121e6e",
+    "passed": false,
+    "errors": [
+      "harvest: InvalidStatus: server rejected WebSocket connection: HTTP 403"
+    ]
+  },
+  "observed": {
+    "calls": {},
+    "results": {},
+    "tool_families": {},
+    "agent_ids": [],
+    "assistant_text": "# Forge UI Rendering Sample\n\nThis paragraph is the first of two. It exists to show how ordinary prose wraps and spaces in the terminal renderer, with no special formatting applied.\n\nThis is the second paragraph. It follows the first with a blank line between them, so the two should render as distinct blocks rather than one run-on passage.\n\n- First bullet item\n- Second bullet item\n\n```python\nprint(\"forge\")\n```\n\n| Component | Status |\n| --- | --- |\n| Heading | Rendered |\n| Table | Rendered |\n\nSee the [Python 3 documentation](https://docs.python.org/3/).\n\ncafé — 東京 🛠️\n\n[FORGE_DONE:ea8d66ec1f534576a4baaf9dc1558270:presentation]",
+    "unpaired_calls": [],
+    "orphan_results": [],
+    "event_counts": {
+      "terminal_frame": 14,
+      "user": 1,
+      "user_confirmed": 1,
+      "terminal_input_sent": 1,
+      "terminal_key_sent": 1,
+      "user_delivered": 1,
+      "claude_hook": 8,
+      "terminal_prompt_submitted": 1,
+      "user_active": 1,
+      "assistant": 1,
+      "result": 1
+    }
+  },
+  "projection_review": {
+    "status": "accepted",
+    "reviewer": "Codex transport/corpus review agent, 2026-09-08",
+    "source_frames_sha256": "5661c0f978a46e11e0a73cb2a856b59bf7cee77fe2aee153f06063082c12f6d1",
+    "previous_projection_sha256": "4f5236dda56c152affd37deb333e8a9ca6872cc989a56594e81f4ac07978b486",
+    "projection_sha256": "d49d29be18d627e769dda5d8618e9457ce7b490497575121d84fda491b00370f",
+    "reason": "Remove only verified idle terminal scrollback after a completed result. These paints created phantom assistant turns at EOF or the next human boundary; genuine terminal-only work remains supported.",
+    "all_real_turns_byte_identical": true,
+    "removed_phantom_turns": [
+      {
+        "turn_id": "f1288a86-4760-5e16-8804-a49d46533b65",
+        "prior_result_seq": 764,
+        "idle_terminal_seq": 768,
+        "old_metadata": {
+          "provenance": "terminal_scrape",
+          "status": "interrupted"
+        },
+        "old_text_sha256": "21b8611f00ace544428049667153e8d1803d12484cd1e33da50d77b1df2017f9"
+      }
+    ],
+    "reducer_source_sha256": "33f1782405903e2e6b152a3435d36db95c6b2696e3675d67c72e15ed9083317d"
+  }
+}

@@ -7,16 +7,28 @@ be restarted (resumed) as regular Volundr-managed sessions.
 """
 
 import logging
-from uuid import UUID
+from dataclasses import replace
+from pathlib import Path
+from uuid import UUID, uuid4
 
+from volundr.domain.history_import import (
+    HistoryImportError,
+    HistoryImportSessionNotFoundError,
+    HistoryImportValidationError,
+)
 from volundr.domain.models import (
     ExternalSessionRecord,
     LocalMountSource,
     Principal,
     Session,
+    SessionLogEntry,
 )
 from volundr.domain.mount_policy import is_host_path_allowed
-from volundr.domain.ports import ExternalSessionProvider, SessionRepository
+from volundr.domain.ports import (
+    ExternalSessionProvider,
+    SessionEventLogRepository,
+    SessionRepository,
+)
 from volundr.domain.services.session import SessionService, _sanitize_log
 
 logger = logging.getLogger(__name__)
@@ -81,12 +93,14 @@ class ExternalSessionService:
         session_service: SessionService,
         allowed_workspace_prefixes: list[str] | None = None,
         allow_root_workspace: bool = False,
+        event_log_repository: SessionEventLogRepository | None = None,
     ):
         self._providers = {provider.name: provider for provider in providers}
         self._repository = repository
         self._session_service = session_service
         self._allowed_workspace_prefixes = allowed_workspace_prefixes or []
         self._allow_root_workspace = allow_root_workspace
+        self._event_log = event_log_repository
 
     @property
     def provider_names(self) -> list[str]:
@@ -162,6 +176,9 @@ class ExternalSessionService:
             raise ExternalSessionPathNotAllowedError(record.external_id, record.workspace_path)
 
         session_name = name or self._default_name(record)
+        # Parse before creating a Forge row: malformed or unavailable native
+        # history must never look like a successful, empty recovery.
+        entries = await self._read_history(prov, record.external_id, uuid4())
         session = await self._session_service.create_session(
             name=session_name,
             model=record.model,
@@ -170,6 +187,18 @@ class ExternalSessionService:
             origin=record.harness,
             external_session_id=record.external_id,
         )
+        try:
+            await self._persist_history(
+                session.id,
+                prov,
+                record.external_id,
+                [replace(entry, session_id=session.id) for entry in entries],
+            )
+        except HistoryImportError as exc:
+            raise HistoryImportError(
+                f"Session {session.id} was created, but its history was not imported. "
+                f"Retry POST /sessions/{session.id}/history/import. {exc}"
+            ) from exc
         logger.info(
             "Imported external session %s/%s as Volundr session %s",
             _sanitize_log(provider),
@@ -177,6 +206,83 @@ class ExternalSessionService:
             session.id,
         )
         return session
+
+    async def backfill_session(self, session_id: UUID, principal: Principal | None = None) -> dict:
+        """Import the stored native identity into an existing empty recovery.
+
+        The repository enforces inactivity and the empty-transcript guard under
+        the same lock used by live writers. A successful retry is a no-op.
+        """
+        session = await self._repository.get(session_id)
+        if session is None:
+            raise HistoryImportSessionNotFoundError(f"Session {session_id} not found")
+        await self._session_service._check_access(session, principal, "update")
+        external_id = session.external_session_id
+        if not external_id:
+            raise HistoryImportValidationError("Session has no imported native session identity")
+        prov = next((p for p in self._providers.values() if p.harness == session.origin), None)
+        if prov is None:
+            raise ExternalSessionProviderNotFoundError(session.origin or "unknown")
+        record = await prov.get_session(external_id)
+        if record is None:
+            raise ExternalSessionNotFoundError(prov.name, external_id)
+        if not self._workspace_allowed(record):
+            raise ExternalSessionPathNotAllowedError(external_id, record.workspace_path)
+        if not record.workspace_exists:
+            raise ExternalSessionWorkspaceError(external_id, record.workspace_path)
+        if not isinstance(session.source, LocalMountSource) or (
+            Path(session.source.local_path).resolve() != Path(record.workspace_path).resolve()
+        ):
+            raise HistoryImportValidationError("Native transcript workspace differs from session")
+        entries = await self._read_history(prov, external_id, session.id)
+        imported = await self._persist_history(session.id, prov, external_id, entries)
+        return {
+            "session_id": str(session.id),
+            "provider": prov.name,
+            "external_session_id": external_id,
+            "imported_frames": imported,
+            "source_frames": len(entries),
+            "partial": any(
+                entry.payload.get("metadata", {}).get("native_import", {}).get("partial", False)
+                for entry in entries
+            ),
+        }
+
+    async def _read_history(
+        self, provider: ExternalSessionProvider, external_id: str, session_id: UUID
+    ) -> list[SessionLogEntry]:
+        if self._event_log is None:
+            raise HistoryImportError("Durable native history import is not configured")
+        try:
+            entries = await provider.read_transcript(external_id, session_id)
+        except NotImplementedError as exc:
+            raise HistoryImportError("Provider does not support native history import") from exc
+        except (OSError, ValueError) as exc:
+            raise HistoryImportValidationError(f"Cannot read native transcript: {exc}") from exc
+        if not entries:
+            raise HistoryImportValidationError("Native transcript has no recoverable messages")
+        return entries
+
+    async def _persist_history(
+        self,
+        session_id: UUID,
+        provider: ExternalSessionProvider,
+        external_id: str,
+        entries: list[SessionLogEntry],
+    ) -> int:
+        if self._event_log is None:
+            raise HistoryImportError("Durable native history import is not configured")
+        try:
+            return await self._event_log.import_history(
+                session_id, f"{provider.name}:{external_id}", entries
+            )
+        except HistoryImportError:
+            raise
+        except Exception as exc:
+            logger.exception("Native history persistence failed for session %s", session_id)
+            raise HistoryImportError(
+                "Native history could not be committed; retry is safe"
+            ) from exc
 
     def _workspace_allowed(self, record: ExternalSessionRecord) -> bool:
         """Apply the allowed mount prefix policy to the record's workspace."""

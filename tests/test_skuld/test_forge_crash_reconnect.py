@@ -88,6 +88,7 @@ def _turn_text(turn: dict) -> str:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_d1_client_crash_mid_turn_reconnect_sees_inflight_and_completes() -> None:
     """D1: kill the client mid ``work:`` turn; a fresh client sees the in-flight
@@ -138,6 +139,7 @@ async def test_d1_client_crash_mid_turn_reconnect_sees_inflight_and_completes() 
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_d2_crash_with_question_open_reconnect_resurfaces_and_unblocks() -> None:
     """D2 (highest value): a question is open, the client crashes, a fresh client
@@ -205,6 +207,7 @@ async def test_d2_crash_with_question_open_reconnect_resurfaces_and_unblocks() -
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_d3_agent_crash_mid_turn_rebuilds_interrupted_transcript() -> None:
     """D3 (Bug 2): SIGKILL the agent mid ``work:`` turn; the durable log rebuilds
@@ -259,6 +262,7 @@ async def test_d3_agent_crash_mid_turn_rebuilds_interrupted_transcript() -> None
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_d5_reconnect_does_not_resurface_settled_question() -> None:
     """D5: answer a question, THEN reconnect — the settled question is NOT
@@ -314,6 +318,7 @@ async def test_d5_reconnect_does_not_resurface_settled_question() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_d7_reconnect_conversation_history_carries_head_seq_cursor() -> None:
     """D7 (SRD FR-6 / INV-6 live side): a reconnecting client gets a

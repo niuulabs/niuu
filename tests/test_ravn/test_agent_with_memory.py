@@ -69,7 +69,9 @@ class RecordingMemory(MemoryPort):
         return self._shared
 
 
-def make_simple_llm(response_text: str = "Done!") -> LLMPort:
+def make_simple_llm(
+    response_text: str = "Done — deployed to staging; the health endpoint returned 200.",
+) -> LLMPort:
     async def _stream(*args, **kwargs) -> AsyncIterator[StreamEvent]:
         yield StreamEvent(type=StreamEventType.TEXT_DELTA, text=response_text)
         yield StreamEvent(
@@ -246,8 +248,8 @@ class TestExtractEpisode:
 class TestAgentMemoryIntegration:
     async def test_run_turn_records_episode(self) -> None:
         mem = RecordingMemory()
-        agent, _ = make_agent(make_simple_llm(), memory=mem)
-        await agent.run_turn("hello world")
+        agent, _ = make_agent(make_simple_llm("Bound on 127.0.0.1:7503, pid 3305464."), memory=mem)
+        await agent.run_turn("which port did the broker bind?")
         assert len(mem.recorded_episodes) == 1
         assert mem.recorded_episodes[0].session_id == str(agent.session.id)
 
@@ -276,7 +278,7 @@ class TestAgentMemoryIntegration:
         assert any("Past Context" in s for s in captured_system)
 
     async def test_no_memory_works_normally(self) -> None:
-        agent, _ = make_agent(make_simple_llm(), memory=None)
+        agent, _ = make_agent(make_simple_llm("Done!"), memory=None)
         result = await agent.run_turn("hello")
         assert result.response == "Done!"
 
@@ -303,24 +305,58 @@ class TestAgentMemoryIntegration:
         """
         mem = RecordingMemory()
         mem.record_episode = AsyncMock(side_effect=RuntimeError("record failed"))
-        agent, _ = make_agent(make_simple_llm(), memory=mem)
+        agent, _ = make_agent(
+            make_simple_llm("Rebased on 6ffcb551, upstream/dev as of 2026-08-09."), memory=mem
+        )
 
         with pytest.raises(RuntimeError, match="recording the episode"):
-            await agent.run_turn("hello")
+            await agent.run_turn(
+                "redeploy the broker on 7503 and confirm it bound to the right port"
+            )
 
     async def test_episode_task_description_matches_user_input(self) -> None:
         mem = RecordingMemory()
-        agent, _ = make_agent(make_simple_llm(), memory=mem)
-        await agent.run_turn("deploy to production server")
+        agent, _ = make_agent(
+            make_simple_llm("Deployed; health endpoint returned 200."), memory=mem
+        )
+        await agent.run_turn("deploy to production server and verify the health endpoint")
         ep = mem.recorded_episodes[0]
         assert "deploy to production server" in ep.task_description
 
     async def test_multiple_turns_record_multiple_episodes(self) -> None:
         mem = RecordingMemory()
-        agent, _ = make_agent(make_simple_llm(), memory=mem)
-        await agent.run_turn("first task")
-        await agent.run_turn("second task")
+        agent, _ = make_agent(make_simple_llm("Bound on 127.0.0.1:7503, pid 3305464."), memory=mem)
+        await agent.run_turn("redeploy the broker and confirm which port it bound")
+        await agent.run_turn("now check whether the room members reconnected to it")
         assert len(mem.recorded_episodes) == 2
+
+
+class TestTrivialTurnsAreNotEpisodes:
+    """The corpus is a search index, not a log.
+
+    100 of 139 documents in the live store were health-check pings, and they made recall
+    degenerate — two unrelated queries returned the same three rows. Each had also paid for a
+    reflection-model call on the way in.
+    """
+
+    async def test_a_ping_is_not_recorded(self) -> None:
+        """A ping is a ping because of the ANSWER, not the question."""
+        mem = RecordingMemory()
+        agent, _ = make_agent(make_simple_llm("ok"), memory=mem)
+
+        await agent.run_turn("hello")
+
+        assert mem.recorded_episodes == []
+
+    async def test_a_real_turn_still_is(self) -> None:
+        mem = RecordingMemory()
+        agent, _ = make_agent(
+            make_simple_llm("Rebased on 6ffcb551, upstream/dev as of 2026-08-09."), memory=mem
+        )
+
+        await agent.run_turn("which commit is the dev-integration branch rebased on right now?")
+
+        assert len(mem.recorded_episodes) == 1
 
 
 # ---------------------------------------------------------------------------

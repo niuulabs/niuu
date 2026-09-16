@@ -1,0 +1,20 @@
+{
+  "session_id": "f314a2bc-11b7-4a88-bf46-dd37dc9f55db",
+  "turns": [
+    {"id": "initial-user", "role": "user", "content": "Synthetic archive regression", "parts": [], "metadata": {}, "created_at": "2026-09-14T09:00:00+00:00"},
+    {"id": "steer-one", "role": "user", "content": "Continue", "parts": [], "metadata": {"request_id": "request-one", "steering_state": "active", "conversation_timeline": {"schema": 1, "seq": 10, "observed_at": "2026-09-14T09:00:10+00:00"}}, "created_at": "2026-09-14T09:00:10+00:00"},
+    {"id": "steer-two", "role": "user", "content": "Continue", "parts": [], "metadata": {"request_id": "request-two", "steering_state": "active", "conversation_timeline": {"schema": 1, "seq": 20, "observed_at": "2026-09-14T09:00:20+00:00"}}, "created_at": "2026-09-14T09:00:20+00:00"},
+    {
+      "id": "native-cumulative-row", "role": "assistant", "content": "Between\n\nAfter", "created_at": "2026-09-14T09:00:30+00:00",
+      "metadata": {"usage": {"model": {"inputTokens": 1}}, "stop_reason": "end_turn"},
+      "parts": [
+        {"type": "tool_use", "id": "tool-before", "name": "Bash", "input": {"command": "printf 'fixture-only\\n'"}, "started_at": "2026-09-14T09:00:05+00:00", "ended_at": "2026-09-14T09:00:25+00:00", "duration_ms": 20000, "conversation_timeline": {"schema": 1, "seq": 5, "observed_at": "2026-09-14T09:00:05+00:00", "span_seq": 5}},
+        {"type": "text", "id": "text-between", "thread_id": "fixture-thread", "turn_id": "fixture-turn", "text": "Between", "complete": true, "phase": "commentary", "conversation_timeline": {"schema": 1, "seq": 15, "observed_at": "2026-09-14T09:00:15+00:00", "span_seq": 5}},
+        {"type": "text", "id": "text-after", "thread_id": "fixture-thread", "turn_id": "fixture-turn", "text": "After", "complete": true, "phase": "final_answer", "conversation_timeline": {"schema": 1, "seq": 22, "observed_at": "2026-09-14T09:00:22+00:00", "span_seq": 5}},
+        {"type": "tool_result", "tool_use_id": "tool-before", "content": "fixture-only\n", "is_error": false, "ended_at": "2026-09-14T09:00:25+00:00", "duration_ms": 20000, "conversation_timeline": {"schema": 1, "seq": 25, "observed_at": "2026-09-14T09:00:25+00:00", "span_seq": 5}}
+      ]
+    }
+  ],
+  "is_active": false,
+  "last_activity": ""
+}

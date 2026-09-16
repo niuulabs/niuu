@@ -14,19 +14,23 @@ def client(tmp_path, monkeypatch):
     from skuld import broker as bmod
     from skuld import broker_api as api_mod
 
-    # Stage into a temp dir (not the real session home) and capture emitted frames instead of
-    # persisting/broadcasting them.
+    # Stage into a temp dir and capture durable-log and live-broadcast parity.
     monkeypatch.setattr(api_mod, "_presented_staging_dir", lambda: tmp_path / "staging")
     monkeypatch.setattr(bmod.broker, "workspace_dir", str(tmp_path))
-    captured: list = []
+    logged: list = []
+    broadcast: list = []
 
-    async def _fake_emit(frame):
-        captured.append(frame)
+    async def _fake_broadcast(frame):
+        broadcast.append(frame)
 
-    monkeypatch.setattr(bmod.broker, "_emit_broker_frame", _fake_emit)
+    monkeypatch.setattr(bmod.broker, "_enqueue_event_log", logged.append)
+    monkeypatch.setattr(bmod.broker, "_save_conversation_history", lambda: None)
+    monkeypatch.setattr(bmod.broker._channels, "broadcast", _fake_broadcast)
+    monkeypatch.setattr(bmod.broker, "_conversation_turns", [])
     api_mod._presented_registry.clear()
     c = TestClient(bmod.app)
-    c.captured = captured  # type: ignore[attr-defined]
+    c.logged = logged  # type: ignore[attr-defined]
+    c.broadcast = broadcast  # type: ignore[attr-defined]
     return c
 
 
@@ -44,17 +48,31 @@ def test_present_file_end_to_end(client, tmp_path):
     fid = body["file_id"]
     assert fid.startswith("pf_") and len(fid) == 35
 
-    # exactly one self-contained conversation.turn with a present_file tool_use part
-    assert len(client.captured) == 1
-    frame = client.captured[0]
+    # One identical turn lands in live memory, durable log, and broadcast.
+    from skuld import broker as bmod
+
+    assert len(bmod.broker._conversation_turns) == 1
+    mem = bmod.broker._conversation_turns[0]
+    assert mem.role == "assistant"
+    assert mem.parts[0]["name"] == "present_file"
+
+    assert len(client.logged) == 1
+    frame = client.logged[0]
     assert frame["type"] == "conversation.turn"
     turn = frame["turn"]
     assert turn["role"] == "assistant"
+    assert turn["id"] == mem.id
     part = turn["parts"][0]
     assert part["type"] == "tool_use" and part["name"] == "present_file"
     assert part["input"]["file_id"] == fid
     assert part["input"]["caption"] == "the report"
     assert turn["metadata"].get("present_file") is True
+
+    assert len(client.broadcast) == 1
+    assert client.broadcast[0]["turn"]["id"] == mem.id
+
+    hist = client.get("/api/conversation/history").json()
+    assert mem.id in [item["id"] for item in hist["turns"]]
 
     # download by opaque id returns the staged bytes verbatim
     d = client.get(f"/api/files/presented/{fid}")
