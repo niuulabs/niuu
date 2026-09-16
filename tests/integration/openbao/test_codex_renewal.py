@@ -284,3 +284,57 @@ async def test_import_rotation_parallel_readers_and_revocation(engine):
         assert exc.value.reconnect
     finally:
         await store.close()
+
+
+async def test_flat_integration_migration_rotation_and_revocation(engine):
+    from niuu.domain.oauth_credentials import OAuthCredentialUnavailableError
+
+    base, state, _ = engine
+    store = OpenBaoOAuthCredentialStore(
+        url=base,
+        token="test-root",
+        oauth_mount_path="oauthapp",
+        oauth_servers={"integration/default": "niuu-codex-subscription"},
+        minimum_seconds=1,
+        maximum_expiry_seconds=14,
+    )
+    try:
+        await OpenBaoCredentialStore.store(
+            store,
+            "user",
+            "alice",
+            "integration",
+            SecretType.OAUTH_TOKEN,
+            {"token": "old-access", "refresh_token": "seed-refresh", "cloud_id": "site"},
+            {"integration": "integration"},
+        )
+        args = dict(
+            owner_id="alice",
+            tenant_id="tenant-a",
+            name="integration",
+            integration="integration",
+            oauth_app="default",
+            token_field="token",
+        )
+        assert await store.migrate_oauth_credential(**args)
+        first = await store.get_value("user", "alice", "integration")
+        assert not await store.migrate_oauth_credential(**args)
+        assert state["calls"] == 1
+        assert await OpenBaoCredentialStore.get_value(store, "user", "alice", "integration") == {
+            "cloud_id": "site"
+        }
+        await asyncio.sleep(5)
+        values = await asyncio.gather(
+            *(store.get_value("user", "alice", "integration") for _ in range(8))
+        )
+        assert state["calls"] == 2
+        assert len({value["token"] for value in values}) == 1
+        assert values[0]["token"] != first["token"]
+        assert all(value["cloud_id"] == "site" and "refresh_token" not in value for value in values)
+        state["revoked"] = True
+        await asyncio.sleep(5)
+        with pytest.raises(OAuthCredentialUnavailableError) as exc:
+            await store.get_value("user", "alice", "integration")
+        assert exc.value.reconnect
+    finally:
+        await store.close()

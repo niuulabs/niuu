@@ -53,8 +53,10 @@ tokens. These service identities are trusted across the users they serve. Never
 attach their broad policies to session identities. A hashed grant name is not an
 access-control boundary; OpenBao policies and application ownership checks are.
 
-Existing KV credentials are not automatically migrated. Configure the matching
-OAuth client and reconnect a renewable integration to enroll it in the engine.
+Existing KV credentials are not automatically migrated. Use the explicit
+[per-connection migration procedure](integrations-and-mcp.md#migrating-existing-renewable-grants)
+or reconnect a renewable integration with the matching OAuth client. Credentials
+without a refresh token remain in the existing store and cannot be auto-renewed.
 Deleting a stored grant does not itself revoke an already-issued upstream token.
 See [OpenBao renewal operations](https://github.com/niuulabs/niuu/blob/dev/docs/operations/openbao-oauth.md) for configuration,
 recovery, historical KV-version retention, and live rotation/isolation checks.

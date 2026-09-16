@@ -110,3 +110,10 @@ def test_openshell_opaque_environment_credential(monkeypatch, capsys):
         )
         == helper
     )
+
+
+def test_codex_stdio_explicitly_inherits_named_credentials_only():
+    config = [{"name": "local", "command": "npx", "env_vars": ["LINEAR_API_KEY"]}]
+    overrides = dict(build_codex_mcp_overrides(config))
+    assert json.loads(overrides["mcp_servers.local.env_vars"]) == ["LINEAR_API_KEY"]
+    assert "mcp_servers.local.env.LINEAR_API_KEY" not in overrides

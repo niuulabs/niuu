@@ -76,11 +76,15 @@ async def test_import_keeps_tokens_out_of_kv_and_reads_rotated_value(store):
         "server": "gitlab",
         "grant_type": "refresh_token",
         "refresh_token": "private-refresh",
+        "maximum_expiry_seconds": 3600,
     }
     assert (await adapter.get_value("user", "alice", "gitlab"))["token"] == "new-access"
     engine["access_token"] = "rotated-access"
     assert (await adapter.get_value("user", "alice", "gitlab"))["token"] == "rotated-access"
-    assert adapter._request.call_args.kwargs == {"params": {"minimum_seconds": 120}}
+    reads = [
+        c for c in adapter._request.call_args_list if c.args[0] == "get" and "/creds/" in c.args[1]
+    ]
+    assert reads[-1].kwargs == {"params": {"minimum_seconds": 120}}
     engine.pop("expire_time")
     assert await adapter.get_value("user", "alice", "gitlab") == {"token": "rotated-access"}
 
@@ -440,3 +444,158 @@ async def test_codex_import_reports_wrapped_provider_expiry_without_leaking(code
     assert exc.value.reconnect
     assert "private-secret" not in str(exc.value)
     assert not kv
+
+
+async def test_flat_migration_resumes_without_replaying_rotating_grant(store):
+    from niuu.adapters.openbao_credential_store import OpenBaoCredentialStore
+
+    adapter, kv, engine = store
+    engine["server"] = "gitlab"
+    await OpenBaoCredentialStore.store(
+        adapter,
+        "user",
+        "alice",
+        "legacy",
+        SecretType.OAUTH_TOKEN,
+        {
+            "token": "old-access",
+            "refresh_token": "old-refresh",
+            "id_token": "old-id",
+            "cloud_id": "site",
+        },
+        {"integration": "gitlab"},
+    )
+    original = adapter._request.side_effect
+    imported = False
+    fail_metadata = True
+    calls = 0
+
+    async def request(method, path, **kwargs):
+        nonlocal imported, fail_metadata, calls
+        if "/creds/" in path:
+            if method == "post":
+                imported = True
+                calls += 1
+            if not imported:
+                return httpx.Response(404)
+        if imported and fail_metadata and method == "post" and "/data/" in path:
+            fail_metadata = False
+            raise httpx.ConnectError("storage interrupted")
+        return await original(method, path, **kwargs)
+
+    adapter._request.side_effect = request
+    args = dict(
+        owner_id="alice",
+        tenant_id="tenant-a",
+        name="legacy",
+        integration="gitlab",
+        oauth_app="default",
+        token_field="token",
+    )
+    with pytest.raises(OAuthCredentialUnavailableError):
+        await adapter.migrate_oauth_credential(**args)
+    assert calls == 1
+    assert await adapter.migrate_oauth_credential(**args)
+    assert not await adapter.migrate_oauth_credential(**args)
+    assert calls == 1
+    assert await OpenBaoCredentialStore.get_value(adapter, "user", "alice", "legacy") == {
+        "cloud_id": "site"
+    }
+    assert (await adapter.get_value("user", "alice", "legacy"))["cloud_id"] == "site"
+    assert "old-refresh" not in json.dumps(kv)
+
+
+@pytest.mark.parametrize("key", ["tenant_id", "integration", "oauth_app", "oauth_token_field"])
+async def test_flat_migration_rejects_identity_mismatch_before_engine_read(store, key):
+    adapter, _, _ = store
+    await enroll(adapter)
+    adapter._request.reset_mock()
+    args = dict(
+        owner_id="alice",
+        tenant_id="tenant-a",
+        name="gitlab",
+        integration="gitlab",
+        oauth_app="default",
+        token_field="token",
+    )
+    args["token_field" if key == "oauth_token_field" else key] = "other"
+    with pytest.raises(ValueError, match="identity"):
+        await adapter.migrate_oauth_credential(**args)
+    assert all("/creds/" not in call.args[1] for call in adapter._request.call_args_list)
+
+
+async def test_enrollment_preserves_auxiliary_fields_on_metadata_update(store):
+    adapter, _, _ = store
+    await adapter.store(
+        "user",
+        "alice",
+        "gitlab",
+        SecretType.OAUTH_TOKEN,
+        {"token": "old", "refresh_token": "refresh", "cloud_id": "site", "id_token": "private"},
+        {"tenant_id": "tenant-a", "integration": "gitlab", "oauth_token_field": "token"},
+    )
+    await adapter.store(
+        "user", "alice", "gitlab", SecretType.OAUTH_TOKEN, {}, {"auth_state": "active"}
+    )
+    values = await adapter.get_value("user", "alice", "gitlab")
+    assert values["cloud_id"] == "site"
+    assert "id_token" not in values
+
+
+@pytest.mark.parametrize(
+    "status,errors,reconnect", [(500, ["invalid_grant secret"], True), (503, [], False)]
+)
+async def test_flat_enrollment_reports_safe_provider_errors(store, status, errors, reconnect):
+    adapter, kv, _ = store
+    original = adapter._request.side_effect
+
+    async def failed(method, path, **kwargs):
+        if method == "post" and "/creds/" in path:
+            return httpx.Response(status, json={"errors": errors})
+        return await original(method, path, **kwargs)
+
+    adapter._request.side_effect = failed
+    with pytest.raises(OAuthCredentialUnavailableError) as exc:
+        await enroll(adapter)
+    assert exc.value.reconnect is reconnect
+    assert "secret" not in str(exc.value)
+    assert not kv
+
+
+@pytest.mark.parametrize("server,refresh", [("wrong-app", True), (None, False)])
+async def test_flat_migration_refuses_unmatched_app_or_nonrenewable_key(store, server, refresh):
+    from niuu.adapters.openbao_credential_store import OpenBaoCredentialStore
+
+    adapter, _, engine = store
+    engine["server"] = server
+    values = {"token": "static"}
+    if refresh:
+        values["refresh_token"] = "refresh"
+    await OpenBaoCredentialStore.store(
+        adapter,
+        "user",
+        "alice",
+        "legacy",
+        SecretType.OAUTH_TOKEN,
+        values,
+        {"integration": "gitlab"},
+    )
+    original = adapter._request.side_effect
+
+    async def request(method, path, **kwargs):
+        if "/creds/" in path and server is None:
+            return httpx.Response(404)
+        return await original(method, path, **kwargs)
+
+    adapter._request.side_effect = request
+    adapter._request.reset_mock()
+    with pytest.raises(ValueError):
+        await adapter.migrate_oauth_credential(
+            owner_id="alice",
+            tenant_id="tenant-a",
+            name="legacy",
+            integration="gitlab",
+            oauth_app="default",
+            token_field="token",
+        )
+    assert all(call.args[0] == "get" for call in adapter._request.call_args_list)

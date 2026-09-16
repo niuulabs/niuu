@@ -33,8 +33,8 @@ Parallel sessions read the same engine credential. The plugin serializes refresh
 for that credential and forwards refresh work to the active backend. This replaces
 application-level refresh races; it does not establish exactly-once semantics across
 provider failures or storage outages. Import and the KV metadata write are separate
-operations: if import succeeds but the metadata write fails, repair/reconnect the
-integration; do not retry an old rotating refresh token blindly.
+operations: if import succeeds but the metadata write fails, use the resumable per-connection
+migration to finish the KV update; do not retry an old rotating refresh token blindly.
 
 The control-plane adapter remains privileged to manage grants. Use workload auth,
 restrict its OpenBao policy, audit access, and keep it separate from session roles.
@@ -54,6 +54,7 @@ credential_store:
     # Include existing OpenBao URL, KV mount and workload auth kwargs here.
     oauth_mount_path: oauthapp
     minimum_seconds: 120
+    maximum_expiry_seconds: 3600
     manage_oauth_applications: true
 
 secret_injection:
@@ -221,3 +222,6 @@ existing database advisory lock, and rejects engine-managed grants. This preserv
 local compatibility without adding a production refresh fallback. Its on-demand
 refresh is separate from the optional mini-mode integration scan; see the published
 [security guide](https://docs.niuu.cloud/operations/security-and-permissions/).
+
+For ordinary integration migration and the current MCP setup flow, see the
+[published integration guide](https://docs.niuu.cloud/operations/integrations-and-mcp/).
