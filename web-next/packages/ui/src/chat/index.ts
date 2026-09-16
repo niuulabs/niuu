@@ -73,3 +73,8 @@ export type {
   ConversationResource,
   ConversationResourcePort,
 } from './components/ConversationResources';
+
+export { MarkdownCodeBlock } from './components/MarkdownContent/MarkdownCodeBlock';
+export { MermaidDiagram } from './components/MarkdownContent/MermaidDiagram';
+export { useCopyFeedback } from './hooks/useCopyFeedback';
+export { useConversationResources } from './components/ConversationResources';

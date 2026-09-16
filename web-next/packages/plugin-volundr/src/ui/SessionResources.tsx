@@ -3,20 +3,15 @@ import {
   ConversationResourceProvider,
   Dialog,
   DialogContent,
-  MarkdownContent,
   type ConversationResource,
 } from '@niuulabs/ui';
 import type { IFileSystemPort } from '../ports/IFileSystemPort';
 import { resolveSessionResource } from '../domain/sessionResources';
 import './SessionResources.css';
+import { classifyPreview, isTextPreview } from '../domain/filePreview';
+import { ResourcePreviewContent, type LoadedPreview } from './ResourcePreviewContent';
 
 const INLINE_TEXT_LIMIT = 2 * 1024 * 1024;
-type Preview = {
-  url: string;
-  blob: Blob;
-  text?: string;
-  kind: 'image' | 'pdf' | 'text' | 'download';
-};
 
 export function SessionResources({
   sessionId,
@@ -30,7 +25,7 @@ export function SessionResources({
   children: ReactNode;
 }) {
   const [selected, setSelected] = useState<ConversationResource | null>(null);
-  const [preview, setPreview] = useState<Preview>();
+  const [preview, setPreview] = useState<LoadedPreview>();
   const [error, setError] = useState<string>();
   const load = useCallback(
     (resource: ConversationResource, signal: AbortSignal) => {
@@ -83,45 +78,16 @@ export function SessionResources({
     void load(selected, abort.signal)
       .then(async (blob) => {
         const mime = selected.mime || blob.type;
-        const ext = selected.name.split('.').at(-1)?.toLowerCase() ?? '';
-        const kind =
-          mime.startsWith('image/') ||
-          ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif'].includes(ext)
-            ? 'image'
-            : mime === 'application/pdf' || ext === 'pdf'
-              ? 'pdf'
-              : mime.startsWith('text/') ||
-                  [
-                    'md',
-                    'txt',
-                    'json',
-                    'yaml',
-                    'yml',
-                    'ts',
-                    'tsx',
-                    'js',
-                    'jsx',
-                    'py',
-                    'swift',
-                    'css',
-                    'html',
-                    'csv',
-                    'log',
-                    'sh',
-                    'sql',
-                    'toml',
-                  ].includes(ext)
-                ? 'text'
-                : 'download';
+        const { kind, language } = classifyPreview(selected.name, mime);
         const text =
-          kind === 'text' && blob.size <= INLINE_TEXT_LIMIT ? await blob.text() : undefined;
+          isTextPreview(kind) && blob.size <= INLINE_TEXT_LIMIT ? await blob.text() : undefined;
         if (abort.signal.aborted) return;
         url = URL.createObjectURL(
           kind === 'pdf' && blob.type !== 'application/pdf'
             ? new Blob([blob], { type: 'application/pdf' })
             : blob,
         );
-        setPreview({ url, blob, text, kind });
+        setPreview({ url, blob, text, kind, language });
       })
       .catch((error: unknown) => {
         if (!abort.signal.aborted)
@@ -143,43 +109,32 @@ export function SessionResources({
         }}
       >
         <DialogContent
+          className="forge-resource-dialog"
           title={selected?.name ?? 'File preview'}
           description={selected?.kind === 'workspace' ? selected.path : 'Delivered by this session'}
         >
-          <div className="forge-resource-preview">
-            {error && <p role="alert">{error}</p>}
-            {!preview && !error && <p role="status">Loading file…</p>}
-            {preview && (
-              <>
-                <a
-                  href={preview.url}
-                  download={selected?.name}
-                  className="forge-resource-preview__download"
-                >
-                  Download {selected?.name}
-                </a>
-                {preview.kind === 'image' && <img src={preview.url} alt={selected?.name} />}
-                {preview.kind === 'pdf' && <iframe title={selected?.name} src={preview.url} />}
-                {preview.text !== undefined &&
-                  (selected?.name.endsWith('.md') ? (
-                    <ConversationResourceProvider port={previewPort}>
-                      <MarkdownContent content={preview.text} />
-                    </ConversationResourceProvider>
-                  ) : (
-                    <pre>{preview.text}</pre>
-                  ))}
-                {preview.kind === 'text' && preview.text === undefined && (
-                  <p>
-                    This file is larger than the 2 MiB text preview limit. Download it to read the
-                    full file.
-                  </p>
-                )}
-                {preview.kind === 'download' && (
-                  <p>Download this file to open it in its application.</p>
-                )}
-              </>
-            )}
-          </div>
+          {error && (
+            <div className="forge-resource-empty">
+              <p role="alert">{error}</p>
+              <button type="button" onClick={() => selected && open({ ...selected })}>
+                Try again
+              </button>
+            </div>
+          )}
+          {!preview && !error && (
+            <div className="forge-resource-empty">
+              <p role="status">Loading file…</p>
+            </div>
+          )}
+          {preview && selected && (
+            <ConversationResourceProvider port={previewPort}>
+              <ResourcePreviewContent
+                key={`${selected.kind}:${selected.path}`}
+                resource={selected}
+                preview={preview}
+              />
+            </ConversationResourceProvider>
+          )}
         </DialogContent>
       </Dialog>
     </ConversationResourceProvider>

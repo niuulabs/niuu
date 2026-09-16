@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { cn } from '@niuulabs/ui';
+import { cn, useConversationResources } from '@niuulabs/ui';
 import type { IFileSystemPort, FileTreeNode } from '../ports/IFileSystemPort';
 import { FileViewer } from './FileTree/FileViewer';
 import './SessionFilesWorkspace.css';
@@ -23,6 +23,7 @@ interface UploadItem {
 
 export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWorkspaceProps) {
   const queryClient = useQueryClient();
+  const resources = useConversationResources();
   const uploadRef = useRef<HTMLInputElement | null>(null);
 
   const [currentDir, setCurrentDir] = useState('/workspace');
@@ -91,6 +92,11 @@ export function SessionFilesWorkspace({ sessionId, filesystem }: SessionFilesWor
   }
 
   async function openFile(path: string) {
+    const resource = resources?.resolve(path);
+    if (resource && resources) {
+      resources.open(resource);
+      return;
+    }
     setViewerPath(path);
     setViewerContent('');
     setViewerError(undefined);

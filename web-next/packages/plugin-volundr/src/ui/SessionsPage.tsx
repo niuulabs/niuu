@@ -244,7 +244,7 @@ function PodEntry({
         className={cn(
           'forge-session-row__select niuu:flex niuu:w-full niuu:items-start niuu:gap-2 niuu:border-b niuu:border-l-2 niuu:px-3 niuu:py-1.5 niuu:text-left niuu:transition-colors',
           selected
-            ? 'niuu:border-brand niuu:border-b-white/10 niuu:bg-[#12212b] niuu:shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]'
+            ? 'niuu:border-brand niuu:border-b-white/10 forge-session-row__select--selected niuu:shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]'
             : 'niuu:border-transparent niuu:border-b-white/6 niuu:hover:bg-bg-tertiary',
         )}
       >
@@ -282,7 +282,7 @@ function PodEntry({
         {collapsed ? null : (
           <>
             <div className="niuu:flex-1 niuu:min-w-0 niuu:flex niuu:flex-col niuu:gap-0.5">
-              <div className="niuu:font-mono niuu:text-[13px] niuu:font-medium niuu:text-text-primary niuu:truncate">
+              <div className="forge-session-row__title niuu:text-text-primary niuu:truncate">
                 {primaryLabel}
               </div>
               <span className="forge-session-state" data-state={session.state}>
@@ -784,12 +784,6 @@ export function SessionsPage() {
                   <h2 className="niuu:text-sm niuu:font-semibold niuu:text-text-primary">
                     Sessions
                   </h2>
-                  <span
-                    className="niuu:rounded-full niuu:bg-bg-elevated niuu:px-1.5 niuu:py-0.5 niuu:font-mono niuu:text-[10px] niuu:text-text-muted"
-                    data-testid="pod-count"
-                  >
-                    {allSessions.length}
-                  </span>
                 </div>
                 <button
                   type="button"
@@ -832,9 +826,7 @@ export function SessionsPage() {
                 </div>
               )}
               <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:px-2.5 niuu:py-1">
-                <span className="niuu:text-[10px] niuu:font-mono niuu:text-text-faint">
-                  group by
-                </span>
+                <span className="niuu:text-xs niuu:text-text-muted">group by</span>
                 <div
                   className="niuu:inline-flex niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:p-0.5"
                   data-testid="pod-group-mode"
@@ -847,7 +839,7 @@ export function SessionsPage() {
                         type="button"
                         onClick={() => setSidebarMode(mode)}
                         className={cn(
-                          'niuu:rounded-md niuu:px-2.5 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:transition-colors',
+                          'niuu:rounded-md niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:font-semibold niuu:transition-colors',
                           active
                             ? 'niuu:bg-brand/15 niuu:text-brand'
                             : 'niuu:text-text-muted niuu:hover:text-text-primary',
@@ -867,7 +859,7 @@ export function SessionsPage() {
                   <button
                     type="button"
                     onClick={() => setLaunchOpen(true)}
-                    className="niuu:flex niuu:h-7 niuu:w-7 niuu:flex-shrink-0 niuu:items-center niuu:justify-center niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:text-sm niuu:font-semibold niuu:text-text-muted niuu:transition-colors niuu:hover:border-brand/40 niuu:hover:text-brand"
+                    className="niuu:flex niuu:h-10 niuu:w-10 niuu:flex-shrink-0 niuu:items-center niuu:justify-center niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:text-sm niuu:font-semibold niuu:text-text-muted niuu:transition-colors niuu:hover:border-brand/40 niuu:hover:text-brand"
                     data-testid="pod-launch-button"
                     aria-label="Launch a new session"
                     title="Launch a new session"
@@ -877,14 +869,14 @@ export function SessionsPage() {
                   <button
                     type="button"
                     onClick={() => setImportOpen(true)}
-                    className="niuu:flex niuu:h-7 niuu:w-7 niuu:flex-shrink-0 niuu:items-center niuu:justify-center niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:text-text-muted niuu:transition-colors niuu:hover:border-brand/40 niuu:hover:text-brand"
+                    className="niuu:flex niuu:h-10 niuu:w-10 niuu:flex-shrink-0 niuu:items-center niuu:justify-center niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:text-text-muted niuu:transition-colors niuu:hover:border-brand/40 niuu:hover:text-brand"
                     data-testid="pod-import-button"
                     aria-label="Import external CLI sessions"
                     title="Import external CLI sessions"
                   >
                     <Download className="niuu:h-3.5 niuu:w-3.5" />
                   </button>
-                  <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:items-center niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] niuu:focus-within:border-brand/50 niuu:focus-within:ring-1 niuu:focus-within:ring-brand/20">
+                  <div className="forge-session-search niuu:flex niuu:min-w-0 niuu:flex-1 niuu:items-center niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] niuu:focus-within:border-brand/50 niuu:focus-within:ring-1 niuu:focus-within:ring-brand/20">
                     <Search
                       className="niuu:h-4 niuu:w-4 niuu:flex-shrink-0 niuu:text-text-muted"
                       aria-hidden="true"
@@ -932,7 +924,7 @@ export function SessionsPage() {
                             }
                           }}
                           className={cn(
-                            'niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-md niuu:px-2.5 niuu:py-1.5 niuu:font-mono niuu:text-[10px] niuu:transition-colors',
+                            'niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-md niuu:px-2.5 niuu:py-1.5 niuu:text-xs niuu:font-semibold niuu:transition-colors',
                             stoppedSelectionMode
                               ? 'niuu:bg-brand/15 niuu:text-brand'
                               : 'niuu:text-text-muted niuu:hover:bg-bg-elevated niuu:hover:text-text-primary',

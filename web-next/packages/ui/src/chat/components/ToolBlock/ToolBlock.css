@@ -258,3 +258,25 @@
   background: var(--color-bg-primary);
   padding: var(--space-2);
 }
+
+[data-theme='xteo'] .niuu-chat-tool-group {
+  box-shadow: var(--shadow-sm);
+}
+[data-theme='xteo'] .niuu-chat-tool-group-header {
+  padding: 10px 14px;
+  min-height: 42px;
+  background: var(--color-bg-tertiary);
+  gap: 10px;
+}
+[data-theme='xteo'] .niuu-chat-tool-group-header .niuu-chat-tool-label {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+[data-theme='xteo'] .niuu-chat-tool-group-count {
+  margin-left: auto;
+  font-size: 11px;
+  min-width: 22px;
+  height: 20px;
+}

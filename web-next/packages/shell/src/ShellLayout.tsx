@@ -1,7 +1,7 @@
 import { createElement, useCallback, useEffect, useMemo, type ReactNode } from 'react';
 import clsx from 'clsx';
 import { Outlet, useRouter, useRouterState } from '@tanstack/react-router';
-import { useConfig, type PluginCtx, type PluginDescriptor } from '@niuulabs/plugin-sdk';
+import { type PluginCtx, type PluginDescriptor } from '@niuulabs/plugin-sdk';
 import {
   LiveBadge,
   Kbd,
@@ -10,6 +10,7 @@ import {
   useCommandPalette,
   useCommandPaletteRegistry,
 } from '@niuulabs/ui';
+import { useTheme, type ThemeName } from '@niuulabs/design-tokens';
 import { useShellContext } from './ShellContext';
 import './Shell.css';
 
@@ -47,7 +48,7 @@ function RailTooltipContent({ title, subtitle }: { title: string; subtitle?: str
 }
 
 export function ShellLayout() {
-  const config = useConfig();
+  const { theme, setTheme } = useTheme();
   const { enabled, brand, version, ctx } = useShellContext();
   const router = useRouter();
   const { location } = useRouterState({ select: (s) => ({ location: s.location }) });
@@ -102,7 +103,7 @@ export function ShellLayout() {
 
   return (
     <TooltipProvider>
-      <div className="niuu-shell" data-theme={config.theme}>
+      <div className="niuu-shell" data-theme={theme}>
         <aside className="niuu-shell__rail">
           <div className="niuu-shell__rail-brand" title="Niuu">
             {brand}
@@ -201,6 +202,17 @@ export function ShellLayout() {
           </div>
           <div className="niuu-shell__topbar-right">
             <PluginSlot render={active?.topbarRight ?? null} ctx={ctx} />
+            <select
+              className="niuu-shell__theme-select"
+              aria-label="Color theme"
+              value={theme}
+              onChange={(event) => setTheme(event.target.value as ThemeName)}
+            >
+              <option value="xteo">xTeo blue</option>
+              <option value="ice">Native dark</option>
+              <option value="amber">Amber</option>
+              <option value="spring">Spring</option>
+            </select>
             <LiveBadge />
             <div className="niuu-shell__topbar-sep" />
             <button

@@ -128,11 +128,14 @@ describe('session file previews', () => {
     await screen.findByRole('link', { name: 'Download diagram.png' });
     expect(screen.getByRole('img', { name: 'diagram.png' })).toBeInTheDocument();
   });
-  it('renders HTML as text and enforces the inline text size limit', async () => {
+  it('sandboxes HTML without scripts and offers literal source, with a bounded text preview', async () => {
     const download = vi.fn().mockResolvedValue(blob('<script>bad()</script>', 'text/html'));
     const first = setup(download, '[HTML](./page.html)');
     fireEvent.click(screen.getByRole('button', { name: 'HTML' }));
-    expect(await screen.findByText('<script>bad()</script>')).toBeInTheDocument();
+    expect(await screen.findByTitle('page.html')).toHaveAttribute('sandbox', '');
+    expect(screen.getByTitle('page.html')).toHaveAttribute('referrerpolicy', 'no-referrer');
+    fireEvent.click(screen.getByRole('button', { name: 'Source', exact: true }));
+    expect(screen.getByText('<script>bad()</script>')).toBeInTheDocument();
     expect(document.querySelector('script')).toBeNull();
     first.unmount();
     setup(vi.fn().mockResolvedValue(blob('x'.repeat(2 * 1024 * 1024 + 1))), '[Large](./large.txt)');

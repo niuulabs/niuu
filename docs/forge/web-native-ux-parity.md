@@ -184,3 +184,80 @@ proxies its API/WebSocket calls to localhost:8080. The active backend is not res
 
 Full native transport, cache, voice and project-coordination parity is not implied by
 this first UI iteration. Review the unchecked items above to choose the next slice.
+
+## xTeo, Markdown and document viewer iteration — 2026-09-16
+
+References reviewed:
+
+- LexiDesignKit `DesignTokens.swift`, `GlassCardSurface.swift`, and native
+  `MarkdownView.swift`, `FilePreview.swift`, `CodeFilePreviewSheet.swift`,
+  `FileClassification.swift` at the native revision above.
+- Lexi web `packages/markdown` and `apps/lexi-chat/src/components/file-viewer`
+  at `552b770`. The shared React renderer adopts its CommonMark/GFM pipeline,
+  path-linkification, callouts, highlighted code, math and Mermaid behavior.
+  Styles and file access remain Niuu token/port based.
+- User-supplied `Web UI refinement mockup (1).zip`, SHA-256
+  `ed4127a780d445ee231e9c42bc9321f9759d61e62bc9804b14fdb0f72bd0ab21`.
+  Extracted and visually rendered `Volundr Web Refined.dc.html`; reviewed both
+  included screenshots. Adopted its stronger sans-serif hierarchy, compact
+  session controls, spacious transcript, quieter metadata, bordered tool cards,
+  raised composer and blue accents. The native SF/Inter stack stays consistent
+  with Lexi; the mockup's fixed 1400px minimum becomes a responsive layout.
+  Its sample session counts/messages remain reference content, not application
+  data. The explicit request to omit the total Sessions heading count prevails.
+
+Delivered:
+
+- [x] Shared `xteo` theme: native navy surfaces, deeper blue filled controls,
+      brighter secondary/faint text, readable semantic tool/status accents,
+      stronger headings, subtle elevation and borders throughout the shell.
+- [x] Always available top-bar theme selector: xTeo blue / Native dark, plus the
+      existing Amber/Spring options. Preference persists in `niuu.theme`; initial
+      selection comes from runtime configuration. Portal previews inherit it too.
+- [x] Sidebar heading is just “Sessions”. Filter counts stay useful; wider controls,
+      balanced spacing and a separate action tray prevent buttons covering row text.
+- [x] Phone top bar places plugin navigation on its own row, keeping the theme
+      switch inside the viewport. Session navigation and toolbar wrap independently.
+- [x] Shared TypeScript React Markdown in live and settled Claude Code/Codex Forge
+      presentation, with stable DOM anchors through streaming. Proper nested/loose
+      lists, tasks, strike/emphasis, references, autolinks, aligned tables, callouts,
+      heading links, inline/fenced code, native MathML and Mermaid.
+- [x] Memoized Markdown components; deferred syntax work with a bounded 40-entry
+      cache and a 100,000-character highlighting ceiling. Code remains readable
+      while highlighting loads. Mermaid waits for settled source and bounds input
+      at 50,000 characters; unavailable diagrams show their original source.
+- [x] Fenced outcome cards and archived summary cards remain supported; examples
+      of outcome markers inside ordinary code remain literal.
+- [x] Workspace-relative, absolute-within-workspace, `file://`, bare and backticked
+      file references use the owning session. Tool file paths and Files-browser
+      preview actions open the same viewer. Document-relative links stay relative.
+- [x] Viewport-sized, keyboard-dismissable document viewer: filename/path, kind/size,
+      Preview/Source, copy text/path and download; rich Markdown, highlighted source,
+      Mermaid, images with zoom/fit, PDF, browser-supported audio/video and HTML.
+- [x] HTML uses a sandbox without scripts or same-origin privileges and a restrictive
+      document CSP; raw HTML is disabled in Markdown. Mermaid uses strict mode and
+      sanitizes SVG before displaying it as an image. Link schemes stay constrained.
+- [x] External Markdown images open in a viewport dialog with an original-image link.
+- [x] Loads abort on close/change; blob URLs are revoked. Text previews stay bounded
+      at 2 MiB. Larger/unsupported files have an explicit download path; unavailable
+      media and request failures are visible. HTML preview supports self-contained
+      documents; it does not load arbitrary scripts or external resources.
+
+Remaining native parity stays explicit: incoming `SendUserFile` attachment UUIDs,
+read-image result drawers and preview-first image caches, office/archive QuickLook
+formats, activity durations and richer tool failure/timing summaries. The mockup's
+example duration/failure badges are not invented when the current transcript
+projection does not carry those fields.
+
+Validation: full unit suite and coverage gate, package/app type checks, lint and
+production build; focused streaming/Markdown/link/security/classification tests;
+browser checks for actual diagram rendering, highlighted prose/code, theme reload,
+preview/source switching, image zoom, and desktop/phone layout. Live deployment
+continues to proxy Thor `127.0.0.1:8080`; no backend restart or test-session mutation.
+
+Final iteration receipt: 6,114 tests in 415 files pass. Coverage: 92.89% statements,
+85.23% branches, 92.23% functions, 94.44% lines. All 23 Forge browser regressions
+pass; the five theme/preview/layout checks also pass after the final phone CSS
+correction. Production build, type checks and lint pass. The xTeo foreground ramp
+is at least 5.04:1 against all five primary/secondary/tertiary/elevated/sent
+surfaces; white on the deep-blue action fill is 5.17:1.

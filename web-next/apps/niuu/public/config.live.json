@@ -1,5 +1,5 @@
 {
-  "theme": "ice",
+  "theme": "xteo",
   "plugins": {
     "login": { "enabled": true, "order": 0 },
     "credentials": { "enabled": true, "order": 1 },

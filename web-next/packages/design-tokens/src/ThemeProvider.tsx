@@ -1,6 +1,14 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useCallback,
+  type ReactNode,
+} from 'react';
 
-export type ThemeName = 'ice' | 'amber' | 'spring';
+export type ThemeName = 'ice' | 'amber' | 'spring' | 'xteo';
 
 interface ThemeContextValue {
   theme: ThemeName;
@@ -15,13 +23,30 @@ interface ThemeProviderProps {
 }
 
 export function ThemeProvider({ theme: initial = 'ice', children }: ThemeProviderProps) {
-  const [theme, setTheme] = useState<ThemeName>(initial);
+  const [theme, updateTheme] = useState<ThemeName>(() => {
+    try {
+      const saved = localStorage.getItem('niuu.theme');
+      if (saved === 'ice' || saved === 'amber' || saved === 'spring' || saved === 'xteo')
+        return saved;
+    } catch {
+      /* Storage can be disabled; the configured theme still works. */
+    }
+    return initial;
+  });
+  const setTheme = useCallback((next: ThemeName) => {
+    updateTheme(next);
+    try {
+      localStorage.setItem('niuu.theme', next);
+    } catch {
+      /* Theme changes remain available for this visit without storage. */
+    }
+  }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
-  const value = useMemo(() => ({ theme, setTheme }), [theme]);
+  const value = useMemo(() => ({ theme, setTheme }), [theme, setTheme]);
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }

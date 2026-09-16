@@ -250,3 +250,250 @@
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* Lexi's reading rhythm, using the active Niuu theme on every surface. */
+.niuu-chat-md {
+  font-size: 15px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.niuu-chat-md p {
+  font-size: inherit;
+  line-height: inherit;
+}
+.niuu-chat-md > :first-child {
+  margin-top: 0;
+}
+.niuu-chat-md > :last-child {
+  margin-bottom: 0;
+}
+.niuu-chat-md strong {
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+.niuu-chat-md em {
+  color: var(--color-emphasis, var(--color-text-secondary));
+}
+.niuu-chat-md del {
+  color: var(--color-text-muted);
+}
+.niuu-chat-md :is(h1, h2, h3, h4, h5, h6) {
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: -0.02em;
+  scroll-margin-top: 16px;
+}
+.niuu-chat-md-h1 {
+  font-size: 1.7em;
+  margin-top: 1.3em;
+}
+.niuu-chat-md-h2 {
+  font-size: 1.35em;
+  margin-top: 1.4em;
+}
+.niuu-chat-md-h3 {
+  font-size: 1.15em;
+  margin-top: 1.2em;
+}
+.niuu-chat-md-p {
+  margin-bottom: 0.85em;
+}
+.niuu-chat-md-ul,
+.niuu-chat-md-ol {
+  padding-left: 1.5em;
+  margin: 0.5em 0 1em;
+}
+.niuu-chat-md-ul {
+  list-style: disc;
+}
+.niuu-chat-md-ol {
+  list-style: decimal;
+}
+.niuu-chat-md li > :is(ul, ol) {
+  margin: 0.3em 0;
+}
+.niuu-chat-md li::marker {
+  color: var(--color-text-muted);
+}
+.niuu-chat-md .task-list-item {
+  list-style: none;
+}
+.niuu-chat-md input[type='checkbox'] {
+  margin-right: 0.5em;
+  accent-color: var(--brand-600);
+  width: 15px;
+  height: 15px;
+}
+.niuu-chat-md hr {
+  margin: 1.6em 0;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+}
+.niuu-chat-md-link {
+  color: var(--color-brand);
+  text-underline-offset: 3px;
+  cursor: pointer;
+  text-align: inherit;
+}
+.niuu-chat-md-link:hover {
+  color: var(--brand-200);
+}
+.niuu-chat-md-link:focus-visible,
+.niuu-chat-md button:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 3px;
+}
+.niuu-chat-md-blockquote {
+  border-color: var(--color-brand);
+  border-radius: 0 10px 10px 0;
+  background: var(--color-bg-tertiary);
+  font-style: normal;
+  padding: 12px 18px;
+  margin: 1em 0;
+}
+.niuu-chat-md-blockquote > :last-child {
+  margin-bottom: 0;
+}
+.niuu-chat-md-callout::before {
+  content: attr(data-callout);
+  display: block;
+  color: var(--color-brand);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  margin-bottom: 6px;
+}
+.niuu-chat-md-callout--warning {
+  border-color: var(--status-amber);
+}
+.niuu-chat-md-callout--caution {
+  border-color: var(--color-critical-fg);
+}
+.niuu-chat-md-callout--important {
+  border-color: var(--color-gate-fg);
+}
+.niuu-chat-md-table-wrap {
+  margin: 1em 0;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 10px;
+}
+.niuu-chat-md-table {
+  font-size: 13px;
+  border: 0;
+}
+.niuu-chat-md-table :is(th, td) {
+  padding: 10px 14px;
+  line-height: 1.65;
+  min-width: 100px;
+}
+.niuu-chat-md-table tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 50%, transparent);
+}
+.niuu-chat-md-codeblock {
+  margin: 1em 0;
+  border-radius: 10px;
+  box-shadow: var(--shadow-sm);
+}
+.niuu-chat-md-codeblock-pre {
+  font-size: 13px;
+  line-height: 1.7;
+  background: var(--color-code-surface, var(--color-bg-primary));
+  color: var(--color-text-primary);
+  tab-size: 2;
+}
+.niuu-chat-md-codeblock-header {
+  min-height: 42px;
+  gap: 12px;
+}
+.niuu-chat-md-codeblock-btn {
+  width: 32px;
+  height: 32px;
+}
+.niuu-chat-md-codeblock-btn-icon {
+  width: 15px;
+  height: 15px;
+}
+.niuu-chat-md-highlight-warning {
+  display: block;
+  font-family: var(--font-sans);
+  color: var(--color-text-muted);
+}
+.niuu-chat-md math[display='block'] {
+  display: block;
+  overflow-x: auto;
+  padding: 18px;
+  margin: 1em 0;
+  background: var(--color-bg-tertiary);
+  border-radius: 10px;
+}
+.niuu-chat-md-diagram {
+  margin: 1em 0;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--color-bg-secondary);
+}
+.niuu-chat-md-diagram-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: 12px;
+  font-weight: 600;
+}
+.niuu-chat-md-diagram-toolbar span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: auto;
+}
+.niuu-chat-md-diagram-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.niuu-chat-md-diagram-toolbar button:hover {
+  background: var(--color-bg-elevated);
+}
+.niuu-chat-md-diagram-image {
+  display: block;
+  padding: 24px;
+  width: 100%;
+  cursor: zoom-in;
+}
+.niuu-chat-md-diagram-image img {
+  width: 100%;
+  max-height: 480px;
+  object-fit: contain;
+}
+.niuu-chat-md-diagram-dialog {
+  width: min(1200px, 94vw);
+  max-height: 92dvh;
+}
+.niuu-chat-md-diagram-dialog img {
+  width: 100%;
+  max-height: 78dvh;
+  object-fit: contain;
+}
+.niuu-chat-md-diagram-error {
+  padding: 12px;
+  color: var(--color-text-secondary);
+}
+@media (pointer: coarse) {
+  .niuu-chat-md-codeblock-btn {
+    width: 40px;
+    height: 40px;
+  }
+}
+.niuu-chat-md input[type='checkbox'] {
+  appearance: auto;
+  opacity: 1;
+  vertical-align: middle;
+}

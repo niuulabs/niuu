@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
-import { ThemeProvider } from '@niuulabs/design-tokens';
 import {
   ConfigProvider,
   FeatureCatalogProvider,
@@ -188,12 +187,10 @@ export function App() {
 
   return (
     <ConfigProvider value={state.config}>
-      <ThemeProvider theme="ice">
-        <QueryClientProvider client={queryClient}>
-          <AppInner />
-          <ReactQueryDevtools initialIsOpen={false} />
-        </QueryClientProvider>
-      </ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <AppInner />
+        <ReactQueryDevtools initialIsOpen={false} />
+      </QueryClientProvider>
     </ConfigProvider>
   );
 }

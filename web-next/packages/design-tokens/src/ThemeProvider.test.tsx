@@ -39,3 +39,29 @@ describe('ThemeProvider', () => {
     console.error = originalError;
   });
 });
+
+function ThemeSwitch() {
+  const { theme, setTheme } = useTheme();
+  return <button onClick={() => setTheme(theme === 'xteo' ? 'ice' : 'xteo')}>{theme}</button>;
+}
+it('remembers the selected theme and restores the original dark palette after reload', async () => {
+  const { fireEvent } = await import('@testing-library/react');
+  localStorage.removeItem('niuu.theme');
+  const first = render(
+    <ThemeProvider theme="xteo">
+      <ThemeSwitch />
+    </ThemeProvider>,
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'xteo' }));
+  expect(document.documentElement.dataset.theme).toBe('ice');
+  expect(localStorage.getItem('niuu.theme')).toBe('ice');
+  first.unmount();
+  const second = render(
+    <ThemeProvider theme="xteo">
+      <ThemeReader />
+    </ThemeProvider>,
+  );
+  expect(screen.getByTestId('theme')).toHaveTextContent('ice');
+  second.unmount();
+  localStorage.removeItem('niuu.theme');
+});

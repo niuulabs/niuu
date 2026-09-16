@@ -220,3 +220,31 @@
   width: 16px;
   height: 16px;
 }
+
+[data-theme='xteo'] .niuu-chat-input-wrapper {
+  background: var(--color-bg-tertiary);
+  box-shadow: var(--shadow-md);
+  border-color: var(--color-border);
+  padding: 14px 16px 12px;
+  gap: 14px;
+}
+[data-theme='xteo'] .niuu-chat-input-wrapper:focus-within {
+  border-color: var(--color-brand);
+}
+[data-theme='xteo'] .niuu-chat-textarea {
+  font-size: 15px;
+  line-height: 1.65;
+}
+[data-theme='xteo'] .niuu-chat-textarea::placeholder {
+  color: var(--color-text-muted);
+}
+[data-theme='xteo'] .niuu-chat-send-btn {
+  width: 36px;
+  height: 36px;
+}
+[data-theme='xteo'] .niuu-chat-send-btn[data-active] {
+  background: var(--brand-600);
+  color: var(--color-accent-on-fill);
+  border-color: var(--brand-600);
+  box-shadow: var(--shadow-sm);
+}

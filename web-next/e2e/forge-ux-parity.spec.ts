@@ -35,7 +35,7 @@ const parts = [
   },
 ];
 
-async function fixture(page: Page) {
+async function fixture(page: Page, rich = false) {
   const mutations: string[] = [];
   const sessions = [
     { id: 'review', name: 'Forge UX review', status: 'running', activity_state: 'active' },
@@ -65,6 +65,7 @@ async function fixture(page: Page) {
     route.fulfill({
       json: {
         ...baseConfig,
+        theme: 'xteo',
         services: {
           ...baseConfig.services,
           forge: { mode: 'http', baseUrl: `${origin}/api/v1/forge` },
@@ -112,7 +113,17 @@ async function fixture(page: Page) {
                 id: 'turn',
                 role: 'assistant',
                 content: '',
-                parts,
+                parts: rich
+                  ? [
+                      {
+                        type: 'text',
+                        id: 'rich-review',
+                        complete: true,
+                        text: '# Forge presentation review\n\nClean **Markdown** from Claude Code and Codex, with *emphasis*, nested lists, and links to `README.md`.\n\n> [!NOTE]\n> Documents and tool output share the same viewer.\n\n1. Review the implementation\n   - [x] Session filters\n   - [ ] Next iteration\n\n| Surface | Status |\n| :--- | ---: |\n| iOS | Reference |\n| Forge | In review |\n\n```typescript\nconst theme = "xteo";\nconsole.log(theme);\n```\n\n$$\nE = mc^2\n$$\n\n```mermaid\ngraph LR; A[Claude Code] --> C[Forge]; B[Codex] --> C; C --> D[File preview];\n```',
+                      },
+                      ...parts,
+                    ]
+                  : parts,
                 created_at: '2026-09-16T10:00:00Z',
               },
             ],
@@ -210,4 +221,75 @@ test('phone layout uses a full-width list and detail back navigation', async ({
   expect(box?.width).toBeGreaterThan(280);
   await page.getByRole('button', { name: '‹ Sessions', exact: true }).click();
   await expect(page.getByTestId('pod-list-sidebar')).toBeVisible();
+});
+
+test('xTeo and Native dark switch across the shell and document previews and survive reload', async ({
+  page,
+}, testInfo) => {
+  await fixture(page, true);
+  await page.goto('/volundr/sessions/review');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'xteo');
+  await expect(page.getByRole('heading', { name: 'Forge presentation review' })).toBeVisible();
+  await expect(page.locator('.niuu-chat-md-callout')).toHaveAttribute('data-callout', 'NOTE');
+  await expect(page.locator('.niuu-chat-md-table')).toBeVisible();
+  await expect(page.locator('pre code span[style]').first()).toBeAttached();
+  await expect(page.locator('math')).toBeAttached();
+  await page.getByRole('img', { name: 'Mermaid diagram', exact: true }).scrollIntoViewIfNeeded();
+  await expect(page.getByRole('img', { name: 'Mermaid diagram', exact: true })).toBeVisible();
+  await page.getByRole('heading', { name: 'Forge presentation review' }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath('xteo-rich-markdown.png') });
+  await page.getByRole('combobox', { name: 'Color theme' }).selectOption('ice');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'ice');
+  await page.reload();
+  await expect(page.getByRole('combobox', { name: 'Color theme' })).toHaveValue('ice');
+  await page.getByRole('combobox', { name: 'Color theme' }).selectOption('xteo');
+  await page.getByRole('button', { name: 'review notes', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('heading', { name: 'Review notes', exact: true })).toBeVisible();
+  const width = (await dialog.boundingBox())!.width;
+  expect(width).toBeGreaterThan(900);
+  await dialog.getByRole('button', { name: 'Source', exact: true }).click();
+  await expect(dialog.locator('pre code')).toContainText('# Review notes');
+  await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
+  await page.screenshot({ path: testInfo.outputPath('xteo-file-preview.png') });
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Open image Diagram', exact: true }).click();
+  await expect(dialog.getByRole('img', { name: 'diagram.svg' })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: 'Fit image' })).toContainText('125%');
+  await dialog.getByRole('button', { name: 'Fit image' }).click();
+  await expect(dialog.getByRole('button', { name: 'Fit image' })).toContainText('100%');
+});
+
+test('phone review keeps theme switch, Chat tab, toolbar and full file preview usable', async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await fixture(page);
+  await page.goto('/volundr/sessions/review');
+  const theme = page.getByRole('combobox', { name: 'Color theme' });
+  await expect(theme).toBeVisible();
+  const themeBox = (await theme.boundingBox())!;
+  expect(themeBox.x + themeBox.width).toBeLessThanOrEqual(390);
+  await theme.selectOption('ice');
+  await theme.selectOption('xteo');
+  const tab = page.locator('.niuu-live-session__tab').filter({ hasText: 'Chat' });
+  await expect(tab).toBeVisible();
+  expect((await tab.boundingBox())!.width).toBeGreaterThan(45);
+  const back = (await page.getByRole('button', { name: '‹ Sessions', exact: true }).boundingBox())!;
+  const topbar = (await page.locator('.niuu-shell__topbar').boundingBox())!;
+  expect(back.y).toBeGreaterThanOrEqual(topbar.y + topbar.height);
+  expect(back.height).toBeGreaterThanOrEqual(44);
+  const toolbar = await page.locator('.niuu-live-session__toolbar').boundingBox();
+  const tabs = await page.locator('.niuu-live-session__tabs').boundingBox();
+  expect(toolbar!.y).toBeGreaterThanOrEqual(tabs!.y + tabs!.height - 1);
+  await page.screenshot({ path: testInfo.outputPath('xteo-phone-detail.png') });
+  await page.getByRole('button', { name: 'review notes', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('heading', { name: 'Review notes', exact: true })).toBeVisible();
+  const box = (await dialog.boundingBox())!;
+  expect(box.width).toBeGreaterThan(360);
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: testInfo.outputPath('xteo-phone-preview.png') });
 });

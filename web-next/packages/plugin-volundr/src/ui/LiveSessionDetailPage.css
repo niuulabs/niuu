@@ -2251,3 +2251,88 @@
     gap: 8px;
   }
 }
+
+/* Keep the navigation legible beside the review actions, including narrow split panes. */
+.niuu-live-session__chrome {
+  container-type: inline-size;
+  box-shadow: var(--shadow-sm);
+}
+.niuu-live-session__title {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.4;
+}
+.niuu-live-session__header {
+  min-height: 52px;
+}
+.niuu-live-session__tabs-row {
+  flex-wrap: wrap;
+  column-gap: 20px;
+  row-gap: 0;
+  overflow: visible;
+}
+.niuu-live-session__tabs {
+  flex: 1 1 350px;
+  gap: 18px;
+}
+.niuu-live-session__tab {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  min-height: 44px;
+}
+.niuu-live-session__toolbar {
+  gap: 6px;
+  padding: 4px 0;
+  flex-wrap: wrap;
+}
+.niuu-live-session__toolbar-button {
+  min-width: 34px;
+  height: 34px;
+  padding: 6px;
+  border-radius: 7px;
+}
+.niuu-live-session__toolbar-button:hover:not(:disabled) {
+  background: var(--color-bg-elevated);
+}
+.niuu-live-session__toolbar-button:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+.niuu-live-session__toolbar-label {
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+.niuu-live-session__handle,
+.niuu-live-session__metric-label,
+.niuu-live-session__forge-badge-label {
+  font-size: 11px;
+  letter-spacing: 0;
+}
+@container (max-width: 760px) {
+  .niuu-live-session__tabs {
+    flex-basis: 100%;
+  }
+  .niuu-live-session__toolbar {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-end;
+    border-top: 1px solid var(--color-border-subtle);
+  }
+}
+@media (max-width: 760px) {
+  .niuu-live-session__header,
+  .niuu-live-session__tabs-row {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .niuu-live-session__title {
+    max-width: 56vw;
+  }
+  .niuu-live-session__toolbar-button {
+    min-width: 40px;
+    height: 40px;
+  }
+}
+.niuu-live-session__chrome {
+  flex-shrink: 0;
+}

@@ -41,3 +41,15 @@ describe('conversation resource controls', () => {
     expect(screen.getByText('File delivery is incomplete.')).toBeInTheDocument();
   });
 });
+
+it('opens remote Markdown images in the viewport without navigating away', async () => {
+  render(<ConversationImage href="https://example.com/image.png" alt="Reference image" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Open image Reference image' }));
+  expect(screen.getByRole('dialog', { name: 'Reference image' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Open original image' })).toHaveAttribute(
+    'href',
+    'https://example.com/image.png',
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Close', exact: true }));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+});

@@ -8,6 +8,8 @@ export interface WorkspaceResource {
 export function resolveSessionResource(href: string, workspace?: string): WorkspaceResource | null {
   if (!href || href.startsWith('#') || href.startsWith('//')) return null;
   let path = href.trim().replace(/^<|>$/g, '');
+  // A bare README.md:12 is an editor reference, not a URL scheme.
+  if (/\.[a-z\d]+:\d+(?::\d+)?$/i.test(path)) path = path.replace(/:\d+(?::\d+)?$/, '');
   if (/^file:\/\//i.test(path)) {
     try {
       const url = new URL(path);

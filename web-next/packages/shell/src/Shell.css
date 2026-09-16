@@ -338,3 +338,101 @@
   color: var(--color-text-faint);
   margin: 0 2px;
 }
+
+.niuu-shell__theme-select {
+  min-height: 34px;
+  max-width: 124px;
+  padding: 5px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.niuu-shell__theme-select:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+[data-theme='xteo'] .niuu-shell__topbar {
+  box-shadow: var(--shadow-sm);
+}
+@media (max-width: 650px) {
+  .niuu-shell__topbar-subtitle,
+  .niuu-shell__topbar-right .niuu-live-badge,
+  .niuu-shell__topbar-sep {
+    display: none;
+  }
+  .niuu-shell__topbar-right {
+    gap: 6px;
+  }
+  .niuu-shell__theme-select {
+    max-width: 112px;
+    min-height: 36px;
+  }
+}
+
+@media (min-width: 761px) {
+  [data-theme='xteo'].niuu-shell {
+    grid-template-columns: 56px auto minmax(0, 1fr);
+    grid-template-rows: 52px minmax(0, 1fr) 30px;
+  }
+  [data-theme='xteo'] .niuu-shell__rail-item {
+    width: 56px;
+  }
+}
+
+@media (max-width: 760px) {
+  .niuu-shell {
+    grid-template-rows: 84px minmax(0, 1fr) 28px;
+  }
+  .niuu-shell__topbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: 46px 36px;
+    padding: 0 12px;
+    gap: 0 8px;
+    min-width: 0;
+  }
+  .niuu-shell__topbar-left {
+    display: contents;
+  }
+  .niuu-shell__topbar-title {
+    grid-column: 1;
+    grid-row: 1;
+    gap: 8px;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .niuu-shell__topbar-title h1 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .niuu-shell__topbar-subtitle {
+    display: none;
+  }
+  .niuu-shell__tabs {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+    overflow-x: auto;
+  }
+  .niuu-shell__tab {
+    flex-shrink: 0;
+    padding: 0 10px;
+  }
+  .niuu-shell__topbar-right {
+    grid-column: 2;
+    grid-row: 1;
+    gap: 0;
+  }
+  .niuu-shell__topbar-right > :not(.niuu-shell__theme-select) {
+    display: none;
+  }
+  .niuu-shell__theme-select {
+    max-width: 112px;
+    min-height: 36px;
+  }
+}

@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import { File, Image as ImageIcon } from 'lucide-react';
 import type { ToolUseBlock } from './ToolBlock/groupContentBlocks';
 import './ConversationResources.css';
+import { Dialog, DialogContent } from '../../primitives/Dialog/Dialog';
 
 export interface ConversationResource {
   kind: 'workspace' | 'presented';
@@ -25,6 +26,10 @@ export function ConversationResourceProvider({
   children: ReactNode;
 }) {
   return <Context.Provider value={port}>{children}</Context.Provider>;
+}
+
+export function useConversationResources() {
+  return useContext(Context);
 }
 
 export function safeExternalUrl(href: string): string | null {
@@ -67,6 +72,7 @@ export function ConversationLink({ href, children }: { href: string; children: R
 }
 
 export function ConversationImage({ href, alt }: { href: string; alt: string }) {
+  const [imageOpen, setImageOpen] = useState(false);
   const port = useContext(Context);
   const [loaded, setLoaded] = useState<{
     href: string;
@@ -143,14 +149,29 @@ export function ConversationImage({ href, alt }: { href: string; alt: string }) 
       </button>
     );
   return (
-    <a
-      href={imageExternal ?? undefined}
-      className="niuu-chat-resource-image"
-      target="_blank"
-      rel="noreferrer"
-    >
-      {content}
-    </a>
+    <>
+      <button
+        type="button"
+        className="niuu-chat-resource-image"
+        aria-label={`Open image ${alt || 'preview'}`}
+        onClick={() => setImageOpen(true)}
+      >
+        {content}
+      </button>
+      <Dialog open={imageOpen} onOpenChange={setImageOpen}>
+        <DialogContent title={alt || 'Image preview'} className="niuu-chat-image-dialog">
+          <img src={imageExternal ?? undefined} alt={alt} />
+          <a
+            className="niuu-chat-md-link"
+            href={imageExternal ?? undefined}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Open original image
+          </a>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

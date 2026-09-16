@@ -159,9 +159,10 @@ describe('SessionsPage', () => {
     await waitFor(() => expect(screen.getByText('Sessions')).toBeInTheDocument());
   });
 
-  it('renders session count badge', async () => {
+  it('keeps the Sessions heading free of the total count', async () => {
     wrap();
-    await waitFor(() => expect(screen.getByTestId('pod-count')).toBeInTheDocument());
+    await screen.findByRole('heading', { name: 'Sessions' });
+    expect(screen.queryByTestId('pod-count')).not.toBeInTheDocument();
   });
 
   it('renders search input in sidebar', async () => {
