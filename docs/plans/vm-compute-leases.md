@@ -508,3 +508,27 @@ credential/routing/Ting tests, 19 mounted-settings UI tests and three Playwright
 checks (save, server error, loading/denied, keyboard activation). The focused
 compute modules meet the 85% coverage gate. Load evidence is deliberately bounded
 to two VMs; it does not certify hundreds of sessions or production OIDC/OpenBao.
+
+The permanent local installation is under `~/.niuu/compute-controller`, with
+PostgreSQL and the standard Niuu root application supervised by user LaunchAgents.
+Persisted policy survived the move. The interrupted-stop test killed the controller
+after its durable stop intent: restart preserved the workspace archive and removed
+the guest. This exposed a session row stuck in `stopping`; reconciliation now
+finishes interrupted stops for every runtime backend, with Kubernetes/VM/Docker
+regression coverage. The same session subsequently resumed on a new allocation
+and a real Codex turn read its preserved file using credentials renewed through
+the existing Skuld/Spark adapter. A different Ting-created session could not see
+the first session's marker.
+
+Final validation: 144 focused compute/application/migration/lifecycle tests
+(91.01% coverage), and the full web suite of 6,648 tests passed its
+coverage gates; web build, typecheck and formatting also passed. Sanitized live
+measurements are recorded in `evidence/harvester-warm-pool-2026-09-16.json`.
+The local pool is left paused and drained pending replacement of the temporary
+Harvester credential. The controller and admin UI remain available. Sustained
+high-capacity load and production identity/OpenBao deployment are not certified
+by this two-machine, local-identity proof.
+
+Concurrent pool maintenance can hold the allocation lock during stop. The stop
+path retries this contention within its configured cleanup timeout, without
+repeating a successful workspace archive or reporting a false failure.

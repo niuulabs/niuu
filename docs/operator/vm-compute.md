@@ -326,3 +326,27 @@ unreleased allocations. Migration 000067 refuses downgrade with live claims.
 Back up the PostgreSQL ledger, configured credential store and controller-local
 workspace archives together. Guest disk loss before a successful stop/archive
 is still outside the durability guarantee of controller-local storage.
+
+## Local controller installation
+
+The verified macOS installation keeps its checkout, configuration, PostgreSQL,
+credential store, pinned SSH key and workspace archives together under
+`~/.niuu/compute-controller`. User LaunchAgents
+`world.niuu.compute-postgres` and `world.niuu.compute-controller` start at login
+and restart failed processes. The controller checks database connectivity before
+starting the normal Niuu root application and mounted Forge/Guild services.
+
+The local UI is available at `http://127.0.0.1:8088/settings/volundr/compute`.
+This installation uses the existing development identity on loopback. Production
+exposure requires the normal configured identity and gateway deployment.
+Configuration and credential files are private to the user; the Harvester token
+stays on the controller and must be replaced before its expiry. No model refresh
+credential is copied from the existing Spark credential service.
+
+Restart the controller with
+`launchctl kickstart -k gui/$(id -u)/world.niuu.compute-controller`.
+Inspect logs under `~/.niuu/compute-controller/logs`. For an upgrade, pause
+admission, finish or stop sessions, drain spares, update the installation checkout
+and web build, apply required migrations, then restart and inspect Compute status
+before reopening admission. Back up the database, credential store and session
+archives together. This user-login installation is not a system boot daemon.
