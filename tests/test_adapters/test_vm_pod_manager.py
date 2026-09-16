@@ -257,7 +257,8 @@ async def test_stop_cancels_recovery_before_guest_data_is_touched(setup):
     assert not provider.machines
 
 
-async def test_manager_claims_standby_without_provisioning_another_machine(setup):
+@pytest.mark.parametrize("profile_changed", [False, True])
+async def test_manager_claims_standby_without_provisioning_another_machine(setup, profile_changed):
     from volundr.domain.compute import ComputePoolPolicy
     from volundr.domain.services.compute_pool import ComputePoolService
 
@@ -279,6 +280,14 @@ async def test_manager_claims_standby_without_provisioning_another_machine(setup
     spare = next(iter(repo.leases.values()))
     assert spare.state == LeaseState.IDLE
     assert (await manager.capacity()).available == 1
+    if profile_changed:
+        provider.profile_revision = "revision-2"
+        assert (
+            await manager._claim_warm(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+            is None
+        )
+        assert repo.leases[spare.id].session_id is None
+        return
     creates = len(provider.created)
     await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
     assert len(provider.created) == creates

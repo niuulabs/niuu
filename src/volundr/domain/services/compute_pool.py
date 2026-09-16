@@ -63,7 +63,10 @@ class ComputePoolService:
         leases = await self.repository.list(self.pool_id, include_released=False)
         return {
             "pool_id": self.pool_id,
-            "profiles": [profile.model_dump() for profile in await self.provider.profiles()],
+            "profiles": [
+                profile.model_dump(exclude={"revision"})
+                for profile in await self.provider.profiles()
+            ],
             "policy": (await self.policy()).model_dump(),
             "counts": dict(
                 Counter(lease.state.value for lease in leases if lease.state != LeaseState.RELEASED)
@@ -76,6 +79,7 @@ class ComputePoolService:
                         "bootstrap_owner",
                         "session_bootstrap_ref",
                         "request_fingerprint",
+                        "profile_revision",
                     },
                 )
                 for lease in leases
@@ -190,6 +194,9 @@ class ComputePoolService:
             LeaseState.RELEASED,
             LeaseState.QUARANTINED,
         }:
+            return
+        if not await self.leases.compatible(lease):
+            await self.dispose(lease.id)
             return
         lease = await self.leases.reconcile(lease.id)
         expired = (

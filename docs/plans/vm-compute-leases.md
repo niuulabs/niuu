@@ -1,6 +1,6 @@
 # VM execution through Völundr: verification and implementation plan
 
-Status: implementation started. The disposable VM allocation layer, Harvester
+Status: the selected local Harvester deployment and shared VM backend are implemented. The disposable VM allocation layer, Harvester
 API adapter, PostgreSQL repository, and operator lifecycle proof command are
 implemented. Live Harvester VM lifecycle proof passed on 2026-09-16. Forge
 runtime integration now includes a generic VmPodManager and a pinned-SSH Docker
@@ -11,6 +11,34 @@ Provider-neutral warm pools and their admin settings are now implemented.
 Verified on 2026-09-16 against local `dev`, HEAD `302507990`, including the
 existing uncommitted working-tree changes. Those changes were left intact.
 Source discussion: https://chatgpt.com/share/6aaa7520-9028-83ea-88f2-0e71daaa28c9
+
+## Current acceptance checklist (2026-09-16)
+
+- Complete: generic provider/runtime ports, durable allocation/admission, Harvester
+  API integration, local storage archive/restore, credential delivery and renewal,
+  warm pools, crash recovery, admin policy/status/disposal, and profile discovery.
+- Complete: local controller/PostgreSQL supervision, real Codex execution through
+  Guild, Ting target discovery, two-machine admission burst, session isolation,
+  controller restart/interrupted-stop recovery, and verified zero-VM cleanup.
+- Added after review: adapter-owned profile revisions prevent assignment of a
+  stale spare after a profile definition changes. Legacy unversioned spares are
+  replaced; already-bound sessions remain on their existing allocation.
+- Pending operator input: a durable Harvester credential source and the maximum
+  VM count for the next live load/churn run. The pool remains paused and drained.
+- Pending deployment selection: production gateway/identity and credential-store
+  verification. The chosen loopback installation uses existing development
+  identity and the existing Spark credential broker; it cannot certify a different
+  production topology.
+- Deferred by scope: EC2/private provider implementation, multiple sessions per VM,
+  and capacity-aware cross-environment placement.
+
+The ordered work packages below retain the original design discussion. The actual
+reset policy is single-use allocation plus complete machine replacement, so there
+is no in-place reassign/scrub generation. `IDLE` means a prepared, unbound guest;
+`READY` means infrastructure exists but runtime preparation/assignment is pending.
+Per-allocation PostgreSQL advisory locks exclude concurrent operations and release
+on controller connection loss. The completion/evidence sections describe the
+implemented contract where the original proposal differs.
 
 ## Implementation progress and proof boundary
 

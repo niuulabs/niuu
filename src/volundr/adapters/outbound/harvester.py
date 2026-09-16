@@ -132,6 +132,13 @@ class HarvesterMachineProvider(MachineProvider):
         return tuple(
             MachineProfile(
                 name=name,
+                revision=hashlib.sha256(
+                    json.dumps(
+                        {"profile": profile.model_dump(), "cloud_init": self._cloud_init},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode()
+                ).hexdigest(),
                 details={
                     "Image": profile.image,
                     "CPU": str(profile.cpu),

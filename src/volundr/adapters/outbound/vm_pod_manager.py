@@ -175,6 +175,7 @@ class VmPodManager(PodManager):
                         lease is None
                         or lease.state != LeaseState.IDLE
                         or lease.session_id is not None
+                        or not await service.compatible(lease)
                     ):
                         continue
                     bootstrap = runtime.session_bootstrap(

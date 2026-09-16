@@ -54,6 +54,18 @@ class ComputeLeaseService:
         self._retry_interval = retry_interval_seconds
         self._retry_max = retry_max_seconds
 
+    async def profile_revision(self, name: str) -> str:
+        for profile in await self._provider.profiles():
+            if profile.name == name:
+                return profile.revision
+        raise ValueError("Machine profile is no longer configured by the provider adapter")
+
+    async def compatible(self, lease: ComputeLease) -> bool:
+        return any(
+            profile.name == lease.profile and profile.revision == lease.profile_revision
+            for profile in await self._provider.profiles()
+        )
+
     async def acquire(
         self,
         *,
@@ -80,6 +92,7 @@ class ComputeLeaseService:
                 tenant_id=tenant_id,
                 owner_id=owner_id,
                 profile=profile,
+                profile_revision=await self.profile_revision(profile),
                 request_fingerprint=fingerprint,
                 provision_deadline=datetime.now(UTC)
                 + timedelta(seconds=timeout_seconds or self._provisioning_timeout),

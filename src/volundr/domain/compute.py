@@ -69,6 +69,7 @@ class MachineProfile(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
+    revision: str = Field(min_length=1, repr=False)
     details: dict[str, str]
 
 
@@ -122,6 +123,7 @@ class ComputeLease(BaseModel):
     tenant_id: str
     owner_id: str
     profile: str
+    profile_revision: str = ""
     request_fingerprint: str
     bootstrap_ref: str | None = None
     bootstrap_owner: str | None = None

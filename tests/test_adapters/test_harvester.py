@@ -359,3 +359,14 @@ async def test_profile_catalog_exposes_only_safe_details(provider):
     assert "private-bootstrap-content" not in profiles[0].model_dump_json()
     assert "test-only-token" not in profiles[0].model_dump_json()
     await provider.close()
+
+
+async def test_profile_revision_changes_with_bootstrap_and_resources(provider):
+    initial = (await provider.profiles())[0].revision
+    assert initial == (await provider.profiles())[0].revision
+    provider._cloud_init = {"packages": ["git"]}
+    bootstrap_changed = (await provider.profiles())[0].revision
+    assert bootstrap_changed != initial
+    provider._profiles["small"] = provider._profiles["small"].model_copy(update={"cpu": 4})
+    assert (await provider.profiles())[0].revision != bootstrap_changed
+    await provider.close()

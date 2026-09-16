@@ -164,3 +164,26 @@ def test_policy_rejects_impossible_capacity():
         ComputePoolPolicy(profile="small", max_machines=1, warm_min=2)
     with pytest.raises(ValueError):
         ComputePoolPolicy(profile="small", max_machines=0)
+
+
+@pytest.mark.parametrize("stored_revision", ["revision-1", ""])
+async def test_profile_revision_change_retires_spares_but_preserves_bound_guests(
+    setup, stored_revision
+):
+    pool, leases, repo, provider, _, _ = setup
+    spare = await warm(setup)
+    repo.leases[spare.id] = spare.model_copy(update={"profile_revision": stored_revision})
+    bound = await leases.acquire(
+        session_id=uuid4(), owner_id="owner", tenant_id="tenant", profile="small"
+    )
+    provider.profile_revision = "revision-2"
+    await pool.maintain()
+    assert repo.leases[spare.id].state == LeaseState.RELEASED
+    assert bound.id in provider.machines
+    replacement = next(
+        lease
+        for lease in repo.leases.values()
+        if lease.session_id is None and lease.state != LeaseState.RELEASED
+    )
+    assert replacement.profile_revision == "revision-2"
+    assert "profile_revision" not in str(await pool.snapshot())

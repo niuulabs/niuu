@@ -130,3 +130,13 @@ async def test_claim_identity_and_limits_required(setup):
         )
     with pytest.raises(ValueError):
         await service.acquire(session_id=uuid4(), tenant_id="", owner_id="", profile="small")
+
+
+async def test_unknown_profile_fails_before_reserving_capacity(setup):
+    service, repository, provider = setup
+    with pytest.raises(ValueError, match="no longer configured"):
+        await service.acquire(
+            session_id=uuid4(), owner_id="owner", tenant_id="tenant", profile="removed"
+        )
+    assert not repository.leases
+    assert not provider.created

@@ -356,3 +356,24 @@ admission, finish or stop sessions, drain spares, update the installation checko
 and web build, apply required migrations, then restart and inspect Compute status
 before reopening admission. Back up the database, credential store and session
 archives together. This user-login installation is not a system boot daemon.
+
+
+## Profile changes and warm-spare compatibility
+
+Each provider catalog entry carries an opaque revision for its machine definition.
+The shared pool persists that revision with the allocation and checks it before
+assigning a spare. Changing a profile under the same name retires old unbound
+guests and prepares replacements; it does not interrupt bound sessions. Older
+allocations without a revision are never assigned as warm spares.
+
+The Harvester revision covers image, resources, network, architecture, volume
+access mode and provider/profile cloud-init configuration. The shared services
+compare opaque values and never inspect Harvester fields. Private providers must
+change the revision when their effective machine definition changes. Use immutable
+image references or a new profile when changing image contents: an unchanged
+reference cannot identify an out-of-band image mutation.
+
+Migration 000068 backfills existing JSONB records with an empty revision. Stop
+older controllers before upgrading the shared lease writer. Downgrade requires
+pausing admission and releasing all allocations; its down migration removes the
+new JSONB field so the older controller can read the ledger.

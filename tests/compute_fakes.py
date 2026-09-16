@@ -64,9 +64,12 @@ class Provider:
     async def profiles(self):
         from volundr.domain.compute import MachineProfile
 
-        return (MachineProfile(name="small", details={"Size": "Small"}),)
+        return (
+            MachineProfile(name="small", revision=self.profile_revision, details={"Size": "Small"}),
+        )
 
     def __init__(self):
+        self.profile_revision = "revision-1"
         self.machines = {}
         self.create_error = False
         self.delete_error = False
