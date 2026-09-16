@@ -945,7 +945,10 @@ class TmuxInteractiveTransport(CLITransport):
 
         if subtype in {"terminal_key", "key"}:
             raw_keys = kwargs.get("keys")
-            if isinstance(raw_keys, list):
+            # The broker supplies keys=[] for the single-key wire form. Only a
+            # nonempty sequence overrides key; otherwise Enter/Escape silently
+            # disappear between the broker and this adapter.
+            if isinstance(raw_keys, list) and raw_keys:
                 keys = [self._normalize_key(str(key)) for key in raw_keys if str(key)]
             else:
                 key = self._coerce_str(kwargs.get("key")) or self._coerce_str(raw_keys)
