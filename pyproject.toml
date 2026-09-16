@@ -7,13 +7,13 @@ license = {text = "Apache-2.0"}
 keywords = ["development-platform", "remote-coding", "ai", "kubernetes", "self-hosted"]
 requires-python = ">=3.12"
 dependencies = [
-    "cedarpy==4.8.7",
+    "cedarpy==4.12.0",
     "a2a-sdk>=1.1.2,<2",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
     "pyyaml>=6.0.3",
     "claude-agent-sdk==0.2.152",
-    "mcp==1.30.0",
+    "mcp==2.2.0",
     "asyncpg>=0.31.0",
     "httpx>=0.28.1",
     "idna>=3.19",
@@ -36,7 +36,7 @@ dependencies = [
     "sqlite-vec>=0.1.9",
     "docker>=7.2.0",
     "xds-protos>=1.78.0,<2",
-    "grpcio>=1.78.0,<2",
+    "grpcio>=1.83.1,<2",
 
     "pillow>=12.3.0",
 ]
@@ -51,7 +51,7 @@ openshell = [
 # DeepSeek Harness runtime for DshJsonRpcTransport (Skuld and OpenShell images).
 # Exact pin: dsh is a developer preview with promised breaking changes.
 dsh = [
-    "deepseek-harness-runtime-bin==0.1.2rc1",
+    "deepseek-harness-runtime-bin==0.1.5rc1",
 ]
 nats = [
     "nats-py[nkeys]>=2.15.0",
