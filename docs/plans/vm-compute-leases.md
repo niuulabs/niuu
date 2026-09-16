@@ -4,8 +4,9 @@ Status: implementation started. The disposable VM allocation layer, Harvester
 API adapter, PostgreSQL repository, and operator lifecycle proof command are
 implemented. Live Harvester VM lifecycle proof passed on 2026-09-16. Forge
 runtime integration now includes a generic VmPodManager and a pinned-SSH Docker
-runtime, with local-disk archive/restore. Model execution, production workload
-identity and warm reuse remain to be verified or implemented.
+runtime, with local-disk archive/restore. Live Codex execution through the
+existing Niuu credential broker passed. Production deployment authentication,
+long-duration renewal and warm reuse remain to be verified or implemented.
 Verified on 2026-09-16 against local `dev`, HEAD `302507990`, including the
 existing uncommitted working-tree changes. Those changes were left intact.
 Source discussion: https://chatgpt.com/share/6aaa7520-9028-83ea-88f2-0e71daaa28c9
@@ -95,9 +96,17 @@ startup in a tracked background task; failures retain capacity and remain visibl
 Live SIGKILL tests recovered both provisioning and running sessions on the same
 allocation. See [crash-recovery evidence](evidence/harvester-crash-recovery-2026-09-16.json).
 
-Remaining plan work includes production workload identity/token renewal, model
-execution proof, unattended inventory recovery and durable retry deadlines, and
-warm-pool reset/reuse. The local proof uses the existing development identity
+Live model execution now passes using Skuld's existing Codex credential adapter
+and the selected connection on the Spark's existing Niuu credential broker.
+Codex (`gpt-5.6-sol`) created and read a workspace file; a separate pinned SSH
+read confirmed its contents. Stop preserved that file in the local workspace
+archive and disposed of the allocation. No subscription refresh credential was
+copied into the VM, and no new login or renewal protocol was introduced.
+See [Codex execution evidence](evidence/harvester-codex-execution-2026-09-16.json).
+
+Remaining plan work includes production deployment authentication and
+long-duration renewal verification, unattended inventory recovery and durable
+retry deadlines, and warm-pool reset/reuse. The local proof uses the existing development identity
 adapter and does not establish production end-user authentication.
 
 
