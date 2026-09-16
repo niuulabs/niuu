@@ -40,6 +40,12 @@ def test_pool_controls_discovered_in_existing_settings_and_persisted(app, setup)
         sections = {s["id"]: s for s in response.json()["sections"]}
         assert sections["compute"]["path"] == "/admin/settings/compute"
         assert sections["compute-status"]["fields"][0]["value"] == "No machines"
+        profile = next(f for f in sections["compute"]["fields"] if f["key"] == "profile")
+        assert profile["type"] == "select"
+        assert profile["options"] == [{"label": "small", "value": "small"}]
+        definition = sections["compute-profiles"]["fields"][0]
+        assert definition["readOnly"]
+        assert definition["value"] == "Size: Small"
         fields = {f["key"]: f["value"] for f in sections["compute"]["fields"]}
         fields.update(warm_min=2, max_machines=3, paused=True)
         assert client.patch("/api/v1/forge/admin/settings/compute", json=fields).status_code == 200
@@ -85,3 +91,14 @@ def test_disposal_reports_conflict_without_bypassing_preservation(app, setup, er
             "/api/v1/forge/admin/settings/compute/dispose", json={"allocation_id": str(uuid4())}
         )
         assert result.status_code == code
+
+
+def test_unknown_profile_rejected_without_changing_pool(app, setup):
+    with TestClient(app) as client:
+        current = client.get("/api/v1/forge/admin/settings/compute").json()["policy"]
+        result = client.patch(
+            "/api/v1/forge/admin/settings/compute", json={**current, "profile": "missing"}
+        )
+        assert result.status_code == 422
+        assert "configured" in result.json()["detail"]
+        assert setup[2].policies["pool"].profile == current["profile"]

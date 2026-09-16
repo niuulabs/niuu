@@ -54,6 +54,8 @@ class ComputePoolService:
         return await self.repository.policy(self.pool_id, self.defaults)
 
     async def configure(self, policy: ComputePoolPolicy) -> ComputePoolPolicy:
+        if policy.profile not in {profile.name for profile in await self.provider.profiles()}:
+            raise ValueError("Select a machine profile configured by the provider adapter")
         await self.repository.set_policy(self.pool_id, policy)
         return policy
 
@@ -61,6 +63,7 @@ class ComputePoolService:
         leases = await self.repository.list(self.pool_id, include_released=False)
         return {
             "pool_id": self.pool_id,
+            "profiles": [profile.model_dump() for profile in await self.provider.profiles()],
             "policy": (await self.policy()).model_dump(),
             "counts": dict(
                 Counter(lease.state.value for lease in leases if lease.state != LeaseState.RELEASED)

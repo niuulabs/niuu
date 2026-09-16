@@ -63,6 +63,15 @@ class MachineOwnershipError(MachineProviderError):
     """A resource does not belong to this installation/allocation."""
 
 
+class MachineProfile(BaseModel):
+    """Adapter-selected public details; never include credentials or bootstrap content."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    details: dict[str, str]
+
+
 class MachineProvider(ABC):
     """Idempotent VM API. False from delete means cleanup is still in progress.
 
@@ -71,6 +80,11 @@ class MachineProvider(ABC):
     is an error. Inventory includes partially created owned allocations so
     reconciliation can recover a timeout before create returned.
     """
+
+    @abstractmethod
+    async def profiles(self) -> tuple[MachineProfile, ...]:
+        """List configured choices and safe, human-readable infrastructure details."""
+        ...
 
     @abstractmethod
     async def create(self, request: MachineRequest) -> Machine: ...

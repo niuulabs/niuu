@@ -165,7 +165,8 @@ def create_admin_settings_router(
             labels = {
                 "profile": (
                     "Machine profile",
-                    "Configured provider profile. Existing sessions retain their profile.",
+                    "Choose a configured preset; open Machine profiles to inspect its definition. "
+                    "Applies to new allocations. Existing sessions retain their profile.",
                 ),
                 "max_machines": (
                     "Maximum machines",
@@ -203,7 +204,8 @@ def create_admin_settings_router(
                     path="/admin/settings/compute",
                     description=(
                         f"Pool {compute_pool.pool_id}. "
-                        "Used guests are archived and replaced with clean machines."
+                        "Session files are archived before used machines are deleted. "
+                        "Ready spares are created as fresh machines."
                     ),
                     save_label="Save pool settings",
                     fields=[
@@ -212,13 +214,45 @@ def create_admin_settings_router(
                             label=labels[key][0],
                             description=labels[key][1],
                             value=value,
-                            type="boolean"
+                            options=[
+                                SettingsOptionSchema(label=p["name"], value=p["name"])
+                                for p in snapshot["profiles"]
+                            ]
+                            if key == "profile"
+                            else None,
+                            type="select"
+                            if key == "profile"
+                            else "boolean"
                             if isinstance(value, bool)
                             else "number"
                             if isinstance(value, float | int)
                             else "text",
                         )
                         for key, value in policy.items()
+                    ],
+                )
+            )
+            schema.sections.append(
+                SettingsSectionSchema(
+                    id="compute-profiles",
+                    label="Machine profiles",
+                    description=(
+                        "Presets supplied by the configured machine provider adapter. "
+                        "Edit their definitions in the provider adapter configuration; "
+                        "select the preset in Compute pool. "
+                        "Credentials and bootstrap contents are hidden."
+                    ),
+                    fields=[
+                        SettingsFieldSchema(
+                            key=profile["name"],
+                            label=profile["name"],
+                            type="textarea",
+                            read_only=True,
+                            value="\n".join(
+                                f"{label}: {value}" for label, value in profile["details"].items()
+                            ),
+                        )
+                        for profile in snapshot["profiles"]
                     ],
                 )
             )
@@ -384,7 +418,10 @@ def create_admin_settings_router(
         async def update_compute(
             body: ComputePoolPolicy, _: Principal = Depends(require_role("volundr:admin"))
         ):
-            return await compute_pool.configure(body)
+            try:
+                return await compute_pool.configure(body)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         @router.patch("/admin/settings/compute/dispose")
         async def dispose_compute(

@@ -61,6 +61,11 @@ class LeaseRepository:
 
 
 class Provider:
+    async def profiles(self):
+        from volundr.domain.compute import MachineProfile
+
+        return (MachineProfile(name="small", details={"Size": "Small"}),)
+
     def __init__(self):
         self.machines = {}
         self.create_error = False

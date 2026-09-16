@@ -273,6 +273,12 @@ same controls work for every `MachineProvider`/`VmRuntime` pair: profile name,
 maximum machines, ready spares, concurrent provisioning, spare lifetime,
 provisioning timeout, pause and drain. Provider-specific image, network, disk,
 CPU, memory and cloud-init remain in the provider adapter's profile kwargs.
+The profile selector is populated by the provider's `profiles()` catalog. The
+Machine profiles section shows adapter-selected public details; raw cloud-init
+and credentials are never returned. Definitions remain in adapter configuration
+(`compute.provider.kwargs.profiles` for Harvester). Unknown profile names are
+rejected before saving pool policy. Every provider implements this catalog, so
+the shared UI does not interpret provider-specific configuration.
 HTTP authentication is optional at the composition boundary: adapters using a
 native credential chain can omit `compute.auth` entirely.
 
