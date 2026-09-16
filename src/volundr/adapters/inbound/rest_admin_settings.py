@@ -215,7 +215,7 @@ def create_admin_settings_router(
                             type="boolean"
                             if isinstance(value, bool)
                             else "number"
-                            if isinstance(value, (float, int))
+                            if isinstance(value, float | int)
                             else "text",
                         )
                         for key, value in policy.items()

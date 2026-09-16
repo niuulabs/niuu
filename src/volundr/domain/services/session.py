@@ -1462,12 +1462,12 @@ class SessionService:
             SessionStatus.STARTING,
             SessionStatus.PROVISIONING,
             SessionStatus.RUNNING,
+            SessionStatus.STOPPING,
         ]
         if self._runtime_backend == "kubernetes":
             statuses.extend(
                 [
                     SessionStatus.FAILED,
-                    SessionStatus.STOPPING,
                     SessionStatus.STOPPED,
                     SessionStatus.ARCHIVED,
                 ]

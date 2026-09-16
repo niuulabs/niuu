@@ -113,7 +113,7 @@ class ComputePoolService:
             result
             for result in results
             if isinstance(result, Exception)
-            and not isinstance(result, (ComputeLeaseBusyError, VmRuntimeUnavailableError))
+            and not isinstance(result, ComputeLeaseBusyError | VmRuntimeUnavailableError)
         ]
         leases = await self.repository.list(self.pool_id, include_released=False)
         # Retire surplus spares after policy reductions, without touching bound guests.

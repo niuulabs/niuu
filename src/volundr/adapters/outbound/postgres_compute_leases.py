@@ -59,7 +59,7 @@ class PostgresComputeLeaseRepository(ComputeLeaseRepository):
                 limit = policy.max_machines
                 provisioning = await conn.fetchval(
                     "SELECT COUNT(*) FROM compute_leases WHERE pool_id = $1 "
-                    "AND (state = 'provisioning' OR (state = 'ready' AND session_id IS NULL))",
+                    "AND state IN ('provisioning', 'ready')",
                     lease.pool_id,
                 )
                 if provisioning >= policy.max_provisioning:
