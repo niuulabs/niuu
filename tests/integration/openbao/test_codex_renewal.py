@@ -37,8 +37,8 @@ def run(*args):
     return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT).strip()
 
 
-@pytest.fixture
-def engine(tmp_path):
+@pytest.fixture(params=[True, False], ids=["provider-expiry", "bounded-expiry"])
+def engine(tmp_path, request):
     plugin = os.environ.get("OPENBAO_OAUTH_PLUGIN")
     if not plugin:
         pytest.skip("Set OPENBAO_OAUTH_PLUGIN to run the real engine test")
@@ -98,8 +98,9 @@ def engine(tmp_path):
                     "access_token": token(),
                     "refresh_token": state["refresh"],
                     "token_type": "Bearer",
-                    "expires_in": 14,
                 }
+                if request.param:
+                    payload["expires_in"] = 14
             else:
                 payload = {"error": "invalid_grant"}
             self.send_response(200 if good else 400)
@@ -204,6 +205,7 @@ async def test_import_rotation_parallel_readers_and_revocation(engine):
         oauth_mount_path="oauthapp",
         codex_oauth_server="niuu-codex-subscription",
         minimum_seconds=1,
+        codex_maximum_expiry_seconds=14,
     )
     try:
         # Seed the legacy nested document exactly as the old broker stored it.

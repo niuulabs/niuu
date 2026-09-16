@@ -90,3 +90,14 @@ async def test_volundr_provider_surfaces_reconnect_failure() -> None:
 
 async def _return(client: httpx.AsyncClient) -> httpx.AsyncClient:
     return client
+
+
+@pytest.mark.parametrize("status", [403, 500, 503])
+async def test_volundr_provider_does_not_request_reconnect_for_broker_failure(status):
+    async with httpx.AsyncClient(
+        base_url="https://volundr.internal",
+        transport=httpx.MockTransport(lambda _: httpx.Response(status)),
+    ) as client:
+        provider = VolundrCodexAuthProvider(http_client_provider=lambda: _return(client))
+        with pytest.raises(CodexAuthProviderError, match="broker is unavailable"):
+            await provider.get_tokens()

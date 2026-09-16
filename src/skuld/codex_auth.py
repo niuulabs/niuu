@@ -89,8 +89,15 @@ class VolundrCodexAuthProvider(CodexAuthProviderPort):
             )
             response.raise_for_status()
             payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise CodexAuthProviderError("Codex authentication requires reconnection") from exc
+        except httpx.HTTPStatusError as exc:
+            message = (
+                "Codex authentication requires reconnection"
+                if exc.response.status_code == 409
+                else "Codex token broker is unavailable"
+            )
+            raise CodexAuthProviderError(message) from None
+        except (httpx.RequestError, ValueError):
+            raise CodexAuthProviderError("Codex token broker is unavailable") from None
 
         access_token = str(payload.get("access_token") or "")
         account_id = str(payload.get("chatgpt_account_id") or "")
