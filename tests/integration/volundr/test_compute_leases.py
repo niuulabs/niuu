@@ -66,3 +66,41 @@ async def test_operation_lock_is_shared_by_independent_repository_instances(db_p
         assert (await first.get(lease.id)).state == LeaseState.DRAINING
     finally:
         await db_pool.execute("DELETE FROM compute_leases WHERE id = $1", lease.id)
+
+
+async def test_standby_target_and_binding_are_atomic_across_controllers(db_pool):
+    from volundr.domain.compute import ComputePoolPolicy
+
+    pool_id = f"warm-{uuid4()}"
+    repos = [PostgresComputeLeaseRepository(db_pool) for _ in range(8)]
+    policy = ComputePoolPolicy(profile="small", max_machines=2, warm_min=1, max_provisioning=2)
+    await repos[0].set_policy(pool_id, policy)
+    try:
+        results = await asyncio.gather(
+            *(
+                repo.reserve(claim(pool_id).model_copy(update={"session_id": None}), 100)
+                for repo in repos
+            ),
+            return_exceptions=True,
+        )
+        spares = [result for result in results if isinstance(result, ComputeLease)]
+        assert len(spares) == 1
+        spare = spares[0].model_copy(update={"state": LeaseState.IDLE})
+        async with repos[0].operation(spare.id):
+            await repos[0].save(spare)
+
+        async def bind(repo):
+            async with repo.operation(spare.id):
+                return await repo.bind(
+                    spare.model_copy(update={"session_id": uuid4(), "state": LeaseState.READY})
+                )
+
+        results = await asyncio.gather(*(bind(repo) for repo in repos), return_exceptions=True)
+        assert sum(isinstance(result, ComputeLease) for result in results) == 1
+        assert sum(isinstance(result, ComputeLeaseBusyError) for result in results) == 7
+        await repos[0].set_policy(pool_id, policy.model_copy(update={"paused": True}))
+        with pytest.raises(ComputeCapacityError):
+            await repos[1].reserve(claim(pool_id), 100)
+    finally:
+        await db_pool.execute("DELETE FROM compute_leases WHERE pool_id = $1", pool_id)
+        await db_pool.execute("DELETE FROM compute_pools WHERE pool_id = $1", pool_id)

@@ -95,6 +95,23 @@ if sys.argv[2]=='restore':
 marker.write_text(allocation)
 """
 
+_SESSION_FILES = r"""
+import json, os, pathlib, sys, tempfile
+for item in json.load(sys.stdin):
+    path=pathlib.Path(item['path'])
+    path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+    fd, name=tempfile.mkstemp(dir=path.parent)
+    try:
+        with os.fdopen(fd,'w') as f:
+            os.fchmod(f.fileno(),int(item['permissions'],8))
+            f.write(item['content'])
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(name,path)
+    finally:
+        if os.path.exists(name): os.unlink(name)
+"""
+
 _STOP = r"""
 import json,pathlib,subprocess,sys
 allocation=sys.argv[1]
@@ -178,6 +195,11 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
     def bootstrap(
         self, session: Session, spec: SessionSpec, defaults: MachineBootstrap
     ) -> MachineBootstrap:
+        return self.session_bootstrap(session, spec, self.machine_bootstrap(defaults))
+
+    def session_bootstrap(
+        self, session: Session, spec: SessionSpec, machine: MachineBootstrap
+    ) -> MachineBootstrap:
         pod = spec.pod_spec
         if any(
             (
@@ -234,6 +256,26 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             raise ValueError("SSH VM environment cannot contain NUL values")
         if any(not k or "=" in k or any(c.isspace() for c in k) or "\x00" in k for k in env):
             raise ValueError("Invalid VM environment variable name")
+        payload = json.dumps(
+            {
+                "image": self._image,
+                "environment": env,
+                "repo": session.source.repo,
+                "branch": session.source.branch,
+                "secret_mounts": secret_mounts,
+            }
+        )
+        return machine.model_copy(
+            update={
+                "files": (
+                    *machine.files,
+                    BootstrapFile(path=_LAUNCH, content=payload),
+                    *secret_files,
+                )
+            }
+        )
+
+    def machine_bootstrap(self, defaults: MachineBootstrap) -> MachineBootstrap:
         key = Ed25519PrivateKey.generate()
         private = key.private_bytes(
             serialization.Encoding.PEM,
@@ -245,15 +287,6 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             .public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
             .decode()
         )
-        payload = json.dumps(
-            {
-                "image": self._image,
-                "environment": env,
-                "repo": session.source.repo,
-                "branch": session.source.branch,
-                "secret_mounts": secret_mounts,
-            }
-        )
         files = (
             BootstrapFile(path=_HOST_KEY, content=private),
             BootstrapFile(path=_HOST_KEY + ".pub", content=public, permissions="0644"),
@@ -262,16 +295,26 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                 content=f"HostKey {_HOST_KEY}\n",
                 permissions="0644",
             ),
-            BootstrapFile(path=_LAUNCH, content=payload),
-            *secret_files,
         )
         paths = [f.path for f in (*defaults.files, *files)]
-        if len(paths) != len(set(paths)):
+        if len(paths) != len(set(paths)) or any(
+            f.path == _LAUNCH or f.path.startswith("/etc/niuu/session-secrets/")
+            for f in defaults.files
+        ):
             raise ValueError("Default bootstrap conflicts with VM runtime files")
         return MachineBootstrap(
             files=(*defaults.files, *files),
             commands=(*defaults.commands, ("systemctl", "restart", "ssh")),
             ssh_authorized_keys=(*defaults.ssh_authorized_keys, self._public_key),
+        )
+
+    async def warm(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+        await self.prepare(lease, bootstrap)
+        await self._run(
+            [
+                *self._ssh(lease, bootstrap),
+                shlex.join(["sudo", "-n", "docker", "pull", self._image]),
+            ]
         )
 
     @staticmethod
@@ -322,8 +365,8 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         address = lease.machine.addresses[0]
         alias = "niuu-" + str(lease.id)
         public = next(f.content for f in bootstrap.files if f.path == _HOST_KEY + ".pub")
-        directory = self._data / str(lease.session_id)
-        directory.mkdir(mode=0o700, exist_ok=True)
+        directory = self._data / str(lease.session_id or lease.id)
+        directory.mkdir(mode=0o700, exist_ok=True, parents=True)
         known = directory / "known_hosts"
         known.write_text(f"{alias} {public}\n")
         return [
@@ -447,7 +490,17 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         await self._run([*ssh, "sudo -n cloud-init status --wait"])
 
     async def start(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+        if lease.session_id is None:
+            raise ValueError("Cannot start an unbound guest")
         ssh = self._ssh(lease, bootstrap)
+        # Warm machines were created without session secrets. Deliver them only
+        # after the durable binding, through the authenticated guest transport.
+        files = [
+            f.model_dump()
+            for f in bootstrap.files
+            if f.path == _LAUNCH or f.path.startswith("/etc/niuu/session-secrets/")
+        ]
+        await self._run([*ssh, self._python(_SESSION_FILES)], data=json.dumps(files).encode())
         archive = self._data / str(lease.session_id) / "session.tar"
         if archive.exists():
             with archive.open("rb") as src:
@@ -478,7 +531,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             # Cancelled before storage restore: retain any previous local archive.
             await self._close_tunnel(str(lease.id))
             return
-        directory = self._data / str(lease.session_id)
+        directory = self._data / str(lease.session_id or lease.id)
         fd, temporary = tempfile.mkstemp(prefix="session-", suffix=".tar", dir=directory)
         try:
             with os.fdopen(fd, "wb") as dest:

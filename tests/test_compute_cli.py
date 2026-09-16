@@ -225,3 +225,16 @@ def test_cli_assigns_new_proof_session_id(monkeypatch):
     monkeypatch.setattr(cli, "run", run)
     cli.main()
     assert run.call_args.args[0].session_id is not None
+
+
+def test_provider_native_auth_requires_no_http_auth_adapter(config, monkeypatch):
+    from volundr.domain.compute import MachineProvider
+
+    provider = MagicMock(spec=MachineProvider)
+    factory = MagicMock(return_value=provider)
+    importer = MagicMock(return_value=factory)
+    monkeypatch.setattr(cli, "import_class", importer)
+    native = config.model_copy(update={"auth": None})
+    assert cli.build_provider(native) is provider
+    importer.assert_called_once_with(native.provider.adapter)
+    assert "auth" not in factory.call_args.kwargs

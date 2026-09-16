@@ -6,7 +6,8 @@ implemented. Live Harvester VM lifecycle proof passed on 2026-09-16. Forge
 runtime integration now includes a generic VmPodManager and a pinned-SSH Docker
 runtime, with local-disk archive/restore. Live Codex execution through the
 existing Niuu credential broker passed. Production deployment authentication,
-long-duration renewal and warm reuse remain to be verified or implemented.
+permanent provider credentials and deployment-scale load remain operational acceptance items.
+Provider-neutral warm pools and their admin settings are now implemented.
 Verified on 2026-09-16 against local `dev`, HEAD `302507990`, including the
 existing uncommitted working-tree changes. Those changes were left intact.
 Source discussion: https://chatgpt.com/share/6aaa7520-9028-83ea-88f2-0e71daaa28c9
@@ -34,11 +35,11 @@ administrator credentials. Details: [VM compute operations](../operator/vm-compu
 
 The initial service allocates a disposable VM per claim and destroys it on
 release. `READY` here means infrastructure readiness, not Skuld authentication
-or runtime readiness. There is no reassignment, reset or warm-pool controller. Forge now composes
+or runtime readiness. The initial increment had no warm-pool controller. Forge composes
 `VmPodManager`, the same lease service, and a configurable `VmRuntime` adapter.
 The SSH runtime archives workspace/home to controller-local disk before deletion
-and restores that archive on the next allocation. The generation-based reusable
-lifecycle below remains a target design; the standalone CLI is infrastructure-only.
+and restores that archive on the next allocation. The warm-pool controller now binds clean guests once and replaces used machines
+instead of scrubbing and reassigning a disk; the standalone CLI is infrastructure-only.
 
 The focused suite passed 53 tests without warnings, with 93% combined line/branch
 coverage across the new compute modules. It exercises API translation using
@@ -104,9 +105,9 @@ archive and disposed of the allocation. No subscription refresh credential was
 copied into the VM, and no new login or renewal protocol was introduced.
 See [Codex execution evidence](evidence/harvester-codex-execution-2026-09-16.json).
 
-Remaining plan work includes production deployment authentication and
-long-duration renewal verification, unattended inventory recovery and durable
-retry deadlines, and warm-pool reset/reuse. The local proof uses the existing development identity
+Unattended inventory recovery, durable retry deadlines, clean standby pools,
+interrupted stop recovery and admin settings are implemented. Production
+deployment authentication and deployment-scale load remain acceptance work. The local proof uses the existing development identity
 adapter and does not establish production end-user authentication.
 
 
@@ -456,7 +457,8 @@ and disposes managed resources before disabling the backend.
 - Moving existing Kubernetes pods under a VM-style lease pool.
 - Sharing the lease service with Ravn `SpawnPort` or resident runtime controllers.
 - Multiple concurrent sessions per VM and arbitrary multi-hop Guild scheduling.
-- A dedicated pool-management UI before the initial rollout requires it.
+- Provider-specific EC2 and private adapter implementations; pool/admin flows
+  are already generic and do not require new provider branches.
 
 ## Verification performed
 
@@ -474,3 +476,35 @@ This validates existing routing/lifecycle contracts with their test doubles. It
 is not live proof of VM provisioning, federated connectivity, load capacity or
 safe reset; those are acceptance gates above. The initial verification changed
 only this plan; the target-selection follow-up is documented at the top.
+
+
+## Warm-pool implementation (2026-09-16)
+
+The shared pool service maintains unbound guests, assigns each once under a
+PostgreSQL operation/admission lock, persists provisioning deadlines and retry
+backoff, resumes stop/cleanup after restart, and quarantines unrecorded owned
+infrastructure. Fresh allocations use separate credential-store namespaces,
+so independent allocation writers do not contend on one file-backed owner record.
+Warm preparation runs concurrently for independently owned allocations; database
+policy bounds total machines, provisioning and spare count across controllers.
+
+Admin Settings → Forge exposes pool policy, status and unused-machine disposal
+through the existing mounted-settings schema and existing admin role gate. No
+Harvester identifiers or API calls enter those shared flows. Providers using
+native authentication can omit the optional HTTP auth adapter. Reset is complete
+machine/root-disk replacement following workspace preservation, rather than
+in-place disk sanitization. EC2 and private implementations remain future adapters.
+
+Live warm assignment reached running in 6.2 seconds on the existing Harvester
+guest after a controller restart. A real Codex turn wrote/read a file, independently
+confirmed over pinned SSH. The regular Guild HTTP and WebSocket paths also work.
+Four simultaneous additional launch requests competed for one available slot;
+one ran, three failed admission, and allocated machines never exceeded two.
+The live admin form saved pause/resume and paused admission returned HTTP 409.
+The existing Ting HTTP adapter discovered Guild's target and claimed a spare.
+
+Focused validation includes 114 compute/application/migration tests, 80 existing
+credential/routing/Ting tests, 19 mounted-settings UI tests and three Playwright
+checks (save, server error, loading/denied, keyboard activation). The focused
+compute modules meet the 85% coverage gate. Load evidence is deliberately bounded
+to two VMs; it does not certify hundreds of sessions or production OIDC/OpenBao.

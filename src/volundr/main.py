@@ -599,12 +599,16 @@ def create_app(
             # Credential store (pluggable: memory, Vault, Infisical)
             credential_store = _create_credential_store(settings)
             compute_provider = None
+            compute_pool = None
+            compute_pool_task = None
             if settings.compute is not None:
                 from volundr.adapters.outbound.postgres_compute_leases import (
                     PostgresComputeLeaseRepository,
                 )
                 from volundr.compute.main import build_provider
+                from volundr.domain.compute import ComputePoolPolicy
                 from volundr.domain.services.compute_leases import ComputeLeaseService
+                from volundr.domain.services.compute_pool import ComputePoolService
                 from volundr.domain.vm_runtime import VmRuntime
 
                 compute = settings.compute
@@ -631,6 +635,9 @@ def create_app(
                     max_machines=compute.max_machines,
                     bootstrap=compute.bootstrap,
                     bootstrap_store=credential_store,
+                    provisioning_timeout_seconds=compute.provisioning_timeout_seconds,
+                    retry_interval_seconds=compute.retry_interval_seconds,
+                    retry_max_seconds=compute.retry_max_seconds,
                 )
                 pod_manager.configure_compute(
                     compute_service,
@@ -640,6 +647,25 @@ def create_app(
                     pool_id=compute.pool_id,
                     max_machines=compute.max_machines,
                 )
+                compute_pool = ComputePoolService(
+                    compute_repository,
+                    compute_service,
+                    compute_provider,
+                    runtime,
+                    pool_id=compute.pool_id,
+                    bootstrap=compute.bootstrap,
+                    interval_seconds=compute.maintenance_interval_seconds,
+                    defaults=ComputePoolPolicy(
+                        profile=pod_manager.profile,
+                        max_machines=compute.max_machines,
+                        warm_min=compute.warm_min,
+                        max_provisioning=compute.max_provisioning,
+                        idle_timeout_seconds=compute.idle_timeout_seconds,
+                        provisioning_timeout_seconds=compute.provisioning_timeout_seconds,
+                    ),
+                )
+                await compute_pool.policy()
+                pod_manager.configure_pool(compute_pool)
             codex_credential_broker = _create_codex_credential_broker(
                 settings,
                 credential_store=credential_store,
@@ -1097,6 +1123,7 @@ def create_app(
             # Admin settings (persisted, runtime-toggleable)
             admin_settings_router = create_admin_settings_router(
                 admin_settings_repository,
+                compute_pool=compute_pool,
                 home_volumes_supported=storage_adapter.supports_home_volumes,
             )
             app.include_router(admin_settings_router)
@@ -1335,9 +1362,14 @@ def create_app(
             if resident_flock_adapter is not None:
                 await resident_flock_adapter.sync()
 
+            if compute_pool is not None:
+                compute_pool_task = asyncio.create_task(compute_pool.run())
             try:
                 yield
             finally:
+                if compute_pool_task is not None:
+                    compute_pool_task.cancel()
+                    await asyncio.gather(compute_pool_task, return_exceptions=True)
                 if bifrost_catalog_task is not None:
                     bifrost_catalog_task.cancel()
                     await asyncio.gather(bifrost_catalog_task, return_exceptions=True)

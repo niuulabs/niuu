@@ -13,6 +13,20 @@ class VmRuntimeUnavailableError(RuntimeError):
 
 class VmRuntime(ABC):
     @abstractmethod
+    def machine_bootstrap(self, defaults: MachineBootstrap) -> MachineBootstrap:
+        """Prepare an unbound guest without any session credentials or data."""
+
+    @abstractmethod
+    def session_bootstrap(
+        self, session: Session, spec: SessionSpec, machine: MachineBootstrap
+    ) -> MachineBootstrap:
+        """Attach session configuration while retaining the guest's pinned identity."""
+
+    @abstractmethod
+    async def warm(self, lease: ComputeLease, bootstrap: MachineBootstrap) -> None:
+        """Verify guest readiness and cache runtime dependencies without starting a session."""
+
+    @abstractmethod
     def bootstrap(
         self, session: Session, spec: SessionSpec, defaults: MachineBootstrap
     ) -> MachineBootstrap:

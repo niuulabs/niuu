@@ -243,7 +243,8 @@ Live tests killed the controller both during provisioning and while Skuld was
 running, then recovered the same allocation and HTTP/WebSocket connectivity.
 Run one controller for this local-disk configuration. Multi-controller routing,
 continuous inventory recovery and durable provisioning retry deadlines remain
-unverified or unimplemented; this is not yet an unattended warm-pool deployment.
+covered by the warm-pool lifecycle below. Production credentials and capacity
+acceptance still require the intended deployment configuration.
 
 ### Reuse existing session credentials
 
@@ -264,3 +265,64 @@ OpenBao agent projection: managed OAuth file mappings still require a compatible
 continuous injector and are rejected when it is absent. Keep using the configured
 credential store, integration selection and existing broker authentication flow;
 no separate VM login/refresh protocol is required.
+
+## Warm pools and admin controls
+
+Settings → Forge → Compute pool manages the configured provider's pool. The
+same controls work for every `MachineProvider`/`VmRuntime` pair: profile name,
+maximum machines, ready spares, concurrent provisioning, spare lifetime,
+provisioning timeout, pause and drain. Provider-specific image, network, disk,
+CPU, memory and cloud-init remain in the provider adapter's profile kwargs.
+HTTP authentication is optional at the composition boundary: adapters using a
+native credential chain can omit `compute.auth` entirely.
+
+Initial policy comes from `compute.max_machines`, `compute.warm_min` (default
+zero), `compute.max_provisioning` (one), `compute.idle_timeout_seconds` (3600),
+and `compute.provisioning_timeout_seconds` (600). The profile comes from the VM
+pod manager. After initialization, policy is stored in PostgreSQL and admin
+changes survive restarts. Editing those bootstrap defaults does not overwrite
+an already-administered pool. All controllers must share its database,
+credential store and workspace archive directory. SSH runtime controllers need
+access to the same controller key and local workspace disk.
+
+A spare has its own pinned SSH identity but no session binding, launch payload,
+model credentials, session container or workspace. A transaction assigns it
+exactly once. Reset means replacement: stop archives the workspace/home, deletes
+the guest and root disk, then replenishes with a clean allocation. No used disk
+or host identity is reassigned to another session. This avoids a provider-specific
+reimage/reset API and the risk of incomplete guest filesystem scrubbing.
+
+Pause rejects new assignments and provisioning without interrupting sessions.
+Drain additionally removes unbound spares. Lowering capacity or the spare target
+retires excess idle guests; it never terminates active sessions. Failed,
+quarantined and deleting allocations continue consuming capacity. The database
+admission lock applies policy across concurrent controllers, not just one process.
+
+Compute status shows pool counts, reconciliation health, allocation ownership
+and errors. Dispose unused machine is restricted to unbound allocations; stop
+session-owned machines through Forge to preserve their files. An owned machine
+missing from the ledger is quarantined, never silently adopted or deleted.
+Inspect its data before explicitly disposing it. A failed archive leaves the
+machine intact, and the persisted stop intent is retried after controller restart.
+
+Provisioning deadlines and provider retry times are durable. Retries use
+`compute.retry_interval_seconds` (10) with exponential delay bounded by
+`compute.retry_max_seconds` (300). Maintenance runs every
+`compute.maintenance_interval_seconds` (10). It resumes partial provisioning,
+cleanup and stop operations under allocation locks. Pool maintenance errors are
+visible in admin settings; provider exception bodies are not exposed as they
+may contain credentials.
+
+With the existing Niuu observability exporter enabled, monitor
+`volundr.compute.machines` by pool/state, `volundr.compute.assignments` by
+warm/cold source, `volundr.compute.warm.duration`,
+`volundr.compute.reconcile.duration` and `volundr.compute.reconcile.errors`.
+A growing failed/draining/quarantined count explains unavailable capacity.
+Admin operations require the existing `volundr:admin` role. Runtime session
+routes keep the existing ownership, tenant and workload-identity authorization.
+
+Before rollback, pause admission, stop sessions, drain spares and verify zero
+unreleased allocations. Migration 000067 refuses downgrade with live claims.
+Back up the PostgreSQL ledger, configured credential store and controller-local
+workspace archives together. Guest disk loss before a successful stop/archive
+is still outside the durability guarantee of controller-local storage.

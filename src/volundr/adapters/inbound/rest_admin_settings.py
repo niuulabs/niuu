@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import (
@@ -16,12 +17,15 @@ from pydantic import (
 
 from niuu.settings_schema import (
     SettingsFieldSchema,
+    SettingsOptionSchema,
     SettingsProviderSchema,
     SettingsSectionSchema,
 )
 from volundr.adapters.inbound.auth import require_role
+from volundr.domain.compute import ComputeLeaseBusyError, ComputePoolPolicy
 from volundr.domain.models import Principal
 from volundr.domain.ports import AdminSettingsRepository
+from volundr.domain.services.compute_pool import ComputePoolService
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +105,7 @@ def create_admin_settings_router(
     repository: AdminSettingsRepository,
     *,
     home_volumes_supported: bool,
+    compute_pool: ComputePoolService | None = None,
 ) -> APIRouter:
     """Create the Forge admin settings router.
 
@@ -135,10 +140,10 @@ def create_admin_settings_router(
         )
         return fields
 
-    def _build_mounted_settings_schema(request: Request) -> SettingsProviderSchema:
+    async def _build_mounted_settings_schema(request: Request) -> SettingsProviderSchema:
         settings = request.app.state.admin_settings
         storage = settings.get(STORAGE_SECTION, {})
-        return SettingsProviderSchema(
+        schema = SettingsProviderSchema(
             title="Forge",
             subtitle="forge platform settings",
             scope="admin",
@@ -153,6 +158,147 @@ def create_admin_settings_router(
                 )
             ],
         )
+
+        if compute_pool is not None:
+            snapshot = await compute_pool.snapshot()
+            policy = snapshot["policy"]
+            labels = {
+                "profile": (
+                    "Machine profile",
+                    "Configured provider profile. Existing sessions retain their profile.",
+                ),
+                "max_machines": (
+                    "Maximum machines",
+                    "Includes standby, active, failed and deleting machines.",
+                ),
+                "warm_min": (
+                    "Ready spare machines",
+                    "Maintain this many clean guests, within the total capacity limit.",
+                ),
+                "max_provisioning": (
+                    "Concurrent provisioning",
+                    "Maximum machines being provisioned at once.",
+                ),
+                "idle_timeout_seconds": (
+                    "Spare lifetime (seconds)",
+                    "Replace unused spare machines after this interval.",
+                ),
+                "provisioning_timeout_seconds": (
+                    "Provisioning timeout (seconds)",
+                    "Deadline for new guests, retained across controller restarts.",
+                ),
+                "paused": (
+                    "Pause new allocations",
+                    "Keep existing sessions and spares; reject new allocations.",
+                ),
+                "drain": (
+                    "Drain spare machines",
+                    "Pause allocation and delete unused spares. Running sessions keep their data.",
+                ),
+            }
+            schema.sections.append(
+                SettingsSectionSchema(
+                    id="compute",
+                    label="Compute pool",
+                    path="/admin/settings/compute",
+                    description=(
+                        f"Pool {compute_pool.pool_id}. "
+                        "Used guests are archived and replaced with clean machines."
+                    ),
+                    save_label="Save pool settings",
+                    fields=[
+                        SettingsFieldSchema(
+                            key=key,
+                            label=labels[key][0],
+                            description=labels[key][1],
+                            value=value,
+                            type="boolean"
+                            if isinstance(value, bool)
+                            else "number"
+                            if isinstance(value, (float, int))
+                            else "text",
+                        )
+                        for key, value in policy.items()
+                    ],
+                )
+            )
+            schema.sections.append(
+                SettingsSectionSchema(
+                    id="compute-status",
+                    label="Compute status",
+                    description="Current allocation inventory. Reload settings to refresh.",
+                    fields=[
+                        SettingsFieldSchema(
+                            key="counts",
+                            label="Machines by state",
+                            type="text",
+                            read_only=True,
+                            value=", ".join(
+                                f"{state}: {count}" for state, count in snapshot["counts"].items()
+                            )
+                            or "No machines",
+                        ),
+                        SettingsFieldSchema(
+                            key="health",
+                            label="Reconciliation",
+                            type="text",
+                            read_only=True,
+                            value=snapshot["last_error"]
+                            or (
+                                f"Last completed: {snapshot['last_reconciled']}"
+                                if snapshot["last_reconciled"]
+                                else "Waiting for first reconciliation"
+                            ),
+                        ),
+                        *[
+                            SettingsFieldSchema(
+                                key=lease["id"],
+                                label=lease["id"],
+                                type="text",
+                                read_only=True,
+                                value=f"{lease['state']} · {lease['profile']}",
+                                description=lease["error"]
+                                or (
+                                    f"Session {lease['session_id']}"
+                                    if lease["session_id"]
+                                    else "Unbound machine"
+                                ),
+                            )
+                            for lease in snapshot["allocations"]
+                        ],
+                    ],
+                )
+            )
+            disposable = [lease for lease in snapshot["allocations"] if lease["session_id"] is None]
+            schema.sections.append(
+                SettingsSectionSchema(
+                    id="compute-dispose",
+                    label="Dispose unused machine",
+                    path="/admin/settings/compute/dispose",
+                    save_label="Dispose selected machine",
+                    description=(
+                        "Permanently delete the selected unbound machine and its disks. "
+                        "Inspect quarantined machines for recoverable data first. "
+                        "Stop session-owned machines from Forge to archive their data."
+                    ),
+                    fields=[
+                        SettingsFieldSchema(
+                            key="allocation_id",
+                            label="Unused allocation",
+                            type="select",
+                            value="",
+                            options=[SettingsOptionSchema(label="Select a machine", value="")]
+                            + [
+                                SettingsOptionSchema(
+                                    label=f"{lease['id']} ({lease['state']})", value=lease["id"]
+                                )
+                                for lease in disposable
+                            ],
+                        )
+                    ],
+                )
+            )
+        return schema
 
     def _current_storage(request: Request) -> AdminStorageSettings:
         storage = request.app.state.admin_settings.get(STORAGE_SECTION, {})
@@ -199,7 +345,7 @@ def create_admin_settings_router(
         request: Request,
         _: Principal = Depends(require_role("volundr:admin")),
     ) -> SettingsProviderSchema:
-        return _build_mounted_settings_schema(request)
+        return await _build_mounted_settings_schema(request)
 
     @router.get("/settings", response_model=SettingsProviderSchema)
     async def get_settings_schema(
@@ -207,7 +353,7 @@ def create_admin_settings_router(
         _: Principal = Depends(require_role("volundr:admin")),
     ) -> SettingsProviderSchema:
         """Return the canonical mounted settings schema for the unified settings shell."""
-        return _build_mounted_settings_schema(request)
+        return await _build_mounted_settings_schema(request)
 
     @router.patch("/admin/settings/storage", response_model=AdminStorageSettings)
     async def update_storage_settings(
@@ -228,4 +374,33 @@ def create_admin_settings_router(
         """Update admin settings (admin only)."""
         return AdminSettingsResponse(storage=await _apply_storage_update(request, body.storage))
 
+    if compute_pool is not None:
+
+        @router.get("/admin/settings/compute")
+        async def get_compute(_: Principal = Depends(require_role("volundr:admin"))):
+            return await compute_pool.snapshot()
+
+        @router.patch("/admin/settings/compute", response_model=ComputePoolPolicy)
+        async def update_compute(
+            body: ComputePoolPolicy, _: Principal = Depends(require_role("volundr:admin"))
+        ):
+            return await compute_pool.configure(body)
+
+        @router.patch("/admin/settings/compute/dispose")
+        async def dispose_compute(
+            body: ComputeDisposal, _: Principal = Depends(require_role("volundr:admin"))
+        ):
+            try:
+                await compute_pool.dispose(body.allocation_id)
+            except LookupError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except (ValueError, ComputeLeaseBusyError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            return await compute_pool.snapshot()
+
     return router
+
+
+class ComputeDisposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    allocation_id: UUID

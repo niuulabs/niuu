@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 from uuid import UUID
 
+from niuu.observability import get_observability
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.compute import (
     ComputeLeaseBusyError,
@@ -51,6 +53,7 @@ class VmPodManager(PodManager):
         self._repository: ComputeLeaseRepository | None = None
         self._runtime: VmRuntime | None = None
         self._defaults = MachineBootstrap()
+        self._pool_service = None
         self._locks: dict[UUID, asyncio.Lock] = {}
         self._recoveries: dict[UUID, asyncio.Task] = {}
 
@@ -73,6 +76,13 @@ class VmPodManager(PodManager):
             bootstrap,
         )
 
+    @property
+    def profile(self) -> str:
+        return self._profile
+
+    def configure_pool(self, service) -> None:
+        self._pool_service = service
+
     def _configured(self):
         if self._service is None or self._repository is None or self._runtime is None:
             raise RuntimeError(
@@ -86,11 +96,16 @@ class VmPodManager(PodManager):
 
     async def capacity(self) -> SessionCapacity:
         _, repository, _ = self._configured()
-        leases = await repository.list(self._pool_id)
+        leases = await repository.list(self._pool_id, include_released=False)
+        policy = await self._pool_service.policy() if self._pool_service else None
+        if policy and (policy.paused or policy.drain):
+            return SessionCapacity(limit=0, active=0, remedy="resume the pool in admin settings")
         return SessionCapacity(
-            limit=self._limit,
-            active=sum(lease.state != LeaseState.RELEASED for lease in leases),
-            remedy="raise compute.max_machines and the matching VM pod manager limit",
+            limit=policy.max_machines if policy else self._limit,
+            active=sum(
+                lease.state not in {LeaseState.RELEASED, LeaseState.IDLE} for lease in leases
+            ),
+            remedy="increase pool capacity or drain unused machines in admin settings",
         )
 
     async def start(self, session: Session, spec: SessionSpec) -> PodStartResult:
@@ -102,13 +117,26 @@ class VmPodManager(PodManager):
                     raise ValueError("VM allocation ownership does not match the session")
                 bootstrap = await service.bootstrap_for(lease)
             else:
+                lease = await self._claim_warm(session, spec)
+                if lease is not None:
+                    bootstrap = await service.bootstrap_for(lease)
+            if lease is None:
                 bootstrap = runtime.bootstrap(session, spec, self._defaults)
+                get_observability().count(
+                    "volundr.compute.assignments",
+                    attributes={"pool": self._pool_id, "source": "cold"},
+                )
                 lease = await service.acquire(
                     session_id=session.id,
                     owner_id=session.owner_id or "",
                     tenant_id=session.tenant_id or "",
-                    profile=self._profile,
+                    profile=(await self._pool_service.policy()).profile
+                    if self._pool_service
+                    else self._profile,
                     bootstrap=bootstrap,
+                    timeout_seconds=(await self._pool_service.policy()).provisioning_timeout_seconds
+                    if self._pool_service
+                    else self._provisioning_timeout,
                 )
             async with asyncio.timeout(self._provisioning_timeout):
                 while True:
@@ -132,6 +160,43 @@ class VmPodManager(PodManager):
                 pod_name=str(lease.id),
             )
 
+    async def _claim_warm(self, session: Session, spec: SessionSpec):
+        if self._pool_service is None:
+            return None
+        service, repository, runtime = self._configured()
+        policy = await self._pool_service.policy()
+        for candidate in await repository.list(self._pool_id, include_released=False):
+            if candidate.state != LeaseState.IDLE or candidate.profile != policy.profile:
+                continue
+            try:
+                async with repository.operation(candidate.id):
+                    lease = await repository.get(candidate.id)
+                    if (
+                        lease is None
+                        or lease.state != LeaseState.IDLE
+                        or lease.session_id is not None
+                    ):
+                        continue
+                    bootstrap = runtime.session_bootstrap(
+                        session, spec, await service.machine_bootstrap_for(lease)
+                    )
+                    bound = await service.bind(
+                        lease,
+                        session.id,
+                        session.owner_id or "",
+                        session.tenant_id or "",
+                        bootstrap,
+                        policy.provisioning_timeout_seconds,
+                    )
+                    get_observability().count(
+                        "volundr.compute.assignments",
+                        attributes={"pool": self._pool_id, "source": "warm"},
+                    )
+                    return bound
+            except ComputeLeaseBusyError:
+                continue
+        return None
+
     async def _start_runtime(self, lease_id: UUID, bootstrap: MachineBootstrap) -> None:
         _, repository, runtime = self._configured()
         async with repository.operation(lease_id):
@@ -139,7 +204,10 @@ class VmPodManager(PodManager):
             if lease is None or lease.state not in {LeaseState.READY, LeaseState.BUSY}:
                 raise RuntimeError("VM claim changed before runtime startup")
             try:
-                async with asyncio.timeout(self._provisioning_timeout):
+                remaining = self._provisioning_timeout
+                if lease.provision_deadline is not None:
+                    remaining = (lease.provision_deadline - datetime.now(UTC)).total_seconds()
+                async with asyncio.timeout(max(0, remaining)):
                     await runtime.prepare(lease, bootstrap)
                     lease = lease.model_copy(update={"runtime_data_started": True})
                     await repository.save(lease)
@@ -244,6 +312,8 @@ class VmPodManager(PodManager):
                         if lease.state == LeaseState.RELEASED:
                             return True
                         if lease.state != LeaseState.DRAINING:
+                            lease = lease.model_copy(update={"stop_requested": True})
+                            await repository.save(lease)
                             if lease.runtime_data_started:
                                 await runtime.stop(lease, await service.bootstrap_for(lease))
                             lease = lease.model_copy(update={"state": LeaseState.DRAINING})

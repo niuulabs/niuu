@@ -75,7 +75,9 @@ async def test_start_proxy_stop_preserves_before_disposal_and_resumes(setup):
     lease = next(iter(repository.leases.values()))
     assert lease.state == LeaseState.BUSY
     assert (await manager.session_proxy_target(session)).connect_port == 9000
-    assert "bootstrap" not in lease.model_dump_json().replace("bootstrap_ref", "")
+    assert "bootstrap" not in lease.model_dump_json().replace("bootstrap_ref", "").replace(
+        "bootstrap_owner", ""
+    )
     # Starting the same session uses its existing, persisted bootstrap and allocation.
     await manager.start(session, spec)
     assert len(repository.leases) == 1
@@ -86,7 +88,10 @@ async def test_start_proxy_stop_preserves_before_disposal_and_resumes(setup):
     runtime.stop.side_effect = preserve
     assert await manager.stop(session)
     assert repository.leases[lease.id].state == LeaseState.RELEASED
-    assert await store.get_value("compute", "pool", lease.bootstrap_ref) is None
+    assert (
+        await store.get_value("compute", lease.bootstrap_owner or "pool", lease.bootstrap_ref)
+        is None
+    )
     assert await manager.status(session) == SessionStatus.STOPPED
     assert await manager.session_proxy_target(session) is None
     assert await manager.stop(session)
@@ -124,7 +129,7 @@ async def test_restart_uses_bootstrap_store_and_enforces_owner(setup):
     with pytest.raises(ValueError, match="ownership"):
         await manager.start(session.model_copy(update={"owner_id": "other"}), spec)
     lease = next(iter(repository.leases.values()))
-    await store.delete("compute", "pool", lease.bootstrap_ref)
+    await store.delete("compute", lease.bootstrap_owner or "pool", lease.bootstrap_ref)
     with pytest.raises(RuntimeError, match="missing"):
         await manager.status(session)
 
@@ -249,3 +254,35 @@ async def test_stop_cancels_recovery_before_guest_data_is_touched(setup):
     runtime.stop.assert_not_awaited()
     assert not manager._recoveries
     assert not provider.machines
+
+
+async def test_manager_claims_standby_without_provisioning_another_machine(setup):
+    from volundr.domain.compute import ComputePoolPolicy
+    from volundr.domain.services.compute_pool import ComputePoolService
+
+    manager, service, repo, provider, runtime, _, session = setup
+    runtime.machine_bootstrap = lambda defaults: defaults
+    runtime.session_bootstrap = lambda session, spec, machine: machine
+    pool = ComputePoolService(
+        repo,
+        service,
+        provider,
+        runtime,
+        pool_id="pool",
+        defaults=ComputePoolPolicy(profile="small", max_machines=1, warm_min=1),
+        bootstrap=MachineBootstrap(),
+    )
+    manager.configure_pool(pool)
+    await pool.maintain()
+    await pool.maintain()
+    spare = next(iter(repo.leases.values()))
+    assert spare.state == LeaseState.IDLE
+    assert (await manager.capacity()).available == 1
+    creates = len(provider.created)
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    assert len(provider.created) == creates
+    assert (await repo.active_for_session("pool", session.id)).id == spare.id
+    assert await manager.wait_for_ready(session, 0.1) == SessionStatus.RUNNING
+    await pool.configure((await pool.policy()).model_copy(update={"paused": True}))
+    assert (await manager.capacity()).available == 0
+    assert manager.profile == "small"

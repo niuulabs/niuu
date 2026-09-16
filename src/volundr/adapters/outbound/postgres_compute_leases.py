@@ -15,6 +15,7 @@ from volundr.domain.compute import (
     ComputeLease,
     ComputeLeaseBusyError,
     ComputeLeaseRepository,
+    ComputePoolPolicy,
 )
 
 
@@ -48,6 +49,29 @@ class PostgresComputeLeaseRepository(ComputeLeaseRepository):
                 ):
                     raise ValueError("Session already owns a different compute claim")
                 return current
+            policy_data = await conn.fetchval(
+                "SELECT data FROM compute_pools WHERE pool_id = $1", lease.pool_id
+            )
+            if policy_data:
+                policy = ComputePoolPolicy.model_validate_json(policy_data)
+                if policy.paused or policy.drain:
+                    raise ComputeCapacityError("Compute pool admission is paused")
+                limit = policy.max_machines
+                provisioning = await conn.fetchval(
+                    "SELECT COUNT(*) FROM compute_leases WHERE pool_id = $1 "
+                    "AND (state = 'provisioning' OR (state = 'ready' AND session_id IS NULL))",
+                    lease.pool_id,
+                )
+                if provisioning >= policy.max_provisioning:
+                    raise ComputeCapacityError("Compute pool provisioning limit reached")
+            if policy_data and lease.session_id is None:
+                warm = await conn.fetchval(
+                    "SELECT COUNT(*) FROM compute_leases WHERE pool_id = $1 "
+                    "AND session_id IS NULL AND state IN ('provisioning', 'ready', 'idle')",
+                    lease.pool_id,
+                )
+                if warm >= policy.warm_min:
+                    raise ComputeCapacityError("Compute pool standby target already met")
             count = await conn.fetchval(
                 "SELECT COUNT(*) FROM compute_leases WHERE pool_id = $1 AND state != 'released'",
                 lease.pool_id,
@@ -71,9 +95,12 @@ class PostgresComputeLeaseRepository(ComputeLeaseRepository):
         data = await conn.fetchval("SELECT data FROM compute_leases WHERE id = $1", lease_id)
         return ComputeLease.model_validate_json(data) if data else None
 
-    async def list(self, pool_id: str) -> list[ComputeLease]:
+    async def list(self, pool_id: str, *, include_released: bool = True) -> list[ComputeLease]:
         rows = await self._pool.fetch(
-            "SELECT data FROM compute_leases WHERE pool_id = $1 ORDER BY created_at", pool_id
+            "SELECT data FROM compute_leases WHERE pool_id = $1 "
+            "AND ($2 OR state != 'released') ORDER BY created_at",
+            pool_id,
+            include_released,
         )
         return [ComputeLease.model_validate_json(row["data"]) for row in rows]
 
@@ -82,17 +109,21 @@ class PostgresComputeLeaseRepository(ComputeLeaseRepository):
         if operation is None or operation[0] != lease.id:
             raise RuntimeError("Compute updates require ownership of the allocation operation")
         result = await operation[1].execute(
-            """UPDATE compute_leases SET state = $2, data = $3::jsonb, updated_at = NOW()
+            """UPDATE compute_leases
+               SET state = $2, data = $3::jsonb, session_id = $4, updated_at = NOW()
                WHERE id = $1""",
             lease.id,
             lease.state.value,
             lease.model_dump_json(),
+            lease.session_id,
         )
         if result != "UPDATE 1":
             raise LookupError("Compute lease disappeared during an operation")
 
     async def active_for_session(self, pool_id: str, session_id: UUID) -> ComputeLease | None:
-        data = await self._pool.fetchval(
+        operation = self._operation.get()
+        conn = operation[1] if operation else self._pool
+        data = await conn.fetchval(
             "SELECT data FROM compute_leases WHERE pool_id = $1 "
             "AND session_id = $2 AND state != 'released'",
             pool_id,
@@ -117,3 +148,59 @@ class PostgresComputeLeaseRepository(ComputeLeaseRepository):
             finally:
                 self._operation.reset(token)
                 await asyncio.shield(conn.execute("SELECT pg_advisory_unlock($1)", key))
+
+    async def policy(self, pool_id: str, default: ComputePoolPolicy) -> ComputePoolPolicy:
+        await self._pool.execute(
+            "INSERT INTO compute_pools (pool_id, data) VALUES ($1, $2::jsonb) "
+            "ON CONFLICT (pool_id) DO NOTHING",
+            pool_id,
+            default.model_dump_json(),
+        )
+        data = await self._pool.fetchval(
+            "SELECT data FROM compute_pools WHERE pool_id = $1", pool_id
+        )
+        return ComputePoolPolicy.model_validate_json(data)
+
+    async def set_policy(self, pool_id: str, policy: ComputePoolPolicy) -> None:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock($1)", _lock_key("pool", pool_id))
+            await conn.execute(
+                "INSERT INTO compute_pools (pool_id, data) VALUES ($1, $2::jsonb) "
+                "ON CONFLICT (pool_id) DO UPDATE SET data = EXCLUDED.data",
+                pool_id,
+                policy.model_dump_json(),
+            )
+
+    async def bind(self, lease: ComputeLease) -> ComputeLease:
+        operation = self._operation.get()
+        if operation is None or operation[0] != lease.id:
+            raise RuntimeError("Binding requires allocation operation ownership")
+        conn = operation[1]
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock($1)", _lock_key("pool", lease.pool_id))
+            data = await conn.fetchval(
+                "SELECT data FROM compute_pools WHERE pool_id = $1", lease.pool_id
+            )
+            policy = ComputePoolPolicy.model_validate_json(data)
+            if policy.paused or policy.drain:
+                raise ComputeCapacityError("Compute pool admission is paused")
+            current = await self.get(lease.id)
+            if current is None or current.state.value != "idle" or current.session_id is not None:
+                raise ComputeLeaseBusyError("Standby allocation is no longer idle")
+            existing = await self.active_for_session(lease.pool_id, lease.session_id)
+            if existing is not None:
+                raise ComputeLeaseBusyError("Session already owns an allocation")
+            await self.save(lease)
+        return lease
+
+    async def quarantine(self, lease: ComputeLease) -> None:
+        await self._pool.execute(
+            "INSERT INTO compute_leases (id, pool_id, session_id, state, data) "
+            "VALUES ($1, $2, NULL, $3, $4::jsonb) ON CONFLICT (id) DO UPDATE "
+            "SET state = EXCLUDED.state, session_id = NULL, data = EXCLUDED.data "
+            "WHERE compute_leases.state = 'released' AND compute_leases.pool_id = EXCLUDED.pool_id",
+            lease.id,
+            lease.pool_id,
+            lease.state.value,
+            lease.model_dump_json(),
+        )

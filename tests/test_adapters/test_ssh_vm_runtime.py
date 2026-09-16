@@ -125,8 +125,9 @@ async def test_start_restores_archive_then_uses_persisted_launch_payload(setup):
     await runtime.start(lease, bootstrap)
     calls = runtime._run.await_args_list
     assert "cloud-init status --wait" in calls[0].args[0][-1]
-    assert "stdin" in calls[1].kwargs
-    assert json.loads(calls[2].kwargs["data"])["allocation_id"] == str(lease.id)
+    assert json.loads(calls[1].kwargs["data"])[0]["path"] == module._LAUNCH
+    assert "stdin" in calls[2].kwargs
+    assert json.loads(calls[3].kwargs["data"])["allocation_id"] == str(lease.id)
     runtime.target.assert_awaited_once()
     archive.unlink()
     runtime._run.reset_mock()
@@ -301,3 +302,20 @@ async def test_existing_session_injector_files_reach_vm_without_entering_workspa
     )
     with pytest.raises(ValueError, match="read-only"):
         runtime.bootstrap(session, spec, MachineBootstrap())
+
+
+async def test_warm_bootstrap_is_unbound_and_binding_keeps_machine_identity(setup):
+    runtime, session, spec, _, lease = setup
+    machine = runtime.machine_bootstrap(MachineBootstrap())
+    assert all(f.path != module._LAUNCH for f in machine.files)
+    bound = runtime.session_bootstrap(session, spec, machine)
+    assert all(f in bound.files for f in machine.files)
+    assert json.loads(next(f.content for f in bound.files if f.path == module._LAUNCH))[
+        "environment"
+    ]["SESSION_ID"] == str(session.id)
+    runtime._run = AsyncMock()
+    spare = lease.model_copy(update={"session_id": None})
+    await runtime.warm(spare, machine)
+    assert runtime._run.await_args.args[0][-1] == "sudo -n docker pull test/skuld:dev"
+    with pytest.raises(ValueError, match="unbound"):
+        await runtime.start(spare, machine)
