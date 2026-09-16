@@ -1197,9 +1197,9 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             },
             mcp_server={
                 "name": "linear",
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-linear"],
-                "env_from_credentials": {"LINEAR_API_KEY": "api_key"},
+                "transport": "http",
+                "url": "https://mcp.linear.app/mcp",
+                "token_field": "api_key",
             },
             auth_type="api_key",
         ),

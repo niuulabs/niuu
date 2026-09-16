@@ -109,6 +109,7 @@ class IntegrationContributor(SessionContributor):
                             "command": spec.command,
                             "args": list(spec.args),
                             "env": {},
+                            "env_vars": list(spec.env_from_credentials),
                         }
                     )
                 else:

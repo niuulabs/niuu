@@ -39,6 +39,7 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
         oauth_servers: dict[str, str] | None = None,
         manage_oauth_applications: bool = False,
         minimum_seconds: int = 120,
+        maximum_expiry_seconds: int = 3600,
         codex_oauth_server: str = "",
         codex_maximum_expiry_seconds: int = 3600,
         **kwargs,
@@ -54,6 +55,9 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
         if self._manage_apps and self._oauth_servers:
             raise ValueError("Choose managed OAuth applications or manual oauth_servers mappings")
         self._minimum_seconds = minimum_seconds
+        if maximum_expiry_seconds <= minimum_seconds:
+            raise ValueError("maximum_expiry_seconds must exceed minimum_seconds")
+        self._maximum_expiry_seconds = maximum_expiry_seconds
         if codex_oauth_server and not re.fullmatch(r"[A-Za-z0-9_-]+", codex_oauth_server):
             raise ValueError("codex_oauth_server must be a literal server name")
         self._codex_server = codex_oauth_server
@@ -140,16 +144,7 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
             raise ValueError("OAuth enrollment requires a user-owned integration")
         path = self._oauth_path(owner_id, name, meta)
         if data.get("refresh_token"):
-            server_key = f"{meta.get('integration', '')}/{meta.get('oauth_app', 'default')}"
-            server = (
-                oauth_application_name(
-                    meta.get("integration", ""), meta.get("oauth_app", "default")
-                )
-                if self._manage_apps
-                else self._oauth_servers.get(server_key)
-            )
-            if not server:
-                raise ValueError(f"Configure oauth_servers[{server_key!r}] before enrollment")
+            server = self._oauth_server(meta)
             field = str(meta.get("oauth_token_field") or "token")
             if field in {"refresh_token", "expires_at"}:
                 raise ValueError("Invalid OAuth access token field")
@@ -160,17 +155,98 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
                     "server": server,
                     "grant_type": "refresh_token",
                     "refresh_token": data["refresh_token"],
+                    "maximum_expiry_seconds": self._maximum_expiry_seconds,
                 },
             )
             if response.status_code >= 400:
-                raise RuntimeError(
-                    f"OpenBao OAuth enrollment failed (HTTP {response.status_code}); reconnect"
-                )
-            meta.update(renewal_owner=OAUTH_ENGINE, oauth_token_field=field)
+                raise self._unavailable(response)
+            meta.update(renewal_owner=OAUTH_ENGINE, oauth_token_field=field, auth_state="active")
+            meta.pop("auth_error_code", None)
         # KV holds only connection metadata. In particular, neither the old
         # access token nor the provider's rotated refresh token is copied here.
-        stored = await super().store(owner_type, owner_id, name, secret_type, {}, meta)
-        return replace(stored, keys=(meta["oauth_token_field"], "expires_at"))
+        preserved = self._oauth_values(data, meta["oauth_token_field"])
+        if not data and managed:
+            preserved = dict(await super().get_value(owner_type, owner_id, name) or {})
+        stored = await super().store(owner_type, owner_id, name, secret_type, preserved, meta)
+        return replace(stored, keys=(*stored.keys, meta["oauth_token_field"], "expires_at"))
+
+    def _oauth_server(self, metadata: dict) -> str:
+        slug, app = metadata.get("integration", ""), metadata.get("oauth_app", "default")
+        if self._manage_apps:
+            return oauth_application_name(slug, app)
+        server = self._oauth_servers.get(f"{slug}/{app}")
+        if not server:
+            raise ValueError(f"Configure oauth_servers[{slug + '/' + app!r}] before enrollment")
+        return server
+
+    @staticmethod
+    def _oauth_values(data: dict[str, str], field: str) -> dict[str, str]:
+        token_fields = {field, "access_token", "refresh_token", "id_token", "expires_at"}
+        return {key: value for key, value in data.items() if key not in token_fields}
+
+    async def migrate_oauth_credential(
+        self,
+        *,
+        owner_id: str,
+        tenant_id: str,
+        name: str,
+        integration: str,
+        oauth_app: str,
+        token_field: str,
+    ) -> bool:
+        """Import one verified connection after stopping legacy renewers."""
+        stored = await super().get("user", owner_id, name)
+        if stored is None:
+            raise ValueError("OAuth credential does not exist")
+        identity = dict(
+            tenant_id=tenant_id,
+            integration=integration,
+            oauth_app=oauth_app,
+            oauth_token_field=token_field,
+        )
+        for key, value in identity.items():
+            if not value or stored.metadata.get(key) not in {None, "", value}:
+                raise ValueError("OAuth credential identity does not match the verified connection")
+        if stored.metadata.get("oauth_format"):
+            raise ValueError("Nested runtime credentials require their dedicated migration")
+        owner = stored.metadata.get("renewal_owner")
+        if owner == OAUTH_ENGINE:
+            await self.get_value("user", owner_id, name)
+            return False
+        if owner:
+            raise ValueError("Credential already has a different renewal owner")
+        if token_field in {"refresh_token", "id_token", "expires_at"}:
+            raise ValueError("Invalid OAuth access token field")
+        meta = {**stored.metadata, **identity}
+        values = await super().get_value("user", owner_id, name) or {}
+        path = self._oauth_path(owner_id, name, meta)
+        server = self._oauth_server(meta)
+        try:
+            response = await self._request("get", f"/v1/{path}")
+            if response.status_code == 404:
+                if not values.get("refresh_token"):
+                    raise ValueError("Credential has no refresh token; reconnect instead")
+                # Reuse enrollment, but only after checking for an interrupted import.
+                await self.store("user", owner_id, name, stored.secret_type, values, meta)
+                return True
+            if response.status_code >= 400:
+                raise self._unavailable(response)
+            grant = response.json().get("data", {})
+            if grant.get("server") != server or not grant.get("access_token"):
+                raise ValueError("Existing OAuth grant does not match the verified application")
+            meta.update(renewal_owner=OAUTH_ENGINE, auth_state="active")
+            meta.pop("auth_error_code", None)
+            await super().store(
+                "user",
+                owner_id,
+                name,
+                stored.secret_type,
+                self._oauth_values(values, token_field),
+                meta,
+            )
+        except httpx.RequestError:
+            raise OAuthCredentialUnavailableError() from None
+        return True
 
     async def get(self, owner_type: str, owner_id: str, name: str) -> StoredCredential | None:
         try:
@@ -216,7 +292,8 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
             result = dict(await super().get_value(owner_type, owner_id, name) or {})
             result[stored.metadata["oauth_token_field"]] = json.dumps(auth, separators=(",", ":"))
         else:
-            result = {stored.metadata["oauth_token_field"]: str(data["access_token"])}
+            result = dict(await super().get_value(owner_type, owner_id, name) or {})
+            result[stored.metadata["oauth_token_field"]] = str(data["access_token"])
         if data.get("expire_time"):
             result["expires_at"] = str(data["expire_time"])
         return result
