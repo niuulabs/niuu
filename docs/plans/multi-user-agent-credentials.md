@@ -1,6 +1,7 @@
 # Multi-user agent credential lifecycle
 
-Status: Codex foundation implemented; deployment and live OpenShell validation pending.
+Historical design: the application refresh and PostgreSQL locking described below
+are superseded by [OpenBao-managed Codex renewal](../operations/openbao-oauth.md#codex-subscription-migration).
 
 ## Decision
 
