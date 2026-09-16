@@ -56,7 +56,9 @@ class PublicEndpointTransport(httpx.AsyncBaseTransport):
     """Pin DNS results to prevent discovery from accessing internal services."""
 
     def __init__(self) -> None:
-        self._transport = httpx.AsyncHTTPTransport()
+        # Pool origins would be keyed by the pinned IP, not the TLS hostname.
+        # Do not reuse a connection across two issuers that share an address.
+        self._transport = httpx.AsyncHTTPTransport(limits=httpx.Limits(max_keepalive_connections=0))
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         validate_mcp_url(str(request.url))
