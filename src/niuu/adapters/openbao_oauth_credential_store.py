@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import replace
+from datetime import UTC, datetime
 
 import httpx
 
@@ -172,7 +173,10 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
         return replace(stored, keys=(meta["oauth_token_field"], "expires_at"))
 
     async def get(self, owner_type: str, owner_id: str, name: str) -> StoredCredential | None:
-        stored = await super().get(owner_type, owner_id, name)
+        try:
+            stored = await super().get(owner_type, owner_id, name)
+        except httpx.HTTPError:
+            raise OAuthCredentialUnavailableError() from None
         if stored is None or stored.metadata.get("renewal_owner") != OAUTH_ENGINE:
             return stored
         return replace(
@@ -286,7 +290,10 @@ class OpenBaoOAuthCredentialStore(OpenBaoCredentialStore, OAuthApplicationStoreP
             oauth_token_field=field,
             codex_account_id=account_id,
             codex_plan_type=codex_plan_type(auth, str(grant["access_token"])),
+            auth_state="active",
+            auth_state_updated_at=datetime.now(UTC).isoformat(),
         )
+        meta.pop("auth_error_code", None)
         # Preserve unrelated configuration, but never retain the login document.
         stored = await super().store(
             owner_type,

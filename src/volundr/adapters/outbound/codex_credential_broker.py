@@ -61,18 +61,18 @@ class OpenBaoCodexCredentialBroker(CodexCredentialBrokerPort):
     ) -> CodexAuthTokens:
         if not owner_id or not tenant_id or not credential_name or not credential_field:
             raise CodexCredentialBrokerError("Codex credential reference is incomplete")
-        stored = await self._credential_store.get("user", owner_id, credential_name)
-        if stored is None or stored.metadata.get("tenant_id") != tenant_id:
-            raise CodexCredentialBrokerError("Codex credential is unavailable for this caller")
-        if (
-            stored.metadata.get("renewal_owner") != OAUTH_ENGINE
-            or stored.metadata.get("oauth_format") != CODEX_AUTH_FORMAT
-            or stored.metadata.get("oauth_token_field") != credential_field
-        ):
-            raise CodexCredentialBrokerError(
-                "Codex credential requires OpenBao migration or reconnection"
-            )
         try:
+            stored = await self._credential_store.get("user", owner_id, credential_name)
+            if stored is None or stored.metadata.get("tenant_id") != tenant_id:
+                raise CodexCredentialBrokerError("Codex credential is unavailable for this caller")
+            if (
+                stored.metadata.get("renewal_owner") != OAUTH_ENGINE
+                or stored.metadata.get("oauth_format") != CODEX_AUTH_FORMAT
+                or stored.metadata.get("oauth_token_field") != credential_field
+            ):
+                raise CodexCredentialBrokerError(
+                    "Codex credential requires OpenBao migration or reconnection"
+                )
             values = await self._credential_store.get_value("user", owner_id, credential_name)
             auth = parse_codex_auth_document(values.get(credential_field) if values else None)
             access_token = auth["tokens"]["access_token"]
@@ -80,6 +80,8 @@ class OpenBaoCodexCredentialBroker(CodexCredentialBrokerPort):
             if values and values.get("expires_at"):
                 expiry = datetime.fromisoformat(values["expires_at"])
                 remaining = min(remaining, int((expiry - datetime.now(UTC)).total_seconds()))
+        except CodexCredentialBrokerError:
+            raise
         except OAuthCredentialUnavailableError as exc:
             raise CodexCredentialBrokerError(str(exc), reconnect=exc.reconnect) from None
         except (ValueError, TypeError):

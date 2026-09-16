@@ -388,3 +388,31 @@ async def test_codex_migration_resumes_engine_import_without_reusing_refresh_tok
     )
     with pytest.raises(ValueError, match="tenant"):
         await adapter.migrate_codex_credential(owner_id="alice", tenant_id="other", name="codex")
+
+
+async def test_codex_migration_clears_legacy_reconnect_status(codex_store):
+    from niuu.adapters.openbao_credential_store import OpenBaoCredentialStore
+
+    adapter, _, _ = codex_store
+    await OpenBaoCredentialStore.store(
+        adapter,
+        "user",
+        "alice",
+        "codex",
+        SecretType.GENERIC,
+        {"auth.json": codex_document()},
+        {"auth_state": "auth_required", "auth_error_code": "refresh_failed"},
+    )
+    await adapter.migrate_codex_credential(owner_id="alice", tenant_id="tenant-a", name="codex")
+    metadata = (await adapter.get("user", "alice", "codex")).metadata
+    assert metadata["auth_state"] == "active"
+    assert "auth_error_code" not in metadata
+
+
+async def test_metadata_outage_is_reported_as_unavailable(store):
+    adapter, _, _ = store
+    adapter._request.side_effect = httpx.ConnectError("private provider context")
+    with pytest.raises(OAuthCredentialUnavailableError) as exc:
+        await adapter.get("user", "alice", "codex")
+    assert not exc.value.reconnect
+    assert "private" not in str(exc.value)

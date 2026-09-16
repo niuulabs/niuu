@@ -136,3 +136,10 @@ async def test_disabled_local_broker():
         await DisabledCodexCredentialBroker().get_tokens(
             owner_id="a", tenant_id="t", credential_name="c", credential_field="auth.json"
         )
+
+
+async def test_metadata_read_outage_does_not_require_reconnection(store):
+    store.get.side_effect = OAuthCredentialUnavailableError()
+    with pytest.raises(CodexCredentialBrokerError) as exc:
+        await get_tokens(store)
+    assert not exc.value.reconnect
