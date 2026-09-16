@@ -1270,7 +1270,11 @@ class SessionService:
             # Run contributor cleanup in reverse order
             await self._run_cleanup(session, principal)
 
-            stopped = stopping.with_status(SessionStatus.STOPPED).with_cleared_endpoints()
+            stopped = (
+                stopping.with_status(SessionStatus.STOPPED)
+                .with_cleared_endpoints()
+                .model_copy(update={"error": None})
+            )
             final = await self._repository.update(stopped)
 
             if self._broadcaster is not None:

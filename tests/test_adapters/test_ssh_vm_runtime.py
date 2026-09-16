@@ -319,3 +319,53 @@ async def test_warm_bootstrap_is_unbound_and_binding_keeps_machine_identity(setu
     assert runtime._run.await_args.args[0][-1] == "sudo -n docker pull test/skuld:dev"
     with pytest.raises(ValueError, match="unbound"):
         await runtime.start(spare, machine)
+
+
+def test_restore_excludes_runtime_cache_but_rejects_other_escaping_links(tmp_path):
+    import io
+    import subprocess
+    import sys
+    import tarfile
+
+    root = tmp_path / "session"
+    program = module._PREPARE.replace("/var/lib/niuu/session", str(root))
+
+    def archive(link_name):
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as tar:
+            marker = tarfile.TarInfo(".allocation")
+            marker.size = len(b"old-allocation")
+            tar.addfile(marker, io.BytesIO(b"old-allocation"))
+            link = tarfile.TarInfo(link_name)
+            link.type = tarfile.SYMTYPE
+            link.linkname = "/outside/runtime-binary"
+            tar.addfile(link)
+            data = tarfile.TarInfo("workspace/marker.txt")
+            data.size = 9
+            tar.addfile(data, io.BytesIO(b"preserved"))
+        return buffer.getvalue()
+
+    args = [sys.executable, "-c", program, "new-allocation", "restore", '["home/.codex/tmp"]']
+    rejected = subprocess.run(args, input=archive("workspace/escape"), capture_output=True)
+    assert rejected.returncode != 0
+    assert b"AbsoluteLinkError" in rejected.stderr
+    assert not (root / ".allocation").exists()
+    restored = subprocess.run(
+        args, input=archive("home/.codex/tmp/arg0/apply_patch"), capture_output=True
+    )
+    assert restored.returncode == 0, restored.stderr
+    assert (root / ".allocation").read_text() == "new-allocation"
+    assert (root / "workspace/marker.txt").read_text() == "preserved"
+    assert not (root / "home/.codex/tmp").exists()
+
+
+@pytest.mark.parametrize("excluded", ["/home", "../home", ".", "home/*"])
+def test_archive_exclusions_require_explicit_relative_paths(setup, tmp_path, excluded):
+    with pytest.raises(ValueError, match="explicit relative paths"):
+        SshContainerVmRuntime(
+            ssh_private_key_file=str(tmp_path / "key"),
+            ssh_public_key_file=str(tmp_path / "key.pub"),
+            data_dir=str(tmp_path / "excluded-data"),
+            skuld_image="test-image",
+            archive_excludes=[excluded],
+        )

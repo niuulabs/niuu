@@ -80,7 +80,7 @@ run('docker','run','--detach','--init','--name',name,'--network','host',
 """
 
 _PREPARE = r"""
-import pathlib,sys,tarfile
+import json,pathlib,sys,tarfile
 root=pathlib.Path('/var/lib/niuu/session')
 marker=root/'.allocation'
 allocation=sys.argv[1]
@@ -89,9 +89,18 @@ if marker.exists():
     if marker.read_text() != allocation:
         raise RuntimeError('Workspace allocation mismatch')
     sys.exit(0)
+excludes=[pathlib.PurePosixPath(p) for p in json.loads(sys.argv[3])]
+def restore_member(member,destination):
+    name=pathlib.PurePosixPath(member.name)
+    # The completion marker belongs to this allocation, never the archived one.
+    if name == pathlib.PurePosixPath('.allocation'):
+        return None
+    if any(name == p or p in name.parents for p in excludes):
+        return None
+    return tarfile.data_filter(member,destination)
 if sys.argv[2]=='restore':
     with tarfile.open(fileobj=sys.stdin.buffer,mode='r|') as archive:
-        archive.extractall(root,filter='data')
+        archive.extractall(root,filter=restore_member)
 marker.write_text(allocation)
 """
 
@@ -153,6 +162,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         stop_timeout_seconds: int = 30,
         poll_interval_seconds: float = 2,
         health_timeout_seconds: float = 5,
+        archive_excludes: list[str] | None = None,
     ):
         if not skuld_image or not ssh_user or ssh_user.startswith("-"):
             raise ValueError("Configure a Skuld image and SSH user")
@@ -176,6 +186,15 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         serialization.load_ssh_public_key(self._public_key.encode())
         self._data = Path(data_dir).expanduser().resolve()
         self._data.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._archive_excludes = tuple(str(PurePosixPath(p)) for p in (archive_excludes or ()))
+        if any(
+            p == "."
+            or PurePosixPath(p).is_absolute()
+            or ".." in PurePosixPath(p).parts
+            or any(char in p for char in "*?[]")
+            for p in self._archive_excludes
+        ):
+            raise ValueError("VM archive exclusions must be explicit relative paths, not globs")
         self._image = skuld_image
         self._configure_brokered_credentials(
             codex_auth_adapter=codex_auth_adapter, codex_auth_kwargs=codex_auth_kwargs
@@ -504,9 +523,24 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         archive = self._data / str(lease.session_id) / "session.tar"
         if archive.exists():
             with archive.open("rb") as src:
-                await self._run([*ssh, self._python(_PREPARE, str(lease.id), "restore")], stdin=src)
+                await self._run(
+                    [
+                        *ssh,
+                        self._python(
+                            _PREPARE, str(lease.id), "restore", json.dumps(self._archive_excludes)
+                        ),
+                    ],
+                    stdin=src,
+                )
         else:
-            await self._run([*ssh, self._python(_PREPARE, str(lease.id), "empty")])
+            await self._run(
+                [
+                    *ssh,
+                    self._python(
+                        _PREPARE, str(lease.id), "empty", json.dumps(self._archive_excludes)
+                    ),
+                ]
+            )
         await self.target(lease, bootstrap)
         payload = json.loads(next(f.content for f in bootstrap.files if f.path == _LAUNCH))
         payload["allocation_id"] = str(lease.id)
@@ -544,6 +578,8 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                                 "-n",
                                 "tar",
                                 "--one-file-system",
+                                "--exclude=./.allocation",
+                                *[f"--exclude=./{p}" for p in self._archive_excludes],
                                 "-C",
                                 _REMOTE_DATA,
                                 "-cf",

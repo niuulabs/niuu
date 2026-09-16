@@ -538,8 +538,9 @@ class Session(BaseModel):
         return self.status in (SessionStatus.CREATED, SessionStatus.STOPPED, SessionStatus.FAILED)
 
     def can_stop(self) -> bool:
-        """Check if session can be stopped."""
+        """Allow cleanup after failure; a failed runtime may still own resources."""
         return self.status in (
+            SessionStatus.FAILED,
             SessionStatus.STARTING,
             SessionStatus.RUNNING,
             SessionStatus.PROVISIONING,

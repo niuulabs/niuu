@@ -377,3 +377,20 @@ Migration 000068 backfills existing JSONB records with an empty revision. Stop
 older controllers before upgrading the shared lease writer. Downgrade requires
 pausing admission and releasing all allocations; its down migration removes the
 new JSONB field so the older controller can read the ledger.
+
+
+## Disposable runtime files in session archives
+
+`SshContainerVmRuntime` accepts `archive_excludes`, a list of explicit paths
+relative to the archived session root (`home/` and `workspace/`). Configure
+`["home/.codex/tmp"]` for Codex sessions: this directory contains disposable
+process launch wrappers that can point at absolute paths in the old container.
+The same exclusions apply while writing new archives and restoring older ones.
+No provider-specific behavior is involved, and credentials, conversation history
+and workspace files remain under their existing preservation rules.
+
+Extraction still uses Python's safe data filter; escaping links anywhere outside
+configured exclusions fail loudly. Allocation completion markers are never
+restored from an archive, so a partial extraction cannot masquerade as a completed
+restore. A failed session can be stopped through the normal Forge API to preserve
+its data and release its machine before retrying.
