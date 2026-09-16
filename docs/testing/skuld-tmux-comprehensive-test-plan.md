@@ -1,5 +1,10 @@
 # Skuld / Forge tmux — Comprehensive Test Plan
 
+Current cross-provider assessment and execution gates:
+[Forge stability review](forge-stability-review-2026-09-07.md) and
+[testing workflow](forge-stability-workflow.md). Run `make test-forge-tmux` for
+the required real-tmux lane; historical outcomes below describe their original run.
+
 > Status: **implemented (Phases 0–4)** — see "Outcomes" at the end. Extends
 > `docs/testing/skuld-claude-interactive.md` (command construction + the basic
 > real-tmux smoke). This document targets the *behavioural* gaps: steering,

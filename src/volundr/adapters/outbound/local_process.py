@@ -426,6 +426,10 @@ class LocalProcessPodManager(PodManager):
     endpoints, and event pipeline work unchanged.
     """
 
+    @property
+    def runtime_backend(self) -> str:
+        return "process"
+
     def __init__(
         self,
         *,
@@ -1004,6 +1008,9 @@ class LocalProcessPodManager(PodManager):
         session_vals = spec.values.get("session", {})
         system_prompt = session_vals.get("systemPrompt", "")
         initial_prompt = session_vals.get("initialPrompt", "")
+        effort = session_vals.get("reasoningEffort") or session_vals.get("reasoning_effort")
+        if effort:
+            env["SKULD__SESSION__REASONING_EFFORT"] = str(effort)
         if system_prompt:
             env["SKULD__SESSION__SYSTEM_PROMPT"] = system_prompt
         if initial_prompt:
@@ -1014,7 +1021,9 @@ class LocalProcessPodManager(PodManager):
             env["SKULD__CLI_BINARY"] = self._resolve_claude_binary()
 
         log_path = workspace / ".skuld.log"
-        log_file = log_path.open("w", encoding="utf-8")
+        # Multiple sessions may share a workspace; retain diagnostics from every
+        # broker while preserving the path consumed by aggregation and archives.
+        log_file = log_path.open("a", encoding="utf-8")
         try:
             process = await asyncio.create_subprocess_exec(
                 *skuld_cmd,
@@ -1502,8 +1511,39 @@ class LocalProcessPodManager(PodManager):
                 raise ValueError(f"envVars entries need a name: {entry!r}")
             env[str(entry["name"])] = str(entry.get("value", ""))
 
+        session_values = spec.values.get("session", {})
+        effort = session_values.get("reasoningEffort") or session_values.get("reasoning_effort")
+        if effort:
+            env["SKULD__SESSION__REASONING_EFFORT"] = str(effort)
+
         broker = spec.values.get("broker", {})
         if isinstance(broker, dict):
+            # The same broker settings reach process, Docker, OpenShell and VM sessions.
+            for key, field in {
+                "historyReadTimeoutSeconds": "history_read_timeout_seconds",
+                "historyBootstrapMaxFrames": "history_bootstrap_max_frames",
+                "conversationRecentMaxTurns": "conversation_recent_max_turns",
+                "conversationRecentMaxBytes": "conversation_recent_max_bytes",
+                "conversationSnapshotMaxBytes": "conversation_snapshot_max_bytes",
+                "liveFrameMaxBytes": "live_frame_max_bytes",
+                "codexReceiveMaxBytes": "codex_receive_max_bytes",
+                "historyHydrationEnabled": "history_hydration_enabled",
+                "historyHydrationTimeoutSeconds": "history_hydration_timeout_seconds",
+                "historyHydrationPageSize": "history_hydration_page_size",
+                "historyHydrationMaxFrames": "history_hydration_max_frames",
+                "historyHydrationMaxBytes": "history_hydration_max_bytes",
+                "tmuxQuestionTranscriptMaxBytes": "tmux_question_transcript_max_bytes",
+                "tmuxQuestionResultHistoryLimit": "tmux_question_result_history_limit",
+                "effortControlTimeoutSeconds": "effort_control_timeout_s",
+                "museBin": "muse_bin",
+                "pi": "pi",
+            }.items():
+                value = broker.get(key, broker.get(field))
+                if value is not None:
+                    env[f"SKULD__{field.upper()}"] = (
+                        json.dumps(value) if isinstance(value, (dict, list, bool)) else str(value)
+                    )
+
             cli_type = broker.get("cliType")
             if cli_type:
                 env["SKULD__CLI_TYPE"] = str(cli_type)

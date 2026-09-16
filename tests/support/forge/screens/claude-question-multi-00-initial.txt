@@ -1,0 +1,13 @@
+←  ☐ Tone  ☐ Texture  ✔ Submit  →
+
+Which tone?
+
+❯ 1. Blue
+     Blue tone
+  2. Amber
+     Amber tone
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

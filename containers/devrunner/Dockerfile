@@ -73,7 +73,8 @@ RUN cd /opt/npm-bootstrap \
     && ln -sf /opt/devrunner-tools/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -sf /opt/devrunner-tools/node_modules/.bin/codex /usr/local/bin/codex \
     && ln -sf /opt/devrunner-tools/node_modules/.bin/opencode /usr/local/bin/opencode \
-    && ln -sf /opt/devrunner-tools/node_modules/.bin/grok /usr/local/bin/grok
+    && ln -sf /opt/devrunner-tools/node_modules/.bin/grok /usr/local/bin/grok \
+    && ln -sf /opt/devrunner-tools/node_modules/.bin/pi /usr/local/bin/pi
 
 # Install PostgreSQL 16
 RUN echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
@@ -125,7 +126,10 @@ COPY containers/devrunner/configs/init-home.sh /usr/local/bin/init-home.sh
 RUN chmod +x /usr/local/bin/devrunner /usr/local/bin/restricted-shell /usr/local/bin/init-home.sh
 
 # Fail the image build if an advertised CLI is missing or cannot execute.
-RUN claude --version && codex --version && opencode --version && grok --version
+COPY containers/skuld/install-muse.sh /tmp/install-muse.sh
+RUN sh /tmp/install-muse.sh "$TARGETARCH" && rm /tmp/install-muse.sh
+
+RUN claude --version && codex --version && opencode --version && grok --version && pi --version && muse --version
 
 # Switch to non-root user
 USER devrunner

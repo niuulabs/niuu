@@ -240,7 +240,7 @@ class TestMemoryRecallScenario:
 
     async def test_episode_recorded_after_turn(self, mem: SqliteMemoryAdapter) -> None:
         """The turn's episode is recorded in the memory backend."""
-        llm = ScriptedLLM([_text_response("Deployed!")])
+        llm = ScriptedLLM([_text_response("Deployed to staging; health endpoint returned 200.")])
         agent, _ = _make_agent(llm, memory=mem)
 
         await agent.run_turn("deploy the service to staging")
@@ -254,9 +254,9 @@ class TestMemoryRecallScenario:
         # Two main responses + two reflection generate() responses (NIU-574).
         llm = ScriptedLLM(
             [
-                _text_response("First done"),
+                _text_response("First task done; the broker rebound on 7503."),
                 _text_response("Reflection on first."),
-                _text_response("Second done"),
+                _text_response("Second task done; both members reconnected."),
                 _text_response("Reflection on second."),
             ]
         )

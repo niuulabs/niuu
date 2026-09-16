@@ -69,7 +69,12 @@ RUN cd /opt/skuld-tools \
     && ln -sf /opt/skuld-tools/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -sf /usr/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex \
     && ln -sf /opt/skuld-tools/node_modules/.bin/opencode /usr/local/bin/opencode \
-    && ln -sf /opt/skuld-tools/node_modules/.bin/grok /usr/local/bin/grok
+    && ln -sf /opt/skuld-tools/node_modules/.bin/grok /usr/local/bin/grok \
+    && ln -sf /opt/skuld-tools/node_modules/.bin/pi /usr/local/bin/pi
+
+ARG TARGETARCH
+COPY containers/skuld/install-muse.sh /tmp/install-muse.sh
+RUN sh /tmp/install-muse.sh "$TARGETARCH" && rm /tmp/install-muse.sh
 
 ENV UV_PROJECT_ENVIRONMENT=/opt/niuu
 COPY pyproject.toml uv.lock README.md /app/
@@ -90,7 +95,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends file \
 RUN test ! -e /usr/lib/node_modules/opencode-ai \
     && test ! -e /root/.local/share/claude \
     && test ! -e /root/.npm \
-    && claude --version && codex --version && opencode --version && grok --version
+    && claude --version && codex --version && opencode --version && grok --version && pi --version && muse --version
 
 USER sandbox
 WORKDIR /sandbox

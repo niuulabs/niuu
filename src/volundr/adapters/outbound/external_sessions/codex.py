@@ -12,9 +12,13 @@ import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID
 
-from volundr.domain.models import ExternalSessionRecord
+from volundr.domain.models import ExternalSessionRecord, SessionLogEntry
 from volundr.domain.ports import ExternalSessionProvider
+
+from .codex_transcript import parse_codex_transcript
+from .transcript_common import DEFAULT_MAX_TRANSCRIPT_BYTES, read_native_jsonl
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +55,14 @@ class CodexSessionProvider(ExternalSessionProvider):
         live_threshold_seconds: int = DEFAULT_LIVE_THRESHOLD_SECONDS,
         head_lines: int = DEFAULT_HEAD_LINES,
         max_sessions: int = DEFAULT_MAX_SESSIONS,
+        max_transcript_bytes: int = DEFAULT_MAX_TRANSCRIPT_BYTES,
         **_extra: object,
     ):
         self._sessions_dir = Path(str(sessions_dir)).expanduser()
         self._live_threshold_seconds = int(live_threshold_seconds)
         self._head_lines = int(head_lines)
         self._max_sessions = int(max_sessions)
+        self._max_transcript_bytes = int(max_transcript_bytes)
 
     @property
     def name(self) -> str:
@@ -71,6 +77,22 @@ class CodexSessionProvider(ExternalSessionProvider):
 
     async def get_session(self, external_id: str) -> ExternalSessionRecord | None:
         return await asyncio.to_thread(self._find_one, external_id)
+
+    async def read_transcript(self, external_id: str, session_id: UUID) -> list[SessionLogEntry]:
+        return await asyncio.to_thread(self._read_transcript, external_id, session_id)
+
+    def _read_transcript(self, external_id: str, session_id: UUID) -> list[SessionLogEntry]:
+        try:
+            UUID(external_id)
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError("Invalid Codex native session identifier") from exc
+        paths = [path for path in self._rollout_files() if path.stem.endswith(f"-{external_id}")]
+        if not paths:
+            raise FileNotFoundError("Codex native transcript was not found")
+        if len(paths) != 1:
+            raise ValueError("Multiple Codex transcripts match the requested native session")
+        source = read_native_jsonl(paths[0], self._sessions_dir, self._max_transcript_bytes)
+        return parse_codex_transcript(source, external_id, session_id)
 
     # ------------------------------------------------------------------
     # Internal

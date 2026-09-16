@@ -1,0 +1,111 @@
+{
+  "observed_at": "2026-09-13T16:47:34.431013+00:00",
+  "runtime_source_commit": "a75ba536f6ed6e51db4cb6761b5a48ffdd55c189",
+  "ux_pin": "11e9e0c668747fd0af1b97463f2c238e9fb40811",
+  "approval_commit": "3cfa0e9c",
+  "history_identity_commit": "a75ba536",
+  "source_overlay": "None; subsequent report/evidence commit changes documentation only.",
+  "installed_codex": "0.154.0",
+  "python": "3.13.13",
+  "pytest": "9.1.1",
+  "combined_tests": {
+    "passed": 2595,
+    "skipped": 22,
+    "deselected": 82,
+    "xfailed": 1,
+    "failed": 0,
+    "reported_warnings": 0,
+    "seconds": 72.99
+  },
+  "excluded_markers": [
+    "integration",
+    "broker",
+    "kind_integration",
+    "live_cli"
+  ],
+  "coverage": {
+    "scope": [
+      "src/skuld/broker.py",
+      "src/skuld/broker_api.py",
+      "src/skuld/channels.py",
+      "src/skuld/transports/codex_ws.py"
+    ],
+    "percent_covered": 86.66121112929623,
+    "per_file_percent": {
+      "src/skuld/broker.py": 84.36991208075546,
+      "src/skuld/broker_api.py": 79.42643391521197,
+      "src/skuld/channels.py": 90.82161361954108,
+      "src/skuld/transports/codex_ws.py": 90.0853889943074
+    },
+    "required_aggregate_percent": 85,
+    "branch": true,
+    "repository_wide": false,
+    "per_file_gate_claim": false
+  },
+  "approval_schema_validation": {
+    "cases": 35,
+    "validator": "Draft7Validator",
+    "schema_origin": "Installed codex-cli 0.154.0 app-server generate-json-schema",
+    "source_commit": "3cfa0e9c",
+    "native_execution_acceptance": false
+  },
+  "source_audit": {
+    "checkout": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913",
+    "python": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.venv/bin/python",
+    "pytest_exitstatus": 0,
+    "all_from_owned_checkout": true,
+    "modules": {
+      "skuld.transports.codex_ws": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/src/skuld/transports/codex_ws.py",
+      "skuld.channels": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/src/skuld/channels.py",
+      "skuld.broker": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/src/skuld/broker.py",
+      "skuld.broker_api": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/src/skuld/broker_api.py",
+      "niuu.domain.transcript_reducer": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/src/niuu/domain/transcript_reducer.py"
+    }
+  },
+  "native_provider_acceptance": false,
+  "ios_render_acceptance": false,
+  "deployed": false,
+  "previous_checkpoint_receipt": "cbef1d1f-8be5-48ec-a807-eb3b6581fa45",
+  "evidence_files": [
+    {
+      "local_path": ".local/codex-review-20260913/approval-before.log",
+      "sha256": "5ab1980fb7f57e151297ef7ce42663bfa4cca1e4abc0dac549a85850bcf42b9f"
+    },
+    {
+      "local_path": ".local/codex-review-20260913/approval-after.log",
+      "sha256": "6a68657b0a51239ace0492e829e82e82eca6f6085dd510a2ae6c94281baaf722"
+    },
+    {
+      "local_path": ".local/codex-review-20260913/approval-schema-validation.json",
+      "sha256": "d4afaf549abf3c3b0b905fc5d20ea794975cc979bc111bf73a51824d05b09875"
+    },
+    {
+      "local_path": ".local/codex-review-20260913/history-contract-before.log",
+      "sha256": "48af9500f78f450e7847e0476dfab3cc2972c8ae548d2a3de8b3c0831c91dd39"
+    },
+    {
+      "local_path": ".local/codex-review-20260913/history-contract-after.log",
+      "sha256": "696ee1085ee52c9df30aafc351796d4d5f0aed38318da98ddda595fd8f1438f3"
+    },
+    {
+      "local_path": ".local/codex-review-20260913/phase2-sweep.log",
+      "sha256": "dab638ed596f705e9b01968508c56fc5ab0e6e27d7f22e1a76d69b9827d2b82b"
+    },
+    {
+      "local_path": ".local/codex-review-20260913/phase2-coverage.json",
+      "sha256": "651b5f197ebd69cb1f0ec6f1fb02a628446e576368f77fcf53e7bae697f0f833"
+    },
+    {
+      "local_path": ".local/codex-review-20260913/phase2-source-audit.json",
+      "sha256": "b6301422dc080ec95fd0dcb4c27247eb3c2ae9616588a9a84a0dda218d8de2b5"
+    },
+    {
+      "local_path": ".local/codex-review-20260913/run-phase2-sweep.py",
+      "sha256": "9946d8b491e50f7ca67fcce31ebe1bb0b5d1c24c26f6a4c2809de182dd34aa3f"
+    },
+    {
+      "local_path": ".local/codex-review-20260913/coverage-phase2.rc",
+      "sha256": "9c3d399a0a33b2165f936e787b88122bce7ad11cf44726f6df369a444e5e89a2"
+    }
+  ]
+}

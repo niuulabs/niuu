@@ -612,6 +612,22 @@ def _build_memory(settings: Settings, llm: Any = None) -> Any:
                 f"fix the adapter configuration — memory will not silently degrade."
             ) from exc
 
+    reranker_port = None
+    if getattr(settings, "reranker", None) is not None and settings.reranker.enabled:
+        # Unlike embeddings, a missing reranker is NOT fatal. Embeddings decide what memory can
+        # find at all; a reranker only reorders what was already found, so failing to build one
+        # degrades to the retrieval order rather than to a different quality of search.
+        try:
+            cls = _import_class(settings.reranker.adapter)
+            reranker_port = cls(**dict(settings.reranker.kwargs))
+        except Exception as exc:  # noqa: BLE001 — reordering is never worth a failed startup
+            logger.warning(
+                "reranker.enabled is true but %r could not be constructed (%s) — "
+                "recall will use the retrieval order.",
+                settings.reranker.adapter,
+                exc,
+            )
+
     adapter = None
 
     if backend == "sqlite":
@@ -630,6 +646,7 @@ def _build_memory(settings: Settings, llm: Any = None) -> Any:
             recency_floor=settings.memory.recency_floor,
             session_search_truncate_chars=settings.memory.session_search_truncate_chars,
             embedding_port=embedding_port,
+            reranker_port=reranker_port,
             rrf_k=settings.embedding.rrf_k,
             semantic_candidate_limit=settings.embedding.semantic_candidate_limit,
             corpus_stats_interval_seconds=settings.memory.corpus_stats_interval_seconds,

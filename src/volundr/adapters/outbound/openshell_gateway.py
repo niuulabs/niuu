@@ -793,6 +793,10 @@ class OpenShellGatewayPodManager(
 ):
     """Kubernetes OpenShell PodManager using OIDC and native gRPC."""
 
+    @property
+    def runtime_backend(self) -> str:
+        return "openshell"
+
     def __init__(
         self,
         *,

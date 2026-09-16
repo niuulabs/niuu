@@ -19,6 +19,22 @@ from ravn.cli.room import RoomDef, room_app
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def hermetic_home(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Membership is about the room, not about the machine running the suite.
+
+    ``ravn join`` reads the operator's ~/.ravn/config.yaml as its default base
+    config, so without this the results depend on what the developer happens to
+    have configured — including whether their provider secrets are exported.
+    Tests that care about base-config resolution set their own home.
+    """
+    monkeypatch.setattr(
+        room_mod.Path, "home", classmethod(lambda cls: tmp_path_factory.mktemp("home"))
+    )
+
+
 @pytest.fixture
 def rooms_dir(tmp_path: Path) -> Path:
     return tmp_path / "rooms"
@@ -740,3 +756,33 @@ class TestPostMentionRouting:
         assert result.exit_code == 0, result.output
         assert posted == []
         assert "recipients: reviewer" in result.output
+
+
+class TestDefaultBaseConfig:
+    """A member inherits the operator's own config unless told otherwise.
+
+    Rendering a member from library defaults silently downgraded it: a resident
+    configured for claude-opus-5 with extended thinking joined its own room as
+    a claude-sonnet-4-6 member with thinking off.
+    """
+
+    def test_the_operator_config_is_the_default_base(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "home"
+        (home / ".ravn").mkdir(parents=True)
+        config = home / ".ravn" / "config.yaml"
+        config.write_text("llm:\n  model: claude-opus-5\n", encoding="utf-8")
+        monkeypatch.setattr(room_mod.Path, "home", classmethod(lambda cls: home))
+
+        assert room_mod._default_base_config() == config
+
+    def test_no_operator_config_means_no_base(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A missing file is simply no base — never an error, never a guess."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(room_mod.Path, "home", classmethod(lambda cls: home))
+
+        assert room_mod._default_base_config() is None

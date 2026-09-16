@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import {
   deriveHttpBase,
   killSession,
@@ -473,7 +473,9 @@ describe('SessionTerminalLive', () => {
     await waitForTerminalWiring();
     expect(xtermInstances).toHaveLength(1);
 
-    latestWebSocketOptions?.onOpen?.();
+    act(() => {
+      latestWebSocketOptions?.onOpen?.();
+    });
     expect(mockSendJson).toHaveBeenCalledWith({ type: 'resize', cols: 80, rows: 24 });
 
     onDataCallbacks[0]?.('ls -la\r');
@@ -529,16 +531,24 @@ describe('SessionTerminalLive', () => {
 
     await waitFor(() => expect(screen.getByText('connecting…')).toBeInTheDocument());
     await waitForSocket();
-    latestWebSocketOptions?.onOpen?.();
+    act(() => {
+      latestWebSocketOptions?.onOpen?.();
+    });
     await waitFor(() => expect(screen.getByText('connected')).toBeInTheDocument());
 
-    latestWebSocketOptions?.onClose?.();
+    act(() => {
+      latestWebSocketOptions?.onClose?.();
+    });
     await waitFor(() => expect(screen.getByText('connecting…')).toBeInTheDocument());
 
-    latestWebSocketOptions?.onOpen?.();
+    act(() => {
+      latestWebSocketOptions?.onOpen?.();
+    });
     await waitFor(() => expect(screen.getByText('connected')).toBeInTheDocument());
 
-    latestWebSocketOptions?.onError?.();
+    act(() => {
+      latestWebSocketOptions?.onError?.();
+    });
     await waitFor(() => expect(screen.getByText('connecting…')).toBeInTheDocument());
   });
 
@@ -567,15 +577,19 @@ describe('SessionTerminalLive', () => {
     await waitFor(() => expect(screen.getByRole('tab', { name: /shell 1/i })).toBeInTheDocument());
     expect(mockXtermOpen).not.toHaveBeenCalled();
 
-    // Socket only: this test is precisely about there being no terminal yet.
     await waitForSocket();
-    latestWebSocketOptions?.onOpen?.();
+    act(() => {
+      latestWebSocketOptions?.onOpen?.();
+    });
     latestWebSocketOptions?.onMessage?.('{"type":"output","data":"ignored"}');
 
     expect(mockSendJson).not.toHaveBeenCalled();
     expect(mockXtermWrite).not.toHaveBeenCalled();
 
-    resolveFontsReady?.();
+    await act(async () => {
+      resolveFontsReady?.();
+      await fonts.ready;
+    });
     await waitFor(() => expect(mockXtermOpen).toHaveBeenCalled());
   });
 
@@ -627,8 +641,10 @@ describe('SessionTerminalLive', () => {
     await waitFor(() => expect(screen.getByRole('tab', { name: /shell 1/i })).toBeInTheDocument());
     view.unmount();
 
-    resolveFontsReady?.();
-    await Promise.resolve();
+    await act(async () => {
+      resolveFontsReady?.();
+      await fonts.ready;
+    });
 
     expect(mockXtermOpen).not.toHaveBeenCalled();
   });
@@ -648,8 +664,8 @@ describe('SessionTerminalLive', () => {
     render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" readOnly />);
 
     await waitFor(() => expect(screen.getByRole('tab', { name: /shell 1/i })).toBeInTheDocument());
+    await waitFor(() => expect(mockXtermOnResize).toHaveBeenCalled());
     expect(mockXtermOnData).not.toHaveBeenCalled();
-    expect(mockXtermOnResize).toHaveBeenCalled();
   });
 
   it('reacts to resize-observer callbacks after mounting the terminal', async () => {
@@ -824,7 +840,11 @@ describe('SessionTerminalLive', () => {
       expect(screen.queryByRole('tab', { name: /tab 1/i })).not.toBeInTheDocument(),
     );
 
-    resolveFontsReady?.();
+    await act(async () => {
+      resolveFontsReady?.();
+      await fonts.ready;
+    });
+    await waitFor(() => expect(mockXtermOpen).toHaveBeenCalledTimes(1));
   });
 
   it('skips terminal refresh when the xterm instance has no refresh method', async () => {

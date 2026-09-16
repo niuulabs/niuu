@@ -474,6 +474,100 @@ class TestActivityStateSinceTimestamp:
         # ISO8601 UTC string matching the surrounding datetime wire convention.
         assert payload["state_since"].endswith("+00:00")
 
+    def test_active_to_tool_executing_keeps_since(self, test_broker):
+        """The intra-turn active⇄tool_executing flip stays in the 'running' coarse
+        bucket, so _activity_state_since must NOT re-stamp (the reset bug fix)."""
+        test_broker._set_activity_state("active")
+        stamped = test_broker._activity_state_since
+        # A real flip inside the turn — the raw state changes but the bucket holds.
+        test_broker._set_activity_state("tool_executing")
+        assert test_broker._activity_state == "tool_executing"
+        assert test_broker._activity_state_since == stamped
+        # And back to active — still no re-stamp.
+        test_broker._set_activity_state("active")
+        assert test_broker._activity_state == "active"
+        assert test_broker._activity_state_since == stamped
+
+    def test_running_to_idle_restamps_since(self, test_broker):
+        """Leaving the running bucket (active→idle) IS a coarse change → re-stamp."""
+        test_broker._set_activity_state("active")
+        test_broker._activity_state_since -= 100  # backdate to make a change visible
+        backdated = test_broker._activity_state_since
+        test_broker._set_activity_state("idle")
+        assert test_broker._activity_state_since > backdated
+
+    def test_awaiting_to_active_restamps_since(self, test_broker):
+        """awaiting_input is its own bucket → resuming to active re-stamps _since
+        (the waiting-time meaning ends; the running label restarts from resume)."""
+        test_broker._set_activity_state("awaiting_input")
+        test_broker._activity_state_since -= 100
+        backdated = test_broker._activity_state_since
+        test_broker._set_activity_state("active")
+        assert test_broker._activity_state_since > backdated
+
+    def test_turn_anchor_floor_stamped_on_running_entry(self, test_broker):
+        """Entering the running bucket from idle floor-stamps the turn anchor."""
+        assert test_broker._turn_started_at is None
+        test_broker._set_activity_state("active")
+        assert isinstance(test_broker._turn_started_at, float)
+
+    def test_turn_anchor_holds_across_intra_turn_flips(self, test_broker):
+        """The turn anchor is stamped ONCE at turn start and never moves across
+        active⇄tool_executing — this is what iOS ticks the running elapsed from."""
+        test_broker._set_activity_state("active")
+        anchor = test_broker._turn_started_at
+        test_broker._set_activity_state("tool_executing")
+        test_broker._set_activity_state("active")
+        assert test_broker._turn_started_at == anchor
+
+    def test_turn_anchor_survives_awaiting_input(self, test_broker):
+        """A turn that blocks on a human resumes; the anchor SURVIVES the gate so
+        the resumed running counter still reads from the original prompt."""
+        test_broker._set_activity_state("active")
+        anchor = test_broker._turn_started_at
+        test_broker._set_activity_state("awaiting_input")
+        assert test_broker._turn_started_at == anchor
+        test_broker._set_activity_state("active")
+        # Resumed into the SAME turn — anchor unchanged (not re-floored).
+        assert test_broker._turn_started_at == anchor
+
+    def test_turn_anchor_cleared_on_idle(self, test_broker):
+        """Turn end (idle) clears the anchor so the NEXT turn re-stamps fresh."""
+        test_broker._set_activity_state("active")
+        test_broker._set_activity_state("idle")
+        assert test_broker._turn_started_at is None
+        # Next turn gets a fresh anchor.
+        test_broker._set_activity_state("active")
+        assert test_broker._turn_started_at is not None
+
+    def test_turn_anchor_cleared_on_stopped(self, test_broker):
+        """Transport death (stopped) also clears the anchor."""
+        test_broker._set_activity_state("active")
+        test_broker._set_activity_state("stopped")
+        assert test_broker._turn_started_at is None
+
+    @pytest.mark.asyncio
+    async def test_report_includes_turn_started_at(self, test_broker):
+        """The /activity POST body carries turn_started_at (ISO or null)."""
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_client.post = AsyncMock(return_value=mock_response)
+        test_broker._http_client = mock_client
+        test_broker._http_client_jwt = None
+
+        # Turn start → running → anchor present, ISO on the wire.
+        await test_broker._report_activity_state("active")
+        payload = mock_client.post.call_args[1]["json"]
+        assert payload["turn_started_at"] is not None
+        assert payload["turn_started_at"].endswith("+00:00")
+
+        # Turn end → idle → anchor cleared, null on the wire.
+        mock_client.post.reset_mock()
+        await test_broker._report_activity_state("idle")
+        payload = mock_client.post.call_args[1]["json"]
+        assert payload["turn_started_at"] is None
+
     @pytest.mark.asyncio
     async def test_idle_transition_includes_state_since(self, test_broker):
         """An idle transition (not just busy states) carries state_since too."""

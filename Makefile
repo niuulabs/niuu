@@ -96,6 +96,18 @@ verify: lint test
 
 review-modules:
 	uv run python scripts/module_review.py
+.PHONY: test-forge test-forge-tmux test-forge-web test-forge-database
+test-forge:
+	uv run python scripts/verify_forge.py unit --coverage
+
+test-forge-tmux:
+	uv run python scripts/verify_forge.py tmux
+
+test-forge-web:
+	uv run python scripts/verify_forge.py web
+
+test-forge-database:
+	uv run python scripts/verify_forge.py database
 
 # --------------------------------------------------------------------------
 # Integration & E2E tests
@@ -134,3 +146,12 @@ clean:
 	rm -rf $(OUTPUT_DIR) $(WEB_DEST) build/ *.build/ *.dist/ *.onefile-build/
 	rm -rf $(MIG_DEST)/*.sql $(TING_MIG_DEST)/*.sql
 	rm -rf $(PGINSTALL_DIR)
+
+# Real provider usage; requires a running platform and authenticated CLIs.
+.PHONY: test-forge-live forge-trace-lab
+FORGE_LIVE_ARGS ?=
+test-forge-live:
+	uv run python -m scripts.forge_live $(FORGE_LIVE_ARGS)
+
+forge-trace-lab:
+	uv run python -m scripts.forge_corpus serve

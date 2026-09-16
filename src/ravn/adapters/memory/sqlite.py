@@ -22,6 +22,7 @@ import random
 import sqlite3
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
@@ -54,6 +55,7 @@ from ravn.memory_telemetry import (
 )
 from ravn.ports.embedding import EmbeddingPort
 from ravn.ports.memory import MemoryPort
+from ravn.ports.reranker import RerankerPort
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -169,6 +171,7 @@ class SqliteMemoryAdapter(MemoryPort):
         recency_floor: float = 0.5,
         session_search_truncate_chars: int = 100_000,
         embedding_port: EmbeddingPort | None = None,
+        reranker_port: RerankerPort | None = None,
         rrf_k: int = 60,
         semantic_candidate_limit: int = 50,
         corpus_stats_interval_seconds: float = 300.0,
@@ -187,6 +190,7 @@ class SqliteMemoryAdapter(MemoryPort):
         self._environment_id = environment_id
         self._session_search_truncate_chars = session_search_truncate_chars
         self._embedding_port = embedding_port
+        self._reranker = reranker_port
         self._corpus_stats_interval_seconds = corpus_stats_interval_seconds
         self._last_corpus_sample_at: float | None = None
         self._write_count = 0
@@ -215,6 +219,30 @@ class SqliteMemoryAdapter(MemoryPort):
     async def initialize(self) -> None:
         """Create the database directory and tables if they do not exist."""
         await asyncio.to_thread(self._init_db)
+        await self._warn_if_unembedded()
+
+    async def _warn_if_unembedded(self) -> None:
+        """Say out loud how much of the corpus semantic search cannot see.
+
+        Hybrid search degrades to keyword-only for any document without a vector, and it does so
+        perfectly quietly: you still get results, they are simply the lexical ones. 96 of 137
+        documents accumulated that way over seven weeks — everything the resident learned before
+        embeddings were configured — and nothing ever said so. A number in the log at startup is
+        the difference between "recall feels vague" and a fact you can act on.
+        """
+        if self._embedding_port is None:
+            return
+        try:
+            pending = len(await self._search.unembedded(limit=10_000))
+        except Exception as exc:  # noqa: BLE001 — a diagnostic must never block startup
+            logger.debug("memory: could not count unembedded documents (%s)", exc)
+            return
+        if pending:
+            logger.warning(
+                "memory: %d document(s) have no embedding — semantic search cannot see them, "
+                "only keyword. Run `ravn memory-backfill-embeddings` to repair.",
+                pending,
+            )
 
     async def record_episode(self, episode: Episode) -> None:
         started = monotonic()
@@ -251,6 +279,31 @@ class SqliteMemoryAdapter(MemoryPort):
         )
         await self._maybe_emit_corpus_gauges()
 
+    async def _reranked(self, query: str, results: list) -> list:
+        """Replace each candidate's retrieval score with how well it answers THIS query.
+
+        The score, not the order. Everything downstream re-sorts by
+        ``combined_score(result.score, recency, outcome)``, so returning a reordered list
+        accomplishes exactly nothing — the first attempt did that and changed no output at all.
+        Writing the rerank score into ``SearchResult.score`` puts the better relevance judgement
+        where the pipeline already reads relevance from, and leaves the recency and outcome
+        weighting that sits on top of it untouched.
+
+        Both scales are normalised to [0, 1], so the substitution is dimensionally honest.
+
+        A configured reranker must score all candidates or fail explicitly.
+        """
+        if self._reranker is None or len(results) < 2:
+            return results
+        documents = [getattr(r, "content", "") or "" for r in results]
+        ranked = await self._reranker.rerank(query, documents)
+        if {index for index, _ in ranked} != set(range(len(results))):
+            raise ValueError("Configured reranker did not score every memory candidate")
+        rescored = list(results)
+        for index, score in ranked:
+            rescored[index] = replace(results[index], score=float(score))
+        return rescored
+
     async def query_episodes(
         self,
         query: str,
@@ -262,6 +315,7 @@ class SqliteMemoryAdapter(MemoryPort):
         try:
             # Get raw search results from the shared search adapter.
             search_results = await self._search.search(query, limit=limit * 3)
+            search_results = await self._reranked(query, search_results)
 
             if not search_results:
                 record_funnel(

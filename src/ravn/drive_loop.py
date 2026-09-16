@@ -2135,6 +2135,8 @@ class DriveLoop:
             triggered_by=f"session_join:{source_session_id}",
             output_mode=OutputMode.AMBIENT,
             persona=persona,
+            # Recall on what was said, not on the envelope it arrived in.
+            recall_query=content.strip(),
         )
         logger.info(
             "drive_loop: joined-session message from %s enqueued as task %s",
@@ -2722,7 +2724,12 @@ class DriveLoop:
         self._active_agents[task.task_id] = agent
         try:
             try:
-                turn_result = await agent.run_turn(prompt)  # type: ignore[attr-defined]
+                # Only passed when there IS one. `run_turn(prompt)` stays the call for every
+                # trigger whose prompt is already the thing that was asked, which is all of them
+                # except a room message — so nothing that implements the old signature has to
+                # learn a keyword that would always be None.
+                recall_kwargs = {"recall_query": task.recall_query} if task.recall_query else {}
+                turn_result = await agent.run_turn(prompt, **recall_kwargs)  # type: ignore[attr-defined]
                 success = True
                 telemetry.event(
                     "ravn.task.lifecycle",

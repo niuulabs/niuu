@@ -21,6 +21,8 @@ class TransportCapabilities:
     steering_mode: str = "none"
     set_model: bool = False
     set_thinking_tokens: bool = False
+    set_effort: bool = False
+    runtime_options: bool = False
     set_permission_mode: bool = False
     rewind_files: bool = False
     mcp_set_servers: bool = False
@@ -89,6 +91,19 @@ class CLITransport(ABC):
     async def discover_slash_commands(self, *, refresh: bool = False) -> list[dict]:
         """Return slash commands available in this transport, if discoverable."""
         return []
+
+    async def get_effort(self) -> dict:
+        """Return effective effort, supported levels and when a change takes effect."""
+        return {"current": "", "levels": [], "mutable": False}
+
+    async def get_runtime_options(self, *, refresh: bool = False) -> dict:
+        """Read native model/effort/tier choices and acknowledged next-turn settings.
+
+        Adapters advertising runtime_options also implement the
+        set_runtime_options control with an opaque options dictionary. Unsupported
+        transports must not advertise an empty catalog as a successful discovery.
+        """
+        raise NotImplementedError("This transport does not expose runtime options")
 
     @property
     @abstractmethod

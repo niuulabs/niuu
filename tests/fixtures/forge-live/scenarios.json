@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "providers": {
+    "claude-tmux": {
+      "definition": "skuldClaudeInteractive",
+      "model": "claude-opus-5"
+    },
+    "codex": {
+      "definition": "skuldCodex",
+      "model": "gpt-6-astra"
+    }
+  },
+  "scenarios": [
+    {
+      "id": "workspace",
+      "tier": "core",
+      "prompt": "Read TASK.md and numbers.json using tools. Use a command to calculate the sum of the numbers; print FORGE_SUM=<sum>. Write answer.json containing exactly an object with key sum and that numeric value. Read the file back with a tool. Actually execute these actions, then briefly report the result.",
+      "required_tools": [
+        "command"
+      ],
+      "tool_output_contains": [
+        "FORGE_SUM=42"
+      ],
+      "files": {
+        "answer.json": {
+          "sum": 42
+        }
+      }
+    },
+    {
+      "id": "search",
+      "tier": "core",
+      "prompt": "Use your native web search tool to search for the official Python documentation for json.loads. Open the official documentation if your tools support it. Explain in two sentences what json.loads does and include an official docs.python.org link. You must actually search; recollection or a shell HTTP request alone does not meet this test.",
+      "required_tools": [
+        "search"
+      ],
+      "assistant_contains": [
+        "docs.python.org"
+      ]
+    },
+    {
+      "id": "agents",
+      "tier": "core",
+      "prompt": "Use your native agent delegation tool to spawn exactly two bounded worker agents, concurrently if supported. One must independently read numbers.json and calculate its sum. The other must inspect answer.json and check whether it matches numbers.json. Workers must stay in this workspace and perform read-only work. Wait for both workers, collect their findings, and report agreement or disagreement. Do not simulate agents in prose or shell subprocesses. Use native Task/Agent/spawn_agent facilities.",
+      "required_tools": [
+        "agent"
+      ],
+      "min_agents": 2
+    },
+    {
+      "id": "recovery",
+      "tier": "core",
+      "prompt": "Exercise a harmless tool failure and recovery. First run python3 -c 'import sys; print(\"FORGE_EXPECTED_FAILURE\"); sys.exit(7)' as its own command. Observe the failed tool result, then run a separate successful command that prints FORGE_RECOVERED. Do not hide the first exit status with a shell fallback. Explain that the failure was intentional.",
+      "required_tools": [
+        "command"
+      ],
+      "tool_output_contains": [
+        "FORGE_EXPECTED_FAILURE",
+        "FORGE_RECOVERED"
+      ],
+      "require_tool_error": true
+    },
+    {
+      "id": "presentation",
+      "tier": "core",
+      "prompt": "Return a compact UI rendering sample: a heading; two paragraphs; a two-item bullet list; a fenced Python block containing print(\"forge\"); a two-column Markdown table with two data rows; a link to https://docs.python.org/3/; and exactly this Unicode text: café — 東京 🛠️. Do not execute commands for this turn.",
+      "assistant_contains": [
+        "```python",
+        "café",
+        "東京",
+        "🛠",
+        "docs.python.org"
+      ]
+    },
+    {
+      "id": "continuity",
+      "tier": "core",
+      "reconnect_before": true,
+      "prompt": "Without running any tools, recall the numeric sum you calculated earlier in this same conversation and the name of the JSON file you wrote. Return exactly: remembered sum=42 file=answer.json",
+      "assistant_contains": [
+        "remembered sum=42 file=answer.json"
+      ]
+    },
+    {
+      "id": "plan",
+      "tier": "extended",
+      "prompt": "Use the native structured plan/task checklist tool to track three steps: inspect numbers.json, verify answer.json, summarize. Move a step through in-progress and completed states while using tools to do the work. End with all three complete.",
+      "required_tools": [
+        "plan"
+      ]
+    },
+    {
+      "id": "question",
+      "tier": "extended",
+      "answer": "amber",
+      "prompt": "Use the native interactive question tool to ask me to choose a trace accent: blue first, amber second. Wait for my explicit answer through that tool. After the answer, write accent.json containing the selected accent in lowercase under key accent. Do not assume an answer or ask only in ordinary prose.",
+      "required_events": [
+        "ask_user_question"
+      ],
+      "files": {
+        "accent.json": {
+          "accent": "amber"
+        }
+      }
+    },
+    {
+      "id": "question-freeform",
+      "tier": "extended",
+      "answer": "violet comet",
+      "prompt": "Use the native interactive question tool to ask me for a two-word trace label as free text. Supply no suggested answers or options. Wait for my explicit answer through that tool, then write label.json containing exactly the answer under key label. Do not assume an answer or ask only in ordinary prose. After writing the file, recall the numeric sum and JSON filename from the earlier workspace task without reading them again, and include remembered sum=42 file=answer.json in your final answer.",
+      "required_events": ["ask_user_question", "ask_user_resolved"],
+      "require_freeform_question": true,
+      "assistant_contains": ["remembered sum=42 file=answer.json"],
+      "files": {"label.json": {"label": "violet comet"}}
+    },
+    {
+      "id": "long-output",
+      "tier": "extended",
+      "prompt": "Run a Python command that prints 200 numbered lines, each containing the Unicode text café 東京. Then run a successful command with no stdout. Summarize how many lines were emitted. Keep the output in tool results rather than repeating it in your final answer.",
+      "required_tools": [
+        "command"
+      ],
+      "tool_output_contains": [
+        "café",
+        "東京"
+      ]
+    },
+    {
+      "id": "background",
+      "tier": "extended",
+      "disconnect_during": true,
+      "prompt": "Run python3 -c 'import time; time.sleep(5); print(\"FORGE_BACKGROUND_DONE\")'. This intentionally completes while the observer is disconnected. Report completion after observing the tool output.",
+      "required_tools": [
+        "command"
+      ],
+      "tool_output_contains": [
+        "FORGE_BACKGROUND_DONE"
+      ]
+    }
+  ]
+}

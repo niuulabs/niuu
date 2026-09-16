@@ -364,6 +364,8 @@ async def _run_daemon(
         or channels_cfg.slack.enabled
         or channels_cfg.matrix.enabled
         or channels_cfg.whatsapp.enabled
+        or getattr(channels_cfg, "openclaw", None) is not None
+        and channels_cfg.openclaw.enabled
     )
     if _any_channel:
         gw = RavnGateway(

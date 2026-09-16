@@ -1,0 +1,89 @@
+name: Forge Live Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Running Forge platform URL reachable by this runner
+        required: true
+        type: string
+      workspace_root:
+        description: Isolated test workspace root on the local-process runtime host
+        required: true
+        type: string
+      providers:
+        description: Provider selection
+        type: choice
+        options: [both, claude-tmux, codex]
+        default: both
+      extended:
+        description: Include plan, questions, large output and disconnected capture
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forge-live-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  live:
+    # Dedicated runner: real platform access, tmux, provider CLIs and auth are required.
+    # No pull_request trigger: this lane consumes provider capacity.
+    runs-on: [self-hosted, forge-live]
+    timeout-minutes: 60
+    env:
+      FORGE_LIVE_TOKEN: ${{ secrets.FORGE_LIVE_TOKEN }}
+      FORGE_TRACE_DATABASE_URL: ${{ secrets.FORGE_TRACE_DATABASE_URL }}
+      TARGET_URL: ${{ inputs.base_url }}
+      WORKSPACE_ROOT: ${{ inputs.workspace_root }}
+      PROVIDERS: ${{ inputs.providers }}
+      EXTENDED: ${{ inputs.extended }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Install project environment
+        run: uv sync --frozen --all-extras --dev
+      - name: Drive real sessions
+        shell: bash
+        run: |
+          args=(--base-url "$TARGET_URL" --workspace-root "$WORKSPACE_ROOT" --output .forge-results/live)
+          if [[ "$PROVIDERS" != both ]]; then args+=(--providers "$PROVIDERS"); fi
+          if [[ "$EXTENDED" == true ]]; then args+=(--extended); fi
+          uv run --frozen python -m scripts.forge_live "${args[@]}"
+      - name: Inspect captured database and replay evidence
+        if: always()
+        run: |
+          uv run --frozen python - <<'PY'
+          import asyncio
+          import os
+          from pathlib import Path
+          from scripts.forge_corpus import inspect_bundle, read_database
+          inspected = 0
+          failed = False
+          for manifest in Path('.forge-results/live').glob('*/manifest.json'):
+              bundle = manifest.parent
+              if not (bundle / 'session.frames.json').exists():
+                  continue
+              raw = None
+              if os.environ.get('FORGE_TRACE_DATABASE_URL'):
+                  raw = asyncio.run(read_database(bundle, 'FORGE_TRACE_DATABASE_URL'))
+              audit = inspect_bundle(bundle, raw)
+              inspected += 1
+              failed |= bool(audit['row_errors']) or not audit['fixture_replay']['passed']
+              failed |= not audit['live_persistence']['passed']
+              if raw is not None:
+                  failed |= not audit['database_verified']
+          if not inspected or failed:
+              raise SystemExit('Recorded trace inspection did not pass')
+          PY
+      - name: Retain run evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: forge-live-${{ github.run_id }}
+          path: .forge-results/live/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7

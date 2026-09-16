@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -12,9 +13,10 @@ from volundr.domain.models import (
     ExternalSessionRecord,
     LocalMountSource,
     Session,
+    SessionLogEntry,
     SessionStatus,
 )
-from volundr.domain.ports import ExternalSessionProvider
+from volundr.domain.ports import ExternalSessionProvider, SessionEventLogRepository
 from volundr.domain.services import ExternalSessionService, SessionService
 
 
@@ -33,6 +35,18 @@ class FakeProvider(ExternalSessionProvider):
     @property
     def harness(self) -> str:
         return self._harness
+
+    async def read_transcript(self, external_id, session_id):
+        return [
+            SessionLogEntry(
+                session_id=session_id,
+                seq=1,
+                kind="user",
+                role="user",
+                payload={"type": "user", "message": {"content": "Recovered request"}},
+                ts=datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
+            )
+        ]
 
     async def list_sessions(self) -> list[ExternalSessionRecord]:
         return list(self._records)
@@ -75,7 +89,14 @@ def session_service(repository, pod_manager) -> SessionService:
 @pytest.fixture
 def app(repository, session_service, claude_record) -> FastAPI:
     provider = FakeProvider("claude-code", "claude", [claude_record])
-    external_service = ExternalSessionService([provider], repository, session_service)
+    external_service = ExternalSessionService(
+        [provider],
+        repository,
+        session_service,
+        event_log_repository=AsyncMock(
+            spec=SessionEventLogRepository, import_history=AsyncMock(return_value=1)
+        ),
+    )
 
     app = FastAPI()
     router = create_router(
@@ -182,6 +203,9 @@ class TestImportSession:
             repository,
             session_service,
             allowed_workspace_prefixes=[str(allowed_dir)],
+            event_log_repository=AsyncMock(
+                spec=SessionEventLogRepository, import_history=AsyncMock(return_value=1)
+            ),
         )
         app = FastAPI()
         app.include_router(
@@ -216,7 +240,14 @@ class TestImportSession:
             workspace_exists=False,
         )
         provider = FakeProvider("claude-code", "claude", [record])
-        external_service = ExternalSessionService([provider], repository, session_service)
+        external_service = ExternalSessionService(
+            [provider],
+            repository,
+            session_service,
+            event_log_repository=AsyncMock(
+                spec=SessionEventLogRepository, import_history=AsyncMock(return_value=1)
+            ),
+        )
         app = FastAPI()
         app.include_router(
             create_router(

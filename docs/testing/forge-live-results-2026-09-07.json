@@ -1,0 +1,700 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-07",
+  "branch": "skuld-agent-tokens",
+  "provider_cli_versions": {
+    "claude": "2.1.263",
+    "codex": "0.153.4"
+  },
+  "runs": [
+    {
+      "run_id": "codex-caea76a023",
+      "provider": "codex",
+      "session_id": "c01e2e67-5595-4ca5-b173-5364b5ac72b1",
+      "passed": false,
+      "errors": [
+        "harvest: InvalidStatus: server rejected WebSocket connection: HTTP 403"
+      ],
+      "scenarios": [
+        {
+          "id": "workspace",
+          "passed": true,
+          "failed_checks": []
+        }
+      ],
+      "audit": {
+        "database_verified": true,
+        "database_rows": 59,
+        "fixture_replay": {
+          "passed": true,
+          "expected_count": 55,
+          "actual_count": 55
+        },
+        "cursor_fixture_replay": {
+          "passed": true,
+          "expected_count": 27,
+          "actual_count": 27
+        },
+        "live_persistence": {
+          "passed": false,
+          "checked": 53,
+          "missing": [
+            {
+              "index": 8,
+              "type": "user_consumed",
+              "hash": "83df806eecf6ec87e9f708bb2c4515f15b814431fbec9a668aae4cd8442cac3a"
+            }
+          ],
+          "scope": "captured live events are an ordered subsequence of persisted events",
+          "snapshot_types_checked_separately": [
+            "agent_update",
+            "available_commands",
+            "conversation_history",
+            "conversation_state",
+            "plan",
+            "terminal_snapshot"
+          ]
+        }
+      },
+      "cleanup_status": "stopped"
+    },
+    {
+      "run_id": "claude-tmux-f30b968be5",
+      "provider": "claude-tmux",
+      "session_id": "158515e4-e165-4dba-a829-c44f8d310932",
+      "passed": false,
+      "errors": [
+        "harvest: InvalidStatus: server rejected WebSocket connection: HTTP 403"
+      ],
+      "scenarios": [
+        {
+          "id": "workspace",
+          "passed": false,
+          "failed_checks": [
+            "terminal-result",
+            "successful-result",
+            "tool:command",
+            "tool-output:FORGE_SUM=42",
+            "file:answer.json"
+          ]
+        }
+      ],
+      "audit": {
+        "database_verified": true,
+        "database_rows": 16,
+        "fixture_replay": {
+          "passed": true,
+          "expected_count": 11,
+          "actual_count": 11
+        },
+        "cursor_fixture_replay": {
+          "passed": true,
+          "expected_count": 5,
+          "actual_count": 5
+        },
+        "live_persistence": {
+          "passed": true,
+          "checked": 8,
+          "missing": [],
+          "scope": "captured live events are an ordered subsequence of persisted events",
+          "snapshot_types_checked_separately": [
+            "agent_update",
+            "available_commands",
+            "conversation_history",
+            "conversation_state",
+            "plan",
+            "terminal_snapshot"
+          ]
+        }
+      },
+      "cleanup_status": "stopped"
+    },
+    {
+      "run_id": "claude-tmux-bee30f9c9d",
+      "provider": "claude-tmux",
+      "session_id": "e2878c83-c547-4013-887d-93161144ad80",
+      "passed": false,
+      "errors": [
+        "harvest: InvalidStatus: server rejected WebSocket connection: HTTP 403"
+      ],
+      "scenarios": [
+        {
+          "id": "workspace",
+          "passed": true,
+          "failed_checks": []
+        }
+      ],
+      "audit": {
+        "database_verified": true,
+        "database_rows": 92,
+        "fixture_replay": {
+          "passed": true,
+          "expected_count": 88,
+          "actual_count": 88
+        },
+        "cursor_fixture_replay": {
+          "passed": true,
+          "expected_count": 43,
+          "actual_count": 43
+        },
+        "live_persistence": {
+          "passed": false,
+          "checked": 85,
+          "missing": [
+            {
+              "index": 19,
+              "type": "terminal_prompt_submitted",
+              "hash": "f81d8a6ef9fc9df9a4f9710de9669baab701edc664234f11f0e8158c9fd47a89"
+            }
+          ],
+          "scope": "captured live events are an ordered subsequence of persisted events",
+          "snapshot_types_checked_separately": [
+            "agent_update",
+            "available_commands",
+            "conversation_history",
+            "conversation_state",
+            "plan",
+            "terminal_snapshot"
+          ]
+        }
+      },
+      "cleanup_status": "stopped"
+    },
+    {
+      "run_id": "codex-47d311efeb",
+      "provider": "codex",
+      "session_id": "ce9a75db-018a-4732-be95-c4a4529043cf",
+      "passed": false,
+      "errors": [
+        "harvest: InvalidStatus: server rejected WebSocket connection: HTTP 403"
+      ],
+      "scenarios": [
+        {
+          "id": "workspace",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "search",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "agents",
+          "passed": false,
+          "failed_checks": [
+            "tool:agent",
+            "agent-count"
+          ]
+        },
+        {
+          "id": "recovery",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "presentation",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "continuity",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "plan",
+          "passed": false,
+          "failed_checks": [
+            "tool:plan"
+          ]
+        },
+        {
+          "id": "question",
+          "passed": false,
+          "failed_checks": [
+            "terminal-result",
+            "successful-result",
+            "event:ask_user_question",
+            "file:accent.json"
+          ]
+        }
+      ],
+      "audit": {
+        "database_verified": true,
+        "database_rows": 627,
+        "fixture_replay": {
+          "passed": true,
+          "expected_count": 608,
+          "actual_count": 608
+        },
+        "cursor_fixture_replay": {
+          "passed": true,
+          "expected_count": 303,
+          "actual_count": 303
+        },
+        "live_persistence": {
+          "passed": false,
+          "checked": 599,
+          "missing": [
+            {
+              "index": 8,
+              "type": "user_consumed",
+              "hash": "24680fce7dadea12d7b90feb6fdf37130ce8bed19e45a3ac41755f1a357a5528"
+            },
+            {
+              "index": 56,
+              "type": "user_consumed",
+              "hash": "0c0cbfdf8c2eac9efe7e31b4ebad715a82b1572a6492f5b094766df9636d1c3d"
+            },
+            {
+              "index": 151,
+              "type": "user_consumed",
+              "hash": "77f60f233cba4439d5a8b91d110449860055afe90a511edc3f641310db29f753"
+            },
+            {
+              "index": 206,
+              "type": "assistant",
+              "hash": "294191409337c07a08e0a27ac9df316d20ad4d5cab3c1cd127296c188b8a9844"
+            },
+            {
+              "index": 450,
+              "type": "result",
+              "hash": "81bc7807b805e74136effda1edb52f28c87db8c90936573725b33e34a58a85a1"
+            },
+            {
+              "index": 458,
+              "type": "user_consumed",
+              "hash": "191fbecece6b3ab53f58435174fd6766926b3d2959b4fc0e00709b1d38975e83"
+            },
+            {
+              "index": 472,
+              "type": "result",
+              "hash": "130f8817b999ce96b0908a9131f5842b25d9c6622ec25678863593f4d874d86d"
+            },
+            {
+              "index": 477,
+              "type": "user_consumed",
+              "hash": "4c32a2a65505480f9bb6e0aa4aa9c16c2e36356c01493e0e71a46ea42a0f0227"
+            },
+            {
+              "index": 523,
+              "type": "assistant",
+              "hash": "6aa0cf70e185c6682918b60a4638adec771fc2d80276e96747c1dab47aee65f3"
+            },
+            {
+              "index": 599,
+              "type": "user_consumed",
+              "hash": "5f1aa9102c1f24b4d30af9f2022ab889891381c1ccd3885cbdc8af37a7e7a5c3"
+            }
+          ],
+          "scope": "captured live events are an ordered subsequence of persisted events",
+          "snapshot_types_checked_separately": [
+            "agent_update",
+            "available_commands",
+            "conversation_history",
+            "conversation_state",
+            "plan",
+            "terminal_snapshot"
+          ]
+        }
+      },
+      "cleanup_status": "stopped"
+    },
+    {
+      "run_id": "claude-tmux-5521bc2046",
+      "provider": "claude-tmux",
+      "session_id": "8fac057d-2ff2-4813-a115-30df7f6b4c2f",
+      "passed": false,
+      "errors": [
+        "harvest: InvalidStatus: server rejected WebSocket connection: HTTP 403"
+      ],
+      "scenarios": [
+        {
+          "id": "workspace",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "search",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "agents",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "recovery",
+          "passed": false,
+          "failed_checks": [
+            "terminal-result",
+            "tool:command",
+            "tool-output:FORGE_EXPECTED_FAILURE",
+            "tool-output:FORGE_RECOVERED",
+            "intentional-tool-failure"
+          ]
+        },
+        {
+          "id": "presentation",
+          "passed": false,
+          "failed_checks": [
+            "assistant:```python",
+            "assistant:caf\u00e9",
+            "assistant:\u6771\u4eac",
+            "assistant:\ud83d\udee0",
+            "assistant:docs.python.org"
+          ]
+        },
+        {
+          "id": "continuity",
+          "passed": false,
+          "failed_checks": [
+            "terminal-result"
+          ]
+        },
+        {
+          "id": "plan",
+          "passed": false,
+          "failed_checks": [
+            "tool:plan"
+          ]
+        },
+        {
+          "id": "question",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "long-output",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "background",
+          "passed": true,
+          "failed_checks": []
+        }
+      ],
+      "audit": {
+        "database_verified": true,
+        "database_rows": 1060,
+        "fixture_replay": {
+          "passed": true,
+          "expected_count": 1032,
+          "actual_count": 1032
+        },
+        "cursor_fixture_replay": {
+          "passed": true,
+          "expected_count": 515,
+          "actual_count": 515
+        },
+        "live_persistence": {
+          "passed": false,
+          "checked": 959,
+          "missing": [
+            {
+              "index": 19,
+              "type": "terminal_prompt_submitted",
+              "hash": "9c395455b9ee0a920f342d1bdaf51ba5afb6434e676ce2bd65e498e4b4f21ee0"
+            },
+            {
+              "index": 111,
+              "type": "terminal_prompt_submitted",
+              "hash": "ea760db07662cf91e0037a0454846843679ccfec07c79159a4167ba76d88b3aa"
+            },
+            {
+              "index": 283,
+              "type": "terminal_prompt_submitted",
+              "hash": "dd98077a4a034261a0fccb602830b17fd38c209fc53eb9fa0ad2e10d01922c36"
+            },
+            {
+              "index": 478,
+              "type": "terminal_prompt_submitted",
+              "hash": "dd0f16aa83bcf006911fda799f291aaaa29596598890283da8131da9139248d8"
+            },
+            {
+              "index": 544,
+              "type": "terminal_prompt_submitted",
+              "hash": "166e2ce79060d20bbb7b2dd60e299fb712d19e1c3261b053a1dd951695ceccb1"
+            },
+            {
+              "index": 610,
+              "type": "terminal_prompt_submitted",
+              "hash": "266ebdf5cf1393ce91d4daa36bf7354f3af9ea0c6664e9bba3ab634c2627fb11"
+            },
+            {
+              "index": 669,
+              "type": "terminal_prompt_submitted",
+              "hash": "b9ef98b2dce399999ee095801ecf7332dae52a187f099e09322688ab6c3e0a79"
+            },
+            {
+              "index": 840,
+              "type": "terminal_prompt_submitted",
+              "hash": "5fd49e80e412f06642ad8f86e79997c37911882dff375ef5359fe63feaa62e6d"
+            },
+            {
+              "index": 908,
+              "type": "terminal_prompt_submitted",
+              "hash": "58cd684f40c906493c3fd875399beb2ca7fdcb0e6d2797e4d2809e7b88705d08"
+            }
+          ],
+          "scope": "captured live events are an ordered subsequence of persisted events",
+          "snapshot_types_checked_separately": [
+            "agent_update",
+            "available_commands",
+            "conversation_history",
+            "conversation_state",
+            "plan",
+            "terminal_snapshot"
+          ]
+        }
+      },
+      "cleanup_status": "stopped"
+    },
+    {
+      "run_id": "codex-91e7907f5b",
+      "provider": "codex",
+      "session_id": "661a1460-bf21-43e4-a587-9f6827250bba",
+      "passed": false,
+      "errors": [
+        "harvest: InvalidStatus: server rejected WebSocket connection: HTTP 403"
+      ],
+      "scenarios": [
+        {
+          "id": "workspace",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "search",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "agents",
+          "passed": false,
+          "failed_checks": [
+            "tool:agent",
+            "agent-count"
+          ]
+        },
+        {
+          "id": "recovery",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "presentation",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "continuity",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "plan",
+          "passed": false,
+          "failed_checks": [
+            "tool:plan"
+          ]
+        },
+        {
+          "id": "question",
+          "passed": false,
+          "failed_checks": [
+            "terminal-result",
+            "correlated-completion",
+            "successful-result",
+            "event:ask_user_question",
+            "file:accent.json"
+          ]
+        }
+      ],
+      "cleanup_status": "stopped"
+    },
+    {
+      "run_id": "claude-tmux-ad948830dc",
+      "provider": "claude-tmux",
+      "session_id": "aba314d5-aafe-4487-afd1-b8306e121e6e",
+      "passed": false,
+      "errors": [
+        "harvest: InvalidStatus: server rejected WebSocket connection: HTTP 403"
+      ],
+      "scenarios": [
+        {
+          "id": "workspace",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "search",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "agents",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "recovery",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "presentation",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "continuity",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "plan",
+          "passed": false,
+          "failed_checks": [
+            "tool:plan"
+          ]
+        },
+        {
+          "id": "question",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "long-output",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "background",
+          "passed": true,
+          "failed_checks": []
+        }
+      ],
+      "audit": {
+        "database_verified": true,
+        "database_rows": 1173,
+        "fixture_replay": {
+          "passed": true,
+          "expected_count": 1143,
+          "actual_count": 1143
+        },
+        "cursor_fixture_replay": {
+          "passed": true,
+          "expected_count": 571,
+          "actual_count": 571
+        },
+        "live_persistence": {
+          "passed": true,
+          "checked": 1064,
+          "missing": [],
+          "scope": "captured live events are an ordered subsequence of persisted events",
+          "excluded_connection_seed_types": [
+            "conversation_history",
+            "conversation_state",
+            "terminal_snapshot"
+          ],
+          "reconciled_snapshots": 0
+        }
+      },
+      "cleanup_status": "stopped"
+    },
+    {
+      "run_id": "codex-ec1e9d9723",
+      "provider": "codex",
+      "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+      "passed": false,
+      "errors": [
+        "harvest: InvalidStatus: server rejected WebSocket connection: HTTP 403"
+      ],
+      "scenarios": [
+        {
+          "id": "workspace",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "agents",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "question",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "long-output",
+          "passed": true,
+          "failed_checks": []
+        },
+        {
+          "id": "background",
+          "passed": true,
+          "failed_checks": []
+        }
+      ],
+      "audit": {
+        "database_verified": true,
+        "database_rows": 525,
+        "fixture_replay": {
+          "passed": true,
+          "expected_count": 511,
+          "actual_count": 511
+        },
+        "cursor_fixture_replay": {
+          "passed": true,
+          "expected_count": 255,
+          "actual_count": 255
+        },
+        "live_persistence": {
+          "passed": true,
+          "checked": 451,
+          "missing": [],
+          "scope": "captured live events are an ordered subsequence of persisted events",
+          "excluded_connection_seed_types": [
+            "conversation_history",
+            "conversation_state",
+            "terminal_snapshot"
+          ],
+          "reconciled_snapshots": 0
+        }
+      },
+      "cleanup_status": "stopped"
+    }
+  ],
+  "reviewed_corpus": {
+    "cases": 11,
+    "frames": 1232
+  },
+  "notes": [
+    "No shared-platform restart performed. The replay facade fix is validated in tests; the existing process still rejects replay WebSockets.",
+    "Plan tools are unavailable in the tested provider configurations.",
+    "iOS simulator/device rendering has not been run in this Linux workspace."
+  ],
+  "validation": {
+    "backend_tests_passed": 4326,
+    "backend_tests_skipped": 24,
+    "backend_tests_xfailed": 1,
+    "skuld_coverage_percent": 82.08,
+    "coverage_required_percent": 85,
+    "coverage_gate_passed": false,
+    "reviewed_corpus_tests_passed": 21,
+    "trace_lab_chromium_smoke": "passed",
+    "fixture_network_replay": {
+      "scenario": "codex agents",
+      "frames": 248,
+      "passed": true
+    },
+    "facade_tests": "passed: embedded forwarding, owner visibility, backend denial, remote forwarding, disconnect cleanup",
+    "shared_platform_restarted": false,
+    "ios_device_tests_run": false
+  }
+}

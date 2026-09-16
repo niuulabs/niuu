@@ -34,6 +34,11 @@ vi.mock('@xterm/xterm', () => ({
     dispose = vi.fn();
     loadAddon = vi.fn();
     onData = vi.fn().mockReturnValue({ dispose: vi.fn() });
+    onResize = vi.fn().mockReturnValue({ dispose: vi.fn() });
+    focus = vi.fn();
+    refresh = vi.fn();
+    cols = 80;
+    rows = 24;
     options = {};
   },
 }));
@@ -594,6 +599,25 @@ describe('LiveSessionDetailPage', () => {
     global.fetch = vi.fn(async (input: string | URL | Request) => {
       const url =
         typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+      if (url.includes('/api/terminal/sessions')) {
+        return new Response(
+          JSON.stringify({
+            sessions: [
+              {
+                terminalId: 'detail-shell-1',
+                label: 'Shell 1',
+                cli_type: 'shell',
+                status: 'running',
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        );
+      }
 
       if (url.includes('/api/diff/files')) {
         return new Response(JSON.stringify({ files: [] }), {
@@ -1365,6 +1389,7 @@ describe('LiveSessionDetailPage', () => {
       await waitFor(() => {
         expect(screen.getByRole('button', { name: /New terminal/i })).toBeInTheDocument();
       });
+      expect(await screen.findByRole('tab', { name: /shell 1/i })).toBeInTheDocument();
     });
 
     it('falls back to the first available tab when chat is hidden', async () => {

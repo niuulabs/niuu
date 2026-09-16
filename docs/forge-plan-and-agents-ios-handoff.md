@@ -1,5 +1,13 @@
 # Forge plan & running-agents — iOS handoff
 
+> **2026-09-07 update:** Claude/tmux and Codex are now the active live acceptance
+> targets. Codex emits the shared `plan` and `agent_update` surfaces when its native
+> runtime supplies those events; scoped worker notifications use additive
+> `agent_event` frames. Installed models may lack the native plan tool, so absence
+> still requires graceful handling. See the [live acceptance plan](testing/forge-live-agentic-acceptance.md)
+> and [reviewed corpus](../tests/fixtures/forge-corpus/README.md) for executable
+> examples, question answers, reconnect checkpoints, and the iOS test matrix.
+
 > **Audience:** an iOS engineer building against the Forge session API. You can
 > implement everything here **without reading the backend source.** Every JSON
 > shape, enum, and reconciliation rule below was verified against the emitting
@@ -23,11 +31,12 @@ structures:
   - **teammates** — non-primary tmux panes from `--teammate-mode tmux`
     (agent-teams). Each extra pane is treated as a running teammate agent.
 
-**Scope limit — tmux-interactive Claude sessions only.** This data is produced by
-`TmuxInteractiveTransport` (Claude Code running in a tmux pane with hooks
-enabled). Sessions on other transports (SDK, Codex, OpenCode) do **not** emit
-these frames — your code should treat plan/agents as *optional* and degrade to an
-empty/hidden state when they never arrive.
+**Active scope — tmux-interactive Claude and Codex app-server sessions.** Claude
+produces these frames through terminal hooks; Codex maps its native plan and
+worker activity events to the same surfaces. Tool availability still varies by
+runtime configuration. Treat plan/agents as *optional* and degrade to an
+empty/hidden state when they never arrive. Other transports retain their existing
+capability-specific behavior.
 
 **Two delivery channels, must be reconciled.** The same data arrives:
 

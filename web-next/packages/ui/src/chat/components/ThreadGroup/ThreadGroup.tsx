@@ -2,7 +2,14 @@ import { ChevronRight, ChevronDown } from 'lucide-react';
 import { cn } from '../../../utils/cn';
 import { resolveParticipantColor } from '../../utils/participantColor';
 import type { ChatMessage } from '../../types';
-import { UserMessage, AssistantMessage, StreamingMessage, SystemMessage } from '../ChatMessages';
+import {
+  UserMessage,
+  AssistantMessage,
+  StreamingMessage,
+  SystemMessage,
+  hasNativeMessageParts,
+  messageRenderKey,
+} from '../ChatMessages';
 import './ThreadGroup.css';
 
 const formatTime = (date: Date): string =>
@@ -61,11 +68,17 @@ export function ThreadGroup({ messages, isCollapsed, onToggle }: ThreadGroupProp
       >
         {messages.map((msg) => {
           if (msg.metadata?.messageType === 'system')
-            return <SystemMessage key={msg.id} message={msg} />;
-          if (msg.role === 'user') return <UserMessage key={msg.id} message={msg} />;
-          if (msg.status === 'running')
-            return <StreamingMessage key={msg.id} content={msg.content} parts={msg.parts} />;
-          return <AssistantMessage key={msg.id} message={msg} />;
+            return <SystemMessage key={messageRenderKey(msg)} message={msg} />;
+          if (msg.role === 'user') return <UserMessage key={messageRenderKey(msg)} message={msg} />;
+          if (msg.status === 'running' && !hasNativeMessageParts(msg.parts))
+            return (
+              <StreamingMessage
+                key={messageRenderKey(msg)}
+                content={msg.content}
+                parts={msg.parts}
+              />
+            );
+          return <AssistantMessage key={messageRenderKey(msg)} message={msg} />;
         })}
       </div>
     </div>

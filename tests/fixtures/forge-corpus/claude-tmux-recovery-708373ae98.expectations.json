@@ -1,0 +1,345 @@
+{
+  "schema_version": 1,
+  "fixture": "claude-tmux-recovery-708373ae98.frames.json",
+  "sha256": "708373ae9812297aa203651e770a16f80d7eda5fa839f346c49e39864e3074bc",
+  "source_slice_sha256": "505e86b15c6bf36e33bf24d831957c49ecd6bb5f13c73d5af285b9f2a5f0518e",
+  "redacted": true,
+  "source": "live-provider",
+  "provider": "claude-tmux",
+  "model": "claude-opus-5",
+  "scenario": {
+    "scenario": "recovery",
+    "passed": true,
+    "checks": [
+      {
+        "name": "terminal-result",
+        "passed": true,
+        "detail": 2
+      },
+      {
+        "name": "correlated-completion",
+        "passed": true,
+        "detail": 1
+      },
+      {
+        "name": "successful-result",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "tool-pairs",
+        "passed": true,
+        "detail": {
+          "unpaired_calls": [],
+          "orphan_results": []
+        }
+      },
+      {
+        "name": "tool:command",
+        "passed": true,
+        "detail": 2
+      },
+      {
+        "name": "tool-output:FORGE_EXPECTED_FAILURE",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "tool-output:FORGE_RECOVERED",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "intentional-tool-failure",
+        "passed": true,
+        "detail": null
+      }
+    ],
+    "observed": {
+      "calls": {
+        "toolu_01BssdYfGbmkZ2tudfRteL3x": {
+          "id": "toolu_01BssdYfGbmkZ2tudfRteL3x",
+          "name": "Bash",
+          "type": "tool_use",
+          "input": {
+            "command": "python3 -c 'import sys; print(\"FORGE_EXPECTED_FAILURE\"); sys.exit(7)'",
+            "description": "Run intentional failing command exiting 7"
+          }
+        },
+        "toolu_011XKBtp3JDQDK3VgTcCW6sj": {
+          "id": "toolu_011XKBtp3JDQDK3VgTcCW6sj",
+          "name": "Bash",
+          "type": "tool_use",
+          "input": {
+            "command": "echo FORGE_RECOVERED",
+            "description": "Print recovery marker"
+          }
+        }
+      },
+      "results": {
+        "toolu_01BssdYfGbmkZ2tudfRteL3x": {
+          "type": "tool_result",
+          "content": "Exit code 7\nFORGE_EXPECTED_FAILURE",
+          "is_error": true,
+          "tool_use_id": "toolu_01BssdYfGbmkZ2tudfRteL3x"
+        },
+        "toolu_011XKBtp3JDQDK3VgTcCW6sj": {
+          "type": "tool_result",
+          "content": "{\"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false, \"stderr\": \"\", \"stdout\": \"FORGE_RECOVERED\"}",
+          "is_error": false,
+          "tool_use_id": "toolu_011XKBtp3JDQDK3VgTcCW6sj"
+        }
+      },
+      "tool_families": {
+        "command": 2
+      },
+      "agent_ids": [],
+      "assistant_text": "That's `verify-worker` signing off idle — same MATCH verdict already reported. Both workers are now finished and idle; nothing further to do.Both steps ran as separate commands, with no `|| true` or other fallback masking the status.\n\n1. **Intentional failure** — `python3 -c 'import sys; print(\"FORGE_EXPECTED_FAILURE\"); sys.exit(7)'` printed `FORGE_EXPECTED_FAILURE` and returned **exit code 7**, surfaced to me as a failed tool result.\n2. **Recovery** — a separate `echo FORGE_RECOVERED` succeeded with exit code 0, printing `FORGE_RECOVERED`.\n\nThe first failure was deliberate: you asked for a harmless non-zero exit so the error path could be observed. Nothing is broken in the workspace — `sys.exit(7)` is the script's own chosen status, not a tool or environment fault, and the following command ran normally.\n\nUnrelated note: the `paper` MCP server failed to connect this session (`CONNECT_TIMEOUT` — version negotiation probe timed out after 5000ms). It didn't affect this task, but it's a connection failure worth retrying if you need it.\n\n[FORGE_DONE:cffd34aaf84643fe9d03fb671f99e421:recovery]",
+      "unpaired_calls": [],
+      "orphan_results": [],
+      "event_counts": {
+        "claude_hook": 18,
+        "assistant": 4,
+        "result": 2,
+        "terminal_frame": 34,
+        "user": 3,
+        "user_confirmed": 1,
+        "terminal_input_sent": 1,
+        "terminal_key_sent": 4,
+        "user_delivered": 1,
+        "terminal_prompt_submitted": 1,
+        "user_active": 1
+      }
+    },
+    "prompt": "Exercise a harmless tool failure and recovery. First run python3 -c 'import sys; print(\"FORGE_EXPECTED_FAILURE\"); sys.exit(7)' as its own command. Observe the failed tool result, then run a separate successful command that prints FORGE_RECOVERED. Do not hide the first exit status with a shell fallback. Explain that the failure was intentional.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:cffd34aaf84643fe9d03fb671f99e421:recovery]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+    "after_seq": 663,
+    "through_seq": 736,
+    "duration_seconds": 11.552
+  },
+  "review": {
+    "status": "accepted",
+    "reviewer": "Codex project-review agent, 2026-09-07",
+    "source_frames_sha256": "2149d1bd67e044968a034a4bcdd97d8b783adbc27e1cefec3818a2e6eec705a6",
+    "notes": [
+      "Reviewed prompt and captured interval (663, 736]. All scenario action assertions passed; tool IDs pair with results.",
+      "PostgreSQL raw rows project to these REST frames exactly. Full and cursor fixture replay match. The captured live stream is preserved in database order.",
+      "The running platform's public replay WebSocket remains unavailable until the facade fix is deployed; this fixture certifies the captured scenario, not that deployment.",
+      "Inspected separate command results: exit 7 includes FORGE_EXPECTED_FAILURE; later successful command includes FORGE_RECOVERED."
+    ]
+  },
+  "checkpoints": [
+    {
+      "after_seq": 667,
+      "event_type": "result",
+      "turn_count": 1,
+      "partial": false,
+      "turns_sha256": "bba5b963fe9c97afa3d81b839aefed39a3734cffb815206eada5eda6c21a6b2b"
+    },
+    {
+      "after_seq": 731,
+      "event_type": "result",
+      "turn_count": 3,
+      "partial": false,
+      "turns_sha256": "754ea0a267d1c7e5c762342ea741f90c935bc754373cd6389375fc0ae1acea5d"
+    }
+  ],
+  "expected_turns": [
+    {
+      "id": "459d97ba-ead6-5b70-a7d4-c5fa68d5320d",
+      "role": "assistant",
+      "content": "That's `verify-worker` signing off idle — same MATCH verdict already reported. Both workers are now finished and idle; nothing further to do.",
+      "parts": [
+        {
+          "type": "text",
+          "text": "That's `verify-worker` signing off idle — same MATCH verdict already reported. Both workers are now finished and idle; nothing further to do."
+        }
+      ],
+      "created_at": "2026-09-07T16:44:59.572442+00:00",
+      "metadata": {
+        "usage": {
+          "claude-opus-5": {
+            "inputTokens": 214,
+            "outputTokens": 35,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0
+          }
+        },
+        "cost": null,
+        "model": "claude-opus-5",
+        "stop_reason": "stop"
+      },
+      "visibility": "public"
+    },
+    {
+      "id": "0c15ae4a-115f-492c-9176-51c300640953",
+      "role": "user",
+      "content": "Exercise a harmless tool failure and recovery. First run python3 -c 'import sys; print(\"FORGE_EXPECTED_FAILURE\"); sys.exit(7)' as its own command. Observe the failed tool result, then run a separate successful command that prints FORGE_RECOVERED. Do not hide the first exit status with a shell fallback. Explain that the failure was intentional.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:cffd34aaf84643fe9d03fb671f99e421:recovery]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+      "parts": [],
+      "created_at": "2026-09-07T16:44:59.837577+00:00",
+      "metadata": {
+        "steering_state": "active"
+      },
+      "visibility": "public"
+    },
+    {
+      "id": "38cd90f2-e6e5-5f1d-9876-122108637b4b",
+      "role": "assistant",
+      "content": "Both steps ran as separate commands, with no `|| true` or other fallback masking the status.\n\n1. **Intentional failure** — `python3 -c 'import sys; print(\"FORGE_EXPECTED_FAILURE\"); sys.exit(7)'` printed `FORGE_EXPECTED_FAILURE` and returned **exit code 7**, surfaced to me as a failed tool result.\n2. **Recovery** — a separate `echo FORGE_RECOVERED` succeeded with exit code 0, printing `FORGE_RECOVERED`.\n\nThe first failure was deliberate: you asked for a harmless non-zero exit so the error path could be observed. Nothing is broken in the workspace — `sys.exit(7)` is the script's own chosen status, not a tool or environment fault, and the following command ran normally.\n\nUnrelated note: the `paper` MCP server failed to connect this session (`CONNECT_TIMEOUT` — version negotiation probe timed out after 5000ms). It didn't affect this task, but it's a connection failure worth retrying if you need it.\n\n[FORGE_DONE:cffd34aaf84643fe9d03fb671f99e421:recovery]",
+      "parts": [
+        {
+          "type": "tool_use",
+          "id": "toolu_01BssdYfGbmkZ2tudfRteL3x",
+          "name": "Bash",
+          "input": {
+            "command": "python3 -c 'import sys; print(\"FORGE_EXPECTED_FAILURE\"); sys.exit(7)'",
+            "description": "Run intentional failing command exiting 7"
+          },
+          "started_at": "2026-09-07T16:45:01.940436+00:00",
+          "ended_at": "2026-09-07T16:45:02.001692+00:00",
+          "duration_ms": 61
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_01BssdYfGbmkZ2tudfRteL3x",
+          "content": "Exit code 7\nFORGE_EXPECTED_FAILURE",
+          "is_error": true,
+          "ended_at": "2026-09-07T16:45:02.001692+00:00"
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_011XKBtp3JDQDK3VgTcCW6sj",
+          "name": "Bash",
+          "input": {
+            "command": "echo FORGE_RECOVERED",
+            "description": "Print recovery marker"
+          },
+          "started_at": "2026-09-07T16:45:03.583603+00:00",
+          "ended_at": "2026-09-07T16:45:03.615657+00:00",
+          "duration_ms": 32
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_011XKBtp3JDQDK3VgTcCW6sj",
+          "content": "{\"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false, \"stderr\": \"\", \"stdout\": \"FORGE_RECOVERED\"}",
+          "is_error": false,
+          "ended_at": "2026-09-07T16:45:03.615657+00:00"
+        },
+        {
+          "type": "text",
+          "text": "Both steps ran as separate commands, with no `|| true` or other fallback masking the status.\n\n1. **Intentional failure** — `python3 -c 'import sys; print(\"FORGE_EXPECTED_FAILURE\"); sys.exit(7)'` printed `FORGE_EXPECTED_FAILURE` and returned **exit code 7**, surfaced to me as a failed tool result.\n2. **Recovery** — a separate `echo FORGE_RECOVERED` succeeded with exit code 0, printing `FORGE_RECOVERED`.\n\nThe first failure was deliberate: you asked for a harmless non-zero exit so the error path could be observed. Nothing is broken in the workspace — `sys.exit(7)` is the script's own chosen status, not a tool or environment fault, and the following command ran normally.\n\nUnrelated note: the `paper` MCP server failed to connect this session (`CONNECT_TIMEOUT` — version negotiation probe timed out after 5000ms). It didn't affect this task, but it's a connection failure worth retrying if you need it.\n\n[FORGE_DONE:cffd34aaf84643fe9d03fb671f99e421:recovery]"
+        }
+      ],
+      "created_at": "2026-09-07T16:45:09.227367+00:00",
+      "metadata": {
+        "usage": {
+          "claude-opus-5": {
+            "inputTokens": 175,
+            "outputTokens": 240,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0
+          }
+        },
+        "cost": null,
+        "model": "claude-opus-5",
+        "stop_reason": "stop"
+      },
+      "visibility": "public"
+    }
+  ],
+  "expected_partial": false,
+  "source_run": {
+    "run_id": "claude-tmux-ad948830dc",
+    "session_id": "aba314d5-aafe-4487-afd1-b8306e121e6e",
+    "passed": false,
+    "errors": [
+      "harvest: InvalidStatus: server rejected WebSocket connection: HTTP 403"
+    ]
+  },
+  "observed": {
+    "calls": {
+      "toolu_01BssdYfGbmkZ2tudfRteL3x": {
+        "id": "toolu_01BssdYfGbmkZ2tudfRteL3x",
+        "name": "Bash",
+        "type": "tool_use",
+        "input": {
+          "command": "python3 -c 'import sys; print(\"FORGE_EXPECTED_FAILURE\"); sys.exit(7)'",
+          "description": "Run intentional failing command exiting 7"
+        }
+      },
+      "toolu_011XKBtp3JDQDK3VgTcCW6sj": {
+        "id": "toolu_011XKBtp3JDQDK3VgTcCW6sj",
+        "name": "Bash",
+        "type": "tool_use",
+        "input": {
+          "command": "echo FORGE_RECOVERED",
+          "description": "Print recovery marker"
+        }
+      }
+    },
+    "results": {
+      "toolu_01BssdYfGbmkZ2tudfRteL3x": {
+        "type": "tool_result",
+        "content": "Exit code 7\nFORGE_EXPECTED_FAILURE",
+        "is_error": true,
+        "tool_use_id": "toolu_01BssdYfGbmkZ2tudfRteL3x"
+      },
+      "toolu_011XKBtp3JDQDK3VgTcCW6sj": {
+        "type": "tool_result",
+        "content": "{\"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false, \"stderr\": \"\", \"stdout\": \"FORGE_RECOVERED\"}",
+        "is_error": false,
+        "tool_use_id": "toolu_011XKBtp3JDQDK3VgTcCW6sj"
+      }
+    },
+    "tool_families": {
+      "command": 2
+    },
+    "agent_ids": [],
+    "assistant_text": "That's `verify-worker` signing off idle — same MATCH verdict already reported. Both workers are now finished and idle; nothing further to do.Both steps ran as separate commands, with no `|| true` or other fallback masking the status.\n\n1. **Intentional failure** — `python3 -c 'import sys; print(\"FORGE_EXPECTED_FAILURE\"); sys.exit(7)'` printed `FORGE_EXPECTED_FAILURE` and returned **exit code 7**, surfaced to me as a failed tool result.\n2. **Recovery** — a separate `echo FORGE_RECOVERED` succeeded with exit code 0, printing `FORGE_RECOVERED`.\n\nThe first failure was deliberate: you asked for a harmless non-zero exit so the error path could be observed. Nothing is broken in the workspace — `sys.exit(7)` is the script's own chosen status, not a tool or environment fault, and the following command ran normally.\n\nUnrelated note: the `paper` MCP server failed to connect this session (`CONNECT_TIMEOUT` — version negotiation probe timed out after 5000ms). It didn't affect this task, but it's a connection failure worth retrying if you need it.\n\n[FORGE_DONE:cffd34aaf84643fe9d03fb671f99e421:recovery]",
+    "unpaired_calls": [],
+    "orphan_results": [],
+    "event_counts": {
+      "claude_hook": 18,
+      "assistant": 4,
+      "result": 2,
+      "terminal_frame": 34,
+      "user": 3,
+      "user_confirmed": 1,
+      "terminal_input_sent": 1,
+      "terminal_key_sent": 4,
+      "user_delivered": 1,
+      "terminal_prompt_submitted": 1,
+      "user_active": 1
+    }
+  },
+  "projection_review": {
+    "status": "accepted",
+    "reviewer": "Codex transport/corpus review agent, 2026-09-08",
+    "source_frames_sha256": "708373ae9812297aa203651e770a16f80d7eda5fa839f346c49e39864e3074bc",
+    "previous_projection_sha256": "483542c212b214433c8770dea1003a9f0e338a058aca939cbf5e0e2bf3f00f2b",
+    "projection_sha256": "754ea0a267d1c7e5c762342ea741f90c935bc754373cd6389375fc0ae1acea5d",
+    "reason": "Remove only verified idle terminal scrollback after a completed result. These paints created phantom assistant turns at EOF or the next human boundary; genuine terminal-only work remains supported.",
+    "all_real_turns_byte_identical": true,
+    "removed_phantom_turns": [
+      {
+        "turn_id": "719dad7f-d4a4-54ab-b8bc-4b55980fd40c",
+        "prior_result_seq": 667,
+        "idle_terminal_seq": 669,
+        "old_metadata": {
+          "provenance": "terminal_scrape"
+        },
+        "old_text_sha256": "56b8338869fbc3bc01843e2b316fadddaa4b9e5895ad43f6ed937c0e7b1d6c75"
+      },
+      {
+        "turn_id": "91e27f60-ee7e-5b8a-805d-bb4385c0a96f",
+        "prior_result_seq": 731,
+        "idle_terminal_seq": 736,
+        "old_metadata": {
+          "provenance": "terminal_scrape",
+          "status": "interrupted"
+        },
+        "old_text_sha256": "239c9be93e687f1e1dea3f280966702f2e372acb2685139b1148ee04bf681e96"
+      }
+    ],
+    "reducer_source_sha256": "33f1782405903e2e6b152a3435d36db95c6b2696e3675d67c72e15ed9083317d"
+  }
+}

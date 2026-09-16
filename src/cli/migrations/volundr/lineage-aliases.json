@@ -1,0 +1,66 @@
+{
+  "000050_session_definition.up.sql": [
+    {
+      "filename": "000049_session_definition.up.sql",
+      "sha256": "445459e6efb424224c25d3e04dde7ba84aa19765f444261969df7c271c6f172b"
+    }
+  ],
+  "000051_device_tokens.up.sql": [
+    {
+      "filename": "000050_device_tokens.up.sql",
+      "sha256": "8300e019b70f71d38e4258071a4e7a794a401001ffe9b2f0838d374fdbcc0f1d"
+    }
+  ],
+  "000052_session_activity_state_since.up.sql": [
+    {
+      "filename": "000051_session_activity_state_since.up.sql",
+      "sha256": "be4f049338d0892efcdda16ee40138e6015491f562f27fcc2b4cc3b0c856c031"
+    }
+  ],
+  "000069_session_turn_started_at.up.sql": [
+    {
+      "filename": "000052_session_turn_started_at.up.sql",
+      "sha256": "cb98b1e1cd325b8c3b30f674ff8da711586b13ea665ae26d31b632de7b1bf919"
+    },
+    {
+      "filename": "000062_session_turn_started_at.up.sql",
+      "sha256": "cb98b1e1cd325b8c3b30f674ff8da711586b13ea665ae26d31b632de7b1bf919"
+    }
+  ],
+  "000070_message_delivery_claims.up.sql": [
+    {
+      "filename": "000053_message_delivery_claims.up.sql",
+      "sha256": "1a5bb4da1acaf2c174668ebefc7eba81cee8771213d81dc91b9ae274400ed1a0"
+    },
+    {
+      "filename": "000063_message_delivery_claims.up.sql",
+      "sha256": "1a5bb4da1acaf2c174668ebefc7eba81cee8771213d81dc91b9ae274400ed1a0"
+    }
+  ],
+  "000071_remove_duplicate_event_log_index.up.sql": [
+    {
+      "filename": "000054_remove_duplicate_event_log_index.up.sql",
+      "sha256": "d247d1ea35c013bb3aac35afcab76d017d729b276cd9bc6f3cb13ef2c92f9505"
+    },
+    {
+      "filename": "000064_remove_duplicate_event_log_index.up.sql",
+      "sha256": "d247d1ea35c013bb3aac35afcab76d017d729b276cd9bc6f3cb13ef2c92f9505"
+    }
+  ],
+  "000072_startup_schema_history.up.sql": [
+    {
+      "filename": "000055_startup_schema_history.up.sql",
+      "sha256": "d691bdc83fa0257005ff511431ddd78ea4ec1e828a1fa1cbe3565146306cf3e7"
+    },
+    {
+      "filename": "000065_startup_schema_history.up.sql",
+      "sha256": "d691bdc83fa0257005ff511431ddd78ea4ec1e828a1fa1cbe3565146306cf3e7"
+    }
+  ],
+  "000073_forge_projects.up.sql": [
+    {
+      "filename": "000066_forge_projects.up.sql",
+      "sha256": "d3628fef1c1118f1398dea4ca663fbffbc193dc3eda5dc4494dbc4ef641604e4"
+    }
+  ]
+}

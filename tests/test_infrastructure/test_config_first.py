@@ -20,6 +20,7 @@ OS_KEYS = {
     "PORT",
     "PYTHONPATH",
     "WORKERS",
+    "XDG_CONFIG_HOME",  # OS-defined user configuration directory, like HOME.
 }
 BUILD_KEYS = {"NIUU_BUILD_REF", "NIUU_BUILD_SHA", "NIUU_NUITKA_EXTRA_ARGS"}
 SECRET_MARKERS = ("API_KEY", "DATABASE_URL", "DSN", "PASSWORD", "SECRET", "TOKEN")

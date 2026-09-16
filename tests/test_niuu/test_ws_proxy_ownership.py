@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -154,3 +155,51 @@ class TestOwnershipGuardPolicy:
             )
             is False
         )
+
+
+@pytest.mark.parametrize(
+    "history,suffix", [("recent", "?history=recent"), ("full", ""), (None, "")]
+)
+async def test_browser_proxy_preserves_recent_replay_negotiation(monkeypatch, history, suffix):
+    from niuu import session_proxy
+
+    reg = SkuldPortRegistry()
+    reg.register("recent-session", 9123)
+    ws = _ws(query={"history": history, "access_token": "do-not-forward-in-url"})
+    ws.close = AsyncMock()
+    captured = []
+
+    async def bridge(socket, url, **kwargs):
+        captured.append(url)
+        kwargs["on_connected"]()
+
+    monkeypatch.setattr(session_proxy, "bridge_websocket", bridge)
+    await session_proxy._proxy_ws(ws, "recent-session", reg, "/session", log_label="test")
+    assert captured == [f"ws://127.0.0.1:9123/session{suffix}"]
+
+
+async def test_browser_proxy_forwards_only_allowlisted_history_protocol_fields(monkeypatch):
+    from niuu import session_proxy
+
+    reg = SkuldPortRegistry()
+    reg.register("sender-session", 9123)
+    ws = _ws(
+        query={
+            "history": "recent",
+            "history_protocol": "2",
+            "history_delivery": "none",
+            "access_token": "do-not-forward",
+            "cursor": "do-not-forward",
+        }
+    )
+    captured = []
+
+    async def bridge(socket, url, **kwargs):
+        captured.append(url)
+        kwargs["on_connected"]()
+
+    monkeypatch.setattr(session_proxy, "bridge_websocket", bridge)
+    await session_proxy._proxy_ws(ws, "sender-session", reg, "/session", log_label="test")
+    assert captured == [
+        "ws://127.0.0.1:9123/session?history=recent&history_protocol=2&history_delivery=none"
+    ]

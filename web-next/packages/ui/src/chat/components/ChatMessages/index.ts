@@ -1,1 +1,8 @@
-export { UserMessage, AssistantMessage, StreamingMessage, SystemMessage } from './ChatMessages';
+export {
+  UserMessage,
+  AssistantMessage,
+  StreamingMessage,
+  SystemMessage,
+  hasNativeMessageParts,
+  messageRenderKey,
+} from './ChatMessages';

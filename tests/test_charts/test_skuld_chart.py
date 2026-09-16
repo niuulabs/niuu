@@ -1008,3 +1008,39 @@ def test_websocket_auth_configuration_reaches_broker(enabled):
     policy = next(d for d in docs if d and d["kind"] == "SecurityPolicy")
     headers = {c["header"] for c in policy["spec"]["jwt"]["providers"][0]["claimToHeaders"]}
     assert {"x-auth-user-id", "x-auth-tenant", "x-auth-roles"} <= headers
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_forge_controls_render_into_valid_skuld_configuration():
+    from skuld.config import SkuldSettings
+
+    result = subprocess.run(
+        [
+            "helm",
+            "template",
+            "forge-controls",
+            str(CHART_DIR),
+            "--set",
+            "session.reasoningEffort=high",
+            "--set",
+            "broker.historyHydrationEnabled=false",
+            "--set",
+            "broker.codexReceiveMaxBytes=123456",
+            "--set",
+            "broker.pi.binary=/opt/pi",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    configs = [
+        yaml.safe_load(doc["data"]["config.yaml"])
+        for doc in yaml.safe_load_all(result.stdout)
+        if doc and doc.get("kind") == "ConfigMap" and "config.yaml" in doc.get("data", {})
+    ]
+    config = next(item for item in configs if "session" in item)
+    settings = SkuldSettings(**config)
+    assert settings.session.reasoning_effort == "high"
+    assert settings.history_hydration_enabled is False
+    assert settings.codex_receive_max_bytes == 123456
+    assert settings.pi.binary == "/opt/pi"

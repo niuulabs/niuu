@@ -44,6 +44,9 @@ class TestOllamaEmbeddingAdapter:
 
     @respx.mock
     async def test_embed_returns_vector(self) -> None:
+        respx.post("http://localhost:11434/api/show").mock(
+            return_value=Response(200, json={"model_info": {"nomic.context_length": 2048}})
+        )
         vec = [0.1, 0.2, 0.3, 0.4]
         respx.post("http://localhost:11434/api/embed").mock(
             return_value=Response(200, json=_make_embed_response([vec]))
@@ -54,6 +57,9 @@ class TestOllamaEmbeddingAdapter:
 
     @respx.mock
     async def test_embed_updates_dimension(self) -> None:
+        respx.post("http://localhost:11434/api/show").mock(
+            return_value=Response(200, json={"model_info": {"nomic.context_length": 2048}})
+        )
         vec = [0.0] * 512
         respx.post("http://localhost:11434/api/embed").mock(
             return_value=Response(200, json=_make_embed_response([vec]))
@@ -64,6 +70,9 @@ class TestOllamaEmbeddingAdapter:
 
     @respx.mock
     async def test_embed_batch_calls_embed_per_text(self) -> None:
+        respx.post("http://localhost:11434/api/show").mock(
+            return_value=Response(200, json={"model_info": {"nomic.context_length": 2048}})
+        )
         vec = [0.5, 0.5]
         respx.post("http://localhost:11434/api/embed").mock(
             return_value=Response(200, json=_make_embed_response([vec, vec, vec]))
@@ -90,6 +99,9 @@ class TestOllamaEmbeddingAdapter:
 
     @respx.mock
     async def test_base_url_trailing_slash_stripped(self) -> None:
+        respx.post("http://localhost:11434/api/show").mock(
+            return_value=Response(200, json={"model_info": {"nomic.context_length": 2048}})
+        )
         vec = [0.1, 0.2]
         respx.post("http://localhost:11434/api/embed").mock(
             return_value=Response(200, json=_make_embed_response([vec]))

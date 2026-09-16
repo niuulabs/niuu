@@ -1,0 +1,308 @@
+{
+  "schema_version": 1,
+  "fixture": "claude-tmux-interleaving-4187139460.frames.json",
+  "sha256": "41871394608208ef4dc32f547d6c60aa264c3800450acbdf70de207fef578bcb",
+  "source_slice_sha256": "9467f54f35124a0a7b30b659c3c617f6e54b6a27363cda050178cb9b2134102e",
+  "redacted": true,
+  "source": "live-provider",
+  "provider": "claude-tmux",
+  "model": "claude-fable-5-1",
+  "scenario": {
+    "scenario": "interleaving",
+    "passed": true,
+    "after_seq": 234,
+    "through_seq": 320,
+    "prompt": "Run a short transcript ordering test in /workspace/forge-interleaving/claude-tmux. Say a brief public progress message explaining the next command, then execute `sleep 2; printf \"gamma\\n\" > third.txt; cat third.txt`. After it finishes, say a brief progress message reporting the result and introducing the next command, then separately execute `sleep 2; printf \"delta\\n\" > fourth.txt; cat fourth.txt`. Finish with two short paragraphs, a numbered list of the two observed outputs, and a Python code fence with print(\"café 東京\"). End the final answer with exact marker [LIVE_ORDER_DONE:91afbd1631]. Use no other tools, workers, search, questions, or files. Never inspect source symlinks. The progress text can use your own wording.",
+    "checks": [
+      {
+        "name": "exact_observed_native_order",
+        "passed": true
+      },
+      {
+        "name": "exact_native_text_bytes",
+        "passed": true
+      },
+      {
+        "name": "native_identity_unchanged",
+        "passed": true
+      }
+    ],
+    "observed_text_parts": 3,
+    "observed_tool_pairs": 2
+  },
+  "review": {
+    "status": "accepted",
+    "reviewer": "Codex transport/corpus review agent, 2026-09-08",
+    "reviewed_at": "2026-09-08T22:25:46.358720+00:00",
+    "source_frames_sha256": "75c7e911ba2ddacabac1873a0f4fa09613314d209d1061a78a8173127434112e",
+    "notes": [
+      "Reviewed only synthetic requests and gamma/delta file commands. No search, private files, agents, credentials or retained-session inputs were used in this interval.",
+      "The exact observed native order is public text, command, result, public text, command, result, final public text. All three text bodies match native bytes; phase and native item identity are preserved where the provider supplies them.",
+      "The two commands each sleep for two seconds. Final native prose includes paragraphs, a numbered list, and a Python fence with café 東京. The expectation records what the provider actually produced, without requiring canned commentary wording.",
+      "The frozen complete-session raw database projects exactly to captured public rows and live public replay. Full and cursor fixture replay pass; recorded live events form an ordered persisted subsequence, excluding reconnect-only snapshots.",
+      "Only the final passing interval is promoted. Original collector and chronology failures remain in private provenance with hashes below; no earlier failure was edited or converted into a pass.",
+      "Literal redactions replace only the owned workspace and local test home path. Review covers the source interval before redaction. No tool output or public prose bytes are otherwise changed.",
+      "This corpus certifies capture/replay and ordered projection, not completed iOS visual acceptance; the simulator recording is a separately reviewed artifact.",
+      "Earlier exact-native comparison exposed PreToolUse arriving before asynchronous native JSONL text became readable. The passing capture uses a bounded 100 ms evidence wait at 5 ms polls; unavailable proof falls back to observed hook order without inventing text order or success.",
+      "The initial provider omitted a requested canned commentary; that omission is preserved as provider behavior, separate from the confirmed ordering defect. Native source has no public phase label, so none is inferred.",
+      "Synthetic native remote-control session URLs visible in TTY chrome are replaced with a non-functional session_FORGE_SYNTHETIC placeholder; this does not alter assistant prose, command outputs or ordered tool IDs.",
+      "The entire captured interval through raw head320 is retained, including terminal repaint320 after result318. A separate public-only replay regression initially produced a phantom interrupted scrollback turn; the reviewed reducer now suppresses that idle repaint until new human or assistant activity, while preserving terminal-only crash fallback. Final projection is exactly two complete turns."
+    ],
+    "native_oracle": {
+      "session_id": "9510e67b-fc0b-4469-9b71-3ffd9914fd54",
+      "public_import_sha256": "a0da8ed1cd0acaf9cb2c8ce79bae9004a19a09332412011c732ca243f3ec7eeb",
+      "public_conversation_sha256": "5884a96c6cff3f5d2134cde0032921fc558b82ebe823cc85dce7d23347731122",
+      "text_items": [
+        {
+          "text_sha256": "71fd7b698812f2e007e890dde8fda3e925ea29a1383636e2edfb39477f679eb0",
+          "text_bytes": 121
+        },
+        {
+          "text_sha256": "ad4986be54aa95ef55a493d60d470323f6d7a9507d39fd1b8f1e9d6b4e613577",
+          "text_bytes": 158
+        },
+        {
+          "text_sha256": "b76cac17fcb320e4d417b666fbcff58bd1092cff5c96bcad26ebec384862623d",
+          "text_bytes": 496
+        }
+      ],
+      "observed_order": [
+        [
+          "text",
+          "71fd7b698812f2e007e890dde8fda3e925ea29a1383636e2edfb39477f679eb0"
+        ],
+        [
+          "tool_use",
+          "toolu_0175nPpByqv2UXfg9NzESd5j"
+        ],
+        [
+          "tool_result",
+          "toolu_0175nPpByqv2UXfg9NzESd5j"
+        ],
+        [
+          "text",
+          "ad4986be54aa95ef55a493d60d470323f6d7a9507d39fd1b8f1e9d6b4e613577"
+        ],
+        [
+          "tool_use",
+          "toolu_011GZabUhB866innNweoYNe2"
+        ],
+        [
+          "tool_result",
+          "toolu_011GZabUhB866innNweoYNe2"
+        ],
+        [
+          "text",
+          "b76cac17fcb320e4d417b666fbcff58bd1092cff5c96bcad26ebec384862623d"
+        ]
+      ]
+    },
+    "capture_proof": {
+      "acceptance_sha256": "378c89cb1f93095ae8a230f780cefe30d25e17a186355cca79740e31d4caa15b",
+      "database_file_sha256": "79b90b62d4283d60ef7094a562895f1d28d12015a0f158b79fd8fbd6fc7dc204",
+      "live_file_sha256": "2556d162a8f6ce4f979259e0c9765022decdbd5c9f809785e73e5280bbc297e3",
+      "public_file_sha256": "21f38f3150082df48a81c7388340cdd7ec8fe490b66affb2a6e3f7650b232b13",
+      "raw_rows": 320,
+      "public_frames": 306,
+      "db_public_parity": {
+        "passed": true,
+        "expected_count": 306,
+        "actual_count": 306
+      },
+      "replay_parity": {
+        "passed": true,
+        "expected_count": 306,
+        "actual_count": 306
+      }
+    },
+    "source_modules": {
+      "src/skuld/broker.py": "7672a2ac1925a88943893fa85b875f300ad9219ccbc2e04714e9fec36b1793a1",
+      "src/skuld/transports/codex_ws.py": "2b14f82a31377fdee143eedbd4a493222db8342dc684422894879bc342f95ce4",
+      "src/skuld/transports/tmux_interactive.py": "6232193287634ada3b4348561883c137dcba4addf196a431ed23d80bafe7f1de",
+      "src/niuu/domain/transcript_reducer.py": "1c9ccc299b041b5cbbc3c65fedbb44b0656196b3cc65d76af04e67a28870d3f2"
+    },
+    "prior_run_provenance": [
+      {
+        "artifact": "followup-claude-tmux-c80dd651/failure.json",
+        "sha256": "d0361a7bd2f87e6b332d246b5957e45cbfb7f63969692caf4697c0812ea55e11"
+      },
+      {
+        "artifact": "followup-claude-tmux-c80dd651/database.json",
+        "sha256": "f0dc6b7f7438f3e58bd342becb8bbcba92a29b7bca798de74d24acedabdc5b43"
+      },
+      {
+        "artifact": "claude-fixed-live.log",
+        "sha256": "1fa4bc4def31ad984752b9a4bebe50744f192cfdfb3e790028890a68c00596ea"
+      },
+      {
+        "artifact": "resume-controller.log",
+        "sha256": "b4402a5a26aaa8701d038539dc137d682b7a4295d7a61a11e636089361d13c79"
+      }
+    ],
+    "post_capture_projection_review": {
+      "source_file": "src/niuu/domain/transcript_reducer.py",
+      "source_sha256": "33f1782405903e2e6b152a3435d36db95c6b2696e3675d67c72e15ed9083317d",
+      "before_proof_sha256": "f46fc924675bcecda5ee63b9fe543509c7da9dc2c1864514c9c78e090953d0e2",
+      "after_proof_sha256": "68287c7475ba67370844b72cc54c7972cbdb922386e96aa816a4682d154b20a4",
+      "regression_cases": 12
+    },
+    "native_pretool_helper_sha256": "e6a352b2123d0bce49d56ba77d7e62f50c8197dcf177f76600e0b89c841afc7a"
+  },
+  "checkpoints": [
+    {
+      "after_seq": 318,
+      "event_type": "result",
+      "turn_count": 2,
+      "partial": false,
+      "turns_sha256": "1ef21b35428cd49c5b546a142cb36b7f54a12c1037d8cc20da9893e1fe6b2e50"
+    }
+  ],
+  "expected_turns": [
+    {
+      "id": "d637bc31-67fd-4ae5-9fd1-bf658faa925a",
+      "role": "user",
+      "content": "Run a short transcript ordering test in /workspace/forge-interleaving/claude-tmux. Say a brief public progress message explaining the next command, then execute `sleep 2; printf \"gamma\\n\" > third.txt; cat third.txt`. After it finishes, say a brief progress message reporting the result and introducing the next command, then separately execute `sleep 2; printf \"delta\\n\" > fourth.txt; cat fourth.txt`. Finish with two short paragraphs, a numbered list of the two observed outputs, and a Python code fence with print(\"café 東京\"). End the final answer with exact marker [LIVE_ORDER_DONE:91afbd1631]. Use no other tools, workers, search, questions, or files. Never inspect source symlinks. The progress text can use your own wording.",
+      "parts": [],
+      "created_at": "2026-09-08T22:21:16.586778+00:00",
+      "metadata": {
+        "steering_state": "active"
+      },
+      "visibility": "public"
+    },
+    {
+      "id": "5b116c38-ff08-5884-9284-de61e8facba5",
+      "role": "assistant",
+      "content": "Starting the ordering test. The first command waits two seconds, writes \"gamma\" into third.txt, and prints the file back.\nthird.txt now holds \"gamma\" and printed it correctly. The second command does the same for fourth.txt: a two-second pause, then \"delta\" is written and echoed.\nBoth commands completed in sequence, and each one printed its file contents immediately after the write. The first produced third.txt with \"gamma\", and the second produced fourth.txt with \"delta\".\n\nNo other tools, workers, searches, or questions were involved, and the source symlinks were never inspected. Only third.txt and fourth.txt were written during this test.\n\n1. third.txt printed \"gamma\".\n2. fourth.txt printed \"delta\".\n\n```python\nprint(\"café 東京\")\n```\n\n[LIVE_ORDER_DONE:91afbd1631]",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Starting the ordering test. The first command waits two seconds, writes \"gamma\" into third.txt, and prints the file back."
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_0175nPpByqv2UXfg9NzESd5j",
+          "name": "Bash",
+          "input": {
+            "command": "sleep 2; printf \"gamma\\n\" > third.txt; cat third.txt",
+            "description": "Write gamma to third.txt after a short pause and print it"
+          },
+          "started_at": "2026-09-08T22:21:20.062837+00:00",
+          "ended_at": "2026-09-08T22:21:22.118919+00:00",
+          "duration_ms": 2056
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_0175nPpByqv2UXfg9NzESd5j",
+          "content": "{\"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false, \"stderr\": \"\", \"stdout\": \"gamma\"}",
+          "is_error": false,
+          "ended_at": "2026-09-08T22:21:22.118919+00:00"
+        },
+        {
+          "type": "text",
+          "text": "third.txt now holds \"gamma\" and printed it correctly. The second command does the same for fourth.txt: a two-second pause, then \"delta\" is written and echoed."
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_011GZabUhB866innNweoYNe2",
+          "name": "Bash",
+          "input": {
+            "command": "sleep 2; printf \"delta\\n\" > fourth.txt; cat fourth.txt",
+            "description": "Write delta to fourth.txt after a short pause and print it"
+          },
+          "started_at": "2026-09-08T22:21:24.713432+00:00",
+          "ended_at": "2026-09-08T22:21:26.770785+00:00",
+          "duration_ms": 2057
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_011GZabUhB866innNweoYNe2",
+          "content": "{\"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false, \"stderr\": \"\", \"stdout\": \"delta\"}",
+          "is_error": false,
+          "ended_at": "2026-09-08T22:21:26.770785+00:00"
+        },
+        {
+          "type": "text",
+          "text": "Both commands completed in sequence, and each one printed its file contents immediately after the write. The first produced third.txt with \"gamma\", and the second produced fourth.txt with \"delta\".\n\nNo other tools, workers, searches, or questions were involved, and the source symlinks were never inspected. Only third.txt and fourth.txt were written during this test.\n\n1. third.txt printed \"gamma\".\n2. fourth.txt printed \"delta\".\n\n```python\nprint(\"café 東京\")\n```\n\n[LIVE_ORDER_DONE:91afbd1631]"
+        }
+      ],
+      "created_at": "2026-09-08T22:21:29.923734+00:00",
+      "metadata": {
+        "usage": {
+          "claude-fable-5-1": {
+            "inputTokens": 189,
+            "outputTokens": 122,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0
+          }
+        },
+        "cost": null,
+        "model": "claude-fable-5-1",
+        "stop_reason": "stop"
+      },
+      "visibility": "public"
+    }
+  ],
+  "expected_partial": false,
+  "source_run": {
+    "run_id": "followup-claude-tmux-d81b7e37",
+    "session_id": "15f38449-1fa2-465d-aa92-0071e7565c10",
+    "passed": true,
+    "errors": []
+  },
+  "observed": {
+    "calls": {
+      "toolu_0175nPpByqv2UXfg9NzESd5j": {
+        "id": "toolu_0175nPpByqv2UXfg9NzESd5j",
+        "name": "Bash",
+        "type": "tool_use",
+        "input": {
+          "command": "sleep 2; printf \"gamma\\n\" > third.txt; cat third.txt",
+          "description": "Write gamma to third.txt after a short pause and print it"
+        }
+      },
+      "toolu_011GZabUhB866innNweoYNe2": {
+        "id": "toolu_011GZabUhB866innNweoYNe2",
+        "name": "Bash",
+        "type": "tool_use",
+        "input": {
+          "command": "sleep 2; printf \"delta\\n\" > fourth.txt; cat fourth.txt",
+          "description": "Write delta to fourth.txt after a short pause and print it"
+        }
+      }
+    },
+    "results": {
+      "toolu_0175nPpByqv2UXfg9NzESd5j": {
+        "type": "tool_result",
+        "content": "{\"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false, \"stderr\": \"\", \"stdout\": \"gamma\"}",
+        "is_error": false,
+        "tool_use_id": "toolu_0175nPpByqv2UXfg9NzESd5j"
+      },
+      "toolu_011GZabUhB866innNweoYNe2": {
+        "type": "tool_result",
+        "content": "{\"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false, \"stderr\": \"\", \"stdout\": \"delta\"}",
+        "is_error": false,
+        "tool_use_id": "toolu_011GZabUhB866innNweoYNe2"
+      }
+    },
+    "tool_families": {
+      "command": 2
+    },
+    "agent_ids": [],
+    "assistant_text": "Starting the ordering test. The first command waits two seconds, writes \"gamma\" into third.txt, and prints the file back.third.txt now holds \"gamma\" and printed it correctly. The second command does the same for fourth.txt: a two-second pause, then \"delta\" is written and echoed.Both commands completed in sequence, and each one printed its file contents immediately after the write. The first produced third.txt with \"gamma\", and the second produced fourth.txt with \"delta\".\n\nNo other tools, workers, searches, or questions were involved, and the source symlinks were never inspected. Only third.txt and fourth.txt were written during this test.\n\n1. third.txt printed \"gamma\".\n2. fourth.txt printed \"delta\".\n\n```python\nprint(\"café 東京\")\n```\n\n[LIVE_ORDER_DONE:91afbd1631]",
+    "unpaired_calls": [],
+    "orphan_results": [],
+    "event_counts": {
+      "user": 3,
+      "user_confirmed": 1,
+      "terminal_input_sent": 1,
+      "terminal_key_sent": 1,
+      "user_delivered": 1,
+      "claude_hook": 12,
+      "terminal_prompt_submitted": 1,
+      "user_active": 1,
+      "terminal_frame": 57,
+      "assistant": 5,
+      "result": 1
+    }
+  }
+}

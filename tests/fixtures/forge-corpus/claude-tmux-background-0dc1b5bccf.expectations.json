@@ -1,0 +1,244 @@
+{
+  "schema_version": 1,
+  "fixture": "claude-tmux-background-0dc1b5bccf.frames.json",
+  "sha256": "0dc1b5bccfc8b34ce018d14c3e106f1cca7e0e69b6a645a08ee99b030682d063",
+  "source_slice_sha256": "39cb80aba68ecb65965e1e61c3c4f04979c7a5db4d89fa6d8ae1acbb5fe02112",
+  "redacted": true,
+  "source": "live-provider",
+  "provider": "claude-tmux",
+  "model": "claude-opus-5",
+  "scenario": {
+    "scenario": "background",
+    "passed": true,
+    "checks": [
+      {
+        "name": "terminal-result",
+        "passed": true,
+        "detail": 1
+      },
+      {
+        "name": "correlated-completion",
+        "passed": true,
+        "detail": 1
+      },
+      {
+        "name": "successful-result",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "tool-pairs",
+        "passed": true,
+        "detail": {
+          "unpaired_calls": [],
+          "orphan_results": []
+        }
+      },
+      {
+        "name": "tool:command",
+        "passed": true,
+        "detail": 1
+      },
+      {
+        "name": "tool-output:FORGE_BACKGROUND_DONE",
+        "passed": true,
+        "detail": null
+      }
+    ],
+    "observed": {
+      "calls": {
+        "toolu_01PUV81iKgzsamH5UBiomDZc": {
+          "id": "toolu_01PUV81iKgzsamH5UBiomDZc",
+          "name": "Bash",
+          "type": "tool_use",
+          "input": {
+            "command": "python3 -c 'import time; time.sleep(5); print(\"FORGE_BACKGROUND_DONE\")'",
+            "description": "Sleep 5 seconds then print completion marker"
+          }
+        }
+      },
+      "results": {
+        "toolu_01PUV81iKgzsamH5UBiomDZc": {
+          "type": "tool_result",
+          "content": "{\"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false, \"stderr\": \"\", \"stdout\": \"FORGE_BACKGROUND_DONE\"}",
+          "is_error": false,
+          "tool_use_id": "toolu_01PUV81iKgzsamH5UBiomDZc"
+        }
+      },
+      "tool_families": {
+        "command": 1
+      },
+      "agent_ids": [],
+      "assistant_text": "The command ran to completion and I observed its output directly: it slept 5 seconds, then printed `FORGE_BACKGROUND_DONE`, exiting 0. The delay spanned the observer disconnect as intended, and the result was still delivered intact in the tool output.\n\n[FORGE_DONE:e15b5592cfd54f00b138be65e943ca11:background]",
+      "unpaired_calls": [],
+      "orphan_results": [],
+      "event_counts": {
+        "user": 2,
+        "user_confirmed": 1,
+        "terminal_input_sent": 1,
+        "terminal_key_sent": 4,
+        "user_delivered": 1,
+        "claude_hook": 8,
+        "terminal_prompt_submitted": 1,
+        "user_active": 1,
+        "terminal_frame": 47,
+        "assistant": 2,
+        "result": 1
+      }
+    },
+    "prompt": "Run python3 -c 'import time; time.sleep(5); print(\"FORGE_BACKGROUND_DONE\")'. This intentionally completes while the observer is disconnected. Report completion after observing the tool output.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:e15b5592cfd54f00b138be65e943ca11:background]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+    "after_seq": 1098,
+    "through_seq": 1171,
+    "duration_seconds": 13.019
+  },
+  "review": {
+    "status": "accepted",
+    "reviewer": "Codex project-review agent, 2026-09-07",
+    "source_frames_sha256": "2149d1bd67e044968a034a4bcdd97d8b783adbc27e1cefec3818a2e6eec705a6",
+    "notes": [
+      "Reviewed prompt and captured interval (1098, 1171]. All scenario action assertions passed; tool IDs pair with results.",
+      "PostgreSQL raw rows project to these REST frames exactly. Full and cursor fixture replay match. The captured live stream is preserved in database order.",
+      "The running platform's public replay WebSocket remains unavailable until the facade fix is deployed; this fixture certifies the captured scenario, not that deployment.",
+      "The observer was closed during the delayed command; database capture contains FORGE_BACKGROUND_DONE and correlated completion."
+    ]
+  },
+  "checkpoints": [
+    {
+      "after_seq": 1164,
+      "event_type": "result",
+      "turn_count": 2,
+      "partial": false,
+      "turns_sha256": "f49759e9d2d62bc4fe710e29cdd60684b02b29168f6e29e3918409403478c53c"
+    }
+  ],
+  "expected_turns": [
+    {
+      "id": "a9219bb6-ea7e-46e6-be49-e34a8ccbfa54",
+      "role": "user",
+      "content": "Run python3 -c 'import time; time.sleep(5); print(\"FORGE_BACKGROUND_DONE\")'. This intentionally completes while the observer is disconnected. Report completion after observing the tool output.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:e15b5592cfd54f00b138be65e943ca11:background]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+      "parts": [],
+      "created_at": "2026-09-07T16:46:15.472050+00:00",
+      "metadata": {
+        "steering_state": "active"
+      },
+      "visibility": "public"
+    },
+    {
+      "id": "5bfa3f6e-a61d-59b5-9c71-61c02b6757cc",
+      "role": "assistant",
+      "content": "The command ran to completion and I observed its output directly: it slept 5 seconds, then printed `FORGE_BACKGROUND_DONE`, exiting 0. The delay spanned the observer disconnect as intended, and the result was still delivered intact in the tool output.\n\n[FORGE_DONE:e15b5592cfd54f00b138be65e943ca11:background]",
+      "parts": [
+        {
+          "type": "tool_use",
+          "id": "toolu_01PUV81iKgzsamH5UBiomDZc",
+          "name": "Bash",
+          "input": {
+            "command": "python3 -c 'import time; time.sleep(5); print(\"FORGE_BACKGROUND_DONE\")'",
+            "description": "Sleep 5 seconds then print completion marker"
+          },
+          "started_at": "2026-09-07T16:46:17.864812+00:00",
+          "ended_at": "2026-09-07T16:46:22.920782+00:00",
+          "duration_ms": 5055
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_01PUV81iKgzsamH5UBiomDZc",
+          "content": "{\"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false, \"stderr\": \"\", \"stdout\": \"FORGE_BACKGROUND_DONE\"}",
+          "is_error": false,
+          "ended_at": "2026-09-07T16:46:22.920782+00:00"
+        },
+        {
+          "type": "text",
+          "text": "The command ran to completion and I observed its output directly: it slept 5 seconds, then printed `FORGE_BACKGROUND_DONE`, exiting 0. The delay spanned the observer disconnect as intended, and the result was still delivered intact in the tool output.\n\n[FORGE_DONE:e15b5592cfd54f00b138be65e943ca11:background]"
+        }
+      ],
+      "created_at": "2026-09-07T16:46:25.869759+00:00",
+      "metadata": {
+        "usage": {
+          "claude-opus-5": {
+            "inputTokens": 138,
+            "outputTokens": 77,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0
+          }
+        },
+        "cost": null,
+        "model": "claude-opus-5",
+        "stop_reason": "stop"
+      },
+      "visibility": "public"
+    }
+  ],
+  "expected_partial": false,
+  "source_run": {
+    "run_id": "claude-tmux-ad948830dc",
+    "session_id": "aba314d5-aafe-4487-afd1-b8306e121e6e",
+    "passed": false,
+    "errors": [
+      "harvest: InvalidStatus: server rejected WebSocket connection: HTTP 403"
+    ]
+  },
+  "observed": {
+    "calls": {
+      "toolu_01PUV81iKgzsamH5UBiomDZc": {
+        "id": "toolu_01PUV81iKgzsamH5UBiomDZc",
+        "name": "Bash",
+        "type": "tool_use",
+        "input": {
+          "command": "python3 -c 'import time; time.sleep(5); print(\"FORGE_BACKGROUND_DONE\")'",
+          "description": "Sleep 5 seconds then print completion marker"
+        }
+      }
+    },
+    "results": {
+      "toolu_01PUV81iKgzsamH5UBiomDZc": {
+        "type": "tool_result",
+        "content": "{\"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false, \"stderr\": \"\", \"stdout\": \"FORGE_BACKGROUND_DONE\"}",
+        "is_error": false,
+        "tool_use_id": "toolu_01PUV81iKgzsamH5UBiomDZc"
+      }
+    },
+    "tool_families": {
+      "command": 1
+    },
+    "agent_ids": [],
+    "assistant_text": "The command ran to completion and I observed its output directly: it slept 5 seconds, then printed `FORGE_BACKGROUND_DONE`, exiting 0. The delay spanned the observer disconnect as intended, and the result was still delivered intact in the tool output.\n\n[FORGE_DONE:e15b5592cfd54f00b138be65e943ca11:background]",
+    "unpaired_calls": [],
+    "orphan_results": [],
+    "event_counts": {
+      "user": 2,
+      "user_confirmed": 1,
+      "terminal_input_sent": 1,
+      "terminal_key_sent": 4,
+      "user_delivered": 1,
+      "claude_hook": 8,
+      "terminal_prompt_submitted": 1,
+      "user_active": 1,
+      "terminal_frame": 47,
+      "assistant": 2,
+      "result": 1
+    }
+  },
+  "projection_review": {
+    "status": "accepted",
+    "reviewer": "Codex transport/corpus review agent, 2026-09-08",
+    "source_frames_sha256": "0dc1b5bccfc8b34ce018d14c3e106f1cca7e0e69b6a645a08ee99b030682d063",
+    "previous_projection_sha256": "63eefe5decf71e7227772c874d3e77b2225c9c5b378e6bdcdc8227964a0cdf3a",
+    "projection_sha256": "f49759e9d2d62bc4fe710e29cdd60684b02b29168f6e29e3918409403478c53c",
+    "reason": "Remove only verified idle terminal scrollback after a completed result. These paints created phantom assistant turns at EOF or the next human boundary; genuine terminal-only work remains supported.",
+    "all_real_turns_byte_identical": true,
+    "removed_phantom_turns": [
+      {
+        "turn_id": "cff4e31e-4e12-582e-9168-ff383c1c1801",
+        "prior_result_seq": 1164,
+        "idle_terminal_seq": 1170,
+        "old_metadata": {
+          "provenance": "terminal_scrape",
+          "status": "interrupted"
+        },
+        "old_text_sha256": "4e0c54b8543cddc577faa12c02ee71de6bbdee387e6dd05e2a463b99c8d54f58"
+      }
+    ],
+    "reducer_source_sha256": "33f1782405903e2e6b152a3435d36db95c6b2696e3675d67c72e15ed9083317d"
+  }
+}

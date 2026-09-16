@@ -14,15 +14,15 @@ tmux"):
     ``awaiting_input``); now fixed in the broker and guarded against regression.
   * E2 — answering the NON-default option translates to the right digit: the
     bridge reads the live menu, ``_match_menu_digit`` picks the matching row, the
-    digit+Enter keystroke is typed, the agent receives that choice, and
-    ``ask_user_resolved`` carries the chosen label.
+    digit is typed, the agent receives that choice, and ``ask_user_resolved``
+    carries the chosen label after the correlated native result.
   * E3 — menu-not-yet-rendered RACE (was a real product bug): with the menu
     rendered ~0.4s AFTER the hook, answering immediately used to capture an EMPTY
     menu and blindly press "1"+Enter (the default). The bridge now bound-polls the
     live menu before pressing the chosen digit; this test guards that fix.
-  * E4 — multiSelect: a multi-option answer. The tmux bridge only translates the
-    FIRST chosen option (one digit + Enter) — a documented limitation of the
-    keystroke bridge (no per-option space-toggle). xfail(strict).
+  * E4 — multiSelect: digits toggle each requested checkbox, arrows focus the
+    unnumbered Submit, Enter opens final review, and digit 1 commits. Both
+    consumed selections must appear in the matching native tool result.
   * E5 — the Deny path sends ``Escape`` (not a digit) and resolves ``deny``.
   * E6 — SDK<->tmux parity (credential-free): the SAME logical question through the
     SDK transport (fake client) and through tmux emits an ``ask_user_question``
@@ -70,7 +70,7 @@ def _page(h: BrokerHarness) -> TmuxPage:
     transport = h.transport
     return TmuxPage(
         str(transport._socket_path),  # noqa: SLF001 - test seam
-        transport.session_id or "",
+        transport._session_name,
     )
 
 
@@ -86,6 +86,7 @@ def _resolved_frames(frames: list[dict]) -> list[dict]:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_e1_question_surfaces_to_frontend_and_is_tracked() -> None:
     """E1: an ask: surfaces a structured ask_user_question to the client + is tracked.
@@ -144,6 +145,7 @@ async def test_e1_question_surfaces_to_frontend_and_is_tracked() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_e1b_ask_user_question_flips_session_to_awaiting_input() -> None:
     """E1b: an AskUserQuestion gate must pin the session at awaiting_input.
@@ -183,12 +185,13 @@ async def test_e1b_ask_user_question_flips_session_to_awaiting_input() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_e2_answer_translates_to_right_digit_and_resolves() -> None:
-    """E2: answering the non-default option presses the matched digit + Enter.
+    """E2: answering the non-default option presses the matched digit only.
 
     The agent renders [1. Postgres, 2. SQLite]; the human chooses SQLite (row 2).
-    Assert _match_menu_digit picks 2, the digit+Enter keystroke lands, the agent
+    Assert _match_menu_digit picks 2, the digit keystroke lands, the agent
     receives that choice ("chose: SQLite" on the pane), and ask_user_resolved
     carries the chosen label.
     """
@@ -218,7 +221,7 @@ async def test_e2_answer_translates_to_right_digit_and_resolves() -> None:
         # Answer the NON-default option through the broker inbound path.
         client.ask_user_answer(request_id, [{"answer": "SQLite"}])
 
-        # The agent received the choice (digit 2 + Enter resolved to SQLite).
+        # A native single-choice digit advances immediately without Enter.
         await page.wait_for_text("chose: SQLite", timeout=8.0)
 
         # ask_user_resolved carries the chosen label, correlated by request_id.
@@ -234,6 +237,8 @@ async def test_e2_answer_translates_to_right_digit_and_resolves() -> None:
         assert resolved[-1].get("decision") == "SQLite", (
             f"the resolved decision must be the chosen label; got {resolved[-1]}"
         )
+        assert resolved[-1].get("accepted") is True
+        assert _native_answers(client.frames, "Which DB?") == ["SQLite"]
 
         # The answered question is dropped from the reconnect-replay tracking so a
         # later client does not re-surface it.
@@ -247,6 +252,7 @@ async def test_e2_answer_translates_to_right_digit_and_resolves() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_e3_menu_not_yet_rendered_race_waits_for_menu() -> None:
     """E3: answering before the menu renders must still press the CHOSEN digit.
@@ -292,29 +298,15 @@ async def test_e3_menu_not_yet_rendered_race_waits_for_menu() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DOCUMENTED LIMITATION (E4 multiSelect): the tmux keystroke bridge cannot "
-        "express a true multi-select. _answer_tty_prompt "
-        "(src/skuld/transports/tmux_interactive.py:836) takes only the FIRST chosen "
-        "option via _first_answer_text (line 929) and presses a single digit + Enter; "
-        "it never space-toggles the remaining selected rows before submitting. So a "
-        "two-option answer ['Postgres','SQLite'] selects only the first option. "
-        "Observed: 'chose: Postgres' (single), not both. A real multi-select would "
-        "need the bridge to toggle each chosen row (Space) then submit (Enter). "
-        "Followup: extend _answer_tty_prompt to walk every chosen label, Space-toggle "
-        "each matched row, then Enter — gated on the menu's multiSelect flag."
-    ),
-)
 async def test_e4_multiselect_maps_selection_then_submit() -> None:
-    """E4: a multiSelect answer toggles every chosen row then submits.
+    """E4: real PTY input must consume both checkboxes and final review.
 
-    The agent offers Postgres;SQLite;MySQL; the human selects TWO (Postgres +
-    SQLite). The correct multi-select contract presses Space on each chosen row
-    then Enter, so the agent records BOTH. The tmux bridge currently maps only the
-    first option (single digit + Enter); xfail(strict) documents the limitation.
+    The fake implements the captured native Colors widget: digits toggle without
+    moving focus; Enter on a checkbox toggles it, so prematurely pressing Enter
+    cannot fabricate successful completion. Proof comes from the actual consumed
+    native tool response, correlated to this question's session and tool IDs.
     """
     _require_tmux()
 
@@ -324,31 +316,220 @@ async def test_e4_multiselect_maps_selection_then_submit() -> None:
         client.send(
             {
                 "type": "message",
-                "content": "ask:Stores|Pick stores|Postgres;SQLite;MySQL",
+                "content": "ask_multi:Colors|Which colors?|Blue;Amber;Violet",
             }
         )
         ask = await client.wait_for_type("ask_user_question", timeout=8.0)
         request_id = ask["request_id"]
 
         page = _page(h)
-        await page.wait_for_text("3. MySQL", timeout=8.0)
+        await page.wait_for_text("3. [ ] Violet", timeout=8.0)
+        assert ask["questions"][0]["multiSelect"] is True
+        keys_before = len(_key_sends(client.frames))
+        client.ask_user_answer(
+            request_id,
+            [{"question": "Which colors?", "answer": ["Violet", "Blue"], "option_indexes": [2, 0]}],
+        )
+        await client.wait_for(
+            lambda frames: any(
+                f.get("request_id") == request_id and f.get("accepted") is True
+                for f in _resolved_frames(frames)
+            ),
+            timeout=8.0,
+        )
+        native = _native_answers(client.frames, "Which colors?")
+        assert len(native) == 1
+        assert set(native[0].split(", ")) == {"Violet", "Blue"}
+        assert _key_sends(client.frames)[keys_before:] == [
+            "1",
+            "3",
+            "Down",
+            "Down",
+            "Down",
+            "Down",
+            "Enter",
+            "1",
+        ]
+        assert request_id not in h.broker._pending_ask_user_questions
 
-        # Answer with TWO selected options (multi-select shape).
-        client.ask_user_answer(request_id, [{"answer": ["Postgres", "SQLite"]}])
 
-        # CORRECT: the agent's resolved choice reflects BOTH selections. fakeagent
-        # echoes the single resolved option it reads from one digit, so a true
-        # multi-select would require the bridge to toggle both rows. We assert the
-        # second selected option is reflected, which the single-digit bridge fails.
-        await page.wait_for_text("SQLite", timeout=8.0)
-        snapshot = await page.snapshot()
-        assert "chose: SQLite" in snapshot, (
-            "a multi-select must reach the second chosen option, not just the first; "
-            f"screen:\n{snapshot}"
+def _native_answers(frames: list[dict], question: str) -> list[str]:
+    """Read the CLI's HTTP proof, checking its identity against the actual PreToolUse."""
+    from uuid import UUID
+
+    payloads = [f["payload"] for f in frames if f.get("type") == "claude_hook"]
+    asks = {
+        (p["session_id"], p["tool_use_id"])
+        for p in payloads
+        if p.get("hook_event_name") == "PreToolUse" and p.get("tool_name") == "AskUserQuestion"
+    }
+    results = []
+    for payload in payloads:
+        if (
+            payload.get("hook_event_name") != "PostToolUse"
+            or payload.get("tool_name") != "AskUserQuestion"
+        ):
+            continue
+        assert (payload["session_id"], payload["tool_use_id"]) in asks
+        assert str(UUID(payload["session_id"])) == payload["session_id"]
+        answers = payload["tool_response"]["answers"]
+        if question in answers:
+            results.append(answers[question])
+    return results
+
+
+@pytest.mark.integration
+@pytest.mark.tmux
+@pytest.mark.asyncio
+async def test_e4b_other_text_is_consumed_before_native_acceptance() -> None:
+    """The old digit/Enter/paste sequence cancels this native-style Other editor."""
+    _require_tmux()
+    async with BrokerHarness(hooks=True, idle_timeout_s=0.3) as h:
+        client = await h.connect()
+        client.send({"type": "message", "content": "ask:Label|Which label?|Blue;Amber"})
+        ask = await client.wait_for_type("ask_user_question", timeout=8.0)
+        text = "Copper multi café 東京"
+        client.ask_user_answer(ask["request_id"], [{"answer": text, "free_text": text}])
+        await client.wait_for(
+            lambda frames: any(
+                f.get("request_id") == ask["request_id"] and f.get("accepted") is True
+                for f in _resolved_frames(frames)
+            ),
+            timeout=8.0,
+        )
+        assert _native_answers(client.frames, "Which label?") == [text]
+        await _page(h).wait_for_text(f"chose: {text}", timeout=5.0)
+
+
+@pytest.mark.integration
+@pytest.mark.tmux
+@pytest.mark.asyncio
+async def test_e4c_premature_other_enter_does_not_fake_success() -> None:
+    """The captured failing digit/Enter sequence rejects the empty Other editor.
+
+    Drive the original buggy keys directly into the real PTY. The fake must
+    report the actual cancellation, never derive a successful answer from the
+    structured question or receipt it is expected to produce.
+    """
+    _require_tmux()
+    async with BrokerHarness(hooks=True, idle_timeout_s=0.3) as h:
+        client = await h.connect()
+        client.send({"type": "message", "content": "ask:Label|Which label?|Blue;Amber"})
+        ask = await client.wait_for_type("ask_user_question", timeout=8.0)
+        page = _page(h)
+        await page.wait_for_text("3. Type something.", timeout=5.0)
+        await page.press("3")
+        await page.wait_for_text("ctrl+g to edit in Vim", timeout=5.0)
+        await page.press("Enter")
+        await page.wait_for_text("chose: cancelled", timeout=5.0)
+        await client.wait_for(
+            lambda frames: any(
+                frame.get("request_id") == ask["request_id"]
+                and frame.get("decision") == "turn_ended"
+                for frame in _resolved_frames(frames)
+            ),
+            timeout=5.0,
+        )
+        assert _native_answers(client.frames, "Which label?") == ["cancelled"]
+        assert not any(
+            frame.get("request_id") == ask["request_id"] and frame.get("accepted") is True
+            for frame in _resolved_frames(client.frames)
         )
 
 
 # --------------------------------------------------------------------------- E5
+
+
+@pytest.mark.integration
+@pytest.mark.tmux
+@pytest.mark.asyncio
+async def test_e4d_mixed_checkbox_other_consumes_exact_native_answer() -> None:
+    """The actual iOS mixed shape follows the recorded native focus/paste/submit flow."""
+    _require_tmux()
+    async with BrokerHarness(hooks=True, idle_timeout_s=0.3) as h:
+        client = await h.connect()
+        client.send(
+            {"type": "message", "content": "ask_multi:Features|Which features?|Auth;Search"}
+        )
+        ask = await client.wait_for_type("ask_user_question", timeout=8.0)
+        page = _page(h)
+        await page.wait_for_text("3. [ ] Type something", timeout=5.0)
+        keys_before = len(_key_sends(client.frames))
+        text = "Copper focus café 東京"
+        client.ask_user_answer(
+            ask["request_id"],
+            [
+                {
+                    "question": "Which features?",
+                    "answer": ["Auth", text],
+                    "free_text": text,
+                    "option_indexes": [0],
+                }
+            ],
+        )
+        await client.wait_for(
+            lambda frames: any(
+                frame.get("request_id") == ask["request_id"] and frame.get("accepted") is True
+                for frame in _resolved_frames(frames)
+            ),
+            timeout=8.0,
+        )
+        assert _native_answers(client.frames, "Which features?") == [f"Auth, {text}"]
+        assert _key_sends(client.frames)[keys_before:] == [
+            "1",
+            "Down",
+            "Down",
+            "Down",
+            "Enter",
+            "1",
+        ]
+        assert (
+            len(
+                [
+                    frame
+                    for frame in _resolved_frames(client.frames)
+                    if frame.get("request_id") == ask["request_id"]
+                ]
+            )
+            == 1
+        )
+        assert ask["request_id"] not in h.broker._pending_ask_user_questions
+        await page.wait_for_text(f"chose: Auth, {text}", timeout=5.0)
+
+
+@pytest.mark.integration
+@pytest.mark.tmux
+@pytest.mark.asyncio
+async def test_e4e_mixed_native_digits_do_not_focus_and_enter_unchecks_text() -> None:
+    """Guard the two observed native traps independently of structured answer code."""
+    _require_tmux()
+    async with BrokerHarness(hooks=True, idle_timeout_s=0.3) as h:
+        client = await h.connect()
+        client.send(
+            {"type": "message", "content": "ask_multi:Features|Which features?|Auth;Search"}
+        )
+        ask = await client.wait_for_type("ask_user_question", timeout=8.0)
+        page = _page(h)
+        await page.wait_for_text("3. [ ] Type something", timeout=5.0)
+        await page.press("1")
+        await page.press("3")
+        snapshot = await page.wait_for_text("3. [✔] Type something", timeout=5.0)
+        assert "❯ 1. [✔] Auth" in snapshot and "ctrl+g to edit" not in snapshot
+        await page.press("Down")
+        await page.press("Down")
+        await page.wait_for_text("❯ 3. [✔] Type something", timeout=5.0)
+        text = "Copper focus café 東京"
+        # Literal paste without the page helper's automatic Enter.
+        await h.transport.send_control("terminal_input", text=text, enter=False)
+        await page.wait_for_text(f"❯ 3. [✔] {text}", timeout=5.0)
+        await page.press("Enter")
+        snapshot = await page.wait_for_text(f"❯ 3. [ ] {text}", timeout=5.0)
+        assert "Review your answers" not in snapshot
+        assert _native_answers(client.frames, "Which features?") == []
+        assert not any(
+            frame.get("request_id") == ask["request_id"] and frame.get("accepted") is True
+            for frame in _resolved_frames(client.frames)
+        )
 
 
 def _key_sends(frames: list[dict]) -> list[str]:
@@ -356,6 +537,7 @@ def _key_sends(frames: list[dict]) -> list[str]:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_e5_deny_path_sends_escape_not_a_digit() -> None:
     """E5: choosing Deny on a permission gate sends Escape and resolves deny.
@@ -511,6 +693,7 @@ async def test_e6_sdk_emits_same_ask_user_question_shape_and_resolves(tmp_path) 
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_e7_turn_end_clears_stale_prompt_and_does_not_replay() -> None:
     """E7: an unanswered question is cleared on turn end and not replayed later.

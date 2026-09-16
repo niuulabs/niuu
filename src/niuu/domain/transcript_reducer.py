@@ -37,7 +37,9 @@ reducer here avoids deepening the skuld↔volundr coupling. This module imports 
 ## Unified metadata schema (chosen ONCE here)
 
   ``{usage, cost, model}`` (the names the UI reads), plus optional ``stop_reason``, ``status``
-  (``interrupted`` / ``error``) and ``provenance`` (``terminal_scrape``). The old rebuild-only
+  (``interrupted`` / ``error``) and ``provenance`` (``terminal_scrape``). Failed results also
+  retain ``is_error``, ``error`` and ``messageType: "error"`` so a transport failure cannot
+  masquerade as a successful completion after reload. The old rebuild-only
   ``modelUsage`` key is gone — it is normalised to ``usage`` here. There is deliberately NO
   ``source`` provenance tag: metadata must be path-IDENTICAL (live == rebuild) for INV-4, and a
   "which path produced this" marker cannot be both meaningful and identical across paths.
@@ -50,14 +52,47 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
+from niuu.domain.conversation_timeline import TIMELINE_KEY, project_timeline, stamp_parts, timeline
+from niuu.domain.history_control import is_history_control
+
 # Deterministic namespace for folded-turn ids (stable across reloads AND across paths).
 _TURN_NAMESPACE = uuid.UUID("6f2d2e2a-7b1c-4e8a-9d3f-0a1b2c3d4e5f")
 
 # Per-reasoning-block summary cap (kept identical to the historical live + rebuild behaviour).
 _REASONING_TAIL = 500
 
-# Synthetic / non-wire kinds: rows written to the durable log purely as derived
-# reducer SEEDS, never broadcast to a live channel (SRD FR-3 / FR-10). The broker
+# --------------------------------------------------------------------------- D1 tool timing
+#
+# Per-tool wall-clock, stamped onto the CONVERSATION WIRE so a client can say "ran in 3m 12s"
+# about ONE tool (or one burst of tools) instead of deriving it from turn boundaries — which
+# over-counts, because a turn's span includes model thinking and prose, and a text→tools→
+# text→tools turn would report the SAME whole-run span on every burst inside it.
+#
+# Placement (the contract iOS/ForgeKit decodes against):
+#   * ``tool_use``    part → ``started_at``, ``ended_at``, ``duration_ms``
+#   * ``tool_result`` part → ``ended_at``
+# ALL THREE client-facing values ride the tool_use part on purpose: it is the block that
+# survives shallow elision by ``{**block}`` spread, and the one ForgeKit already decodes into
+# a typed struct. The tool_result stamp is the orphan-safe fallback (a result whose call was
+# in an already-flushed turn still reports when it landed).
+#
+# Every key is ADDITIVE and OMITTED ENTIRELY when unknown: a frame with no timestamp produces
+# the exact byte-identical part dict it produced before D1, so a stored transcript, an old
+# broker, and a client that never learned these keys are all unaffected.
+#
+# Honest semantics: "started" = when the broker OBSERVED the tool_use frame, "ended" = when it
+# observed the tool_result. On the tmux/Claude plane those come from PreToolUse/PostToolUse
+# hooks (millisecond-accurate boundaries); on SDK/streaming transports a message's tool_use
+# blocks arrive together, so parallel calls report overlapping windows. This is wall-clock
+# observation latency, NOT CPU time. A transport that knows better may stamp ``started_at`` /
+# ``ended_at`` on the raw block itself — the reducer prefers a block-carried stamp over the
+# frame ts, so hook-exact timing is a one-line transport change later.
+TOOL_STARTED_AT = "started_at"
+TOOL_ENDED_AT = "ended_at"
+TOOL_DURATION_MS = "duration_ms"
+
+# Synthetic / non-wire kinds: derived reducer seeds and atomic import markers,
+# never broadcast to a live channel (SRD FR-3 / FR-10). The broker
 # appends ``conversation.turn`` rows via ``Broker._append_turn`` so a fold (live OR
 # crash-rebuild) can consume them as authoritative ``sdk_turns`` without
 # re-deriving turns from raw frames — but the live broadcast NEVER emits them. The
@@ -65,8 +100,11 @@ _REASONING_TAIL = 500
 # exclude these so literal frame-for-frame equality holds (live == replay == cold).
 # This is NOT a visibility concern (independent of ``show_internal``); it is the set
 # of kinds that simply do not belong on the wire. The reduce/rebuild path STILL
-# reads them as authoritative seeds — only the verbatim wire stream drops them.
-NON_BROADCAST_KINDS: frozenset[str] = frozenset({"conversation.turn"})
+# reads them as authoritative seeds or snapshot boundaries; only the verbatim
+# wire stream drops them.
+NON_BROADCAST_KINDS: frozenset[str] = frozenset(
+    {"conversation.turn", "conversation.projection", "history_import"}
+)
 
 # Per-connect handshake/preamble frames: addressed to ONE freshly-connecting
 # socket, NOT the canonical shared stream (SRD FR-7 / INV-5). On every browser
@@ -108,7 +146,7 @@ def is_per_connect_ephemeral(kind: str, payload: dict | None) -> bool:
     such a frame; a ``system`` welcome is identified by the ``PER_CONNECT_MARKER``
     payload key the broker stamps (so genuine CLI ``system`` frames are unaffected).
     """
-    if kind in PER_CONNECT_EPHEMERAL_KINDS:
+    if kind in PER_CONNECT_EPHEMERAL_KINDS or is_history_control(kind, payload):
         return True
     return isinstance(payload, dict) and bool(payload.get(PER_CONNECT_MARKER))
 
@@ -121,8 +159,9 @@ def is_read_path_excluded(kind: str, payload: dict | None) -> bool:
     independent of ``show_internal`` (a separate visibility concern). Two rationales,
     both "this frame was never on the canonical shared wire":
 
-      * ``NON_BROADCAST_KINDS`` — synthetic reducer SEEDS (``conversation.turn``)
-        never broadcast to ANY channel; the reduce/rebuild path still reads them.
+      * ``NON_BROADCAST_KINDS`` — derived ``conversation.turn`` seeds and atomic
+        ``history_import`` markers, never broadcast to ANY channel; the
+        reduce/rebuild path still reads them.
       * per-connect handshakes (:func:`is_per_connect_ephemeral`) — broadcast to ONE
         socket only; a connecting client gets its own fresh handshake.
 
@@ -159,6 +198,7 @@ class TurnAccumulator:
     last_seq: int = 0
     # tmux LAST-RESORT pane rows, used only when no delta/assistant content exists.
     pending_tmux_rows: list[str] | None = None
+    native_import: dict | None = None
 
     def touch(self, ts: datetime | None, seq: int) -> None:
         if ts is not None:
@@ -166,13 +206,18 @@ class TurnAccumulator:
         self.last_seq = max(self.last_seq, seq)
 
     def is_empty(self) -> bool:
-        return not self.content and not self.parts and not self.reasoning
+        return (
+            not self.content
+            and not self.reasoning
+            and not any(part.get("type") != "text" or part.get("text") for part in self.parts)
+        )
 
     def reset(self) -> None:
         self.content = ""
         self.parts = []
         self.reasoning = ""
         self.pending_tmux_rows = None
+        self.native_import = None
         # last_ts / last_seq intentionally retained as a floor for the next span.
 
 
@@ -236,27 +281,48 @@ def steering_target_id(kind: str, payload: dict) -> str:
 # The live path calls them as frames stream; the batch path calls them while walking the list.
 
 
-def apply_assistant_blocks(acc: TurnAccumulator, content_blocks: list) -> None:
+def apply_assistant_blocks(
+    acc: TurnAccumulator, content_blocks: list, *, ts: datetime | str | None = None
+) -> None:
     """Fold an ``assistant`` frame's content blocks (text / thinking / tool_use) into ``acc``.
 
     Mirrors the live broker's accumulation EXACTLY: text blocks append to both ``parts`` and
     ``content`` (newline-joined), thinking blocks append a capped reasoning part, tool_use
     blocks append a tool card carrying subagent attribution when present.
+
+    ``ts`` is the frame's timestamp (D1 per-tool timing): when given, every tool_use part is
+    stamped ``started_at``. Optional and omitted-when-absent so every historical caller and
+    every stored transcript keeps its exact pre-D1 shape (see ``_stamp_iso``).
     """
     if not isinstance(content_blocks, list):
         return
-    text_parts: list[str] = []
+    started_at = _stamp_iso(ts)
     for block in content_blocks:
         if not isinstance(block, dict):
             continue
         btype = block.get("type")
-        if btype == "text" and block.get("text"):
-            text_parts.append(block["text"])
-            acc.parts.append({"type": "text", "text": block["text"]})
+        if btype == "text" and isinstance(block.get("text"), str):
+            apply_text_message(acc, block)
         elif btype == "thinking" and block.get("thinking"):
             summary = str(block["thinking"])[-_REASONING_TAIL:]
             acc.parts.append({"type": "reasoning", "text": summary})
         elif btype == "tool_use" and block.get("id"):
+            existing = next(
+                (
+                    part
+                    for part in reversed(acc.parts)
+                    if part.get("type") == "tool_use" and part.get("id") == block["id"]
+                ),
+                None,
+            )
+            if existing is not None:
+                # Native tools can reveal their arguments only at completion.
+                # A same-ID refresh enriches the original card; its original
+                # timing and attribution remain authoritative when omitted here.
+                for key in ("name", "input", "parent_tool_use_id", "agent_id"):
+                    if key in block:
+                        existing[key] = block[key]
+                continue
             part: dict[str, Any] = {
                 "type": "tool_use",
                 "id": block.get("id"),
@@ -267,37 +333,166 @@ def apply_assistant_blocks(acc: TurnAccumulator, content_blocks: list) -> None:
                 part["parent_tool_use_id"] = block.get("parent_tool_use_id")
             if block.get("agent_id") is not None:
                 part["agent_id"] = block.get("agent_id")
+            # D1: prefer a transport-stamped start (hook-exact) over the frame ts.
+            block_started = _stamp_iso(block.get(TOOL_STARTED_AT)) or started_at
+            if block_started:
+                part[TOOL_STARTED_AT] = block_started
             acc.parts.append(part)
-    text_content = "\n".join(text_parts)
-    if text_content:
-        acc.content = f"{acc.content}\n{text_content}" if acc.content else text_content
+
+
+_TEXT_METADATA = ("phase", "turn_id", "thread_id", "index", "id_source")
+
+
+def _text_identity(frame: dict, block: dict | None = None) -> str | None:
+    value = (block or {}).get("id") or frame.get("item_id")
+    return value if isinstance(value, str) and value else None
+
+
+def _text_metadata(part: dict, source: dict) -> None:
+    for key in _TEXT_METADATA:
+        value = source.get(key)
+        if key == "index":
+            valid = type(value) is int and value >= 0
+        elif key == "phase":
+            valid = value in ("commentary", "final_answer")
+        else:
+            valid = isinstance(value, str) and bool(value)
+        if valid:
+            part[key] = value
+
+
+def _find_text_part(acc: TurnAccumulator, frame: dict) -> dict | None:
+    identity = _text_identity(frame)
+    for part in reversed(acc.parts):
+        if part.get("type") != "text":
+            continue
+        if identity is not None:
+            if part.get("id") != identity:
+                continue
+            if any(
+                frame.get(key) and part.get(key) and frame[key] != part[key]
+                for key in ("turn_id", "thread_id")
+            ):
+                continue
+            return part
+        if part.get("complete") is False and (
+            frame.get("index") is None or frame.get("index") == part.get("index")
+        ):
+            return part
+    return None
+
+
+def _sync_text_content(acc: TurnAccumulator) -> None:
+    """Compatibility prose; exact per-item bytes live in ordered parts.
+
+    Legacy whole-message transcripts keep their historical single-newline join.
+    Identified messages have a paragraph boundary, never a separator per delta.
+    """
+    text = ""
+    previous: dict | None = None
+    for part in acc.parts:
+        value = part.get("text")
+        if part.get("type") != "text" or not isinstance(value, str) or not value:
+            continue
+        if previous is not None:
+            text += "\n\n" if previous.get("id") or part.get("id") else "\n"
+        text += value
+        previous = part
+    acc.content = text
+
+
+def _preserve_legacy_content(acc: TurnAccumulator) -> None:
+    # Older callers/cache seeds can supply aggregate-only prose. Preserve it as
+    # an opaque legacy block; this cannot reconstruct its original chronology.
+    if acc.content and not any(p.get("type") == "text" and p.get("text") for p in acc.parts):
+        acc.parts.append({"type": "text", "text": acc.content})
+
+
+def apply_text_start(acc: TurnAccumulator, frame: dict) -> None:
+    """Reserve the message's first-seen position before tools or later text arrive."""
+    block = frame.get("content_block")
+    if not isinstance(block, dict) or block.get("type") != "text":
+        return
+    if block.get("phase", frame.get("phase")) == "analysis":
+        return
+    identity = _text_identity(frame, block)
+    lookup = {**frame, "item_id": identity}
+    part = _find_text_part(acc, lookup) if identity else None
+    if part is not None and part.get("complete") is True:
+        return  # Replay of an old start cannot reopen a completed message.
+    if part is None:
+        _preserve_legacy_content(acc)
+        part = {
+            "type": "text",
+            "id": identity or f"legacy-text-{len(acc.parts)}",
+            "text": "",
+            "complete": False,
+        }
+        if identity is None:
+            part["id_source"] = "synthetic"
+        acc.parts.append(part)
+    _text_metadata(part, frame)
+    _text_metadata(part, block)
+    if not part["text"] and isinstance(block.get("text"), str) and block["text"]:
+        part["text"] = block["text"]
+        _sync_text_content(acc)
+
+
+def apply_text_delta(acc: TurnAccumulator, text: str, *, frame: dict | None = None) -> None:
+    """Append exact chunk bytes to one open text item, never to the whole turn."""
+    if not isinstance(text, str) or not text:
+        return
+    source = frame or {}
+    if source.get("phase") == "analysis":
+        return
+    part = _find_text_part(acc, source)
+    if part is None:
+        apply_text_start(acc, {**source, "content_block": {"type": "text"}})
+        part = _find_text_part(acc, source)
+    if part is None or part.get("complete") is True:
+        return
+    _text_metadata(part, source)
+    part["text"] += text
+    _sync_text_content(acc)
 
 
 def apply_content_block_start(acc: TurnAccumulator, block: dict) -> None:
-    """Preserve a structured streaming text-item boundary when the transport supplies one."""
-    if not isinstance(block, dict) or block.get("type") != "text":
-        return
-    item_id = block.get("id")
-    phase = block.get("phase")
-    part = {"type": "text", "text": ""}
-    if isinstance(item_id, str) and item_id:
-        part["id"] = item_id
-    if isinstance(phase, str) and phase:
-        part["phase"] = phase
-    acc.parts.append(part)
+    """Apply a text boundary from callers using the block-only interface."""
+    apply_text_start(acc, {"content_block": block})
 
 
-def apply_text_delta(acc: TurnAccumulator, text: str) -> None:
-    """Fold a streaming text delta into ``acc`` (HTTP streaming format)."""
-    if not text:
+def apply_text_stop(acc: TurnAccumulator, frame: dict) -> None:
+    part = _find_text_part(acc, frame)
+    if part is not None:
+        _text_metadata(part, frame)
+        part["complete"] = True
+
+
+def apply_text_message(acc: TurnAccumulator, block: dict) -> None:
+    """Upsert authoritative full text by item identity without moving its anchor."""
+    if block.get("phase") == "analysis":
         return
-    part = acc.parts[-1] if acc.parts else None
-    structured_part = isinstance(part, dict) and part.get("type") == "text"
-    if structured_part:
-        if not part.get("text") and acc.content:
-            acc.content += "\n\n"
-        part["text"] = f"{part.get('text', '')}{text}"
-    acc.content += text
+    text = block.get("text")
+    if not isinstance(text, str):
+        return
+    identity = _text_identity({}, block)
+    if identity is None:
+        if text:
+            _preserve_legacy_content(acc)
+            acc.parts.append({"type": "text", "text": text})
+            _sync_text_content(acc)
+        return
+    source = {**block, "item_id": identity}
+    part = _find_text_part(acc, source)
+    if part is None:
+        apply_text_start(acc, {**source, "content_block": {"type": "text", "id": identity}})
+        part = _find_text_part(acc, source)
+    if part is None or (part.get("complete") is True and block.get("complete") is False):
+        return
+    _text_metadata(part, block)
+    part["text"] = text
+    part["complete"] = block.get("complete") is not False
+    _sync_text_content(acc)
 
 
 def apply_thinking_delta(acc: TurnAccumulator, thinking: str) -> None:
@@ -306,23 +501,62 @@ def apply_thinking_delta(acc: TurnAccumulator, thinking: str) -> None:
         acc.reasoning += thinking
 
 
-def apply_tool_result_blocks(acc: TurnAccumulator, blocks: list) -> None:
+def apply_tool_result_blocks(
+    acc: TurnAccumulator, blocks: list, *, ts: datetime | str | None = None
+) -> None:
     """Enrich the OPEN assistant turn with tool_result blocks (a tool_result-only user event
     is NOT a new turn — it carries the output of the calls already in ``acc``).
+
+    ``ts`` is the frame's timestamp (D1 per-tool timing): when given, the tool_result part is
+    stamped ``ended_at`` AND the matching ``tool_use`` part already in ``acc.parts`` is
+    back-filled with ``ended_at`` + ``duration_ms``. The back-fill mutates the part dict IN
+    PLACE, which is what makes the live plane work: the broker's ``_pending_accumulator()``
+    hands the reducer the very same ``parts`` list object it serves from, so an in-progress
+    poll and the eventual flushed turn both see the completed timing.
     """
+    ended_at = _stamp_iso(ts)
     for block in blocks or []:
         if not (isinstance(block, dict) and block.get("type") == "tool_result"):
             continue
-        if not block.get("tool_use_id"):
+        tool_use_id = block.get("tool_use_id")
+        if not tool_use_id:
             continue
-        acc.parts.append(
-            {
-                "type": "tool_result",
-                "tool_use_id": block.get("tool_use_id"),
-                "content": block.get("content"),
-                "is_error": bool(block.get("is_error")),
-            }
-        )
+        part: dict[str, Any] = {
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": block.get("content"),
+            "is_error": bool(block.get("is_error")),
+        }
+        # D1: prefer a transport-stamped end (hook-exact) over the frame ts.
+        block_ended = _stamp_iso(block.get(TOOL_ENDED_AT)) or ended_at
+        if block_ended:
+            part[TOOL_ENDED_AT] = block_ended
+        acc.parts.append(part)
+        if block_ended:
+            _close_tool_use(acc.parts, str(tool_use_id), block_ended)
+
+
+def _close_tool_use(parts: list[dict], tool_use_id: str, ended_at: str) -> None:
+    """Back-fill ``ended_at`` / ``duration_ms`` onto the tool_use part this result closes.
+
+    Scans ``parts`` in REVERSE for the most recent matching, still-open call. Deliberately
+    index-free: the state lives entirely in the accumulator's own parts list, so there is no
+    second structure that the live plane (which rebuilds a throw-away ``TurnAccumulator`` view
+    per frame) and the batch rebuild could get out of step on — the seam is parity-safe by
+    construction. A LATE / ORPHAN result (its call was in an already-flushed turn, or never
+    seen) simply finds nothing and is a no-op; the result part still carries its own
+    ``ended_at``.
+    """
+    for part in reversed(parts):
+        if part.get("type") != "tool_use" or str(part.get("id") or "") != tool_use_id:
+            continue
+        if TOOL_ENDED_AT in part:
+            continue  # already closed — a duplicate/replayed result must not re-stamp
+        part[TOOL_ENDED_AT] = ended_at
+        duration = _duration_ms(part.get(TOOL_STARTED_AT), ended_at)
+        if duration is not None:
+            part[TOOL_DURATION_MS] = duration
+        return
 
 
 def apply_tmux_rows(acc: TurnAccumulator, rows: list[str]) -> None:
@@ -340,6 +574,10 @@ def apply_result_content(acc: TurnAccumulator, payload: dict) -> None:
     content on BOTH paths. The guard is "no streamed assistant text" (empty ``content``), NOT
     ``is_empty()``: a tool_use-only turn has non-empty ``parts`` yet empty ``content``, and the
     live viewer saw the result text, so a rebuild must too.
+
+    A failed result may carry ONLY ``error`` (Codex socket EOF does this). Preserve the
+    failure as visible content when no prose exists. If text already streamed, its content
+    stays intact and :func:`result_metadata` carries the diagnostic without duplicating it.
     """
     if acc.content:
         return
@@ -349,7 +587,10 @@ def apply_result_content(acc: TurnAccumulator, payload: dict) -> None:
             if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
                 text = block["text"]
                 break
-    acc.content = text
+    if not text and _result_status(payload) == "error":
+        text = _result_error_text(payload)
+    if text:
+        apply_text_message(acc, {"type": "text", "text": text})
 
 
 # --------------------------------------------------------------------------- turn builders
@@ -381,6 +622,8 @@ def build_assistant_turn(
     text = acc.content
     parts = finalize_parts(acc)
     meta = dict(metadata or {})
+    if acc.native_import is not None:
+        meta["native_import"] = dict(acc.native_import)
     if not text and not parts and scrape_text:
         text = scrape_text
         meta["provenance"] = "terminal_scrape"
@@ -431,10 +674,12 @@ def build_error_turn(session_id: str, seq: int, text: str, ts: datetime | None =
 
 
 def result_metadata(payload: dict) -> dict:
-    """Lift usage/cost/model from a ``result`` frame into the UNIFIED metadata schema.
+    """Lift accounting and terminal outcome into the UNIFIED metadata schema.
 
     Accepts either the live wire key ``modelUsage`` or a pre-normalised ``usage`` and always
     emits ``{usage, cost, model}`` — the names the UI reads — plus ``stop_reason`` when present.
+    Errors remain errors even after prose streamed, and intentional interruption remains
+    distinguishable from a provider failure. Successful results keep their existing shape.
     """
     usage = payload.get("modelUsage")
     if not isinstance(usage, dict):
@@ -449,7 +694,44 @@ def result_metadata(payload: dict) -> dict:
     stop_reason = payload.get("stop_reason")
     if stop_reason is not None:
         md["stop_reason"] = stop_reason
+    status = _result_status(payload)
+    if status is not None:
+        md["status"] = status
+    if payload.get("is_error") is True:
+        md["is_error"] = True
+    if status == "error":
+        md.update(is_error=True, error=_result_error_text(payload), messageType="error")
     return md
+
+
+def _result_status(payload: dict) -> str | None:
+    stop_reason = str(payload.get("stop_reason") or "").lower()
+    if stop_reason in {"interrupted", "cancelled", "canceled", "aborted"}:
+        return "interrupted"
+    if (
+        payload.get("is_error") is True
+        or stop_reason in {"error", "errored", "failed"}
+        or str(payload.get("subtype") or "").startswith("error_")
+    ):
+        return "error"
+    return None
+
+
+def _result_error_text(payload: dict) -> str:
+    error = payload.get("error")
+    if isinstance(error, dict):
+        error = error.get("message")
+    if isinstance(error, str) and error.strip():
+        return error
+    errors = payload.get("errors")
+    if isinstance(errors, list):
+        messages = [message for message in errors if isinstance(message, str) and message.strip()]
+        if messages:
+            return "\n".join(messages)
+    result = payload.get("result")
+    if isinstance(result, str) and result.strip():
+        return result
+    return "The agent stopped with an error."
 
 
 # --------------------------------------------------------------------------- batch driver
@@ -472,6 +754,21 @@ _IGNORED_KINDS = frozenset(
         "tool_result",
         "log_gap",  # Epic-A overflow sentinel: a detectable hole marker, NOT content.
         "log_conflict",  # INV-3c sentinel: a distinct-payload seq collision marker, NOT content.
+    }
+)
+
+_CONVERSATIONAL_KINDS = frozenset(
+    {
+        "user",
+        "user_confirmed",
+        "assistant",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "result",
+        "error",
+        "terminal_frame",
+        "terminal_snapshot",
     }
 )
 
@@ -508,11 +805,29 @@ def reduce_frames(
     session_id = _session_id_of(rows[0])
     folded_request_ids = set(folded_request_ids or set())
     seen_ids = set(seen_ids or set())
-    turns: list[dict[str, Any]] = list(sdk_turns or [])
+    # Delivery folding must not mutate seed payloads supplied by a repository
+    # or a caller retaining the original ledger rows. Preserve absent metadata.
+    turns: list[dict[str, Any]] = [
+        {
+            **turn,
+            **(
+                {"metadata": dict(turn["metadata"])}
+                if isinstance(turn.get("metadata"), dict)
+                else {}
+            ),
+        }
+        for turn in sdk_turns or []
+    ]
 
     acc = TurnAccumulator()
-    # turn_id -> (seq, steering_state): the delivery-state transitions seen in the log, applied
-    # onto the matching user turns at the end (last-writer-wins by seq, == the live path).
+    imported_prefix_open = False
+    # A terminal pane keeps repainting after a result. Public replay has no
+    # conversation.turn seed to suppress that idle scrollback, so a completed
+    # span stays closed until a new human turn or assistant activity opens it.
+    # Initial/raw-only history still admits the last-resort pane fallback.
+    terminal_span_closed = False
+    # Preserve legacy raw-tail delivery folding. Only explicitly timed user seeds
+    # opt into the additional cross-seed lifecycle reconciliation below.
     steering: dict[str, tuple[int, str]] = {}
 
     def flush(status: str | None = None, md: dict | None = None) -> None:
@@ -528,11 +843,28 @@ def reduce_frames(
 
     for r in rows:
         k = r.kind
+        p = r.payload if isinstance(r.payload, dict) else {}
+        # Exclude before any accumulator/import boundary transition. A failed
+        # viewer history delivery must never terminate the running agent span.
+        if is_per_connect_ephemeral(k, p):
+            continue
+        metadata = p.get("metadata")
+        is_imported = isinstance(metadata, dict) and isinstance(metadata.get("native_import"), dict)
+        # An imported snapshot is a distinct historical prefix. If it ended
+        # mid-turn, a subsequent live result must never finish that old work.
+        # Raw DB reads carry the boundary marker; public replay filters it out,
+        # so native provenance supplies the SAME boundary at the next live frame.
+        if imported_prefix_open and (
+            k == "history_import" or (not is_imported and k in _CONVERSATIONAL_KINDS)
+        ):
+            flush(status="interrupted")
+            imported_prefix_open = False
+        if is_imported:
+            imported_prefix_open = True
         if k in NON_BROADCAST_KINDS or k in _IGNORED_KINDS:
             continue
         if r.request_id and r.request_id in folded_request_ids:
             continue
-        p = r.payload if isinstance(r.payload, dict) else {}
         seq = int(r.seq)
         ts = _ts_of(r)
 
@@ -544,30 +876,58 @@ def reduce_frames(
                 continue
 
         if k in ("user", "user_confirmed"):
-            _apply_user_frame(acc, turns, seen_ids, session_id, seq, ts, k, p, flush)
+            # Tool-result frames belong to the open assistant span. Human user
+            # frames flush that span first and carry their own provenance below.
+            if is_imported and _user_string_content(p) is None:
+                acc.native_import = acc.native_import or dict(metadata["native_import"])
+            if _apply_user_frame(acc, turns, seen_ids, session_id, seq, ts, k, p, flush):
+                terminal_span_closed = False
             continue
 
+        if is_imported:
+            acc.native_import = acc.native_import or dict(metadata["native_import"])
+
         if k == "assistant":
-            apply_assistant_blocks(acc, _content_blocks(p))
+            terminal_span_closed = False
+            # D1: the frame's durable ts IS the tool_use start stamp — the same instant the
+            # live broker passes here as it enqueues the frame, so both planes agree exactly.
+            part_start = len(acc.parts)
+            apply_assistant_blocks(acc, _content_blocks(p), ts=ts)
+            stamp_parts(acc.parts, p, start=part_start)
             acc.touch(ts, seq)
             continue
 
         if k == "content_block_start":
-            block = p.get("content_block", {})
-            apply_content_block_start(acc, block if isinstance(block, dict) else {})
+            terminal_span_closed = False
+            part_start = len(acc.parts)
+            apply_text_start(acc, p)
+            stamp_parts(acc.parts, p, start=part_start)
+            acc.touch(ts, seq)
+            continue
+
+        if k == "content_block_stop":
+            part_start = len(acc.parts)
+            apply_text_stop(acc, p)
+            stamp_parts(acc.parts, p, start=part_start)
             acc.touch(ts, seq)
             continue
 
         if k == "content_block_delta":
             delta = p.get("delta", {}) if isinstance(p.get("delta"), dict) else {}
+            if delta.get("text") or delta.get("thinking"):
+                terminal_span_closed = False
+            part_start = len(acc.parts)
             if delta.get("type") == "thinking_delta":
                 apply_thinking_delta(acc, delta.get("thinking", ""))
             else:
-                apply_text_delta(acc, delta.get("text", ""))
+                apply_text_delta(acc, delta.get("text", ""), frame=p)
+            stamp_parts(acc.parts, p, start=part_start)
             acc.touch(ts, seq)
             continue
 
         if k in ("terminal_frame", "terminal_snapshot"):
+            if terminal_span_closed:
+                continue
             rows_text = p.get("rows")
             if not isinstance(rows_text, list):
                 rows_text = str(p.get("text", "")).split("\n")
@@ -576,27 +936,78 @@ def reduce_frames(
             continue
 
         if k == "result":
+            part_start = len(acc.parts)
             apply_result_content(acc, p)
+            stamp_parts(acc.parts, p, start=part_start)
             acc.touch(ts, seq)
             flush(md=result_metadata(p))
+            terminal_span_closed = True
             continue
 
         if k == "error":
             flush()
             acc.touch(ts, seq)
             turns.append(build_error_turn(session_id, seq, _error_text(p), ts))
+            terminal_span_closed = True
             continue
 
     if not acc.is_empty() or acc.pending_tmux_rows is not None:
         flush(status="interrupted")
 
     _apply_steering_states(turns, steering)
+    turns = apply_steering_frames(turns, rows)
 
-    partial = any(t.get("metadata", {}).get("status") in ("interrupted", "error") for t in turns)
-    return ReduceResult(turns=turns, partial=partial)
+    partial = any(
+        t.get("metadata", {}).get("status") in ("interrupted", "error")
+        or bool(t.get("metadata", {}).get("native_import", {}).get("partial"))
+        for t in turns
+    )
+    return ReduceResult(turns=project_timeline(turns, session_id), partial=partial)
 
 
 # --------------------------------------------------------------------------- internal helpers
+
+
+def apply_steering_frames(turns: list[dict], frames: list[Frame]) -> list[dict]:
+    """Apply logged delivery outcomes even when saved assistant seeds cover the raw tail.
+
+    Content seeds do not supersede lifecycle ACKs for timed same-turn input.
+    Untimed authoritative history retains its prior projection exactly: this is
+    not a retrospective repair of legacy delivery labels. Copy timed user metadata
+    so a read never mutates an authoritative stored payload.
+    """
+    result = [
+        {
+            **turn,
+            **(
+                {"metadata": dict(turn["metadata"])}
+                if isinstance(turn.get("metadata"), dict)
+                else {}
+            ),
+        }
+        if turn.get("role") == "user"
+        else turn
+        for turn in turns
+    ]
+    states: dict[str, tuple[int, str]] = {}
+    users = {
+        turn.get("id"): turn
+        for turn in result
+        if turn.get("role") == "user" and timeline(turn.get("metadata")) is not None
+    }
+    for row in sorted(frames, key=lambda frame: frame.seq):
+        payload = row.payload
+        if not isinstance(payload, dict) or steering_target_id(row.kind, payload) not in users:
+            continue
+        _record_steering(states, row.kind, payload, row.seq)
+        accepted = payload.get("accepted_at")
+        if row.kind != "user_active" or not isinstance(accepted, str) or not accepted:
+            continue
+        user = users.get(payload.get("id"))
+        if user is not None:
+            user.setdefault("metadata", {}).setdefault("steering_accepted_at", accepted)
+    _apply_steering_states(result, states)
+    return result
 
 
 def _record_steering(
@@ -632,26 +1043,45 @@ def _apply_steering_states(
         turn.setdefault("metadata", {})["steering_state"] = resolved[1]
 
 
-def _apply_user_frame(acc, turns, seen_ids, session_id, seq, ts, kind, payload, flush) -> None:
+def _apply_user_frame(acc, turns, seen_ids, session_id, seq, ts, kind, payload, flush) -> bool:
     """Fold a ``user`` or ``user_confirmed`` frame.
 
     Epic-A carry-over: ONE human message is durably written as BOTH a ``user`` frame (string
     content, ``uuid``) AND a ``user_confirmed`` broker frame (``id`` + ``content``). They share
     the id/content, so dedup on that id and emit a single user turn — never a doubled turn.
+    Return whether a new human turn was added; a replayed confirmation cannot reopen an idle pane.
     """
     content = _user_string_content(payload) if kind == "user" else _confirmed_content(payload)
     if content is None:
         if kind == "user":
-            apply_tool_result_blocks(acc, _tool_result_blocks(payload))
+            # D1: the frame's durable ts IS the tool_result end stamp (see the assistant branch).
+            part_start = len(acc.parts)
+            apply_tool_result_blocks(acc, _tool_result_blocks(payload), ts=ts)
+            stamp_parts(acc.parts, payload, start=part_start)
             acc.touch(ts, seq)
-        return
+        return False
     uid = _user_id(payload, kind)
     if uid and uid in seen_ids:
-        return  # already emitted (seed double-log, or the user/user_confirmed pair)
-    flush()
+        return False  # already emitted (seed double-log, or the user/user_confirmed pair)
+    # A same-turn steering input is a display boundary, NOT an execution end.
+    # Keep native items open so a later full text/tool completion updates the
+    # original item. The shared presentation projection positions the input.
+    if timeline(payload) is None:
+        flush()
     if uid:
         seen_ids.add(uid)
-    turns.append(build_user_turn(session_id, seq, content, turn_id=uid or None, ts=ts))
+    metadata = {}
+    source_metadata = payload.get("metadata")
+    if isinstance(source_metadata, dict) and isinstance(source_metadata.get("native_import"), dict):
+        metadata["native_import"] = dict(source_metadata["native_import"])
+    if payload.get("request_id"):
+        metadata["request_id"] = payload["request_id"]
+    if timeline(payload) is not None:
+        metadata[TIMELINE_KEY] = dict(timeline(payload))
+    turns.append(
+        build_user_turn(session_id, seq, content, turn_id=uid or None, ts=ts, metadata=metadata)
+    )
+    return True
 
 
 def _turn_dict(
@@ -726,3 +1156,37 @@ def _iso(ts: datetime | None) -> str:
         return ts.isoformat()
     except Exception:  # noqa: BLE001 — defensive; ts is best-effort metadata
         return str(ts)
+
+
+def _stamp_iso(ts: datetime | str | None) -> str | None:
+    """The ISO string to stamp for ``ts``, or None when there is nothing honest to stamp.
+
+    Accepts a ``datetime`` (the batch path reads ``SessionLogEntry.ts``; the live path passes
+    the very instant it hands ``_enqueue_event_log``) or an already-ISO string (a transport
+    that pre-stamped the raw block). Returns None — never ``""`` — for absent/empty input so
+    the caller OMITS the key rather than writing an empty stamp.
+    """
+    if ts is None:
+        return None
+    text = _iso(ts) if isinstance(ts, datetime) else str(ts)
+    return text or None
+
+
+def _duration_ms(started_at: Any, ended_at: str) -> int | None:
+    """Elapsed milliseconds between two ISO stamps, or None when it cannot be computed.
+
+    Both endpoints are read back as STRINGS (the start was already stamped onto the part), so
+    the arithmetic is identical on the live and rebuild planes — neither reaches for a
+    datetime the other does not have. A negative span (clock step / skew) clamps to 0 rather
+    than surfacing a nonsense "-3 ms" in a UI.
+    """
+    if not isinstance(started_at, str) or not started_at:
+        return None
+    try:
+        start = datetime.fromisoformat(started_at)
+        end = datetime.fromisoformat(ended_at)
+    except ValueError:
+        return None
+    if (start.tzinfo is None) != (end.tzinfo is None):
+        return None  # naive vs aware — not subtractable, and guessing would be a lie
+    return max(0, int((end - start).total_seconds() * 1000))

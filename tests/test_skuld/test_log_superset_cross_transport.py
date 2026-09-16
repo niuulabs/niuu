@@ -35,6 +35,8 @@ The transport fakes are reused by IMPORT only:
               ``start`` + ``send_message`` path (from ``transports/test_sdk``).
   * grok    — the ACP stdin/stdout queue fakes driving the real ``_read_loop`` via
               ``send_message`` (mirroring ``test_grok_transport``).
+  * muse    — the MSP stdio fake host driving the real ``_reader_loop`` via
+              ``send_message`` (imported from ``test_muse_transport``).
   * persistent-subprocess — ``_StubStream`` / ``_make_proc`` driving the real
               ``_read_stdout_loop`` via ``send_message`` (from
               ``test_persistent_subprocess``).
@@ -59,10 +61,23 @@ from skuld.config import SkuldSettings
 # --- Shared transport fakes, imported (never forked) ------------------------
 from skuld.transports.codex_ws import CodexWebSocketTransport
 from skuld.transports.grok import GrokACPTransport
+from skuld.transports.muse import MuseMSPTransport
 from skuld.transports.opencode import OpenCodeHttpTransport
 from skuld.transports.persistent_subprocess import PersistentSubprocessTransport
 from skuld.transports.sdk import SDKTransport
 from tests.test_skuld.test_codex_ws_transport import FakeWebSocket as CodexFakeWebSocket
+from tests.test_skuld.test_muse_transport import (
+    _FakeHost as MuseFakeHost,
+)
+from tests.test_skuld.test_muse_transport import (
+    _initialize_result as muse_initialize_result,
+)
+from tests.test_skuld.test_muse_transport import (
+    _notification as muse_notification,
+)
+from tests.test_skuld.test_muse_transport import (
+    _session as muse_session,
+)
 from tests.test_skuld.test_persistent_subprocess import _make_proc
 from tests.test_skuld.transports.test_sdk import (
     _assistant_message,
@@ -316,6 +331,106 @@ async def _drive_grok(broker: Broker, tmp_path, monkeypatch) -> set[str]:
     return {"assistant", "content_block_delta", "result"}
 
 
+async def _drive_muse(broker: Broker, tmp_path, monkeypatch) -> set[str]:
+    # Drive the REAL MSP reader loop via the imported fake host: the handshake is
+    # answered as start() asks for it, then one turn streams text, a tool call and its
+    # result, and the terminal — the frames a live `muse serve` emits.
+    host = MuseFakeHost()
+    monkeypatch.setattr(
+        "skuld.transports.muse.asyncio.create_subprocess_exec",
+        AsyncMock(return_value=host.process),
+    )
+    t = MuseMSPTransport(str(tmp_path))
+    t.on_event(broker._handle_cli_event)
+
+    start_task = asyncio.create_task(t.start())
+    await host.answer("initialize", muse_initialize_result())
+    await host.answer(
+        "model/list", {"models": [], "providerId": "meta", "source": "bundledCatalog"}
+    )
+    await host.answer("session/start", {"session": muse_session(), "viewCursor": "v:1"})
+    await start_task
+
+    send_task = asyncio.create_task(t.send_message("do the thing"))
+    cid = await host.accept_turn()
+    sid = muse_session()["sessionId"]
+    await host.push(
+        muse_notification(
+            "turn/started", {"sessionId": sid, "viewCursor": "v:2", "turnId": cid, "commandId": cid}
+        ),
+        muse_notification(
+            "item/started",
+            {
+                "sessionId": sid,
+                "viewCursor": "v:3",
+                "item": {
+                    "itemId": "a1",
+                    "kind": "agentMessage",
+                    "turnId": cid,
+                    "revision": 1,
+                    "status": "inProgress",
+                    "text": "",
+                },
+            },
+        ),
+        muse_notification(
+            "item/delta",
+            {"sessionId": sid, "viewCursor": "v:4", "itemId": "a1", "delta": "Hello"},
+        ),
+        muse_notification(
+            "item/started",
+            {
+                "sessionId": sid,
+                "viewCursor": "v:5",
+                "item": {
+                    "itemId": "tc1",
+                    "kind": "toolCall",
+                    "turnId": cid,
+                    "revision": 1,
+                    "status": "inProgress",
+                    "tool": "edit_file",
+                    "args": '{"path": "foo.py"}',
+                },
+            },
+        ),
+        muse_notification(
+            "item/completed",
+            {
+                "sessionId": sid,
+                "viewCursor": "v:6",
+                "item": {
+                    "itemId": "tc1",
+                    "kind": "toolCall",
+                    "turnId": cid,
+                    "revision": 2,
+                    "status": "completed",
+                    "tool": "edit_file",
+                    "args": '{"path": "foo.py"}',
+                    "visibleOutput": "ok",
+                },
+            },
+        ),
+        muse_notification(
+            "turn/completed",
+            {
+                "sessionId": sid,
+                "viewCursor": "v:7",
+                "turnId": cid,
+                "terminal": "completed",
+                "usage": {
+                    "inputTokens": 10,
+                    "outputTokens": 5,
+                    "cachedTokens": 0,
+                    "reasoningTokens": 0,
+                },
+            },
+        ),
+    )
+    await asyncio.wait_for(send_task, timeout=5)
+    await t.stop()
+    return {"assistant", "content_block_delta", "user", "result"}
+
+
 async def _drive_persistent_subprocess(broker: Broker, tmp_path, monkeypatch) -> set[str]:
     # Drive the REAL _read_stdout_loop via the _StubStream-backed proc + send_message.
     proc = _make_proc(
@@ -358,6 +473,7 @@ _TRANSPORTS = [
     ("opencode", _drive_opencode, False),
     ("sdk", _drive_sdk, True),
     ("grok", _drive_grok, True),
+    ("muse", _drive_muse, True),
     ("persistent_subprocess", _drive_persistent_subprocess, True),
 ]
 

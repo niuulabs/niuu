@@ -1,0 +1,1088 @@
+[
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 395,
+    "kind": "user",
+    "role": "user",
+    "request_id": null,
+    "payload": {
+      "role": "user",
+      "type": "user",
+      "uuid": "3ad419c9-7db1-427c-b313-1fdf5c7f28ff",
+      "message": {
+        "role": "user",
+        "content": "Run a Python command that prints 200 numbered lines, each containing the Unicode text café 東京. Then run a successful command with no stdout. Summarize how many lines were emitted. Keep the output in tool results rather than repeating it in your final answer.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:0e7d7acc879f45068a69f4faa8b2f291:long-output]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only."
+      }
+    },
+    "ts": "2026-09-07T16:56:37.569950+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 396,
+    "kind": "user_confirmed",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "id": "3ad419c9-7db1-427c-b313-1fdf5c7f28ff",
+      "type": "user_confirmed",
+      "content": "Run a Python command that prints 200 numbered lines, each containing the Unicode text café 東京. Then run a successful command with no stdout. Summarize how many lines were emitted. Keep the output in tool results rather than repeating it in your final answer.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:0e7d7acc879f45068a69f4faa8b2f291:long-output]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+      "request_id": null,
+      "steering_state": "pending"
+    },
+    "ts": "2026-09-07T16:56:37.579345+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 397,
+    "kind": "user_delivered",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "id": "3ad419c9-7db1-427c-b313-1fdf5c7f28ff",
+      "type": "user_delivered",
+      "status": "delivered"
+    },
+    "ts": "2026-09-07T16:56:37.583388+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 398,
+    "kind": "assistant",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "assistant",
+      "message": {
+        "model": "gpt-6-astra",
+        "content": []
+      }
+    },
+    "ts": "2026-09-07T16:56:37.586966+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 399,
+    "kind": "user_consumed",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "user_consumed",
+      "msg_id": "3ad419c9-7db1-427c-b313-1fdf5c7f28ff",
+      "event_type": "codex.turn.started"
+    },
+    "ts": "2026-09-07T16:56:37.594311+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 400,
+    "kind": "user_active",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "id": "3ad419c9-7db1-427c-b313-1fdf5c7f28ff",
+      "type": "user_active"
+    },
+    "ts": "2026-09-07T16:56:37.595395+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 401,
+    "kind": "assistant",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "assistant",
+      "message": {
+        "model": "gpt-6-astra",
+        "content": [
+          {
+            "id": "exec-695f376e-6ce1-4f11-9c6a-0fa7c209234c",
+            "name": "Bash",
+            "type": "tool_use",
+            "input": {
+              "command": "/bin/bash -lc \"python3 - <<'PY'\nfor i in range(1, 201):\n    print(f'{i}: café 東京')\nPY\""
+            }
+          }
+        ]
+      }
+    },
+    "ts": "2026-09-07T16:56:44.665293+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 402,
+    "kind": "content_block_start",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+        "id": "exec-695f376e-6ce1-4f11-9c6a-0fa7c209234c",
+        "name": "Bash",
+        "type": "tool_use"
+      }
+    },
+    "ts": "2026-09-07T16:56:44.682033+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 403,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"command\": \"/bin/bash -lc \\\"python3 - <<'PY'\\nfor i in range(1, 201):\\n    print(f'{i}: caf\\u00e9 \\u6771\\u4eac')\\nPY\\\"\"}"
+      }
+    },
+    "ts": "2026-09-07T16:56:44.682128+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 404,
+    "kind": "content_block_stop",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_stop"
+    },
+    "ts": "2026-09-07T16:56:44.682191+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 405,
+    "kind": "user",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "content": "1: café 東京\n2: café 東京\n3: café 東京\n4: café 東京\n5: café 東京\n6: café 東京\n7: café 東京\n8: café 東京\n9: café 東京\n10: café 東京\n11: café 東京\n12: café 東京\n13: café 東京\n14: café 東京\n15: café 東京\n16: café 東京\n17: café 東京\n18: café 東京\n19: café 東京\n20: café 東京\n21: café 東京\n22: café 東京\n23: café 東京\n24: café 東京\n25: café 東京\n26: café 東京\n27: café 東京\n28: café 東京\n29: café 東京\n30: café 東京\n31: café 東京\n32: café 東京\n33: café 東京\n34: café 東京\n35: café 東京\n36: café 東京\n37: café 東京\n38: café 東京\n39: café 東京\n40: café 東京\n41: café 東京\n42: café 東京\n43: café 東京\n44: café 東京\n45: café 東京\n46: café 東京\n47: café 東京\n48: café 東京\n49: café 東京\n50: café 東京\n51: café 東京\n52: café 東京\n53: café 東京\n54: café 東京\n55: café 東京\n56: café 東京\n57: café 東京\n58: café 東京\n59: café 東京\n60: café 東京\n61: café 東京\n62: café 東京\n63: café 東京\n64: café 東京\n65: café 東京\n66: café 東京\n67: café 東京\n68: café 東京\n69: café 東京\n70: café 東京\n71: café 東京\n72: café 東京\n73: café 東京\n74: café 東京\n75: café 東京\n76: café 東京\n77: café 東京\n78: café 東京\n79: café 東京\n80: café 東京\n81: café 東京\n82: café 東京\n83: café 東京\n84: café 東京\n85: café 東京\n86: café 東京\n87: café 東京\n88: café 東京\n89: café 東京\n90: café 東京\n91: café 東京\n92: café 東京\n93: café 東京\n94: café 東京\n95: café 東京\n96: café 東京\n97: café 東京\n98: café 東京\n99: café 東京\n100: café 東京\n101: café 東京\n102: café 東京\n103: café 東京\n104: café 東京\n105: café 東京\n106: café 東京\n107: café 東京\n108: café 東京\n109: café 東京\n110: café 東京\n111: café 東京\n112: café 東京\n113: café 東京\n114: café 東京\n115: café 東京\n116: café 東京\n117: café 東京\n118: café 東京\n119: café 東京\n120: café 東京\n121: café 東京\n122: café 東京\n123: café 東京\n124: café 東京\n125: café 東京\n126: café 東京\n127: café 東京\n128: café 東京\n129: café 東京\n130: café 東京\n131: café 東京\n132: café 東京\n133: café 東京\n134: café 東京\n135: café 東京\n136: café 東京\n137: café 東京\n138: café 東京\n139: café 東京\n140: café 東京\n141: café 東京\n142: café 東京\n143: café 東京\n144: café 東京\n145: café 東京\n146: café 東京\n147: café 東京\n148: café 東京\n149: café 東京\n150: café 東京\n151: café 東京\n152: café 東京\n153: café 東京\n154: café 東京\n155: café 東京\n156: café 東京\n157: café 東京\n158: café 東京\n159: café 東京\n160: café 東京\n161: café 東京\n162: café 東京\n163: café 東京\n164: café 東京\n165: café 東京\n166: café 東京\n167: café 東京\n168: café 東京\n169: café 東京\n170: café 東京\n171: café 東京\n172: café 東京\n173: café 東京\n174: café 東京\n175: café 東京\n176: café 東京\n177: café 東京\n178: café 東京\n179: café 東京\n180: café 東京\n181: café 東京\n182: café 東京\n183: café 東京\n184: café 東京\n185: café 東京\n186: café 東京\n187: café 東京\n188: café 東京\n189: café 東京\n190: café 東京\n191: café 東京\n192: café 東京\n193: café 東京\n194: café 東京\n195: café 東京\n196: café 東京\n197: café 東京\n198: café 東京\n199: café 東京\n200: café 東京\n",
+          "ended_at": "2026-09-07T16:56:44.682207+00:00",
+          "tool_use_id": "exec-695f376e-6ce1-4f11-9c6a-0fa7c209234c"
+        }
+      ],
+      "message": {
+        "content": [
+          {
+            "type": "tool_result",
+            "content": "1: café 東京\n2: café 東京\n3: café 東京\n4: café 東京\n5: café 東京\n6: café 東京\n7: café 東京\n8: café 東京\n9: café 東京\n10: café 東京\n11: café 東京\n12: café 東京\n13: café 東京\n14: café 東京\n15: café 東京\n16: café 東京\n17: café 東京\n18: café 東京\n19: café 東京\n20: café 東京\n21: café 東京\n22: café 東京\n23: café 東京\n24: café 東京\n25: café 東京\n26: café 東京\n27: café 東京\n28: café 東京\n29: café 東京\n30: café 東京\n31: café 東京\n32: café 東京\n33: café 東京\n34: café 東京\n35: café 東京\n36: café 東京\n37: café 東京\n38: café 東京\n39: café 東京\n40: café 東京\n41: café 東京\n42: café 東京\n43: café 東京\n44: café 東京\n45: café 東京\n46: café 東京\n47: café 東京\n48: café 東京\n49: café 東京\n50: café 東京\n51: café 東京\n52: café 東京\n53: café 東京\n54: café 東京\n55: café 東京\n56: café 東京\n57: café 東京\n58: café 東京\n59: café 東京\n60: café 東京\n61: café 東京\n62: café 東京\n63: café 東京\n64: café 東京\n65: café 東京\n66: café 東京\n67: café 東京\n68: café 東京\n69: café 東京\n70: café 東京\n71: café 東京\n72: café 東京\n73: café 東京\n74: café 東京\n75: café 東京\n76: café 東京\n77: café 東京\n78: café 東京\n79: café 東京\n80: café 東京\n81: café 東京\n82: café 東京\n83: café 東京\n84: café 東京\n85: café 東京\n86: café 東京\n87: café 東京\n88: café 東京\n89: café 東京\n90: café 東京\n91: café 東京\n92: café 東京\n93: café 東京\n94: café 東京\n95: café 東京\n96: café 東京\n97: café 東京\n98: café 東京\n99: café 東京\n100: café 東京\n101: café 東京\n102: café 東京\n103: café 東京\n104: café 東京\n105: café 東京\n106: café 東京\n107: café 東京\n108: café 東京\n109: café 東京\n110: café 東京\n111: café 東京\n112: café 東京\n113: café 東京\n114: café 東京\n115: café 東京\n116: café 東京\n117: café 東京\n118: café 東京\n119: café 東京\n120: café 東京\n121: café 東京\n122: café 東京\n123: café 東京\n124: café 東京\n125: café 東京\n126: café 東京\n127: café 東京\n128: café 東京\n129: café 東京\n130: café 東京\n131: café 東京\n132: café 東京\n133: café 東京\n134: café 東京\n135: café 東京\n136: café 東京\n137: café 東京\n138: café 東京\n139: café 東京\n140: café 東京\n141: café 東京\n142: café 東京\n143: café 東京\n144: café 東京\n145: café 東京\n146: café 東京\n147: café 東京\n148: café 東京\n149: café 東京\n150: café 東京\n151: café 東京\n152: café 東京\n153: café 東京\n154: café 東京\n155: café 東京\n156: café 東京\n157: café 東京\n158: café 東京\n159: café 東京\n160: café 東京\n161: café 東京\n162: café 東京\n163: café 東京\n164: café 東京\n165: café 東京\n166: café 東京\n167: café 東京\n168: café 東京\n169: café 東京\n170: café 東京\n171: café 東京\n172: café 東京\n173: café 東京\n174: café 東京\n175: café 東京\n176: café 東京\n177: café 東京\n178: café 東京\n179: café 東京\n180: café 東京\n181: café 東京\n182: café 東京\n183: café 東京\n184: café 東京\n185: café 東京\n186: café 東京\n187: café 東京\n188: café 東京\n189: café 東京\n190: café 東京\n191: café 東京\n192: café 東京\n193: café 東京\n194: café 東京\n195: café 東京\n196: café 東京\n197: café 東京\n198: café 東京\n199: café 東京\n200: café 東京\n",
+            "ended_at": "2026-09-07T16:56:44.682207+00:00",
+            "tool_use_id": "exec-695f376e-6ce1-4f11-9c6a-0fa7c209234c"
+          }
+        ]
+      }
+    },
+    "ts": "2026-09-07T16:56:44.682209+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 406,
+    "kind": "content_block_start",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_start",
+      "index": 1,
+      "content_block": {
+        "type": "tool_result",
+        "content": "1: café 東京\n2: café 東京\n3: café 東京\n4: café 東京\n5: café 東京\n6: café 東京\n7: café 東京\n8: café 東京\n9: café 東京\n10: café 東京\n11: café 東京\n12: café 東京\n13: café 東京\n14: café 東京\n15: café 東京\n16: café 東京\n17: café 東京\n18: café 東京\n19: café 東京\n20: café 東京\n21: café 東京\n22: café 東京\n23: café 東京\n24: café 東京\n25: café 東京\n26: café 東京\n27: café 東京\n28: café 東京\n29: café 東京\n30: café 東京\n31: café 東京\n32: café 東京\n33: café 東京\n34: café 東京\n35: café 東京\n36: café 東京\n37: café 東京\n38: café 東京\n39: café 東京\n40: café 東京\n41: café 東京\n42: café 東京\n43: café 東京\n44: café 東京\n45: café 東京\n46: café 東京\n47: café 東京\n48: café 東京\n49: café 東京\n50: café 東京\n51: café 東京\n52: café 東京\n53: café 東京\n54: café 東京\n55: café 東京\n56: café 東京\n57: café 東京\n58: café 東京\n59: café 東京\n60: café 東京\n61: café 東京\n62: café 東京\n63: café 東京\n64: café 東京\n65: café 東京\n66: café 東京\n67: café 東京\n68: café 東京\n69: café 東京\n70: café 東京\n71: café 東京\n72: café 東京\n73: café 東京\n74: café 東京\n75: café 東京\n76: café 東京\n77: café 東京\n78: café 東京\n79: café 東京\n80: café 東京\n81: café 東京\n82: café 東京\n83: café 東京\n84: café 東京\n85: café 東京\n86: café 東京\n87: café 東京\n88: café 東京\n89: café 東京\n90: café 東京\n91: café 東京\n92: café 東京\n93: café 東京\n94: café 東京\n95: café 東京\n96: café 東京\n97: café 東京\n98: café 東京\n99: café 東京\n100: café 東京\n101: café 東京\n102: café 東京\n103: café 東京\n104: café 東京\n105: café 東京\n106: café 東京\n107: café 東京\n108: café 東京\n109: café 東京\n110: café 東京\n111: café 東京\n112: café 東京\n113: café 東京\n114: café 東京\n115: café 東京\n116: café 東京\n117: café 東京\n118: café 東京\n119: café 東京\n120: café 東京\n121: café 東京\n122: café 東京\n123: café 東京\n124: café 東京\n125: café 東京\n126: café 東京\n127: café 東京\n128: café 東京\n129: café 東京\n130: café 東京\n131: café 東京\n132: café 東京\n133: café 東京\n134: café 東京\n135: café 東京\n136: café 東京\n137: café 東京\n138: café 東京\n139: café 東京\n140: café 東京\n141: café 東京\n142: café 東京\n143: café 東京\n144: café 東京\n145: café 東京\n146: café 東京\n147: café 東京\n148: café 東京\n149: café 東京\n150: café 東京\n151: café 東京\n152: café 東京\n153: café 東京\n154: café 東京\n155: café 東京\n156: café 東京\n157: café 東京\n158: café 東京\n159: café 東京\n160: café 東京\n161: café 東京\n162: café 東京\n163: café 東京\n164: café 東京\n165: café 東京\n166: café 東京\n167: café 東京\n168: café 東京\n169: café 東京\n170: café 東京\n171: café 東京\n172: café 東京\n173: café 東京\n174: café 東京\n175: café 東京\n176: café 東京\n177: café 東京\n178: café 東京\n179: café 東京\n180: café 東京\n181: café 東京\n182: café 東京\n183: café 東京\n184: café 東京\n185: café 東京\n186: café 東京\n187: café 東京\n188: café 東京\n189: café 東京\n190: café 東京\n191: café 東京\n192: café 東京\n193: café 東京\n194: café 東京\n195: café 東京\n196: café 東京\n197: café 東京\n198: café 東京\n199: café 東京\n200: café 東京\n",
+        "ended_at": "2026-09-07T16:56:44.682207+00:00",
+        "tool_use_id": "exec-695f376e-6ce1-4f11-9c6a-0fa7c209234c"
+      }
+    },
+    "ts": "2026-09-07T16:56:44.693168+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 407,
+    "kind": "content_block_stop",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_stop"
+    },
+    "ts": "2026-09-07T16:56:44.693345+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 408,
+    "kind": "assistant",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "assistant",
+      "message": {
+        "model": "gpt-6-astra",
+        "content": [
+          {
+            "id": "exec-f74cb7af-f947-4e3a-917a-3cd135bfa85d",
+            "name": "Bash",
+            "type": "tool_use",
+            "input": {
+              "command": "/bin/bash -lc true"
+            }
+          }
+        ]
+      }
+    },
+    "ts": "2026-09-07T16:56:44.715913+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 409,
+    "kind": "content_block_start",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_start",
+      "index": 2,
+      "content_block": {
+        "id": "exec-f74cb7af-f947-4e3a-917a-3cd135bfa85d",
+        "name": "Bash",
+        "type": "tool_use"
+      }
+    },
+    "ts": "2026-09-07T16:56:44.721731+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 410,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"command\": \"/bin/bash -lc true\"}"
+      }
+    },
+    "ts": "2026-09-07T16:56:44.721810+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 411,
+    "kind": "content_block_stop",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_stop"
+    },
+    "ts": "2026-09-07T16:56:44.721848+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 412,
+    "kind": "user",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "content": "",
+          "ended_at": "2026-09-07T16:56:44.721875+00:00",
+          "tool_use_id": "exec-f74cb7af-f947-4e3a-917a-3cd135bfa85d"
+        }
+      ],
+      "message": {
+        "content": [
+          {
+            "type": "tool_result",
+            "content": "",
+            "ended_at": "2026-09-07T16:56:44.721875+00:00",
+            "tool_use_id": "exec-f74cb7af-f947-4e3a-917a-3cd135bfa85d"
+          }
+        ]
+      }
+    },
+    "ts": "2026-09-07T16:56:44.721877+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 413,
+    "kind": "content_block_start",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_start",
+      "index": 3,
+      "content_block": {
+        "type": "tool_result",
+        "content": "",
+        "ended_at": "2026-09-07T16:56:44.721875+00:00",
+        "tool_use_id": "exec-f74cb7af-f947-4e3a-917a-3cd135bfa85d"
+      }
+    },
+    "ts": "2026-09-07T16:56:44.729514+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 414,
+    "kind": "content_block_stop",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_stop"
+    },
+    "ts": "2026-09-07T16:56:44.729621+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 415,
+    "kind": "message_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "message_delta",
+      "usage": {
+        "output_tokens": 123
+      }
+    },
+    "ts": "2026-09-07T16:56:44.729705+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 416,
+    "kind": "content_block_start",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_start",
+      "index": 4,
+      "content_block": {
+        "type": "text"
+      }
+    },
+    "ts": "2026-09-07T16:56:48.872965+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 417,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "Em",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:48.873142+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 418,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "itted",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:48.873173+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 419,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": " ",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:48.898220+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 420,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "200",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:48.934545+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 421,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": " numbered",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:48.960389+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 422,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": " Unicode",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.023707+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 423,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": " lines",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.023833+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 424,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": ".",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.025550+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 425,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": " The",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.055122+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 426,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": " subsequent",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.089211+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 427,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": " command",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.139247+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 428,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": " succeeded",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.159381+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 429,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": " with",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.190175+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 430,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": " no",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.198683+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 431,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": " stdout",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.240977+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 432,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": ".\n\n",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.275367+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 433,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "[",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.304186+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 434,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "FOR",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.362735+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 435,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "GE",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.402580+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 436,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "_DONE",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.402711+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 437,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": ":",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.430652+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 438,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "0",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.461808+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 439,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "e",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.489520+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 440,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "7",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.521737+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 441,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "d",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.555056+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 442,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "7",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.582998+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 443,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "acc",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.617356+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 444,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "879",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.618592+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 445,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "f",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.646312+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 446,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "450",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.681871+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 447,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "68",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.716095+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 448,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "a",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.744001+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 449,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "69",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.774570+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 450,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "f",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.805822+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 451,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "4",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.838274+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 452,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "faa",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.884452+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 453,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "8",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.914408+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 454,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "b",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.936405+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 455,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "2",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:49.970574+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 456,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "f",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:50.009467+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 457,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "291",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:50.036968+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 458,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": ":",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:50.060578+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 459,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "long",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:50.090297+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 460,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "-output",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:50.120630+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 461,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "]",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:56:50.160031+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 462,
+    "kind": "content_block_stop",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_stop"
+    },
+    "ts": "2026-09-07T16:56:50.242209+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 463,
+    "kind": "message_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "message_delta",
+      "usage": {
+        "output_tokens": 49
+      }
+    },
+    "ts": "2026-09-07T16:56:50.306270+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 464,
+    "kind": "result",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "result",
+      "result": "",
+      "is_error": false,
+      "modelUsage": {
+        "gpt-6-astra": {
+          "inputTokens": 15280,
+          "outputTokens": 49,
+          "cacheReadInputTokens": 13952,
+          "cacheCreationInputTokens": 0
+        }
+      },
+      "stop_reason": "end_turn"
+    },
+    "ts": "2026-09-07T16:56:50.309495+00:00"
+  }
+]

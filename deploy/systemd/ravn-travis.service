@@ -1,0 +1,26 @@
+[Unit]
+Description=Ravn Travis (Telegram + local HTTP + OpenClaw shim for LexiChat)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# systemd --user starts with a minimal PATH that does not include ~/.local/bin,
+# so `uv` is not found and the unit dies with status=127 before it logs anything.
+Environment=PATH=/home/thor/.local/bin:/home/thor/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/thor/.ravn/start-travis.sh
+# Travis had no supervisor at all before this: a bare `uv run` re-parented to
+# systemd --user. travis.log already contains a crash at 11:10:29 on Aug 10 and
+# a MANUAL re-run three minutes later — three minutes of silence nobody was
+# told about. Now that he is a channel in Damien's chat list, that is not ok.
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/thor/.ravn/travis.log
+StandardError=append:/home/thor/.ravn/travis.log
+# Ravn keeps sessions in RAM; a hard kill loses conversation context, so give it
+# a chance to finish an in-flight turn.
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

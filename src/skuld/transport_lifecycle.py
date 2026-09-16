@@ -29,7 +29,9 @@ class TransportLifecycleMixin:
         return {
             "workspace_dir": self.workspace_dir,
             "model": self.model,
-            "reasoning_effort": self._settings.session.reasoning_effort,
+            "reasoning_effort": self._restored_effort(),
+            "service_tier": getattr(self, "_runtime_service_tier", None),
+            "effort_control_timeout_s": self._settings.effort_control_timeout_s,
             "sdk_port": self._settings.port,
             "session_id": self.session_id,
             "skip_permissions": self._settings.skip_permissions,
@@ -47,6 +49,17 @@ class TransportLifecycleMixin:
             "resume_session_id": self._settings.session.resume_session_id,
             "ask_user_question_enabled": self._settings.ask_user_question_enabled,
             "acp_prompt_timeout_s": self._settings.acp_prompt_timeout_s,
+            "muse_bin": self._settings.muse_bin,
+            "pi_bin": self._settings.pi.binary,
+            "pi_agent_dir": self._settings.pi.agent_dir,
+            "pi_session_dir": self._settings.pi.session_dir,
+            "pi_command_timeout_s": self._settings.pi.command_timeout_s,
+            "pi_turn_timeout_s": self._settings.pi.turn_timeout_s,
+            "pi_shutdown_timeout_s": self._settings.pi.shutdown_timeout_s,
+            "question_transcript_max_bytes": self._settings.tmux_question_transcript_max_bytes,
+            "question_result_history_limit": self._settings.tmux_question_result_history_limit,
+            "codex_receive_max_bytes": self._settings.codex_receive_max_bytes,
+            "live_frame_max_bytes": self._settings.live_frame_max_bytes,
             "dsh_runtime_bin": self._settings.dsh.runtime_bin,
             "dsh_cordis_config": self._settings.dsh.cordis_config,
             "dsh_base_url": self._settings.dsh.base_url,
@@ -76,6 +89,7 @@ class TransportLifecycleMixin:
         Legacy ``cli_type`` / ``transport`` fields are resolved to the correct
         adapter path by the config validator before this method is called.
         """
+        self._restore_runtime_options()
         adapter_path = self._settings.transport_adapter
         if "." not in adapter_path:
             raise ValueError(
@@ -162,7 +176,9 @@ class TransportLifecycleMixin:
         os.makedirs(self.workspace_dir, exist_ok=True)
 
         # Load conversation history from disk
+        self._load_control_state()
         self._load_conversation_history()
+        await self._hydrate_conversation_history()
 
         # Evict participants whose heartbeats lapse (room mode only)
         if self._room_bridge is not None:

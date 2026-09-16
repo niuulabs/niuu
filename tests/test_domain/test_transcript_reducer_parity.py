@@ -176,10 +176,18 @@ def _user_turn(turns: list[dict]) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_parity_delivery_state_active(tmp_path):
+async def test_parity_delivery_state_active(tmp_path, monkeypatch):
     """INV-4 + INV-7: a user message driven to delivered+active stamps steering_state on the
     LIVE turn; rebuilding from the durable log must reconstruct the SAME steering_state — the
     delivery state is not a live-only, on-disk fact (it is folded from the logged ACK frames)."""
+    import importlib
+
+    module = importlib.import_module("skuld.broker")
+    monkeypatch.setattr(
+        module, "claim_message", AsyncMock(return_value={"claimed": True, "status": "pending"})
+    )
+    monkeypatch.setattr(module, "settle_message", AsyncMock())
+    monkeypatch.setattr(Broker, "_get_http_client", AsyncMock())
     b = _delivery_broker(tmp_path)
 
     await b._dispatch_browser_message({"content": "steer the agent", "request_id": "rq-1"})
@@ -202,12 +210,22 @@ async def test_parity_delivery_state_active(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_parity_delivery_state_failed(tmp_path):
+async def test_parity_delivery_state_failed(tmp_path, monkeypatch):
     """INV-4 + INV-7: a user message whose delivery terminally fails flips the LIVE turn to a
     visible ``failed`` state; the rebuild reconstructs ``failed`` from the logged
     user_delivery_failed frame — never silently losing it to a bare ``pending``."""
+    import importlib
+
+    from skuld.delivery_errors import DeliveryNotAcceptedError
+
+    module = importlib.import_module("skuld.broker")
+    monkeypatch.setattr(
+        module, "claim_message", AsyncMock(return_value={"claimed": True, "status": "pending"})
+    )
+    monkeypatch.setattr(module, "settle_message", AsyncMock())
+    monkeypatch.setattr(Broker, "_get_http_client", AsyncMock())
     b = _delivery_broker(tmp_path)
-    b._transport.send_message = AsyncMock(side_effect=RuntimeError("wedged forever"))
+    b._transport.send_message = AsyncMock(side_effect=DeliveryNotAcceptedError("wedged forever"))
 
     await b._dispatch_browser_message({"content": "this will fail", "request_id": "rq-2"})
     await _settle_delivery()
@@ -267,7 +285,14 @@ async def test_parity_full_turn_text_reasoning_tools_user_and_result(tmp_path):
     assert "usage" in asst_meta
     # parts order is identical on both paths: the assistant frame's blocks (reasoning, then
     # tool_use) first, then the tool_result enriching the open turn.
-    assert [p["type"] for p in live[1]["parts"]] == ["reasoning", "tool_use", "tool_result"]
+    assert [p["type"] for p in live[1]["parts"]] == ["reasoning", "tool_use", "tool_result", "text"]
+    assert live[1]["parts"][-1] == {
+        "type": "text",
+        "text": "Hello world",
+        "id": "legacy-text-3",
+        "id_source": "synthetic",
+        "complete": False,
+    }
 
 
 @pytest.mark.asyncio
@@ -297,8 +322,14 @@ async def test_parity_preserves_codex_agent_message_boundaries_and_phases(tmp_pa
     assert live == rebuilt
     assert live[1]["content"] == "First.\n\nSecond."
     assert live[1]["parts"] == [
-        {"type": "text", "text": "First.", "id": "msg-1", "phase": "commentary"},
-        {"type": "text", "text": "Second.", "id": "msg-2", "phase": "final_answer"},
+        {"type": "text", "text": "First.", "id": "msg-1", "phase": "commentary", "complete": True},
+        {
+            "type": "text",
+            "text": "Second.",
+            "id": "msg-2",
+            "phase": "final_answer",
+            "complete": True,
+        },
     ]
 
 
@@ -409,6 +440,223 @@ async def test_parity_user_confirmed_and_user_dedup_single_turn(tmp_path):
     # both paths converge on the same single user turn id (the carried msg_id).
     assert rebuilt[0]["id"] == msg_id
     assert live == rebuilt
+
+
+# --------------------------------------------------------------------------- D1 tool timing
+#
+# The stamps (``started_at`` / ``ended_at`` / ``duration_ms`` on tool_use, ``ended_at`` on
+# tool_result) are written by the SAME shared transitions, from the SAME instant the broker
+# hands ``_enqueue_event_log`` as the durable row's ``ts``. That is the 2205 SEAM lesson made
+# concrete: two independent ``now()`` calls would differ by microseconds and a reloaded
+# transcript would show a *different* duration than the live one — a field that changes on
+# reload is worse than no field. These tests assert the values are BOTH present AND equal, so
+# a regression that silently drops the stamps on one plane cannot pass as "parity".
+
+
+def _tool_use_part(turn: dict, uid: str) -> dict:
+    return next(p for p in turn["parts"] if p.get("type") == "tool_use" and p.get("id") == uid)
+
+
+def _assistant(*blocks: dict) -> dict:
+    return {"type": "assistant", "message": {"content": list(blocks)}}
+
+
+def _tool_result_frame(uid: str, content: str = "ok") -> dict:
+    return {
+        "type": "user",
+        "message": {"content": [{"type": "tool_result", "tool_use_id": uid, "content": content}]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_parity_tool_timing_live_equals_durable(tmp_path):
+    """D1: per-tool timing is on BOTH planes with byte-identical values.
+
+    ``live == rebuilt`` alone would pass vacuously if the stamps were missing everywhere, so
+    this asserts presence FIRST and equality second."""
+    b = _broker(tmp_path)
+    await _drive(
+        b,
+        [
+            {"type": "user", "uuid": "U-T1", "message": {"role": "user", "content": "run it"}},
+            _assistant({"type": "tool_use", "id": "t1", "name": "Bash", "input": {"cmd": "ls"}}),
+            _tool_result_frame("t1"),
+            {"type": "result", "result": "done", "modelUsage": {}},
+        ],
+    )
+
+    live = _live_turns(b)
+    rebuilt = _rebuilt_turns(b)
+
+    call = _tool_use_part(live[1], "t1")
+    assert call["started_at"], "live tool_use lost its started_at stamp"
+    assert call["ended_at"], "live tool_use lost its ended_at stamp"
+    assert isinstance(call["duration_ms"], int)
+    assert call["started_at"] <= call["ended_at"]
+    result = next(p for p in live[1]["parts"] if p.get("type") == "tool_result")
+    assert result["ended_at"] == call["ended_at"]
+
+    # The durable rebuild reconstructs the SAME stamps to the microsecond — the log row's ts
+    # IS the instant the live path stamped, not a second reading of the clock.
+    assert _tool_use_part(rebuilt[1], "t1") == call
+    assert live == rebuilt
+
+
+@pytest.mark.asyncio
+async def test_parity_tool_timing_survives_the_in_progress_seam(tmp_path):
+    """The seam a reloading client actually crosses: in-progress row -> flushed turn -> rebuild.
+
+    A running tool is served on the in-progress row with a start and no end (an honest ticking
+    elapsed); the result closes it in place; the flush and the durable rebuild then report that
+    SAME closed span. Nothing appears and then disappears."""
+    b = _broker(tmp_path)
+    await _drive(
+        b,
+        [
+            {"type": "user", "uuid": "U-T2", "message": {"role": "user", "content": "go"}},
+            _assistant({"type": "tool_use", "id": "t9", "name": "Bash", "input": {}}),
+        ],
+    )
+
+    running = b._serialize_in_progress_turn()
+    assert running is not None and running["in_progress"] is True
+    open_call = _tool_use_part(running, "t9")
+    assert open_call["started_at"]
+    assert "ended_at" not in open_call and "duration_ms" not in open_call
+
+    await _drive(b, [_tool_result_frame("t9")])
+    closed = _tool_use_part(b._serialize_in_progress_turn(), "t9")
+    assert closed["started_at"] == open_call["started_at"]  # the start never moved
+    assert closed["ended_at"] and isinstance(closed["duration_ms"], int)
+
+    await _drive(b, [{"type": "result", "result": "done", "modelUsage": {}}])
+    assert b._serialize_in_progress_turn() is None  # the turn settled
+
+    live = _live_turns(b)
+    rebuilt = _rebuilt_turns(b)
+    settled = _tool_use_part(live[1], "t9")
+    assert settled["started_at"] == closed["started_at"]
+    assert settled["ended_at"] == closed["ended_at"]
+    assert settled["duration_ms"] == closed["duration_ms"]
+    assert _tool_use_part(rebuilt[1], "t9") == settled
+    assert live == rebuilt
+
+
+@pytest.mark.asyncio
+async def test_parity_multi_burst_turn_times_each_tool_separately(tmp_path):
+    """The reason D1 exists: ONE turn, two tool bursts split by prose.
+
+    Derived-from-turn-boundaries timing gave both bursts the identical whole-run span. Real
+    stamps give each call its own, and neither equals the turn's span."""
+    b = _broker(tmp_path)
+    await _drive(
+        b,
+        [
+            {"type": "user", "uuid": "U-T3", "message": {"role": "user", "content": "two bursts"}},
+            _assistant({"type": "tool_use", "id": "burst-a", "name": "Bash", "input": {}}),
+            _tool_result_frame("burst-a"),
+            _assistant({"type": "text", "text": "now the second half"}),
+            _assistant({"type": "tool_use", "id": "burst-b", "name": "Bash", "input": {}}),
+            _tool_result_frame("burst-b"),
+            {"type": "result", "result": "", "modelUsage": {}},
+        ],
+    )
+
+    live = _live_turns(b)
+    a = _tool_use_part(live[1], "burst-a")
+    c = _tool_use_part(live[1], "burst-b")
+    # Each burst reports its OWN window; the second starts no earlier than the first ended.
+    assert a["ended_at"] <= c["started_at"]
+    assert a["started_at"] != c["started_at"]
+    assert live == _rebuilt_turns(b)
+
+
+@pytest.mark.asyncio
+async def test_parity_late_result_across_a_turn_boundary(tmp_path):
+    """An orphan result — its call was flushed with the previous turn — on BOTH planes.
+
+    The late result still carries its own ``ended_at`` (when it landed) and back-fills nothing;
+    the flushed call keeps the open, un-ended shape it had. Live and rebuild agree on all of it.
+    """
+    b = _broker(tmp_path)
+    await _drive(
+        b,
+        [
+            {"type": "user", "uuid": "U-T4", "message": {"role": "user", "content": "go"}},
+            _assistant({"type": "tool_use", "id": "orphan", "name": "Bash", "input": {}}),
+            # the turn closes BEFORE the tool returns (interrupt / crash-resume shape)
+            {"type": "result", "result": "interrupted", "modelUsage": {}},
+            _tool_result_frame("orphan", "late output"),
+            {"type": "result", "result": "", "modelUsage": {}},
+        ],
+    )
+
+    live = _live_turns(b)
+    rebuilt = _rebuilt_turns(b)
+
+    flushed_call = _tool_use_part(live[1], "orphan")
+    assert flushed_call["started_at"]
+    assert "ended_at" not in flushed_call  # never closed — do not invent an end
+    late = next(
+        p
+        for t in live
+        for p in t["parts"]
+        if p.get("type") == "tool_result" and p.get("tool_use_id") == "orphan"
+    )
+    assert late["ended_at"]  # the result knows when IT landed
+    assert live == rebuilt
+
+
+@pytest.mark.asyncio
+async def test_parity_pre_d1_log_without_frame_ts_rebuilds_untimed(tmp_path):
+    """Backward compatibility on the durable plane: frames with no ``ts`` produce no stamps.
+
+    An OLD durable log (or any frame source that never carried a timestamp) must rebuild to the
+    exact pre-D1 part dicts — not to half-stamped parts, and certainly not to a crash."""
+    from dataclasses import dataclass
+
+    from niuu.domain.transcript_reducer import reduce_frames
+
+    @dataclass
+    class _UntimedFrame:
+        """A durable row from before the ts column was populated — no ``ts`` attribute at all."""
+
+        seq: int
+        kind: str
+        payload: dict
+        request_id: str | None = None
+        session_id: str = SID
+
+    frames = [
+        _UntimedFrame(1, "user", {"uuid": "U-old", "message": {"content": "old session"}}),
+        _UntimedFrame(
+            2,
+            "assistant",
+            {
+                "message": {
+                    "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]
+                }
+            },
+        ),
+        _UntimedFrame(
+            3,
+            "user",
+            {
+                "message": {
+                    "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]
+                }
+            },
+        ),
+        _UntimedFrame(4, "result", {"result": "done", "modelUsage": {}}),
+    ]
+
+    turns = reduce_frames(frames).turns
+    assistant = next(t for t in turns if t["role"] == "assistant")
+    assert assistant["parts"] == [
+        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}},
+        {"type": "tool_result", "tool_use_id": "t1", "content": "ok", "is_error": False},
+        {"type": "text", "text": "done"},
+    ]
 
 
 @pytest.mark.asyncio

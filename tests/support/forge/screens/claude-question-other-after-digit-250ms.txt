@@ -1,0 +1,13 @@
+ ☐ Label
+
+Which label should be written?
+
+  1. Blue
+     Write "Blue" to transition-label.txt
+  2. Amber
+     Write "Amber" to transition-label.txt
+❯ 3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · ctrl+g to edit in Vim · Esc to cancel

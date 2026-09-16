@@ -1,0 +1,436 @@
+{
+  "schema_version": 1,
+  "fixture": "codex-agents-da06fa93af.frames.json",
+  "sha256": "da06fa93afbc80a823df6db86b37473b15f07f4d69a0671d592c5a31f7570e1e",
+  "source_slice_sha256": "09eccdd8eda7064eaaf65d65f9471c8f800a21040c5bf528fd05af9d6a1ecd5d",
+  "redacted": true,
+  "source": "live-provider",
+  "provider": "codex",
+  "model": "gpt-6-astra",
+  "scenario": {
+    "scenario": "agents",
+    "passed": true,
+    "checks": [
+      {
+        "name": "terminal-result",
+        "passed": true,
+        "detail": 1
+      },
+      {
+        "name": "correlated-completion",
+        "passed": true,
+        "detail": 1
+      },
+      {
+        "name": "successful-result",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "tool-pairs",
+        "passed": true,
+        "detail": {
+          "unpaired_calls": [],
+          "orphan_results": []
+        }
+      },
+      {
+        "name": "tool:agent",
+        "passed": true,
+        "detail": 2
+      },
+      {
+        "name": "agent-count",
+        "passed": true,
+        "detail": 2
+      }
+    ],
+    "observed": {
+      "calls": {
+        "call_LOznqdsitTUGHM9YYhP7WiQc": {
+          "id": "call_LOznqdsitTUGHM9YYhP7WiQc",
+          "name": "Agent",
+          "type": "tool_use",
+          "input": {
+            "agent_id": "01a07ccc-06e4-7d91-aabf-45dab8de40c8",
+            "agent_path": "/root/independent_sum"
+          }
+        },
+        "call_8WW8QBNUu8K4Oh0GKDHlZLSC": {
+          "id": "call_8WW8QBNUu8K4Oh0GKDHlZLSC",
+          "name": "Agent",
+          "type": "tool_use",
+          "input": {
+            "agent_id": "01a07ccc-2a4f-7a22-a5d8-947bbd7ed6c9",
+            "agent_path": "/root/verify_answer"
+          }
+        },
+        "call_IPuKLtV9OITA7drCtjHTFhJa": {
+          "id": "call_IPuKLtV9OITA7drCtjHTFhJa",
+          "name": "Agent:wait",
+          "type": "tool_use",
+          "input": {
+            "model": null,
+            "prompt": null,
+            "senderThreadId": "01a07ccb-92e4-7f03-8a0d-0e293d7c98aa",
+            "receiverThreadIds": []
+          }
+        },
+        "call_VmrnWJ95B0fjhfpoNRAfep2b": {
+          "id": "call_VmrnWJ95B0fjhfpoNRAfep2b",
+          "name": "Agent:wait",
+          "type": "tool_use",
+          "input": {
+            "model": null,
+            "prompt": null,
+            "senderThreadId": "01a07ccb-92e4-7f03-8a0d-0e293d7c98aa",
+            "receiverThreadIds": []
+          }
+        }
+      },
+      "results": {
+        "call_LOznqdsitTUGHM9YYhP7WiQc": {
+          "type": "tool_result",
+          "content": "{\"agent_id\": \"01a07ccc-06e4-7d91-aabf-45dab8de40c8\", \"status\": \"started\"}",
+          "ended_at": "2026-09-07T16:55:41.128290+00:00",
+          "tool_use_id": "call_LOznqdsitTUGHM9YYhP7WiQc"
+        },
+        "call_8WW8QBNUu8K4Oh0GKDHlZLSC": {
+          "type": "tool_result",
+          "content": "{\"agent_id\": \"01a07ccc-2a4f-7a22-a5d8-947bbd7ed6c9\", \"status\": \"started\"}",
+          "ended_at": "2026-09-07T16:55:50.194265+00:00",
+          "tool_use_id": "call_8WW8QBNUu8K4Oh0GKDHlZLSC"
+        },
+        "call_IPuKLtV9OITA7drCtjHTFhJa": {
+          "type": "tool_result",
+          "content": "{\"receiverThreadIds\": [], \"agentsStates\": {}, \"status\": \"completed\"}",
+          "ended_at": "2026-09-07T16:55:59.829912+00:00",
+          "tool_use_id": "call_IPuKLtV9OITA7drCtjHTFhJa"
+        },
+        "call_VmrnWJ95B0fjhfpoNRAfep2b": {
+          "type": "tool_result",
+          "content": "{\"receiverThreadIds\": [], \"agentsStates\": {}, \"status\": \"completed\"}",
+          "ended_at": "2026-09-07T16:56:14.376266+00:00",
+          "tool_use_id": "call_VmrnWJ95B0fjhfpoNRAfep2b"
+        }
+      },
+      "tool_families": {
+        "agent": 2
+      },
+      "agent_ids": [
+        "01a07ccc-06e4-7d91-aabf-45dab8de40c8",
+        "01a07ccc-2a4f-7a22-a5d8-947bbd7ed6c9"
+      ],
+      "assistant_text": "Both read-only workers finished and agree:\n- Worker 1 independently calculated **42**.\n- Worker 2 confirmed `answer.json` contains exactly `{\"sum\": 42}`, matching `numbers.json`.\n\n[FORGE_DONE:0aeace12b4d143618f05a59652a0c6d5:agents]",
+      "unpaired_calls": [],
+      "orphan_results": [],
+      "event_counts": {
+        "user": 5,
+        "user_confirmed": 1,
+        "user_delivered": 1,
+        "assistant": 5,
+        "user_consumed": 1,
+        "user_active": 1,
+        "agent_event": 133,
+        "content_block_start": 9,
+        "content_block_delta": 73,
+        "content_block_stop": 9,
+        "agent_update": 4,
+        "message_delta": 5,
+        "result": 1
+      }
+    },
+    "prompt": "Use your native agent delegation tool to spawn exactly two bounded worker agents, concurrently if supported. One must independently read numbers.json and calculate its sum. The other must inspect answer.json and check whether it matches numbers.json. Workers must stay in this workspace and perform read-only work. Wait for both workers, collect their findings, and report agreement or disagreement. Do not simulate agents in prose or shell subprocesses. Use native Task/Agent/spawn_agent facilities.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:0aeace12b4d143618f05a59652a0c6d5:agents]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+    "after_seq": 78,
+    "through_seq": 328,
+    "duration_seconds": 45.605
+  },
+  "review": {
+    "status": "accepted",
+    "reviewer": "Codex project-review agent, 2026-09-07",
+    "source_frames_sha256": "1504dfbbaf9fa090966365ac8c9802e4440b2b4e8c1486da0fb4ba05e7f414ad",
+    "notes": [
+      "Reviewed prompt and captured interval (78, 328]. All scenario action assertions passed; tool IDs pair with results.",
+      "PostgreSQL raw rows project to these REST frames exactly. Full and cursor fixture replay match. The captured live stream is preserved in database order.",
+      "The running platform's public replay WebSocket remains unavailable until the facade fix is deployed; this fixture certifies the captured scenario, not that deployment.",
+      "Two native spawn receipts are present. Inspected final parent response: workers independently calculate 42 and verify answer.json; the parent completion marker follows their findings. Codex child frames remain scoped as agent_event."
+    ]
+  },
+  "checkpoints": [
+    {
+      "after_seq": 94,
+      "event_type": "agent_update",
+      "turn_count": 2,
+      "partial": true,
+      "turns_sha256": "de0227e6cf62d0158db3c2bdb2bb302235171ed0c278758dc074e6da7a001fd3"
+    },
+    {
+      "after_seq": 111,
+      "event_type": "agent_update",
+      "turn_count": 2,
+      "partial": true,
+      "turns_sha256": "2343eadb5f86ff86be41f9772eb6d219aab589de5dec122227daf55c011266fd"
+    },
+    {
+      "after_seq": 172,
+      "event_type": "agent_update",
+      "turn_count": 2,
+      "partial": true,
+      "turns_sha256": "2166f3649b378042fb54350e3c11c9b45fc8d011183592e1600e91b7d36cdc82"
+    },
+    {
+      "after_seq": 249,
+      "event_type": "agent_update",
+      "turn_count": 2,
+      "partial": true,
+      "turns_sha256": "3243be2e8c9d4a91e85969e3bfa048158d99036561205823474e890de2b0f099"
+    },
+    {
+      "after_seq": 327,
+      "event_type": "result",
+      "turn_count": 2,
+      "partial": false,
+      "turns_sha256": "765df533bbea6877cd02d6ffb715aab1559a6337b8988ade70a296eb6e1e4919"
+    }
+  ],
+  "expected_turns": [
+    {
+      "id": "1d424d42-ac82-4046-83eb-3533ff2a157b",
+      "role": "user",
+      "content": "Use your native agent delegation tool to spawn exactly two bounded worker agents, concurrently if supported. One must independently read numbers.json and calculate its sum. The other must inspect answer.json and check whether it matches numbers.json. Workers must stay in this workspace and perform read-only work. Wait for both workers, collect their findings, and report agreement or disagreement. Do not simulate agents in prose or shell subprocesses. Use native Task/Agent/spawn_agent facilities.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:0aeace12b4d143618f05a59652a0c6d5:agents]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+      "parts": [],
+      "created_at": "2026-09-07T16:55:34.888122+00:00",
+      "metadata": {
+        "steering_state": "active"
+      },
+      "visibility": "public"
+    },
+    {
+      "id": "4d095191-15f1-5289-b33d-37096acbd186",
+      "role": "assistant",
+      "content": "Both read-only workers finished and agree:\n- Worker 1 independently calculated **42**.\n- Worker 2 confirmed `answer.json` contains exactly `{\"sum\": 42}`, matching `numbers.json`.\n\n[FORGE_DONE:0aeace12b4d143618f05a59652a0c6d5:agents]",
+      "parts": [
+        {
+          "type": "tool_use",
+          "id": "call_LOznqdsitTUGHM9YYhP7WiQc",
+          "name": "Agent",
+          "input": {
+            "agent_id": "01a07ccc-06e4-7d91-aabf-45dab8de40c8",
+            "agent_path": "/root/independent_sum"
+          },
+          "started_at": "2026-09-07T16:55:41.110754+00:00",
+          "ended_at": "2026-09-07T16:55:41.128290+00:00",
+          "duration_ms": 17
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_LOznqdsitTUGHM9YYhP7WiQc",
+          "content": "{\"agent_id\": \"01a07ccc-06e4-7d91-aabf-45dab8de40c8\", \"status\": \"started\"}",
+          "is_error": false,
+          "ended_at": "2026-09-07T16:55:41.128290+00:00"
+        },
+        {
+          "type": "tool_use",
+          "id": "call_8WW8QBNUu8K4Oh0GKDHlZLSC",
+          "name": "Agent",
+          "input": {
+            "agent_id": "01a07ccc-2a4f-7a22-a5d8-947bbd7ed6c9",
+            "agent_path": "/root/verify_answer"
+          },
+          "started_at": "2026-09-07T16:55:50.176802+00:00",
+          "ended_at": "2026-09-07T16:55:50.194265+00:00",
+          "duration_ms": 17
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_8WW8QBNUu8K4Oh0GKDHlZLSC",
+          "content": "{\"agent_id\": \"01a07ccc-2a4f-7a22-a5d8-947bbd7ed6c9\", \"status\": \"started\"}",
+          "is_error": false,
+          "ended_at": "2026-09-07T16:55:50.194265+00:00"
+        },
+        {
+          "type": "tool_use",
+          "id": "call_IPuKLtV9OITA7drCtjHTFhJa",
+          "name": "Agent:wait",
+          "input": {
+            "model": null,
+            "prompt": null,
+            "senderThreadId": "01a07ccb-92e4-7f03-8a0d-0e293d7c98aa",
+            "receiverThreadIds": []
+          },
+          "started_at": "2026-09-07T16:55:54.871535+00:00",
+          "ended_at": "2026-09-07T16:55:59.829912+00:00",
+          "duration_ms": 4958
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_IPuKLtV9OITA7drCtjHTFhJa",
+          "content": "{\"receiverThreadIds\": [], \"agentsStates\": {}, \"status\": \"completed\"}",
+          "is_error": false,
+          "ended_at": "2026-09-07T16:55:59.829912+00:00"
+        },
+        {
+          "type": "tool_use",
+          "id": "call_VmrnWJ95B0fjhfpoNRAfep2b",
+          "name": "Agent:wait",
+          "input": {
+            "model": null,
+            "prompt": null,
+            "senderThreadId": "01a07ccb-92e4-7f03-8a0d-0e293d7c98aa",
+            "receiverThreadIds": []
+          },
+          "started_at": "2026-09-07T16:56:02.135050+00:00",
+          "ended_at": "2026-09-07T16:56:14.376266+00:00",
+          "duration_ms": 12241
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_VmrnWJ95B0fjhfpoNRAfep2b",
+          "content": "{\"receiverThreadIds\": [], \"agentsStates\": {}, \"status\": \"completed\"}",
+          "is_error": false,
+          "ended_at": "2026-09-07T16:56:14.376266+00:00"
+        },
+        {
+          "type": "text",
+          "id": "legacy-text-8",
+          "text": "Both read-only workers finished and agree:\n- Worker 1 independently calculated **42**.\n- Worker 2 confirmed `answer.json` contains exactly `{\"sum\": 42}`, matching `numbers.json`.\n\n[FORGE_DONE:0aeace12b4d143618f05a59652a0c6d5:agents]",
+          "complete": true,
+          "id_source": "synthetic",
+          "index": 8
+        }
+      ],
+      "created_at": "2026-09-07T16:56:18.459962+00:00",
+      "metadata": {
+        "usage": {
+          "gpt-6-astra": {
+            "inputTokens": 13451,
+            "outputTokens": 73,
+            "cacheReadInputTokens": 13184,
+            "cacheCreationInputTokens": 0
+          }
+        },
+        "cost": null,
+        "model": "gpt-6-astra",
+        "stop_reason": "end_turn"
+      },
+      "visibility": "public"
+    }
+  ],
+  "expected_partial": false,
+  "source_run": {
+    "run_id": "codex-ec1e9d9723",
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "passed": false,
+    "errors": [
+      "harvest: InvalidStatus: server rejected WebSocket connection: HTTP 403"
+    ]
+  },
+  "observed": {
+    "calls": {
+      "call_LOznqdsitTUGHM9YYhP7WiQc": {
+        "id": "call_LOznqdsitTUGHM9YYhP7WiQc",
+        "name": "Agent",
+        "type": "tool_use",
+        "input": {
+          "agent_id": "01a07ccc-06e4-7d91-aabf-45dab8de40c8",
+          "agent_path": "/root/independent_sum"
+        }
+      },
+      "call_8WW8QBNUu8K4Oh0GKDHlZLSC": {
+        "id": "call_8WW8QBNUu8K4Oh0GKDHlZLSC",
+        "name": "Agent",
+        "type": "tool_use",
+        "input": {
+          "agent_id": "01a07ccc-2a4f-7a22-a5d8-947bbd7ed6c9",
+          "agent_path": "/root/verify_answer"
+        }
+      },
+      "call_IPuKLtV9OITA7drCtjHTFhJa": {
+        "id": "call_IPuKLtV9OITA7drCtjHTFhJa",
+        "name": "Agent:wait",
+        "type": "tool_use",
+        "input": {
+          "model": null,
+          "prompt": null,
+          "senderThreadId": "01a07ccb-92e4-7f03-8a0d-0e293d7c98aa",
+          "receiverThreadIds": []
+        }
+      },
+      "call_VmrnWJ95B0fjhfpoNRAfep2b": {
+        "id": "call_VmrnWJ95B0fjhfpoNRAfep2b",
+        "name": "Agent:wait",
+        "type": "tool_use",
+        "input": {
+          "model": null,
+          "prompt": null,
+          "senderThreadId": "01a07ccb-92e4-7f03-8a0d-0e293d7c98aa",
+          "receiverThreadIds": []
+        }
+      }
+    },
+    "results": {
+      "call_LOznqdsitTUGHM9YYhP7WiQc": {
+        "type": "tool_result",
+        "content": "{\"agent_id\": \"01a07ccc-06e4-7d91-aabf-45dab8de40c8\", \"status\": \"started\"}",
+        "ended_at": "2026-09-07T16:55:41.128290+00:00",
+        "tool_use_id": "call_LOznqdsitTUGHM9YYhP7WiQc"
+      },
+      "call_8WW8QBNUu8K4Oh0GKDHlZLSC": {
+        "type": "tool_result",
+        "content": "{\"agent_id\": \"01a07ccc-2a4f-7a22-a5d8-947bbd7ed6c9\", \"status\": \"started\"}",
+        "ended_at": "2026-09-07T16:55:50.194265+00:00",
+        "tool_use_id": "call_8WW8QBNUu8K4Oh0GKDHlZLSC"
+      },
+      "call_IPuKLtV9OITA7drCtjHTFhJa": {
+        "type": "tool_result",
+        "content": "{\"receiverThreadIds\": [], \"agentsStates\": {}, \"status\": \"completed\"}",
+        "ended_at": "2026-09-07T16:55:59.829912+00:00",
+        "tool_use_id": "call_IPuKLtV9OITA7drCtjHTFhJa"
+      },
+      "call_VmrnWJ95B0fjhfpoNRAfep2b": {
+        "type": "tool_result",
+        "content": "{\"receiverThreadIds\": [], \"agentsStates\": {}, \"status\": \"completed\"}",
+        "ended_at": "2026-09-07T16:56:14.376266+00:00",
+        "tool_use_id": "call_VmrnWJ95B0fjhfpoNRAfep2b"
+      }
+    },
+    "tool_families": {
+      "agent": 2
+    },
+    "agent_ids": [
+      "01a07ccc-06e4-7d91-aabf-45dab8de40c8",
+      "01a07ccc-2a4f-7a22-a5d8-947bbd7ed6c9"
+    ],
+    "assistant_text": "Both read-only workers finished and agree:\n- Worker 1 independently calculated **42**.\n- Worker 2 confirmed `answer.json` contains exactly `{\"sum\": 42}`, matching `numbers.json`.\n\n[FORGE_DONE:0aeace12b4d143618f05a59652a0c6d5:agents]",
+    "unpaired_calls": [],
+    "orphan_results": [],
+    "event_counts": {
+      "user": 5,
+      "user_confirmed": 1,
+      "user_delivered": 1,
+      "assistant": 5,
+      "user_consumed": 1,
+      "user_active": 1,
+      "agent_event": 133,
+      "content_block_start": 9,
+      "content_block_delta": 73,
+      "content_block_stop": 9,
+      "agent_update": 4,
+      "message_delta": 5,
+      "result": 1
+    }
+  },
+  "projection_review": {
+    "schema_version": 1,
+    "status": "accepted",
+    "reviewer": "Codex integration review, 2026-09-08",
+    "source_frames_sha256": "da06fa93afbc80a823df6db86b37473b15f07f4d69a0671d592c5a31f7570e1e",
+    "previous_projection_sha256": "765df533bbea6877cd02d6ffb715aab1559a6337b8988ade70a296eb6e1e4919",
+    "projection_sha256": "22b3819afb2ceecce5df11981087c0c208b91bd527ff554427105a2f4c0e3d06",
+    "notes": [
+      "Captured final text deltas now produce one ordered text part after the tool burst.",
+      "Exact final prose, every nontext part, turn identity and accounting unchanged.",
+      "Original raw frames and original capture review remain unchanged."
+    ]
+  }
+}

@@ -9,10 +9,22 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
+from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, Response, status
-from fastapi.responses import StreamingResponse
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    Response,
+    WebSocket,
+    status,
+)
+from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.auth import extract_principal
@@ -22,6 +34,7 @@ from niuu.adapters.inbound.remote_urls import (
 from niuu.adapters.inbound.remote_urls import (
     forward_identity_headers as _forward_headers,
 )
+from niuu.adapters.inbound.ws_forge_replay import forward_replay
 from niuu.domain.models import InstanceKind, Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
 
@@ -196,6 +209,25 @@ def _ensure_remote_success(response: httpx.Response) -> None:
     raise HTTPException(status_code=response.status_code, detail=_upstream_detail(response)[:1000])
 
 
+def _ensure_history_success(response: httpx.Response) -> None:
+    """Preserve machine-readable history recovery through the aggregate facade."""
+    if response.status_code < 400:
+        return
+    try:
+        payload = response.json()
+        detail = payload.get("detail") if isinstance(payload, dict) else None
+    except ValueError:
+        detail = None
+    if isinstance(detail, dict) and detail.get("code") in {
+        "history_cursor_invalid",
+        "history_busy",
+        "history_page_too_large",
+    }:
+        headers = {"Retry-After": "1"} if detail["code"] == "history_busy" else None
+        raise HTTPException(response.status_code, detail, headers=headers)
+    _ensure_remote_success(response)
+
+
 def _uses_embedded_transport(instance: RegisteredInstance) -> bool:
     return str(instance.config.get("transport", "")).strip().lower() == "embedded"
 
@@ -337,10 +369,13 @@ async def _find_runtime_owner(
         )
         return instance, response
 
-    tasks = [
-        asyncio.create_task(probe(instance))
-        for instance in await _visible_instances(service, principal)
-    ]
+    selected = request.query_params.get("instance_id")
+    instances = (
+        [await _resolve_target_instance(service, principal, selected)]
+        if selected
+        else await _visible_instances(service, principal)
+    )
+    tasks = [asyncio.create_task(probe(instance)) for instance in instances]
     failure: HTTPException | None = None
     try:
         # Ownership is unknown until a visible instance returns the resource.
@@ -814,12 +849,163 @@ def create_volundr_router(
         )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
+    @router.get("/projects")
+    async def list_projects(
+        request: Request,
+        response: Response,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict[str, Any]]:
+        instances = await _visible_instances(service, principal)
+        selected = request.query_params.get("instance_id")
+        if selected:
+            instances = [await _resolve_target_instance(service, principal, selected)]
+        results = await asyncio.gather(
+            *[
+                _request_remote(
+                    instance,
+                    request,
+                    method="GET",
+                    path="/projects",
+                    embedded_app=embedded_forge_app,
+                )
+                for instance in instances
+            ],
+            return_exceptions=True,
+        )
+        projects, unavailable = [], []
+        successful = 0
+        for instance, result in zip(instances, results, strict=True):
+            if isinstance(result, Exception) or result.status_code >= 400:
+                unavailable.append(instance.id)
+                continue
+            try:
+                payload = result.json()
+            except ValueError:
+                unavailable.append(instance.id)
+                continue
+            if not isinstance(payload, list):
+                unavailable.append(instance.id)
+                continue
+            successful += 1
+            projects.extend(
+                _with_instance(item, instance) for item in payload if isinstance(item, dict)
+            )
+        if instances and not successful:
+            raise HTTPException(503, "No Forge host could load projects")
+        if unavailable:
+            response.headers["X-Forge-Unavailable-Instances"] = ",".join(unavailable)
+        return projects
+
+    @router.post("/projects", status_code=201)
+    async def register_project(
+        request: Request,
+        body: dict[str, Any] = Body(...),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance = await _resolve_target_instance(service, principal, body.get("instance_id"))
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path="/projects",
+            json_body=_strip_instance_hints(body),
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return _with_instance(response.json(), instance)
+
+    async def _project_checkout_request(request, body, principal, path):
+        instance = await _resolve_target_instance(
+            service, principal, body.get("instance_id") or request.query_params.get("instance_id")
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=path,
+            json_body=_strip_instance_hints(body),
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return _with_instance(response.json(), instance)
+
+    @router.post("/projects/discover")
+    async def discover_project_checkout(
+        request: Request,
+        body: dict[str, Any] = Body(...),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        return await _project_checkout_request(request, body, principal, "/projects/discover")
+
+    @router.post("/projects/connect", status_code=201)
+    async def connect_project_checkout(
+        request: Request,
+        body: dict[str, Any] = Body(...),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        return await _project_checkout_request(request, body, principal, "/projects/connect")
+
+    @router.get("/projects/{project_id}")
+    @router.patch("/projects/{project_id}")
+    @router.get("/projects/{project_id}/{operation:path}")
+    @router.post("/projects/{project_id}/{operation:path}")
+    async def project_operation(
+        request: Request,
+        project_id: UUID,
+        operation: str = "",
+        principal: Principal = Depends(extract_principal),
+    ) -> Any:
+        allowed = {
+            ("GET", ""),
+            ("PATCH", ""),
+            ("GET", "context"),
+            ("GET", "receipts"),
+            ("POST", "receipts"),
+            ("POST", "export"),
+        }
+        pieces = operation.split("/")
+        is_ack = len(pieces) == 3 and pieces[0] == "receipts" and pieces[2] == "ack"
+        if is_ack:
+            try:
+                UUID(pieces[1])
+            except ValueError as exc:
+                raise HTTPException(422, "Invalid receipt ID") from exc
+        if (request.method, operation) not in allowed and not (request.method == "POST" and is_ack):
+            raise HTTPException(404, "Unknown project operation")
+        instance = await _resolve_target_instance(
+            service,
+            principal,
+            request.query_params.get("instance_id"),
+        )
+        body = await request.body()
+        try:
+            document = json.loads(body) if body else None
+        except ValueError as exc:
+            raise HTTPException(422, "Project request must contain valid JSON") from exc
+        if document is not None and not isinstance(document, dict):
+            raise HTTPException(422, "Project request must be a JSON object")
+        response = await _request_remote(
+            instance,
+            request,
+            method=request.method,
+            path=f"/projects/{project_id}" + (f"/{operation}" if operation else ""),
+            params=_query_params(request),
+            json_body=document,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        return _with_instance(payload, instance) if not operation else payload
+
     @router.get("/sessions")
     async def list_sessions(
         request: Request,
         principal: Principal = Depends(extract_principal),
     ) -> list[dict[str, Any]]:
         instances = await _visible_instances(service, principal)
+        selected = request.query_params.get("instance_id")
+        if selected:
+            instances = [await _resolve_target_instance(service, principal, selected)]
         params = _query_params(request)
         results = await asyncio.gather(
             *[
@@ -848,7 +1034,7 @@ def create_volundr_router(
             for item in payload:
                 if not isinstance(item, dict):
                     continue
-                merged[str(item.get("id") or "")] = _with_instance(item, instance)
+                merged[f"{instance.id}:{item.get('id') or ''}"] = _with_instance(item, instance)
 
         sessions = [item for item in merged.values() if item.get("id")]
         sessions.sort(
@@ -1157,7 +1343,19 @@ def create_volundr_router(
         )
         _ensure_remote_success(response)
         payload = response.json()
-        return payload if isinstance(payload, dict) else {}
+        flags = dict(payload) if isinstance(payload, dict) else {}
+        # Advertise this facade's public surface, not routes that exist only on
+        # its embedded service. Clients can avoid expected 404s and keep the
+        # existing Bifrost model fallback.
+        flags["capabilities"] = {
+            "models": False,
+            "chronicles": False,
+            "session_chronicle": False,
+            "session_events": False,
+            "message_delivery": True,
+            "native_history_import": True,
+        }
+        return flags
 
     @router.get("/external-sessions")
     async def list_external_sessions(
@@ -1291,6 +1489,14 @@ def create_volundr_router(
     ) -> dict[str, Any]:
         return await _start_session_on_owner(request, session_id, principal, "resume")
 
+    @router.post("/sessions/{session_id}/history/import")
+    async def import_session_history(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        return await _start_session_on_owner(request, session_id, principal, "history/import")
+
     @router.post("/sessions/{session_id}/log", status_code=status.HTTP_201_CREATED)
     async def append_log(
         request: Request,
@@ -1359,6 +1565,24 @@ def create_volundr_router(
         # ("session looks dead / no final message") even with hundreds of
         # frames stored (latest_seq high, replay empty).
         return response.json()
+
+    @router.websocket("/sessions/{session_id}/replay")
+    async def replay_session(websocket: WebSocket, session_id: str) -> None:
+        principal = await extract_principal(websocket)
+        try:
+            instance, _ = await _find_session_owner(
+                service, principal, websocket, session_id, embedded_app=embedded_forge_app
+            )
+        except HTTPException:
+            await websocket.close(code=1008)
+            return
+        await forward_replay(
+            websocket,
+            instance,
+            session_id,
+            headers=_forward_headers(websocket),
+            embedded_app=embedded_forge_app,
+        )
 
     @router.post("/sessions/{session_id}/activity", status_code=status.HTTP_204_NO_CONTENT)
     async def report_activity(
@@ -1568,8 +1792,12 @@ def create_volundr_router(
             embedded_app=embedded_forge_app,
         )
         t_remote = time.perf_counter()
-        _ensure_remote_success(response)
+        _ensure_history_success(response)
         payload = response.json()
+        if isinstance(payload, dict) and payload.get("history_protocol") == 2:
+            # The owner fitted the WHOLE page envelope to the requested byte
+            # limit. Adding aggregate timings afterwards can exceed that limit.
+            return payload
         t_json = time.perf_counter()
         if isinstance(payload, dict):
             prep = dict(payload.get("_prep") or {})
@@ -1581,6 +1809,31 @@ def create_volundr_router(
             prep["server_total_ms"] = round((t_json - t0) * 1000, 1)
             payload["_prep"] = prep
         return payload if isinstance(payload, dict) else {"turns": []}
+
+    @router.get("/sessions/{session_id}/conversation/turns/{turn_id}")
+    async def get_conversation_item(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        turn_id: str = Path(description="Stable conversation row identity"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/conversation/turns/{quote(turn_id, safe='')}",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_history_success(response)
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
 
     @router.get("/sessions/{session_id}/tool-result/{tool_use_id}")
     async def get_tool_result(
@@ -1606,6 +1859,45 @@ def create_volundr_router(
         _ensure_remote_success(response)
         payload = response.json()
         return payload if isinstance(payload, dict) else {}
+
+    @router.get("/sessions/{session_id}/tool-result/{tool_use_id}/preview")
+    async def get_tool_result_preview(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        tool_use_id: str = Path(description="tool_use_id of the image result"),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Byte-proxy a scaled-down JPEG tool-result preview from the owning instance.
+
+        Unlike the sibling JSON routes this forwards raw image bytes; 404/501 from
+        the owner pass through via ``_ensure_remote_success`` so the client can
+        fall back to the full tool-result fetch.
+        """
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=(f"/sessions/{session_id}/tool-result/{quote(tool_use_id, safe='')}/preview"),
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        headers = {
+            name: value
+            for name in ("cache-control", "etag")
+            if (value := response.headers.get(name))
+        }
+        return Response(
+            content=response.content,
+            media_type=response.headers.get("content-type", "image/jpeg"),
+            headers=headers,
+        )
 
     @router.get("/sessions/{session_id}/workflow/gates")
     async def get_workflow_gates(
@@ -1670,7 +1962,7 @@ def create_volundr_router(
         session_id: str = Path(description="Volundr session identifier"),
         body: dict[str, Any] = Body(default_factory=dict),
         principal: Principal = Depends(extract_principal),
-    ) -> dict[str, Any]:
+    ) -> Response:
         instance, _ = await _find_session_owner(
             service,
             principal,
@@ -1688,7 +1980,40 @@ def create_volundr_router(
         )
         _ensure_remote_success(response)
         payload = response.json()
-        return payload if isinstance(payload, dict) else {}
+        return JSONResponse(
+            content=payload if isinstance(payload, dict) else {}, status_code=response.status_code
+        )
+
+    @router.api_route("/sessions/{session_id}/message-deliveries/{request_id}", methods=["GET"])
+    @router.api_route(
+        "/sessions/{session_id}/message-deliveries/{request_id}/{operation}", methods=["POST"]
+    )
+    async def message_delivery(
+        request: Request,
+        session_id: str,
+        request_id: str = Path(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:-]+$"),
+        operation: str | None = None,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        if request.method == "POST" and operation not in ("claim", "settle"):
+            raise HTTPException(404, "Unknown delivery operation")
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        # GET has no operation path segment. Never treat an unrelated query
+        # parameter as part of a forwarded URL.
+        suffix = f"/{operation}" if request.method == "POST" else ""
+        response = await _request_remote(
+            instance,
+            request,
+            method=request.method,
+            path=f"/sessions/{session_id}/message-deliveries/{request_id}{suffix}",
+            json_body=body if request.method == "POST" else None,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return JSONResponse(content=response.json(), status_code=response.status_code)
 
     @router.get("/sessions/{session_id}/logs")
     async def get_logs(

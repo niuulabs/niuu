@@ -40,6 +40,7 @@ import re
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -77,6 +78,17 @@ _DEFAULT_BROKER_URL = "http://127.0.0.1:9000"
 _STARTUP_TIMEOUT_S = 30.0
 _STARTUP_POLL_INTERVAL_S = 0.25
 
+# Environment a room's broker and members must NOT inherit from whoever started
+# them. SKULD__* outranks the YAML config file for both Skuld and Ravn, and the
+# FORGE_* vars address the caller's own broker; either would point the child at
+# another session. The config pointers are dropped so the child's own file is
+# the one that applies, and RAVN_PERSONA/RAVN_ROOM so a caller's identity does
+# not become the child's. Secrets (ANTHROPIC_API_KEY, tokens) pass through.
+_CHILD_ENV_STRIPPED_PREFIXES = ("SKULD__", "FORGE_", "VOLUNDR")
+_CHILD_ENV_STRIPPED_KEYS = frozenset(
+    {"NIUU_CONFIG", "RAVN_CONFIG", "RAVN_PERSONA", "RAVN_ROOM", "RAVN_STATE_DIR"}
+)
+
 # HTTP timeout for the participation subcommands.
 _REQUEST_TIMEOUT_S = 10.0
 
@@ -102,6 +114,20 @@ _TURN_PREVIEW_LIMIT = 120
 
 def _rooms_dir_default() -> Path:
     return Path.home() / ".ravn" / "rooms"
+
+
+def _default_base_config() -> Path | None:
+    """Return the operator's own ravn.yaml, when they have one.
+
+    Without this, ``ravn join`` rendered a member config from library defaults
+    and inherited nothing the operator had configured — so a resident running
+    on ``claude-opus-5`` with extended thinking joined its own room as a
+    ``claude-sonnet-4-6`` member with thinking off, silently.  A member of a
+    room on this host should be the same agent this host runs; ``--base-config``
+    still overrides, and a missing file is simply no base.
+    """
+    path = Path.home() / ".ravn" / "config.yaml"
+    return path if path.is_file() else None
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +380,60 @@ def _write_broker_config(room_def: RoomDef, rooms_dir: Path) -> Path:
     return path
 
 
+def _isolated_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The caller's environment, minus the session identity it carries.
+
+    A room and its members are spawned by whoever ran the command, and that
+    caller is often itself a live agent session.  Both ``SkuldSettings`` and
+    Ravn's ``RuntimeExecutorConfig`` accept ``SKULD__*`` variables as
+    validation aliases that outrank the YAML config file, so an inherited
+    environment silently reconfigures the child:
+
+    - the broker adopted the caller's session id, host, port and workspace,
+      ignoring its own ``broker.yaml`` entirely;
+    - a member read ``SKULD__TRANSPORT_ADAPTER`` and switched to the CLI
+      transport executor, which assembles a prompt rather than calling the
+      model — so the member posted its own system prompt into the room as its
+      reply.
+
+    The child's own config file is the only thing that may configure it.
+    """
+    source = os.environ if environ is None else environ
+    return {
+        key: value
+        for key, value in source.items()
+        if not key.startswith(_CHILD_ENV_STRIPPED_PREFIXES) and key not in _CHILD_ENV_STRIPPED_KEYS
+    }
+
+
+def _missing_provider_secrets(base: dict, environ: Mapping[str, str] | None = None) -> list[str]:
+    """Return the provider secret env vars the member would start without.
+
+    ``llm.provider.secret_kwargs_env`` maps a provider kwarg to the environment
+    variable holding it.  A member spawned without those set starts cleanly,
+    registers, and then fails every single turn with a 401 written only to its
+    own log — so this is checked before spawning rather than discovered later.
+    """
+    source = os.environ if environ is None else environ
+    provider = (base.get("llm") or {}).get("provider") or {}
+    wanted = (provider.get("secret_kwargs_env") or {}).values()
+    return sorted({str(name) for name in wanted if not str(source.get(str(name), "")).strip()})
+
+
+def _broker_env(config_path: Path, environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Environment for a room's Skuld broker, configured only by its own YAML."""
+    env = _isolated_env(environ)
+    env["NIUU_CONFIG"] = str(config_path)
+    return env
+
+
+def _member_env(config_path: Path, environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Environment for a room member's Ravn daemon, configured only by its own YAML."""
+    env = _isolated_env(environ)
+    env["RAVN_CONFIG"] = str(config_path)
+    return env
+
+
 def _spawn_broker(room_def: RoomDef, rooms_dir: Path) -> int:
     """Start the room's broker process detached and return its pid."""
     log_path = _log_path(room_def.name, rooms_dir)
@@ -362,7 +442,7 @@ def _spawn_broker(room_def: RoomDef, rooms_dir: Path) -> int:
     with open(log_path, "a") as log_fd:
         proc = subprocess.Popen(
             [sys.executable, "-m", "skuld"],
-            env={**os.environ, "NIUU_CONFIG": str(config_path)},
+            env=_broker_env(config_path),
             stdout=log_fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
@@ -833,7 +913,7 @@ def _spawn_member(
     with open(log_path, "a") as log_fd:
         proc = subprocess.Popen(
             [sys.executable, "-m", "ravn", "daemon", "--persona", persona],
-            env={**os.environ, "RAVN_CONFIG": str(config_path)},
+            env=_member_env(config_path),
             stdout=log_fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
@@ -996,11 +1076,22 @@ def join_room(
     if existing_pid is not None:
         stop_pids([existing_pid])
 
+    base_config_path = Path(base_config).expanduser() if base_config else _default_base_config()
     try:
-        base = load_base_config(Path(base_config).expanduser() if base_config else None)
+        base = load_base_config(base_config_path)
     except (OSError, ValueError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(2) from exc
+
+    missing = _missing_provider_secrets(base)
+    if missing:
+        typer.echo(
+            f"{', '.join(missing)} not set — {resolved_handle!r} would join and then fail "
+            f"every turn with a provider auth error, visible only in its own log. "
+            f"Export it (or source the env file that holds it) and join again.",
+            err=True,
+        )
+        raise typer.Exit(2)
 
     members = _members_dir(room_def.name, resolved_dir)
     members.mkdir(parents=True, exist_ok=True)
@@ -1077,6 +1168,7 @@ def join_room(
     typer.echo(
         f"{resolved_handle!r} joined {room_def.name!r} as persona {effective_persona} (pid {pid})"
     )
+    typer.echo(f"  Base config: {base_config_path or 'none — library defaults'}")
     typer.echo(f"  Config: {config_path}")
     typer.echo(f"  Log:    {_member_log_path(room_def.name, resolved_dir, resolved_handle)}")
 

@@ -55,6 +55,7 @@ def test_fakeagent_unknown_line_echoes_as_say() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_real_tmux_say_reaches_pane_and_stop_hook(tmp_path: Path) -> None:
     if shutil.which("tmux") is None:
@@ -99,7 +100,7 @@ async def test_real_tmux_say_reaches_pane_and_stop_hook(tmp_path: Path) -> None:
             await transport.start()
             page = TmuxPage(
                 str(transport._socket_path),  # noqa: SLF001 - test seam
-                transport.session_id or "",
+                transport._session_name,
             )
             await page.wait_for_text("fakeagent ready", timeout=5.0)
 

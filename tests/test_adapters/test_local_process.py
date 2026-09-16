@@ -1024,6 +1024,54 @@ class TestProcessSpawning:
 
         assert manager._resolve_skuld_command() == ["/tmp/niuu", "platform", "skuld"]
 
+    async def test_shared_workspace_spawn_preserves_both_brokers_logs(
+        self,
+        manager: LocalProcessPodManager,
+        git_session: Session,
+        default_spec: SessionSpec,
+        tmp_workspaces: Path,
+    ) -> None:
+        """A second launch must retain history and the first child's open log stream."""
+        workspace = tmp_workspaces / "shared-project"
+        workspace.mkdir()
+        log_path = workspace / ".skuld.log"
+        log_path.write_text("existing diagnostics\n", encoding="utf-8")
+        child_descriptors: list[int] = []
+
+        async def inherit_log_stream(*_args, **kwargs):
+            assert kwargs["stdout"] is kwargs["stderr"]
+            # A spawned child inherits the open file description, including
+            # O_APPEND. Keep that descriptor alive after the parent closes its copy.
+            descriptor = os.dup(kwargs["stdout"].fileno())
+            child_descriptors.append(descriptor)
+            os.write(descriptor, f"broker {len(child_descriptors)} started\n".encode())
+            return MagicMock(pid=40 + len(child_descriptors))
+
+        second_session = git_session.model_copy(update={"id": uuid4(), "name": "second"})
+        try:
+            with (
+                patch.object(manager, "_resolve_claude_binary", return_value="/fixture/claude"),
+                patch("asyncio.create_subprocess_exec", side_effect=inherit_log_stream),
+            ):
+                first_pid = await manager._spawn_skuld(git_session, default_spec, workspace, 9100)
+                assert log_path.read_text() == "existing diagnostics\nbroker 1 started\n"
+                second_pid = await manager._spawn_skuld(
+                    second_session, default_spec, workspace, 9101
+                )
+            assert (first_pid, second_pid) == (41, 42)
+            assert log_path.read_text() == (
+                "existing diagnostics\nbroker 1 started\nbroker 2 started\n"
+            )
+            # The already-running first broker continues at the end, preserving
+            # the second broker's newer output rather than overwriting it.
+            os.write(child_descriptors[0], b"broker 1 continued\n")
+            assert log_path.read_text() == (
+                "existing diagnostics\nbroker 1 started\nbroker 2 started\nbroker 1 continued\n"
+            )
+        finally:
+            for descriptor in child_descriptors:
+                os.close(descriptor)
+
     async def test_spawn_skuld_returns_pid(
         self,
         manager: LocalProcessPodManager,

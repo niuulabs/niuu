@@ -952,6 +952,18 @@ oauth:
 
 # Application configuration
 config:
+  # Project checkout roots are paths mounted in the Forge API container.
+  projects:
+    enabled: true
+    instance_id: ""
+    workspace_adapter: volundr.adapters.outbound.project_workspace.GitProjectWorkspace
+    workspace_kwargs: {}
+    context_bytes: 8192
+    git_timeout_seconds: 15
+    dispatch_wait_seconds: 30
+    dispatch_poll_seconds: 0.05
+  conversationRecentMaxTurns: 15
+  conversationRecentMaxBytes: 262144
   # -- Log level (debug, info, warning, error)
   logLevel: info
   # -- Log format (json, text)
@@ -1171,7 +1183,7 @@ sessionDefinitions:
         # -- Skip tool permission prompts (--dangerously-skip-permissions)
         skipPermissions: true
         # -- Enable Claude Code experimental Agent Teams
-        agentTeams: false
+        agentTeams: true
 
       image:
         # -- Session image repository

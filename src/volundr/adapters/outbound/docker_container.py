@@ -89,6 +89,10 @@ class _NetworkRegistry:
 class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodManager):
     """Run each Forge session as a Skuld container on the host Docker daemon."""
 
+    @property
+    def runtime_backend(self) -> str:
+        return "docker"
+
     def __init__(
         self,
         *,

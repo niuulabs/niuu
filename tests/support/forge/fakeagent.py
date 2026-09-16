@@ -16,6 +16,7 @@ Directive grammar (one user line may chain several with ``' ;; '``)::
     nul:<text>      emit an assistant line whose content embeds a NUL byte
     work:<seconds>
     ask:<header>|<question>|<opt1>;<opt2>;...[|delay=<s>]
+    ask_multi:<header>|<question>|<opt1>;<opt2>;...[|delay=<s>]
     perm:<tool>|<detail>[|delay=<s>]
     tool:<name>
     todo:<content>=<status>;<content>=<status>;...   TodoWrite plan (status optional)
@@ -46,18 +47,17 @@ content is ``<text>\\x00[nul]``.
 
 Menu-render delay (E3 race)
 ---------------------------
-``ask:`` and ``perm:`` normally render the numbered on-screen menu, then fire the
-structured hook, then block for the resolving keystroke. With a non-zero menu
-delay the order changes to expose a race window for clients that answer the
-*structured* question before the on-screen menu exists:
+Questions fire the structured hook before rendering the native-style widget.
+A non-zero menu delay exposes a predictable race window for clients answering
+the structured question before the terminal menu exists:
 
     1. fire the hook FIRST (PreToolUse AskUserQuestion / PermissionRequest),
     2. sleep <delay> seconds (NO menu on screen yet),
     3. THEN render the numbered menu to the pane,
     4. block for the resolving keystroke.
 
-Two backward-compatible ways to set the delay (default 0 = legacy behavior:
-render menu first, then hook, then block — unchanged for all Phase 0/1 usage):
+The permission fake retains its older line-oriented renderer. Both question and
+permission directives support these ways to set the delay (default 0):
 
   * a trailing ``|delay=<s>`` field on a single directive, e.g.
     ``ask:Pick|Which?|a;b|delay=0.4`` or ``perm:Bash|rm -rf|delay=0.4``;
@@ -69,12 +69,17 @@ render menu first, then hook, then block — unchanged for all Phase 0/1 usage):
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
+import select
 import signal
 import sys
+import termios
 import time
+import tty
 import urllib.request
+import uuid
 from pathlib import Path
 
 _SCREENS_DIR = Path(__file__).resolve().parent / "screens"
@@ -170,7 +175,7 @@ class _Hooks:
             }
         )
 
-    def post_tool_use(self, tool_name: str, tool_use_id: str, response: str) -> None:
+    def post_tool_use(self, tool_name: str, tool_use_id: str, response: str | dict) -> None:
         self.post(
             {
                 "hook_event_name": "PostToolUse",
@@ -239,7 +244,7 @@ def _parse_settings_path(argv: list[str]) -> str | None:
 
 
 def _session_name() -> str:
-    return os.environ.get("FORGE_FAKEAGENT_SESSION", "fakeagent")
+    return os.environ.get("FORGE_FAKEAGENT_NATIVE_SESSION") or str(uuid.uuid4())
 
 
 # ──────────────────────────── directives ────────────────────────────
@@ -324,7 +329,141 @@ def _render_after_delay(options: list[str], delay: float) -> None:
     _render_menu(options)
 
 
-def _do_ask(spec: str, hooks: _Hooks, menu_delay: float = 0.0) -> None:
+def _read_widget_key() -> str | None:
+    """Read one cbreak key, including arrows, bracketed paste, and UTF-8 text."""
+    fd = sys.stdin.fileno()
+    first = os.read(fd, 1)
+    if not first:
+        return None
+    if first == b"\x1b":
+        sequence = first
+        while len(sequence) < 8 and select.select([fd], [], [], 0.05)[0]:
+            sequence += os.read(fd, 1)
+            if sequence in {b"\x1b[A", b"\x1b[B", b"\x1b[200~", b"\x1b[201~"}:
+                break
+        return sequence.decode("ascii", errors="replace")
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    value = decoder.decode(first)
+    while not value:
+        byte = os.read(fd, 1)
+        if not byte:
+            return None
+        value = decoder.decode(byte)
+    return value
+
+
+def _question_widget(header: str, question: str, options: list[str], *, multi: bool) -> str:
+    """Consume the observed native menu protocol, without consulting the answer request.
+
+    Single-choice digits advance immediately. Checkbox digits only toggle;
+    Enter on a checkbox toggles it too. Focusing Other opens its editor; typing
+    selects that text immediately. Submission requires focus on the unnumbered
+    Submit row followed by the separate final-review digit.
+    """
+    focus = 0
+    selected: list[str] = []
+    custom = ""
+    editing = False
+    review = False
+
+    def render() -> None:
+        checked = "☒" if selected else "☐"
+        lines = [f"←  {checked} {header}  ✔ Submit  →" if multi else f" {checked} {header}", ""]
+        if review:
+            lines.extend(
+                [
+                    "Review your answers",
+                    "",
+                    f" ● {question}",
+                    f"   → {', '.join(selected)}",
+                    "",
+                    "Ready to submit your answers?",
+                    "",
+                    "❯ 1. Submit answers",
+                    "  2. Cancel",
+                ]
+            )
+        else:
+            lines.extend([question, ""])
+            labels = [*options, custom or ("Type something" if multi else "Type something.")]
+            for index, label in enumerate(labels):
+                marker = "❯" if index == focus else " "
+                box = f"[{'✔' if label in selected else ' '}] " if multi else ""
+                lines.append(f"{marker} {index + 1}. {box}{label}")
+            if multi:
+                lines.append("❯    Submit" if focus == len(labels) else "     Submit")
+            lines.extend(["─" * 80, f"  {len(labels) + 1}. Chat about this", ""])
+            footer = "Enter to select · ↑/↓ to navigate · "
+            if editing or focus == len(options):
+                footer += "ctrl+g to edit in Vim · "
+            lines.append(footer + "Esc to cancel")
+        sys.stdout.write("\x1b[2J\x1b[H" + "\n".join(lines) + "\n")
+        sys.stdout.flush()
+
+    def toggle(label: str) -> None:
+        if label in selected:
+            selected.remove(label)
+        else:
+            selected.append(label)
+
+    render()
+    while True:
+        key = _read_widget_key()
+        if key is None or key == "\x1b":
+            return "cancelled"
+        if key in {"\x1b[200~", "\x1b[201~"}:
+            continue
+        if review:
+            if key in {"1", "\r", "\n"}:
+                return ", ".join(selected)
+            if key == "2":
+                return "cancelled"
+            continue
+        if editing and key not in {"\x1b[A", "\x1b[B"}:
+            if key in {"\r", "\n"}:
+                if multi:
+                    toggle(custom or "Type something")
+                else:
+                    return custom or "cancelled"
+            else:
+                previous = custom or "Type something"
+                custom = custom[:-1] if key in {"\x7f", "\b"} else custom + key
+                if multi:
+                    if previous in selected:
+                        selected.remove(previous)
+                    if custom:
+                        selected.append(custom)
+            render()
+            continue
+        if key in {"\x1b[A", "\x1b[B"}:
+            focus = (focus + (1 if key.endswith("B") else -1)) % (
+                len(options) + (2 if multi else 1)
+            )
+            editing = focus == len(options)
+        elif key.isdigit() and 1 <= int(key) <= len(options) + 1:
+            index = int(key) - 1
+            if index == len(options):
+                if multi:
+                    toggle(custom or "Type something")
+                else:
+                    focus, editing = index, True
+            elif multi:
+                toggle(options[index])
+            else:
+                return options[index]
+        elif key in {"\r", "\n"}:
+            if multi and focus == len(options) + 1:
+                review = True
+            elif focus == len(options):
+                editing = True
+            elif multi:
+                toggle(options[focus])
+            else:
+                return options[focus]
+        render()
+
+
+def _do_ask(spec: str, hooks: _Hooks, menu_delay: float = 0.0, *, multi: bool = False) -> None:
     fields = spec.split("|")
     fields, delay = _split_delay_field(fields, menu_delay)
     header = fields[0] if fields else ""
@@ -333,25 +472,36 @@ def _do_ask(spec: str, hooks: _Hooks, menu_delay: float = 0.0) -> None:
     options = [opt.strip() for opt in opt_blob.split(";") if opt.strip()]
     if not options:
         options = ["Yes", "No"]
-    # delay == 0 -> legacy order: render menu, then fire hook, then block.
-    if delay <= 0:
-        _render_menu(options)
-    if hooks.enabled:
-        tool_input = {
-            "questions": [
-                {
-                    "header": header.strip(),
-                    "question": question.strip(),
-                    "options": [{"label": label} for label in options],
-                    "multiSelect": False,
-                }
-            ]
-        }
-        hooks.pre_tool_use("AskUserQuestion", tool_input, "fakeagent-ask")
-    # delay > 0 -> hook fired above; wait, THEN render the menu (race window).
-    _render_after_delay(options, delay)
-    keystroke = _read_keystroke()
-    chosen = _resolve_choice(keystroke, options)
+    tool_use_id = f"fakeagent-ask-{uuid.uuid4().hex}"
+    tool_input = {
+        "questions": [
+            {
+                "header": header.strip(),
+                "question": question.strip(),
+                "options": [{"label": label} for label in options],
+                "multiSelect": multi,
+            }
+        ]
+    }
+    # Native questions consume single keys. Restore the original mode before
+    # returning to the line-oriented command grammar used elsewhere in the fake.
+    fd = sys.stdin.fileno()
+    original = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        sys.stdout.write("\x1b[?2004h")
+        sys.stdout.flush()
+        hooks.pre_tool_use("AskUserQuestion", tool_input, tool_use_id)
+        if delay > 0:
+            time.sleep(delay)
+        chosen = _question_widget(header.strip(), question.strip(), options, multi=multi)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, original)
+        sys.stdout.write("\x1b[?2004l")
+        sys.stdout.flush()
+    # This proof is generated only after the terminal actually consumed keys.
+    # The fake never reads the browser's proposed answer or fabricates a receipt.
+    hooks.post_tool_use("AskUserQuestion", tool_use_id, {"answers": {question.strip(): chosen}})
     _emit(f"chose: {chosen}")
     _finish_turn(f"chose: {chosen}", hooks)
 
@@ -614,6 +764,9 @@ def _dispatch(directive: str, hooks: _Hooks, menu_delay: float = 0.0) -> None:
     if directive.startswith("ask:"):
         _do_ask(directive[len("ask:") :], hooks, menu_delay)
         return
+    if directive.startswith("ask_multi:"):
+        _do_ask(directive[len("ask_multi:") :], hooks, menu_delay, multi=True)
+        return
     if directive.startswith("perm:"):
         _do_perm(directive[len("perm:") :], hooks, menu_delay)
         return
@@ -674,6 +827,8 @@ def run(argv: list[str] | None = None) -> int:
         line = sys.stdin.readline()
         if line == "":
             return 0
+        if line.strip():
+            hooks.user_prompt_submit(line.rstrip("\n"))
         handle_line(line.rstrip("\n"), hooks)
 
 

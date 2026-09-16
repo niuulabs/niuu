@@ -254,3 +254,5 @@ references*
 
 # Local config files created by e2e scripts
 ting.yaml
+# Local Forge stability reports (JUnit, manifests, traces).
+.forge-results/

@@ -90,6 +90,7 @@ async def start_server(app: object) -> tuple[uvicorn.Server, str]:
         host="127.0.0.1",
         port=port,
         log_level="warning",
+        ws="none",  # This server exercises HTTP/SSE only; no legacy WS protocol imports.
     )
     server = uvicorn.Server(config)
     asyncio.create_task(server.serve())

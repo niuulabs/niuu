@@ -608,7 +608,7 @@ jobs:
             diagnostics="$(
               kubectl get pods -l app.kubernetes.io/name=volundr -o wide 2>&1
               kubectl describe pods -l app.kubernetes.io/name=volundr 2>&1
-              kubectl logs -l app.kubernetes.io/name=volundr --all-containers=true --tail=100 --prefix 2>&1
+              kubectl logs -l app.kubernetes.io/name=volundr --all-containers=true --tail=100 --prefix 2>&1 || true
             )"
             combined="${output}
           ${diagnostics}"

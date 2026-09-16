@@ -370,6 +370,10 @@ def create_app(
         PATRevocationMiddleware,
         websocket_check_interval=loaded_settings.pat.websocket_check_interval,
     )
+    # Wire compression (2026-07-12) — see niuu.gzip_sse for the numbers + SSE safety.
+    from niuu.gzip_sse import SSESafeGZipMiddleware
+
+    app.add_middleware(SSESafeGZipMiddleware, minimum_size=4096)
 
     @app.get("/health", tags=["Health"])
     async def health_check() -> dict[str, str]:

@@ -392,7 +392,9 @@ async def test_owner_lookup_cancels_stalled_probes_after_finding_owner(monkeypat
     )
     principal = Principal(user_id="user-a", email="", tenant_id="tenant-a", roles=[])
     owner, _ = await asyncio.wait_for(
-        rest_volundr._find_session_owner(service, principal, Request({"type": "http"}), "s2"),
+        rest_volundr._find_session_owner(
+            service, principal, Request({"type": "http", "query_string": b""}), "s2"
+        ),
         timeout=1,
     )
     assert owner.id == "noatun"
@@ -1166,6 +1168,71 @@ def test_feature_flags_proxies_to_default_instance() -> None:
 
     assert response.status_code == 200
     assert response.json()["mini_mode"] is True
+    capabilities = response.json()["capabilities"]
+    assert capabilities["message_delivery"] is True
+    assert capabilities["chronicles"] is False
+    assert capabilities["session_events"] is False
+
+
+@respx.mock
+def test_send_preserves_pending_http_status_and_client_request_identity() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/sessions/s1").mock(
+        return_value=Response(200, json={"id": "s1"})
+    )
+    payload = {"request_id": "client-1", "status": "pending", "delivery": "pending"}
+    route = respx.post("http://alpha/api/v1/forge/sessions/s1/messages").mock(
+        return_value=Response(202, json=payload)
+    )
+    response = client.post(
+        "/api/v1/forge/sessions/s1/messages",
+        headers=_headers(),
+        json={"content": "hello", "request_id": "client-1"},
+    )
+    assert response.status_code == 202
+    assert response.json() == payload
+    import json
+
+    assert json.loads(route.calls.last.request.content)["request_id"] == "client-1"
+
+
+@respx.mock
+@pytest.mark.parametrize("operation", [None, "claim", "settle"])
+def test_delivery_state_routes_reach_session_owner(operation) -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/sessions/s1").mock(
+        return_value=Response(200, json={"id": "s1"})
+    )
+    path = "/api/v1/forge/sessions/s1/message-deliveries/req-1"
+    method = "GET" if operation is None else "POST"
+    if operation:
+        path += f"/{operation}"
+    route = respx.request(method, f"http://alpha{path}").mock(
+        return_value=Response(200, json={"request_id": "req-1", "status": "pending"})
+    )
+    response = client.request(method, path, headers=_headers(), json={} if operation else None)
+    assert response.status_code == 200
+    assert route.called
+    assert response.json()["request_id"] == "req-1"
+
+
+@respx.mock
+def test_delivery_get_query_cannot_change_the_forwarded_path() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/sessions/s1").mock(
+        return_value=Response(200, json={"id": "s1"})
+    )
+    path = "/api/v1/forge/sessions/s1/message-deliveries/req-1"
+    route = respx.get(f"http://alpha{path}").mock(
+        return_value=Response(200, json={"request_id": "req-1", "status": "pending"})
+    )
+    response = client.get(
+        path, headers=_headers(), params={"operation": "../../../../feature-flags"}
+    )
+    assert response.status_code == 200
+    assert route.called
+    response = client.post(path + "/claim", headers=_headers(), content="not JSON")
+    assert response.status_code == 422
 
 
 @respx.mock
@@ -1381,3 +1448,94 @@ def test_feature_flags_reject_invisible_instance() -> None:
     client = _client([_instance("private", base_url="http://private", tenant_id="other")])
     response = client.get("/api/v1/forge/feature-flags?instance_id=private", headers=_headers())
     assert response.status_code == 404
+
+
+@respx.mock
+def test_tool_result_preview_byte_proxies_jpeg_from_owner() -> None:
+    """The aggregate preview route forwards RAW image bytes (not JSON) from the
+    owning instance, preserving content-type and the immutable cache-control the
+    volundr tier stamps — the phone's URLSession caches on it."""
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2", "name": "Session 2"})
+    )
+    jpeg_bytes = b"\xff\xd8\xff\xe0fake-jpeg-payload\xff\xd9"
+    route = respx.get("http://beta/api/v1/forge/sessions/s2/tool-result/tu-img/preview").mock(
+        return_value=Response(
+            200,
+            content=jpeg_bytes,
+            headers={
+                "content-type": "image/jpeg",
+                "cache-control": "public, max-age=31536000, immutable",
+            },
+        )
+    )
+
+    response = client.get(
+        "/api/v1/forge/sessions/s2/tool-result/tu-img/preview",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.content == jpeg_bytes
+    assert response.headers["content-type"] == "image/jpeg"
+    assert "immutable" in response.headers["cache-control"]
+    assert route.called
+
+
+@respx.mock
+def test_tool_result_preview_passes_owner_404_through() -> None:
+    """A non-image tool_result 404s at the volundr tier; the aggregate must pass
+    that through (NOT wrap it in a 502) so the client falls back to the full
+    tool-result fetch."""
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2", "name": "Session 2"})
+    )
+    respx.get("http://beta/api/v1/forge/sessions/s2/tool-result/tu-text/preview").mock(
+        return_value=Response(404, json={"detail": "tool_result is not an image"})
+    )
+
+    response = client.get(
+        "/api/v1/forge/sessions/s2/tool-result/tu-text/preview",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 404
+
+
+@respx.mock
+def test_native_history_import_routes_to_owner_with_auth() -> None:
+    instance = _instance("owner", base_url="https://forge.example")
+    session_id = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
+    respx.get(f"https://forge.example/api/v1/forge/sessions/{session_id}").mock(
+        return_value=Response(200, json={"id": session_id, "status": "stopped"})
+    )
+    import_route = respx.post(
+        f"https://forge.example/api/v1/forge/sessions/{session_id}/history/import"
+    ).mock(return_value=Response(200, json={"session_id": session_id, "imported_frames": 19}))
+    client = _client([instance])
+    response = client.post(
+        f"/api/v1/forge/sessions/{session_id}/history/import", headers=_headers()
+    )
+    assert response.status_code == 200
+    assert response.json()["imported_frames"] == 19
+    assert response.json()["instance_id"] == "owner"
+    assert import_route.calls[0].request.headers["authorization"] == "Bearer test-token"
+
+
+@respx.mock
+def test_native_history_import_preserves_conflict_response() -> None:
+    instance = _instance("owner", base_url="https://forge.example")
+    session_id = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
+    respx.get(f"https://forge.example/api/v1/forge/sessions/{session_id}").mock(
+        return_value=Response(200, json={"id": session_id, "status": "running"})
+    )
+    respx.post(f"https://forge.example/api/v1/forge/sessions/{session_id}/history/import").mock(
+        return_value=Response(409, json={"detail": "Session must be stopped before import"})
+    )
+    response = _client([instance]).post(
+        f"/api/v1/forge/sessions/{session_id}/history/import", headers=_headers()
+    )
+    assert response.status_code == 409
+    assert "stopped" in response.json()["detail"]

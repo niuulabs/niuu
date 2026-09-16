@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 from fastapi import WebSocket
 
+from niuu.domain.conversation_timeline import TIMELINE_KEY, observation, timeline
 from skuld.conversation_models import ConversationTurn
 from skuld.session_artifacts import SessionArtifacts
 
@@ -326,15 +327,24 @@ class EventLogMixin:
                 return inner
         return None
 
-    def _enqueue_event_log(self, data: dict) -> None:
+    def _enqueue_event_log(self, data: dict, *, ts: datetime | None = None) -> None:
         """Buffer a raw CLI frame for durable persistence. Never raises.
 
         Runs for every frame regardless of attached channels — this is what
         guarantees no agent output is dropped when no client is connected.
+
+        ``ts`` lets the CLI-event handler share one observation instant with
+        live transcript reduction. Other callers retain the prior behavior.
         """
         if not self._settings.event_log_enabled or not self.volundr_api_url:
             return
         self._event_log_seq += 1
+        observed_at = (ts or datetime.now(UTC)).isoformat()
+        caps = getattr(self._transport, "capabilities", None)
+        if getattr(caps, "steering_mode", None) == "live":
+            # Input can arrive inside an ongoing native turn. Carry its observed
+            # slot on the wire as well as the durable row, not merely in DB ts.
+            data.setdefault(TIMELINE_KEY, observation(self._event_log_seq, observed_at))
         entry = {
             "seq": self._event_log_seq,
             "kind": str(data.get("type", "unknown"))[:64],
@@ -344,7 +354,7 @@ class EventLogMixin:
             # arrival time, which skews replayed timelines whenever the POST
             # batch lags (rate-limit stalls, backend hiccups). Clients replay
             # these ts so an old session shows when things actually happened.
-            "ts": datetime.now(UTC).isoformat(),
+            "ts": observed_at,
         }
         role = data.get("role")
         if isinstance(role, str):
@@ -443,7 +453,14 @@ class EventLogMixin:
         self._enqueue_event_log(frame)
         return await self._safe_browser_send_json(websocket, frame)
 
-    def _enqueue_human_turn_event(self, content: str, turn_id: str) -> None:
+    def _enqueue_human_turn_event(
+        self,
+        content: str,
+        turn_id: str,
+        *,
+        request_id: str | None = None,
+        ts: datetime | None = None,
+    ) -> dict | None:
         """Persist a HUMAN message to the durable event log as a user frame.
 
         The CLI never echoes the operator's own prompt as a text frame — only
@@ -455,15 +472,17 @@ class EventLogMixin:
         user frames).
         """
         if not content:
-            return
-        self._enqueue_event_log(
-            {
-                "type": "user",
-                "role": "user",
-                "uuid": turn_id,
-                "message": {"role": "user", "content": content},
-            }
-        )
+            return None
+        frame = {
+            "type": "user",
+            "role": "user",
+            "uuid": turn_id,
+            "message": {"role": "user", "content": content},
+            **({"request_id": request_id} if request_id else {}),
+            **({"created_at": ts.isoformat()} if ts else {}),
+        }
+        self._enqueue_event_log(frame, ts=ts)
+        return timeline(frame)
 
     async def _surface_remote_control_url(self, url: str) -> None:
         """Surface a remote-control pairing URL as an assistant turn everywhere.
@@ -522,40 +541,59 @@ class EventLogMixin:
         return status >= 500 or status in (408, 429)
 
     async def _flush_event_log(self) -> None:
-        """Send one batch from the front of the buffer. Removes only on success."""
+        """Serialize flushes and acknowledge only the sequence range actually sent."""
         if not self.volundr_api_url:
             return
         async with self._event_log_lock:
             batch = self._event_log_buffer[: self._settings.event_log_batch_size]
-        if not batch:
-            return
+            if not batch:
+                return
 
-        client = await self._get_http_client()
-        path = self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id)
-        try:
-            response = await client.post(path, json={"entries": batch})
-        except Exception:
-            logger.debug("event log POST failed — will retry", exc_info=True)
-            return
-        if response.status_code >= 300:
-            if self._is_transient_status(response.status_code):
+            client = await self._get_http_client()
+            path = self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id)
+            try:
+                response = await client.post(path, json={"entries": batch})
+            except Exception:
+                logger.debug("event log POST failed — will retry", exc_info=True)
+                return
+            if response.status_code >= 300:
+                if not self._is_transient_status(response.status_code):
+                    raise EventLogRejectedError(
+                        f"Volundr rejected the durable event log for session {self.session_id} "
+                        f"({response.status_code}): {response.text[:200]}. Retrying cannot fix "
+                        "this — session.id must be the Volundr session UUID and the broker's "
+                        "credentials must be valid. Fix the config, or unset volundr_api_url / "
+                        "set event_log_enabled: false to run without a durable log."
+                    )
                 logger.debug(
                     "event log POST rejected (%d): %s — will retry",
                     response.status_code,
                     response.text[:200],
                 )
                 return
-            raise EventLogRejectedError(
-                f"Volundr rejected the durable event log for session {self.session_id} "
-                f"({response.status_code}): {response.text[:200]}. Retrying cannot fix "
-                "this — session.id must be the Volundr session UUID and the broker's "
-                "credentials must be valid. Fix the config, or unset volundr_api_url / "
-                "set event_log_enabled: false to run without a durable log."
+
+            # Enqueue is synchronous and can overflow the buffer during the POST.
+            # Its prefix may now contain NEW frames, so deleting len(batch) loses
+            # unsent output. Acknowledge the sent prefix by seq, trimming any gap
+            # created in flight so it cannot collide with a now-persisted row.
+            acknowledged = max(
+                entry["payload"]["last_seq"] if entry["kind"] == "log_gap" else entry["seq"]
+                for entry in batch
             )
-        # Idempotent on (session_id, seq), so removing exactly the sent count is
-        # safe even if newer frames were appended during the POST.
-        async with self._event_log_lock:
-            del self._event_log_buffer[: len(batch)]
+            remaining = []
+            for entry in self._event_log_buffer:
+                if entry["seq"] > acknowledged:
+                    remaining.append(entry)
+                    continue
+                if entry["kind"] != "log_gap":
+                    continue
+                gap = entry["payload"]
+                if gap["last_seq"] <= acknowledged:
+                    continue
+                entry["seq"] = gap["first_seq"] = acknowledged + 1
+                gap["dropped"] = gap["last_seq"] - acknowledged
+                remaining.append(entry)
+            self._event_log_buffer[:] = remaining
 
     async def _init_event_log(self) -> None:
         """Resume the seq counter from the backend so restarts don't collide.
@@ -585,14 +623,22 @@ class EventLogMixin:
             ) from exc
         if response.status_code >= 300:
             raise EventLogRejectedError(
-                f"Volundr rejected the event-log head fetch for session "
+                f"Volundr rejected the durable event log head fetch for session "
                 f"{self.session_id} ({response.status_code}): {response.text[:200]}. "
                 "session.id must be the Volundr session UUID and the broker's "
                 "credentials must be valid. Fix the config, or unset "
                 "volundr_api_url / set event_log_enabled: false to run without a "
                 "durable log."
             )
-        head = int(response.json().get("latest_seq", 0))
+        try:
+            head = response.json()["latest_seq"]
+            if type(head) is not int or head < 0:
+                raise ValueError("latest_seq must be a non-negative integer")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EventLogRejectedError(
+                f"Cannot initialize durable event log for session {self.session_id}: "
+                "a valid head is required before starting the agent"
+            ) from exc
         await self._resume_seq_from_head(head)
         self._event_log_task = asyncio.create_task(self._event_log_flush_loop())
         self._event_log_task.add_done_callback(self._on_event_log_worker_done)
@@ -640,6 +686,9 @@ class EventLogMixin:
                 return
             for entry in self._event_log_buffer:
                 entry["seq"] += head
+                if entry["kind"] == "log_gap":
+                    entry["payload"]["first_seq"] += head
+                    entry["payload"]["last_seq"] += head
             self._event_log_seq += head
 
     async def _stop_event_log(self) -> None:

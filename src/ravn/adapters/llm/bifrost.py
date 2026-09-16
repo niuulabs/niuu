@@ -75,8 +75,8 @@ class BifrostAdapter(AnthropicAdapter):
         self._agent_id = agent_id
         self._session_id = session_id
 
-    def _headers(self, *, thinking_enabled: bool = False) -> dict[str, str]:
-        headers = super()._headers(thinking_enabled=thinking_enabled)
+    def _headers(self, *, thinking_enabled: bool = False, model: str = "") -> dict[str, str]:
+        headers = super()._headers(thinking_enabled=thinking_enabled, model=model)
         # Bifrost manages API keys — remove the empty x-api-key header
         headers.pop("x-api-key", None)
         # Inject agent identity for per-agent usage tracking and cost attribution

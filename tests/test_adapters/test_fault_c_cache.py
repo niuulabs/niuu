@@ -17,14 +17,14 @@ from volundr.domain.services.session_archive import SessionArchiveService
 def test_durable_count_cache_put_stores_updates_and_bounds():
     cache = rest_mod._DURABLE_COUNT_CACHE
     cache.clear()
-    rest_mod._durable_count_cache_put("s1", 10, 42)
-    assert cache["s1"] == (10, 42)
-    # Same key updates in place (new seq + count).
-    rest_mod._durable_count_cache_put("s1", 11, 43)
-    assert cache["s1"] == (11, 43)
+    rest_mod._durable_count_cache_put("s1", 10, 42, "turn-42")
+    assert cache["s1"] == (10, 42, "turn-42")
+    # Same key updates in place (new seq, count, and settled tail id).
+    rest_mod._durable_count_cache_put("s1", 11, 43, "turn-43")
+    assert cache["s1"] == (11, 43, "turn-43")
     # Bounded: filling well past the cap must never exceed it.
     for i in range(rest_mod._DURABLE_COUNT_CACHE_MAX + 50):
-        rest_mod._durable_count_cache_put(f"k{i}", i, i)
+        rest_mod._durable_count_cache_put(f"k{i}", i, i, f"turn-{i}")
     assert len(cache) <= rest_mod._DURABLE_COUNT_CACHE_MAX
     cache.clear()
 

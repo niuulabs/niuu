@@ -409,8 +409,15 @@ class RavnAgent:
             usage=response.usage,
         )
 
-    async def run_turn(self, user_input: str) -> TurnResult:
+    async def run_turn(self, user_input: str, *, recall_query: str | None = None) -> TurnResult:
         """Process one user turn and return the result.
+
+        *recall_query* is what memory is searched with, when it differs from what the model is
+        given. A room message reaches the agent wrapped in framing plus up to 4,000 characters of
+        prior room context; recalling on all of that embeds an average of the room's recent
+        chatter rather than the question, and searches documents averaging 158 characters with a
+        4,000-character vector. Defaults to *user_input*, which is correct for every trigger whose
+        prompt IS what was asked.
 
         Runs the full tool-call loop until the LLM produces a final response
         or the maximum number of iterations is reached.
@@ -455,11 +462,13 @@ class RavnAgent:
         # for outcome recording.
         memory_ctx = ""
         if self._prompt_builder is not None:
-            effective_system: SystemPrompt = await self._build_effective_system(user_input)
+            effective_system: SystemPrompt = await self._build_effective_system(
+                user_input, recall_query
+            )
         else:
             effective_system = self._system_prompt
             if self._memory is not None:
-                memory_ctx = await self._prefetch_or_fail(user_input)
+                memory_ctx = await self._prefetch_or_fail(recall_query or user_input)
                 if memory_ctx:
                     effective_system = f"{effective_system}\n\n{memory_ctx}"
 
@@ -621,7 +630,6 @@ class RavnAgent:
                     {
                         "type": "tool_result",
                         "tool_use_id": tool_call.id,
-                        "name": tool_call.name,
                         "content": result.content,
                         "is_error": result.is_error,
                     }
@@ -693,7 +701,7 @@ class RavnAgent:
                 episode.structured_outcome = parsed_outcome.fields
                 episode.outcome_valid = parsed_outcome.valid
 
-            if self._memory is not None:
+            if self._memory is not None and _is_worth_remembering(episode):
                 episode = await self._enrich_episode(
                     episode=episode,
                     turn_result=partial_result,
@@ -743,7 +751,9 @@ class RavnAgent:
             episode=recorded_episode,
         )
 
-    async def _build_effective_system(self, user_input: str) -> SystemPrompt:
+    async def _build_effective_system(
+        self, user_input: str, recall_query: str | None = None
+    ) -> SystemPrompt:
         """Build the effective system prompt for this turn.
 
         When a PromptBuilder is configured, it handles memory context as a
@@ -752,14 +762,14 @@ class RavnAgent:
         """
         if self._prompt_builder is not None:
             if self._memory is not None:
-                memory_ctx = await self._prefetch_or_fail(user_input)
+                memory_ctx = await self._prefetch_or_fail(recall_query or user_input)
                 self._prompt_builder.set_memory_context(memory_ctx or "")
             return self._prompt_builder.render_blocks()
 
         # Legacy: plain-string system prompt with optional memory suffix.
         effective: str = self._system_prompt
         if self._memory is not None:
-            memory_ctx = await self._prefetch_or_fail(user_input)
+            memory_ctx = await self._prefetch_or_fail(recall_query or user_input)
             if memory_ctx:
                 effective = f"{self._system_prompt}\n\n{memory_ctx}"
         return effective
@@ -1689,6 +1699,33 @@ def _determine_outcome(tool_results: list[ToolResult]) -> Outcome:
     if errors:
         return Outcome.PARTIAL
     return Outcome.SUCCESS
+
+
+#: An answer this short is an acknowledgement, not a finding. Measured against the real corpus:
+#: the health-check answers were "ok" (2), "pong" (4) and "Hello!" (6); the shortest genuinely
+#: useful answer was 35 ("Yes — Travis, Thor's resident Ravn.").
+_TRIVIAL_ANSWER_MAX_CHARS = 12
+
+
+def _is_worth_remembering(episode: Episode) -> bool:
+    """Whether this turn is an episode at all, rather than a ping.
+
+    Memory is a corpus you search, not a log you append to: every document competes with every
+    other for the same few recall slots. 100 of 139 documents in the live store were health
+    checks — 70 "Hello!", 23 "Hello, Ravn!", 7 "pong" — and they made recall degenerate, with two
+    unrelated queries returning the same three rows. Each had also paid for a reflection-model
+    call on the way in.
+
+    The discriminator is the ANSWER, not the length of the exchange. A turn that used a tool did
+    something in the world and is kept whatever it said; a turn that errored is a fact about the
+    system, often the most useful kind. What remains is a turn where the agent answered from what
+    it already knew — and if that answer is a bare acknowledgement, it added nothing to the corpus
+    that was not in it already. Filtering on the exchange's total length would instead have
+    dropped a real question that happened to get a short reply.
+    """
+    if episode.tools_used or episode.errors:
+        return True
+    return len(episode.summary.strip()) > _TRIVIAL_ANSWER_MAX_CHARS
 
 
 def _extract_episode(

@@ -321,6 +321,39 @@ async def test_update_activity_forwards_state_since() -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_update_activity_forwards_turn_started_at() -> None:
+    """Turn-anchor regression: the facade MUST accept and forward turn_started_at.
+
+    The stable-turn-anchor change threaded turn_started_at through the REST
+    endpoint and the deep session service but missed this facade, so EVERY
+    activity report raised TypeError -> 500 and no session ever showed an
+    activity state. This test passes both activity kwargs and asserts they
+    reach the deep session service.
+    """
+    session_service = AsyncMock(spec=SessionService)
+    forge = ForgeService(session_service)
+    session_id = uuid4()
+    state_since = datetime(2026, 7, 10, 5, 10, 0, tzinfo=UTC)
+    turn_started_at = datetime(2026, 7, 10, 5, 12, 30, tzinfo=UTC)
+
+    await forge.update_activity(
+        session_id,
+        SessionActivityState.TOOL_EXECUTING,
+        {"source": "test"},
+        state_since=state_since,
+        turn_started_at=turn_started_at,
+    )
+
+    session_service.update_activity.assert_awaited_once_with(
+        session_id,
+        SessionActivityState.TOOL_EXECUTING,
+        {"source": "test"},
+        state_since=state_since,
+        turn_started_at=turn_started_at,
+    )
+
+
 def test_list_providers_uses_repo_service() -> None:
     session_service = AsyncMock(spec=SessionService)
     repo_service = AsyncMock(spec=RepoService)

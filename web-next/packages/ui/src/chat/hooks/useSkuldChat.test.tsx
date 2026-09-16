@@ -2315,8 +2315,14 @@ page_path: council/demo/opinion-b.md
 
     expect(result.current.streamingContent).toBe('Checking the repository.\n\nDone.');
     expect(result.current.streamingParts).toEqual([
-      { type: 'text', text: 'Checking the repository.', id: 'msg-1', phase: 'commentary' },
-      { type: 'text', text: 'Done.', id: 'msg-2', phase: 'final_answer' },
+      {
+        type: 'text',
+        text: 'Checking the repository.',
+        id: 'msg-1',
+        phase: 'commentary',
+        complete: false,
+      },
+      { type: 'text', text: 'Done.', id: 'msg-2', phase: 'final_answer', complete: false },
     ]);
   });
 
@@ -2636,6 +2642,120 @@ page_path: council/demo/opinion-b.md
       { type: 'tool_result', tool_use_id: 'cmd-1', content: 'README.md' },
     ]);
   });
+
+  it('refreshes a completed search input in the same live message and pairs its later result', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/search/session'));
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    const emit = (frame: unknown) => wsHandlers.onMessage?.(JSON.stringify(frame));
+    act(() => {
+      emit({
+        type: 'assistant',
+        message: {
+          model: 'gpt-6-astra',
+          usage: { input_tokens: 120, output_tokens: 8 },
+          content: [{ type: 'text', text: 'Checking the documentation. ' }],
+        },
+      });
+      emit({
+        type: 'content_block_start',
+        content_block: { type: 'tool_use', id: 'search-1', name: 'WebSearch' },
+      });
+      emit({
+        type: 'content_block_delta',
+        delta: { type: 'input_json_delta', partial_json: '{"query":""}' },
+      });
+      emit({ type: 'content_block_stop' });
+    });
+    const original = result.current.messages[0];
+    const input = {
+      query: 'json.loads café 東京',
+      action: { type: 'search', query: 'json.loads café 東京', queries: null },
+    };
+    const refresh = {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 'search-1', name: 'WebSearch:search', input }],
+      },
+    };
+    act(() => {
+      emit(refresh);
+      emit(refresh);
+    });
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0]).toMatchObject({
+      id: original.id,
+      createdAt: original.createdAt,
+      participant: original.participant,
+      metadata: original.metadata,
+      status: 'running',
+      content: 'Checking the documentation. ',
+      parts: [
+        { type: 'text', text: 'Checking the documentation. ' },
+        { type: 'tool_use', id: 'search-1', name: 'WebSearch:search', input },
+      ],
+    });
+    expect(result.current.streamingParts).toEqual(result.current.messages[0].parts);
+
+    act(() => {
+      emit({
+        type: 'content_block_start',
+        content_block: {
+          type: 'tool_result',
+          tool_use_id: 'search-1',
+          content: 'https://docs.python.org/3/library/json.html',
+        },
+      });
+      emit({ type: 'content_block_stop' });
+      emit({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'Found it.' } });
+      emit({ type: 'result', is_error: false });
+    });
+    expect(result.current.messages).toHaveLength(1);
+    const final = result.current.messages[0];
+    expect(final.id).toBe(original.id);
+    expect(final.status).toBe('done');
+    expect(final.content).toBe('Checking the documentation. Found it.');
+    expect(final.parts?.filter((part) => part.type === 'tool_use')).toEqual([
+      { type: 'tool_use', id: 'search-1', name: 'WebSearch:search', input },
+    ]);
+    expect(final.parts?.filter((part) => part.type === 'tool_result')).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'search-1',
+        content: 'https://docs.python.org/3/library/json.html',
+      },
+    ]);
+  });
+
+  it.each([
+    [{ type: 'tool_use', id: 'another-search', name: 'WebSearch', input: { query: 'new' } }],
+    [
+      { type: 'text', text: 'A new assistant message.' },
+      { type: 'tool_use', id: 'search-1', name: 'WebSearch', input: { query: 'new' } },
+    ],
+  ])(
+    'keeps ordinary assistant boundaries when content is not exclusively known tool IDs: %j',
+    async (...blocks) => {
+      const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/boundary/session'));
+      await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+      const emit = (frame: unknown) => wsHandlers.onMessage?.(JSON.stringify(frame));
+      act(() => {
+        emit({ type: 'assistant', message: { content: [] } });
+        emit({
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: 'search-1', name: 'WebSearch' },
+        });
+        emit({ type: 'content_block_stop' });
+        emit({ type: 'assistant', message: { content: blocks } });
+      });
+      expect(result.current.messages).toHaveLength(2);
+      expect(result.current.messages[0].status).toBe('done');
+      expect(result.current.messages[1].status).toBe('running');
+      expect(result.current.messages[1].id).not.toBe(result.current.messages[0].id);
+      expect(result.current.messages[0].parts).toEqual([
+        { type: 'tool_use', id: 'search-1', name: 'WebSearch', input: {} },
+      ]);
+    },
+  );
 
   it('sendSetInternalVisibility forwards the toggle to the backend', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));

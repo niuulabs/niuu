@@ -63,9 +63,9 @@ async def txn_pool() -> TransactionalPool:
     conn = await asyncpg.connect(
         host=os.environ.get("TEST_DATABASE_HOST", "localhost"),
         port=int(os.environ.get("TEST_DATABASE_PORT", "5432")),
-        user=os.environ.get("TEST_DATABASE_USER", "volundr"),
-        password=os.environ.get("TEST_DATABASE_PASSWORD", "volundr"),
-        database=os.environ.get("TEST_DATABASE_NAME", "volundr"),
+        user=os.environ.get("TEST_DATABASE_USER", "volundr_test"),
+        password=os.environ.get("TEST_DATABASE_PASSWORD", "volundr_test"),
+        database=os.environ.get("TEST_DATABASE_NAME", "volundr_test"),
     )
     txn = conn.transaction()
     await txn.start()

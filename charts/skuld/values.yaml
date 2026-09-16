@@ -231,6 +231,31 @@ git:
 
 # Broker configuration (Skuld application settings)
 broker:
+  conversationRecentMaxTurns: 15
+  conversationRecentMaxBytes: 262144
+  conversationSnapshotMaxBytes: 921600
+  liveFrameMaxBytes: 921600
+  codexReceiveMaxBytes: 16777216
+  historyHydrationEnabled: true
+  historyHydrationTimeoutSeconds: 30
+  historyHydrationPageSize: 1000
+  historyHydrationMaxFrames: 100000
+  historyHydrationMaxBytes: 67108864
+  effortControlTimeoutSeconds: 15
+  # PI paths refer to the session container, not the API host.
+  pi:
+    binary: pi
+    agent_dir: ""
+    session_dir: ""
+    command_timeout_s: 30
+    turn_timeout_s: 1800
+    shutdown_timeout_s: 5
+  historyReadTimeoutSeconds: 2.0
+  historyBootstrapMaxFrames: 256
+  # Native question proof bounds and optional Muse executable override.
+  tmuxQuestionTranscriptMaxBytes: 1048576
+  tmuxQuestionResultHistoryLimit: 128
+  museBin: ""
   # -- (DEPRECATED) AI CLI backend: "claude" (Claude Code, default) or "codex" (OpenAI Codex).
   # Use broker.transportAdapter instead. Kept for backward compatibility during rollout.
   cliType: claude
@@ -244,6 +269,7 @@ broker:
   #   "skuld.transports.sdk.SDKTransport"                       # Claude Code (default)
   #   "skuld.transports.codex.CodexSubprocessTransport"         # OpenAI Codex
   #   "skuld.transports.grok.GrokACPTransport"                  # xAI Grok Build (ACP / Scaldy)
+  #   "skuld.transports.muse.MuseMSPTransport"                  # Meta Muse Code (MSP / Scaldy)
   transportAdapter: "skuld.transports.sdk.SDKTransport"
   # -- CLI executable used by subprocess-based transports.
   cliBinary: "claude"
@@ -255,7 +281,7 @@ broker:
   # Codex approvalPolicy=never with danger-full-access)
   skipPermissions: true
   # -- Enable Claude Code experimental Agent Teams (Claude only)
-  agentTeams: false
+  agentTeams: true
 
 # Volundr API (for token usage reporting back to the control plane)
 volundr:

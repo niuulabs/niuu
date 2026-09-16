@@ -369,3 +369,20 @@ def test_archive_exclusions_require_explicit_relative_paths(setup, tmp_path, exc
             skuld_image="test-image",
             archive_excludes=[excluded],
         )
+
+
+def test_forge_controls_reach_vm_guest(setup):
+    runtime, session, spec, _, _ = setup
+    spec.values["session"]["reasoningEffort"] = "high"
+    spec.values["broker"] = {
+        "historyHydrationEnabled": False,
+        "codexReceiveMaxBytes": 123456,
+        "pi": {"binary": "/opt/pi"},
+    }
+    bootstrap = runtime.bootstrap(session, spec, MachineBootstrap())
+    payload = json.loads(next(f.content for f in bootstrap.files if f.path == module._LAUNCH))
+    env = payload["environment"]
+    assert env["SKULD__SESSION__REASONING_EFFORT"] == "high"
+    assert env["SKULD__HISTORY_HYDRATION_ENABLED"] == "false"
+    assert env["SKULD__CODEX_RECEIVE_MAX_BYTES"] == "123456"
+    assert json.loads(env["SKULD__PI"])["binary"] == "/opt/pi"

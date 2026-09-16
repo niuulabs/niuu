@@ -47,15 +47,13 @@ from tests.support.forge import BrokerHarness
 
 _NUL = chr(0)
 
-# Real-PG connection for the payoff tests. Defaults match the platform DB the
-# Forge stack uses locally (volundr/volundr/volundr); every field is env-
-# overridable so CI can point elsewhere. The schema is assumed already migrated
-# (the running platform owns session_event_log); we skip if it is not reachable.
+# Real-PG connection for the payoff tests. Defaults match the shared TEST database,
+# never the live platform. The database lane runs migrations before these tests.
 _DB_HOST = os.environ.get("TEST_DATABASE_HOST", "localhost")
 _DB_PORT = int(os.environ.get("TEST_DATABASE_PORT", "5432"))
-_DB_USER = os.environ.get("TEST_DATABASE_USER", "volundr")
-_DB_PASSWORD = os.environ.get("TEST_DATABASE_PASSWORD", "volundr")
-_DB_NAME = os.environ.get("TEST_DATABASE_NAME", "volundr")
+_DB_USER = os.environ.get("TEST_DATABASE_USER", "volundr_test")
+_DB_PASSWORD = os.environ.get("TEST_DATABASE_PASSWORD", "volundr_test")
+_DB_NAME = os.environ.get("TEST_DATABASE_NAME", "volundr_test")
 
 
 def _require_tmux() -> None:
@@ -136,6 +134,7 @@ def _payload_contains_nul(value: object) -> bool:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_nul_turn_lands_in_durable_log_and_rebuilds() -> None:
     """Producer side: a NUL-bearing turn reaches the durable log and rebuilds.
@@ -256,12 +255,14 @@ async def test_nul_entries_persist_to_real_pg_and_round_trip(txn_pool) -> None:
     # but every other byte — including non-ASCII Unicode — must survive.
     poisoned = next(e for e in round_tripped if e.seq == 2)
     flat = repr(poisoned.payload)
-    assert _NUL not in flat, "NUL survived into the persisted JSONB payload"
-    assert "crashdump[nul] tail" in poisoned.payload["message"]["content"][0]["text"]
+    assert not _payload_contains_nul(poisoned.payload), (
+        "NUL survived into the persisted JSONB payload"
+    )
+    assert "crashdump�[nul] tail" in poisoned.payload["message"]["content"][0]["text"]
     assert "café ✓ 日本語" in flat, "non-ASCII Unicode was corrupted by sanitization"
     # The NUL-bearing dict key persisted with the NUL stripped (not dropped).
-    assert any("metakey" == k for k in poisoned.payload), (
-        f"NUL-stripped dict key missing; keys={list(poisoned.payload)}"
+    assert any("meta�key" == k for k in poisoned.payload), (
+        f"NUL-replaced dict key missing; keys={list(poisoned.payload)}"
     )
 
 
