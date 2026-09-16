@@ -19,7 +19,10 @@ from niuu.domain.session_endpoint import public_session_endpoint
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.dispatch import resolve_volundr_factory
 from ting.domain.models import WorkflowDefinition, WorkflowScope
-from ting.domain.services.dispatch_service import _resolve_workflow_execution
+from ting.domain.services.dispatch_service import (
+    _resolve_workflow_execution,
+    select_adapter_by_tags,
+)
 from ting.domain.utils import _session_name, _slugify
 from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_mimir_from_snapshot
 from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrPort, VolundrSession
@@ -533,7 +536,7 @@ async def _resolve_target_adapter(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Volundr target not found: {normalized_connection_id}",
         )
-    return adapters[0]
+    return select_adapter_by_tags(adapters)
 
 
 def _build_workflow_initiative_context(

@@ -31,6 +31,7 @@ from ting.domain.models import (
     validate_transition,
 )
 from ting.domain.services.dispatch_service import DispatchService
+from ting.domain.services.session_target import find_session_target
 from ting.domain.services.session_transcript import attach_session_transcript
 from ting.domain.tracker_routing import select_tracker_for_run
 from ting.ports.event_bus import EventBusPort, TingEvent
@@ -413,7 +414,8 @@ class ReviewEngine:
             adapters = await self._volundr_factory.for_owner(owner_id)
             if not adapters:
                 return
-            await adapters[0].stop_session(session_id)
+            target = await find_session_target(adapters, session_id)
+            await target.stop_session(session_id)
             logger.info("Stopped %s %s", label, session_id)
         except Exception:
             logger.warning("Failed to stop %s %s", label, session_id, exc_info=True)
@@ -491,7 +493,8 @@ class ReviewEngine:
             )
             return
         try:
-            await adapters[0].send_message(
+            target = await find_session_target(adapters, run.session_id)
+            await target.send_message(
                 run.session_id,
                 f"Review failed: {reason}. Please fix and push again.",
             )

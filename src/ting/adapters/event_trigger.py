@@ -35,6 +35,7 @@ from ting.domain.models import (
     Saga,
     SagaStatus,
 )
+from ting.domain.services.dispatch_service import select_adapter_by_tags
 from ting.domain.templates import (
     BUNDLED_TEMPLATES_DIR,
     SagaTemplate,
@@ -395,8 +396,8 @@ class EventTriggerAdapter:
             )
             return
 
-        volundr = await self._volundr_factory.primary_for_owner(self._owner_id)
-        if volundr is None:
+        adapters = await self._volundr_factory.for_owner(self._owner_id)
+        if not adapters:
             logger.error(
                 "EventTriggerAdapter: no Volundr adapter for owner %s, cannot dispatch phase '%s'",
                 self._owner_id,
@@ -405,6 +406,12 @@ class EventTriggerAdapter:
             return
 
         for run, tpl_run in zip(runs, tpl_phase.runs):
+            volundr = select_adapter_by_tags(
+                adapters,
+                saga.target_tags,
+                saga.target_match,
+                connection_id=saga.instance_id if not saga.target_tags else None,
+            )
             await self._spawn_run(volundr, saga, phase, run, tpl_run)
 
     async def advance_phase(self, saga_id: str) -> None:

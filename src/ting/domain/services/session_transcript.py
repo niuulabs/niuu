@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 
+from ting.domain.services.session_target import find_session_target
 from ting.ports.tracker import TrackerPort
 from ting.ports.volundr import VolundrFactory
 
@@ -68,7 +69,8 @@ async def attach_session_transcript(
             )
             return
 
-        conversation = await adapters[0].get_conversation(session_id)
+        target = await find_session_target(adapters, session_id)
+        conversation = await target.get_conversation(session_id)
         turns = conversation.get("turns", [])
         title, body = _format_transcript(turns, title_prefix, run_name)
 

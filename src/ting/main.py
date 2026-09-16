@@ -66,6 +66,7 @@ from ting.api.research import create_research_router, resolve_workflow_campaign_
 from ting.api.runs import create_runs_router, resolve_git, resolve_run_repo
 from ting.api.runs import resolve_tracker as resolve_runs_tracker
 from ting.api.runs import resolve_volundr as resolve_runs_volundr
+from ting.api.runs import resolve_volundr_targets as resolve_runs_volundr_targets
 from ting.api.saga_previews import create_saga_previews_router
 from ting.api.sagas import create_sagas_router, resolve_llm, resolve_saga_repo
 from ting.api.sagas import resolve_git as sagas_resolve_git
@@ -700,6 +701,13 @@ def create_app(
 
             app.dependency_overrides[resolve_volundr] = _resolve_volundr_per_user
             app.dependency_overrides[resolve_runs_volundr] = _resolve_volundr_per_user
+
+            async def _resolve_run_targets(
+                principal: Principal = Depends(extract_principal),
+            ) -> list[VolundrPort]:
+                return await app.state.volundr_factory.for_principal(principal)
+
+            app.dependency_overrides[resolve_runs_volundr_targets] = _resolve_run_targets
             app.dependency_overrides[sagas_resolve_volundr] = _resolve_volundr_per_user
 
             async def _resolve_factory() -> VolundrAdapterFactory:
