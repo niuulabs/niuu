@@ -128,6 +128,27 @@ It never reports the unchanged rejected token as successfully refreshed. Revoked
 provider grants require reconnecting; vault outages return a service-unavailable
 response instead of asking the user to replace valid credentials.
 
+### Docker mini-mode Codex compatibility
+
+Docker mini mode explicitly selects `MiniModeCodexCredentialBroker` for its
+file-backed credentials. It refreshes the authenticated user's grant on request,
+under a database advisory lock; it does not scan users. It refuses to start outside
+mini mode and refuses grants managed by OpenBao. Host-native mini mode continues
+to use the runtime's local login.
+
+The scanning flag above does not disable this on-demand path. To disable it, set:
+
+```yaml
+codex_credential_broker:
+  adapter: volundr.adapters.outbound.codex_credential_broker.DisabledCodexCredentialBroker
+  kwargs: {}
+```
+
+Restart the mini-mode host after changing the adapter. Brokered Codex sessions
+then require configuring the OpenBao path; disabling a broker does not revoke the
+provider grant or disable a runtime's separate host login. Production deployments
+select `OpenBaoCodexCredentialBroker` and do not construct the mini-mode lock.
+
 ## Before promoting output
 
 Inspect the diff and run the project's checks. A generated instruction or tool
