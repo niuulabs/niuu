@@ -112,3 +112,35 @@ def test_urls_reject_embedded_credentials_and_insecure_transport(url):
 
     with pytest.raises(ValueError):
         validate_mcp_url(url)
+
+
+async def test_shared_ip_does_not_reuse_another_hosts_tls_connection():
+    import httpcore
+
+    tls_hosts = []
+    response = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+
+    class CertificateCheckedStream(httpcore.AsyncMockStream):
+        async def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+            tls_hosts.append(server_hostname)
+            # Model an endpoint whose certificate covers only the first host.
+            if server_hostname != "first.example":
+                raise httpcore.ConnectError("certificate hostname mismatch")
+            return self
+
+    class SharedIPBackend(httpcore.AsyncMockBackend):
+        async def connect_tcp(self, host, port, **kwargs):
+            assert host == "1.1.1.1"
+            return CertificateCheckedStream([response, response])
+
+    transport = PublicEndpointTransport()
+    transport._transport._pool._network_backend = SharedIPBackend([])
+    async with httpx.AsyncClient(transport=transport) as client:
+        with patch("asyncio.get_running_loop") as loop:
+            loop.return_value.getaddrinfo = AsyncMock(
+                return_value=[(0, 0, 0, "", ("1.1.1.1", 443))]
+            )
+            assert (await client.get("https://first.example/metadata")).status_code == 200
+            with pytest.raises(httpx.ConnectError, match="certificate hostname mismatch"):
+                await client.get("https://second.example/metadata")
+    assert tls_hosts == ["first.example", "second.example"]
