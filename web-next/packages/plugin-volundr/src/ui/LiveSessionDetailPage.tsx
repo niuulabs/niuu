@@ -10,6 +10,7 @@ import {
   ErrorState,
   LoadingState,
   SessionChat,
+  ChatConnectionsButton,
   type FileEntry,
   type MeshNotificationEvent,
   cn,
@@ -4036,6 +4037,7 @@ function LiveSessionDetailPageInner({
             )}
           </div>
           <div className="niuu-live-session__toolbar">
+            {!readOnly && !isReady && <ChatConnectionsButton />}
             <SessionToolbarButton
               icon={showInternalMessages ? Eye : EyeOff}
               title={

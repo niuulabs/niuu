@@ -131,6 +131,11 @@ def _validate_required_fields(schema: dict[str, Any], values: dict[str, Any]) ->
 class IntegrationUpdateRequest(BaseModel):
     """Request model for updating an integration connection."""
 
+    credential: dict[str, str] | None = Field(
+        default=None,
+        description="Replacement static credential for this account",
+    )
+
     model_config = ConfigDict(populate_by_name=True)
 
     credential_name: str | None = Field(
@@ -994,6 +999,49 @@ def _build_integrations_router(
             or (data.config is not None and data.config != existing.config)
         ):
             raise HTTPException(422, "Reconnect the MCP server to change its authentication")
+        if data.credential is not None:
+            definition = registry.get_definition(existing.slug) if registry else None
+            if (
+                existing.owner_id != principal.user_id
+                or existing.slug == "mcp"
+                or definition is None
+                or not definition.credential_schema.get("properties")
+            ):
+                raise HTTPException(422, "Reconnect this account through its provider sign-in flow")
+            if data.credential_name is not None:
+                raise HTTPException(422, "Cannot rename a credential while replacing it")
+            if credential_store is None:
+                raise HTTPException(503, "Credential storage is not available")
+            current_credential = await credential_store.get(
+                "user", existing.owner_id, existing.credential_name
+            )
+            if (
+                current_credential
+                and current_credential.metadata.get("renewal_owner") == OAUTH_ENGINE
+            ):
+                raise HTTPException(422, "Reconnect this OAuth account through provider sign-in")
+            errors = _validate_required_fields(definition.credential_schema, data.credential)
+            errors += _validate_required_fields(
+                definition.config_schema,
+                data.config if data.config is not None else existing.config,
+            )
+            if not data.credential or errors:
+                raise HTTPException(422, errors or "Credential data is required")
+            await credential_store.store(
+                owner_type="user",
+                owner_id=existing.owner_id,
+                name=existing.credential_name,
+                secret_type=_secret_type_for_definition(definition),
+                data=data.credential,
+                metadata={
+                    "source": "integration",
+                    "integration": definition.slug,
+                    "integration_type": str(definition.integration_type),
+                    "auth_type": definition.auth_type,
+                    "auth_state": "active",
+                    "tenant_id": principal.tenant_id,
+                },
+            )
         now = datetime.now(UTC)
         updated = IntegrationConnection(
             id=existing.id,

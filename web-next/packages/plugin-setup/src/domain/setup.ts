@@ -672,6 +672,7 @@ export interface IntegrationTestResult {
 }
 
 export interface ConnectIntegrationInput {
+  connectionId?: string;
   slug: string;
   credentialName: string;
   credential: Record<string, string>;

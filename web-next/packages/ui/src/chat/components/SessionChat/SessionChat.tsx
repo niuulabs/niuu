@@ -64,6 +64,7 @@ import {
   type ConversationView,
 } from '../../compactUxPrefs';
 import './SessionChat.css';
+import { ChatConnectionsButton } from '../../../ChatConnections';
 
 const SCROLL_THRESHOLD = 150;
 const SCROLL_LOCK_MS = 500;
@@ -992,6 +993,7 @@ export function SessionChat({
 
   const displayControls = (
     <>
+      <ChatConnectionsButton />
       <button
         type="button"
         className={cn(

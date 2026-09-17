@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import replace
@@ -365,6 +366,7 @@ def _build_oauth_router(
             "justify-content:center;height:100vh;margin:0;"
             "background:#09090b;color:#fafafa;"
         )
+        completion_key = json.dumps(f"{slug}:{credential_name}").replace("<", "\\u003c")
         html = (
             "<!DOCTYPE html>"
             "<html><head><title>Connected</title></head>"
@@ -372,7 +374,10 @@ def _build_oauth_router(
             '<div style="text-align:center;">'
             f"<h2>Connected to {defn.name}</h2>"
             "<p>This window will close automatically.</p>"
-            "<script>setTimeout(function(){window.close()},2000)"
+            "<script>try {"
+            f"localStorage.setItem('niuu:provider-connected', {completion_key});"
+            "localStorage.removeItem('niuu:provider-connected');"
+            "} catch (_) {} setTimeout(function(){window.close()},2000)"
             "</script></div></body></html>"
         )
         response = HTMLResponse(content=html)

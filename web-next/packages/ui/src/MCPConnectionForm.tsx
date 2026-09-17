@@ -24,15 +24,18 @@ export function MCPConnectionForm({
   connect,
   onConnected,
   connections,
+  initialConnectionId = '',
 }: {
+  initialConnectionId?: string;
   discover: (serverUrl: string) => Promise<MCPDiscovery>;
   connect: (input: MCPConnectionInput) => Promise<{ url?: string; connection_id?: string }>;
   onConnected: () => void;
   connections: { id: string; config: Record<string, unknown> }[];
 }) {
-  const [connectionId, setConnectionId] = useState('');
-  const [serverUrl, setServerUrl] = useState('');
-  const [name, setName] = useState('');
+  const initial = connections.find((item) => item.id === initialConnectionId);
+  const [connectionId, setConnectionId] = useState(initialConnectionId);
+  const [serverUrl, setServerUrl] = useState(String(initial?.config.mcp_url ?? ''));
+  const [name, setName] = useState(String(initial?.config.name ?? ''));
   const [mode, setMode] = useState('oauth');
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');

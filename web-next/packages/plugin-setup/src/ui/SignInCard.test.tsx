@@ -194,3 +194,47 @@ describe('SignInCard', () => {
     expect(screen.getByTestId('setup-signin-start-codex')).not.toBeDisabled();
   });
 });
+
+it('completes OAuth reconnection for an account that already exists', async () => {
+  const service = createMockSetupService({ latencyMs: 0 });
+  const jira = MOCK_CATALOG.find((entry) => entry.slug === 'jira')!;
+  const popup = { location: { href: '' }, close: vi.fn() };
+  vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window);
+  const authorize = vi
+    .spyOn(service, 'startOAuthAuthorization')
+    .mockResolvedValue({ url: 'https://provider.example/authorize' });
+  renderWithSetup(
+    <SignInCard
+      entry={jira}
+      reconnect
+      connection={{
+        id: 'jira-work',
+        slug: 'jira',
+        integrationType: 'issue_tracker',
+        credentialName: 'jira-work',
+        enabled: true,
+        config: { site_url: 'https://work.atlassian.net' },
+        credentialStatus: 'active',
+      }}
+      credentialName="jira-work"
+      oauthApp="work"
+    />,
+    { service },
+  );
+  fireEvent.click(screen.getByTestId('setup-signin-start-jira'));
+  await waitFor(() =>
+    expect(authorize).toHaveBeenCalledWith('jira', 'jira-work', 'work', expect.any(Object)),
+  );
+  await waitFor(() => expect(popup.location.href).toBe('https://provider.example/authorize'));
+  fireEvent(
+    window,
+    new StorageEvent('storage', { key: 'niuu:provider-connected', newValue: 'other:jira-work' }),
+  );
+  expect(screen.getByText('Waiting for approval…')).toBeInTheDocument();
+  fireEvent(
+    window,
+    new StorageEvent('storage', { key: 'niuu:provider-connected', newValue: 'jira:jira-work' }),
+  );
+  expect(await screen.findByText(/Signed in · credential jira-work/)).toBeInTheDocument();
+  vi.restoreAllMocks();
+});

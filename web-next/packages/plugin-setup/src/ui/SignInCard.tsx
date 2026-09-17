@@ -35,6 +35,7 @@ export interface SignInCardProps {
   credentialName?: string;
   /** Hold the start button, e.g. while the account name clashes with an existing one. */
   disabled?: boolean;
+  reconnect?: boolean;
   /** Which of the provider's OAuth applications this account signs in through. */
   oauthApp?: string;
   testResult?: IntegrationTestResult;
@@ -68,12 +69,21 @@ function OAuthAuthorizationCard({
   headless = false,
   credentialName: requestedName,
   disabled = false,
+  reconnect = false,
   oauthApp = '',
   testResult,
   testing = false,
   onTest,
 }: SignInCardProps) {
-  const [config, setConfig] = useState<Record<string, string>>({});
+  const [config, setConfig] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      Object.entries(connection?.config ?? {}).map(([key, value]) => [
+        key,
+        Array.isArray(value) ? value.join(', ') : String(value),
+      ]),
+    ),
+  );
+  const [completed, setCompleted] = useState(false);
   const [touched, setTouched] = useState(false);
   const [waiting, setWaiting] = useState(false);
   const authorize = useStartOAuthAuthorization();
@@ -81,12 +91,26 @@ function OAuthAuthorizationCard({
   const missingConfig = missingConfigKeys(entry, config);
 
   useEffect(() => {
-    if (!waiting || connection) return;
+    if (!waiting || completed) return;
     const interval = window.setInterval(() => {
       void queryClient.invalidateQueries({ queryKey: setupKeys.integrations });
     }, ENROLLMENT_POLL_MS);
-    return () => window.clearInterval(interval);
-  }, [connection, queryClient, waiting]);
+    const notified = (event: StorageEvent) => {
+      if (
+        event.key !== 'niuu:provider-connected' ||
+        event.newValue !== `${entry.slug}:${requestedName ?? connection?.credentialName}`
+      )
+        return;
+      setCompleted(true);
+      setWaiting(false);
+      void queryClient.invalidateQueries({ queryKey: setupKeys.integrations });
+    };
+    window.addEventListener('storage', notified);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('storage', notified);
+    };
+  }, [connection, requestedName, entry.slug, queryClient, waiting, completed]);
 
   const begin = () => {
     setTouched(true);
@@ -115,7 +139,8 @@ function OAuthAuthorizationCard({
     );
   };
 
-  const connected = connection !== undefined && !connectionNeedsSignIn(connection);
+  const connected =
+    completed || (!reconnect && connection !== undefined && !connectionNeedsSignIn(connection));
   const Wrapper = headless ? 'div' : 'section';
   return (
     <Wrapper
@@ -149,9 +174,10 @@ function OAuthAuthorizationCard({
         {connected ? (
           <>
             <span className="setup-note">
-              <CheckIcon size={13} /> Signed in · credential {connection.credentialName}
+              <CheckIcon size={13} /> Signed in · credential{' '}
+              {connection?.credentialName ?? requestedName}
             </span>
-            {onTest ? (
+            {onTest && connection ? (
               <button
                 type="button"
                 className="setup-btn"
@@ -198,6 +224,7 @@ function EnrollmentSignInCard({
   headless = false,
   credentialName: requestedName,
   disabled = false,
+  reconnect = false,
   oauthApp,
   testResult,
   testing = false,
@@ -234,7 +261,7 @@ function EnrollmentSignInCard({
     submit.mutate({ enrollmentId: enrollment.id, code: code.trim() });
   };
 
-  const signedIn = connection !== undefined && !connectionNeedsSignIn(connection);
+  const signedIn = !reconnect && connection !== undefined && !connectionNeedsSignIn(connection);
   const connectedNow = signedIn || enrollment?.state === 'complete';
 
   const Wrapper = headless ? 'div' : 'section';

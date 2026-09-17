@@ -50,3 +50,5 @@ export { randomId } from './utils/randomId';
 export * from './chat';
 
 export * from './MCPConnectionForm';
+
+export { ChatConnectionsContext, ChatConnectionsButton } from './ChatConnections';

@@ -198,6 +198,17 @@ export function buildSetupHttpAdapter(clients: SetupHttpClients): ISetupService 
       return rows.map(mapIntegration);
     },
     async connectIntegration(input: ConnectIntegrationInput): Promise<IntegrationConnection> {
+      if (input.connectionId) {
+        return mapIntegration(
+          await clients.integrations.put<IntegrationWire>(
+            `/${encodeURIComponent(input.connectionId)}`,
+            {
+              credential: input.credential,
+              config: input.config,
+            },
+          ),
+        );
+      }
       const row = await clients.integrations.post<IntegrationWire>('', {
         slug: input.slug,
         config: input.config,

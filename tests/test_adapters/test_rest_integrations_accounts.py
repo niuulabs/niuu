@@ -126,3 +126,38 @@ def test_credential_identity_comes_from_authenticated_context(tmp_path):
     assert stored.metadata["tenant_id"] == "t"
     assert stored.metadata["integration"] == "github"
     assert stored.metadata["oauth_app"] == "default"
+
+
+def test_replace_static_credential_keeps_connection_and_other_accounts(tmp_path):
+    import asyncio
+
+    client, store = _client(tmp_path)
+    connection = _connect(client, "github-work", "old-work").json()
+    _connect(client, "github-personal", "personal")
+    response = client.put(
+        f"/api/v1/integrations/{connection['id']}",
+        json={"credential": {"token": "new-work"}},
+    )
+    assert response.status_code == 200
+    assert response.json()["id"] == connection["id"]
+    assert "new-work" not in response.text
+    assert len(client.get("/api/v1/integrations").json()) == 2
+    assert asyncio.run(store.get_value("user", "owner-1", "github-work"))["token"] == "new-work"
+    assert asyncio.run(store.get_value("user", "owner-1", "github-personal"))["token"] == "personal"
+
+
+def test_replace_credential_validates_and_enforces_owner(tmp_path):
+    import asyncio
+
+    client, store = _client(tmp_path)
+    connection = _connect(client, "github-work", "old-work").json()
+    endpoint = f"/api/v1/integrations/{connection['id']}"
+    assert client.put(endpoint, json={"credential": {"token": ""}}).status_code == 422
+    assert (
+        client.put(endpoint, json={"credential": {}, "credential_name": "other"}).status_code == 422
+    )
+    client.app.dependency_overrides[extract_principal] = lambda: Principal(
+        user_id="other", tenant_id="t", email="other@example.test", roles=["volundr:developer"]
+    )
+    assert client.put(endpoint, json={"credential": {"token": "stolen"}}).status_code == 404
+    assert asyncio.run(store.get_value("user", "owner-1", "github-work"))["token"] == "old-work"

@@ -208,6 +208,9 @@ class TestCallback:
 
         assert cb_resp.status_code == 200
         assert "Connected to Linear" in cb_resp.text
+        assert "niuu:provider-connected" in cb_resp.text
+        assert "linear:linear-oauth-token" in cb_resp.text
+        assert "oauth-tok-123" not in cb_resp.text
         credential_store.store.assert_called_once()
         store_kwargs = credential_store.store.call_args
         assert store_kwargs[1]["name"] == "linear-oauth-token"

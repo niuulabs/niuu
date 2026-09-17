@@ -30,6 +30,7 @@ export interface IntegrationCardProps {
   credentialName?: string;
   /** Hold the connect button, e.g. while the account name clashes with an existing one. */
   disabled?: boolean;
+  initialConfig?: Record<string, unknown>;
 }
 
 function inputType(type: string): string {
@@ -51,9 +52,17 @@ export function IntegrationCard({
   headless = false,
   credentialName,
   disabled = false,
+  initialConfig = {},
 }: IntegrationCardProps) {
   const [credential, setCredential] = useState<Record<string, string>>({});
-  const [config, setConfig] = useState<Record<string, string>>({});
+  const [config, setConfig] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      Object.entries(initialConfig).map(([key, value]) => [
+        key,
+        Array.isArray(value) ? value.join(', ') : String(value),
+      ]),
+    ),
+  );
   const [touched, setTouched] = useState(false);
   const connectable = isConnectableFromWizard(entry);
   const missing = missingCredentialKeys(entry, credential);

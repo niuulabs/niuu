@@ -48,3 +48,5 @@ export type {
   SystemReport,
 } from './domain/setup';
 export { providerGroupsForType } from './domain/setup';
+
+export { ConnectionRecoveryProvider } from './ui/ConnectionRecoveryProvider';
