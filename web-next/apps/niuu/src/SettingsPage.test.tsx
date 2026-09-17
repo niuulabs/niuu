@@ -462,6 +462,55 @@ describe('SettingsPage', () => {
     expect(screen.getByDisplayValue('telegram-credential')).toBeTruthy();
   });
 
+  it.each(['Linear-mcp', ''])('shows the MCP connection name or endpoint: %s', async (name) => {
+    routerMocks.params = { providerId: 'integrations', sectionId: 'connections' };
+    const defaultGet = apiMocks.get.getMockImplementation()!;
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/settings') {
+        return {
+          title: 'Integrations',
+          scope: 'user',
+          sections: [
+            {
+              id: 'connections',
+              label: 'Connections',
+              fields: [],
+              resources: [
+                {
+                  id: 'integration_connections',
+                  type: 'integrations',
+                  label: 'Integration connections',
+                  listPath: '/api/v1/integrations',
+                  catalogPath: '/api/v1/integrations/catalog',
+                  credentialListPath: '/api/v1/credentials/user',
+                },
+              ],
+            },
+          ],
+        };
+      }
+      if (path === '/api/v1/integrations') {
+        return [
+          {
+            id: 'linear-mcp',
+            slug: 'mcp',
+            integration_type: 'mcp',
+            credential_name: 'mcp-internal-credential-id',
+            enabled: true,
+            config: { name, mcp_url: 'https://mcp.linear.app/mcp/readonly' },
+          },
+        ];
+      }
+      return defaultGet(path);
+    });
+    wrap(<SettingsPage />);
+    expect(
+      await screen.findByText(name || 'https://mcp.linear.app/mcp/readonly', { exact: true }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/mcp · https:\/\/mcp.linear.app\/mcp\/readonly/)).toBeInTheDocument();
+    expect(screen.queryByText(/mcp-internal-credential-id/)).not.toBeInTheDocument();
+  });
+
   it('supports reusing an existing stored credential for non-oauth integrations', async () => {
     routerMocks.params = { providerId: 'integrations', sectionId: 'connections' };
     apiMocks.get.mockImplementation(async (path: string) => {

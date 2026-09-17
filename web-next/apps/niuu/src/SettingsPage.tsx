@@ -1913,11 +1913,16 @@ function IntegrationsResourceCard({
             <div key={integration.id} className="settings-resource__row">
               <div className="settings-resource__row-main">
                 <div className="settings-resource__row-title">
-                  {(integration.slug ?? integration.integrationType).replace(/_/g, ' ')}
+                  {integration.integrationType === 'mcp'
+                    ? String(integration.config.name || integration.config.mcp_url || 'MCP server')
+                    : (integration.slug ?? integration.integrationType).replace(/_/g, ' ')}
                 </div>
                 <div className="settings-resource__row-meta">
                   {formatIntegrationType(integration.integrationType)} ·{' '}
-                  {integration.credentialName} · {integration.enabled ? 'enabled' : 'disabled'} ·{' '}
+                  {integration.integrationType === 'mcp'
+                    ? String(integration.config.mcp_url ?? '')
+                    : integration.credentialName}{' '}
+                  · {integration.enabled ? 'enabled' : 'disabled'} ·{' '}
                   {integration.credentialStatus.replace(/_/g, ' ')}
                 </div>
                 {lastTestStatus[integration.id] ? (
