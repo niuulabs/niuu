@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
-interface Discovery {
+export interface MCPDiscovery {
   issuer: string;
   resource: string;
   scope: string;
@@ -25,7 +25,7 @@ export function MCPConnectionForm({
   onConnected,
   connections,
 }: {
-  discover: (serverUrl: string) => Promise<Discovery>;
+  discover: (serverUrl: string) => Promise<MCPDiscovery>;
   connect: (input: MCPConnectionInput) => Promise<{ url?: string; connection_id?: string }>;
   onConnected: () => void;
   connections: { id: string; config: Record<string, unknown> }[];
@@ -40,11 +40,29 @@ export function MCPConnectionForm({
   const [token, setToken] = useState('');
   const [header, setHeader] = useState('Authorization');
   const [prefix, setPrefix] = useState('Bearer ');
-  const [metadata, setMetadata] = useState<Discovery | null>(null);
+  const [metadata, setMetadata] = useState<MCPDiscovery | null>(null);
   const [authorizationUrl, setAuthorizationUrl] = useState('');
+  const [pendingId, setPendingId] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [connected, setConnected] = useState(false);
+
+  useEffect(() => {
+    if (!authorizationUrl) return;
+    const refresh = () => onConnected();
+    const completed = (event: StorageEvent) => {
+      if (event.key !== 'niuu:mcp-connected' || event.newValue !== pendingId) return;
+      setConnected(true);
+      setAuthorizationUrl('');
+      onConnected();
+    };
+    window.addEventListener('focus', refresh);
+    window.addEventListener('storage', completed);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('storage', completed);
+    };
+  }, [authorizationUrl, pendingId, onConnected]);
 
   async function submit() {
     setError('');
@@ -65,6 +83,7 @@ export function MCPConnectionForm({
       setToken('');
       setClientSecret('');
       if (result.url) {
+        setPendingId(result.connection_id ?? connectionId);
         setAuthorizationUrl(result.url);
         return;
       }
@@ -79,17 +98,17 @@ export function MCPConnectionForm({
 
   return (
     <form
-      className="settings-resource__composer settings-resource__composer--stacked"
+      className="niuu:flex niuu:flex-col niuu:gap-4"
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
       }}
     >
-      <h3 className="settings-resource__title">Connect an MCP server</h3>
-      <label className="settings-field">
+      <h3 className="niuu:font-semibold">Connect an MCP server</h3>
+      <label className="niuu:flex niuu:flex-col niuu:gap-1">
         Connection
         <select
-          className="settings-field__control"
+          className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-2 niuu:text-text-primary"
           value={connectionId}
           onChange={(event) => {
             const selected = connections.find((item) => item.id === event.target.value);
@@ -109,10 +128,10 @@ export function MCPConnectionForm({
           ))}
         </select>
       </label>
-      <label className="settings-field">
+      <label className="niuu:flex niuu:flex-col niuu:gap-1">
         Server URL
         <input
-          className="settings-field__control"
+          className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-2 niuu:text-text-primary"
           type="url"
           required
           value={serverUrl}
@@ -131,18 +150,18 @@ export function MCPConnectionForm({
         <option value="https://gitlab.com/api/v4/mcp">GitLab MCP</option>
         <option value="https://mcp.linear.app/mcp">Linear MCP</option>
       </datalist>
-      <label className="settings-field">
+      <label className="niuu:flex niuu:flex-col niuu:gap-1">
         Name
         <input
-          className="settings-field__control"
+          className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-2 niuu:text-text-primary"
           value={name}
           onChange={(event) => setName(event.target.value)}
         />
       </label>
-      <label className="settings-field">
+      <label className="niuu:flex niuu:flex-col niuu:gap-1">
         Authentication
         <select
-          className="settings-field__control"
+          className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-2 niuu:text-text-primary"
           value={mode}
           onChange={(event) => {
             setMode(event.target.value);
@@ -161,19 +180,19 @@ export function MCPConnectionForm({
           </p>
           <details open={!metadata.registration_available}>
             <summary>Registered OAuth application</summary>
-            <label className="settings-field">
+            <label className="niuu:flex niuu:flex-col niuu:gap-1">
               Client ID
               <input
-                className="settings-field__control"
+                className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-2 niuu:text-text-primary"
                 value={clientId}
                 required={!metadata.registration_available}
                 onChange={(event) => setClientId(event.target.value)}
               />
             </label>
-            <label className="settings-field">
+            <label className="niuu:flex niuu:flex-col niuu:gap-1">
               Client authentication
               <select
-                className="settings-field__control"
+                className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-2 niuu:text-text-primary"
                 value={method}
                 onChange={(event) => setMethod(event.target.value)}
               >
@@ -183,10 +202,10 @@ export function MCPConnectionForm({
               </select>
             </label>
             {method !== 'none' ? (
-              <label className="settings-field">
+              <label className="niuu:flex niuu:flex-col niuu:gap-1">
                 Client secret
                 <input
-                  className="settings-field__control"
+                  className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-2 niuu:text-text-primary"
                   type="password"
                   autoComplete="off"
                   value={clientSecret}
@@ -199,10 +218,10 @@ export function MCPConnectionForm({
       ) : null}
       {mode === 'token' ? (
         <>
-          <label className="settings-field">
+          <label className="niuu:flex niuu:flex-col niuu:gap-1">
             API token
             <input
-              className="settings-field__control"
+              className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-2 niuu:text-text-primary"
               type="password"
               autoComplete="off"
               required
@@ -212,18 +231,18 @@ export function MCPConnectionForm({
           </label>
           <details>
             <summary>Authentication header</summary>
-            <label className="settings-field">
+            <label className="niuu:flex niuu:flex-col niuu:gap-1">
               Header name
               <input
-                className="settings-field__control"
+                className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-2 niuu:text-text-primary"
                 value={header}
                 onChange={(event) => setHeader(event.target.value)}
               />
             </label>
-            <label className="settings-field">
+            <label className="niuu:flex niuu:flex-col niuu:gap-1">
               Token prefix
               <input
-                className="settings-field__control"
+                className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:p-2 niuu:text-text-primary"
                 value={prefix}
                 onChange={(event) => setPrefix(event.target.value)}
               />
@@ -233,15 +252,24 @@ export function MCPConnectionForm({
       ) : null}
       {authorizationUrl ? (
         <div>
+          <p role="status">Finish signing in in the new tab. This page updates when you return.</p>
           <a href={authorizationUrl} target="_blank" rel="noopener noreferrer">
             Continue to sign in
           </a>
-          <button className="settings-resource__row-action" type="button" onClick={onConnected}>
+          <button
+            className="niuu:rounded-md niuu:border niuu:border-border niuu:px-3 niuu:py-2 niuu:text-text-primary niuu:disabled:opacity-50"
+            type="button"
+            onClick={onConnected}
+          >
             Refresh connections after signing in
           </button>
         </div>
       ) : (
-        <button className="settings-resource__row-action" disabled={busy} type="submit">
+        <button
+          className="niuu:rounded-md niuu:border niuu:border-border niuu:px-3 niuu:py-2 niuu:text-text-primary niuu:disabled:opacity-50"
+          disabled={busy}
+          type="submit"
+        >
           {busy
             ? 'Connecting…'
             : mode === 'oauth' && !metadata

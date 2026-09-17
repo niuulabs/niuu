@@ -20,6 +20,7 @@ KNOWN_SETUP_STEPS: tuple[str, ...] = (
     "providers",
     "git",
     "tracker",
+    "mcp",
     "runtime",
     "launch",
 )

@@ -130,3 +130,32 @@ test('MCP API tokens use the same connection flow', async ({ page }) => {
   await expect(page.getByRole('status').filter({ hasText: 'MCP server connected' })).toBeVisible();
   await expect(page.getByLabel('API token', { exact: true })).toHaveValue('');
 });
+
+test('onboarding offers MCP setup, loading feedback, errors and keyboard access', async ({
+  page,
+}) => {
+  await mockMCPSettings(page);
+  await page.goto('/setup?step=mcp&config=/config.live.json');
+  await expect(
+    page.getByRole('heading', { name: 'Connect MCP servers', exact: true }),
+  ).toBeVisible();
+  await page.getByLabel('Server URL', { exact: true }).fill('https://tools.example/mcp');
+  await page.getByLabel('Server URL', { exact: true }).press('Tab');
+  await expect(page.getByLabel('Name', { exact: true })).toBeFocused();
+  await page.route('**/api/v1/integrations/oauth/mcp/discover', (route) =>
+    route.fulfill({ status: 422, json: { detail: 'Unavailable' } }),
+  );
+  await page.getByRole('button', { name: 'Discover authentication' }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'Could not connect' })).toBeVisible();
+  await page.getByLabel('Authentication', { exact: true }).selectOption('token');
+  await page.getByLabel('API token', { exact: true }).fill('test-token');
+  await page.route('**/api/v1/integrations/oauth/mcp/connect', (route) =>
+    route.fulfill({ json: { connection_id: 'linear' } }),
+  );
+  await page.getByRole('button', { name: 'Connect MCP server' }).click();
+  await expect(page.getByText('MCP server connected', { exact: true })).toBeVisible();
+  await page.getByTestId('setup-continue').click();
+  await expect(
+    page.getByRole('heading', { name: 'Runtime and access', exact: true }),
+  ).toBeVisible();
+});

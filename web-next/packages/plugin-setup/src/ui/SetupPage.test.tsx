@@ -23,7 +23,7 @@ describe('initialStep', () => {
     expect(initialStep(stateWith(['welcome', 'system']))).toBe('model');
     expect(
       initialStep(stateWith(['welcome', 'system', 'model', 'providers', 'git', 'tracker'])),
-    ).toBe('runtime');
+    ).toBe('mcp');
     expect(
       initialStep(
         stateWith([
@@ -33,6 +33,7 @@ describe('initialStep', () => {
           'providers',
           'git',
           'tracker',
+          'mcp',
           'runtime',
           'launch',
         ]),
@@ -84,6 +85,9 @@ describe('SetupPage', () => {
     await waitFor(() => expect(screen.getByTestId('setup-step-tracker')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('setup-continue'));
 
+    await waitFor(() => expect(screen.getByTestId('setup-step-mcp')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('setup-continue'));
+
     await waitFor(() => expect(screen.getByTestId('setup-runtime')).toBeInTheDocument());
     await waitFor(() => expect(screen.getByTestId('setup-access-lan')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('setup-continue'));
@@ -132,6 +136,7 @@ describe('SetupPage', () => {
         'providers',
         'git',
         'tracker',
+        'mcp',
         'runtime',
       ]),
     });
@@ -180,7 +185,16 @@ describe('SetupPage', () => {
     const service = createMockSetupService({
       latencyMs: 0,
       initialState: {
-        ...stateWith(['welcome', 'system', 'model', 'providers', 'git', 'tracker', 'runtime']),
+        ...stateWith([
+          'welcome',
+          'system',
+          'model',
+          'providers',
+          'git',
+          'tracker',
+          'mcp',
+          'runtime',
+        ]),
         completed: true,
       },
     });
@@ -208,6 +222,7 @@ describe('SetupPage', () => {
         'providers',
         'git',
         'tracker',
+        'mcp',
         'runtime',
       ]),
     });
@@ -231,6 +246,7 @@ describe('SetupPage apply flow', () => {
         'providers',
         'git',
         'tracker',
+        'mcp',
         'runtime',
       ]),
     });
@@ -261,6 +277,7 @@ describe('SetupPage apply flow', () => {
         'providers',
         'git',
         'tracker',
+        'mcp',
         'runtime',
       ]),
     });

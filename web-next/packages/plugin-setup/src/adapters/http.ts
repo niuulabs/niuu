@@ -171,6 +171,12 @@ export function mapTestResult(result: IntegrationTestWire): IntegrationTestResul
 
 export function buildSetupHttpAdapter(clients: SetupHttpClients): ISetupService {
   return {
+    discoverMCP(serverUrl) {
+      return clients.integrations.post('/oauth/mcp/discover', { server_url: serverUrl });
+    },
+    connectMCP(input) {
+      return clients.integrations.post('/oauth/mcp/connect', input);
+    },
     getState(): Promise<SetupState> {
       return clients.setup.get<SetupState>('');
     },

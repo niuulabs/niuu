@@ -148,6 +148,13 @@ describe('LaunchWizard helpers', () => {
       adapter: 'github',
       status: 'connected',
     };
+    const mcp = {
+      ...integration,
+      slug: 'mcp',
+      config: { name: 'Linear', mcp_url: 'https://mcp.linear.app/mcp' },
+    };
+    expect(formatIntegrationLabel(mcp)).toBe('Linear');
+    expect(formatIntegrationMeta(mcp)).toBe('https://mcp.linear.app/mcp');
     expect(formatIntegrationLabel(integration)).toBe('Github App · prod-github');
     expect(formatIntegrationMeta(integration)).toBe('source control · prod-github');
     expect(formatIntegrationMeta({ ...integration, credentialName: null })).toBe('source control');

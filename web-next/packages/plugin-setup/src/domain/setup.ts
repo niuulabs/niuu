@@ -725,7 +725,7 @@ export function enrollmentFailureMessage(enrollment: Enrollment): string {
 
 /** Wizard screens in presentation order. Only screens with a live backend appear. */
 export type WizardStepId =
-  'welcome' | 'system' | 'model' | 'providers' | 'git' | 'tracker' | 'runtime' | 'finish';
+  'welcome' | 'system' | 'model' | 'providers' | 'git' | 'tracker' | 'mcp' | 'runtime' | 'finish';
 
 export interface WizardStep {
   id: WizardStepId;
@@ -741,6 +741,7 @@ export const WIZARD_STEPS: readonly WizardStep[] = [
   { id: 'providers', label: 'AI providers', integrationType: 'ai_provider' },
   { id: 'git', label: 'Git', integrationType: 'source_control' },
   { id: 'tracker', label: 'Tickets', integrationType: 'issue_tracker' },
+  { id: 'mcp', label: 'MCP servers' },
   { id: 'runtime', label: 'Runtime & access' },
   { id: 'finish', label: 'Finish' },
 ];

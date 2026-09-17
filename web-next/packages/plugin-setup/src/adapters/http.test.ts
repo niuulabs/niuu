@@ -152,6 +152,32 @@ describe('buildSetupHttpAdapter', () => {
     expect(c.integrations.get).toHaveBeenNthCalledWith(2, '');
   });
 
+  it('uses the existing MCP discovery and connection endpoints', async () => {
+    const c = clients();
+    const adapter = buildSetupHttpAdapter(c);
+    c.integrations.post
+      .mockResolvedValueOnce({ issuer: 'https://auth.example' })
+      .mockResolvedValueOnce({ connection_id: 'linear' });
+    expect(await adapter.discoverMCP('https://mcp.linear.app/mcp')).toEqual({
+      issuer: 'https://auth.example',
+    });
+    expect(
+      await adapter.connectMCP({
+        server_url: 'https://mcp.linear.app/mcp',
+        name: 'Linear',
+        api_token: 'test-token',
+      }),
+    ).toEqual({ connection_id: 'linear' });
+    expect(c.integrations.post).toHaveBeenCalledWith('/oauth/mcp/discover', {
+      server_url: 'https://mcp.linear.app/mcp',
+    });
+    expect(c.integrations.post).toHaveBeenCalledWith('/oauth/mcp/connect', {
+      server_url: 'https://mcp.linear.app/mcp',
+      name: 'Linear',
+      api_token: 'test-token',
+    });
+  });
+
   it('connects with an inline credential and tests by id', async () => {
     const c = clients();
     c.integrations.post

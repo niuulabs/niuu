@@ -48,3 +48,5 @@ export { randomId } from './utils/randomId';
 
 /* Chat */
 export * from './chat';
+
+export * from './MCPConnectionForm';

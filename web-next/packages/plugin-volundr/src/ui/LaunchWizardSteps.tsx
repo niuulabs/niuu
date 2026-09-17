@@ -285,7 +285,14 @@ export function ConfirmStep({
         >
           <ConfirmChipList
             title="MCP servers"
-            items={form.mcpServers.map((server) => server.name)}
+            items={[
+              ...form.mcpServers.map((server) => server.name),
+              ...integrations
+                .filter(
+                  (item) => item.slug === 'mcp' && form.selectedIntegrations.includes(item.id),
+                )
+                .map(formatIntegrationLabel),
+            ]}
             emptyLabel="No MCP servers attached"
           />
           <ConfirmChipList

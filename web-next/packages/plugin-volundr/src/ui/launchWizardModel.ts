@@ -350,6 +350,9 @@ export function withDefaultSourceControlIntegrations(
 }
 
 export function formatIntegrationLabel(integration: IntegrationConnection): string {
+  if (integration.slug === 'mcp') {
+    return String(integration.config?.name || integration.config?.mcp_url || 'MCP server');
+  }
   const base = integration.slug
     ? integration.slug.replace(/[-_]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase())
     : integration.id;
@@ -358,6 +361,7 @@ export function formatIntegrationLabel(integration: IntegrationConnection): stri
 }
 
 export function formatIntegrationMeta(integration: IntegrationConnection): string | null {
+  if (integration.slug === 'mcp') return String(integration.config?.mcp_url || 'MCP server');
   if (integration.integrationType && integration.credentialName) {
     return `${integration.integrationType.replace(/_/g, ' ')} · ${integration.credentialName}`;
   }

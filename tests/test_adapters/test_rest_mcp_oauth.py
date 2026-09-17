@@ -122,7 +122,10 @@ def test_browser_flow_cross_replica_pkce_resource_and_replay(setup):
     assert authorization["code_challenge_method"] == ["S256"]
     assert authorization["resource"] == ["https://tools.example/mcp"]
     params = {"state": authorization["state"][0], "code": "provider-code"}
-    assert replica().get("/mcp/callback", params=params).status_code == 200
+    callback = replica().get("/mcp/callback", params=params)
+    assert callback.status_code == 200
+    assert "niuu:mcp-connected" in callback.text
+    assert response.json()["connection_id"] in callback.text
     exchange = parse_qs(next(r for r in requests if r.url.path == "/token").content.decode())
     assert len(exchange["code_verifier"][0]) >= 43
     assert exchange["resource"] == ["https://tools.example/mcp"]

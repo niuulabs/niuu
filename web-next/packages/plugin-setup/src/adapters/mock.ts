@@ -528,6 +528,12 @@ export function createMockSetupService(options: MockSetupOptions = {}): ISetupSe
       await wait();
       return connections;
     },
+    async discoverMCP() {
+      throw new Error('MCP authentication requires a live integration service.');
+    },
+    async connectMCP() {
+      throw new Error('MCP authentication requires a live integration service.');
+    },
     async connectIntegration(input: ConnectIntegrationInput) {
       await wait();
       const entry = catalog.find((candidate) => candidate.slug === input.slug);

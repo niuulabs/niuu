@@ -30,6 +30,7 @@ const TYPE_LABELS: Record<string, string> = {
   ai_provider: 'AI providers',
   source_control: 'Git',
   issue_tracker: 'Tickets',
+  mcp: 'MCP servers',
 };
 
 export function summarizeConnections(
@@ -40,7 +41,11 @@ export function summarizeConnections(
     if (!connection.enabled) continue;
     const label = TYPE_LABELS[connection.integrationType] ?? connection.integrationType;
     const names = groups.get(label) ?? [];
-    names.push(connection.slug || connection.credentialName);
+    names.push(
+      connection.slug === 'mcp'
+        ? String(connection.config.name || connection.config.mcp_url || 'MCP server')
+        : connection.slug || connection.credentialName,
+    );
     groups.set(label, names);
   }
   return Object.values(TYPE_LABELS).map((label) => ({

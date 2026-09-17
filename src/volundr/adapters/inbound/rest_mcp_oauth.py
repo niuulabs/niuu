@@ -308,7 +308,10 @@ def create_mcp_oauth_router(
         if info.scope:
             params["scope"] = info.scope
         separator = "&" if "?" in str(metadata.authorization_endpoint) else "?"
-        return {"url": str(metadata.authorization_endpoint) + separator + urlencode(params)}
+        return {
+            "url": str(metadata.authorization_endpoint) + separator + urlencode(params),
+            "connection_id": connection.id,
+        }
 
     @router.get("/callback", response_class=HTMLResponse)
     async def complete(state: str, code: str = "", error: str = "", iss: str = ""):
@@ -390,7 +393,10 @@ def create_mcp_oauth_router(
         await repository.save_connection(connection)
         return HTMLResponse(
             "<!doctype html><title>MCP connected</title>"
-            "<p>MCP connected. You can close this window.</p>"
+            "<p>MCP connected. You can close this window and return to Niuu.</p>"
+            "<script>try { localStorage.setItem(\"niuu:mcp-connected\", "
+            + json.dumps(connection.id)
+            + "); localStorage.removeItem(\"niuu:mcp-connected\"); } catch {} </script>"
         )
 
     return router

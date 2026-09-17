@@ -1,3 +1,4 @@
+import type { MCPConnectionInput, MCPDiscovery } from '@niuulabs/ui';
 import type {
   ApplyStatus,
   ModelTestResult,
@@ -22,6 +23,8 @@ import type {
  * wizard never becomes a second configuration system.
  */
 export interface ISetupService {
+  discoverMCP(serverUrl: string): Promise<MCPDiscovery>;
+  connectMCP(input: MCPConnectionInput): Promise<{ url?: string; connection_id?: string }>;
   getState(): Promise<SetupState>;
   getSystem(): Promise<SystemReport>;
   completeStep(step: string, data?: Record<string, unknown>): Promise<SetupState>;

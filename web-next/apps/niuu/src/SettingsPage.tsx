@@ -24,7 +24,7 @@ import {
   type RemoteSettingsTokensResource,
 } from './SettingsRegistry';
 import './SettingsPage.css';
-import { MCPConnectionForm } from './MCPConnectionForm';
+import { MCPConnectionForm } from '@niuulabs/ui';
 
 function isRemoteProvider(
   provider: MountedSettingsProvider,

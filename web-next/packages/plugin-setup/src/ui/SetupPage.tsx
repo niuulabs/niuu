@@ -11,6 +11,7 @@ import {
   type SetupState,
   type WizardStepId,
 } from '../domain/setup';
+import { MCPStep } from './MCPStep';
 import { FinishStep } from './FinishStep';
 import { IntegrationsStep } from './IntegrationsStep';
 import { ModelStep } from './ModelStep';
@@ -57,6 +58,10 @@ const STEP_COPY: Record<WizardStepId, { title: string; lede: string }> = {
   tracker: {
     title: 'Where does work come from?',
     lede: 'Ting turns issues into sagas and dispatches them. Optional for now.',
+  },
+  mcp: {
+    title: 'Connect MCP servers',
+    lede: 'Give sessions access to tools from Linear, GitHub, or another MCP server. Connect now, then choose which connections to attach when launching a session.',
   },
   runtime: {
     title: 'Runtime and access',
@@ -251,6 +256,7 @@ export function SetupPage({ onNavigate, origin }: SetupPageProps = {}) {
                 }
               />
             ) : null}
+            {step === 'mcp' ? <MCPStep /> : null}
             {step === 'runtime' ? (
               <RuntimeStep
                 stack={stack}

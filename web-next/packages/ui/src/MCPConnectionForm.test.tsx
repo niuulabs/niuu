@@ -12,13 +12,16 @@ const metadata = {
 
 describe('MCPConnectionForm', () => {
   it('discovers OAuth before opening the authorization URL', async () => {
+    const done = vi.fn();
     const discover = vi.fn().mockResolvedValue(metadata);
-    const connect = vi.fn().mockResolvedValue({ url: 'https://auth.example/authorize' });
+    const connect = vi
+      .fn()
+      .mockResolvedValue({ url: 'https://auth.example/authorize', connection_id: 'linear' });
     render(
       <MCPConnectionForm
         discover={discover}
         connect={connect}
-        onConnected={vi.fn()}
+        onConnected={done}
         connections={[]}
       />,
     );
@@ -31,6 +34,17 @@ describe('MCPConnectionForm', () => {
       'href',
       'https://auth.example/authorize',
     );
+    fireEvent(
+      window,
+      new StorageEvent('storage', { key: 'niuu:mcp-connected', newValue: 'unrelated' }),
+    );
+    expect(done).not.toHaveBeenCalled();
+    fireEvent(
+      window,
+      new StorageEvent('storage', { key: 'niuu:mcp-connected', newValue: 'linear' }),
+    );
+    expect(await screen.findByText('MCP server connected')).toBeInTheDocument();
+    expect(done).toHaveBeenCalledOnce();
     expect(connect).toHaveBeenCalledWith(
       expect.objectContaining({ server_url: metadata.resource }),
     );

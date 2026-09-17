@@ -388,6 +388,13 @@ describe('FinishStep', () => {
     const rows = summarizeConnections([
       connection,
       { ...connection, id: 'c2', slug: 'linear', integrationType: 'issue_tracker' },
+      {
+        ...connection,
+        id: 'mcp',
+        slug: 'mcp',
+        integrationType: 'mcp',
+        config: { name: 'Linear tools' },
+      },
       { ...connection, id: 'c3', slug: 'off', enabled: false },
       { ...connection, id: 'c4', slug: '', integrationType: 'other', credentialName: 'cred' },
     ]);
@@ -395,6 +402,7 @@ describe('FinishStep', () => {
       { label: 'AI providers', value: 'none' },
       { label: 'Git', value: 'github' },
       { label: 'Tickets', value: 'linear' },
+      { label: 'MCP servers', value: 'Linear tools' },
     ]);
     expect(summarizeConnections(undefined).every((row) => row.value === 'none')).toBe(true);
   });

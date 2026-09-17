@@ -709,6 +709,29 @@ describe('LaunchWizard step components', () => {
     expect(screen.queryByRole('button', { name: 'remove' })).not.toBeInTheDocument();
   });
 
+  it('includes selected MCP integrations in the launch review', () => {
+    render(
+      <ConfirmStep
+        form={makeForm({ selectedIntegrations: ['linear'] })}
+        models={{}}
+        sessionDefinitions={[]}
+        targets={[]}
+        integrations={[
+          {
+            id: 'linear',
+            slug: 'mcp',
+            enabled: true,
+            credentialName: 'internal',
+            config: { name: 'Linear', mcp_url: 'https://mcp.linear.app/mcp' },
+          },
+        ]}
+      />,
+    );
+    expect(screen.getAllByText('Linear')).toHaveLength(2);
+    expect(screen.queryByText('No MCP servers attached')).not.toBeInTheDocument();
+    expect(screen.queryByText(/internal/)).not.toBeInTheDocument();
+  });
+
   it('renders confirm fallbacks for blank sources, unknown integrations, and prompt-free sessions', () => {
     render(
       <ConfirmStep
