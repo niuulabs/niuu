@@ -3441,6 +3441,9 @@ class TmuxInteractiveTransport(CLITransport):
         finally:
             with suppress(Exception):
                 await self._send_key_raw("Escape", pane_id=target)
+                # Claude handles menu dismissal asynchronously. Without a render
+                # tick, the menu consumes C-u and leaves '/' in the next prompt.
+                await asyncio.sleep(self._menu_poll_step_s)
                 await self._send_key_raw("C-u", pane_id=target)
 
         commands: list[dict] = []

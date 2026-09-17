@@ -130,6 +130,8 @@ RUN existing=$(getent passwd 1000 | cut -d: -f1) && \
 # Copy the pre-built venv from builder.
 ENV VIRTUAL_ENV=/opt/venv
 COPY --from=builder /opt/venv /opt/venv
+# Repository startup hooks also need the pinned tooling installer at runtime.
+COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Copy entrypoint
