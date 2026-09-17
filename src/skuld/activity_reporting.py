@@ -14,6 +14,9 @@ logger = logging.getLogger("skuld.broker")
 class ActivityReportingMixin:
     """Broker behavior for activity transitions and attention state."""
 
+    _RUNNING_RAW_STATES = ("active", "tool_executing")
+    _TURN_END_RAW_STATES = ("idle", "stopped")
+
     async def _report_session_start(self) -> None:
         """Report the session start timeline event (once)."""
         if self._session_start_reported:
@@ -36,20 +39,30 @@ class ActivityReportingMixin:
             model=self.model,
         )
 
-    def _set_activity_state(self, state: str, metadata: dict[str, Any] | None = None) -> None:
-        """Set the in-memory activity_state and stamp ``_activity_state_since``.
+    @classmethod
+    def _coarse_bucket(cls, state: str) -> str:
+        """Collapse raw active/tool states into the client-visible running bucket."""
+        return "running" if state in cls._RUNNING_RAW_STATES else state
 
-        The canonical mutation point for ``self._activity_state``. The "since"
-        timestamp (wall-clock epoch seconds, UTC) is stamped ONLY when the state
-        actually CHANGES — re-asserting the same state (heartbeats, repeated
-        reports) must NOT reset it, so elapsed time stays accurate for clients.
+    def _set_activity_state(self, state: str, metadata: dict[str, Any] | None = None) -> None:
+        """Set activity state while maintaining coarse-state and turn anchors.
+
+        Raw active/tool state continues to change, but ``_activity_state_since``
+        stays stable while both states render as one running bucket.
+        ``_turn_started_at`` survives awaiting-input and clears on turn end.
 
         ``metadata`` is accepted for symmetry/forward-compat; it is not stored
         here (the rich per-state context lives in ``_activity_extra``, managed by
         ``_report_activity_state``).
         """
-        if state != self._activity_state:
-            self._activity_state = state
+        new_bucket = self._coarse_bucket(state)
+        old_bucket = self._coarse_bucket(self._activity_state)
+        if new_bucket == "running" and self._turn_started_at is None:
+            self._turn_started_at = time.time()
+        elif state in self._TURN_END_RAW_STATES:
+            self._turn_started_at = None
+        self._activity_state = state
+        if new_bucket != old_bucket:
             self._activity_state_since = time.time()
 
     @staticmethod
@@ -112,6 +125,11 @@ class ActivityReportingMixin:
                 json={
                     "state": state,
                     "state_since": self._state_since_iso(self._activity_state_since),
+                    "turn_started_at": (
+                        self._state_since_iso(self._turn_started_at)
+                        if self._turn_started_at is not None
+                        else None
+                    ),
                     "metadata": metadata,
                 },
             )

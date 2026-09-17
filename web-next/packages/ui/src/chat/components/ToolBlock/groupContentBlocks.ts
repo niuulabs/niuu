@@ -14,12 +14,17 @@ export interface ToolResultBlock {
 export interface TextBlock {
   type: 'text';
   text: string;
+  id?: string;
+  phase?: string;
+  turn_id?: string;
+  thread_id?: string;
+  complete?: boolean;
 }
 
 export type ContentBlock = ToolUseBlock | ToolResultBlock | TextBlock | { type: string };
 
 export type GroupedContent =
-  | { kind: 'text'; text: string }
+  | ({ kind: 'text' } & Omit<TextBlock, 'type'>)
   | { kind: 'single'; block: ToolUseBlock; result?: ToolResultBlock }
   | {
       kind: 'group';
@@ -48,7 +53,8 @@ export function groupContentBlocks(blocks: ContentBlock[]): GroupedContent[] {
     }
 
     if (block.type === 'text') {
-      result.push({ kind: 'text', text: (block as TextBlock).text });
+      const { type: _type, ...text } = block as TextBlock;
+      result.push({ kind: 'text', ...text });
       i++;
       continue;
     }

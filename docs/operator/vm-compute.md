@@ -1,9 +1,9 @@
 # VM compute allocations
 
 The generic VM backend supports Forge/Skuld sessions and an infrastructure-only
-operator CLI. There is no warm pool. Root disks are disposable: infrastructure
-release deletes the VM, disk and cloud-init Secret. Forge stop preserves session
-workspace/home to the configured controller-local archive before release.
+operator CLI, with a provider-neutral warm pool. Infrastructure release deletes
+the VM, disk and cloud-init Secret. Forge stop preserves workspace/home to the
+configured controller-local archive before replacing or recycling its guest.
 
 ## Provider and authentication configuration
 
@@ -210,11 +210,16 @@ For the tested dev image, the live proof used 2 CPUs, 4096 MiB and 16 GiB disk.
 Keep enough disk space for the image, workspace and Docker extraction.
 
 The runtime accepts an empty workspace or Git source and literal session
-environment settings. Kubernetes mounts, projected service-account identity,
-sidecars and host-path sources are rejected. Configure compatible session
+environment settings. It also carries read-only hostPath **files** from the
+existing session secret injector into guest Docker binds at the same paths.
+Skuld consumes `/run/secrets/env.sh` and credential files normally. Credential
+files live outside the archived workspace/home and are deleted with the VM.
+Directories, writable mounts, Kubernetes volumes, projected service-account
+identity, sidecars and workspace host-path sources are rejected. Configure compatible session
 contributors explicitly; the development proof disables projected workload
-identity and uses the existing development identity adapter. Production OIDC
-and workload token renewal require separate integration and verification.
+identity and uses the existing development identity adapter. Production sessions
+must use the deployment's existing identity and OpenBao configuration; the local
+development proof does not establish production authentication.
 
 While running, workspace/home live on guest local disk. Forge stop archives both
 to `data_dir/<session-id>/session.tar` on the controller, then deletes the VM.
@@ -225,7 +230,235 @@ not continuous replication or protection against unexpected guest disk loss.
 Do not use the standalone infrastructure `release` command on a Forge allocation:
 it does not invoke runtime archiving.
 
-Graceful controller shutdown closes tunnels without deleting live VMs. A restarted
+Graceful controller shutdown closes tunnels without deleting live VMs. A tunnel
+supervisor also closes SSH when the controller dies abruptly: controller pipe EOF
+causes bounded SSH termination, releasing the guest reverse listener. A restarted
 controller reconstructs connections from durable leases and credential storage.
-Abrupt-process-death tunnel recovery and multi-controller runtime routing are
-not yet established; run one controller for this local-disk configuration.
+If runtime startup was interrupted, reconciliation replays the saved bootstrap
+under the allocation lock in a background task. Initialized workspace contents
+are not overwritten. Startup failures remain visible on the lease and retain
+capacity; stopping a session cancels its local recovery task before archiving.
+
+Live tests killed the controller both during provisioning and while Skuld was
+running, then recovered the same allocation and HTTP/WebSocket connectivity.
+Run one controller for this local-disk configuration. Multi-controller routing,
+continuous inventory recovery and durable provisioning retry deadlines remain
+covered by the warm-pool lifecycle below. Production credentials and capacity
+acceptance still require the intended deployment configuration.
+
+### Reuse existing session credentials
+
+VM Skuld uses the same `BrokeredCredentialPodManager` helper as Docker and
+Kubernetes. The default Codex adapter is
+`skuld.codex_auth.VolundrCodexAuthProvider`: it requests access-only tokens from
+the existing Völundr credential broker, which delegates renewal to the configured
+OpenBao credential store. The selected integration's credential name/field are
+preserved. No provider refresh-token implementation is added to the VM backend.
+`compute.runtime.kwargs.codex_auth_adapter` and `codex_auth_kwargs` provide the
+same explicit overrides as Docker; per-session broker settings take precedence.
+
+Broker-only Codex connections require no mounted secret file or OpenBao agent.
+For credentials normally supplied as static files (including Claude setup-token
+environment files), select the existing session file injection adapter. The VM
+runtime transports its output and binds it read-only. This is not continuous
+OpenBao agent projection: managed OAuth file mappings still require a compatible
+continuous injector and are rejected when it is absent. Keep using the configured
+credential store, integration selection and existing broker authentication flow;
+no separate VM login/refresh protocol is required.
+
+## Warm pools and admin controls
+
+Settings → Forge → Compute pool manages the configured provider's pool. The
+same controls work for every `MachineProvider`/`VmRuntime` pair: profile name,
+maximum machines, ready spares, concurrent provisioning, spare lifetime,
+provisioning timeout, pause and drain. Provider-specific image, network, disk,
+CPU, memory and cloud-init remain in the provider adapter's profile kwargs.
+The profile selector is populated by the provider's `profiles()` catalog. The
+Machine profiles section shows adapter-selected public details; raw cloud-init
+and credentials are never returned. Definitions remain in adapter configuration
+(`compute.provider.kwargs.profiles` for Harvester). Unknown profile names are
+rejected before saving pool policy. Every provider implements this catalog, so
+the shared UI does not interpret provider-specific configuration.
+HTTP authentication is optional at the composition boundary: adapters using a
+native credential chain can omit `compute.auth` entirely.
+
+Initial policy comes from `compute.max_machines`, `compute.warm_min` (default
+zero), `compute.max_provisioning` (one), `compute.idle_timeout_seconds` (3600),
+and `compute.provisioning_timeout_seconds` (600). The profile comes from the VM
+pod manager. After initialization, policy is stored in PostgreSQL and admin
+changes survive restarts. Editing those bootstrap defaults does not overwrite
+an already-administered pool. All controllers must share its database,
+credential store and workspace archive directory. SSH runtime controllers need
+access to the same controller key and local workspace disk.
+
+A spare has its own pinned SSH identity but no session binding, launch payload,
+model credentials, session container or workspace. A transaction assigns it
+to one session at a time. The default `replace` policy archives the workspace/home,
+deletes the guest and root disk, then replenishes with a clean allocation. The
+`reuse` policy requires explicit runtime support: after archival and sandbox/data
+cleanup, the same guest returns to the pool with its previous binding cleared.
+OpenShell on Docker implements this path; the direct Docker runtime retains the
+replacement policy. Failed or incompletely started guests are disposed after
+preserving any session data.
+
+Pause rejects new assignments and provisioning without interrupting sessions.
+Drain additionally removes unbound spares. Lowering capacity retires excess idle
+guests; it never terminates active sessions. With replacement policy, reducing
+the spare target also retires excess spares immediately. Reuse policy retains
+excess spares until idle expiry, within maximum capacity. Failed,
+quarantined and deleting allocations continue consuming capacity. The database
+admission lock applies policy across concurrent controllers, not just one process.
+
+Compute status shows pool counts, reconciliation health, allocation ownership
+and errors. Dispose unused machine is restricted to unbound allocations; stop
+session-owned machines through Forge to preserve their files. An owned machine
+missing from the ledger is quarantined, never silently adopted or deleted.
+Inspect its data before explicitly disposing it. A failed archive leaves the
+machine intact, and the persisted stop intent is retried after controller restart.
+
+Provisioning deadlines and provider retry times are durable. Retries use
+`compute.retry_interval_seconds` (10) with exponential delay bounded by
+`compute.retry_max_seconds` (300). Maintenance runs every
+`compute.maintenance_interval_seconds` (10). It resumes partial provisioning,
+cleanup and stop operations under allocation locks. Pool maintenance errors are
+visible in admin settings; provider exception bodies are not exposed as they
+may contain credentials.
+
+With the existing Niuu observability exporter enabled, monitor
+`volundr.compute.machines` by pool/state, `volundr.compute.assignments` by
+warm/cold source, `volundr.compute.warm.duration`,
+`volundr.compute.reconcile.duration` and `volundr.compute.reconcile.errors`.
+A growing failed/draining/quarantined count explains unavailable capacity.
+Admin operations require the existing `volundr:admin` role. Runtime session
+routes keep the existing ownership, tenant and workload-identity authorization.
+
+Before rollback, pause admission, stop sessions, drain spares and verify zero
+unreleased allocations. Migration 000067 refuses downgrade with live claims.
+Back up the PostgreSQL ledger, configured credential store and controller-local
+workspace archives together. Guest disk loss before a successful stop/archive
+is still outside the durability guarantee of controller-local storage.
+
+## Local controller installation
+
+The verified macOS installation keeps its checkout, configuration, PostgreSQL,
+credential store, pinned SSH key and workspace archives together under
+`~/.niuu/compute-controller`. User LaunchAgents
+`world.niuu.compute-postgres` and `world.niuu.compute-controller` start at login
+and restart failed processes. The controller checks database connectivity before
+starting the normal Niuu root application and mounted Forge/Guild services.
+
+The local UI is available at `http://127.0.0.1:8088/settings/volundr/compute`.
+This installation uses the existing development identity on loopback. Production
+exposure requires the normal configured identity and gateway deployment.
+Configuration and credential files are private to the user; the Harvester token
+stays on the controller and must be replaced before its expiry. No model refresh
+credential is copied from the existing Spark credential service.
+
+Restart the controller with
+`launchctl kickstart -k gui/$(id -u)/world.niuu.compute-controller`.
+Inspect logs under `~/.niuu/compute-controller/logs`. For an upgrade, pause
+admission, finish or stop sessions, drain spares, update the installation checkout
+and web build, apply required migrations, then restart and inspect Compute status
+before reopening admission. Back up the database, credential store and session
+archives together. This user-login installation is not a system boot daemon.
+
+
+## Profile changes and warm-spare compatibility
+
+Each provider catalog entry carries an opaque revision for its machine definition.
+The shared pool persists that revision with the allocation and checks it before
+assigning a spare. Changing a profile under the same name retires old unbound
+guests and prepares replacements; it does not interrupt bound sessions. Older
+allocations without a revision are never assigned as warm spares.
+
+The Harvester revision covers image, resources, network, architecture, volume
+access mode and provider/profile cloud-init configuration. The shared services
+compare opaque values and never inspect Harvester fields. Private providers must
+change the revision when their effective machine definition changes. Use immutable
+image references or a new profile when changing image contents: an unchanged
+reference cannot identify an out-of-band image mutation.
+
+Migration 000068 backfills existing JSONB records with an empty revision. Stop
+older controllers before upgrading the shared lease writer. Downgrade requires
+pausing admission and releasing all allocations; its down migration removes the
+new JSONB field so the older controller can read the ledger.
+
+
+## Disposable runtime files in session archives
+
+`SshContainerVmRuntime` accepts `archive_excludes`, a list of explicit paths
+relative to the archived session root (`home/` and `workspace/`). Configure
+`["home/.codex/tmp"]` for Codex sessions: this directory contains disposable
+process launch wrappers that can point at absolute paths in the old container.
+The same exclusions apply while writing new archives and restoring older ones.
+No provider-specific behavior is involved, and credentials, conversation history
+and workspace files remain under their existing preservation rules.
+
+Extraction still uses Python's safe data filter; escaping links anywhere outside
+configured exclusions fail loudly. Allocation completion markers are never
+restored from an archive, so a partial extraction cannot masquerade as a completed
+restore. A failed session can be stopped through the normal Forge API to preserve
+its data and release its machine before retrying.
+
+## OpenShell on managed VMs
+
+Use `VmPodManager` with
+`volundr.adapters.outbound.openshell_vm_runtime.OpenShellVmRuntime` as
+`compute.runtime.adapter`. The machine provider remains independent of this
+runtime. Harvester delivers its generated bootstrap through cloud-init; another
+provider implements the same `MachineBootstrap` contract.
+
+The image or provider bootstrap must supply Docker, Python 3.12+, OpenSSH and
+OpenSSL. The runtime bootstrap installs the native gateway from `gateway_image`,
+creates its Docker network and signing keys, validates `gateway_config` with
+OpenShell's preflight, and starts the systemd service. No Kubernetes installation
+is involved. Warm readiness requires an authenticated gateway RPC and a cached
+sandbox image, before a session can claim the guest.
+
+Alongside the SSH runtime's key paths, local `data_dir`, `skuld_image`, timeout
+and callback settings, configure:
+
+| Runtime kwarg | Purpose |
+| --- | --- |
+| `gateway_image` | Gateway image matching the supervisor and SDK versions |
+| `gateway_config` | OpenShell version 2 TOML, selecting the Docker driver |
+| `network_subnet` | Dedicated Docker bridge subnet inside each guest |
+| `gateway_kwargs` | Existing OpenShell policy, OIDC token URL/client ID, sandbox command and resource limits |
+| `gateway_client_secret` | OIDC client secret; supply through `compute.runtime.secret_kwargs_env` |
+
+The TOML must require OIDC authentication, bind its plaintext endpoint to the
+configured Docker bridge address, and enable Docker bind mounts. Controller
+traffic travels through pinned SSH. Configure the gateway signing-key paths as
+`/var/lib/openshell/jwt/signing.pem`, `public.pem`, and `kid`. The runtime owns the
+per-guest endpoint and workspace/home mounts; do not duplicate those in
+`gateway_kwargs`. Allow the bridge callback address and required model/broker
+endpoints in the sandbox policy.
+
+The guest has one session at a time. Workspace and CLI state live under
+`/var/lib/niuu/session` and are mounted under `/sandbox/workspace` and
+`/sandbox/home`. Session credentials are delivered only after binding, separately
+from machine bootstrap. The existing Skuld credential broker and read-only secret
+file injection apply. This VM runtime does not configure SPIFFE infrastructure;
+OpenShell dynamic provider grants requiring it must use a deployment that supplies
+that infrastructure.
+
+### Stop, reuse and idle deletion
+
+`compute.reuse_policy` initializes the pool policy. Admin settings expose the same
+choice as **After session stop**:
+
+- `reuse`: stop the sandbox, archive workspace/home to the controller's local disk,
+  delete the OpenShell sandbox, remove guest session files, then clear the binding
+  and return the same VM to idle capacity. New sessions receive fresh storage;
+  restarting a previous session restores its own archive.
+- `replace` (the backward-compatible default): archive the session and delete its
+  VM. The warm minimum determines whether to provision a replacement.
+
+Reuse requires a runtime that explicitly implements cleanup. A failed archive or
+reset retains the binding and stop request for retry; the VM is never offered as
+idle after incomplete cleanup. The provider and allocation record remain the
+same across successful reuse. Retained surplus VMs expire after
+`idle_timeout_seconds`; lowering maximum capacity or draining the pool can remove
+them sooner. The warm minimum replenishes expired spares while the pool is active.
+Closing a browser tab does not stop a session. Explicit stop, archive, and delete
+operations use the session lifecycle's cleanup path.

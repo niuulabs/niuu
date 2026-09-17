@@ -956,7 +956,12 @@ class OAuthClientConfig(BaseModel):
 class OAuthConfig(BaseModel):
     """Top-level OAuth configuration."""
 
+    mini_mode_refresh_enabled: bool = Field(
+        default=True, description="Run the legacy OAuth refresher only in mini-mode."
+    )
     redirect_base_url: str = ""
+    mcp_request_timeout_seconds: float = Field(default=15.0, gt=0)
+    mcp_state_ttl_seconds: int = Field(default=600, gt=0)
     clients: dict[str, OAuthClientConfig] = Field(default_factory=dict)
 
 
@@ -1018,9 +1023,26 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
     """Return the built-in integration catalog entries."""
     return [
         IntegrationDefinitionConfig(
+            slug="mcp",
+            name="MCP server",
+            description="Connect an MCP server using OAuth or an API token",
+            integration_type="mcp",
+            credential_schema={
+                "required": ["access_token"],
+                "properties": {"access_token": {"label": "API token", "type": "password"}},
+            },
+            config_schema={
+                "required": ["mcp_url"],
+                "properties": {
+                    "mcp_url": {"label": "MCP server URL", "type": "string"},
+                    "name": {"label": "Display name", "type": "string"},
+                },
+            },
+        ),
+        IntegrationDefinitionConfig(
             slug="github",
             name="GitHub",
-            description="GitHub source control — repo browsing, clone, PRs, and MCP server",
+            description="GitHub source control — repo browsing, clone, PRs, and gh CLI",
             integration_type="source_control",
             adapter="volundr.adapters.outbound.github.GitHubProvider",
             icon="github",
@@ -1043,12 +1065,6 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             },
             # gh in the session image signs in with GH_TOKEN.
             env_from_credentials={"GH_TOKEN": "token"},
-            mcp_server={
-                "name": "github",
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-github"],
-                "env_from_credentials": {"GITHUB_PERSONAL_ACCESS_TOKEN": "token"},
-            },
             # Sign in with GitHub: device flow of an OAuth App the person owns
             # (client id registered from the wizard or under oauth.clients.github;
             # no secret, no callback). Without scopes GitHub hands out a token
@@ -1071,7 +1087,7 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
         IntegrationDefinitionConfig(
             slug="gitlab",
             name="GitLab",
-            description="GitLab source control — repo browsing, clone, MRs, and MCP server",
+            description="GitLab source control — repo browsing, clone, MRs, and glab CLI",
             integration_type="source_control",
             adapter="volundr.adapters.outbound.gitlab.GitLabProvider",
             icon="gitlab",
@@ -1094,12 +1110,6 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             },
             # glab in the session image signs in with GITLAB_TOKEN.
             env_from_credentials={"GITLAB_TOKEN": "token"},
-            mcp_server={
-                "name": "gitlab",
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-gitlab"],
-                "env_from_credentials": {"GITLAB_PERSONAL_ACCESS_TOKEN": "token"},
-            },
             # Sign in with GitLab (17.2+): device grant of an application whose
             # public client id is configured under oauth.clients.gitlab.
             oauth=OAuthSpecConfig(
@@ -1199,9 +1209,9 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             },
             mcp_server={
                 "name": "linear",
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-linear"],
-                "env_from_credentials": {"LINEAR_API_KEY": "api_key"},
+                "transport": "http",
+                "url": "https://mcp.linear.app/mcp",
+                "token_field": "api_key",
             },
             auth_type="api_key",
         ),
@@ -1250,6 +1260,19 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             },
             env_from_credentials={"XAI_API_KEY": "api_key"},
             key_probe={"url": "https://api.x.ai/v1/models", "auth": "bearer"},
+        ),
+        IntegrationDefinitionConfig(
+            slug="meta",
+            name="Meta (Muse)",
+            description="Meta API key for Muse Code sessions",
+            integration_type="ai_provider",
+            model_vendor="meta",
+            icon="meta",
+            credential_schema={
+                "required": ["api_key"],
+                "properties": {"api_key": {"label": "API Key", "type": "password"}},
+            },
+            env_from_credentials={"META_API_KEY": "api_key"},
         ),
         IntegrationDefinitionConfig(
             slug="grok-build",
@@ -1894,6 +1917,23 @@ class ObservatoryConfig(BaseModel):
     )
 
 
+class ProjectsConfig(BaseModel):
+    """Storage adapters and bounded checkpoint limits; workflows live in agent skills."""
+
+    enabled: bool = True
+    instance_id: str = ""
+    repository_adapter: str = (
+        "volundr.adapters.outbound.postgres_projects.PostgresProjectRepository"
+    )
+    repository_kwargs: dict[str, Any] = Field(default_factory=dict)
+    workspace_adapter: str = "volundr.adapters.outbound.project_workspace.GitProjectWorkspace"
+    workspace_kwargs: dict[str, Any] = Field(default_factory=dict)
+    context_bytes: int = Field(default=8192, ge=1024, le=65536)
+    git_timeout_seconds: float = Field(default=15.0, gt=0)
+    dispatch_wait_seconds: float = Field(default=30.0, gt=0)
+    dispatch_poll_seconds: float = Field(default=0.05, gt=0)
+
+
 class Settings(BaseSettings):
     """Application settings.
 
@@ -1916,6 +1956,10 @@ class Settings(BaseSettings):
 
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     compute: ComputeConfig | None = None
+
+    projects: ProjectsConfig = Field(default_factory=ProjectsConfig)
+    conversation_recent_max_turns: int = Field(default=15, gt=0)
+    conversation_recent_max_bytes: int = Field(default=256 * 1024, ge=4096)
     server_host: str = Field(
         default="127.0.0.1",
         validation_alias=AliasChoices("server_host", "NIUU_SERVER_HOST"),

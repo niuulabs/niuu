@@ -20,6 +20,7 @@ from volundr.domain.models import (
     CredentialEnrollmentPoll,
     CredentialEnrollmentState,
     Principal,
+    SecretType,
 )
 from volundr.domain.services.credential_enrollment import (
     CredentialEnrollmentError,
@@ -435,3 +436,30 @@ async def test_reconcile_loop_reaps_stale_logins_and_survives_failures() -> None
 
     # A failing sweep must not end the loop: the next interval still runs.
     assert len(sweeps) == 3
+
+
+async def test_enrollment_cannot_be_resumed_from_another_tenant():
+    service, _, _, _, _ = _service()
+    principal = _principal("user-1")
+    enrollment = await service.start(principal=principal, slug="codex")
+    other = replace(principal, tenant_id="tenant-2")
+    with pytest.raises(CredentialEnrollmentError, match="not found"):
+        await service.start(principal=other, slug="codex")
+    with pytest.raises(CredentialEnrollmentError, match="not found"):
+        await service.get(enrollment.id, other)
+    with pytest.raises(CredentialEnrollmentError, match="not found"):
+        await service.cancel(enrollment.id, other)
+
+
+async def test_enrollment_cannot_replace_another_tenants_credential():
+    service, _, _, store, _ = _service()
+    await store.store(
+        "user",
+        "user-1",
+        "codex-credentials",
+        SecretType.OAUTH_TOKEN,
+        {"token": "private"},
+        {"tenant_id": "other-tenant"},
+    )
+    with pytest.raises(CredentialEnrollmentError, match="not found"):
+        await service.start(principal=_principal("user-1"), slug="codex")

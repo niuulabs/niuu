@@ -150,6 +150,7 @@ def _broker(tmp_path, *, volundr_api_url: str | None = None) -> Broker:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_f1_default_mode_surfaces_permission_gate() -> None:
     """F1: default mode (skip_permissions=False) surfaces a structured gate.
@@ -244,6 +245,7 @@ async def _drive_permission_choice(
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_f2_allow_sends_first_row_digit() -> None:
     """F2(allow): an Allow answer presses the first menu row's digit."""
@@ -256,6 +258,7 @@ async def test_f2_allow_sends_first_row_digit() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_f2_allow_dont_ask_sends_second_row_digit() -> None:
     """F2(allow & don't ask again): selects the persistent-allow row (digit 2).
@@ -276,6 +279,7 @@ async def test_f2_allow_dont_ask_sends_second_row_digit() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_f2_deny_sends_escape_and_reflects_not_allowed() -> None:
     """F2(deny): a Deny answer presses Escape (cancels the menu) and the
@@ -595,6 +599,7 @@ def test_flimit_tmux_transport_has_no_plan_or_accept_edits_param() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_flimit_skip_permissions_toggles_bypass_argv() -> None:
     """F-LIMIT (real spawn-argv): skip_permissions=True puts ``--permission-mode

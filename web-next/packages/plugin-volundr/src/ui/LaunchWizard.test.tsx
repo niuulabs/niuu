@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
@@ -791,8 +791,10 @@ source:
     expect(await screen.findByTestId('step-source-content')).toBeInTheDocument();
   });
 
-  it('does not render when closed', () => {
-    wrap(false);
+  it('does not render when closed', async () => {
+    await act(async () => {
+      wrap(false);
+    });
     expect(screen.queryByText('Launch pod')).not.toBeInTheDocument();
   });
 });

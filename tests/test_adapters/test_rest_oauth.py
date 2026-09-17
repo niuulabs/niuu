@@ -273,6 +273,9 @@ class TestCallback:
         assert stored["name"] == "jira-work"
         assert stored["data"] == credentials
         assert stored["metadata"]["auth_expires_at"] == credentials["expires_at"]
+        assert stored["metadata"]["tenant_id"] == "t1"
+        assert stored["metadata"]["oauth_app"] == "default"
+        assert stored["metadata"]["oauth_token_field"] == "access_token"
         connection = integration_repo.save_connection.call_args.args[0]
         assert connection.config == {
             "site_url": "https://work.atlassian.net",

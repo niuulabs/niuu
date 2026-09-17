@@ -52,3 +52,13 @@ export { MeshSidebar } from './components/MeshSidebar';
 export { ChatInput } from './components/ChatInput';
 export { SessionChat } from './components/SessionChat';
 export type { SessionChatProps } from './components/SessionChat';
+
+export { repairCanonicalText } from './hooks/canonicalTextRepair';
+export type { TextRepairIdentity } from './hooks/canonicalTextRepair';
+export {
+  foldPublicText,
+  publicTextContent,
+  upsertToolPart,
+  validateTextReceipt,
+} from './hooks/orderedPublicText';
+export type { PublicTextEvent } from './hooks/orderedPublicText';

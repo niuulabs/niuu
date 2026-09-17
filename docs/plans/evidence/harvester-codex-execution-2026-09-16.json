@@ -1,0 +1,40 @@
+{
+  "date": "2026-09-16",
+  "status": "passed",
+  "session_id": "46cc14b8-b0e8-49cf-906f-e5b139130d3a",
+  "allocation_id": "cd526a27-6311-47ab-bd8d-02f217476868",
+  "model": "gpt-5.6-sol",
+  "skuld_image": "ghcr.io/niuulabs/skuld:dev",
+  "image_digest": "sha256:efb1ccfb08290f2f725297873ec3e0ce5d2c036d5fcdd071f57e23a77417b4bb",
+  "credential_flow": {
+    "adapter": "skuld.codex_auth.VolundrCodexAuthProvider",
+    "broker": "http://192.168.1.87:8080/api/v1/internal/credentials/codex/tokens",
+    "selected_connection": "codex-credentials",
+    "broker_status": 200,
+    "refresh_credentials_copied_to_vm": false,
+    "new_authentication_or_renewal_protocol": false
+  },
+  "checks": {
+    "websocket_turn_completed": true,
+    "turn_stop_reason": "end_turn",
+    "model_usage": {
+      "gpt-5.6-sol": {
+        "inputTokens": 14365,
+        "outputTokens": 12,
+        "cacheReadInputTokens": 11136,
+        "cacheCreationInputTokens": 0
+      }
+    },
+    "file_created_by_model": "/workspace/vm-credential-proof.txt",
+    "file_content_verified_over_pinned_ssh": "VM_CODEX_LIVE_PROOF_OK",
+    "file_sha256": "4586d9ac25d438874847758a405b2b6f62f04e6c262899177b6d66366916221a",
+    "workspace_archive_verified": true,
+    "final_stop": 200,
+    "managed_allocations_remaining": 0
+  },
+  "scope_limits": [
+    "Spark is running its existing development credential broker; this is not a production OIDC or OpenBao deployment proof",
+    "Long-duration renewal was not exercised",
+    "No warm reuse proof"
+  ]
+}

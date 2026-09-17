@@ -672,13 +672,12 @@ class TestAuditSubscriberEndToEnd:
     and confirms events are queryable back from the store.
     """
 
-    async def test_turn_start_persisted_to_audit_log(self):
-        from sleipnir.adapters.audit_sqlite import SqliteAuditRepository
+    async def test_turn_start_persisted_to_audit_log(self, audit_repo):
         from sleipnir.adapters.audit_subscriber import AuditSubscriber
         from sleipnir.ports.audit import AuditQuery
 
         bus = InProcessBus()
-        repo = SqliteAuditRepository(db_path=":memory:")
+        repo = audit_repo
         subscriber = AuditSubscriber(bus, repo)
         await subscriber.start()
 
@@ -698,14 +697,13 @@ class TestAuditSubscriberEndToEnd:
 
         await subscriber.stop()
 
-    async def test_all_ravn_events_persisted_by_audit_subscriber(self):
+    async def test_all_ravn_events_persisted_by_audit_subscriber(self, audit_repo):
         """All 6 required event types are written to the audit log."""
-        from sleipnir.adapters.audit_sqlite import SqliteAuditRepository
         from sleipnir.adapters.audit_subscriber import AuditSubscriber
         from sleipnir.ports.audit import AuditQuery
 
         bus = InProcessBus()
-        repo = SqliteAuditRepository(db_path=":memory:")
+        repo = audit_repo
         subscriber = AuditSubscriber(bus, repo)
         await subscriber.start()
 
@@ -733,14 +731,13 @@ class TestAuditSubscriberEndToEnd:
 
         await subscriber.stop()
 
-    async def test_audit_subscriber_idempotent_start(self):
+    async def test_audit_subscriber_idempotent_start(self, audit_repo):
         """Calling start() twice does not double-subscribe."""
-        from sleipnir.adapters.audit_sqlite import SqliteAuditRepository
         from sleipnir.adapters.audit_subscriber import AuditSubscriber
         from sleipnir.ports.audit import AuditQuery
 
         bus = InProcessBus()
-        repo = SqliteAuditRepository(db_path=":memory:")
+        repo = audit_repo
         subscriber = AuditSubscriber(bus, repo)
         await subscriber.start()
         await subscriber.start()  # second call must be a no-op
@@ -756,14 +753,13 @@ class TestAuditSubscriberEndToEnd:
 
         await subscriber.stop()
 
-    async def test_audit_repo_query_by_correlation_id(self):
+    async def test_audit_repo_query_by_correlation_id(self, audit_repo):
         """query(correlation_id=...) returns only events for that task."""
-        from sleipnir.adapters.audit_sqlite import SqliteAuditRepository
         from sleipnir.adapters.audit_subscriber import AuditSubscriber
         from sleipnir.ports.audit import AuditQuery
 
         bus = InProcessBus()
-        repo = SqliteAuditRepository(db_path=":memory:")
+        repo = audit_repo
         subscriber = AuditSubscriber(bus, repo)
         await subscriber.start()
 
@@ -975,14 +971,13 @@ class TestAuditSubscriberLifecycle:
         subscriber = AuditSubscriber(bus, repo)
         await subscriber.stop()  # must not raise
 
-    async def test_start_stop_lifecycle(self):
+    async def test_start_stop_lifecycle(self, audit_repo):
         """start → publish → stop round-trip completes without error."""
-        from sleipnir.adapters.audit_sqlite import SqliteAuditRepository
         from sleipnir.adapters.audit_subscriber import AuditSubscriber
         from sleipnir.ports.audit import AuditQuery
 
         bus = InProcessBus()
-        repo = SqliteAuditRepository(db_path=":memory:")
+        repo = audit_repo
         subscriber = AuditSubscriber(bus, repo)
 
         assert not subscriber.running
@@ -998,14 +993,13 @@ class TestAuditSubscriberLifecycle:
         events = await repo.query(AuditQuery(event_type_pattern="ravn.*"))
         assert len(events) == 1
 
-    async def test_disabled_audit_subscriber_does_not_persist(self):
+    async def test_disabled_audit_subscriber_does_not_persist(self, audit_repo):
         """AuditSubscriber with enabled=False never writes to the repo."""
-        from sleipnir.adapters.audit_sqlite import SqliteAuditRepository
         from sleipnir.adapters.audit_subscriber import AuditConfig, AuditSubscriber
         from sleipnir.ports.audit import AuditQuery
 
         bus = InProcessBus()
-        repo = SqliteAuditRepository(db_path=":memory:")
+        repo = audit_repo
         subscriber = AuditSubscriber(bus, repo, config=AuditConfig(enabled=False))
         await subscriber.start()
         assert not subscriber.running
@@ -1048,19 +1042,17 @@ class TestAuditSubscriberLifecycle:
 class TestSqliteAuditRepository:
     """Additional coverage for SqliteAuditRepository query paths."""
 
-    async def test_purge_expired_returns_count(self):
-        from sleipnir.adapters.audit_sqlite import SqliteAuditRepository
+    async def test_purge_expired_returns_count(self, audit_repo):
 
-        repo = SqliteAuditRepository(db_path=":memory:")
+        repo = audit_repo
         # No TTL events — purge should return 0.
         count = await repo.purge_expired()
         assert count == 0
 
-    async def test_query_with_source_filter(self):
-        from sleipnir.adapters.audit_sqlite import SqliteAuditRepository
+    async def test_query_with_source_filter(self, audit_repo):
         from sleipnir.ports.audit import AuditQuery
 
-        repo = SqliteAuditRepository(db_path=":memory:")
+        repo = audit_repo
         source_a = "ravn:sess-a"
         source_b = "ravn:sess-b"
 
@@ -1087,4 +1079,15 @@ class TestSqliteAuditRepository:
         await repo.purge_expired()
         await repo.close()
         # Calling close again must be safe.
+        await repo.close()
+
+
+@pytest.fixture
+async def audit_repo():
+    from sleipnir.adapters.audit_sqlite import SqliteAuditRepository
+
+    repo = SqliteAuditRepository(db_path=":memory:")
+    try:
+        yield repo
+    finally:
         await repo.close()

@@ -334,14 +334,11 @@ podManager:
   # Each entry: { kwarg: "name", secretName: "k8s-secret", secretKey: "key" }
   secretKwargs: []
 
-# Codex subscription credentials are centrally refreshed by Völundr. Session
-# workloads receive only the access token and account metadata.
+# OpenBao oauthapp owns Codex subscription renewal. The broker delivers only
+# access tokens and account metadata from the configured OAuth credential store.
 codexCredentialBroker:
   adapter: "volundr.adapters.outbound.codex_credential_broker.OpenBaoCodexCredentialBroker"
-  kwargs:
-    oauth_token_url: "https://auth.openai.com/oauth/token"
-    oauth_client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
-    refresh_skew_seconds: 300
+  kwargs: {}
   secretKwargs: []
 
 # Trusted login runner is independent of the selected session pod manager.
@@ -575,6 +572,9 @@ envoy:
     # -- Path prefixes that bypass JWT validation (no auth required)
     # Rules are evaluated in order; matching prefixes skip the JWT check.
     bypassPrefixes:
+      - /api/v1/integrations/oauth/callback
+      - /api/v1/integrations/oauth/mcp/callback
+      - /api/v1/integrations/oauth/mcp/client-metadata
       - /api/v1/identity/auth/config
       - /api/v1/tokens/workload/exchange
       - /api/v1/tokens/workload/jwks
@@ -757,6 +757,10 @@ authorization:
 #       auth_method: "token"
 #       token: ""
 #
+# OAuth renewal: see docs/operations/openbao-oauth.md. Use
+# niuu.adapters.openbao_oauth_credential_store.OpenBaoOAuthCredentialStore
+# with oauth_mount_path/oauth_servers, plus oauth_mount_path on secretInjection.
+#
 # ── Infisical ──────────────────────────────────────────────────
 #   credentialStore:
 #     adapter: "niuu.adapters.infisical_credential_store.InfisicalCredentialStore"
@@ -933,8 +937,12 @@ auth:
 
 # OAuth integration configuration
 oauth:
+  # -- Legacy refresh loop; ignored outside mini-mode. OpenBao owns production renewal.
+  miniModeRefreshEnabled: true
   # -- Base URL for OAuth redirect callbacks (e.g. https://volundr.example.com)
   redirectBaseUrl: ""
+  mcpRequestTimeoutSeconds: 15
+  mcpStateTtlSeconds: 600
   # -- Per-integration OAuth client credentials
   # clients:
   #   linear:
@@ -944,6 +952,18 @@ oauth:
 
 # Application configuration
 config:
+  # Project checkout roots are paths mounted in the Forge API container.
+  projects:
+    enabled: true
+    instance_id: ""
+    workspace_adapter: volundr.adapters.outbound.project_workspace.GitProjectWorkspace
+    workspace_kwargs: {}
+    context_bytes: 8192
+    git_timeout_seconds: 15
+    dispatch_wait_seconds: 30
+    dispatch_poll_seconds: 0.05
+  conversationRecentMaxTurns: 15
+  conversationRecentMaxBytes: 262144
   # -- Log level (debug, info, warning, error)
   logLevel: info
   # -- Log format (json, text)
@@ -1163,7 +1183,7 @@ sessionDefinitions:
         # -- Skip tool permission prompts (--dangerously-skip-permissions)
         skipPermissions: true
         # -- Enable Claude Code experimental Agent Teams
-        agentTeams: false
+        agentTeams: true
 
       image:
         # -- Session image repository

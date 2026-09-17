@@ -1,0 +1,256 @@
+{
+  "schema_version": 1,
+  "fixture": "codex-question-3c651f5bc0.frames.json",
+  "sha256": "3c651f5bc0bf622fd2393fba611e4d9edea46c9b97ca58e70ea3833d1db980ee",
+  "source_slice_sha256": "3c651f5bc0bf622fd2393fba611e4d9edea46c9b97ca58e70ea3833d1db980ee",
+  "redacted": true,
+  "source": "live-provider",
+  "provider": "codex",
+  "model": "gpt-6-astra",
+  "scenario": {
+    "scenario": "question",
+    "passed": true,
+    "checks": [
+      {
+        "name": "terminal-result",
+        "passed": true,
+        "detail": 1
+      },
+      {
+        "name": "correlated-completion",
+        "passed": true,
+        "detail": 1
+      },
+      {
+        "name": "successful-result",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "tool-pairs",
+        "passed": true,
+        "detail": {
+          "unpaired_calls": [],
+          "orphan_results": []
+        }
+      },
+      {
+        "name": "event:ask_user_question",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "file:accent.json",
+        "passed": true,
+        "detail": {
+          "accent": "amber"
+        }
+      }
+    ],
+    "observed": {
+      "calls": {
+        "exec-29468b2a-94a3-4924-b32a-5b9e093574e0": {
+          "id": "exec-29468b2a-94a3-4924-b32a-5b9e093574e0",
+          "name": "Bash",
+          "type": "tool_use",
+          "input": {
+            "command": "/bin/bash -lc \"python3 - <<'PY'\nimport json\nfrom pathlib import Path\nPath('accent.json').write_text(json.dumps({'accent': 'amber'}) + '\\\\n')\nPY\ncat accent.json\""
+          }
+        }
+      },
+      "results": {
+        "exec-29468b2a-94a3-4924-b32a-5b9e093574e0": {
+          "type": "tool_result",
+          "content": "{\"accent\": \"amber\"}\n",
+          "ended_at": "2026-09-07T16:56:30.165369+00:00",
+          "tool_use_id": "exec-29468b2a-94a3-4924-b32a-5b9e093574e0"
+        }
+      },
+      "tool_families": {
+        "command": 1
+      },
+      "agent_ids": [],
+      "assistant_text": "Wrote `accent.json`: `{\"accent\": \"amber\"}`.\n\n[FORGE_DONE:63706464cc4b48a49dd3c69cc87581ac:question]",
+      "unpaired_calls": [],
+      "orphan_results": [],
+      "event_counts": {
+        "user": 2,
+        "user_confirmed": 1,
+        "user_delivered": 1,
+        "assistant": 2,
+        "user_consumed": 1,
+        "user_active": 1,
+        "content_block_start": 4,
+        "content_block_stop": 4,
+        "ask_user_question": 1,
+        "ask_user_resolved": 1,
+        "message_delta": 3,
+        "content_block_delta": 41,
+        "result": 1
+      }
+    },
+    "prompt": "Use the native interactive question tool to ask me to choose a trace accent: blue first, amber second. Wait for my explicit answer through that tool. After the answer, write accent.json containing the selected accent in lowercase under key accent. Do not assume an answer or ask only in ordinary prose.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:63706464cc4b48a49dd3c69cc87581ac:question]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+    "after_seq": 328,
+    "through_seq": 393,
+    "duration_seconds": 17.055
+  },
+  "review": {
+    "status": "accepted",
+    "reviewer": "Codex project-review agent, 2026-09-07",
+    "source_frames_sha256": "1504dfbbaf9fa090966365ac8c9802e4440b2b4e8c1486da0fb4ba05e7f414ad",
+    "notes": [
+      "Reviewed prompt and captured interval (328, 393]. All scenario action assertions passed; tool IDs pair with results.",
+      "PostgreSQL raw rows project to these REST frames exactly. Full and cursor fixture replay match. The captured live stream is preserved in database order.",
+      "The running platform's public replay WebSocket remains unavailable until the facade fix is deployed; this fixture certifies the captured scenario, not that deployment.",
+      "Inspected question options and tool output: the explicit second choice Amber produces accent.json with lowercase amber. This is not first-option fallback."
+    ]
+  },
+  "checkpoints": [
+    {
+      "after_seq": 338,
+      "event_type": "ask_user_question",
+      "turn_count": 1,
+      "partial": false,
+      "turns_sha256": "16286b862297eef58da789fba7711ef72f67f857a8f95cbcf0b6cd9a9a99c3ed"
+    },
+    {
+      "after_seq": 339,
+      "event_type": "ask_user_resolved",
+      "turn_count": 1,
+      "partial": false,
+      "turns_sha256": "16286b862297eef58da789fba7711ef72f67f857a8f95cbcf0b6cd9a9a99c3ed"
+    },
+    {
+      "after_seq": 392,
+      "event_type": "result",
+      "turn_count": 2,
+      "partial": false,
+      "turns_sha256": "f23491f4a17008d3457cd466e9665a787241298335ebb4078e8af93c6062f3f9"
+    }
+  ],
+  "expected_turns": [
+    {
+      "id": "00fdba9b-125c-441c-b165-e3b25597ef52",
+      "role": "user",
+      "content": "Use the native interactive question tool to ask me to choose a trace accent: blue first, amber second. Wait for my explicit answer through that tool. After the answer, write accent.json containing the selected accent in lowercase under key accent. Do not assume an answer or ask only in ordinary prose.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:63706464cc4b48a49dd3c69cc87581ac:question]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+      "parts": [],
+      "created_at": "2026-09-07T16:56:20.504282+00:00",
+      "metadata": {
+        "steering_state": "active"
+      },
+      "visibility": "public"
+    },
+    {
+      "id": "4f880d39-dca7-58c6-bfbf-954ca1760c46",
+      "role": "assistant",
+      "content": "Wrote `accent.json`: `{\"accent\": \"amber\"}`.\n\n[FORGE_DONE:63706464cc4b48a49dd3c69cc87581ac:question]",
+      "parts": [
+        {
+          "type": "tool_use",
+          "id": "exec-29468b2a-94a3-4924-b32a-5b9e093574e0",
+          "name": "Bash",
+          "input": {
+            "command": "/bin/bash -lc \"python3 - <<'PY'\nimport json\nfrom pathlib import Path\nPath('accent.json').write_text(json.dumps({'accent': 'amber'}) + '\\\\n')\nPY\ncat accent.json\""
+          },
+          "started_at": "2026-09-07T16:56:30.145031+00:00",
+          "ended_at": "2026-09-07T16:56:30.165369+00:00",
+          "duration_ms": 20
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "exec-29468b2a-94a3-4924-b32a-5b9e093574e0",
+          "content": "{\"accent\": \"amber\"}\n",
+          "is_error": false,
+          "ended_at": "2026-09-07T16:56:30.165369+00:00"
+        },
+        {
+          "type": "text",
+          "id": "legacy-text-3",
+          "text": "Wrote `accent.json`: `{\"accent\": \"amber\"}`.\n\n[FORGE_DONE:63706464cc4b48a49dd3c69cc87581ac:question]",
+          "complete": true,
+          "id_source": "synthetic",
+          "index": 3
+        }
+      ],
+      "created_at": "2026-09-07T16:56:35.420903+00:00",
+      "metadata": {
+        "usage": {
+          "gpt-6-astra": {
+            "inputTokens": 13886,
+            "outputTokens": 44,
+            "cacheReadInputTokens": 13568,
+            "cacheCreationInputTokens": 0
+          }
+        },
+        "cost": null,
+        "model": "gpt-6-astra",
+        "stop_reason": "end_turn"
+      },
+      "visibility": "public"
+    }
+  ],
+  "expected_partial": false,
+  "source_run": {
+    "run_id": "codex-ec1e9d9723",
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "passed": false,
+    "errors": [
+      "harvest: InvalidStatus: server rejected WebSocket connection: HTTP 403"
+    ]
+  },
+  "observed": {
+    "calls": {
+      "exec-29468b2a-94a3-4924-b32a-5b9e093574e0": {
+        "id": "exec-29468b2a-94a3-4924-b32a-5b9e093574e0",
+        "name": "Bash",
+        "type": "tool_use",
+        "input": {
+          "command": "/bin/bash -lc \"python3 - <<'PY'\nimport json\nfrom pathlib import Path\nPath('accent.json').write_text(json.dumps({'accent': 'amber'}) + '\\\\n')\nPY\ncat accent.json\""
+        }
+      }
+    },
+    "results": {
+      "exec-29468b2a-94a3-4924-b32a-5b9e093574e0": {
+        "type": "tool_result",
+        "content": "{\"accent\": \"amber\"}\n",
+        "ended_at": "2026-09-07T16:56:30.165369+00:00",
+        "tool_use_id": "exec-29468b2a-94a3-4924-b32a-5b9e093574e0"
+      }
+    },
+    "tool_families": {
+      "command": 1
+    },
+    "agent_ids": [],
+    "assistant_text": "Wrote `accent.json`: `{\"accent\": \"amber\"}`.\n\n[FORGE_DONE:63706464cc4b48a49dd3c69cc87581ac:question]",
+    "unpaired_calls": [],
+    "orphan_results": [],
+    "event_counts": {
+      "user": 2,
+      "user_confirmed": 1,
+      "user_delivered": 1,
+      "assistant": 2,
+      "user_consumed": 1,
+      "user_active": 1,
+      "content_block_start": 4,
+      "content_block_stop": 4,
+      "ask_user_question": 1,
+      "ask_user_resolved": 1,
+      "message_delta": 3,
+      "content_block_delta": 41,
+      "result": 1
+    }
+  },
+  "projection_review": {
+    "schema_version": 1,
+    "status": "accepted",
+    "reviewer": "Codex integration review, 2026-09-08",
+    "source_frames_sha256": "3c651f5bc0bf622fd2393fba611e4d9edea46c9b97ca58e70ea3833d1db980ee",
+    "previous_projection_sha256": "f23491f4a17008d3457cd466e9665a787241298335ebb4078e8af93c6062f3f9",
+    "projection_sha256": "30b3c42d82381118c35e5c5e4fd35df230a4146c0eea659ed7553a0623ca0550",
+    "notes": [
+      "Captured final text deltas now produce one ordered text part after the tool burst.",
+      "Exact final prose, every nontext part, turn identity and accounting unchanged.",
+      "Original raw frames and original capture review remain unchanged."
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+←  ☒ Features  ✔ Submit  →
+
+Which features?
+
+  1. [✔] Auth first
+  Prioritize authentication work first.
+  2. [ ] Search second
+  Prioritize search work second.
+  3. [✔] Copper focus café 東京
+❯    Submit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · ctrl+g to edit in Vim · Esc to cancel

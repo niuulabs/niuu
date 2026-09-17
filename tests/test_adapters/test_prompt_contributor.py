@@ -68,3 +68,24 @@ class TestPromptContributor:
         context = SessionContext(system_prompt="test")
         result = await contributor.contribute(_make_session(), context)
         assert result.values["session"]["systemPrompt"] == "test"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_is_in_session_values_and_other_workload_flags_survive():
+    contributor = PromptContributor()
+    context = SessionContext(workload_config={"reasoningEffort": "xhigh", "worktree": True})
+    result = await contributor.contribute(None, context)
+    assert result.values["session"]["reasoningEffort"] == "xhigh"
+    assert context.workload_config["worktree"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effort", [None, "", 2])
+async def test_invalid_explicit_effort_is_rejected(effort):
+    contributor = PromptContributor()
+    context = SessionContext(workload_config={"reasoningEffort": effort})
+    if effort is None:
+        assert (await contributor.contribute(None, context)).values == {}
+        return
+    with pytest.raises(ValueError, match="reasoningEffort"):
+        await contributor.contribute(None, context)

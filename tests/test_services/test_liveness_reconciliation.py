@@ -311,7 +311,11 @@ class TestReconcileActiveSessions:
         assert updated.status == SessionStatus.FAILED
         assert updated.error == "install failed"
 
-    async def test_stopping_row_finishes_when_runtime_is_gone(self, service, repo, pod_manager):
+    @pytest.mark.parametrize("backend", ["kubernetes", "vm", "docker"])
+    async def test_stopping_row_finishes_when_runtime_is_gone(
+        self, service, repo, pod_manager, backend
+    ):
+        service._runtime_backend = backend
         session = _session(SessionStatus.STOPPING, datetime.now(UTC))
         await repo.create(session)
         pod_manager.status = lambda _session: _async_status(SessionStatus.STOPPED)  # type: ignore[method-assign]

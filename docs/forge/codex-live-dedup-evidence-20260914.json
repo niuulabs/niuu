@@ -1,0 +1,212 @@
+{
+  "session_id": "0cf947a5-84d1-5a59-83ad-3f5b93752c17",
+  "candidate_commit": "650088f3e2fe234e75cd7d2578acae911290ee91",
+  "candidate_source_sha256": "57446280f7a8bc81d6ae0b8215f8e8df528f0d28add876ac272bd39d3ebff000",
+  "live_capture": {
+    "first": {
+      "row_count": 12,
+      "total_turns": 12,
+      "window_offset": 0,
+      "projection_revision": "text-items-1:0;timeline-1",
+      "in_progress_rows": 1,
+      "counts": {
+        "row": 12,
+        "text": 15,
+        "tool_use": 46,
+        "tool_result": 46
+      },
+      "duplicate_counts": {
+        "row": 0,
+        "text": 0,
+        "tool_use": 0,
+        "tool_result": 0
+      },
+      "calls_without_results": [],
+      "results_without_calls": [],
+      "calls_with_ended_at": 46
+    },
+    "followup": {
+      "row_count": 9,
+      "total_turns": 9,
+      "window_offset": 0,
+      "projection_revision": "text-items-1:0;timeline-1",
+      "in_progress_rows": 0,
+      "counts": {
+        "row": 9,
+        "text": 16,
+        "tool_use": 46,
+        "tool_result": 46
+      },
+      "duplicate_counts": {
+        "row": 0,
+        "text": 0,
+        "tool_use": 0,
+        "tool_result": 0
+      },
+      "calls_without_results": [],
+      "results_without_calls": [],
+      "calls_with_ended_at": 46
+    },
+    "shallow": {
+      "row_count": 9,
+      "total_turns": 9,
+      "window_offset": 0,
+      "projection_revision": "text-items-1:0;timeline-1",
+      "in_progress_rows": 0,
+      "counts": {
+        "row": 9,
+        "text": 16,
+        "tool_use": 46,
+        "tool_result": 46
+      },
+      "duplicate_counts": {
+        "row": 0,
+        "text": 0,
+        "tool_use": 0,
+        "tool_result": 0
+      },
+      "calls_without_results": [],
+      "results_without_calls": [],
+      "calls_with_ended_at": 46
+    },
+    "incremental": {
+      "row_count": 0,
+      "total_turns": 9,
+      "window_offset": 9,
+      "projection_revision": "text-items-1:0;timeline-1",
+      "in_progress_rows": 0,
+      "counts": {
+        "row": 0,
+        "text": 0,
+        "tool_use": 0,
+        "tool_result": 0
+      },
+      "duplicate_counts": {
+        "row": 0,
+        "text": 0,
+        "tool_use": 0,
+        "tool_result": 0
+      },
+      "calls_without_results": [],
+      "results_without_calls": [],
+      "calls_with_ended_at": 0
+    },
+    "old_rows_retained": 6,
+    "old_rows_missing": [
+      "2da7bb22-243a-501b-8910-11a255dd53ff",
+      "57d7a800-1a91-5154-a7a6-96c56e33f62e",
+      "7a904144-412a-5123-a8e1-e1e143218b7f",
+      "b011b311-2467-5d72-8a4f-338a006bd90d",
+      "b89c2026-bf93-54fe-9a04-7ffead651371",
+      "e97b5f55-f303-5242-a7e0-6c081e4dde25"
+    ],
+    "old_row_parts_changed": [],
+    "incremental_seam": {
+      "after": 10,
+      "expected_offset": 11,
+      "actual_offset": 9,
+      "prior_prefix_row_overlap": []
+    }
+  },
+  "offline_archive_correction": {
+    "old_live_rows": 12,
+    "archived_unprojected_rows": 9,
+    "offline_projected_rows": 12,
+    "row_identity_and_order_equal": true,
+    "row_dates_equal": true,
+    "source_unmodified": true,
+    "live_parts": 107,
+    "archived_parts": 108,
+    "old_part_identities_retained": 107,
+    "old_parts_payload_changed": 0,
+    "old_part_identities_missing": 0
+  },
+  "evidence_sha256": {
+    "log.json": "ad83ea4f96311ef71061271ef2b2fa1906e6186980d257f043d76f9d50b828d1",
+    "conversation-followup.json": "fec191f42b7b4e78f838abf0e639613df74ace10a1accf8862631fe8275dd22b",
+    "session-followup.json": "a35bc7c8b39a53edf45fbbf6089bb751486096fb373ea7db5a8aa4bb05db43d3",
+    "spark-before.json": "39ec5e0759311daefdec5be2a731ad22a50f508b87efa536c4956bbac8c6e775",
+    "session.json": "677a12099198370c3e905c75940deeb5bd02f1d7d9b339c2789fc84c0583ba84",
+    "conversation.json": "eadd6a7d572e28c79385eb017687d74edbc46907ab277d628c505126892a1c90"
+  },
+  "native_status": "Source-level defect paths and acceptance fixture handed to coordinator; not implemented or rendered-tested here.",
+  "deployment_status": "Deployed to Spark API only at2026-09-14T10:02:51.917277+00:00\u201310:02:56.833643+00:00; Thor untouched. Native live-display fix remains unimplemented here.",
+  "rollout": {
+    "passed": true,
+    "sessions_preserved": 14,
+    "unchanged_session_turn_payloads": 13,
+    "intentionally_projected_session_ids": [
+      "0cf947a5-84d1-5a59-83ad-3f5b93752c17"
+    ],
+    "before_display_rows": 59,
+    "after_display_rows": 62,
+    "public_log_entries_unchanged": 2357,
+    "candidate_health": {
+      "status": "ok",
+      "revision": "650088f3e2fe234e75cd7d2578acae911290ee91",
+      "build": "forge-codex-ready-20260914-timeline-v4",
+      "source_sha256": "57446280f7a8bc81d6ae0b8215f8e8df528f0d28add876ac272bd39d3ebff000",
+      "dirty": false,
+      "failed_plugins": []
+    },
+    "protected_processes": {
+      "5185": {
+        "pid": 5185,
+        "start_ticks": "2763",
+        "boot_id": "f14b7265-14a5-46d3-ba64-1ea25a5a3e01",
+        "argv_sha256": "d98815c233fc5f595111c85e7c535cf214fd45021f3af9d5d7d9b29deaa71a3f"
+      },
+      "1044001": {
+        "pid": 1044001,
+        "start_ticks": "474764909",
+        "boot_id": "f14b7265-14a5-46d3-ba64-1ea25a5a3e01",
+        "argv_sha256": "47ae0b9bb0e7f4bcf1fb05a9f5b773aeeb79067f012e8e583ac40fc3cea82c19"
+      },
+      "2484157": {
+        "pid": 2484157,
+        "start_ticks": "496566993",
+        "boot_id": "f14b7265-14a5-46d3-ba64-1ea25a5a3e01",
+        "argv_sha256": "e618bfb5a5c5ac3e57643ec974009786141c3c551350b6386b460123de0f8908"
+      },
+      "5640": {
+        "pid": 5640,
+        "start_ticks": "11435",
+        "boot_id": "f14b7265-14a5-46d3-ba64-1ea25a5a3e01",
+        "argv_sha256": "988c96a494b646ddd2636f2a67e8dec872ad1e8598e405c38c09d5cbaa3cb159"
+      }
+    },
+    "live_gateways_at_cutover": 0,
+    "checks": [
+      {
+        "name": "agent HTTP",
+        "fields": {
+          "status": "ok"
+        }
+      },
+      {
+        "name": "agent TLS",
+        "fields": {
+          "status": "ok"
+        }
+      },
+      {
+        "name": "web preview",
+        "sha256": "736173c7bf20a6c8b373da0dc00d63e56991da9c648e10f9aa9aa33445c31ca0"
+      }
+    ],
+    "started_at": "2026-09-14T10:02:51.917277+00:00",
+    "finished_at": "2026-09-14T10:02:56.833643+00:00"
+  },
+  "validation": {
+    "thor_sweep_passed": 5128,
+    "thor_additional_rest_tests_passed": 4,
+    "spark_exact_staged_sweep_passed": 5132,
+    "skipped": 24,
+    "deselected": 95,
+    "expected_failures": 1,
+    "scoped_statement_branch_coverage_percent": 85.77,
+    "coverage_gate_percent": 85,
+    "four_archive_regressions_failed_before_fix": true,
+    "no_provider_or_physical_device_test": true
+  }
+}

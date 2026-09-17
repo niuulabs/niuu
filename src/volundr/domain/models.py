@@ -26,6 +26,7 @@ from identity.models import (  # noqa: F401
 )
 from niuu.domain import models as shared_models
 from tracker.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue  # noqa: F401
+from volundr.domain.projects import SessionCoordination
 
 CIStatus = shared_models.CIStatus
 GitProviderType = shared_models.GitProviderType
@@ -352,6 +353,8 @@ SessionSource = Annotated[
 class Session(BaseModel):
     """A Claude Code coding session."""
 
+    coordination: SessionCoordination | None = None
+
     id: UUID = Field(
         default_factory=uuid4,
         description="Unique session identifier",
@@ -452,8 +455,17 @@ class Session(BaseModel):
         default=None,
         description=(
             "Timestamp (UTC) when the session ENTERED its current activity_state. "
-            "Stamped only on a real state change (not on re-asserting the same "
-            "state), so clients can render an accurate 'active for Ns' elapsed."
+            "Stamped only on a real (coarse-bucket) change, so clients can render "
+            "an accurate 'active for Ns' elapsed without an intra-turn reset."
+        ),
+    )
+    turn_started_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Timestamp (UTC) when the CURRENT turn started (the user's prompt "
+            "landing). Stable across intra-turn active/tool_executing flips; "
+            "None when no turn is in flight. Clients anchor RUNNING elapsed to "
+            "this, falling back to activity_state_since for older brokers."
         ),
     )
     activity_metadata: dict = Field(
@@ -496,7 +508,7 @@ class Session(BaseModel):
         default=None,
         max_length=255,
         description=(
-            "Session definition (runtime type, e.g. skuldClaude / skuldGrok) the "
+            "Session definition (runtime type, e.g. skuldClaude / skuldGrok / skuldMuse) the "
             "session was launched with, persisted so restarts re-apply the same "
             "transport instead of falling back to the platform default."
         ),
@@ -538,8 +550,9 @@ class Session(BaseModel):
         return self.status in (SessionStatus.CREATED, SessionStatus.STOPPED, SessionStatus.FAILED)
 
     def can_stop(self) -> bool:
-        """Check if session can be stopped."""
+        """Allow cleanup after failure; a failed runtime may still own resources."""
         return self.status in (
+            SessionStatus.FAILED,
             SessionStatus.STARTING,
             SessionStatus.RUNNING,
             SessionStatus.PROVISIONING,
@@ -1043,11 +1056,22 @@ class MCPServerSpec:
     """
 
     name: str
-    command: str
+    command: str = ""
+    transport: str = "stdio"
+    url: str = ""
+    token_field: str = ""
+    auth_header: str = "Authorization"
+    auth_prefix: str = "Bearer "
     args: tuple[str, ...] = ()
     env_from_credentials: dict[str, str] = ()  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
+        if self.transport not in {"stdio", "http", "sse"}:
+            raise ValueError("Unsupported MCP transport")
+        if self.transport != "stdio" and not self.url.startswith("https://"):
+            raise ValueError("Remote integration MCP servers require an HTTPS URL")
+        if self.transport == "stdio" and self.token_field:
+            raise ValueError("MCP token_field requires an HTTP transport; use stdio env mappings")
         if not isinstance(self.args, tuple):
             object.__setattr__(self, "args", tuple(self.args))
         if not isinstance(self.env_from_credentials, dict):
@@ -1200,6 +1224,11 @@ class CredentialMapping:
     credential_name: str
     env_mappings: dict[str, str] = ()  # type: ignore[assignment]
     file_mappings: dict[str, str] = ()  # type: ignore[assignment]
+
+    oauth_tenant_id: str = ""
+    oauth_token_field: str = ""
+    oauth_token_documents: tuple[str, ...] = ()
+    provider: dict | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.env_mappings, dict):

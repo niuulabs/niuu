@@ -1,0 +1,80 @@
+{
+  "review_date": "2026-09-07",
+  "branch": "skuld-agent-tokens",
+  "base_revision": "ce7ee1ea781be2738548cbde77ebe7d3d525f17e",
+  "uncommitted_working_tree": true,
+  "environment": {
+    "os": "Linux aarch64",
+    "python": "3.11.15",
+    "node": "22.22.1",
+    "tmux": "3.4",
+    "database": "disposable PostgreSQL 16 container"
+  },
+  "backend": {
+    "passed": 4192,
+    "failed": 0,
+    "skipped": 24,
+    "expected_failures": 1
+  },
+  "skuld_coverage": {
+    "combined_line_and_branch_percent": 81.87,
+    "required_percent": 85,
+    "gate_passed": false
+  },
+  "web_unit": {
+    "passed": 831,
+    "failed": 0,
+    "skipped": 0,
+    "expected_failures": 0
+  },
+  "database": {
+    "passed": 24,
+    "failed": 0,
+    "skipped": 0,
+    "expected_failures": 0
+  },
+  "tmux_repeated_runs": [
+    {
+      "passed": 52,
+      "failed": 0,
+      "skipped": 0,
+      "expected_failures": 1
+    },
+    {
+      "passed": 52,
+      "failed": 0,
+      "skipped": 0,
+      "expected_failures": 1
+    },
+    {
+      "passed": 52,
+      "failed": 0,
+      "skipped": 0,
+      "expected_failures": 1
+    }
+  ],
+  "browser": {
+    "passed": 5,
+    "failed": 0,
+    "skipped": 0,
+    "expected_failures": 0
+  },
+  "new_python_cases": 46,
+  "new_browser_cases": 5,
+  "acceptance_scenarios_documented": 68,
+  "not_executed": [
+    "credentialed provider canaries",
+    "Python 3.12 locally",
+    "hosted GitHub Actions",
+    "historical branch builds",
+    "cluster or Flux rollout",
+    "full monorepo unrelated-service suite"
+  ],
+  "release_ready": false,
+  "limitations": [
+    "Skuld coverage below 85 percent",
+    "tmux multiselect expected failure",
+    "real Claude plan-mode edit enforcement acceptance missing",
+    "remaining risks listed in the companion review"
+  ]
+}

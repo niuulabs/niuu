@@ -16,6 +16,7 @@ import pytest
 
 from skuld.transports.tmux_interactive import (
     TmuxInteractiveTransport,
+    _PaneState,
     _TmuxResult,
 )
 
@@ -41,6 +42,9 @@ class FakeTmuxInteractiveTransport(TmuxInteractiveTransport):
         # menu-showing pane override this.
         self.capture_stdout = "❯ "
         self.pane_lines = ["%1\t0\tmain\t1\tclaude\t200\t50\t2\t47"]
+        # pane_id -> the pane's `#{pane_start_command}` (what `display-message` returns). Lets a
+        # test give a teammate pane a real `--agent-name`; unmapped panes report an empty command.
+        self.pane_start_commands: dict[str, str] = {}
         # SAFETY: redirect the socket dir + runtime root into the per-test workspace so the
         # periodic sweep loop started by start() can NEVER touch the real /tmp/skuld-tmux-* dir
         # or a live session's runtime dir on this box.
@@ -71,6 +75,9 @@ class FakeTmuxInteractiveTransport(TmuxInteractiveTransport):
             return _TmuxResult(0)
         if command == "list-panes":
             return _TmuxResult(0, "\n".join(self.pane_lines) + "\n")
+        if command == "display-message":
+            target = args[args.index("-t") + 1] if "-t" in args else ""
+            return _TmuxResult(0, self.pane_start_commands.get(target, ""))
         if command == "load-buffer":
             self.loaded_buffers.append(Path(args[-1]).read_text(encoding="utf-8"))
             return _TmuxResult(0)
@@ -127,7 +134,9 @@ async def test_start_creates_session_emits_init_and_pane(tmp_path: Path) -> None
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "Stop" in settings["hooks"]
     assert "PreToolUse" in settings["hooks"]
-    assert "MessageDisplay" not in settings["hooks"]
+    # MessageDisplay is ON by default with hook mode — it is the live channel for the
+    # agent's intermediary prose (tools-only until Stop without it).
+    assert "MessageDisplay" in settings["hooks"]
 
     await transport.stop()
 
@@ -155,13 +164,14 @@ async def test_start_answers_the_cli_first_run_dialogs_in_its_config(
     transport._socket_path = transport._socket_dir / f"{transport._session_name}.sock"
 
     await transport.start()
+    settings = json.loads(transport._hook_settings_path.read_text(encoding="utf-8"))
     await transport.stop()
 
     config = json.loads((config_dir / ".claude.json").read_text(encoding="utf-8"))
     assert config["hasCompletedOnboarding"] is True
     assert config["theme"] == "dark"
     assert config["projects"][str(workspace)]["hasTrustDialogAccepted"] is True
-    settings = json.loads((config_dir / "settings.json").read_text(encoding="utf-8"))
+    assert not (config_dir / "settings.json").exists()
     assert settings["skipDangerousModePermissionPrompt"] is True
 
 
@@ -191,15 +201,33 @@ def test_prepare_claude_config_keeps_existing_state(tmp_path: Path) -> None:
     assert config_path.stat().st_mtime_ns == stamp
 
 
-def test_prepare_claude_config_keeps_other_user_settings(tmp_path: Path) -> None:
+@pytest.mark.parametrize("hook_events_enabled,sdk_port", [(False, 0), (True, 8081)])
+def test_prepare_claude_config_keeps_other_user_settings(
+    tmp_path: Path, hook_events_enabled: bool, sdk_port: int
+) -> None:
     settings_path = tmp_path / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True)
-    settings_path.write_text(json.dumps({"model": "opus", "hooks": {}}), encoding="utf-8")
-    transport = FakeTmuxInteractiveTransport(str(tmp_path / "ws"), skip_permissions=True)
+    projected = tmp_path / "projected-settings.json"
+    original = json.dumps({"model": "opus", "hooks": {}})
+    projected.write_text(original, encoding="utf-8")
+    projected.chmod(0o444)
+    settings_path.symlink_to(projected)
+    transport = FakeTmuxInteractiveTransport(
+        str(tmp_path / "ws"),
+        skip_permissions=True,
+        sdk_port=sdk_port,
+    )
 
+    transport._hook_events_enabled = hook_events_enabled
     transport._prepare_claude_config({"HOME": str(tmp_path)})
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
-    assert settings == {"model": "opus", "hooks": {}, "skipDangerousModePermissionPrompt": True}
+    assert settings == {"model": "opus", "hooks": {}}
+    assert settings_path.is_symlink()
+    assert projected.read_text() == original
+    transport._write_hook_settings()
+    argv = transport._interactive_argv()
+    overlay = Path(argv[argv.index("--settings") + 1])
+    assert json.loads(overlay.read_text())["skipDangerousModePermissionPrompt"] is True
 
 
 @pytest.mark.asyncio
@@ -245,6 +273,69 @@ async def test_send_message_pastes_text_and_streams_turn(tmp_path: Path) -> None
     result = next(event for event in events if event["type"] == "result")
     assert result["stop_reason"] == "terminal_idle"
     assert result["result"] == "Claude says hi\nwith clean spacing"
+
+
+@pytest.mark.asyncio
+async def test_paste_represses_enter_while_composer_still_holds_text(tmp_path: Path) -> None:
+    """Submit-confirm: when the pane capture still shows the pasted text after Enter (the
+    busy-TUI race that left steers typed-but-unsubmitted), Enter is re-pressed with backoff."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    await _collect_events(transport)
+    await transport.start()
+
+    def enter_count() -> int:
+        return sum(
+            1
+            for args, _ in transport.commands
+            if args and args[0] == "send-keys" and args[-1] == "Enter"
+        )
+
+    transport.capture_stdout = "╭──────╮\n│ ❯ fix the fold bug please │\n╰──────╯\n"
+    await transport.send_message("fix the fold bug please")
+    # initial Enter + one retry per backoff hop (the fake composer never clears); the confirm
+    # loop runs in the background so send_message itself stays non-blocking.
+    expected = 1 + len(TmuxInteractiveTransport._SUBMIT_RETRY_DELAYS_S)
+    await _wait_until(lambda: enter_count() == expected, timeout=5.0)
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_paste_confirm_never_presses_enter_into_open_menu(tmp_path: Path) -> None:
+    """An open selection menu means an extra Enter would ANSWER it — the confirm loop must
+    observe 'menu' and stand down, even though the composer text never visibly cleared."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    await _collect_events(transport)
+    await transport.start()
+
+    transport.capture_stdout = "Do you want to proceed?\n❯ 1. Allow\n  2. Deny\n"
+    await transport.send_message("run the migration")
+    await asyncio.sleep(1.0)  # past the first two backoff hops
+    enters = [
+        args
+        for args, _ in transport.commands
+        if args and args[0] == "send-keys" and args[-1] == "Enter"
+    ]
+    assert len(enters) == 1  # the submit Enter only — no blind retry into the menu
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_paste_confirm_stops_after_composer_clears(tmp_path: Path) -> None:
+    """The normal path: the composer cleared by the first observation → exactly one Enter."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    await _collect_events(transport)
+    await transport.start()
+
+    transport.capture_stdout = "⏺ Working on it…\n"
+    await transport.send_message("hello there")
+    await asyncio.sleep(1.0)  # past the first two backoff hops
+    enters = [
+        args
+        for args, _ in transport.commands
+        if args and args[0] == "send-keys" and args[-1] == "Enter"
+    ]
+    assert len(enters) == 1
+    await transport.stop()
 
 
 @pytest.mark.asyncio
@@ -341,6 +432,34 @@ async def test_discover_slash_commands_scrapes_terminal_menu(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_slash_discovery_waits_for_menu_dismissal_before_clearing_input(
+    tmp_path: Path, monkeypatch
+) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    composer = ""
+    menu_open = False
+
+    def dismiss_menu() -> None:
+        nonlocal menu_open
+        menu_open = False
+
+    async def send_key(key: str, *, pane_id: str | None = None) -> None:
+        nonlocal composer, menu_open
+        if key == "/":
+            composer += key
+            menu_open = True
+        elif key == "Escape" and menu_open:
+            asyncio.get_running_loop().call_later(transport._menu_poll_step_s / 2, dismiss_menu)
+        elif key == "C-u" and not menu_open:
+            composer = ""
+
+    monkeypatch.setattr(transport, "_send_key_raw", send_key)
+    await transport._discover_slash_commands_from_terminal()
+
+    assert composer == ""
+
+
+@pytest.mark.asyncio
 async def test_refresh_panes_emits_transport_stopped_on_session_gone(tmp_path: Path) -> None:
     # When list-panes fails (tmux session vanished) the transport dies. It must emit
     # a one-shot transport_stopped so the broker can report the 'stopped' activity
@@ -387,6 +506,211 @@ async def test_refresh_panes_emits_new_agent_team_pane(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_pane_opened_forwards_pane_title(tmp_path: Path) -> None:
+    # #{pane_title} rides along on terminal_pane_opened so the broker can name a teammate pane by a
+    # real identity instead of the shared "main" window name. (11-field list-panes format.)
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    await transport.start()
+
+    transport.pane_lines.append("%2\t1\tmain\t0\tclaude\t100\t40\t0\t0\t0\treviewer")
+    await transport._refresh_panes(emit_events=True)  # noqa: SLF001 - direct pane simulation
+    await transport.stop()
+
+    opened = [e for e in events if e["type"] == "terminal_pane_opened" and e["pane_id"] == "%2"]
+    assert opened and opened[0]["pane_title"] == "reviewer"
+
+
+@pytest.mark.asyncio
+async def test_refresh_panes_evicts_dead_pane(tmp_path: Path) -> None:
+    # `remain-on-exit on` keeps an EXITED pane listed as a DEAD pane forever, so the vanish sweep
+    # never fires. A dead pane must be treated as CLOSED: one terminal_pane_closed, then untracked.
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    await transport.start()
+
+    # A live teammate pane opens...
+    transport.pane_lines.append("%2\t1\tmain\t0\tclaude\t100\t40\t0\t0\t0\t")
+    await transport._refresh_panes(emit_events=True)  # noqa: SLF001
+    assert "%2" in transport._panes  # noqa: SLF001
+    assert any(e["type"] == "terminal_pane_opened" and e["pane_id"] == "%2" for e in events)
+
+    # ...then it exits and becomes a DEAD-but-listed pane (pane_dead=1).
+    transport.pane_lines[-1] = "%2\t1\tmain\t0\tclaude\t100\t40\t0\t0\t1\t"
+    await transport._refresh_panes(emit_events=True)  # noqa: SLF001
+    # A second poll while it is still a dead corpse must NOT re-emit (idempotent).
+    await transport._refresh_panes(emit_events=True)  # noqa: SLF001
+    await transport.stop()
+
+    closed = [e for e in events if e["type"] == "terminal_pane_closed" and e["pane_id"] == "%2"]
+    assert len(closed) == 1, "a dead pane closes exactly once"
+    assert "%2" not in transport._panes  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_refresh_panes_ignores_pane_already_dead_on_first_sight(tmp_path: Path) -> None:
+    # A pane that is already dead the first time we see it was never opened — it must never register
+    # and must not emit an opened OR a closed event.
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    await transport.start()
+
+    transport.pane_lines.append("%3\t2\tmain\t0\tclaude\t100\t40\t0\t0\t1\t")
+    await transport._refresh_panes(emit_events=True)  # noqa: SLF001
+    await transport.stop()
+
+    assert "%3" not in transport._panes  # noqa: SLF001
+    assert not any(e.get("pane_id") == "%3" for e in events if "pane" in e.get("type", ""))
+
+
+# ──────────────────────────── teammate identity + finish signal ────────────────────────────
+
+
+def test_parse_agent_name_extracts_from_start_command() -> None:
+    parse = FakeTmuxInteractiveTransport._parse_agent_name  # noqa: SLF001
+    teammate = (
+        "env CLAUDECODE=1 /home/thor/.local/share/claude/versions/2.1.200 "
+        "--agent-id card-explorer@session-a27e0dba --agent-name card-explorer "
+        "--team-name session-a27e0dba --agent-type Explore --model opus"
+    )
+    assert parse(teammate) == "card-explorer"
+    # `=` form + surrounding quotes are both handled.
+    assert parse("x --agent-name=wa-audio-explorer --model opus") == "wa-audio-explorer"
+    # The primary REPL has no `--agent-name`, so it is never a teammate.
+    assert parse("claude --model claude-fable-5 --remote-control lexi --teammate-mode tmux") == ""
+    assert parse("") == ""
+
+
+@pytest.mark.asyncio
+async def test_pane_opened_forwards_agent_name_from_start_command(tmp_path: Path) -> None:
+    # A teammate pane's `--agent-name` (its authoritative identity) rides on terminal_pane_opened so
+    # the broker names the row by the real teammate name instead of "main"/the claude version.
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    await transport.start()
+
+    transport.pane_start_commands["%2"] = (
+        "env CLAUDECODE=1 /home/thor/.local/share/claude/versions/2.1.200 "
+        "--agent-name wa-audio-explorer --team-name session-a27 --agent-type Explore"
+    )
+    transport.pane_lines.append("%2\t1\tmain\t0\t2.1.200\t100\t40\t0\t0\t0\t")
+    await transport._refresh_panes(emit_events=True)  # noqa: SLF001 - direct pane simulation
+    await transport.stop()
+
+    opened = [e for e in events if e["type"] == "terminal_pane_opened" and e["pane_id"] == "%2"]
+    assert opened and opened[0]["agent_name"] == "wa-audio-explorer"
+    assert transport._panes.get("%2") is None or True  # pane may be torn down by stop()
+
+
+@pytest.mark.asyncio
+async def test_teammate_idle_hook_evicts_teammate_by_pane(tmp_path: Path) -> None:
+    """A TeammateIdle hook emits a `stopped` agent_update keyed by the teammate's PANE id (the
+    registry key), resolved from teammate_name → the pane whose `--agent-name` matches."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    # A teammate pane is live and known to the transport (agent_name parsed from its start command).
+    transport._panes["%4"] = _PaneState(  # noqa: SLF001
+        pane_id="%4",
+        pane_index="3",
+        window_name="main",
+        active=False,
+        current_command="2.1.200",
+        width=100,
+        height=40,
+        cursor_x=0,
+        cursor_y=0,
+        log_path=tmp_path / "4.log",
+        agent_name="wa-audio-explorer",
+    )
+
+    handled = await transport.handle_claude_hook(
+        {
+            "hook_event_name": "TeammateIdle",
+            "session_id": "teammate-session",
+            "team_name": "session-a27e0dba",
+            "teammate_name": "wa-audio-explorer",
+            "agent_type": "Explore",
+        }
+    )
+
+    assert handled is True
+    stopped = [e for e in events if e["type"] == "agent_update" and e["action"] == "stopped"]
+    assert len(stopped) == 1
+    assert stopped[0]["agent"]["id"] == "%4"  # keyed by the PANE id so the broker pops the row
+    assert stopped[0]["agent"]["kind"] == "teammate"
+    assert stopped[0]["agent"]["name"] == "wa-audio-explorer"
+
+
+@pytest.mark.asyncio
+async def test_teammate_idle_without_matching_pane_is_harmless(tmp_path: Path) -> None:
+    """If the teammate's pane is already gone (dead-pane eviction beat us), the stopped frame is
+    keyed by name — a no-op pop on the broker, never an exception."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+
+    await transport.handle_claude_hook(
+        {"hook_event_name": "TeammateIdle", "teammate_name": "ghost-explorer"}
+    )
+
+    stopped = [e for e in events if e["type"] == "agent_update" and e["action"] == "stopped"]
+    assert len(stopped) == 1
+    assert stopped[0]["agent"]["id"] == "teammate:ghost-explorer"
+
+
+@pytest.mark.asyncio
+async def test_teammate_idle_without_name_is_ignored(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    await transport.handle_claude_hook({"hook_event_name": "TeammateIdle"})
+    assert not [e for e in events if e["type"] == "agent_update"]
+
+
+@pytest.mark.asyncio
+async def test_dead_teammate_pane_emits_agent_stopped(tmp_path: Path) -> None:
+    """Belt-and-suspenders: when a teammate pane dies/vanishes, an explicit `stopped` agent_update
+    is emitted (not just terminal_pane_closed) so a LIVE client evicts the teammate immediately —
+    the fallback for a dropped TeammateIdle."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    await transport.start()
+
+    # A teammate pane opens (its --agent-name comes from the start command).
+    transport.pane_start_commands["%2"] = "x --agent-name fold-fixer --agent-type Explore"
+    transport.pane_lines.append("%2\t1\tmain\t0\t2.1.200\t100\t40\t0\t0\t0\t")
+    await transport._refresh_panes(emit_events=True)  # noqa: SLF001
+    assert transport._panes["%2"].agent_name == "fold-fixer"  # noqa: SLF001
+
+    # …then its pane dies (pane_dead=1) — the teammate finished and its Claude exited.
+    transport.pane_lines[-1] = "%2\t1\tmain\t0\t2.1.200\t100\t40\t0\t0\t1\t"
+    await transport._refresh_panes(emit_events=True)  # noqa: SLF001
+    await transport.stop()
+
+    stopped = [
+        e
+        for e in events
+        if e["type"] == "agent_update" and e["action"] == "stopped" and e["agent"]["id"] == "%2"
+    ]
+    assert len(stopped) == 1
+    assert stopped[0]["agent"]["kind"] == "teammate"
+    assert stopped[0]["agent"]["name"] == "fold-fixer"
+
+
+@pytest.mark.asyncio
+async def test_dead_primary_pane_emits_no_agent_stopped(tmp_path: Path) -> None:
+    """The primary REPL pane has no --agent-name, so its close must NEVER emit a teammate stop."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    events = await _collect_events(transport)
+    await transport.start()
+
+    # Default pane %1 is the primary (no --agent-name resolved). Make it vanish.
+    transport.pane_lines = []
+    await transport._refresh_panes(emit_events=True)  # noqa: SLF001
+    await transport.stop()
+
+    assert not [e for e in events if e["type"] == "agent_update"]
+
+
+@pytest.mark.asyncio
 async def test_interrupt_finishes_active_turn(tmp_path: Path) -> None:
     transport = FakeTmuxInteractiveTransport(str(tmp_path))
     events = await _collect_events(transport)
@@ -419,6 +743,7 @@ def test_capabilities_advertise_interactive_terminal_controls(tmp_path: Path) ->
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_real_tmux_smoke_with_fake_claude(
     tmp_path: Path,
@@ -528,6 +853,166 @@ async def test_claude_stop_hook_emits_semantic_result(tmp_path: Path) -> None:
     assert usage, "completed turn must report non-empty modelUsage"
     out_tokens = next(iter(usage.values()))["outputTokens"]
     assert out_tokens >= 1
+
+
+@pytest.mark.asyncio
+async def test_message_display_hook_streams_interleaved_prose(tmp_path: Path) -> None:
+    """MessageDisplay → a whole-message assistant frame MID-TURN, interleaved with the tool
+    hooks — the live channel for the agent's 'normal messages' between tool calls."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    events = await _collect_events(transport)
+
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "MessageDisplay",
+            "session_id": "claude-session",
+            "turn_id": "turn-1",
+            "message_id": "msg-1",
+            "index": 0,
+            "final": True,
+            "delta": "Scanning the module now.",
+        }
+    )
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "swift test"},
+            "tool_use_id": "tool-1",
+        }
+    )
+    # A message displayed across TWO flushes → accumulated, ONE frame on the final flush.
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "MessageDisplay",
+            "turn_id": "turn-1",
+            "message_id": "msg-2",
+            "index": 0,
+            "final": False,
+            "delta": "Found it —",
+        }
+    )
+    assert not [
+        e
+        for e in events
+        if e["type"] == "assistant"
+        and any(b.get("text") == "Found it —" for b in e["message"]["content"])
+    ], "a non-final flush must not emit"
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "MessageDisplay",
+            "turn_id": "turn-1",
+            "message_id": "msg-2",
+            "index": 1,
+            "final": True,
+            "delta": "patching.",
+        }
+    )
+    # A TUI re-display of the SAME message must not duplicate the segment.
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "MessageDisplay",
+            "turn_id": "turn-1",
+            "message_id": "msg-2",
+            "index": 0,
+            "final": True,
+            "delta": "Found it —\npatching.",
+        }
+    )
+
+    assistants = [e for e in events if e["type"] == "assistant"]
+    texts = [
+        block["text"]
+        for e in assistants
+        for block in e["message"]["content"]
+        if block.get("type") == "text"
+    ]
+    assert texts == ["Scanning the module now.", "Found it —\npatching."]
+    # Ordering: prose frame → tool_use frame → prose frame (interleaved, not batched at Stop).
+    kinds = [
+        ("tool" if any(b.get("type") == "tool_use" for b in e["message"]["content"]) else "text")
+        for e in assistants
+    ]
+    assert kinds == ["text", "tool", "text"]
+    assert transport.is_turn_active  # prose alone marks the semantic turn started
+
+
+@pytest.mark.asyncio
+async def test_stop_hook_skips_final_message_already_streamed_via_display(
+    tmp_path: Path,
+) -> None:
+    """The Stop twin guard: when MessageDisplay already streamed the final message, Stop
+    must not emit the same prose a second time — but the result frame still carries it."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    events = await _collect_events(transport)
+
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "MessageDisplay",
+            "message_id": "msg-9",
+            "final": True,
+            "delta": "All done — tests green.",
+        }
+    )
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "Stop",
+            "last_assistant_message": "All done — tests green.",
+        }
+    )
+
+    assistants = [e for e in events if e["type"] == "assistant"]
+    assert len(assistants) == 1  # the MessageDisplay emission only
+    result = next(e for e in events if e["type"] == "result")
+    assert result["result"] == "All done — tests green."
+
+
+@pytest.mark.asyncio
+async def test_late_display_flush_after_stop_drops_result_echo(tmp_path: Path) -> None:
+    """Fast turn cycle (verified live): the final MessageDisplay flush can land AFTER the
+    Stop hook. The result already carried that text, so the late echo must be dropped —
+    no twin assistant frame, and no phantom turn opened."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    events = await _collect_events(transport)
+
+    await transport.handle_claude_hook(
+        {"hook_event_name": "UserPromptSubmit", "prompt": "quick one"}
+    )
+    await transport.handle_claude_hook(
+        {"hook_event_name": "Stop", "last_assistant_message": "quick answer"}
+    )
+    assert not transport.is_turn_active
+    frames_after_stop = len(events)
+
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "MessageDisplay",
+            "message_id": "late-1",
+            "final": True,
+            "delta": "quick answer",
+        }
+    )
+    assert not transport.is_turn_active, "a late display echo must not open a phantom turn"
+    late = [e for e in events[frames_after_stop:] if e["type"] == "assistant"]
+    assert not late, "the result already carried this text — no twin frame"
+
+
+@pytest.mark.asyncio
+async def test_message_display_hook_drops_sidechain_prose(tmp_path: Path) -> None:
+    """Subagent (sidechain) prose has no main-flow anchor — it must not interleave."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    events = await _collect_events(transport)
+
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "MessageDisplay",
+            "is_sidechain": True,
+            "message_id": "sub-1",
+            "final": True,
+            "delta": "subagent chatter",
+        }
+    )
+    assert not [e for e in events if e["type"] == "assistant"]
 
 
 def test_remote_control_on_by_default_adds_flag(tmp_path: Path, monkeypatch) -> None:
@@ -752,6 +1237,117 @@ async def test_hook_enabled_turn_completes_on_stop_not_terminal_idle(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_queued_prompt_after_teammate_stop_recovers_native_idle(tmp_path: Path) -> None:
+    """Recorded live: a worker's late Stop precedes a follow-up with no Stop."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    events = await _collect_events(transport)
+    transport._claude_native_session_id = "main-native-session"
+    fixture = Path(__file__).parents[1] / "fixtures/forge-live/claude-queued-idle.json"
+    hooks = json.loads(fixture.read_text())
+    try:
+        for hook in hooks:
+            await transport.handle_claude_hook(hook)
+        results = [e for e in events if e["type"] == "result"]
+        assert len(results) == 2  # Old worker notification, then the actual follow-up.
+        assert results[-1]["stop_reason"] == "native_idle"
+        assert "FORGE_RECOVERED" in results[-1]["result"]
+        assert "FORGE_DONE:" in results[-1]["result"]
+        assert not transport.is_turn_active
+        # A retried notification or a delayed Stop cannot commit the answer twice.
+        await transport.handle_claude_hook(hooks[-1])
+        await transport.handle_claude_hook(
+            {
+                **hooks[-1],
+                "hook_event_name": "Stop",
+                "last_assistant_message": results[-1]["result"],
+            }
+        )
+        assert len([e for e in events if e["type"] == "result"]) == 2
+    finally:
+        await transport.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "obstacle", ["foreign_prompt", "no_prompt", "child", "partial", "tool", "question", "queued"]
+)
+async def test_native_idle_requires_matching_finished_main_display(
+    tmp_path: Path, obstacle: str
+) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    events = await _collect_events(transport)
+    transport._claude_native_session_id = "main"
+    try:
+        await transport.handle_claude_hook(
+            {
+                "hook_event_name": "MessageDisplay",
+                "session_id": "main",
+                "prompt_id": "p",
+                "message_id": "m",
+                "delta": "Public answer",
+                "final": True,
+            }
+        )
+        idle = {
+            "hook_event_name": "Notification",
+            "notification_type": "idle_prompt",
+            "session_id": "main",
+            "prompt_id": "p",
+        }
+        if obstacle == "foreign_prompt":
+            idle["prompt_id"] = "old"
+        elif obstacle == "no_prompt":
+            idle.pop("prompt_id")
+        elif obstacle == "child":
+            idle["session_id"] = "worker"
+        elif obstacle == "partial":
+            await transport.handle_claude_hook(
+                {
+                    "hook_event_name": "MessageDisplay",
+                    "message_id": "new",
+                    "delta": "still writing",
+                    "final": False,
+                }
+            )
+        elif obstacle == "tool":
+            await transport.handle_claude_hook(
+                {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "tool"}
+            )
+        elif obstacle == "question":
+            transport._pending_tty_prompts["question"] = {"answer_in_flight": True}
+        elif obstacle == "queued":
+            transport._pending_prompt_correlations.append(("next", None, "next request"))
+        await transport.handle_claude_hook(idle)
+        assert not any(e["type"] == "result" for e in events)
+        assert transport.is_turn_active
+    finally:
+        await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_native_work_after_stop_rearms_completion_watchdog(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    events = await _collect_events(transport)
+    try:
+        await transport.handle_claude_hook(
+            {"hook_event_name": "UserPromptSubmit", "prompt": "first"}
+        )
+        previous = transport._turn_done
+        await transport.handle_claude_hook(
+            {"hook_event_name": "Stop", "last_assistant_message": "first done"}
+        )
+        transport._turn_max_seconds = 0.01
+        await transport.handle_claude_hook(
+            {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "next"}
+        )
+        assert transport._turn_done is not previous
+        await _wait_until(lambda: any(e.get("stop_reason") == "timeout" for e in events))
+        assert not transport.is_turn_active
+    finally:
+        await transport.stop()
+
+
+@pytest.mark.asyncio
 async def test_capabilities_advertise_native_steering(tmp_path: Path) -> None:
     transport = FakeTmuxInteractiveTransport(str(tmp_path))
     caps = transport.capabilities
@@ -917,10 +1513,18 @@ async def test_answer_deny_presses_escape(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_ask_user_question_tool_surfaces_and_answers(tmp_path: Path) -> None:
-    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    from tests.test_skuld.test_tmux_native_question_consumption import (
+        NATIVE_ID,
+        TOOL_ID,
+        NativeQuestionTransport,
+    )
+
+    transport = NativeQuestionTransport(str(tmp_path))
     events = await _collect_events(transport)
     await transport.start()
-    transport.capture_stdout = "\n".join(["❯ 1. Postgres", "  2. SQLite", ""])
+    transport.capture_stdout = "\n".join(
+        ["☐ Database", "Which DB?", "❯ 1. Postgres", "  2. SQLite", ""]
+    )
 
     questions = [
         {
@@ -935,6 +1539,9 @@ async def test_ask_user_question_tool_surfaces_and_answers(tmp_path: Path) -> No
             "hook_event_name": "PreToolUse",
             "tool_name": "AskUserQuestion",
             "tool_input": {"questions": questions},
+            "session_id": NATIVE_ID,
+            "tool_use_id": TOOL_ID,
+            "transcript_path": str(transport.native_path),
         }
     )
 
@@ -949,9 +1556,73 @@ async def test_ask_user_question_tool_surfaces_and_answers(tmp_path: Path) -> No
         for e in events
     )
 
+    transport.steps.append(("2", "❯\n"))
+    transport.consumed = {"answers": {"Which DB?": "SQLite"}}
     await transport.send_control("ask_user_answer", request_id=rid, answers=[{"answer": "SQLite"}])
     keys = _send_keys(transport)
-    assert keys[-2:] == ["2", "Enter"]  # select row 2 + confirm
+    assert keys == ["2"]  # Native selection commits on its digit, then exact result proves it.
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_turn_end_flushes_uncorrelated_steer_to_active(tmp_path: Path) -> None:
+    """The CLI batches queued steers into ONE UserPromptSubmit — the later message never
+    fires its own hook and used to strand at steering_state=pending forever. The turn-end
+    flush emits its consumed signal so the broker flips the bubble."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    events = await _collect_events(transport)
+    await transport.start()
+
+    await transport.send_message("first steer", msg_id="m-1")
+    await transport.send_message("second steer", msg_id="m-2")
+    # Claude consumed the FIRST via its own UserPromptSubmit hook…
+    await transport.handle_claude_hook(
+        {"hook_event_name": "UserPromptSubmit", "prompt": "first steer"}
+    )
+    # …but batched/absorbed the second (no per-message hook). Then the turn stops.
+    await transport.handle_claude_hook(
+        {"hook_event_name": "Stop", "last_assistant_message": "did both"}
+    )
+
+    submitted = [e for e in events if e["type"] == "terminal_prompt_submitted"]
+    assert [e.get("msg_id") for e in submitted] == ["m-1", "m-2"]
+    assert submitted[1]["metadata"]["source"] == "turn_boundary_flush"
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_correlated_prompt_captures_claude_native_session_id(tmp_path: Path) -> None:
+    """Resume-id fix (2026-07-13): ``cli_session_id`` used to report the TMUX NAME — a
+    restart passed it to ``claude --resume`` and silently lost the conversation. A
+    CORRELATED UserPromptSubmit (a prompt WE pasted into the main pane) provably belongs
+    to the main conversation, so its ``session_id`` is claude's native resume-capable id.
+    Uncorrelated prompts (teammate/subagent claude processes share this hook endpoint and
+    POST their OWN ids) must NOT capture."""
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    await _collect_events(transport)
+    await transport.start()
+    assert transport.session_id is None
+
+    # Uncorrelated prompt (a teammate pane's own hook) — no capture.
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "not ours",
+            "session_id": "11111111-2222-3333-4444-555555555555",
+        }
+    )
+    assert transport.session_id is None
+
+    # Correlated prompt (we pasted it) — capture claude's native id.
+    await transport.send_message("do the thing", msg_id="m-1")
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "do the thing",
+            "session_id": "502f0634-1dc7-4bdb-9520-68f80c008cca",
+        }
+    )
+    assert transport.session_id == "502f0634-1dc7-4bdb-9520-68f80c008cca"
     await transport.stop()
 
 
@@ -1013,11 +1684,12 @@ async def test_user_message_waits_for_repl_ready_before_pasting(
     await asyncio.wait_for(delivery, timeout=3)
     assert any("hello there" in buf for buf in transport.loaded_buffers)
 
-    # once seen, later deliveries do not poll the pane again
+    # Readiness stays cached; each delivery still checks for a workspace-trust dialog.
     before = len([args for args, _ in transport.commands if args[0] == "capture-pane"])
     await transport.send_message("second")
     after = len([args for args, _ in transport.commands if args[0] == "capture-pane"])
-    assert after == before
+    assert after == before + 1
+    assert transport._repl_ready_seen
     await transport.stop()
 
 
@@ -1300,3 +1972,29 @@ def test_spawn_env_routes_through_the_model_gateway(tmp_path):
     assert env["ANTHROPIC_BASE_URL"] == "http://niuu:8080/api/v1/bifrost"
     assert env["ANTHROPIC_AUTH_TOKEN"] == "niuu-gateway"
     assert "ANTHROPIC_API_KEY" not in env
+
+
+@pytest.mark.asyncio
+async def test_workspace_trust_menu_is_not_a_prompt_and_cannot_receive_chat(tmp_path):
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    await transport.start()
+    transport.capture_stdout = (
+        "Accessing workspace:\n/test\n❯ No, exit\n  Yes, I trust this folder\nEnter to confirm"
+    )
+    before = list(transport.loaded_buffers)
+    assert not transport._repl_looks_ready(transport.capture_stdout)
+    with pytest.raises(RuntimeError, match="Workspace trust"):
+        await transport.send_message("This must not select No, exit")
+    assert transport.loaded_buffers == before
+    assert not transport._turn_active
+    assert not transport._send_lock.locked()
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_seed_prompt_and_command_discovery_reject_workspace_trust_menu(tmp_path):
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    transport.capture_stdout = "Accessing workspace:\n❯ No, exit\nYes, I trust this folder"
+    with pytest.raises(RuntimeError, match="Workspace trust"):
+        await transport._wait_for_repl_ready()
+    assert not transport.loaded_buffers

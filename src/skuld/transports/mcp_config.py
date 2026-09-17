@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from typing import Any
 
 
@@ -27,8 +28,21 @@ def normalize_mcp_servers(raw_servers: object) -> list[dict[str, Any]]:
             entry["url"] = str(raw["url"])
         if isinstance(raw.get("args"), list):
             entry["args"] = [str(arg) for arg in raw["args"]]
+        if isinstance(raw.get("env_vars"), list):
+            entry["env_vars"] = [str(name) for name in raw["env_vars"]]
         if isinstance(raw.get("env"), dict):
             entry["env"] = {str(k): str(v) for k, v in raw["env"].items()}
+        if isinstance(raw.get("headers"), dict):
+            entry["headers"] = {str(k): str(v) for k, v in raw["headers"].items()}
+        for key in (
+            "credential_file",
+            "credential_env",
+            "credential_format",
+            "auth_header",
+            "auth_prefix",
+        ):
+            if key in raw:
+                entry[key] = str(raw[key])
         if raw.get("description"):
             entry["description"] = str(raw["description"])
         if raw.get("cwd"):
@@ -53,6 +67,8 @@ def build_claude_mcp_config(raw_servers: object) -> str | None:
         entry: dict[str, Any] = {}
         if server.get("url"):
             entry["url"] = server["url"]
+            entry["type"] = server.get("type", "http")
+            entry.update(_claude_auth(server))
         else:
             entry["command"] = server.get("command")
             entry["args"] = list(server.get("args") or [])
@@ -74,9 +90,9 @@ def build_sdk_mcp_servers(raw_servers: object) -> dict[str, dict[str, Any]]:
         if server.get("url"):
             server_type = str(server.get("type") or "sse")
             if server_type == "http":
-                payload[name] = {"type": "http", "url": server["url"]}
+                payload[name] = {"type": "http", "url": server["url"], **_claude_auth(server)}
                 continue
-            payload[name] = {"type": "sse", "url": server["url"]}
+            payload[name] = {"type": "sse", "url": server["url"], **_claude_auth(server)}
             continue
 
         entry: dict[str, Any] = {"command": server.get("command") or ""}
@@ -98,15 +114,48 @@ def build_codex_mcp_overrides(raw_servers: object) -> list[tuple[str, str]]:
         base = f"mcp_servers.{server['name']}"
         if server.get("url"):
             overrides.append((f"{base}.url", json.dumps(server["url"])))
+            if server.get("credential_file") or server.get("credential_env"):
+                overrides.append(
+                    (f"{base}.http_headers_helper", json.dumps(_header_helper(server)))
+                )
+            for key, value in server.get("headers", {}).items():
+                overrides.append((f"{base}.http_headers.{json.dumps(key)}", json.dumps(value)))
         else:
             overrides.append((f"{base}.command", json.dumps(server.get("command") or "")))
             overrides.append((f"{base}.args", json.dumps(list(server.get("args") or []))))
             if server.get("env"):
                 for env_key, env_value in dict(server["env"]).items():
                     overrides.append((f"{base}.env.{env_key}", json.dumps(env_value)))
+            if server.get("env_vars"):
+                overrides.append((f"{base}.env_vars", json.dumps(server["env_vars"])))
             if server.get("cwd"):
                 overrides.append((f"{base}.cwd", json.dumps(server["cwd"])))
         for timeout_key in ("startup_timeout_sec", "tool_timeout_sec"):
             if timeout_key in server:
                 overrides.append((f"{base}.{timeout_key}", json.dumps(server[timeout_key])))
     return overrides
+
+
+def _header_helper(server: dict[str, Any]) -> str:
+    args = [
+        "python3",
+        "-m",
+        "skuld.mcp_credentials",
+        "--env" if server.get("credential_env") else "--file",
+        server.get("credential_env") or server["credential_file"],
+        "--header",
+        server.get("auth_header", "Authorization"),
+        "--prefix",
+        server.get("auth_prefix", "Bearer "),
+    ]
+    if server.get("credential_format") == "oauth":
+        args.append("--oauth")
+    return shlex.join(args)
+
+
+def _claude_auth(server: dict[str, Any]) -> dict[str, Any]:
+    if server.get("credential_file") or server.get("credential_env"):
+        return {"headersHelper": _header_helper(server)}
+    if server.get("headers"):
+        return {"headers": server["headers"]}
+    return {}

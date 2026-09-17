@@ -21,6 +21,7 @@ from volundr.domain.models import (
     GitSource,
     Principal,
     RepoInfo,
+    Session,
     SessionStatus,
 )
 from volundr.domain.services import (
@@ -897,6 +898,17 @@ class TestSessionServiceStop:
         assert result.chat_endpoint is None
         assert result.code_endpoint is None
         assert len(pod_manager.stop_calls) == 1
+
+    async def test_stop_failed_session_retries_cleanup(self, repository: Repo, pod_manager: Pods):
+        service = SessionService(repository, pod_manager)
+        session = Session(
+            id=uuid4(), name="failed", status=SessionStatus.FAILED, error="start failed"
+        )
+        await repository.create(session)
+        stopped = await service.stop_session(session.id)
+        assert pod_manager.stop_calls == [session]
+        assert stopped.status == SessionStatus.STOPPED
+        assert stopped.error is None
 
     async def test_stop_nonexistent(self, repository: Repo, pod_manager: Pods):
         """Stopping a nonexistent session raises SessionNotFoundError."""

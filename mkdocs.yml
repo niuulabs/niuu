@@ -70,6 +70,7 @@ nav:
       - Single-host Docker mode: operations/docker-mode.md
       - Kubernetes deployment: operations/kubernetes-deployment.md
       - OpenShell runtime: operations/openshell-runtime.md
+      - Integration credentials and MCP: operations/integrations-and-mcp.md
       - Identity and execution boundaries: operations/security-and-permissions.md
       - Diagnose an operation: operations/observability.md
       - Migrations and upgrades: operations/migrations.md

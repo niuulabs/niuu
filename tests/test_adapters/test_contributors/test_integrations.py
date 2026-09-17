@@ -122,6 +122,7 @@ class TestIntegrationContributor:
         assert server["name"] == "linear"
         assert server["command"] == "npx"
         assert server["env"] == {}
+        assert server["env_vars"] == ["LINEAR_API_KEY"]
 
     async def test_produces_secret_manifest_for_mcp(self, session, principal):
         """MCP integration produces manifest with env mappings."""
@@ -375,3 +376,97 @@ async def test_model_server_without_a_gateway_url_refuses_to_launch(session, pri
     )
     with pytest.raises(ValueError, match="gateway_url"):
         await IntegrationContributor(integration_registry=registry).contribute(session, ctx)
+
+
+async def test_http_oauth_config_contains_only_file_references(session):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from niuu.domain.oauth_credentials import OAUTH_ENGINE, mcp_token_path
+
+    registry = IntegrationRegistry(
+        definitions_from_config(
+            [
+                {
+                    "slug": "linear",
+                    "name": "Linear",
+                    "integration_type": "issue_tracker",
+                    "mcp_server": {
+                        "name": "linear",
+                        "transport": "http",
+                        "url": "https://mcp.linear.app/mcp",
+                        "token_field": "token",
+                    },
+                }
+            ]
+        )
+    )
+    store = AsyncMock()
+    store.get.return_value = SimpleNamespace(metadata={"renewal_owner": OAUTH_ENGINE})
+    contributor = IntegrationContributor(integration_registry=registry, credential_store=store)
+    result = await contributor.contribute(
+        session, SessionContext(integration_connections=(_linear_connection(),))
+    )
+    server = result.values["mcpServers"][0]
+    assert server == {
+        "name": "linear",
+        "type": "http",
+        "url": "https://mcp.linear.app/mcp",
+        "credential_file": mcp_token_path("conn-linear"),
+        "credential_format": "oauth",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+    }
+    store.get_value.assert_not_called()
+
+
+async def test_builtin_linear_uses_official_http_and_projected_credential(session, principal):
+    registry = IntegrationRegistry(
+        definitions_from_config(
+            [definition.model_dump() for definition in Settings().integrations.definitions]
+        )
+    )
+    spec = registry.get_definition("linear").mcp_server
+    assert spec.transport == "http"
+    assert spec.url == "https://mcp.linear.app/mcp"
+    assert spec.token_field == "api_key"
+    contribution = await IntegrationContributor(integration_registry=registry).contribute(
+        session,
+        SessionContext(principal=principal, integration_connections=(_linear_connection(),)),
+    )
+    server = contribution.values["mcpServers"][0]
+    assert server["url"] == spec.url
+    assert server["credential_file"].startswith("/run/secrets/mcp/")
+    assert "headers" not in server
+    assert "command" not in server
+
+
+@pytest.mark.parametrize("runtime_backend", ["kubernetes", "openshell"])
+async def test_generic_mcp_uses_existing_runtime_credential_delivery(
+    session, principal, runtime_backend
+):
+    from dataclasses import replace
+
+    registry = IntegrationRegistry(
+        definitions_from_config(
+            [definition.model_dump() for definition in Settings().integrations.definitions]
+        )
+    )
+    connection = replace(
+        _linear_connection(), slug="mcp", config={"mcp_url": "https://tools.example/mcp"}
+    )
+    result = await IntegrationContributor(integration_registry=registry).contribute(
+        session,
+        SessionContext(
+            principal=principal,
+            integration_connections=(connection,),
+            runtime_backend=runtime_backend,
+        ),
+    )
+    server = result.values["mcpServers"][0]
+    assert server["url"] == "https://tools.example/mcp"
+    assert server["name"] == "mcp-conn-linear"
+    assert server["auth_header"] == "Authorization"
+    assert server["auth_prefix"] == "Bearer "
+    assert "headers" not in server
+    assert ("credential_env" if runtime_backend == "openshell" else "credential_file") in server

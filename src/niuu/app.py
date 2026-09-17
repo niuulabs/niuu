@@ -515,6 +515,7 @@ def build_root_app(
         # target in single-process/local mode.
         key=lambda item: (item[0] == "guild", item[0]),
     )
+    startup_failures: set[str] = set()
     for name, plugin in plugin_order:
         if name not in requested_plugins:
             continue
@@ -538,6 +539,7 @@ def build_root_app(
                 embedded_forge_app = sub_app
             sub_apps.append((name, sub_app))
         except Exception:
+            startup_failures.add(name)
             logger.exception("Failed to create API app for plugin: %s", name)
 
     @asynccontextmanager
@@ -558,6 +560,7 @@ def build_root_app(
                     started_app_ids.add(app_id)
                     logger.info("Started %s lifespan", name)
                 except Exception:
+                    startup_failures.add(name)
                     logger.exception("Failed to start %s lifespan", name)
 
         yield
@@ -592,9 +595,20 @@ def build_root_app(
         ", ".join(f"{item.name}[{item.source}]" for item in route_inventory) or "(none)",
     )
 
+    from niuu.build_identity import build_identity
+
+    identity = build_identity()
+
     @root.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health() -> Response:
+        return JSONResponse(
+            {
+                "status": "degraded" if startup_failures else "ok",
+                **identity,
+                "failed_plugins": sorted(startup_failures),
+            },
+            status_code=503 if startup_failures else 200,
+        )
 
     prefix_apps: list[tuple[str, ASGIApp]] = []
     for name, sub_app in sub_apps:
@@ -614,6 +628,13 @@ def build_root_app(
     guild_app = next((sub_app for name, sub_app in sub_apps if name == "guild"), None)
     if guild_app is not None and "skuld-proxy" in active_mounts:
         root.add_middleware(_ResidentSessionDispatchMiddleware, guild_app=guild_app)
+
+    # Wire compression (2026-07-12) — see niuu.gzip_sse for the numbers + SSE safety. Added
+    # AFTER the prefix dispatch so gzip is the OUTERMOST layer and covers the mounted plugin
+    # APIs (the forge conversation windows are the payloads that need it most).
+    from niuu.gzip_sse import SSESafeGZipMiddleware
+
+    root.add_middleware(SSESafeGZipMiddleware, minimum_size=4096)
 
     _install_merged_openapi(
         root=root,

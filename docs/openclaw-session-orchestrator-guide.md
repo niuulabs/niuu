@@ -175,6 +175,8 @@ Volundr's Forge session-create API uses `definition` to pick the runtime, for ex
 
 - `skuldClaude`
 - `skuldCodex`
+- `skuldMuse` — Meta Muse Code over the Muse Session Protocol (native mid-turn
+  steering, resumable host sessions); see `docs/operator/muse-code.md`.
 - `skuldOpenCode`
 - `skuldClaudeRemote` — Claude Code Remote Control: the broker launches
   `claude remote-control` and surfaces a pairing URL
@@ -437,6 +439,11 @@ The `201` response is a regular session object with `origin` set to the
 harness (`claude` or `codex`), `external_session_id` recorded, and a
 `local_mount` source pointing at the session's original working directory. The
 session is created in a non-running state — importing never launches anything.
+Before returning `201`, Forge reads a bounded snapshot of the native transcript
+and commits its recoverable messages and tool activity to the durable event log.
+An unreadable, invalid, or empty transcript returns an error instead of an empty
+successful recovery. If storage fails after session creation, the error identifies
+the created session and its history-import retry endpoint.
 
 Error contract:
 
@@ -445,8 +452,8 @@ Error contract:
 | `404` | Unknown provider or external id | Re-list and reconcile |
 | `409` | Already imported | Extract the existing session id from the listing's `imported_session_id` |
 | `403` | Workspace outside allowed mount prefixes | Do not retry; surface to operator |
-| `422` | Workspace directory no longer exists | Do not retry; the session is dead on disk |
-| `503` | Discovery not enabled on this deployment | Stop using the feature |
+| `422` | Workspace or native transcript is unavailable/invalid | Inspect the native source before retrying |
+| `503` | Discovery/storage unavailable or commit failed | Restore the dependency; use the returned history-import retry endpoint if a session was created |
 
 ### Resume an imported session
 
@@ -462,6 +469,42 @@ native session id to the broker, so the CLI reattaches to the original
 conversation — prior context, decisions, and file state knowledge included.
 From that point the session behaves like any Volundr session: SSE updates,
 live chat over `chat_endpoint`, stop/archive lifecycle, chronicles.
+
+Native model context and Forge display history are restored together. Import
+stores public user/assistant messages and available tool calls/results with native
+timestamps and provenance. Resume loads the durable transcript into the broker's
+conversation cache before starting the CLI, so iOS REST history and WebSocket
+reconnect snapshots include the imported prefix. Verify `cli_session_id` matches
+`external_session_id` to confirm native context continuity independently.
+
+To repair an older recovery that has no conversation data, stop that Forge
+session, then call:
+
+```http
+POST /api/v1/forge/sessions/{id}/history/import
+```
+
+The endpoint derives the provider and native identity from the existing session.
+Its response reports `imported_frames`, `source_frames`, and `partial`. A repeat
+of the same committed import returns `imported_frames: 0`. An active session or
+one already containing conversation data returns `409`; Forge does not merge
+different conversations or overwrite existing capture. Resume after backfill.
+
+This is a snapshot import, not a byte-for-byte reconstruction of the old live
+stream. Private reasoning and injected system context are excluded. Incomplete
+final JSONL writes can be recovered up to the last complete record, with partial
+provenance; corrupt interior records fail explicitly. Original tool calls are
+displayed as history and are never executed by the import.
+
+The browser exposes discovery under **Import CLI Sessions** beside the Sessions
+sidebar's create button. Its import action creates the record; start it afterward.
+There is currently no iOS import screen or browser paste-ID field; direct native
+IDs can be imported through the API above. Imported sessions appear in the normal
+iOS session list.
+
+Codex imports use the app-server transport. Claude imports currently use the
+resume-capable persistent subprocess transport, not the preferred Claude tmux
+runtime. The import request does not yet expose a transport selector.
 
 Recommended controller flow:
 
@@ -645,7 +688,7 @@ broker may emit:
 The turn blocks until a client answers:
 
 ```json
-{"type": "ask_user_answer", "request_id": "q-1", "answer": "beta"}
+{"type": "ask_user_answer", "request_id": "q-1", "answers": [{"question": "...", "answer": "beta"}]}
 ```
 
 A controller that cannot meaningfully answer should surface the question to a

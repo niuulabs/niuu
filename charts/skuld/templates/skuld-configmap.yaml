@@ -52,10 +52,27 @@ data:
     transport: {{ .Values.broker.transport | default "sdk" | quote }}
     transport_adapter: {{ .Values.broker.transportAdapter | default "skuld.transports.sdk.SDKTransport" | quote }}
     cli_binary: {{ .Values.broker.cliBinary | default "claude" | quote }}
+    muse_bin: {{ .Values.broker.museBin | default "" | quote }}
+    tmux_question_transcript_max_bytes: {{ .Values.broker.tmuxQuestionTranscriptMaxBytes | default 1048576 }}
+    tmux_question_result_history_limit: {{ .Values.broker.tmuxQuestionResultHistoryLimit | default 128 }}
     remote_control_permission_mode: {{ .Values.broker.remoteControlPermissionMode | default "" | quote }}
     skip_permissions: {{ .Values.broker.skipPermissions }}
     agent_teams: {{ .Values.broker.agentTeams | default false }}
     cli_type: {{ .Values.broker.cliType | default "claude" | quote }}
+    history_read_timeout_seconds: {{ .Values.broker.historyReadTimeoutSeconds | default 2.0 }}
+    history_bootstrap_max_frames: {{ .Values.broker.historyBootstrapMaxFrames | default 256 }}
+    conversation_recent_max_turns: {{ .Values.broker.conversationRecentMaxTurns | toJson }}
+    conversation_recent_max_bytes: {{ .Values.broker.conversationRecentMaxBytes | toJson }}
+    conversation_snapshot_max_bytes: {{ .Values.broker.conversationSnapshotMaxBytes | toJson }}
+    live_frame_max_bytes: {{ .Values.broker.liveFrameMaxBytes | toJson }}
+    codex_receive_max_bytes: {{ .Values.broker.codexReceiveMaxBytes | toJson }}
+    history_hydration_enabled: {{ .Values.broker.historyHydrationEnabled | toJson }}
+    history_hydration_timeout_seconds: {{ .Values.broker.historyHydrationTimeoutSeconds | toJson }}
+    history_hydration_page_size: {{ .Values.broker.historyHydrationPageSize | toJson }}
+    history_hydration_max_frames: {{ .Values.broker.historyHydrationMaxFrames | toJson }}
+    history_hydration_max_bytes: {{ .Values.broker.historyHydrationMaxBytes | toJson }}
+    effort_control_timeout_s: {{ .Values.broker.effortControlTimeoutSeconds | toJson }}
+    pi: {{ .Values.broker.pi | toJson }}
     codex_auth:
       adapter: {{ dig "codexAuth" "adapter" "skuld.codex_auth.HostCodexAuthProvider" .Values.broker | quote }}
       kwargs: {{ dig "codexAuth" "kwargs" dict .Values.broker | toJson }}

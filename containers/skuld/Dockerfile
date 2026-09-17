@@ -113,7 +113,8 @@ RUN cd /opt/npm-bootstrap \
     && ln -sf /opt/skuld-tools/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -sf /opt/skuld-tools/node_modules/.bin/codex /usr/local/bin/codex \
     && ln -sf /opt/skuld-tools/node_modules/.bin/opencode /usr/local/bin/opencode \
-    && ln -sf /opt/skuld-tools/node_modules/.bin/grok /usr/local/bin/grok
+    && ln -sf /opt/skuld-tools/node_modules/.bin/grok /usr/local/bin/grok \
+    && ln -sf /opt/skuld-tools/node_modules/.bin/pi /usr/local/bin/pi
 
 # Grok Build CLI (ACP stdio transport and the xAI device sign-in) ships from the
 # @xai-official/grok npm package above. Sessions authenticate with XAI_API_KEY or
@@ -129,6 +130,8 @@ RUN existing=$(getent passwd 1000 | cut -d: -f1) && \
 # Copy the pre-built venv from builder.
 ENV VIRTUAL_ENV=/opt/venv
 COPY --from=builder /opt/venv /opt/venv
+# Repository startup hooks also need the pinned tooling installer at runtime.
+COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Copy entrypoint
@@ -147,8 +150,12 @@ RUN chmod +x /usr/local/bin/openshell-run-installed-skuld
 # Set working directory
 WORKDIR /app
 
+# Pinned Muse is shared with the OpenShell image.
+COPY containers/skuld/install-muse.sh /tmp/install-muse.sh
+RUN sh /tmp/install-muse.sh "$TARGETARCH" && rm /tmp/install-muse.sh
+
 # Fail the image build if an advertised CLI is missing or cannot execute.
-RUN claude --version && codex --version && opencode --version && grok --version
+RUN claude --version && codex --version && opencode --version && grok --version && pi --version && muse --version
 
 # Switch to non-root user
 USER skuld

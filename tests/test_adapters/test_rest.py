@@ -781,7 +781,11 @@ class TestSessionMessages:
         assert body["status"] == "pending"
         assert body["delivery"] == "pending"
         assert fake_connect.calls == [
-            ("ws://localhost:8080/s/message-session/session", {"open_timeout": 10})
+            (
+                "ws://localhost:8080/s/message-session/session"
+                "?history=recent&history_protocol=2&history_delivery=none",
+                {"open_timeout": 10},
+            )
         ]
         # BUG-3: the outbound user frame now carries a request_id correlating with the
         # broker's delivery ACK. The endpoint echoes the same request_id in its body,
@@ -938,6 +942,7 @@ class TestSessionMessages:
         repository: InMemorySessionRepository,
         fake_connect,
         content: str = "hello",
+        request_id: str | None = None,
     ):
         session = Session(
             id=uuid4(),
@@ -964,8 +969,46 @@ class TestSessionMessages:
         ):
             return client.post(
                 f"/api/v1/forge/sessions/{session.id}/messages",
-                json={"content": content},
+                json={"content": content, **({"request_id": request_id} if request_id else {})},
             )
+
+    def test_send_preserves_client_identity_for_duplicate_safe_retry(self, client, repository):
+        fake_connect = self._ack_connect({"type": "user_delivered", "status": "delivered"})
+        identity = str(uuid4())
+        response = self._post_message(client, repository, fake_connect, request_id=identity)
+        assert response.json()["request_id"] == identity
+        assert json.loads(fake_connect.ws.sent[0])["request_id"] == identity
+
+    @pytest.mark.parametrize(
+        ("frame", "expected"),
+        [
+            ({"type": "user_delivery_pending", "status": "pending"}, 202),
+            ({"type": "error", "code": "request_id_conflict", "content": "different prompt"}, 409),
+            (
+                {
+                    "type": "error",
+                    "code": "message_claim_unavailable",
+                    "content": "database offline",
+                },
+                503,
+            ),
+        ],
+    )
+    def test_duplicate_and_claim_failures_are_not_delivered(
+        self, client, repository, frame, expected
+    ):
+        response = self._post_message(client, repository, self._ack_connect(frame))
+        assert response.status_code == expected
+        assert response.json()["delivery"] != "delivered"
+
+    def test_send_failure_after_dispatch_is_uncertain_not_safe_to_repeat(self, client, repository):
+        fake_connect = self._ack_connect(None)
+        fake_connect.ws.send = AsyncMock(side_effect=TimeoutError("write may have reached peer"))
+        identity = str(uuid4())
+        response = self._post_message(client, repository, fake_connect, request_id=identity)
+        assert response.status_code == 202
+        assert response.json()["request_id"] == identity
+        assert response.json()["delivery"] == "pending"
 
     def test_send_message_delivered_ack_returns_200_delivered(
         self,

@@ -90,6 +90,13 @@ describe('LaunchWizard helpers', () => {
     expect(deriveCliTool('skuld-custom')).toBe('custom');
     expect(deriveCliTool(' bespoke-tool ')).toBe('bespoke-tool');
     expect(normalizeDefinitionKey(' skuld-opencode ')).toBe('skuldOpenCode');
+    // Meta Muse Code (skuldMuse) — its own rune, CLI tool and task type, plus the short aliases.
+    expect(getDefinitionRune('skuldMuse')).toBe('ᛘ');
+    expect(getDefinitionRune('skuld-muse')).toBe('ᛘ');
+    expect(normalizeDefinitionKey('muse')).toBe('skuldMuse');
+    expect(normalizeDefinitionKey('skuld-muse')).toBe('skuldMuse');
+    expect(deriveCliTool('skuldMuse')).toBe('muse');
+    expect(definitionToTaskType('skuld-muse')).toBe('skuld-muse');
     expect(normalizeDefinitionKey('skuld-claude-interactive')).toBe('skuldClaudeInteractive');
     expect(normalizeDefinitionKey('custom-tool')).toBe('custom-tool');
     expect(definitionToTaskType('skuldClaudeInteractive')).toBe('skuld-claude-interactive');

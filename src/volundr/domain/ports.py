@@ -24,7 +24,7 @@ from credentials.ports import (  # noqa: F401
 from identity.models import Resource  # noqa: F401
 from identity.ports import AuthorizationPort, TenantRepository, UserRepository  # noqa: F401
 from niuu.domain.outcome import OutcomeField
-from niuu.ports.credentials import CredentialRefreshLockPort, CredentialStorePort  # noqa: F401
+from niuu.ports.credentials import CredentialStorePort  # noqa: F401
 from niuu.ports.git import (
     GitAuthError,  # noqa: F401
     GitProvider,  # noqa: F401
@@ -99,7 +99,6 @@ from volundr.domain.models import (  # noqa: F401
 __all__ = [
     "AuthorizationPort",
     "CredentialStorePort",
-    "CredentialRefreshLockPort",
     "GitAuthError",
     "GitProvider",
     "GitRepoNotFoundError",
@@ -180,13 +179,14 @@ class CodexAuthTokens:
 
 
 class CodexCredentialBrokerPort(ABC):
-    """Resolve and rotate a user's Codex credential without exposing its refresh token."""
+    """Resolve a user's managed Codex credential without exposing its refresh token."""
 
     @abstractmethod
     async def get_tokens(
         self,
         *,
         owner_id: str,
+        tenant_id: str,
         credential_name: str,
         credential_field: str,
         force_refresh: bool = False,
@@ -296,6 +296,14 @@ class ExternalSessionProvider(ABC):
     async def get_session(self, external_id: str) -> ExternalSessionRecord | None:
         """Look up a single session by its native identifier."""
         raise NotImplementedError
+
+    async def read_transcript(self, external_id: str, session_id: UUID) -> list[SessionLogEntry]:
+        """Read native history as ordered replayable frames for a Forge session.
+
+        Adapters preserve native timestamps and identities, and exclude injected
+        instructions and private reasoning. Reading must never invoke the CLI.
+        """
+        raise NotImplementedError("This provider does not support transcript import")
 
 
 class CommunicationRouteRepository(ABC):
@@ -422,6 +430,16 @@ class PodManager(ABC):
 
     async def capacity(self) -> SessionCapacity | None:
         """The runtime's session capacity, or None when it has no fixed cap."""
+        return None
+
+    @property
+    def runtime_backend(self) -> str | None:
+        """Declare lifecycle semantics independently of adapter/config class names.
+
+        None retains legacy composition for existing external implementations.
+        Process adapters must declare their backend so Kubernetes orphan cleanup
+        never interprets an ordinary local gateway as a disposable cluster pod.
+        """
         return None
 
     def initial_chat_endpoint(self, session: Session) -> str | None:
@@ -980,6 +998,17 @@ class SessionEventLogRepository(ABC):
     async def latest_seq(self, session_id: UUID) -> int:
         """Return the highest seq stored for a session, or 0 if none."""
 
+    async def import_history(
+        self, session_id: UUID, source_id: str, entries: list[SessionLogEntry]
+    ) -> int:
+        """Atomically backfill native history into an inactive empty transcript.
+
+        Preserve existing cursors, prevent concurrent broker writes, and record
+        the source so retries cannot duplicate history. Returns inserted frames,
+        or zero if this source was already imported.
+        """
+        raise NotImplementedError("This repository does not support transcript import")
+
     async def detect_conflicts(self, entries: list[SessionLogEntry]) -> list[int]:
         """Return the seqs that ALREADY have a stored row with a DISTINCT payload.
 
@@ -1376,6 +1405,11 @@ class SecretInjectionPort(ABC):
     configure how secrets are injected into session pods.  Volundr never
     sees secret values in production.
     """
+
+    @property
+    def supports_managed_oauth(self) -> bool:
+        """Whether this adapter continuously projects OAuth engine access tokens."""
+        return False
 
     @abstractmethod
     async def pod_spec_additions(

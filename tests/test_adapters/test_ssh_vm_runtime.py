@@ -125,8 +125,9 @@ async def test_start_restores_archive_then_uses_persisted_launch_payload(setup):
     await runtime.start(lease, bootstrap)
     calls = runtime._run.await_args_list
     assert "cloud-init status --wait" in calls[0].args[0][-1]
-    assert "stdin" in calls[1].kwargs
-    assert json.loads(calls[2].kwargs["data"])["allocation_id"] == str(lease.id)
+    assert json.loads(calls[1].kwargs["data"])[0]["path"] == module._LAUNCH
+    assert "stdin" in calls[2].kwargs
+    assert json.loads(calls[3].kwargs["data"])["allocation_id"] == str(lease.id)
     runtime.target.assert_awaited_once()
     archive.unlink()
     runtime._run.reset_mock()
@@ -244,3 +245,144 @@ async def test_cancel_before_restore_preserves_previous_local_archive(setup):
     await runtime.stop(lease, bootstrap)
     assert archive.read_bytes() == b"previous durable data"
     runtime._run.assert_awaited_once()
+
+
+def test_vm_uses_existing_codex_broker_and_preserves_selected_connection(setup):
+    runtime, session, spec, bootstrap, lease = setup
+    payload = json.loads(next(f.content for f in bootstrap.files if f.path == module._LAUNCH))
+    assert payload["environment"]["SKULD__CODEX_AUTH__ADAPTER"] == (
+        "skuld.codex_auth.VolundrCodexAuthProvider"
+    )
+    spec.values["broker"] = {"codexAuth": {"kwargs": {"credential_name": "selected-codex"}}}
+    supplied = runtime.bootstrap(session, spec, MachineBootstrap())
+    payload = json.loads(next(f.content for f in supplied.files if f.path == module._LAUNCH))
+    assert json.loads(payload["environment"]["SKULD__CODEX_AUTH__KWARGS"]) == {
+        "credential_name": "selected-codex"
+    }
+
+
+async def test_existing_session_injector_files_reach_vm_without_entering_workspace(setup, tmp_path):
+    from volundr.adapters.outbound.session_file_secret_injection import (
+        SessionFileSecretInjectionAdapter,
+    )
+    from volundr.domain.models import CredentialMapping
+
+    runtime, session, spec, _, _ = setup
+    source = tmp_path / "credentials" / "user" / session.owner_id
+    source.mkdir(parents=True)
+    (source / "credentials.json").write_text(
+        json.dumps({"values": {"claude-connection": {"token": "explicit-test-token"}}})
+    )
+    injection = SessionFileSecretInjectionAdapter(base_dir=str(tmp_path / "credentials"))
+    await injection.ensure_secret_provider_class(
+        session.owner_id,
+        [
+            CredentialMapping(
+                credential_name="claude-connection",
+                env_mappings={"CLAUDE_CODE_OAUTH_TOKEN": "token"},
+            )
+        ],
+        session_id=str(session.id),
+    )
+    spec.pod_spec = await injection.pod_spec_additions(session.owner_id, str(session.id))
+    bootstrap = runtime.bootstrap(session, spec, MachineBootstrap())
+    payload = json.loads(next(f.content for f in bootstrap.files if f.path == module._LAUNCH))
+    assert "explicit-test-token" not in json.dumps(payload)
+    mount = payload["secret_mounts"][0]
+    assert mount["target"] == "/run/secrets/env.sh"
+    assert not mount["source"].startswith(module._REMOTE_DATA)
+    assert "explicit-test-token" in next(
+        f.content for f in bootstrap.files if f.path == mount["source"]
+    )
+    spec.pod_spec = PodSpecAdditions(
+        volumes=spec.pod_spec.volumes,
+        volume_mounts=(
+            {"name": "secret-env", "mountPath": "/run/secrets/env.sh", "readOnly": False},
+        ),
+    )
+    with pytest.raises(ValueError, match="read-only"):
+        runtime.bootstrap(session, spec, MachineBootstrap())
+
+
+async def test_warm_bootstrap_is_unbound_and_binding_keeps_machine_identity(setup):
+    runtime, session, spec, _, lease = setup
+    machine = runtime.machine_bootstrap(MachineBootstrap())
+    assert all(f.path != module._LAUNCH for f in machine.files)
+    bound = runtime.session_bootstrap(session, spec, machine)
+    assert all(f in bound.files for f in machine.files)
+    assert json.loads(next(f.content for f in bound.files if f.path == module._LAUNCH))[
+        "environment"
+    ]["SESSION_ID"] == str(session.id)
+    runtime._run = AsyncMock()
+    spare = lease.model_copy(update={"session_id": None})
+    await runtime.warm(spare, machine)
+    assert runtime._run.await_args.args[0][-1] == "sudo -n docker pull test/skuld:dev"
+    with pytest.raises(ValueError, match="unbound"):
+        await runtime.start(spare, machine)
+
+
+def test_restore_excludes_runtime_cache_but_rejects_other_escaping_links(tmp_path):
+    import io
+    import subprocess
+    import sys
+    import tarfile
+
+    root = tmp_path / "session"
+    program = module._PREPARE.replace("/var/lib/niuu/session", str(root))
+
+    def archive(link_name):
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as tar:
+            marker = tarfile.TarInfo(".allocation")
+            marker.size = len(b"old-allocation")
+            tar.addfile(marker, io.BytesIO(b"old-allocation"))
+            link = tarfile.TarInfo(link_name)
+            link.type = tarfile.SYMTYPE
+            link.linkname = "/outside/runtime-binary"
+            tar.addfile(link)
+            data = tarfile.TarInfo("workspace/marker.txt")
+            data.size = 9
+            tar.addfile(data, io.BytesIO(b"preserved"))
+        return buffer.getvalue()
+
+    args = [sys.executable, "-c", program, "new-allocation", "restore", '["home/.codex/tmp"]']
+    rejected = subprocess.run(args, input=archive("workspace/escape"), capture_output=True)
+    assert rejected.returncode != 0
+    assert b"AbsoluteLinkError" in rejected.stderr
+    assert not (root / ".allocation").exists()
+    restored = subprocess.run(
+        args, input=archive("home/.codex/tmp/arg0/apply_patch"), capture_output=True
+    )
+    assert restored.returncode == 0, restored.stderr
+    assert (root / ".allocation").read_text() == "new-allocation"
+    assert (root / "workspace/marker.txt").read_text() == "preserved"
+    assert not (root / "home/.codex/tmp").exists()
+
+
+@pytest.mark.parametrize("excluded", ["/home", "../home", ".", "home/*"])
+def test_archive_exclusions_require_explicit_relative_paths(setup, tmp_path, excluded):
+    with pytest.raises(ValueError, match="explicit relative paths"):
+        SshContainerVmRuntime(
+            ssh_private_key_file=str(tmp_path / "key"),
+            ssh_public_key_file=str(tmp_path / "key.pub"),
+            data_dir=str(tmp_path / "excluded-data"),
+            skuld_image="test-image",
+            archive_excludes=[excluded],
+        )
+
+
+def test_forge_controls_reach_vm_guest(setup):
+    runtime, session, spec, _, _ = setup
+    spec.values["session"]["reasoningEffort"] = "high"
+    spec.values["broker"] = {
+        "historyHydrationEnabled": False,
+        "codexReceiveMaxBytes": 123456,
+        "pi": {"binary": "/opt/pi"},
+    }
+    bootstrap = runtime.bootstrap(session, spec, MachineBootstrap())
+    payload = json.loads(next(f.content for f in bootstrap.files if f.path == module._LAUNCH))
+    env = payload["environment"]
+    assert env["SKULD__SESSION__REASONING_EFFORT"] == "high"
+    assert env["SKULD__HISTORY_HYDRATION_ENABLED"] == "false"
+    assert env["SKULD__CODEX_RECEIVE_MAX_BYTES"] == "123456"
+    assert json.loads(env["SKULD__PI"])["binary"] == "/opt/pi"

@@ -356,6 +356,77 @@ class TestUpdateActivity:
         assert updated.activity_state_since is not None
 
     @pytest.mark.asyncio
+    async def test_update_activity_persists_turn_started_at(self, service):
+        """A broker-stamped turn_started_at is persisted VERBATIM and round-trips."""
+        from datetime import UTC, datetime
+
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        turn_start = datetime(2026, 7, 5, 8, 49, 5, tzinfo=UTC)
+
+        updated = await service.update_activity(
+            session.id,
+            SessionActivityState.ACTIVE,
+            {"turn_count": 1},
+            turn_started_at=turn_start,
+        )
+
+        assert updated.turn_started_at == turn_start
+        reloaded = await service.get_session(session.id)
+        assert reloaded.turn_started_at == turn_start
+
+    @pytest.mark.asyncio
+    async def test_update_activity_turn_started_at_null_is_verbatim(self, service):
+        """Unlike state_since, a null turn_started_at is persisted as-is (no now()
+        fallback) — a turn-end/idle report clears the anchor to null."""
+        from datetime import UTC, datetime
+
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        # A running turn stamps the anchor…
+        await service.update_activity(
+            session.id,
+            SessionActivityState.ACTIVE,
+            {},
+            turn_started_at=datetime(2026, 7, 5, 8, 49, 5, tzinfo=UTC),
+        )
+        # …and an idle report (anchor omitted → None) clears it, not defaults it.
+        updated = await service.update_activity(session.id, SessionActivityState.IDLE, {})
+        assert updated.turn_started_at is None
+        reloaded = await service.get_session(session.id)
+        assert reloaded.turn_started_at is None
+
+    @pytest.mark.asyncio
+    async def test_activity_event_carries_turn_started_at(self, service, broadcaster):
+        """The SESSION_ACTIVITY SSE payload includes turn_started_at (ISO8601)."""
+        from datetime import UTC, datetime
+
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        broadcaster._events.clear()
+        turn_start = datetime(2026, 7, 5, 8, 49, 5, tzinfo=UTC)
+
+        await service.update_activity(
+            session.id,
+            SessionActivityState.ACTIVE,
+            {"turn_count": 1},
+            turn_started_at=turn_start,
+        )
+
+        activity = [e for e in broadcaster._events if e.type == EventType.SESSION_ACTIVITY]
+        assert len(activity) == 1
+        assert activity[0].data["turn_started_at"] == turn_start.isoformat()
+
+    @pytest.mark.asyncio
     async def test_activity_event_carries_state_since(self, service, broadcaster):
         """The SESSION_ACTIVITY SSE payload includes activity_state_since (ISO8601)."""
         from datetime import UTC, datetime

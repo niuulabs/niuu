@@ -36,4 +36,10 @@ class PromptContributor(SessionContributor):
         if context.initial_prompt:
             values.setdefault("session", {})["initialPrompt"] = context.initial_prompt
 
+        effort = context.workload_config.get("reasoningEffort")
+        if effort is not None:
+            if not isinstance(effort, str) or not effort.strip():
+                raise ValueError("reasoningEffort must be a nonempty native effort level")
+            values.setdefault("session", {})["reasoningEffort"] = effort.strip()
+
         return SessionContribution(values=values)

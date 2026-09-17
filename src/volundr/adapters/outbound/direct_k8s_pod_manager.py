@@ -351,6 +351,13 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
             env.append(
                 {"name": "SKULD__SESSION__SYSTEM_PROMPT", "value": session_config["systemPrompt"]}
             )
+        if session_config.get("reasoningEffort"):
+            env.append(
+                {
+                    "name": "SKULD__SESSION__REASONING_EFFORT",
+                    "value": session_config["reasoningEffort"],
+                }
+            )
         if session_config.get("initialPrompt"):
             env.append(
                 {"name": "SKULD__SESSION__INITIAL_PROMPT", "value": session_config["initialPrompt"]}

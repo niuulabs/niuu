@@ -26,6 +26,7 @@ from niuu.ports.http_auth import HttpAuthPort
 from volundr.domain.compute import (
     Machine,
     MachineOwnershipError,
+    MachineProfile,
     MachineProvider,
     MachineProviderError,
     MachineRequest,
@@ -126,6 +127,32 @@ class HarvesterMachineProvider(MachineProvider):
         self._vm_path = f"apis/kubevirt.io/v1/namespaces/{self._namespace}/virtualmachines"
         self._vmi_path = f"apis/kubevirt.io/v1/namespaces/{self._namespace}/virtualmachineinstances"
         self._core = f"api/v1/namespaces/{self._namespace}"
+
+    async def profiles(self) -> tuple[MachineProfile, ...]:
+        return tuple(
+            MachineProfile(
+                name=name,
+                revision=hashlib.sha256(
+                    json.dumps(
+                        {"profile": profile.model_dump(), "cloud_init": self._cloud_init},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode()
+                ).hexdigest(),
+                details={
+                    "Image": profile.image,
+                    "CPU": str(profile.cpu),
+                    "Memory": f"{profile.memory_mib} MiB",
+                    "Disk": f"{profile.disk_gib} GiB",
+                    "Network": profile.network,
+                    "Architecture": profile.architecture,
+                    "Cloud-init": "Configured"
+                    if self._cloud_init or profile.cloud_init
+                    else "None",
+                },
+            )
+            for name, profile in self._profiles.items()
+        )
 
     async def close(self) -> None:
         await self._client.aclose()

@@ -1,0 +1,857 @@
+[
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 467,
+    "kind": "user",
+    "role": "user",
+    "request_id": null,
+    "payload": {
+      "role": "user",
+      "type": "user",
+      "uuid": "cd7c328c-a37e-4fa1-b20d-65770256327d",
+      "message": {
+        "role": "user",
+        "content": "Run python3 -c 'import time; time.sleep(5); print(\"FORGE_BACKGROUND_DONE\")'. This intentionally completes while the observer is disconnected. Report completion after observing the tool output.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:e7a66de14733482c8c56e3fb3becca7e:background]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only."
+      }
+    },
+    "ts": "2026-09-07T16:56:52.639574+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 468,
+    "kind": "user_confirmed",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "id": "cd7c328c-a37e-4fa1-b20d-65770256327d",
+      "type": "user_confirmed",
+      "content": "Run python3 -c 'import time; time.sleep(5); print(\"FORGE_BACKGROUND_DONE\")'. This intentionally completes while the observer is disconnected. Report completion after observing the tool output.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:e7a66de14733482c8c56e3fb3becca7e:background]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+      "request_id": null,
+      "steering_state": "pending"
+    },
+    "ts": "2026-09-07T16:56:52.649458+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 469,
+    "kind": "user_delivered",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "id": "cd7c328c-a37e-4fa1-b20d-65770256327d",
+      "type": "user_delivered",
+      "status": "delivered"
+    },
+    "ts": "2026-09-07T16:56:52.654316+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 470,
+    "kind": "assistant",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "assistant",
+      "message": {
+        "model": "gpt-6-astra",
+        "content": []
+      }
+    },
+    "ts": "2026-09-07T16:56:52.658271+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 471,
+    "kind": "user_consumed",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "user_consumed",
+      "msg_id": "cd7c328c-a37e-4fa1-b20d-65770256327d",
+      "event_type": "codex.turn.started"
+    },
+    "ts": "2026-09-07T16:56:52.666082+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 472,
+    "kind": "user_active",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "id": "cd7c328c-a37e-4fa1-b20d-65770256327d",
+      "type": "user_active"
+    },
+    "ts": "2026-09-07T16:56:52.667186+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 473,
+    "kind": "assistant",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "assistant",
+      "message": {
+        "model": "gpt-6-astra",
+        "content": [
+          {
+            "id": "exec-b11dc47f-d45b-4ced-ba90-223e54dc3713",
+            "name": "Bash",
+            "type": "tool_use",
+            "input": {
+              "command": "/bin/bash -lc \"python3 -c 'import time; time.sleep(5); print(\\\"FORGE_BACKGROUND_DONE\\\")'\""
+            }
+          }
+        ]
+      }
+    },
+    "ts": "2026-09-07T16:56:57.226989+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 474,
+    "kind": "content_block_start",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+        "id": "exec-b11dc47f-d45b-4ced-ba90-223e54dc3713",
+        "name": "Bash",
+        "type": "tool_use"
+      }
+    },
+    "ts": "2026-09-07T16:56:57.247602+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 475,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"command\": \"/bin/bash -lc \\\"python3 -c 'import time; time.sleep(5); print(\\\\\\\"FORGE_BACKGROUND_DONE\\\\\\\")'\\\"\"}"
+      }
+    },
+    "ts": "2026-09-07T16:56:57.247649+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 476,
+    "kind": "message_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "message_delta",
+      "usage": {
+        "output_tokens": 77
+      }
+    },
+    "ts": "2026-09-07T16:56:58.236677+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 477,
+    "kind": "content_block_stop",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_stop"
+    },
+    "ts": "2026-09-07T16:57:02.101103+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 478,
+    "kind": "user",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "content": "FORGE_BACKGROUND_DONE\n",
+          "ended_at": "2026-09-07T16:57:02.101209+00:00",
+          "tool_use_id": "exec-b11dc47f-d45b-4ced-ba90-223e54dc3713"
+        }
+      ],
+      "message": {
+        "content": [
+          {
+            "type": "tool_result",
+            "content": "FORGE_BACKGROUND_DONE\n",
+            "ended_at": "2026-09-07T16:57:02.101209+00:00",
+            "tool_use_id": "exec-b11dc47f-d45b-4ced-ba90-223e54dc3713"
+          }
+        ]
+      }
+    },
+    "ts": "2026-09-07T16:57:02.101211+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 479,
+    "kind": "content_block_start",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_start",
+      "index": 1,
+      "content_block": {
+        "type": "tool_result",
+        "content": "FORGE_BACKGROUND_DONE\n",
+        "ended_at": "2026-09-07T16:57:02.101209+00:00",
+        "tool_use_id": "exec-b11dc47f-d45b-4ced-ba90-223e54dc3713"
+      }
+    },
+    "ts": "2026-09-07T16:57:02.119237+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 480,
+    "kind": "content_block_stop",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_stop"
+    },
+    "ts": "2026-09-07T16:57:02.119300+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 481,
+    "kind": "message_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "message_delta",
+      "usage": {
+        "output_tokens": 40
+      }
+    },
+    "ts": "2026-09-07T16:57:02.119367+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 482,
+    "kind": "content_block_start",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_start",
+      "index": 2,
+      "content_block": {
+        "type": "text"
+      }
+    },
+    "ts": "2026-09-07T16:57:05.850419+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 483,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "Command",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.020986+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 484,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": " completed",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.021898+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 485,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": " successfully",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.024273+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 486,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": ";",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.025040+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 487,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": " observed",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.030399+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 488,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": " `",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.034717+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 489,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "FOR",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.037334+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 490,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "GE",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.039422+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 491,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "_BACKGROUND",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.192812+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 492,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "_DONE",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.194383+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 493,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "`.\n\n",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.194463+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 494,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "[",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.198775+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 495,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "FOR",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.198846+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 496,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "GE",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.201113+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 497,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "_DONE",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.236763+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 498,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": ":e",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.367248+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 499,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "7",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.378522+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 500,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "a",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.382542+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 501,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "66",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.385142+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 502,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "de",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.385245+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 503,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "147",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.421061+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 504,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "334",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.448637+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 505,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "82",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.473818+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 506,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "c",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.553287+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 507,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "8",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.562454+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 508,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "c",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.562541+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 509,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "56",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.591940+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 510,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "e",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.622273+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 511,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "3",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.653773+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 512,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "fb",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.684282+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 513,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "3",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.723518+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 514,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "becca",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.751783+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 515,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "7",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.783770+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 516,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "e",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.811941+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 517,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": ":",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.847456+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 518,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "background",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.847553+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 519,
+    "kind": "content_block_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_delta",
+      "delta": {
+        "text": "]",
+        "type": "text_delta"
+      }
+    },
+    "ts": "2026-09-07T16:57:06.875418+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 520,
+    "kind": "content_block_stop",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "content_block_stop"
+    },
+    "ts": "2026-09-07T16:57:06.987758+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 521,
+    "kind": "message_delta",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "message_delta",
+      "usage": {
+        "output_tokens": 41
+      }
+    },
+    "ts": "2026-09-07T16:57:07.002386+00:00"
+  },
+  {
+    "session_id": "a3082046-cd8f-4f8f-ba61-1502845b963a",
+    "seq": 522,
+    "kind": "result",
+    "role": null,
+    "request_id": null,
+    "payload": {
+      "type": "result",
+      "result": "",
+      "is_error": false,
+      "modelUsage": {
+        "gpt-6-astra": {
+          "inputTokens": 15684,
+          "outputTokens": 41,
+          "cacheReadInputTokens": 15232,
+          "cacheCreationInputTokens": 0
+        }
+      },
+      "stop_reason": "end_turn"
+    },
+    "ts": "2026-09-07T16:57:07.006080+00:00"
+  }
+]

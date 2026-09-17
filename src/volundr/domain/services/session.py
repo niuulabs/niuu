@@ -50,6 +50,7 @@ from volundr.domain.ports import (
     SessionSpanRepository,
     StoragePort,
 )
+from volundr.domain.projects import SessionCoordination
 
 if TYPE_CHECKING:
     from niuu.ports.user_integration import UserIntegrationPort
@@ -188,6 +189,9 @@ class SessionService:
         issue_tracker_url: str | None = None,
         origin: str = "volundr",
         external_session_id: str | None = None,
+        coordination: SessionCoordination | None = None,
+        session_id: UUID | None = None,
+        project_context: str = "",
     ) -> Session:
         """Create a new session.
 
@@ -248,6 +252,8 @@ class SessionService:
             await self._validate_repository(repo, principal)
 
         session = Session(
+            **({"id": session_id} if session_id else {}),
+            coordination=coordination,
             name=name,
             model=model,
             source=source,
@@ -259,6 +265,7 @@ class SessionService:
             issue_tracker_url=issue_tracker_url,
             origin=origin,
             external_session_id=external_session_id,
+            workload_config={"project_context": project_context} if project_context else {},
         )
         await self._check_access(session, principal, "create")
         created = await self._repository.create(session)
@@ -333,6 +340,7 @@ class SessionService:
         state: SessionActivityState,
         metadata: dict,
         state_since: datetime | None = None,
+        turn_started_at: datetime | None = None,
     ) -> Session:
         """Update a session's activity state and broadcast an SSE event.
 
@@ -340,6 +348,13 @@ class SessionService:
         entered ``state`` (None for older brokers that don't report it). It is
         persisted and re-broadcast so clients can render an accurate elapsed
         time without re-deriving it from event arrival.
+
+        ``turn_started_at`` is the broker-stamped UTC timestamp of when the
+        CURRENT turn started (the prompt instant), stable across intra-turn
+        state flips; None when no turn is in flight OR the broker is too old to
+        report it. Unlike ``state_since`` it is persisted VERBATIM (no now()
+        fallback) — a null is meaningful ("no turn / unknown"), and clients then
+        fall back to ``state_since`` for the running elapsed.
 
         Raises SessionNotFoundError if the session doesn't exist.
         """
@@ -364,6 +379,9 @@ class SessionService:
         # when an older broker omits it so the field is never null for a live
         # session that just transitioned.
         session.activity_state_since = state_since or datetime.now(UTC)
+        # Persisted VERBATIM (incl. None) — a null turn anchor is meaningful
+        # (no turn in flight / old broker), and clients fall back to state_since.
+        session.turn_started_at = turn_started_at
         session.activity_metadata = metadata
         if state is SessionActivityState.ERROR:
             message = str(metadata.get("error") or metadata.get("message") or "").strip()
@@ -393,6 +411,9 @@ class SessionService:
                             updated.activity_state_since.isoformat()
                             if updated.activity_state_since
                             else None
+                        ),
+                        "turn_started_at": (
+                            updated.turn_started_at.isoformat() if updated.turn_started_at else None
                         ),
                         "metadata": metadata,
                         "owner_id": session.owner_id or "",
@@ -822,6 +843,12 @@ class SessionService:
         if integration_ids:
             workload_config = {**(workload_config or {}), "integration_ids": integration_ids}
 
+        # A project briefing is a persisted snapshot, including on restart. It is
+        # separate from repository-owned AGENTS.md / CLAUDE.md files.
+        project_context = session.workload_config.get("project_context", "")
+        if project_context:
+            workload_config = {**(workload_config or {}), "project_context": project_context}
+
         # Set chat_endpoint eagerly — Flux/Gateway sessions know their public
         # route before the pod is ready; local mode falls back to the root proxy.
         # Refuse here, before the session flips to STARTING, so the caller
@@ -1031,6 +1058,16 @@ class SessionService:
             contributions.append(contribution)
 
         spec = SessionSpec.merge(contributions)
+        if session.coordination and (
+            project_context := session.workload_config.get("project_context")
+        ):
+            # Append after persona/launch-spec resolution. Supplying a project
+            # brief as an ad-hoc system prompt would overwrite those instructions.
+            session_values = spec.values.setdefault("session", {})
+            existing_prompt = session_values.get("systemPrompt", "")
+            session_values["systemPrompt"] = "\n\n".join(
+                part for part in (existing_prompt, project_context) if part
+            )
         self._overlay_resume_session(session, spec)
         return await self._pod_manager.start(session, spec=spec)
 
@@ -1270,7 +1307,11 @@ class SessionService:
             # Run contributor cleanup in reverse order
             await self._run_cleanup(session, principal)
 
-            stopped = stopping.with_status(SessionStatus.STOPPED).with_cleared_endpoints()
+            stopped = (
+                stopping.with_status(SessionStatus.STOPPED)
+                .with_cleared_endpoints()
+                .model_copy(update={"error": None})
+            )
             final = await self._repository.update(stopped)
 
             if self._broadcaster is not None:
@@ -1462,12 +1503,12 @@ class SessionService:
             SessionStatus.STARTING,
             SessionStatus.PROVISIONING,
             SessionStatus.RUNNING,
+            SessionStatus.STOPPING,
         ]
         if self._runtime_backend == "kubernetes":
             statuses.extend(
                 [
                     SessionStatus.FAILED,
-                    SessionStatus.STOPPING,
                     SessionStatus.STOPPED,
                     SessionStatus.ARCHIVED,
                 ]

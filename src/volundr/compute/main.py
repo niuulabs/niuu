@@ -29,13 +29,14 @@ from volundr.domain.services.compute_leases import ComputeLeaseService
 
 
 def build_provider(config: ComputeConfig) -> MachineProvider:
-    auth_cls = import_class(config.auth.adapter)
-    auth = auth_cls(**resolve_secret_kwargs(config.auth.kwargs, config.auth.secret_kwargs_env))
+    kwargs = resolve_secret_kwargs(config.provider.kwargs, config.provider.secret_kwargs_env)
+    if config.auth is not None:
+        auth_cls = import_class(config.auth.adapter)
+        kwargs["auth"] = auth_cls(
+            **resolve_secret_kwargs(config.auth.kwargs, config.auth.secret_kwargs_env)
+        )
     provider_cls = import_class(config.provider.adapter)
-    provider = provider_cls(
-        auth=auth,
-        **resolve_secret_kwargs(config.provider.kwargs, config.provider.secret_kwargs_env),
-    )
+    provider = provider_cls(**kwargs)
     if not isinstance(provider, MachineProvider):
         raise TypeError("Configured compute provider must implement MachineProvider")
     return provider

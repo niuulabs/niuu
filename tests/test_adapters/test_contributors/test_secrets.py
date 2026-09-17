@@ -22,6 +22,7 @@ from volundr.domain.models import (
     StoredCredential,
 )
 from volundr.domain.ports import SessionContext
+from volundr.domain.services.integration_registry import IntegrationRegistry
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
 
 
@@ -69,11 +70,7 @@ def _definition(
 
 
 def _registry(definitions=None):
-    """Build a mock IntegrationRegistry."""
-    reg = MagicMock()
-    defs = {d.slug: d for d in (definitions or [])}
-    reg.get_definition = lambda slug: defs.get(slug)
-    return reg
+    return IntegrationRegistry(definitions or [])
 
 
 class TestSecretInjectionContributor:
@@ -609,3 +606,134 @@ async def test_openshell_source_control_uses_dynamic_provider_without_token_file
             "fileMappings": {},
         }
     ]
+
+
+@pytest.mark.parametrize("failure", ["", "tenant", "owner", "stdio", "injector", "revoked"])
+async def test_managed_oauth_projection_preflights_and_checks_scope(session, failure):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from niuu.domain.oauth_credentials import OAUTH_ENGINE, mcp_token_path
+
+    session.tenant_id = "tenant-a"
+    spec = MCPServerSpec(
+        name="remote", transport="http", url="https://mcp.example.test", token_field="token"
+    )
+    if failure == "stdio":
+        spec = MCPServerSpec(name="remote", command="mcp", env_from_credentials={"TOKEN": "token"})
+    connection = _connection()
+    if failure == "owner":
+        connection = replace(connection, owner_id="other")
+    store = AsyncMock()
+    store.get.return_value = SimpleNamespace(
+        metadata={
+            "renewal_owner": OAUTH_ENGINE,
+            "tenant_id": "other" if failure == "tenant" else "tenant-a",
+            "oauth_token_field": "token",
+        }
+    )
+    store.get_value.return_value = {"token": "private-access-token"}
+    if failure == "revoked":
+        store.get_value.side_effect = RuntimeError("reconnect")
+    injection = AsyncMock()
+    injection.supports_managed_oauth = failure != "injector"
+    contributor = SecretInjectionContributor(
+        credential_store=store,
+        secret_injection=injection,
+        integration_registry=_registry([_definition(mcp_server=spec)]),
+    )
+    context = SessionContext(integration_connections=(connection,))
+    if failure:
+        with pytest.raises((ValueError, RuntimeError)):
+            await contributor.contribute(session, context)
+        injection.ensure_secret_provider_class.assert_not_called()
+        return
+    await contributor.contribute(session, context)
+    mapping = injection.ensure_secret_provider_class.call_args.args[1][0]
+    assert mapping.oauth_tenant_id == "tenant-a"
+    assert mapping.oauth_token_documents == (mcp_token_path(connection.id),)
+    assert mapping.file_mappings == {mcp_token_path(connection.id): "token"}
+    assert "private-access-token" not in repr(mapping)
+    store.get_value.assert_awaited_once()
+
+
+async def test_openshell_managed_http_mcp_uses_dynamic_provider(session):
+    from types import SimpleNamespace
+
+    from niuu.domain.oauth_credentials import OAUTH_ENGINE, mcp_token_env
+
+    session.tenant_id = "tenant-a"
+    store = AsyncMock()
+    store.get.return_value = SimpleNamespace(
+        metadata={
+            "renewal_owner": OAUTH_ENGINE,
+            "tenant_id": "tenant-a",
+            "oauth_token_field": "token",
+        }
+    )
+    store.get_value.return_value = {"token": "private-access"}
+    spec = MCPServerSpec(
+        name="remote", transport="http", url="https://mcp.example.test/mcp", token_field="token"
+    )
+    c = SecretInjectionContributor(
+        credential_store=store, integration_registry=_registry([_definition(mcp_server=spec)])
+    )
+    result = await c.contribute(
+        session,
+        SessionContext(runtime_backend="openshell", integration_connections=(_connection(),)),
+    )
+    mapping = result.values["openshell"]["credentialMappings"][0]
+    assert mapping["envMappings"] == {mcp_token_env("conn-1"): "token"}
+    assert mapping["fileMappings"] == {}
+    assert mapping["provider"]["endpoints"][0]["host"] == "mcp.example.test"
+    assert mapping["provider"]["authStyle"] == "bearer"
+    assert "private-access" not in repr(result)
+
+
+@pytest.mark.parametrize("backend", ["vm", "docker", "kubernetes"])
+async def test_brokered_codex_does_not_require_file_or_agent_injection(session, backend):
+    from dataclasses import replace
+
+    from niuu.domain.oauth_credentials import OAUTH_ENGINE
+    from volundr.domain.models import CredentialEnrollmentSpec
+
+    definition = replace(
+        _definition(slug="codex"),
+        credential_enrollment=CredentialEnrollmentSpec(
+            method="codex_device",
+            credential_field="auth.json",
+            default_credential_name="codex-default",
+        ),
+    )
+    store = AsyncMock()
+    store.get.return_value = StoredCredential(
+        id="credential-test",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        name="selected-codex",
+        secret_type=SecretType.OAUTH_TOKEN,
+        owner_type="user",
+        owner_id=session.owner_id,
+        keys=["auth.json"],
+        metadata={
+            "renewal_owner": OAUTH_ENGINE,
+            "tenant_id": session.tenant_id,
+            "oauth_token_field": "auth.json",
+        },
+    )
+    store.get_value.return_value = {"auth.json": "explicit-test-preflight"}
+    contributor = SecretInjectionContributor(
+        credential_store=store,
+        integration_registry=_registry([definition]),
+    )
+    result = await contributor.contribute(
+        session,
+        SessionContext(
+            runtime_backend=backend,
+            integration_connections=(_connection("selected-codex", "codex"),),
+        ),
+    )
+    assert result.pod_spec is None
+    assert result.values["broker"]["codexAuth"]["kwargs"]["credential_name"] == "selected-codex"
+    assert "explicit-test-preflight" not in repr(result)
+    store.get_value.assert_awaited_once_with("user", session.owner_id, "selected-codex")

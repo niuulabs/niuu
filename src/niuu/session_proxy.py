@@ -278,16 +278,19 @@ async def bridge_websocket(
                 async for msg in broker_ws:
                     await websocket.send_text(str(msg))
 
-        done, pending = await asyncio.wait(
-            [
-                asyncio.create_task(browser_to_broker()),
-                asyncio.create_task(broker_to_browser()),
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
+        pumps = [
+            asyncio.create_task(browser_to_broker()),
+            asyncio.create_task(broker_to_browser()),
+        ]
+        try:
+            done, _ = await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            # Also drain both pumps when the outer request is cancelled. A
+            # reconnect must not leave an old view forwarding in the background.
+            for task in pumps:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*pumps, return_exceptions=True)
         for task in done:
             task.result()
 
@@ -318,11 +321,16 @@ async def _proxy_ws(
     port = skuld_reg.get_port(session_id)
     target = None if port is not None else await skuld_reg.resolve_target(session_id)
     if port is None and target is None:
-        # No live port — the broker is gone. Reconcile the row so a stale
-        # RUNNING tombstone self-heals, then close with a deterministic
-        # "session gone" code (4410) the client can branch on.
-        await skuld_reg.reconcile_dead(session_id)
-        await websocket.close(code=4410, reason="Session is no longer running")
+        # A newly advertised session may not have a listening broker yet.
+        # Only the runtime's confirmed death makes this connection terminal.
+        confirmed_dead = await skuld_reg.reconcile_dead(session_id)
+        await websocket.accept()
+        await websocket.close(
+            code=4410 if confirmed_dead else 4411,
+            reason="Session is no longer running"
+            if confirmed_dead
+            else "Session is starting; retry",
+        )
         return
 
     connected = False
@@ -341,6 +349,20 @@ async def _proxy_ws(
                 "port": target.connect_port,
                 "proxy": None,
             }
+        # Carry the browser's supported replay negotiation across the proxy.
+        # Auth query parameters are handled as headers, never copied into this URL.
+        if broker_path == "/session":
+            negotiation = {}
+            for key, allowed in (
+                ("history", {"recent"}),
+                ("history_protocol", {"2"}),
+                ("history_delivery", {"none"}),
+            ):
+                value = websocket.query_params.get(key)
+                if value in allowed:
+                    negotiation[key] = value
+            if negotiation:
+                connect_url += "?" + urllib.parse.urlencode(negotiation)
         await bridge_websocket(
             websocket,
             connect_url,
@@ -360,10 +382,15 @@ async def _proxy_ws(
             if confirmed_dead:
                 skuld_reg.unregister(session_id)
             with suppress(Exception):
-                await websocket.close(code=4410, reason="Session is no longer running")
-            return
-        with suppress(Exception):
-            await websocket.close()
+                await websocket.close(
+                    code=4410 if confirmed_dead else 4411,
+                    reason="Session is no longer running"
+                    if confirmed_dead
+                    else "Session is starting; retry",
+                )
+        else:
+            with suppress(Exception):
+                await websocket.close()
 
 
 def get_skuld_registry() -> SkuldPortRegistry | None:

@@ -56,8 +56,12 @@ async def test_release_recovers_after_failure_and_capacity_waits_for_confirmed_d
     assert repository.leases[lease.id].state == LeaseState.DRAINING
     with pytest.raises(ComputeCapacityError):
         await acquire(service)
+    assert repository.leases[lease.id].retry_after is not None
+    # Backoff survives a controller restart; explicit release retries immediately.
+    assert (await service.reconcile(lease.id)).state == LeaseState.DRAINING
     provider.delete_error = False
     provider.delete_pending = True
+    await service.release(lease.id)
     assert (await service.reconcile(lease.id)).state == LeaseState.DRAINING
     provider.delete_pending = False
     assert (await service.reconcile(lease.id)).state == LeaseState.RELEASED
@@ -126,3 +130,13 @@ async def test_claim_identity_and_limits_required(setup):
         )
     with pytest.raises(ValueError):
         await service.acquire(session_id=uuid4(), tenant_id="", owner_id="", profile="small")
+
+
+async def test_unknown_profile_fails_before_reserving_capacity(setup):
+    service, repository, provider = setup
+    with pytest.raises(ValueError, match="no longer configured"):
+        await service.acquire(
+            session_id=uuid4(), owner_id="owner", tenant_id="tenant", profile="removed"
+        )
+    assert not repository.leases
+    assert not provider.created

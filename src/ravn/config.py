@@ -371,6 +371,28 @@ class ToolsConfig(BaseModel):
     )
 
 
+class RerankerConfig(BaseModel):
+    """Second-stage ranking for retrieved memories.
+
+    Off by default. Retrieval already over-fetches, so this only decides which candidates survive
+    the cut — an embedding is computed once without seeing the question, while a reranker judges
+    query and document together. A failure is never fatal: the retrieval order stands.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Rerank retrieved episodes before admitting them to the prompt.",
+    )
+    adapter: str = Field(
+        default="ravn.adapters.reranker.qwen.QwenRerankerAdapter",
+        description="Fully-qualified class path for the reranker adapter.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extra kwargs forwarded to the reranker adapter constructor.",
+    )
+
+
 class EmbeddingConfig(BaseModel):
     """Embedding backend configuration for semantic memory search."""
 
@@ -1362,11 +1384,80 @@ class WhatsAppChannelConfig(BaseModel):
     )
 
 
+class OpenClawChannelConfig(BaseModel):
+    """OpenClaw-protocol gateway channel — makes Ravn look like an OpenClaw
+    gateway to the LexiChat iOS app.
+
+    Serves a WebSocket at the ROOT path plus ``GET /health``, speaking the
+    req/res/event protocol the shipped app's OpenClawKit already implements, so
+    Ravn conversations appear in the same channel list as OpenClaw ones with no
+    client change. See ``ravn.adapters.channels.gateway_openclaw``.
+
+    Bind to the tailnet address, never publicly: the iOS client hardcodes
+    ``ws://`` and ``http://`` and cannot speak TLS, so the tailnet *is* the
+    transport security.
+    """
+
+    enabled: bool = Field(default=False)
+    host: str = Field(
+        default="127.0.0.1",
+        description="Host/IP to bind the OpenClaw-protocol server.",
+    )
+    port: int = Field(
+        default=18790,
+        description=(
+            "TCP port for the OpenClaw-protocol server. Deliberately NOT 18789 "
+            "— that is the real OpenClaw gateway's port."
+        ),
+    )
+    token_env: str = Field(
+        default="RAVN_OPENCLAW_TOKEN",
+        description=(
+            "Environment variable holding the bearer token clients must present. "
+            "Use a value distinct from every real OpenClaw gateway token so a "
+            "leak is scoped. An unset token refuses every connect."
+        ),
+    )
+    agent_id: str = Field(
+        default="travis",
+        description=(
+            "Agent id advertised to the client. Becomes segment 1 of every "
+            "session key (``agent:<id>:main``) and the app's agent lens."
+        ),
+    )
+    session_prefix: str = Field(
+        default="",
+        description=(
+            "Allowlist prefix for addressable session keys. Defaults to "
+            "``agent:<agent_id>:``. Only keys matching it may be read or sent "
+            "to — without this a client could pass a Telegram session key and "
+            "inject a turn into a real thread, since Ravn performs no ownership "
+            "check of its own."
+        ),
+    )
+    max_live_sessions: int = Field(
+        default=32,
+        description=(
+            "Cap on sessions this channel will mint. RavnGateway._sessions is "
+            "never evicted, so an uncapped client could grow it without bound."
+        ),
+    )
+    store_path: str = Field(
+        default="~/.ravn/openclaw/state.db",
+        description=(
+            "SQLite transcript. This store, not Ravn and not the phone, is the "
+            "system of record — Ravn keeps sessions in RAM only and exposes no "
+            "history endpoint, so chat.history has nothing else to read."
+        ),
+    )
+
+
 class GatewayChannelsConfig(BaseModel):
     """Per-channel gateway configuration."""
 
     telegram: TelegramChannelConfig = Field(default_factory=TelegramChannelConfig)
     http: HttpChannelConfig = Field(default_factory=HttpChannelConfig)
+    openclaw: OpenClawChannelConfig = Field(default_factory=OpenClawChannelConfig)
     skuld: SkuldChannelConfig = Field(default_factory=SkuldChannelConfig)
     discord: DiscordChannelConfig = Field(default_factory=DiscordChannelConfig)
     slack: SlackChannelConfig = Field(default_factory=SlackChannelConfig)
@@ -4390,6 +4481,7 @@ class Settings(BaseSettings):
 
     # NIU-436: semantic memory
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    reranker: RerankerConfig = Field(default_factory=RerankerConfig)
     skill: SkillConfig = Field(default_factory=SkillConfig)
 
     # NIU-501: self-improvement loop

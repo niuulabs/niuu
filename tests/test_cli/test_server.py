@@ -185,8 +185,8 @@ class TestSkuldWsProxyTransientBlip:
                 with client.websocket_connect("/s/sess-live/session") as ws:
                     ws.receive_text()
 
-        # Closed deterministically with 4410 so the browser can branch/retry...
-        assert exc.value.code == 4410
+        # Startup/transient failure is retryable, distinct from confirmed death.
+        assert exc.value.code == 4411
         # ...but the live port is RETAINED so the very next connect can succeed.
         assert reg.get_port("sess-live") == 9100
 
@@ -526,7 +526,10 @@ class TestRootServerBuildApp:
         client = TestClient(app)
         resp = client.get("/health")
         assert resp.status_code == 200
-        assert resp.json() == {"status": "ok"}
+        assert resp.json()["status"] == "ok"
+        assert resp.json()["revision"]
+        assert len(resp.json()["source_sha256"]) == 64
+        assert resp.json()["failed_plugins"] == []
 
     def test_cors_headers_are_only_added_when_configured(self) -> None:
         registry = PluginRegistry()
@@ -595,8 +598,8 @@ class TestRootServerBuildApp:
         client = TestClient(app)
 
         with pytest.raises(WebSocketDisconnect) as exc:
-            with client.websocket_connect("/s/dead-session/session"):
-                pass
+            with client.websocket_connect("/s/dead-session/session") as ws:
+                ws.receive_text()
 
         assert exc.value.code == 4410
         assert reconciled == ["dead-session"]
@@ -2018,6 +2021,8 @@ class TestRootServerRunMigrations:
             raise FileNotFoundError
 
         mock_conn = AsyncMock()
+        mock_conn.transaction = MagicMock(return_value=AsyncMock())
+        mock_conn.fetchval.return_value = None
 
         with (
             patch("asyncpg.connect", new_callable=AsyncMock, return_value=mock_conn),
@@ -2026,17 +2031,30 @@ class TestRootServerRunMigrations:
         ):
             await server._run_migrations()
 
-        assert mock_conn.execute.await_count == 3
-        executed_sql = [call.args[0] for call in mock_conn.execute.await_args_list]
+        executed_sql = [
+            call.args[0]
+            for call in mock_conn.execute.await_args_list
+            if call.args[0].startswith("CREATE TABLE IF NOT EXISTS t")
+        ]
         assert executed_sql == [
             "CREATE TABLE IF NOT EXISTS t1 (id INT);",
             "CREATE TABLE IF NOT EXISTS t0 (id INT);",
             "CREATE TABLE IF NOT EXISTS t2 (id INT);",
         ]
+        ledger_keys = [
+            call.args[1]
+            for call in mock_conn.execute.await_args_list
+            if "INSERT INTO volundr_schema_history" in call.args[0]
+        ]
+        assert ledger_keys == [
+            "000001_init.up.sql",
+            "ting/000025_legacy_schema_compat.up.sql",
+            "ting/000001_init.up.sql",
+        ]
         mock_conn.close.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_handles_migration_errors_gracefully(self, tmp_path: Path) -> None:
+    async def test_migration_errors_prevent_startup(self, tmp_path: Path) -> None:
         registry = PluginRegistry()
         server = RootServer(registry=registry)
 
@@ -2051,6 +2069,8 @@ class TestRootServerRunMigrations:
         (vol_dir / "000001_init.up.sql").write_text("INVALID SQL;")
 
         mock_conn = AsyncMock()
+        mock_conn.transaction = MagicMock(return_value=AsyncMock())
+        mock_conn.fetchval.return_value = None
         mock_conn.execute = AsyncMock(side_effect=Exception("syntax error"))
 
         with (
@@ -2058,11 +2078,11 @@ class TestRootServerRunMigrations:
             patch("cli.resources.migration_dir", side_effect=[vol_dir, FileNotFoundError]),
             patch("niuu.app.bootstrap_sql_for_service", return_value=()),
         ):
-            # Should not raise
-            await server._run_migrations()
+            with pytest.raises(Exception, match="syntax error"):
+                await server._run_migrations()
 
     @pytest.mark.asyncio
-    async def test_handles_connect_failure_gracefully(self) -> None:
+    async def test_connect_failure_prevents_startup(self) -> None:
         registry = PluginRegistry()
         server = RootServer(registry=registry)
 
@@ -2073,8 +2093,8 @@ class TestRootServerRunMigrations:
         server._embedded_db = mock_db
 
         with patch("asyncpg.connect", new_callable=AsyncMock, side_effect=Exception("fail")):
-            # Should not raise
-            await server._run_migrations()
+            with pytest.raises(Exception, match="fail"):
+                await server._run_migrations()
 
 
 class TestRootServerStartEmbeddedDb:
@@ -2193,6 +2213,8 @@ class TestRootServerStartEmbeddedDb:
         mig_dir.mkdir()
         (mig_dir / "000001_init.up.sql").write_text("CREATE TABLE IF NOT EXISTS t (id int);")
         conn = AsyncMock()
+        conn.transaction = MagicMock(return_value=AsyncMock())
+        conn.fetchval.return_value = None
         connect = AsyncMock(return_value=conn)
         bootstrap = AsyncMock()
 
@@ -2316,32 +2338,40 @@ class TestRootServerLifespan:
             def create_api_app(self):
                 return sub_app
 
+            def api_route_domains(self):
+                return (APIRouteDomain(name="forge-api", prefixes=("/api/v1/forge",)),)
+
         registry = PluginRegistry()
         registry.register(VolundrPlugin(name="volundr"))
 
-        server = RootServer(registry=registry)
+        server = RootServer(registry=registry, enabled_mounts={"forge-api"})
         with patch.dict(os.environ, {"NIUU_NO_WEB": "true"}):
             app = server._build_app()
 
         # Should not raise despite sub-app failure
         with TestClient(app) as client:
             resp = client.get("/health")
-            assert resp.status_code == 200
+            assert resp.status_code == 503
+            assert resp.json()["status"] == "degraded"
+            assert resp.json()["failed_plugins"] == ["volundr"]
 
 
 class TestSkuldWsProxy:
     """Tests for the Skuld WebSocket proxy endpoint."""
 
     def test_ws_proxy_session_not_found(self) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
         registry = PluginRegistry()
         server = RootServer(registry=registry)
         with patch.dict(os.environ, {"NIUU_NO_WEB": "true"}):
             app = server._build_app()
         client = TestClient(app)
-        with pytest.raises(Exception):
-            # WebSocket to unknown session should close with 4004
-            with client.websocket_connect("/s/unknown/session"):
-                pass
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect("/s/unknown/session") as ws:
+                ws.receive_text()
+        # Without a liveness authority this may be a create-time race.
+        assert exc.value.code == 4411
 
 
 class TestPluginApiPrefixes:

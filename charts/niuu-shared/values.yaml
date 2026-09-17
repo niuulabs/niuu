@@ -177,6 +177,9 @@ envoy:
     keycloakCaFile: /etc/ssl/certs/ca-certificates.crt
     extraClaimHeaders: []
     bypassPrefixes:
+      - /api/v1/integrations/oauth/callback
+      - /api/v1/integrations/oauth/mcp/callback
+      - /api/v1/integrations/oauth/mcp/client-metadata
       - /api/v1/identity/auth/config
       - /api/v1/tokens/workload/exchange
       - /api/v1/tokens/workload/jwks
@@ -344,3 +347,10 @@ authorization:
   adapter: "identity.adapters.cedar.CedarAuthorizationAdapter"
   kwargs: {}
   secret_kwargs_env: {}
+
+# Provider OAuth refresh is owned by the configured credential store in clusters.
+oauth:
+  miniModeRefreshEnabled: false
+  redirectBaseUrl: ""
+  mcpRequestTimeoutSeconds: 15
+  mcpStateTtlSeconds: 600

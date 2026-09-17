@@ -36,6 +36,7 @@ from openshell._proto import datamodel_pb2, openshell_pb2, openshell_pb2_grpc, s
 
 from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
 from niuu.domain.models import Principal
+from niuu.domain.oauth_credentials import OAUTH_ENGINE
 from niuu.domain.services.token_scope import (
     OPENSHELL_RESIDENT_TOKEN_USE,
     OPENSHELL_SESSION_TOKEN_USE,
@@ -271,9 +272,11 @@ class OpenShellGatewayClient:
         *,
         endpoint: str = DEFAULT_GATEWAY_ENDPOINT,
         token_provider: ClientCredentialsTokenProvider,
+        compute_driver: str = "kubernetes",
         plaintext: bool = True,
         timeout: float = 30.0,
     ) -> None:
+        self._compute_driver = compute_driver
         self._endpoint = _endpoint_hostport(endpoint)
         self._token_provider = token_provider
         self._timeout = float(timeout)
@@ -289,6 +292,10 @@ class OpenShellGatewayClient:
     def close(self) -> None:
         self._channel.close()
         self._token_provider.close()
+
+    def wait_for_ready(self, timeout: float) -> None:
+        """Wait for the native channel after establishing a new guest tunnel."""
+        grpc.channel_ready_future(self._channel).result(timeout=timeout)
 
     def create_sandbox(
         self,
@@ -311,7 +318,7 @@ class OpenShellGatewayClient:
         if resources:
             template.resources.CopyFrom(_protobuf_struct(resources))
         if driver_config:
-            template.driver_config.CopyFrom(_protobuf_struct({"kubernetes": driver_config}))
+            template.driver_config.CopyFrom(_protobuf_struct({self._compute_driver: driver_config}))
         spec = openshell_pb2.SandboxSpec(
             environment=env,
             template=template,
@@ -786,11 +793,16 @@ class OpenShellGatewayPodManager(
 ):
     """Kubernetes OpenShell PodManager using OIDC and native gRPC."""
 
+    @property
+    def runtime_backend(self) -> str:
+        return "openshell"
+
     def __init__(
         self,
         *,
         gateway_endpoint: str = DEFAULT_GATEWAY_ENDPOINT,
         gateway_public_url: str = "",
+        compute_driver: str = "kubernetes",
         token_url: str = DEFAULT_TOKEN_URL,
         client_id: str = DEFAULT_CLIENT_ID,
         client_secret: str = "",
@@ -823,6 +835,7 @@ class OpenShellGatewayPodManager(
         codex_auth_adapter: str = "skuld.codex_auth.VolundrCodexAuthProvider",
         codex_auth_kwargs: dict | None = None,
         sandbox_policy: dict[str, Any] | None = None,
+        driver_config: dict[str, Any] | None = None,
         client: OpenShellGatewayClient | None = None,
         **_extra: object,
     ) -> None:
@@ -836,6 +849,7 @@ class OpenShellGatewayPodManager(
         self._gateway_connect_host = gateway_host.strip("[]")
         self._gateway_connect_port = int(gateway_port)
         self._gateway_connect_secure = not plaintext
+        self._driver_config = deepcopy(driver_config or {})
         self._sandbox_image = sandbox_image
         self._sandbox_command = _normalize_command(sandbox_command) or DEFAULT_SANDBOX_COMMAND
         self._sandbox_workspace = sandbox_workspace
@@ -870,6 +884,7 @@ class OpenShellGatewayPodManager(
         )
         self._client = client or OpenShellGatewayClient(
             endpoint=gateway_endpoint,
+            compute_driver=compute_driver,
             token_provider=ClientCredentialsTokenProvider(
                 token_url=token_url,
                 client_id=client_id,
@@ -1303,6 +1318,9 @@ class OpenShellGatewayPodManager(
                 workload_start_file=workload_start_file,
                 workload_environment=env,
             )
+            if self._driver_config.keys() & driver_config.keys():
+                raise ValueError("OpenShell operator and session driver configuration overlap")
+            driver_config = {**self._driver_config, **driver_config}
             provider_names = (*platform_providers, *credential_context.providers)
             grants = tuple(
                 OpenShellProviderGrant(provider_name=name, profile_id=name)
@@ -2247,6 +2265,12 @@ class OpenShellGatewayPodManager(
 
         if self._credential_store is None:
             raise ValueError("credential store is unavailable")
+        stored = await self._credential_store.get("user", workload.owner_id, credential_name)
+        if stored and stored.metadata.get("renewal_owner") == OAUTH_ENGINE:
+            if stored.metadata.get("tenant_id") != workload.tenant_id:
+                raise ValueError("OAuth credential does not belong to this workload tenant")
+            if credential_field != stored.metadata.get("oauth_token_field"):
+                raise ValueError("OAuth credential grants may expose only the access token")
         values = await self._credential_store.get_value("user", workload.owner_id, credential_name)
         value = values.get(credential_field) if values else None
         if not value or "\x00" in value or "\r" in value or "\n" in value:
@@ -2254,7 +2278,16 @@ class OpenShellGatewayPodManager(
         basic_username = str(config.get("volundr_basic_auth_username") or "")
         if basic_username:
             value = "Basic " + base64.b64encode(f"{basic_username}:{value}".encode()).decode()
-        return OpenShellCredentialGrantToken(access_token=value)
+        token = OpenShellCredentialGrantToken(access_token=value)
+        if values and values.get("expires_at"):
+            expiry = datetime.fromisoformat(values["expires_at"])
+            if expiry.tzinfo is None:
+                raise ValueError("OAuth credential expiry must include a timezone")
+            remaining = int((expiry - datetime.now(UTC)).total_seconds())
+            if remaining <= 0:
+                raise ValueError("OAuth credential expired; reconnect the integration")
+            token = replace(token, expires_in=min(token.expires_in, remaining))
+        return token
 
     def _issue_platform_token(
         self,
@@ -2458,6 +2491,15 @@ class OpenShellGatewayPodManager(
             raise RuntimeError(
                 f"Credential {credential_name!r} not found for OpenShell session launch"
             )
+        if stored.metadata.get("renewal_owner") == OAUTH_ENGINE:
+            if stored.metadata.get("tenant_id") != subject.tenant_id:
+                raise RuntimeError("OAuth credential does not belong to this workload tenant")
+            if (
+                file_mappings
+                or mapping.get("materializeEnvironment")
+                or mapping.get("materialize_environment")
+            ):
+                raise RuntimeError("Managed OAuth credentials require dynamic provider injection")
         requested_fields = set(env_mappings.values()) | set(file_mappings.values())
         missing_fields = sorted(requested_fields - set(stored.keys))
         if missing_fields:

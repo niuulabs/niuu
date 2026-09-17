@@ -56,7 +56,7 @@ def _page(h: BrokerHarness) -> TmuxPage:
     transport = h.transport
     return TmuxPage(
         str(transport._socket_path),  # noqa: SLF001 - test seam
-        transport.session_id or "",
+        transport._session_name,
     )
 
 
@@ -72,6 +72,7 @@ def _failed_acks(frames: list[dict]) -> list[dict]:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_b1_idle_message_starts_exactly_one_turn() -> None:
     """B1: an idle browser message starts exactly one turn -> exactly one result."""
@@ -101,6 +102,7 @@ async def test_b1_idle_message_starts_exactly_one_turn() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_b2_mid_turn_steer_keeps_turn_and_delivers() -> None:
     """B2: a mid-turn steer keeps the SAME turn (no restart) and delivers the text.
@@ -218,6 +220,7 @@ async def test_b2_mid_turn_steer_keeps_turn_and_delivers() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_b3_wedged_send_lock_is_bounded_not_deadlocked() -> None:
     """B3: a wedged send-lock surfaces a loud user_delivery_failed, not a deadlock."""
@@ -282,6 +285,7 @@ async def test_b3_wedged_send_lock_is_bounded_not_deadlocked() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_b4_steer_after_reconnect_reaches_new_client_and_agent() -> None:
     """B4 (Bug 3): a steer after WS crash+reconnect ACKs to the NEW client and lands.
@@ -366,6 +370,7 @@ async def test_b4_steer_after_reconnect_reaches_new_client_and_agent() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.tmux
 @pytest.mark.asyncio
 async def test_b6_burst_messages_deliver_in_order_and_each_acked() -> None:
     """B6: a burst of 5 messages during a turn delivers in order, each ACKed."""

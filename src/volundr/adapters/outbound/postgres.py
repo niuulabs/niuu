@@ -34,10 +34,10 @@ class PostgresSessionRepository(SessionRepository):
                  launch_spec_id, archived_at, owner_id, tenant_id, workload_type,
                  origin, external_session_id, cli_session_id, session_definition,
                  activity_state, activity_metadata, activity_state_since,
-                 workload_config)
+                 workload_config, turn_started_at, coordination)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
                     $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-                    $22, $23, $24, $25, $26, $27, $28, $29)
+                    $22, $23, $24, $25, $26, $27, $28, $29, $30, $31)
             """,
             session.id,
             session.name,
@@ -68,6 +68,8 @@ class PostgresSessionRepository(SessionRepository):
             json.dumps(session.activity_metadata or {}),
             session.activity_state_since,
             json.dumps(session.workload_config or {}),
+            session.turn_started_at,
+            session.coordination.model_dump_json() if session.coordination else None,
         )
         return session
 
@@ -140,7 +142,7 @@ class PostgresSessionRepository(SessionRepository):
                 origin = $21, external_session_id = $22, cli_session_id = $23,
                 session_definition = $24, activity_state = $25,
                 activity_metadata = $26, activity_state_since = $27,
-                workload_config = $28
+                workload_config = $28, turn_started_at = $29, coordination = $30
             WHERE id = $1
             """,
             session.id,
@@ -171,6 +173,8 @@ class PostgresSessionRepository(SessionRepository):
             json.dumps(session.activity_metadata or {}),
             session.activity_state_since,
             json.dumps(session.workload_config or {}),
+            session.turn_started_at,
+            session.coordination.model_dump_json() if session.coordination else None,
         )
         return session
 
@@ -201,6 +205,7 @@ class PostgresSessionRepository(SessionRepository):
         last_active = row["last_active"]
         archived_at = row.get("archived_at")
         activity_state_since = row.get("activity_state_since")
+        turn_started_at = row.get("turn_started_at")
 
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=UTC)
@@ -212,6 +217,8 @@ class PostgresSessionRepository(SessionRepository):
             archived_at = archived_at.replace(tzinfo=UTC)
         if activity_state_since is not None and activity_state_since.tzinfo is None:
             activity_state_since = activity_state_since.replace(tzinfo=UTC)
+        if turn_started_at is not None and turn_started_at.tzinfo is None:
+            turn_started_at = turn_started_at.replace(tzinfo=UTC)
 
         source = self._parse_source(row.get("source"))
         activity_state = self._parse_activity_state(row.get("activity_state"))
@@ -240,12 +247,14 @@ class PostgresSessionRepository(SessionRepository):
             tenant_id=row.get("tenant_id"),
             workload_type=row.get("workload_type") or "session",
             workload_config=self._parse_json_dict(row.get("workload_config")),
+            coordination=self._parse_json_dict(row.get("coordination")) or None,
             origin=row.get("origin") or "volundr",
             external_session_id=row.get("external_session_id"),
             cli_session_id=row.get("cli_session_id"),
             session_definition=row.get("session_definition"),
             activity_state=activity_state,
             activity_state_since=activity_state_since,
+            turn_started_at=turn_started_at,
             activity_metadata=activity_metadata,
         )
 

@@ -38,6 +38,9 @@ class ManagedModel:
     session_definition: str | None = None
     supports_tools: bool = True
     supports_thinking: bool = True
+    effort_levels: tuple[str, ...] = ()
+    default_effort: str = ""
+    effort_note: str = ""
     enabled: bool = True
     aliases: tuple[str, ...] = field(default_factory=tuple)
     provider_keys: tuple[str, ...] = field(default_factory=tuple)

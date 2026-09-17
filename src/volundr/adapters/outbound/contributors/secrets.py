@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
+from niuu.domain.oauth_credentials import OAUTH_ENGINE, mcp_token_env, mcp_token_path
 from volundr.domain.models import (
     CredentialMapping,
     IntegrationType,
@@ -48,6 +52,7 @@ def _mapping_payload(mapping: CredentialMapping) -> dict[str, object]:
         "credentialName": mapping.credential_name,
         "envMappings": dict(mapping.env_mappings),
         "fileMappings": dict(mapping.file_mappings),
+        **({"provider": mapping.provider} if mapping.provider else {}),
     }
 
 
@@ -120,15 +125,57 @@ class SecretInjectionContributor(SessionContributor):
 
         # Integration connections — mapping comes from IntegrationDefinition
         for conn in context.integration_connections:
+            if conn.owner_id != owner_id:
+                raise ValueError("Integration does not belong to the session owner")
             env_mappings: dict[str, str] = {}
             file_mappings: dict[str, str] = {}
+            provider = None
 
             if self._registry:
                 defn = self._registry.get_definition(conn.slug)
                 if defn is not None:
                     env_mappings.update(defn.env_from_credentials)
-                    if defn.mcp_server:
-                        env_mappings.update(defn.mcp_server.env_from_credentials)
+                    spec = self._registry.mcp_spec(conn)
+                    if spec:
+                        env_mappings.update(spec.env_from_credentials)
+                        if spec.token_field:
+                            if context.runtime_backend == "openshell":
+                                if spec.auth_prefix not in {"Bearer ", ""}:
+                                    raise ValueError(
+                                        "OpenShell MCP supports bearer or raw header authentication"
+                                    )
+                                endpoint = urlsplit(spec.url)
+                                provider = {
+                                    "authStyle": "bearer" if spec.auth_prefix else "header",
+                                    "headerName": spec.auth_header,
+                                    "endpoints": [
+                                        {
+                                            "host": endpoint.hostname,
+                                            "port": endpoint.port or 443,
+                                            "protocol": "rest",
+                                            "tls": "terminate",
+                                            "enforcement": "enforce",
+                                            "access": "full",
+                                        }
+                                    ],
+                                    "binaries": [
+                                        "/usr/local/bin/claude",
+                                        "/usr/local/bin/codex",
+                                        "/usr/bin/node",
+                                        "/usr/local/bin/node",
+                                        "/opt/venv/bin/python3",
+                                        "/opt/niuu/bin/python",
+                                    ],
+                                }
+                                mappings.append(
+                                    CredentialMapping(
+                                        credential_name=conn.credential_name,
+                                        env_mappings={mcp_token_env(conn.id): spec.token_field},
+                                        provider=provider,
+                                    )
+                                )
+                            else:
+                                file_mappings[mcp_token_path(conn.id)] = spec.token_field
                     file_mappings.update(defn.file_mounts)
                     auth_ref = _integration_auth_ref(conn.slug)
                     if auth_ref in self._mimir_auth_refs(context):
@@ -142,13 +189,14 @@ class SecretInjectionContributor(SessionContributor):
             ):
                 file_mappings[git_token_path(conn.id)] = "token"
 
-            mappings.append(
-                CredentialMapping(
-                    credential_name=conn.credential_name,
-                    env_mappings=env_mappings,
-                    file_mappings=file_mappings,
+            if env_mappings or file_mappings or provider is None:
+                mappings.append(
+                    CredentialMapping(
+                        credential_name=conn.credential_name,
+                        env_mappings=env_mappings,
+                        file_mappings=file_mappings,
+                    )
                 )
-            )
 
         # Direct credential names — mapping comes from SecretMountStrategy
         refs = self._mimir_auth_refs(context)
@@ -273,11 +321,107 @@ class SecretInjectionContributor(SessionContributor):
         if not mappings:
             return SessionContribution()
 
-        values = _openshell_credential_values(mappings)
         codex_values = _codex_auth_values(context, self._registry)
+        brokered_name = (
+            codex_values.get("broker", {})
+            .get("codexAuth", {})
+            .get("kwargs", {})
+            .get("credential_name")
+        )
+        if self._credential_store:
+            checked = []
+            for mapping in mappings:
+                stored = await self._credential_store.get(
+                    "user", session.owner_id, mapping.credential_name
+                )
+                for connection in context.integration_connections:
+                    if (
+                        connection.slug != "mcp"
+                        or connection.credential_name != mapping.credential_name
+                    ):
+                        continue
+                    if (
+                        stored is None
+                        or stored.metadata.get("mcp_url") != connection.config.get("mcp_url")
+                        or stored.metadata.get("tenant_id") != session.tenant_id
+                    ):
+                        raise ValueError("MCP credential is not bound to this server and tenant")
+                    expiry = stored.metadata.get("auth_expires_at")
+                    if expiry and datetime.fromisoformat(str(expiry)) <= datetime.now(UTC):
+                        raise ValueError("MCP authorization has expired; reconnect the server")
+                if stored and stored.metadata.get("renewal_owner") == OAUTH_ENGINE:
+                    if stored.metadata.get("tenant_id") != session.tenant_id:
+                        raise ValueError("OAuth credential does not belong to the session tenant")
+                    if (
+                        not (
+                            mapping.credential_name == brokered_name
+                            and not mapping.env_mappings
+                            and not mapping.file_mappings
+                        )
+                        and context.runtime_backend != "openshell"
+                        and (
+                            not self._secret_injection
+                            or not self._secret_injection.supports_managed_oauth
+                        )
+                    ):
+                        raise ValueError(
+                            "Managed OAuth credentials require continuous OpenBao injection"
+                        )
+                    # Reading the engine endpoint refreshes if needed and prevents
+                    # launch with an unusable grant. Never put this value in specs.
+                    await self._credential_store.get_value(
+                        "user", session.owner_id, mapping.credential_name
+                    )
+                    if context.runtime_backend == "openshell":
+                        if mapping.file_mappings:
+                            raise ValueError(
+                                "Managed OpenShell OAuth credentials require a dynamic provider, "
+                                "not static files"
+                            )
+                        checked.append(mapping)
+                        continue
+                    # Stdio environment credentials are snapshots. Do not claim
+                    # live renewal for a server that cannot reload them.
+                    token_documents = []
+                    for connection in context.integration_connections:
+                        if (
+                            connection.credential_name != mapping.credential_name
+                            or not self._registry
+                        ):
+                            continue
+                        spec = self._registry.mcp_spec(connection)
+                        if spec and spec.transport == "stdio" and mapping.env_mappings:
+                            raise ValueError(
+                                "Renewable MCP credentials require HTTP token_field "
+                                "or a file-aware server"
+                            )
+                        if spec and spec.token_field:
+                            token_documents.append(mcp_token_path(connection.id))
+                    mapping = replace(
+                        mapping,
+                        oauth_tenant_id=session.tenant_id,
+                        oauth_token_field=stored.metadata["oauth_token_field"],
+                        oauth_token_documents=tuple(token_documents),
+                    )
+                checked.append(mapping)
+            mappings = checked
+
+        values = _openshell_credential_values(mappings)
         if codex_values:
             values.update(codex_values)
         if context.runtime_backend == "openshell":
+            return SessionContribution(values=values)
+
+        # Brokered providers such as Codex fetch access tokens through Skuld's
+        # existing authenticated client; there is nothing to mount in the guest.
+        mappings = [
+            mapping
+            for mapping in mappings
+            if mapping.credential_name != brokered_name
+            or mapping.env_mappings
+            or mapping.file_mappings
+        ]
+        if not mappings:
             return SessionContribution(values=values)
 
         if not self._secret_injection:

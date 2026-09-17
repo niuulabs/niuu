@@ -379,3 +379,60 @@ class TestOpenBaoAgentInjectionAdapter:
         config_module.load_kube_config.assert_awaited_once()
         assert isinstance(api_client, client_module.ApiClient)
         assert isinstance(core_api, client_module.CoreV1Api)
+
+
+def test_oauth_projection_uses_exact_engine_policy_and_continuous_agent():
+    from niuu.domain.oauth_credentials import oauth_credential_name
+
+    adapter = OpenBaoAgentInjectionAdapter(oauth_mount_path="oauthapp")
+    mapping = CredentialMapping(
+        credential_name="gitlab",
+        oauth_tenant_id="tenant-a",
+        oauth_token_field="token",
+        file_mappings={"/run/secrets/mcp/token": "token"},
+        oauth_token_documents=("/run/secrets/mcp/token",),
+    )
+    path = "oauthapp/creds/" + oauth_credential_name("tenant-a", "alice", "gitlab")
+    policy = adapter._session_policy("alice", [mapping])
+    assert policy == f'path "{path}" {{\n  capabilities = ["read"]\n}}'
+    config = adapter._build_configmap_data(
+        user_id="alice", credential_mappings=[mapping], role_name="session"
+    )
+    assert "exit_after_auth = true" in config["config-init.hcl"]
+    assert "exit_after_auth = false" in config["config.hcl"]
+    assert 'static_secret_render_interval = "30s"' in config["config.hcl"]
+    assert path in config["config.hcl"]
+    assert '"access_token" | toJSON' in config["config.hcl"]
+    assert '"expire_time"' in config["config.hcl"]
+    assert "refresh_token" not in config["config.hcl"]
+    assert "client_secret" not in config["config.hcl"]
+    assert ".Data.data" not in config["config.hcl"]
+
+
+async def test_oauth_tenant_mismatch_has_no_side_effects():
+    adapter = OpenBaoAgentInjectionAdapter(oauth_mount_path="oauthapp")
+    adapter._ensure_service_account = AsyncMock()
+    with pytest.raises(ValueError, match="tenant"):
+        await adapter.ensure_secret_provider_class(
+            "alice",
+            [CredentialMapping(credential_name="token", oauth_tenant_id="other")],
+            session_id="session",
+            tenant_id="tenant-a",
+        )
+    adapter._ensure_service_account.assert_not_called()
+
+
+def test_oauth_projection_rejects_refresh_token_field():
+    adapter = OpenBaoAgentInjectionAdapter(oauth_mount_path="oauthapp")
+    with pytest.raises(ValueError, match="only access token"):
+        adapter._build_template_blocks(
+            "alice",
+            [
+                CredentialMapping(
+                    credential_name="token",
+                    oauth_tenant_id="tenant-a",
+                    oauth_token_field="token",
+                    file_mappings={"/run/secrets/refresh": "refresh_token"},
+                )
+            ],
+        )

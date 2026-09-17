@@ -1,0 +1,122 @@
+[
+  {
+    "session_id": "main-native-session",
+    "prompt_id": "561f2d8f-e289-42b4-ba34-378621fb574a",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "Exercise a harmless tool failure and recovery. First run python3 -c 'import sys; print(\"FORGE_EXPECTED_FAILURE\"); sys.exit(7)' as its own command. Observe the failed tool result, then run a separate successful command that prints FORGE_RECOVERED. Do not hide the first exit status with a shell fallback. Explain that the failure was intentional.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:f2c494ff063440d1aa3897ed7d17d22e:recovery]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only."
+  },
+  {
+    "session_id": "main-native-session",
+    "prompt_id": "561f2d8f-e289-42b4-ba34-378621fb574a",
+    "hook_event_name": "MessageDisplay",
+    "turn_id": "f635bc2c-d6ad-4c72-a71d-09fecf8cfdc7",
+    "message_id": "54b79660-6f64-4068-96d4-86b548d5bc07",
+    "index": 0,
+    "final": true,
+    "delta": "That is the verify worker's idle notification, confirming the same result it already reported. Both workers are now idle, and the findings stand as reported: agreement on a sum of 42, with answer.json matching numbers.json. No further action needed."
+  },
+  {
+    "session_id": "main-native-session",
+    "prompt_id": "561f2d8f-e289-42b4-ba34-378621fb574a",
+    "hook_event_name": "Stop",
+    "last_assistant_message": "That is the verify worker's idle notification, confirming the same result it already reported. Both workers are now idle, and the findings stand as reported: agreement on a sum of 42, with answer.json matching numbers.json. No further action needed."
+  },
+  {
+    "session_id": "main-native-session",
+    "prompt_id": "82c897fc-9e5e-4f2b-965f-4523463a2701",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "python3 -c 'import sys; print(\"FORGE_EXPECTED_FAILURE\"); sys.exit(7)'",
+      "description": "Run intentionally failing command with exit 7"
+    },
+    "tool_use_id": "toolu_012WdVDoZhZik5x27pQxc5V4"
+  },
+  {
+    "session_id": "main-native-session",
+    "prompt_id": "82c897fc-9e5e-4f2b-965f-4523463a2701",
+    "hook_event_name": "MessageDisplay",
+    "turn_id": "dbb579fc-5533-4ae9-be76-4c0bd4cd8b63",
+    "message_id": "f4372619-8ba9-4c70-844f-bd1547946734",
+    "index": 0,
+    "final": true,
+    "delta": "Running the intentionally failing command first, on its own, with no fallback masking the exit status."
+  },
+  {
+    "session_id": "main-native-session",
+    "prompt_id": "82c897fc-9e5e-4f2b-965f-4523463a2701",
+    "hook_event_name": "PostToolUseFailure",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "python3 -c 'import sys; print(\"FORGE_EXPECTED_FAILURE\"); sys.exit(7)'",
+      "description": "Run intentionally failing command with exit 7"
+    },
+    "tool_use_id": "toolu_012WdVDoZhZik5x27pQxc5V4",
+    "error": "Exit code 7\nFORGE_EXPECTED_FAILURE"
+  },
+  {
+    "session_id": "main-native-session",
+    "prompt_id": "82c897fc-9e5e-4f2b-965f-4523463a2701",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "echo FORGE_RECOVERED",
+      "description": "Print recovery marker"
+    },
+    "tool_use_id": "toolu_01DE9sFMFMEhuhqQtATTLv9t"
+  },
+  {
+    "session_id": "main-native-session",
+    "prompt_id": "82c897fc-9e5e-4f2b-965f-4523463a2701",
+    "hook_event_name": "MessageDisplay",
+    "turn_id": "dbb579fc-5533-4ae9-be76-4c0bd4cd8b63",
+    "message_id": "c25da84f-03d3-4212-ba49-a63471b497b0",
+    "index": 0,
+    "final": true,
+    "delta": "The failure landed as expected: the tool reported exit code 7 with the printed marker. Now running the separate recovery command."
+  },
+  {
+    "session_id": "main-native-session",
+    "prompt_id": "82c897fc-9e5e-4f2b-965f-4523463a2701",
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "echo FORGE_RECOVERED",
+      "description": "Print recovery marker"
+    },
+    "tool_response": {
+      "stdout": "FORGE_RECOVERED",
+      "stderr": "",
+      "interrupted": false,
+      "isImage": false,
+      "noOutputExpected": false
+    },
+    "tool_use_id": "toolu_01DE9sFMFMEhuhqQtATTLv9t"
+  },
+  {
+    "session_id": "main-native-session",
+    "prompt_id": "82c897fc-9e5e-4f2b-965f-4523463a2701",
+    "hook_event_name": "MessageDisplay",
+    "turn_id": "dbb579fc-5533-4ae9-be76-4c0bd4cd8b63",
+    "message_id": "07028fd8-d2fe-4109-b956-150278ca40e9",
+    "index": 0,
+    "final": false,
+    "delta": "Both steps executed as requested.\n\n"
+  },
+  {
+    "session_id": "main-native-session",
+    "prompt_id": "82c897fc-9e5e-4f2b-965f-4523463a2701",
+    "hook_event_name": "MessageDisplay",
+    "turn_id": "dbb579fc-5533-4ae9-be76-4c0bd4cd8b63",
+    "message_id": "07028fd8-d2fe-4109-b956-150278ca40e9",
+    "index": 1,
+    "final": true,
+    "delta": "**Step 1, intentional failure.** The Python command printed its marker and then exited with status 7. The tool surfaced this as a failed result:\n\n```\nExit code 7\nFORGE_EXPECTED_FAILURE\n```\n\nThis failure was deliberate. The command was written to exit non-zero on purpose, and I ran it as its own command with no `|| true` or other shell fallback, so the real exit status reached the tool result unmasked.\n\n**Step 2, recovery.** A separate, independent command then succeeded:\n\n```\nFORGE_RECOVERED\n```\n\nThe session continued normally after the failed tool call. No files were changed.\n\nUnrelated note: the `paper` MCP server failed to connect this session with a version negotiation timeout. Nothing in this request depended on it.\n\n[FORGE_DONE:f2c494ff063440d1aa3897ed7d17d22e:recovery]"
+  },
+  {
+    "session_id": "main-native-session",
+    "prompt_id": "82c897fc-9e5e-4f2b-965f-4523463a2701",
+    "hook_event_name": "Notification",
+    "notification_type": "idle_prompt"
+  }
+]

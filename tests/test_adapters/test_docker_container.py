@@ -903,3 +903,23 @@ def test_capacity_settings_path_is_configurable(client: _Client, workspaces: Pat
         capacity_settings_path="/settings/runtime",
     )
     assert "/settings/runtime" in manager._capacity_remedy()
+
+
+async def test_forge_controls_reach_docker_container(manager, client, workspaces, session, spec):
+    spec.values["session"]["reasoningEffort"] = "high"
+    spec.values["broker"].update(
+        {
+            "historyHydrationEnabled": False,
+            "codexReceiveMaxBytes": 123456,
+            "pi": {"binary": "/opt/pi"},
+        }
+    )
+    ws = _workspace(workspaces, session)
+    with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
+        await manager.start(session, spec)
+    env = client.containers.run_kwargs[0]["environment"]
+    assert env["SKULD__SESSION__REASONING_EFFORT"] == "high"
+    assert env["SKULD__HISTORY_HYDRATION_ENABLED"] == "false"
+    assert env["SKULD__CODEX_RECEIVE_MAX_BYTES"] == "123456"
+    assert json.loads(env["SKULD__PI"])["binary"] == "/opt/pi"
+    assert manager.runtime_backend == "docker"

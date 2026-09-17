@@ -53,6 +53,20 @@ class IntegrationRegistry:
 
     # --- MCP helpers -----------------------------------------------
 
+    def mcp_spec(self, connection: IntegrationConnection) -> MCPServerSpec | None:
+        """Resolve user-connected MCP endpoints without modifying the shared catalog."""
+        if connection.slug == "mcp":
+            return MCPServerSpec(
+                name=f"mcp-{connection.id}",
+                transport="http",
+                url=str(connection.config.get("mcp_url", "")),
+                token_field="access_token",
+                auth_header=str(connection.config.get("auth_header", "Authorization")),
+                auth_prefix=str(connection.config.get("auth_prefix", "Bearer ")),
+            )
+        definition = self.get_definition(connection.slug)
+        return definition.mcp_server if definition else None
+
     def build_mcp_env(
         self,
         connection: IntegrationConnection,
@@ -63,12 +77,12 @@ class IntegrationRegistry:
         Returns ``None`` if the connection's definition has no MCP
         server spec.
         """
-        defn = self._by_slug.get(connection.slug)
-        if defn is None or defn.mcp_server is None:
+        spec = self.mcp_spec(connection)
+        if spec is None:
             return None
 
         env: dict[str, str] = {}
-        for env_var, cred_field in defn.mcp_server.env_from_credentials.items():
+        for env_var, cred_field in spec.env_from_credentials.items():
             value = credentials.get(cred_field, "")
             if not value:
                 value = connection.config.get(cred_field, "")
@@ -85,12 +99,19 @@ class IntegrationRegistry:
         Returns ``None`` if the connection's definition has no MCP
         server spec.
         """
-        defn = self._by_slug.get(connection.slug)
-        if defn is None or defn.mcp_server is None:
+        spec = self.mcp_spec(connection)
+        if spec is None:
             return None
 
         env = self.build_mcp_env(connection, credentials)
-        spec = defn.mcp_server
+        if spec.transport != "stdio":
+            config = {"name": spec.name, "type": spec.transport, "url": spec.url}
+            if spec.token_field:
+                token = credentials.get(spec.token_field)
+                if not token:
+                    raise ValueError("MCP credential missing; reconnect the integration")
+                config["headers"] = {spec.auth_header: spec.auth_prefix + token}
+            return config
         return {
             "name": spec.name,
             "type": "stdio",
@@ -111,7 +132,12 @@ def definitions_from_config(
         if mcp_raw and isinstance(mcp_raw, dict):
             mcp_spec = MCPServerSpec(
                 name=mcp_raw["name"],
-                command=mcp_raw["command"],
+                command=mcp_raw.get("command", ""),
+                transport=mcp_raw.get("transport", "stdio"),
+                url=mcp_raw.get("url", ""),
+                token_field=mcp_raw.get("token_field", ""),
+                auth_header=mcp_raw.get("auth_header", "Authorization"),
+                auth_prefix=mcp_raw.get("auth_prefix", "Bearer "),
                 args=tuple(mcp_raw.get("args", [])),
                 env_from_credentials=mcp_raw.get("env_from_credentials", {}),
             )

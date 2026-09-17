@@ -115,6 +115,31 @@ class TestBaseLayering:
         assert config["skuld"]["enabled"] is True
         assert config["skuld"]["broker_url"] == "ws://x/ws/ravn"
 
+    def test_the_residents_gateway_is_not_inherited(self) -> None:
+        """A member is reached through the room, never through a front door.
+
+        The operator's ravn.yaml is one specific resident's deployment: its
+        gateway block binds Telegram, an HTTP port and the OpenClaw shim on
+        fixed ports. Inherited, every member died on uvicorn STARTUP_FAILURE
+        against ports the resident already held — and would have impersonated
+        that resident had they been free.
+        """
+        base = {
+            "llm": {"model": "claude-opus-5"},
+            "gateway": {
+                "enabled": True,
+                "channels": {
+                    "openclaw": {"enabled": True, "port": 18790, "agent_id": "travis"},
+                    "telegram": {"enabled": True},
+                },
+            },
+        }
+
+        config = build_member_config(handle="neo", broker_url="ws://x/ws/ravn", base=base)
+
+        assert "gateway" not in config
+        assert config["llm"]["model"] == "claude-opus-5"
+
 
 class TestLoadBaseConfig:
     def test_none_yields_empty(self) -> None:
@@ -229,3 +254,44 @@ class TestClusterYaml:
 
         assert "peers:" in rendered
         assert "peer_id" not in rendered
+
+
+class TestMemberMemoryIsItsOwn:
+    """A member's memory must be the member's.
+
+    The sqlite backend reads `memory.path`, not `memory.sqlite.path`, so setting only the latter
+    left every room member inheriting the operator's database from the base config — Neo's
+    episodes were written into Travis's memory with nothing to tell them apart.
+    """
+
+    def test_the_path_the_backend_actually_reads_is_set(self) -> None:
+        config = build_member_config(
+            handle="neo",
+            broker_url="ws://x/ws/ravn",
+            memory_db_path=Path("/rooms/backstage/runtime/neo/memory.db"),
+        )
+
+        assert config["memory"]["path"] == "/rooms/backstage/runtime/neo/memory.db"
+
+    def test_it_overrides_an_inherited_operator_database(self) -> None:
+        """The exact shape that caused the bleed: a base config naming the resident's store."""
+        base = {"memory": {"backend": "sqlite", "path": "~/.ravn/memory.db"}}
+
+        config = build_member_config(
+            handle="neo",
+            broker_url="ws://x/ws/ravn",
+            memory_db_path=Path("/rooms/backstage/runtime/neo/memory.db"),
+            base=base,
+        )
+
+        assert config["memory"]["path"] == "/rooms/backstage/runtime/neo/memory.db"
+
+    def test_both_keys_agree(self) -> None:
+        """Leaving them disagreeing is how this was missed for as long as it was."""
+        config = build_member_config(
+            handle="neo",
+            broker_url="ws://x/ws/ravn",
+            memory_db_path=Path("/rooms/backstage/runtime/neo/memory.db"),
+        )
+
+        assert config["memory"]["path"] == config["memory"]["sqlite"]["path"]

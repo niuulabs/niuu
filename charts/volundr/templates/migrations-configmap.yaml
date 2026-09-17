@@ -6,6 +6,11 @@ metadata:
   labels:
     {{- include "volundr.labels" . | nindent 4 }}
 data:
+  000001_initial_schema.down.sql: |
+    -- Rollback initial schema
+
+    DROP TABLE IF EXISTS token_usage;
+    DROP TABLE IF EXISTS sessions;
   000001_initial_schema.up.sql: |
     -- Initial schema for volundr
 
@@ -40,12 +45,13 @@ data:
     CREATE INDEX IF NOT EXISTS idx_token_usage_recorded_at ON token_usage(recorded_at);
     CREATE INDEX IF NOT EXISTS idx_token_usage_session_id ON token_usage(session_id);
     CREATE INDEX IF NOT EXISTS idx_token_usage_provider ON token_usage(provider);
+  000002_add_session_columns.down.sql: |
+    -- Rollback session columns
 
-  000001_initial_schema.down.sql: |
-    -- Rollback initial schema
-    DROP TABLE IF EXISTS token_usage;
-    DROP TABLE IF EXISTS sessions;
-
+    DROP INDEX IF EXISTS idx_sessions_last_active;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS tokens_used;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS message_count;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS last_active;
   000002_add_session_columns.up.sql: |
     -- Add last_active, message_count, and tokens_used columns to sessions table
 
@@ -54,14 +60,21 @@ data:
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS tokens_used INTEGER NOT NULL DEFAULT 0;
 
     CREATE INDEX IF NOT EXISTS idx_sessions_last_active ON sessions(last_active);
+  000003_add_repo_branch_columns.down.sql: |
+    -- Remove columns added by this migration
+    -- Note: Only removes columns that weren't in the original minimal schema
 
-  000002_add_session_columns.down.sql: |
-    -- Rollback session columns
     DROP INDEX IF EXISTS idx_sessions_last_active;
-    ALTER TABLE sessions DROP COLUMN IF EXISTS tokens_used;
-    ALTER TABLE sessions DROP COLUMN IF EXISTS message_count;
-    ALTER TABLE sessions DROP COLUMN IF EXISTS last_active;
 
+    ALTER TABLE sessions DROP COLUMN IF EXISTS repo;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS branch;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS chat_endpoint;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS code_endpoint;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS last_active;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS message_count;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS tokens_used;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS pod_name;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS error;
   000003_add_repo_branch_columns.up.sql: |
     -- Add all potentially missing columns to sessions table (fixes schema drift)
     -- This migration ensures the sessions table matches the domain model
@@ -79,15 +92,11 @@ data:
     CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
     CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at);
     CREATE INDEX IF NOT EXISTS idx_sessions_last_active ON sessions(last_active);
-
-  000003_add_repo_branch_columns.down.sql: |
-    -- Remove columns added by this migration
-    -- Note: Only removes columns that weren't in the original minimal schema
+  000004_fix_schema_drift.down.sql: |
+    -- Rollback schema drift fix
 
     DROP INDEX IF EXISTS idx_sessions_last_active;
 
-    ALTER TABLE sessions DROP COLUMN IF EXISTS repo;
-    ALTER TABLE sessions DROP COLUMN IF EXISTS branch;
     ALTER TABLE sessions DROP COLUMN IF EXISTS chat_endpoint;
     ALTER TABLE sessions DROP COLUMN IF EXISTS code_endpoint;
     ALTER TABLE sessions DROP COLUMN IF EXISTS last_active;
@@ -95,7 +104,6 @@ data:
     ALTER TABLE sessions DROP COLUMN IF EXISTS tokens_used;
     ALTER TABLE sessions DROP COLUMN IF EXISTS pod_name;
     ALTER TABLE sessions DROP COLUMN IF EXISTS error;
-
   000004_fix_schema_drift.up.sql: |
     -- Fix remaining schema drift - add all missing columns
 
@@ -110,20 +118,16 @@ data:
     CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
     CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at);
     CREATE INDEX IF NOT EXISTS idx_sessions_last_active ON sessions(last_active);
+  000005_chronicles.down.sql: |
+    -- Rollback chronicles table
 
-  000004_fix_schema_drift.down.sql: |
-    -- Rollback schema drift fix
-
-    DROP INDEX IF EXISTS idx_sessions_last_active;
-
-    ALTER TABLE sessions DROP COLUMN IF EXISTS chat_endpoint;
-    ALTER TABLE sessions DROP COLUMN IF EXISTS code_endpoint;
-    ALTER TABLE sessions DROP COLUMN IF EXISTS last_active;
-    ALTER TABLE sessions DROP COLUMN IF EXISTS message_count;
-    ALTER TABLE sessions DROP COLUMN IF EXISTS tokens_used;
-    ALTER TABLE sessions DROP COLUMN IF EXISTS pod_name;
-    ALTER TABLE sessions DROP COLUMN IF EXISTS error;
-
+    DROP INDEX IF EXISTS idx_chronicles_parent_id;
+    DROP INDEX IF EXISTS idx_chronicles_tags;
+    DROP INDEX IF EXISTS idx_chronicles_created_at;
+    DROP INDEX IF EXISTS idx_chronicles_repo;
+    DROP INDEX IF EXISTS idx_chronicles_project;
+    DROP INDEX IF EXISTS idx_chronicles_session_id;
+    DROP TABLE IF EXISTS chronicles;
   000005_chronicles.up.sql: |
     -- Add chronicles table for session history and relaunch
 
@@ -154,18 +158,13 @@ data:
     CREATE INDEX IF NOT EXISTS idx_chronicles_created_at ON chronicles(created_at);
     CREATE INDEX IF NOT EXISTS idx_chronicles_tags ON chronicles USING GIN(tags);
     CREATE INDEX IF NOT EXISTS idx_chronicles_parent_id ON chronicles(parent_chronicle_id);
+  000006_chronicle_events.down.sql: |
+    -- Rollback chronicle_events table
 
-  000005_chronicles.down.sql: |
-    -- Rollback chronicles table
-
-    DROP INDEX IF EXISTS idx_chronicles_parent_id;
-    DROP INDEX IF EXISTS idx_chronicles_tags;
-    DROP INDEX IF EXISTS idx_chronicles_created_at;
-    DROP INDEX IF EXISTS idx_chronicles_repo;
-    DROP INDEX IF EXISTS idx_chronicles_project;
-    DROP INDEX IF EXISTS idx_chronicles_session_id;
-    DROP TABLE IF EXISTS chronicles;
-
+    DROP INDEX IF EXISTS idx_chronicle_events_t;
+    DROP INDEX IF EXISTS idx_chronicle_events_session_id;
+    DROP INDEX IF EXISTS idx_chronicle_events_chronicle_id;
+    DROP TABLE IF EXISTS chronicle_events;
   000006_chronicle_events.up.sql: |
     -- Add chronicle_events table for session timeline tracking
 
@@ -188,38 +187,9 @@ data:
     CREATE INDEX IF NOT EXISTS idx_chronicle_events_chronicle_id ON chronicle_events(chronicle_id);
     CREATE INDEX IF NOT EXISTS idx_chronicle_events_session_id ON chronicle_events(session_id);
     CREATE INDEX IF NOT EXISTS idx_chronicle_events_t ON chronicle_events(t);
-
-  000006_chronicle_events.down.sql: |
-    -- Rollback chronicle_events table
-
-    DROP INDEX IF EXISTS idx_chronicle_events_t;
-    DROP INDEX IF EXISTS idx_chronicle_events_session_id;
-    DROP INDEX IF EXISTS idx_chronicle_events_chronicle_id;
-    DROP TABLE IF EXISTS chronicle_events;
-
-  000038_chronicle_history_survives_session_delete.up.sql: |
-    -- Preserve chronicles and timeline history after session deletion
-
-    ALTER TABLE chronicles
-        DROP CONSTRAINT IF EXISTS chronicles_session_id_fkey;
-
-    ALTER TABLE chronicle_events
-        DROP CONSTRAINT IF EXISTS chronicle_events_session_id_fkey;
-
-  000038_chronicle_history_survives_session_delete.down.sql: |
-    -- Restore session foreign keys for chronicles and timeline events
-
-    ALTER TABLE chronicles
-        ADD CONSTRAINT chronicles_session_id_fkey
-        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL;
-
-    ALTER TABLE chronicle_events
-        ADD CONSTRAINT chronicle_events_session_id_fkey
-        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE;
-
+  000007_session_events.down.sql: |
+    DROP TABLE IF EXISTS session_events;
   000007_session_events.up.sql: |
-    -- Add session_events table for the event pipeline
-
     CREATE TABLE IF NOT EXISTS session_events (
         id              UUID PRIMARY KEY,
         session_id      UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -243,12 +213,10 @@ data:
         ON session_events(session_id, timestamp);
     CREATE INDEX IF NOT EXISTS idx_session_events_sequence
         ON session_events(session_id, sequence);
+  000008_saved_prompts.down.sql: |
+    -- Rollback saved_prompts table
 
-  000007_session_events.down.sql: |
-    -- Rollback session_events table
-
-    DROP TABLE IF EXISTS session_events;
-
+    DROP TABLE IF EXISTS saved_prompts;
   000008_saved_prompts.up.sql: |
     -- Add saved_prompts table for reusable prompt storage
 
@@ -271,24 +239,22 @@ data:
         ON saved_prompts USING GIN(tags);
     CREATE INDEX IF NOT EXISTS idx_saved_prompts_name_content
         ON saved_prompts USING GIN(to_tsvector('english', name || ' ' || content));
-
-  000008_saved_prompts.down.sql: |
-    -- Rollback saved_prompts table
-
-    DROP TABLE IF EXISTS saved_prompts;
-
-  000009_session_archive.up.sql: |
-    -- Add archived_at column and index for session archiving
-
-    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP WITH TIME ZONE;
-    CREATE INDEX IF NOT EXISTS idx_sessions_archived_at ON sessions(archived_at);
-
   000009_session_archive.down.sql: |
     -- Rollback session archive column
 
     DROP INDEX IF EXISTS idx_sessions_archived_at;
     ALTER TABLE sessions DROP COLUMN IF EXISTS archived_at;
+  000009_session_archive.up.sql: |
+    -- Add archived_at column and index for session archiving
 
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP WITH TIME ZONE;
+    CREATE INDEX IF NOT EXISTS idx_sessions_archived_at ON sessions(archived_at);
+  000010_project_mappings.down.sql: |
+    -- Rollback project_mappings table and tracker_issue_id column
+
+    ALTER TABLE sessions DROP COLUMN IF EXISTS tracker_issue_id;
+
+    DROP TABLE IF EXISTS project_mappings;
   000010_project_mappings.up.sql: |
     -- Add project_mappings table and tracker_issue_id column on sessions
 
@@ -306,14 +272,12 @@ data:
         ON project_mappings(project_id);
 
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS tracker_issue_id VARCHAR(255);
+  000011_volundr_presets.down.sql: |
+    -- Rollback volundr_presets table and preset_id column
 
-  000010_project_mappings.down.sql: |
-    -- Rollback project_mappings table and tracker_issue_id column
+    ALTER TABLE sessions DROP COLUMN IF EXISTS preset_id;
 
-    ALTER TABLE sessions DROP COLUMN IF EXISTS tracker_issue_id;
-
-    DROP TABLE IF EXISTS project_mappings;
-
+    DROP TABLE IF EXISTS volundr_presets;
   000011_volundr_presets.up.sql: |
     -- Add volundr_presets table and preset_id on sessions
 
@@ -346,14 +310,15 @@ data:
         ON volundr_presets(is_default);
 
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS preset_id UUID;
+  000012_tenant_hierarchy.down.sql: |
+    -- Rollback tenant hierarchy
 
-  000011_volundr_presets.down.sql: |
-    -- Rollback volundr_presets table and preset_id column
+    ALTER TABLE sessions DROP COLUMN IF EXISTS tenant_id;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS owner_id;
 
-    ALTER TABLE sessions DROP COLUMN IF EXISTS preset_id;
-
-    DROP TABLE IF EXISTS volundr_presets;
-
+    DROP TABLE IF EXISTS tenant_memberships;
+    DROP TABLE IF EXISTS users;
+    DROP TABLE IF EXISTS tenants;
   000012_tenant_hierarchy.up.sql: |
     -- Tenant hierarchy: tenants, users, tenant_memberships
 
@@ -395,22 +360,16 @@ data:
     CREATE INDEX IF NOT EXISTS idx_tenant_memberships_tenant_id ON tenant_memberships(tenant_id);
     CREATE INDEX IF NOT EXISTS idx_tenant_memberships_user_id ON tenant_memberships(user_id);
 
+    -- Add owner_id and tenant_id to sessions for identity-scoped access
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS owner_id TEXT REFERENCES users(id);
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS tenant_id TEXT REFERENCES tenants(id);
 
     CREATE INDEX IF NOT EXISTS idx_sessions_owner_id ON sessions(owner_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_tenant_id ON sessions(tenant_id);
+  000013_credential_metadata.down.sql: |
+    -- Rollback credential metadata table
 
-  000012_tenant_hierarchy.down.sql: |
-    -- Rollback tenant hierarchy
-
-    ALTER TABLE sessions DROP COLUMN IF EXISTS tenant_id;
-    ALTER TABLE sessions DROP COLUMN IF EXISTS owner_id;
-
-    DROP TABLE IF EXISTS tenant_memberships;
-    DROP TABLE IF EXISTS users;
-    DROP TABLE IF EXISTS tenants;
-
+    DROP TABLE IF EXISTS credential_metadata;
   000013_credential_metadata.up.sql: |
     -- Credential metadata table for the pluggable credential store
 
@@ -429,12 +388,10 @@ data:
 
     CREATE INDEX IF NOT EXISTS idx_credential_metadata_owner
         ON credential_metadata(owner_type, owner_id);
+  000014_integration_connections.down.sql: |
+    -- Rollback integration connections
 
-  000013_credential_metadata.down.sql: |
-    -- Rollback credential metadata table
-
-    DROP TABLE IF EXISTS credential_metadata;
-
+    DROP TABLE IF EXISTS integration_connections;
   000014_integration_connections.up.sql: |
     -- Integration connections for pluggable issue trackers and other integrations
 
@@ -452,12 +409,15 @@ data:
 
     CREATE INDEX IF NOT EXISTS idx_integration_connections_user
         ON integration_connections(user_id, integration_type);
+  000015_workspaces.down.sql: |
+    -- Rollback workspaces table and user provisioning columns
 
-  000014_integration_connections.down.sql: |
-    -- Rollback integration connections
+    ALTER TABLE sessions DROP COLUMN IF EXISTS workspace_id;
 
-    DROP TABLE IF EXISTS integration_connections;
+    ALTER TABLE users DROP COLUMN IF EXISTS provision_error;
+    ALTER TABLE users DROP COLUMN IF EXISTS provisioned_at;
 
+    DROP TABLE IF EXISTS workspaces;
   000015_workspaces.up.sql: |
     -- Workspaces table for per-user/per-session storage isolation
 
@@ -484,21 +444,26 @@ data:
 
     -- Allow sessions to reference an existing workspace for reuse
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces(id);
+  000016_session_source.down.sql: |
+    -- Reverse migration: restore flat repo/branch columns from source JSONB.
 
-  000015_workspaces.down.sql: |
-    -- Rollback workspaces table and user provisioning columns
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS repo VARCHAR(500) DEFAULT '';
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS branch VARCHAR(255) DEFAULT 'main';
 
-    ALTER TABLE sessions DROP COLUMN IF EXISTS workspace_id;
+    -- Backfill from source JSONB (only git sources have repo/branch)
+    UPDATE sessions
+    SET repo = COALESCE(source->>'repo', ''),
+        branch = COALESCE(source->>'branch', 'main')
+    WHERE source IS NOT NULL AND source->>'type' = 'git';
 
-    ALTER TABLE users DROP COLUMN IF EXISTS provision_error;
-    ALTER TABLE users DROP COLUMN IF EXISTS provisioned_at;
-
-    DROP TABLE IF EXISTS workspaces;
-
+    ALTER TABLE sessions DROP COLUMN IF EXISTS source;
   000016_session_source.up.sql: |
     -- Migrate sessions from flat repo/branch columns to source JSONB.
+
+    -- Add the new source column
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS source JSONB;
 
+    -- Backfill existing rows: convert repo+branch into a GitSource JSON object
     UPDATE sessions
     SET source = jsonb_build_object(
         'type', 'git',
@@ -507,52 +472,42 @@ data:
     )
     WHERE source IS NULL;
 
+    -- Set a default for future inserts
     ALTER TABLE sessions ALTER COLUMN source SET DEFAULT '{"type": "git", "repo": "", "branch": "main"}'::jsonb;
     ALTER TABLE sessions ALTER COLUMN source SET NOT NULL;
 
+    -- Drop old columns
     ALTER TABLE sessions DROP COLUMN IF EXISTS repo;
     ALTER TABLE sessions DROP COLUMN IF EXISTS branch;
-
-  000016_session_source.down.sql: |
-    -- Reverse migration: restore flat repo/branch columns from source JSONB.
-    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS repo VARCHAR(500) DEFAULT '';
-    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS branch VARCHAR(255) DEFAULT 'main';
-
-    UPDATE sessions
-    SET repo = COALESCE(source->>'repo', ''),
-        branch = COALESCE(source->>'branch', 'main')
-    WHERE source IS NOT NULL AND source->>'type' = 'git';
-
-    ALTER TABLE sessions DROP COLUMN IF EXISTS source;
-
-  000017_preset_source_integrations_scripts.up.sql: |
-    -- Add source, integration_ids, and setup_scripts to presets
-    ALTER TABLE volundr_presets ADD COLUMN IF NOT EXISTS source JSONB;
-    ALTER TABLE volundr_presets ADD COLUMN IF NOT EXISTS integration_ids JSONB NOT NULL DEFAULT '[]';
-    ALTER TABLE volundr_presets ADD COLUMN IF NOT EXISTS setup_scripts JSONB NOT NULL DEFAULT '[]';
-
   000017_preset_source_integrations_scripts.down.sql: |
     -- Rollback source, integration_ids, and setup_scripts from presets
+
     ALTER TABLE volundr_presets DROP COLUMN IF EXISTS setup_scripts;
     ALTER TABLE volundr_presets DROP COLUMN IF EXISTS integration_ids;
     ALTER TABLE volundr_presets DROP COLUMN IF EXISTS source;
+  000017_preset_source_integrations_scripts.up.sql: |
+    -- Add source, integration_ids, and setup_scripts to presets
 
-  000018_integration_slug.up.sql: |
-    -- Add slug column to integration_connections for catalog definition references
-    ALTER TABLE integration_connections
-        ADD COLUMN IF NOT EXISTS slug VARCHAR(100) NOT NULL DEFAULT '';
-
+    ALTER TABLE volundr_presets ADD COLUMN IF NOT EXISTS source JSONB;
+    ALTER TABLE volundr_presets ADD COLUMN IF NOT EXISTS integration_ids JSONB NOT NULL DEFAULT '[]';
+    ALTER TABLE volundr_presets ADD COLUMN IF NOT EXISTS setup_scripts JSONB NOT NULL DEFAULT '[]';
   000018_integration_slug.down.sql: |
     ALTER TABLE integration_connections DROP COLUMN IF EXISTS slug;
+  000018_integration_slug.up.sql: |
+    -- Add slug column to integration_connections for catalog definition references
 
-  000019_session_issue_link.up.sql: |
-    -- Add issue tracker URL to sessions for direct linking
-    ALTER TABLE sessions
-        ADD COLUMN IF NOT EXISTS issue_tracker_url VARCHAR(500);
-
+    ALTER TABLE integration_connections
+        ADD COLUMN IF NOT EXISTS slug VARCHAR(100) NOT NULL DEFAULT '';
   000019_session_issue_link.down.sql: |
     ALTER TABLE sessions DROP COLUMN IF EXISTS issue_tracker_url;
+  000019_session_issue_link.up.sql: |
+    -- Add issue tracker URL to sessions for direct linking
 
+    ALTER TABLE sessions
+        ADD COLUMN IF NOT EXISTS issue_tracker_url VARCHAR(500);
+  000020_feature_toggles.down.sql: |
+    DROP TABLE IF EXISTS user_feature_preferences;
+    DROP TABLE IF EXISTS feature_toggles;
   000020_feature_toggles.up.sql: |
     -- Feature toggles: admin-level overrides for which features are available.
     CREATE TABLE IF NOT EXISTS feature_toggles (
@@ -572,11 +527,8 @@ data:
 
     CREATE INDEX IF NOT EXISTS idx_user_feature_prefs_user
         ON user_feature_preferences(user_id);
-
-  000020_feature_toggles.down.sql: |
-    DROP TABLE IF EXISTS user_feature_preferences;
-    DROP TABLE IF EXISTS feature_toggles;
-
+  000021_personal_access_tokens.down.sql: |
+    DROP TABLE IF EXISTS personal_access_tokens;
   000021_personal_access_tokens.up.sql: |
     -- Personal access tokens: stores PAT metadata and bcrypt hash of the raw JWT.
     CREATE TABLE IF NOT EXISTS personal_access_tokens (
@@ -590,43 +542,46 @@ data:
     );
 
     CREATE INDEX IF NOT EXISTS idx_pats_owner_id ON personal_access_tokens(owner_id);
-
-  000021_personal_access_tokens.down.sql: |
-    DROP TABLE IF EXISTS personal_access_tokens;
-
+  000022_pat_unique_owner_name.down.sql: |
+    DROP INDEX IF EXISTS idx_pats_owner_name;
   000022_pat_unique_owner_name.up.sql: |
     -- Enforce one PAT name per owner
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pats_owner_name ON personal_access_tokens(owner_id, name);
-
-  000022_pat_unique_owner_name.down.sql: |
-    DROP INDEX IF EXISTS idx_pats_owner_name;
-
+  000023_session_activity_state.down.sql: |
+    ALTER TABLE sessions DROP COLUMN IF EXISTS activity_metadata;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS activity_state;
   000023_session_activity_state.up.sql: |
     -- Add activity state tracking columns to sessions table
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS activity_state TEXT DEFAULT 'idle';
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS activity_metadata JSONB DEFAULT '{}';
-
-  000023_session_activity_state.down.sql: |
-    ALTER TABLE sessions DROP COLUMN IF EXISTS activity_metadata;
-    ALTER TABLE sessions DROP COLUMN IF EXISTS activity_state;
-
-  000024_rename_user_id_to_owner_id.up.sql: |
-    -- Rename user_id to owner_id in integration_connections
-    -- Code already references owner_id; this migration aligns the schema.
-    ALTER TABLE integration_connections RENAME COLUMN user_id TO owner_id;
-    DROP INDEX IF EXISTS idx_integration_connections_user;
-    CREATE INDEX IF NOT EXISTS idx_integration_connections_owner
-        ON integration_connections(owner_id, integration_type);
-
   000024_rename_user_id_to_owner_id.down.sql: |
+    -- Revert owner_id back to user_id in integration_connections
+
     ALTER TABLE integration_connections RENAME COLUMN owner_id TO user_id;
+
     DROP INDEX IF EXISTS idx_integration_connections_owner;
     CREATE INDEX IF NOT EXISTS idx_integration_connections_user
         ON integration_connections(user_id, integration_type);
+  000024_rename_user_id_to_owner_id.up.sql: |
+    -- Rename user_id to owner_id in integration_connections
+    -- Code already references owner_id; this migration aligns the schema.
 
+    ALTER TABLE integration_connections RENAME COLUMN user_id TO owner_id;
 
+    DROP INDEX IF EXISTS idx_integration_connections_user;
+    CREATE INDEX IF NOT EXISTS idx_integration_connections_owner
+        ON integration_connections(owner_id, integration_type);
+  000025_sleipnir_events.down.sql: |
+    -- Rollback: drop Sleipnir audit log table and indexes.
+    DROP INDEX IF EXISTS idx_sleipnir_events_source_ts;
+    DROP INDEX IF EXISTS idx_sleipnir_events_correlation;
+    DROP INDEX IF EXISTS idx_sleipnir_events_type_ts;
+    DROP TABLE IF EXISTS sleipnir_events;
   000025_sleipnir_events.up.sql: |
     -- Sleipnir audit log — persistent record of every event on the bus.
+    -- Partitioned by month (range on timestamp) so old partitions can be
+    -- detached cheaply when a data-retention policy is applied.
+
     CREATE TABLE IF NOT EXISTS sleipnir_events (
         event_id        TEXT        PRIMARY KEY,
         event_type      TEXT        NOT NULL,
@@ -641,19 +596,19 @@ data:
         timestamp       TIMESTAMPTZ NOT NULL,
         ttl             INTEGER
     );
+
     CREATE INDEX IF NOT EXISTS idx_sleipnir_events_type_ts
         ON sleipnir_events (event_type, timestamp);
+
     CREATE INDEX IF NOT EXISTS idx_sleipnir_events_correlation
         ON sleipnir_events (correlation_id);
+
     CREATE INDEX IF NOT EXISTS idx_sleipnir_events_source_ts
         ON sleipnir_events (source, timestamp);
-
-  000025_sleipnir_events.down.sql: |
-    DROP INDEX IF EXISTS idx_sleipnir_events_source_ts;
-    DROP INDEX IF EXISTS idx_sleipnir_events_correlation;
-    DROP INDEX IF EXISTS idx_sleipnir_events_type_ts;
-    DROP TABLE IF EXISTS sleipnir_events;
-
+  000026_ravn_episodes.down.sql: |
+    -- Rollback ravn episodic memory tables.
+    DROP TABLE IF EXISTS ravn_sessions;
+    DROP TABLE IF EXISTS ravn_episodes;
   000026_ravn_episodes.up.sql: |
     -- Ravn episodic memory tables.
     -- ravn_episodes: stores one row per recorded agent episode.
@@ -669,6 +624,10 @@ data:
     END;
     $$;
 
+    -- Immutable wrapper around to_tsvector for use in generated columns.
+    -- to_tsvector is STABLE (not IMMUTABLE) in PostgreSQL, but with a fixed
+    -- regconfig the result is deterministic. Declaring IMMUTABLE is the
+    -- standard pattern for generated tsvector columns.
     CREATE OR REPLACE FUNCTION ravn_episode_tsv(summary TEXT, task_desc TEXT, tags TEXT[])
     RETURNS tsvector LANGUAGE sql IMMUTABLE AS $$
         SELECT to_tsvector('english'::regconfig,
@@ -686,6 +645,8 @@ data:
         tools_used       TEXT[] NOT NULL DEFAULT '{}',
         outcome          TEXT NOT NULL,
         tags             TEXT[] NOT NULL DEFAULT '{}',
+        -- Stored as a JSON text array (e.g. "[0.1, 0.2, ...]") for portability.
+        -- Cast to vector type when pgvector is available: embedding::vector
         embedding        TEXT,
         search_vector    tsvector GENERATED ALWAYS AS (
             ravn_episode_tsv(summary, task_description, tags)
@@ -698,9 +659,11 @@ data:
     CREATE INDEX IF NOT EXISTS idx_ravn_episodes_timestamp
         ON ravn_episodes (timestamp DESC);
 
+    -- GIN index on the generated tsvector column for fast FTS queries.
     CREATE INDEX IF NOT EXISTS idx_ravn_episodes_fts
         ON ravn_episodes USING GIN (search_vector);
 
+    -- Session lifecycle metadata (populated when Ravn tracks session boundaries).
     CREATE TABLE IF NOT EXISTS ravn_sessions (
         session_id    TEXT PRIMARY KEY,
         agent_id      TEXT NOT NULL DEFAULT '',
@@ -712,15 +675,14 @@ data:
 
     CREATE INDEX IF NOT EXISTS idx_ravn_sessions_agent_id
         ON ravn_sessions (agent_id);
+  000027_bifrost_requests.down.sql: |
+    -- Rollback bifrost accounting table.
 
-  000026_ravn_episodes.down.sql: |
-    -- Rollback ravn episodic memory tables.
-    DROP TABLE IF EXISTS ravn_sessions;
-    DROP TABLE IF EXISTS ravn_episodes;
-
+    DROP TABLE IF EXISTS bifrost_requests;
   000027_bifrost_requests.up.sql: |
     -- Bifrost per-request accounting table.
     -- One row per LLM request: token counts, cost attribution, and latency.
+
     CREATE TABLE IF NOT EXISTS bifrost_requests (
         id                 BIGSERIAL   PRIMARY KEY,
         request_id         TEXT        NOT NULL DEFAULT '',
@@ -740,18 +702,19 @@ data:
         streaming          BOOLEAN     NOT NULL DEFAULT FALSE,
         timestamp          TIMESTAMPTZ NOT NULL
     );
+
     CREATE INDEX IF NOT EXISTS idx_bifrost_req_tenant_ts  ON bifrost_requests(tenant_id, timestamp);
     CREATE INDEX IF NOT EXISTS idx_bifrost_req_agent_ts   ON bifrost_requests(agent_id,  timestamp);
     CREATE INDEX IF NOT EXISTS idx_bifrost_req_model      ON bifrost_requests(model);
     CREATE INDEX IF NOT EXISTS idx_bifrost_req_provider   ON bifrost_requests(provider);
+  000028_bifrost_audit.down.sql: |
+    -- Rollback bifrost audit log table.
 
-  000027_bifrost_requests.down.sql: |
-    -- Rollback bifrost accounting table.
-    DROP TABLE IF EXISTS bifrost_requests;
-
+    DROP TABLE IF EXISTS bifrost_audit;
   000028_bifrost_audit.up.sql: |
     -- Bifrost per-request audit log table.
     -- One row per LLM request attempt: outcome, rule matches, and security metadata.
+
     CREATE TABLE IF NOT EXISTS bifrost_audit (
         id               BIGSERIAL   PRIMARY KEY,
         request_id       TEXT        NOT NULL DEFAULT '',
@@ -776,63 +739,113 @@ data:
         response_content TEXT        NOT NULL DEFAULT '',
         timestamp        TIMESTAMPTZ NOT NULL
     );
+
+    -- Idempotent column additions for existing deployments upgraded from pre-NIU-462 schema.
     ALTER TABLE bifrost_audit ADD COLUMN IF NOT EXISTS tokens_input     INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE bifrost_audit ADD COLUMN IF NOT EXISTS tokens_output    INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE bifrost_audit ADD COLUMN IF NOT EXISTS cost_usd         REAL    NOT NULL DEFAULT 0;
     ALTER TABLE bifrost_audit ADD COLUMN IF NOT EXISTS cache_hit        BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE bifrost_audit ADD COLUMN IF NOT EXISTS prompt_content   TEXT    NOT NULL DEFAULT '';
     ALTER TABLE bifrost_audit ADD COLUMN IF NOT EXISTS response_content TEXT    NOT NULL DEFAULT '';
+
     CREATE INDEX IF NOT EXISTS idx_bifrost_audit_tenant_ts  ON bifrost_audit(tenant_id, timestamp);
     CREATE INDEX IF NOT EXISTS idx_bifrost_audit_agent_ts   ON bifrost_audit(agent_id,  timestamp);
     CREATE INDEX IF NOT EXISTS idx_bifrost_audit_outcome    ON bifrost_audit(outcome);
     CREATE INDEX IF NOT EXISTS idx_bifrost_audit_request_id ON bifrost_audit(request_id);
+  000029_buri_knowledge_facts.down.sql: |
+    -- Rollback Búri knowledge memory substrate (NIU-541).
 
-  000028_bifrost_audit.down.sql: |
-    -- Rollback bifrost audit log table.
-    DROP TABLE IF EXISTS bifrost_audit;
-
+    DROP TABLE IF EXISTS session_states;
+    DROP TABLE IF EXISTS knowledge_relationships;
+    DROP TABLE IF EXISTS knowledge_facts;
+    DROP TABLE IF EXISTS memory_clusters;
   000029_buri_knowledge_facts.up.sql: |
     -- Búri knowledge memory substrate (NIU-541).
+    -- Typed fact graph with temporal validity, proto-vMF embedding clusters,
+    -- typed relationship edges, and proto-RWKV session state.
+    --
+    -- Requires: pgvector extension (vector type + ivfflat index method).
+    -- The extension is enabled by migration 000026_ravn_episodes.up.sql;
+    -- if not available, VECTOR columns fall back to TEXT (embeddings stored as JSON).
+
+    -- ---------------------------------------------------------------------------
+    -- Proto-vMF embedding clusters — must be created before knowledge_facts
+    -- ---------------------------------------------------------------------------
+
     CREATE TABLE IF NOT EXISTS memory_clusters (
         cluster_id    TEXT PRIMARY KEY,
-        centroid      TEXT,
-        radius        REAL,
+        centroid      TEXT,              -- unit-normalised JSON float array (cast to vector when available)
+        radius        REAL,              -- cosine spread of cluster members (proto-κ)
         member_count  INT NOT NULL DEFAULT 1,
         dominant_type TEXT,
         label         TEXT
     );
-    CREATE INDEX IF NOT EXISTS idx_clusters_centroid ON memory_clusters (cluster_id);
+
+    CREATE INDEX IF NOT EXISTS idx_clusters_centroid
+        ON memory_clusters (cluster_id);
+
+    -- ---------------------------------------------------------------------------
+    -- Typed facts with temporal validity
+    -- ---------------------------------------------------------------------------
+
     CREATE TABLE IF NOT EXISTS knowledge_facts (
         fact_id        TEXT PRIMARY KEY,
         fact_type      TEXT NOT NULL CHECK (fact_type IN ('preference','decision','goal','directive','relationship','observation')),
         content        TEXT NOT NULL,
         entities       TEXT[] NOT NULL DEFAULT '{}',
-        embedding      TEXT,
+        embedding      TEXT,             -- JSON float array; cast to vector when pgvector available
         confidence     REAL NOT NULL DEFAULT 1.0 CHECK (confidence BETWEEN 0 AND 1),
         valid_from     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         valid_until    TIMESTAMPTZ,
         superseded_by  TEXT REFERENCES knowledge_facts(fact_id),
-        source         TEXT NOT NULL,
+        source         TEXT NOT NULL,    -- "session:<id>" or "manual"
         source_context TEXT NOT NULL DEFAULT '',
         cluster_id     TEXT REFERENCES memory_clusters(cluster_id),
         tags           TEXT[] NOT NULL DEFAULT '{}'
     );
-    CREATE INDEX IF NOT EXISTS idx_facts_entities ON knowledge_facts USING GIN (entities);
-    CREATE INDEX IF NOT EXISTS idx_facts_current ON knowledge_facts (fact_type, valid_until) WHERE valid_until IS NULL;
-    CREATE INDEX IF NOT EXISTS idx_facts_cluster ON knowledge_facts (cluster_id) WHERE cluster_id IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS idx_facts_source ON knowledge_facts (source);
+
+    CREATE INDEX IF NOT EXISTS idx_facts_entities
+        ON knowledge_facts USING GIN (entities);
+
+    CREATE INDEX IF NOT EXISTS idx_facts_current
+        ON knowledge_facts (fact_type, valid_until)
+        WHERE valid_until IS NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_facts_cluster
+        ON knowledge_facts (cluster_id)
+        WHERE cluster_id IS NOT NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_facts_source
+        ON knowledge_facts (source);
+
+    -- ---------------------------------------------------------------------------
+    -- Typed relationship edges
+    -- ---------------------------------------------------------------------------
+
     CREATE TABLE IF NOT EXISTS knowledge_relationships (
         rel_id      TEXT PRIMARY KEY,
         from_entity TEXT NOT NULL,
-        relation    TEXT NOT NULL,
+        relation    TEXT NOT NULL,   -- "works_at", "prefers", "owns", "lives_in", "decided"
         to_entity   TEXT NOT NULL,
         fact_id     TEXT REFERENCES knowledge_facts(fact_id),
         valid_from  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         valid_until TIMESTAMPTZ
     );
-    CREATE INDEX IF NOT EXISTS idx_rels_entities ON knowledge_relationships (from_entity, to_entity) WHERE valid_until IS NULL;
-    CREATE INDEX IF NOT EXISTS idx_rels_from_entity ON knowledge_relationships (from_entity);
-    CREATE INDEX IF NOT EXISTS idx_rels_to_entity ON knowledge_relationships (to_entity);
+
+    CREATE INDEX IF NOT EXISTS idx_rels_entities
+        ON knowledge_relationships (from_entity, to_entity)
+        WHERE valid_until IS NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_rels_from_entity
+        ON knowledge_relationships (from_entity);
+
+    CREATE INDEX IF NOT EXISTS idx_rels_to_entity
+        ON knowledge_relationships (to_entity);
+
+    -- ---------------------------------------------------------------------------
+    -- Session recurrent state (proto-RWKV)
+    -- ---------------------------------------------------------------------------
+
     CREATE TABLE IF NOT EXISTS session_states (
         session_id      TEXT PRIMARY KEY,
         rolling_summary TEXT NOT NULL DEFAULT '',
@@ -840,15 +853,11 @@ data:
         turn_count      INT NOT NULL DEFAULT 0,
         last_updated    TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-    CREATE INDEX IF NOT EXISTS idx_session_states_updated ON session_states (last_updated DESC);
 
-  000029_buri_knowledge_facts.down.sql: |
-    -- Rollback Búri knowledge memory substrate (NIU-541).
-    DROP TABLE IF EXISTS session_states;
-    DROP TABLE IF EXISTS knowledge_relationships;
-    DROP TABLE IF EXISTS knowledge_facts;
-    DROP TABLE IF EXISTS memory_clusters;
-
+    CREATE INDEX IF NOT EXISTS idx_session_states_updated
+        ON session_states (last_updated DESC);
+  000030_ravn_checkpoints.down.sql: |
+    DROP TABLE IF EXISTS ravn_checkpoints;
   000030_ravn_checkpoints.up.sql: |
     CREATE TABLE IF NOT EXISTS ravn_checkpoints (
         task_id              TEXT PRIMARY KEY,
@@ -863,12 +872,23 @@ data:
         interrupted_by       TEXT,
         created_at           TIMESTAMPTZ NOT NULL
     );
+  000031_ravn_checkpoint_snapshots.down.sql: |
+    -- Rollback NIU-537 checkpoint snapshot schema.
+    DROP TABLE IF EXISTS ravn_checkpoint_snapshots;
 
-  000030_ravn_checkpoints.down.sql: |
-    DROP TABLE IF EXISTS ravn_checkpoints;
-
+    ALTER TABLE ravn_checkpoints
+        DROP COLUMN IF EXISTS checkpoint_id,
+        DROP COLUMN IF EXISTS seq,
+        DROP COLUMN IF EXISTS label,
+        DROP COLUMN IF EXISTS tags,
+        DROP COLUMN IF EXISTS memory_context;
   000031_ravn_checkpoint_snapshots.up.sql: |
     -- NIU-537: named checkpoint snapshots table and extended crash-recovery columns.
+    --
+    -- Adds NIU-537 fields to the existing ravn_checkpoints table (crash-recovery)
+    -- and creates the ravn_checkpoint_snapshots table (named snapshots, multiple per task).
+
+    -- Extend crash-recovery table with NIU-537 snapshot fields.
     ALTER TABLE ravn_checkpoints
         ADD COLUMN IF NOT EXISTS checkpoint_id   TEXT NOT NULL DEFAULT '',
         ADD COLUMN IF NOT EXISTS seq             INTEGER NOT NULL DEFAULT 0,
@@ -876,6 +896,7 @@ data:
         ADD COLUMN IF NOT EXISTS tags            JSONB NOT NULL DEFAULT '[]',
         ADD COLUMN IF NOT EXISTS memory_context  TEXT NOT NULL DEFAULT '';
 
+    -- Named snapshots: one row per checkpoint_id (ckpt_{task_id}_{seq}).
     CREATE TABLE IF NOT EXISTS ravn_checkpoint_snapshots (
         checkpoint_id        TEXT PRIMARY KEY,
         task_id              TEXT NOT NULL,
@@ -897,49 +918,30 @@ data:
 
     CREATE INDEX IF NOT EXISTS idx_ravn_snapshots_task_id
         ON ravn_checkpoint_snapshots (task_id, seq DESC);
-
-  000031_ravn_checkpoint_snapshots.down.sql: |
-    DROP TABLE IF EXISTS ravn_checkpoint_snapshots;
-
-    ALTER TABLE ravn_checkpoints
-        DROP COLUMN IF EXISTS checkpoint_id,
-        DROP COLUMN IF EXISTS seq,
-        DROP COLUMN IF EXISTS label,
-        DROP COLUMN IF EXISTS tags,
-        DROP COLUMN IF EXISTS memory_context;
-
-  000032_ravn_episodes_reflection.up.sql: |
-    -- NIU-574: Add reflection, errors, cost_usd, duration_seconds columns to ravn_episodes.
-    ALTER TABLE ravn_episodes
-        ADD COLUMN IF NOT EXISTS reflection       TEXT,
-        ADD COLUMN IF NOT EXISTS errors           TEXT,
-        ADD COLUMN IF NOT EXISTS cost_usd         NUMERIC(12, 8),
-        ADD COLUMN IF NOT EXISTS duration_seconds NUMERIC(12, 3);
-
   000032_ravn_episodes_reflection.down.sql: |
     -- Rollback NIU-574: remove reflection columns from ravn_episodes.
+
     ALTER TABLE ravn_episodes
         DROP COLUMN IF EXISTS reflection,
         DROP COLUMN IF EXISTS errors,
         DROP COLUMN IF EXISTS cost_usd,
         DROP COLUMN IF EXISTS duration_seconds;
+  000032_ravn_episodes_reflection.up.sql: |
+    -- NIU-574: Add reflection, errors, cost_usd, duration_seconds columns to ravn_episodes.
+    -- These fields were previously stored in a separate task_outcomes table and are now
+    -- merged directly into the episode record for a single unified store.
 
-  000033_drop_buri_tables.up.sql: |
-    -- Drop Buri knowledge memory substrate tables (NIU-576).
-    --
-    -- These tables were created by migration 000029_buri_knowledge_facts.up.sql
-    -- and are no longer used after the Buri memory adapter was removed.
-    -- Inline fact detection now writes to Mimir compiled-truth pages instead.
-    DROP TABLE IF EXISTS session_states;
-    DROP TABLE IF EXISTS knowledge_relationships;
-    DROP TABLE IF EXISTS knowledge_facts;
-    DROP TABLE IF EXISTS memory_clusters;
-
+    ALTER TABLE ravn_episodes
+        ADD COLUMN IF NOT EXISTS reflection       TEXT,
+        ADD COLUMN IF NOT EXISTS errors           TEXT,
+        ADD COLUMN IF NOT EXISTS cost_usd         NUMERIC(12, 8),
+        ADD COLUMN IF NOT EXISTS duration_seconds NUMERIC(12, 3);
   000033_drop_buri_tables.down.sql: |
-    -- Restore Buri knowledge memory substrate tables (rollback of NIU-576 drop).
+    -- Restore Búri knowledge memory substrate tables (rollback of NIU-576 drop).
     --
     -- Recreates the schema from 000029_buri_knowledge_facts.up.sql so that
     -- the migration tool can roll back cleanly.  Data is not restored.
+
     CREATE TABLE IF NOT EXISTS memory_clusters (
         cluster_id    TEXT PRIMARY KEY,
         centroid      TEXT,
@@ -1012,7 +1014,20 @@ data:
 
     CREATE INDEX IF NOT EXISTS idx_session_states_updated
         ON session_states (last_updated DESC);
+  000033_drop_buri_tables.up.sql: |
+    -- Drop Búri knowledge memory substrate tables (NIU-576).
+    --
+    -- These tables were created by migration 000029_buri_knowledge_facts.up.sql
+    -- and are no longer used after the Búri memory adapter was removed.
+    -- Inline fact detection now writes to Mímir compiled-truth pages instead.
 
+    DROP TABLE IF EXISTS session_states;
+    DROP TABLE IF EXISTS knowledge_relationships;
+    DROP TABLE IF EXISTS knowledge_facts;
+    DROP TABLE IF EXISTS memory_clusters;
+  000034_ravn_personas.down.sql: |
+    DROP INDEX IF EXISTS idx_ravn_personas_owner_updated;
+    DROP TABLE IF EXISTS ravn_personas;
   000034_ravn_personas.up.sql: |
     -- Add per-user persona registry for the Volundr-hosted Ravn API
 
@@ -1028,19 +1043,17 @@ data:
 
     CREATE INDEX IF NOT EXISTS idx_ravn_personas_owner_updated
         ON ravn_personas(owner_id, updated_at DESC);
-
-  000034_ravn_personas.down.sql: |
-    DROP INDEX IF EXISTS idx_ravn_personas_owner_updated;
-    DROP TABLE IF EXISTS ravn_personas;
-
-  000035_sessions_workload_type.up.sql: |
-    ALTER TABLE sessions
-        ADD COLUMN IF NOT EXISTS workload_type VARCHAR(100) NOT NULL DEFAULT 'session';
-
   000035_sessions_workload_type.down.sql: |
     ALTER TABLE sessions
         DROP COLUMN IF EXISTS workload_type;
-
+  000035_sessions_workload_type.up.sql: |
+    ALTER TABLE sessions
+        ADD COLUMN IF NOT EXISTS workload_type VARCHAR(100) NOT NULL DEFAULT 'session';
+  000036_communication_routes.down.sql: |
+    DROP INDEX IF EXISTS idx_comm_routes_active_lookup;
+    DROP INDEX IF EXISTS idx_comm_routes_owner_id;
+    DROP INDEX IF EXISTS idx_comm_routes_session_id;
+    DROP TABLE IF EXISTS communication_routes;
   000036_communication_routes.up.sql: |
     CREATE TABLE IF NOT EXISTS communication_routes (
         id UUID PRIMARY KEY,
@@ -1065,28 +1078,39 @@ data:
 
     CREATE INDEX IF NOT EXISTS idx_comm_routes_active_lookup
         ON communication_routes(platform, conversation_id, thread_id, active);
-
-  000036_communication_routes.down.sql: |
-    DROP INDEX IF EXISTS idx_comm_routes_active_lookup;
-    DROP INDEX IF EXISTS idx_comm_routes_owner_id;
-    DROP INDEX IF EXISTS idx_comm_routes_session_id;
-    DROP TABLE IF EXISTS communication_routes;
-
+  000037_communication_cursors.down.sql: |
+    DROP TABLE IF EXISTS communication_cursors;
   000037_communication_cursors.up.sql: |
     CREATE TABLE IF NOT EXISTS communication_cursors (
         platform TEXT NOT NULL,
         consumer_key TEXT NOT NULL,
         cursor TEXT NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
         PRIMARY KEY (platform, consumer_key)
     );
 
     CREATE INDEX IF NOT EXISTS idx_comm_cursors_updated_at
         ON communication_cursors(updated_at);
+  000038_chronicle_history_survives_session_delete.down.sql: |
+    -- Restore session foreign keys for chronicles and timeline events
 
-  000037_communication_cursors.down.sql: |
-    DROP TABLE IF EXISTS communication_cursors;
+    ALTER TABLE chronicles
+        ADD CONSTRAINT chronicles_session_id_fkey
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL;
 
+    ALTER TABLE chronicle_events
+        ADD CONSTRAINT chronicle_events_session_id_fkey
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE;
+  000038_chronicle_history_survives_session_delete.up.sql: |
+    -- Preserve chronicles and timeline history after session deletion
+
+    ALTER TABLE chronicles
+        DROP CONSTRAINT IF EXISTS chronicles_session_id_fkey;
+
+    ALTER TABLE chronicle_events
+        DROP CONSTRAINT IF EXISTS chronicle_events_session_id_fkey;
+  000039_observatory_registry.down.sql: |
+    DROP TABLE IF EXISTS observatory_registries;
   000039_observatory_registry.up.sql: |
     CREATE TABLE IF NOT EXISTS observatory_registries (
         registry_key TEXT PRIMARY KEY,
@@ -1094,9 +1118,11 @@ data:
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         payload JSONB NOT NULL
     );
-
-  000039_observatory_registry.down.sql: |
-    DROP TABLE IF EXISTS observatory_registries;
+  000040_niuu_instances.down.sql: |
+    DROP INDEX IF EXISTS idx_niuu_instances_visibility;
+    DROP INDEX IF EXISTS idx_niuu_instances_kind_enabled;
+    DROP INDEX IF EXISTS idx_niuu_instances_scope_slug;
+    DROP TABLE IF EXISTS niuu_instances;
   000040_niuu_instances.up.sql: |
     -- Shared runtime instance registry for multi-instance Niuu deployments.
 
@@ -1131,21 +1157,6 @@ data:
 
     CREATE INDEX IF NOT EXISTS idx_niuu_instances_visibility
         ON niuu_instances(visibility, owner_id, tenant_id);
-
-  000040_niuu_instances.down.sql: |
-    DROP INDEX IF EXISTS idx_niuu_instances_visibility;
-    DROP INDEX IF EXISTS idx_niuu_instances_kind_enabled;
-    DROP INDEX IF EXISTS idx_niuu_instances_scope_slug;
-    DROP TABLE IF EXISTS niuu_instances;
-
-  000041_expand_niuu_instance_kinds.up.sql: |
-    ALTER TABLE niuu_instances
-        DROP CONSTRAINT IF EXISTS niuu_instances_kind_check;
-
-    ALTER TABLE niuu_instances
-        ADD CONSTRAINT niuu_instances_kind_check
-        CHECK (kind IN ('volundr', 'ting', 'mimir', 'bifrost', 'ravn', 'observatory', 'generic'));
-
   000041_expand_niuu_instance_kinds.down.sql: |
     ALTER TABLE niuu_instances
         DROP CONSTRAINT IF EXISTS niuu_instances_kind_check;
@@ -1153,7 +1164,19 @@ data:
     ALTER TABLE niuu_instances
         ADD CONSTRAINT niuu_instances_kind_check
         CHECK (kind IN ('volundr'));
+  000041_expand_niuu_instance_kinds.up.sql: |
+    ALTER TABLE niuu_instances
+        DROP CONSTRAINT IF EXISTS niuu_instances_kind_check;
 
+    ALTER TABLE niuu_instances
+        ADD CONSTRAINT niuu_instances_kind_check
+        CHECK (kind IN ('volundr', 'ting', 'mimir', 'bifrost', 'ravn', 'observatory', 'generic'));
+  000042_session_spans.down.sql: |
+    DROP INDEX IF EXISTS idx_session_spans_kind;
+    DROP INDEX IF EXISTS idx_session_spans_trace;
+    DROP INDEX IF EXISTS idx_session_spans_parent;
+    DROP INDEX IF EXISTS idx_session_spans_session_started;
+    DROP TABLE IF EXISTS session_spans;
   000042_session_spans.up.sql: |
     CREATE TABLE IF NOT EXISTS session_spans (
         id UUID PRIMARY KEY,
@@ -1183,14 +1206,11 @@ data:
         ON session_spans(trace_id);
     CREATE INDEX IF NOT EXISTS idx_session_spans_kind
         ON session_spans(kind);
+  000043_niuu_instance_tags.down.sql: |
+    DROP INDEX IF EXISTS idx_niuu_instances_tags;
 
-  000042_session_spans.down.sql: |
-    DROP INDEX IF EXISTS idx_session_spans_kind;
-    DROP INDEX IF EXISTS idx_session_spans_trace;
-    DROP INDEX IF EXISTS idx_session_spans_parent;
-    DROP INDEX IF EXISTS idx_session_spans_session_started;
-    DROP TABLE IF EXISTS session_spans;
-
+    ALTER TABLE niuu_instances
+        DROP COLUMN IF EXISTS tags;
   000043_niuu_instance_tags.up.sql: |
     -- Add freeform tags to registered instances for label-based targeting.
 
@@ -1199,27 +1219,6 @@ data:
 
     CREATE INDEX IF NOT EXISTS idx_niuu_instances_tags
         ON niuu_instances USING GIN(tags);
-
-  000043_niuu_instance_tags.down.sql: |
-    DROP INDEX IF EXISTS idx_niuu_instances_tags;
-
-    ALTER TABLE niuu_instances
-        DROP COLUMN IF EXISTS tags;
-
-  000044_launch_specs.up.sql: |
-    -- Consolidate profiles + templates + presets into unified launch specs.
-    ALTER TABLE volundr_presets RENAME TO volundr_launch_specs;
-
-    ALTER TABLE volundr_launch_specs ADD COLUMN IF NOT EXISTS session_definition VARCHAR(255);
-    ALTER TABLE volundr_launch_specs ADD COLUMN IF NOT EXISTS repos JSONB NOT NULL DEFAULT '[]'::jsonb;
-    ALTER TABLE volundr_launch_specs ADD COLUMN IF NOT EXISTS workspace_layout JSONB NOT NULL DEFAULT '{}'::jsonb;
-
-    ALTER INDEX IF EXISTS idx_volundr_presets_name RENAME TO idx_volundr_launch_specs_name;
-    ALTER INDEX IF EXISTS idx_volundr_presets_cli_tool RENAME TO idx_volundr_launch_specs_cli_tool;
-    ALTER INDEX IF EXISTS idx_volundr_presets_is_default RENAME TO idx_volundr_launch_specs_is_default;
-
-    ALTER TABLE sessions RENAME COLUMN preset_id TO launch_spec_id;
-
   000044_launch_specs.down.sql: |
     ALTER TABLE sessions RENAME COLUMN launch_spec_id TO preset_id;
 
@@ -1232,8 +1231,27 @@ data:
     ALTER TABLE volundr_launch_specs DROP COLUMN IF EXISTS session_definition;
 
     ALTER TABLE volundr_launch_specs RENAME TO volundr_presets;
+  000044_launch_specs.up.sql: |
+    -- Consolidate profiles + templates + presets into unified launch specs.
+    -- User-scope launch specs were the former presets table; system-scope specs
+    -- are config-seeded and not stored here.
 
+    ALTER TABLE volundr_presets RENAME TO volundr_launch_specs;
 
+    ALTER TABLE volundr_launch_specs ADD COLUMN IF NOT EXISTS session_definition VARCHAR(255);
+    ALTER TABLE volundr_launch_specs ADD COLUMN IF NOT EXISTS repos JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE volundr_launch_specs ADD COLUMN IF NOT EXISTS workspace_layout JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+    ALTER INDEX IF EXISTS idx_volundr_presets_name RENAME TO idx_volundr_launch_specs_name;
+    ALTER INDEX IF EXISTS idx_volundr_presets_cli_tool RENAME TO idx_volundr_launch_specs_cli_tool;
+    ALTER INDEX IF EXISTS idx_volundr_presets_is_default RENAME TO idx_volundr_launch_specs_is_default;
+
+    ALTER TABLE sessions RENAME COLUMN preset_id TO launch_spec_id;
+  000045_session_origin.down.sql: |
+    DROP INDEX IF EXISTS idx_sessions_external_session_id;
+
+    ALTER TABLE sessions DROP COLUMN IF EXISTS external_session_id;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS origin;
   000045_session_origin.up.sql: |
     -- Track where a session originated (volundr, claude, codex) and the native
     -- CLI session/thread id for sessions imported from an external harness.
@@ -1244,30 +1262,35 @@ data:
     CREATE INDEX IF NOT EXISTS idx_sessions_external_session_id
         ON sessions (external_session_id)
         WHERE external_session_id IS NOT NULL;
-
-  000045_session_origin.down.sql: |
-    DROP INDEX IF EXISTS idx_sessions_external_session_id;
-
-    ALTER TABLE sessions DROP COLUMN IF EXISTS external_session_id;
-    ALTER TABLE sessions DROP COLUMN IF EXISTS origin;
-
+  000046_session_cli_session_id.down.sql: |
+    ALTER TABLE sessions DROP COLUMN IF EXISTS cli_session_id;
   000046_session_cli_session_id.up.sql: |
     -- Capture the CLI/agent conversation id (Claude session UUID or Codex thread
     -- id) reported by the broker at runtime, so a stopped session can be resumed
     -- with its prior conversation on restart.
 
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS cli_session_id VARCHAR(255);
-
-  000046_session_cli_session_id.down.sql: |
-    ALTER TABLE sessions DROP COLUMN IF EXISTS cli_session_id;
-
+  000047_session_event_log.down.sql: |
+    DROP INDEX IF EXISTS idx_session_event_log_request;
+    DROP INDEX IF EXISTS idx_session_event_log_session_seq;
+    DROP TABLE IF EXISTS session_event_log;
   000047_session_event_log.up.sql: |
-    -- Durable, append-only, full-fidelity per-session event log. Preserves the
-    -- complete agent output (text, thinking, tool_use, tool_result, deltas)
-    -- ordered by a monotonic per-session `seq` so any client can replay the full
-    -- transcript from a cursor regardless of whether a socket was attached.
-    -- PRIMARY KEY (session_id, seq) makes at-least-once ingestion idempotent.
-    -- No FK to sessions: history survives session deletion.
+    -- Durable, append-only, full-fidelity per-session event log.
+    --
+    -- Unlike session_events (analytics previews, CASCADE-deleted with the session),
+    -- this table preserves the COMPLETE agent output verbatim — assistant text,
+    -- thinking, tool_use, tool_result, deltas — ordered by a monotonic per-session
+    -- `seq`. It is the source of truth for transcript replay: any client (web or
+    -- iOS) can resume from a cursor (`seq`) and reconstruct the full conversation
+    -- regardless of whether a socket was attached when the events were produced.
+    --
+    -- The producer (skuld) assigns `seq` monotonically per session (it is the sole
+    -- writer for a session's CLI), so the PRIMARY KEY (session_id, seq) makes
+    -- ingestion idempotent under at-least-once retries (ON CONFLICT DO NOTHING).
+    --
+    -- No FK to sessions: the log survives session deletion (same posture as
+    -- chronicle_events after migration 000038) so history is never lost.
+
     CREATE TABLE IF NOT EXISTS session_event_log (
         session_id   UUID NOT NULL,
         seq          BIGINT NOT NULL,
@@ -1285,10 +1308,10 @@ data:
 
     CREATE INDEX IF NOT EXISTS idx_session_event_log_request
         ON session_event_log(session_id, request_id);
-  000047_session_event_log.down.sql: |
-    DROP INDEX IF EXISTS idx_session_event_log_request;
-    DROP INDEX IF EXISTS idx_session_event_log_session_seq;
-    DROP TABLE IF EXISTS session_event_log;
+  000048_odin_review_queue.down.sql: |
+    DROP INDEX IF EXISTS idx_odin_review_items_environment;
+    DROP INDEX IF EXISTS idx_odin_review_items_status;
+    DROP TABLE IF EXISTS odin_review_items;
   000048_odin_review_queue.up.sql: |
     -- Central ODIN review queue: every decision awaiting (or carrying) an
     -- operator verdict, with the full ReviewItem envelope as JSONB.
@@ -1308,10 +1331,10 @@ data:
 
     CREATE INDEX IF NOT EXISTS idx_odin_review_items_environment
         ON odin_review_items(environment_id, status);
-  000048_odin_review_queue.down.sql: |
-    DROP INDEX IF EXISTS idx_odin_review_items_environment;
-    DROP INDEX IF EXISTS idx_odin_review_items_status;
-    DROP TABLE IF EXISTS odin_review_items;
+  000049_valkyrie_history.down.sql: |
+    DROP TABLE IF EXISTS valkyrie_signals;
+    DROP TABLE IF EXISTS valkyrie_actions;
+    DROP TABLE IF EXISTS valkyrie_decisions;
   000049_valkyrie_history.up.sql: |
     CREATE TABLE IF NOT EXISTS valkyrie_decisions (
         decision_id TEXT PRIMARY KEY,
@@ -1364,17 +1387,16 @@ data:
         ON valkyrie_signals (environment_id, received_at DESC);
     CREATE INDEX IF NOT EXISTS idx_valkyrie_signals_severity
         ON valkyrie_signals (severity, received_at DESC);
-  000049_valkyrie_history.down.sql: |
-    DROP TABLE IF EXISTS valkyrie_signals;
-    DROP TABLE IF EXISTS valkyrie_actions;
-    DROP TABLE IF EXISTS valkyrie_decisions;
+  000050_session_definition.down.sql: |
+    ALTER TABLE sessions DROP COLUMN IF EXISTS session_definition;
   000050_session_definition.up.sql: |
     -- Persist the session definition (runtime type, e.g. skuldClaude / skuldGrok) a
     -- session was launched with, so restarts re-apply the same transport instead of
     -- falling back to the platform default.
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_definition VARCHAR(255);
-  000050_session_definition.down.sql: |
-    ALTER TABLE sessions DROP COLUMN IF EXISTS session_definition;
+  000051_device_tokens.down.sql: |
+    DROP INDEX IF EXISTS idx_device_tokens_owner;
+    DROP TABLE IF EXISTS device_tokens;
   000051_device_tokens.up.sql: |
     -- Push device registrations for session attention notifications.
     -- A session entering awaiting_input fans a push out to every device its owner
@@ -1391,16 +1413,19 @@ data:
     );
 
     CREATE INDEX IF NOT EXISTS idx_device_tokens_owner ON device_tokens (owner_id);
-  000051_device_tokens.down.sql: |
-    DROP INDEX IF EXISTS idx_device_tokens_owner;
-    DROP TABLE IF EXISTS device_tokens;
+  000052_session_activity_state_since.down.sql: |
+    ALTER TABLE sessions DROP COLUMN IF EXISTS activity_state_since;
   000052_session_activity_state_since.up.sql: |
     -- Timestamp (UTC) of when a session ENTERED its current activity_state. Stamped
     -- by the Skuld broker only on a real state change, so clients can render an
     -- accurate "active for Ns" elapsed without re-deriving it from event arrival.
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS activity_state_since TIMESTAMPTZ;
-  000052_session_activity_state_since.down.sql: |
-    ALTER TABLE sessions DROP COLUMN IF EXISTS activity_state_since;
+  000053_realms_trust_capabilities.down.sql: |
+    DROP INDEX IF EXISTS idx_capabilities_realm;
+    DROP TABLE IF EXISTS capabilities;
+    DROP INDEX IF EXISTS idx_trust_grants_realm_action;
+    DROP TABLE IF EXISTS trust_grants;
+    DROP TABLE IF EXISTS realms;
   000053_realms_trust_capabilities.up.sql: |
     -- Realm governance foundation: a realm is a Valkyrie's domain, carrying its
     -- build capability, trust level, and per-Valkyrie build config in the shared
@@ -1451,18 +1476,17 @@ data:
     );
 
     CREATE INDEX IF NOT EXISTS idx_capabilities_realm ON capabilities(realm_id);
-  000053_realms_trust_capabilities.down.sql: |
-    DROP INDEX IF EXISTS idx_capabilities_realm;
-    DROP TABLE IF EXISTS capabilities;
-    DROP INDEX IF EXISTS idx_trust_grants_realm_action;
-    DROP TABLE IF EXISTS trust_grants;
-    DROP TABLE IF EXISTS realms;
-  000054_sessions_workload_config.up.sql: |
-    ALTER TABLE sessions
-        ADD COLUMN IF NOT EXISTS workload_config JSONB NOT NULL DEFAULT '{}'::jsonb;
   000054_sessions_workload_config.down.sql: |
     ALTER TABLE sessions
         DROP COLUMN IF EXISTS workload_config;
+  000054_sessions_workload_config.up.sql: |
+    ALTER TABLE sessions
+        ADD COLUMN IF NOT EXISTS workload_config JSONB NOT NULL DEFAULT '{}'::jsonb;
+  000055_resident_runtimes.down.sql: |
+    DROP INDEX IF EXISTS idx_resident_runtimes_profile;
+    DROP INDEX IF EXISTS idx_resident_runtimes_observed_state;
+    DROP INDEX IF EXISTS idx_resident_runtimes_tenant_owner;
+    DROP TABLE IF EXISTS resident_runtimes;
   000055_resident_runtimes.up.sql: |
     CREATE TABLE IF NOT EXISTS resident_runtimes (
         id              UUID        PRIMARY KEY,
@@ -1491,21 +1515,24 @@ data:
         ON resident_runtimes (observed_state);
     CREATE INDEX IF NOT EXISTS idx_resident_runtimes_profile
         ON resident_runtimes (profile_id);
-  000055_resident_runtimes.down.sql: |
-    DROP INDEX IF EXISTS idx_resident_runtimes_profile;
-    DROP INDEX IF EXISTS idx_resident_runtimes_observed_state;
-    DROP INDEX IF EXISTS idx_resident_runtimes_tenant_owner;
-    DROP TABLE IF EXISTS resident_runtimes;
-  000056_resident_usage.up.sql: |
-    ALTER TABLE resident_runtimes
-        ADD COLUMN IF NOT EXISTS message_count INTEGER NOT NULL DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS tokens_used BIGINT NOT NULL DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS cost NUMERIC(14, 6) NOT NULL DEFAULT 0;
   000056_resident_usage.down.sql: |
     ALTER TABLE resident_runtimes
         DROP COLUMN IF EXISTS cost,
         DROP COLUMN IF EXISTS tokens_used,
         DROP COLUMN IF EXISTS message_count;
+  000056_resident_usage.up.sql: |
+    ALTER TABLE resident_runtimes
+        ADD COLUMN IF NOT EXISTS message_count INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS tokens_used BIGINT NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS cost NUMERIC(14, 6) NOT NULL DEFAULT 0;
+  000057_resident_flock_membership.down.sql: |
+    DROP INDEX IF EXISTS idx_resident_runtimes_flock;
+
+    ALTER TABLE resident_runtimes
+        DROP COLUMN IF EXISTS flock_peer_id,
+        DROP COLUMN IF EXISTS flock_role,
+        DROP COLUMN IF EXISTS flock_member_id,
+        DROP COLUMN IF EXISTS flock_id;
   000057_resident_flock_membership.up.sql: |
     ALTER TABLE resident_runtimes
         ADD COLUMN IF NOT EXISTS flock_id UUID,
@@ -1516,20 +1543,6 @@ data:
     CREATE INDEX IF NOT EXISTS idx_resident_runtimes_flock
         ON resident_runtimes (flock_id)
         WHERE flock_id IS NOT NULL;
-
-  000057_resident_flock_membership.down.sql: |
-    DROP INDEX IF EXISTS idx_resident_runtimes_flock;
-
-    ALTER TABLE resident_runtimes
-        DROP COLUMN IF EXISTS flock_peer_id,
-        DROP COLUMN IF EXISTS flock_role,
-        DROP COLUMN IF EXISTS flock_member_id,
-        DROP COLUMN IF EXISTS flock_id;
-  000058_resident_session_traces.up.sql: |
-    -- A trace subject can be either a Forge session or a resident runtime. Access
-    -- checks at the trace API validate the subject before spans are accepted.
-    ALTER TABLE session_spans
-        DROP CONSTRAINT IF EXISTS session_spans_session_id_fkey;
   000058_resident_session_traces.down.sql: |
     -- Resident-owned spans cannot satisfy the original sessions-only constraint.
     DELETE FROM session_spans AS span
@@ -1553,11 +1566,11 @@ data:
         END IF;
     END
     $$;
-  000059_resident_session_events.up.sql: |
-    -- Session analytics events can belong to a Forge session or resident runtime.
-    -- The REST adapter authorizes either subject before accepting events.
-    ALTER TABLE session_events
-        DROP CONSTRAINT IF EXISTS session_events_session_id_fkey;
+  000058_resident_session_traces.up.sql: |
+    -- A trace subject can be either a Forge session or a resident runtime. Access
+    -- checks at the trace API validate the subject before spans are accepted.
+    ALTER TABLE session_spans
+        DROP CONSTRAINT IF EXISTS session_spans_session_id_fkey;
   000059_resident_session_events.down.sql: |
     -- Resident-owned events cannot satisfy the original sessions-only constraint.
     DELETE FROM session_events AS event
@@ -1581,6 +1594,15 @@ data:
         END IF;
     END
     $$;
+  000059_resident_session_events.up.sql: |
+    -- Session analytics events can belong to a Forge session or resident runtime.
+    -- The REST adapter authorizes either subject before accepting events.
+    ALTER TABLE session_events
+        DROP CONSTRAINT IF EXISTS session_events_session_id_fkey;
+  000060_credential_enrollments.down.sql: |
+    DROP INDEX IF EXISTS idx_credential_enrollments_active_connection;
+    DROP INDEX IF EXISTS idx_credential_enrollments_owner;
+    DROP TABLE IF EXISTS credential_enrollments;
   000060_credential_enrollments.up.sql: |
     CREATE TABLE IF NOT EXISTS credential_enrollments (
         id                  UUID         PRIMARY KEY,
@@ -1609,10 +1631,9 @@ data:
     CREATE UNIQUE INDEX IF NOT EXISTS idx_credential_enrollments_active_connection
         ON credential_enrollments (connection_id)
         WHERE state IN ('pending', 'awaiting_user');
-  000060_credential_enrollments.down.sql: |
-    DROP INDEX IF EXISTS idx_credential_enrollments_active_connection;
-    DROP INDEX IF EXISTS idx_credential_enrollments_owner;
-    DROP TABLE IF EXISTS credential_enrollments;
+  000061_observatory_fragments.down.sql: |
+    DROP INDEX IF EXISTS observatory_fragments_received_at_idx;
+    DROP TABLE IF EXISTS observatory_fragments;
   000061_observatory_fragments.up.sql: |
     -- Push inbox for topology fragments.
     --
@@ -1636,19 +1657,6 @@ data:
     -- as stale with a last-seen time rather than vanishing from the graph.
     CREATE INDEX IF NOT EXISTS observatory_fragments_received_at_idx
         ON observatory_fragments (received_at DESC);
-  000061_observatory_fragments.down.sql: |
-    DROP INDEX IF EXISTS observatory_fragments_received_at_idx;
-    DROP TABLE IF EXISTS observatory_fragments;
-
-  000062_pat_authority.up.sql: |
-    -- Existing unattributed PATs remain recorded but are not valid credentials.
-    -- Rotate them through the authenticated issuance path to establish tenant/scope metadata.
-    ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
-    ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS scopes TEXT[];
-    ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
-    CREATE INDEX IF NOT EXISTS idx_pats_tenant_owner ON personal_access_tokens(tenant_id, owner_id);
-
-
   000062_pat_authority.down.sql: |
     -- Revoke scoped credentials before older code can treat them as unrestricted.
     -- Preserve the audit record; token_hash no longer matches any presented JWT.
@@ -1667,19 +1675,26 @@ data:
     DROP INDEX IF EXISTS idx_pats_tenant_owner;
     ALTER TABLE personal_access_tokens DROP COLUMN IF EXISTS scopes;
     ALTER TABLE personal_access_tokens DROP COLUMN IF EXISTS tenant_id;
-
-
+  000062_pat_authority.up.sql: |
+    -- Existing unattributed PATs remain recorded but are not valid credentials.
+    -- Rotate them through the authenticated issuance path to establish tenant/scope metadata.
+    ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS scopes TEXT[];
+    ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+    CREATE INDEX IF NOT EXISTS idx_pats_tenant_owner ON personal_access_tokens(tenant_id, owner_id);
+  000063_topology_source_authority.down.sql: |
+    DROP INDEX IF EXISTS idx_observatory_fragments_tenant;
+    ALTER TABLE observatory_fragments DROP COLUMN IF EXISTS owner_id;
+    ALTER TABLE observatory_fragments DROP COLUMN IF EXISTS tenant_id;
   000063_topology_source_authority.up.sql: |
     -- Legacy fragments remain quarantined until ownership is audited.
     ALTER TABLE observatory_fragments ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT '';
     ALTER TABLE observatory_fragments ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
     CREATE INDEX IF NOT EXISTS idx_observatory_fragments_tenant ON observatory_fragments(tenant_id);
-
-  000063_topology_source_authority.down.sql: |
-    DROP INDEX IF EXISTS idx_observatory_fragments_tenant;
-    ALTER TABLE observatory_fragments DROP COLUMN IF EXISTS owner_id;
-    ALTER TABLE observatory_fragments DROP COLUMN IF EXISTS tenant_id;
-
+  000064_instance_tenant_attribution.down.sql: |
+    -- Preserve recorded tenant attribution on rollback; older code may ignore it.
+    -- The relaxed constraint is additive and also accepts the old user-row shape.
+    SELECT 1;
   000064_instance_tenant_attribution.up.sql: |
     ALTER TABLE niuu_instances DROP CONSTRAINT IF EXISTS niuu_instances_scope_check;
     ALTER TABLE niuu_instances ADD CONSTRAINT niuu_instances_scope_check CHECK (
@@ -1687,12 +1702,8 @@ data:
         OR (visibility = 'tenant' AND owner_id IS NULL AND tenant_id IS NOT NULL)
         OR (visibility = 'user' AND owner_id IS NOT NULL)
     );
-
-  000064_instance_tenant_attribution.down.sql: |
-    -- Preserve recorded tenant attribution on rollback; older code may ignore it.
-    -- The relaxed constraint is additive and also accepts the old user-row shape.
-    SELECT 1;
-
+  000065_admin_settings.down.sql: |
+    DROP TABLE IF EXISTS admin_settings;
   000065_admin_settings.up.sql: |
     -- Admin settings edited on the Settings page (Forge → Storage) persist across
     -- restarts instead of living in process memory. One row per settings section.
@@ -1701,10 +1712,8 @@ data:
         data        JSONB NOT NULL DEFAULT '{}'::jsonb,
         updated_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
     );
-
-  000065_admin_settings.down.sql: |
-    DROP TABLE IF EXISTS admin_settings;
-
+  000066_compute_leases.down.sql: |
+    DROP TABLE IF EXISTS compute_leases;
   000066_compute_leases.up.sql: |
     -- Durable VM allocations. Failed and draining machines still consume pool capacity.
     CREATE TABLE IF NOT EXISTS compute_leases (
@@ -1725,8 +1734,192 @@ data:
     CREATE UNIQUE INDEX IF NOT EXISTS idx_compute_leases_live_session
         ON compute_leases (pool_id, session_id) WHERE state != 'released';
     CREATE INDEX IF NOT EXISTS idx_compute_leases_pool_state ON compute_leases (pool_id, state);
-
-  000066_compute_leases.down.sql: |
-    DROP TABLE IF EXISTS compute_leases;
-
+  000067_compute_pools.down.sql: |
+    -- Rollback is safe only after admission is paused and every allocation is released.
+    DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM compute_leases WHERE state != 'released') THEN
+            RAISE EXCEPTION 'Drain and release all compute allocations before downgrading';
+        END IF;
+    END $$;
+    DELETE FROM compute_leases WHERE session_id IS NULL;
+    UPDATE compute_leases SET data = data - ARRAY[
+        'session_bootstrap_ref', 'created_at', 'provision_deadline', 'idle_since',
+        'retry_after', 'failures', 'stop_requested', 'bootstrap_owner'
+    ];
+    ALTER TABLE compute_leases ALTER COLUMN session_id SET NOT NULL;
+    ALTER TABLE compute_leases DROP CONSTRAINT IF EXISTS compute_leases_state_check;
+    ALTER TABLE compute_leases ADD CONSTRAINT compute_leases_state_check CHECK (state IN (
+        'provisioning', 'ready', 'busy', 'draining', 'released', 'failed'
+    ));
+    DROP TABLE IF EXISTS compute_pools;
+  000067_compute_pools.up.sql: |
+    -- Standby guests have no session or user binding. Keep capacity until confirmed deletion.
+    ALTER TABLE compute_leases ALTER COLUMN session_id DROP NOT NULL;
+    ALTER TABLE compute_leases DROP CONSTRAINT IF EXISTS compute_leases_state_check;
+    ALTER TABLE compute_leases ADD CONSTRAINT compute_leases_state_check CHECK (state IN (
+        'provisioning', 'idle', 'quarantined', 'ready', 'busy', 'draining', 'released', 'failed'
+    ));
+    CREATE TABLE IF NOT EXISTS compute_pools (
+        pool_id TEXT PRIMARY KEY,
+        data JSONB NOT NULL
+    );
+    UPDATE compute_leases SET data = data || jsonb_build_object('created_at', created_at)
+    WHERE NOT data ? 'created_at';
+  000068_compute_profile_revision.down.sql: |
+    -- Older controllers cannot parse the additional payload field.
+    DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM compute_leases WHERE state != 'released') THEN
+            RAISE EXCEPTION 'Drain and release all compute allocations before downgrading';
+        END IF;
+    END $$;
+    UPDATE compute_leases SET data = data - 'profile_revision';
+  000068_compute_profile_revision.up.sql: |
+    -- Profile revisions are stored in the existing JSONB lease payload.
+    -- Empty revisions on older leases remain readable and cannot enter the warm pool.
+    UPDATE compute_leases SET data = data || '{"profile_revision": ""}'::jsonb
+    WHERE NOT data ? 'profile_revision';
+  000069_session_turn_started_at.down.sql: |
+    ALTER TABLE sessions DROP COLUMN IF EXISTS turn_started_at;
+  000069_session_turn_started_at.up.sql: |
+    -- Timestamp (UTC) of when a session's CURRENT turn started (the user's prompt
+    -- landing). Stable across intra-turn active/tool_executing flips (unlike
+    -- activity_state_since, which re-stamps on coarse-bucket changes). NULL when no
+    -- turn is in flight, or when an older broker doesn't report it. Clients anchor
+    -- the RUNNING elapsed to this, falling back to activity_state_since when NULL.
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS turn_started_at TIMESTAMPTZ;
+  000070_message_delivery_claims.down.sql: |
+    DROP TABLE IF EXISTS session_message_deliveries;
+  000070_message_delivery_claims.up.sql: |
+    -- Durable dispatch identities: pending claims are never silently re-executed.
+    CREATE TABLE IF NOT EXISTS session_message_deliveries (
+        session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        request_id VARCHAR(200) NOT NULL,
+        payload_hash CHAR(64) NOT NULL,
+        claim_token UUID NOT NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'pending'
+            CHECK (status IN ('pending', 'delivered', 'failed')),
+        error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (session_id, request_id)
+    );
+  000071_remove_duplicate_event_log_index.down.sql: |
+    CREATE INDEX IF NOT EXISTS idx_session_event_log_session_seq
+        ON session_event_log (session_id, seq);
+  000071_remove_duplicate_event_log_index.up.sql: |
+    -- The primary key already provides this exact ordered index.
+    DROP INDEX IF EXISTS idx_session_event_log_session_seq;
+  000072_startup_schema_history.down.sql: |
+    DROP TABLE IF EXISTS volundr_schema_history;
+  000072_startup_schema_history.up.sql: |
+    -- Standalone bootstrap uses this same table before applying the numbered set.
+    CREATE TABLE IF NOT EXISTS volundr_schema_history (
+        filename TEXT PRIMARY KEY,
+        sha256 CHAR(64) NOT NULL,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  000073_forge_projects.down.sql: |
+    DROP TABLE IF EXISTS forge_project_receipts;
+    DROP TABLE IF EXISTS forge_project_dispatches;
+    DROP INDEX IF EXISTS idx_sessions_project;
+    ALTER TABLE sessions DROP COLUMN IF EXISTS coordination;
+    DROP TABLE IF EXISTS forge_projects;
+  000073_forge_projects.up.sql: |
+    -- Additive project coordination. Existing sessions retain NULL coordination.
+    CREATE TABLE IF NOT EXISTS forge_projects (
+        id UUID PRIMARY KEY,
+        owner_id TEXT NOT NULL DEFAULT '',
+        tenant_id TEXT NOT NULL DEFAULT '',
+        document JSONB NOT NULL,
+        revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_forge_projects_scope ON forge_projects(owner_id, tenant_id, updated_at DESC);
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS coordination JSONB;
+    CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions ((coordination->>'project_id'))
+        WHERE coordination IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS forge_project_dispatches (
+        id UUID PRIMARY KEY,
+        fingerprint CHAR(64) NOT NULL,
+        session_id UUID NOT NULL,
+        completed BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    -- Dispatch IDs remain as tombstones if their session is explicitly deleted.
+    CREATE TABLE IF NOT EXISTS forge_project_receipts (
+        id UUID PRIMARY KEY,
+        project_id UUID NOT NULL REFERENCES forge_projects(id),
+        seq BIGSERIAL UNIQUE NOT NULL,
+        document JSONB NOT NULL,
+        acknowledged_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_forge_receipts_cursor ON forge_project_receipts(project_id, seq);
+  lineage-aliases.json: |
+    {
+      "000050_session_definition.up.sql": [
+        {
+          "filename": "000049_session_definition.up.sql",
+          "sha256": "445459e6efb424224c25d3e04dde7ba84aa19765f444261969df7c271c6f172b"
+        }
+      ],
+      "000051_device_tokens.up.sql": [
+        {
+          "filename": "000050_device_tokens.up.sql",
+          "sha256": "8300e019b70f71d38e4258071a4e7a794a401001ffe9b2f0838d374fdbcc0f1d"
+        }
+      ],
+      "000052_session_activity_state_since.up.sql": [
+        {
+          "filename": "000051_session_activity_state_since.up.sql",
+          "sha256": "be4f049338d0892efcdda16ee40138e6015491f562f27fcc2b4cc3b0c856c031"
+        }
+      ],
+      "000069_session_turn_started_at.up.sql": [
+        {
+          "filename": "000052_session_turn_started_at.up.sql",
+          "sha256": "cb98b1e1cd325b8c3b30f674ff8da711586b13ea665ae26d31b632de7b1bf919"
+        },
+        {
+          "filename": "000062_session_turn_started_at.up.sql",
+          "sha256": "cb98b1e1cd325b8c3b30f674ff8da711586b13ea665ae26d31b632de7b1bf919"
+        }
+      ],
+      "000070_message_delivery_claims.up.sql": [
+        {
+          "filename": "000053_message_delivery_claims.up.sql",
+          "sha256": "1a5bb4da1acaf2c174668ebefc7eba81cee8771213d81dc91b9ae274400ed1a0"
+        },
+        {
+          "filename": "000063_message_delivery_claims.up.sql",
+          "sha256": "1a5bb4da1acaf2c174668ebefc7eba81cee8771213d81dc91b9ae274400ed1a0"
+        }
+      ],
+      "000071_remove_duplicate_event_log_index.up.sql": [
+        {
+          "filename": "000054_remove_duplicate_event_log_index.up.sql",
+          "sha256": "d247d1ea35c013bb3aac35afcab76d017d729b276cd9bc6f3cb13ef2c92f9505"
+        },
+        {
+          "filename": "000064_remove_duplicate_event_log_index.up.sql",
+          "sha256": "d247d1ea35c013bb3aac35afcab76d017d729b276cd9bc6f3cb13ef2c92f9505"
+        }
+      ],
+      "000072_startup_schema_history.up.sql": [
+        {
+          "filename": "000055_startup_schema_history.up.sql",
+          "sha256": "d691bdc83fa0257005ff511431ddd78ea4ec1e828a1fa1cbe3565146306cf3e7"
+        },
+        {
+          "filename": "000065_startup_schema_history.up.sql",
+          "sha256": "d691bdc83fa0257005ff511431ddd78ea4ec1e828a1fa1cbe3565146306cf3e7"
+        }
+      ],
+      "000073_forge_projects.up.sql": [
+        {
+          "filename": "000066_forge_projects.up.sql",
+          "sha256": "d3628fef1c1118f1398dea4ca663fbffbc193dc3eda5dc4494dbc4ef641604e4"
+        }
+      ]
+    }
 {{- end }}

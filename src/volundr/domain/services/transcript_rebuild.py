@@ -36,7 +36,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from niuu.domain.transcript_reducer import reduce_frames
+from niuu.domain.conversation_timeline import project_timeline, timeline
+from niuu.domain.text_projection import apply_repair_markers, repair_legacy_turns
+from niuu.domain.transcript_reducer import apply_steering_frames, reduce_frames
 
 if TYPE_CHECKING:
     from volundr.domain.models import SessionLogEntry
@@ -55,6 +57,20 @@ def rebuild_turns(entries: list[SessionLogEntry]) -> RebuildResult:
     rows = sorted(entries, key=lambda e: e.seq)
     if not rows:
         return RebuildResult(turns=[], partial=False)
+
+    # Native history is imported as raw replay frames, with an atomic boundary
+    # marker. Later live conversation.turn rows cover only the post-import tail;
+    # treating those seeds as authoritative for ALL earlier rows would erase
+    # the recovered conversation as soon as the resumed agent completes a turn.
+    import_marker = next((row for row in rows if row.kind == "history_import"), None)
+    if import_marker is not None:
+        imported = reduce_frames([row for row in rows if row.seq < import_marker.seq])
+        live = rebuild_turns([row for row in rows if row.seq > import_marker.seq])
+        metadata = import_marker.payload if isinstance(import_marker.payload, dict) else {}
+        return RebuildResult(
+            turns=apply_repair_markers([*imported.turns, *live.turns], rows),
+            partial=imported.partial or live.partial or bool(metadata.get("partial")),
+        )
 
     sdk_turn_rows = [r for r in rows if r.kind == "conversation.turn"]
     folded_request_ids = {r.request_id for r in sdk_turn_rows if r.request_id}
@@ -102,7 +118,21 @@ def rebuild_turns(entries: list[SessionLogEntry]) -> RebuildResult:
         and r.payload["turn"].get("role") == "assistant"
         for r in sdk_turn_rows
     )
-    last_sdk_seq = max((r.seq for r in sdk_turn_rows), default=0)
+    # A timed user seed inside an open turn does NOT cover the assistant prefix
+    # before it. Untimed legacy seeds retain the historical cutoff unchanged.
+    last_sdk_seq = max(
+        (
+            r.seq
+            for r in sdk_turn_rows
+            if not (
+                isinstance(r.payload, dict)
+                and isinstance(r.payload.get("turn"), dict)
+                and r.payload["turn"].get("role") == "user"
+                and timeline(r.payload["turn"].get("metadata")) is not None
+            )
+        ),
+        default=0,
+    )
     tail = [r for r in rows if r.seq > last_sdk_seq] if has_sdk_assistant else rows
     result = reduce_frames(
         tail,
@@ -111,7 +141,14 @@ def rebuild_turns(entries: list[SessionLogEntry]) -> RebuildResult:
         seen_ids=seen_ids,
         scrape=None if has_sdk_assistant else _extract_assistant_text,
     )
-    return RebuildResult(turns=result.turns, partial=result.partial)
+    # Explicit verified repairs take precedence over automatic reconstruction,
+    # including native item IDs/phases recovered from a separately verified log.
+    turns = apply_steering_frames(result.turns, rows)
+    turns = apply_repair_markers(turns, rows)
+    turns = repair_legacy_turns(turns, rows)
+    return RebuildResult(
+        turns=project_timeline(turns, str(rows[0].session_id)), partial=result.partial
+    )
 
 
 # --------------------------------------------------------------------------- tmux pane scrape

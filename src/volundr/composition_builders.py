@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
+from niuu.ports.credentials import CredentialRefreshLockPort
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class, resolve_secret_kwargs
 from volundr.config import Settings
@@ -13,7 +14,6 @@ from volundr.domain.ports import (
     AuthorizationPort,
     CodexCredentialBrokerPort,
     CredentialEnrollmentRunnerPort,
-    CredentialRefreshLockPort,
     CredentialStorePort,
     ExternalSessionProvider,
     GatewayPort,
@@ -53,7 +53,7 @@ def _create_codex_credential_broker(
     settings: Settings,
     *,
     credential_store: CredentialStorePort,
-    refresh_lock: CredentialRefreshLockPort,
+    refresh_lock: CredentialRefreshLockPort | None = None,
 ) -> CodexCredentialBrokerPort:
     """Create the configured central Codex token broker adapter."""
     config = settings.codex_credential_broker
@@ -61,6 +61,7 @@ def _create_codex_credential_broker(
     kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
     instance = cls(
         credential_store=credential_store,
+        mini_mode=settings.local_mounts.mini_mode,
         refresh_lock=refresh_lock,
         **kwargs,
     )
@@ -94,7 +95,16 @@ def create_oauth_client_registry(
     integration_registry: IntegrationRegistry,
 ) -> OAuthClientRegistry:
     """The install's OAuth applications: ``oauth.clients`` plus those registered in the wizard."""
+    from niuu.ports.credentials import OAuthApplicationStorePort
+
+    application_store = (
+        credential_store
+        if isinstance(credential_store, OAuthApplicationStorePort)
+        and credential_store.manages_oauth_applications
+        else None
+    )
     return OAuthClientRegistry(
+        application_store=application_store,
         credential_store=credential_store,
         integration_registry=integration_registry,
         configured={
@@ -216,9 +226,11 @@ def _create_resident_session_controllers(
     return session_controllers
 
 
-def _runtime_backend(settings: Settings) -> str:
+def _runtime_backend(settings: Settings, pod_manager: PodManager) -> str:
     if settings.pod_manager.runtime_backend:
         return settings.pod_manager.runtime_backend
+    if isinstance(pod_manager.runtime_backend, str) and pod_manager.runtime_backend:
+        return pod_manager.runtime_backend
     adapter = settings.pod_manager.adapter.rsplit(".", 1)[-1].lower()
     if "openshell" in adapter:
         return "openshell"

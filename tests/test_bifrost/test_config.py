@@ -47,17 +47,83 @@ class TestBifrostConfig:
         cfg = BifrostConfig(aliases={"fast": "claude-haiku-4-5-20251001"})
         assert cfg.resolve_alias("gpt-4o") == "gpt-4o"
 
-    def test_grok_build_resolves_to_skuld_grok_definition(self):
-        # Regression: grok-build must be registered in the managed-model
+    def test_muse_models_resolve_to_skuld_muse_definition(self):
+        # Every Muse Spark id must be registered with session_definition=skuldMuse, or a
+        # forge session created for one of them falls back to the platform default
+        # runtime and no Muse MSP worker ever spawns (the Grok lesson, applied up front).
+        from bifrost.config import _default_models
+        from niuu.domain.model_catalog import ManagedModelTier
+
+        models = _default_models()
+        for model_id in ("muse-spark-1.3", "muse-spark-1.2", "muse-spark-1.3-contributor"):
+            muse = next((m for m in models if m.id == model_id), None)
+            assert muse is not None, f"{model_id} missing from default model catalog"
+            assert muse.session_definition == "skuldMuse"
+            assert muse.vendor == "meta"
+        default = next(m for m in models if m.id == "muse-spark-1.3")
+        assert default.tier == ManagedModelTier.FRONTIER
+
+    def test_fable_entry_is_fable_5_1(self):
+        # The Fable row is Claude Fable 5.1 (Damien, 2026-09-02). Fable 5 stays served by
+        # Anthropic, so an old client sending `claude-fable-5` still works — it is just no
+        # longer the catalogue's Fable entry.
+        from bifrost.config import _default_models
+        from niuu.domain.model_catalog import ManagedModelTier
+
+        models = _default_models()
+        fable = next((m for m in models if m.id == "claude-fable-5-1"), None)
+        assert fable is not None, "claude-fable-5-1 missing from default model catalog"
+        assert fable.name == "Claude Fable 5.1"
+        assert fable.session_definition == "skuldClaude"
+        assert fable.tier == ManagedModelTier.FRONTIER
+        assert not [m for m in models if m.id == "claude-fable-5"], (
+            "claude-fable-5 must not remain as a second Fable row"
+        )
+
+    def test_codex_catalog_preserves_astra_sol_and_terra(self):
+        # Astra + Sol are the only two Codex choices, Astra the default (Damien,
+        # 2026-09-05). Terra was removed with the same decision.
+        from bifrost.config import _default_models
+        from niuu.domain.model_catalog import ManagedModelTier
+
+        models = _default_models()
+        astra = next((m for m in models if m.id == "gpt-6-astra"), None)
+        assert astra is not None, "gpt-6-astra missing from default model catalog"
+        assert astra.name == "GPT-6 Astra"
+        assert astra.vendor == "openai"
+        assert astra.session_definition == "skuldCodex"
+        assert astra.tier == ManagedModelTier.FRONTIER
+        assert astra.supports_tools and astra.supports_thinking
+        sol = next((m for m in models if m.id == "gpt-5.6-sol"), None)
+        assert sol is not None, "gpt-5.6-sol must stay in the catalogue"
+        assert sol.session_definition == "skuldCodex"
+        openai_ids = [m.id for m in models if m.session_definition == "skuldCodex"]
+        assert openai_ids == ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra"], (
+            f"Codex catalogue must preserve Astra, Sol and upstream Terra, got {openai_ids}"
+        )
+        assert next(m for m in models if m.id == "gpt-5.6-terra").session_definition == "skuldCodex"
+
+    def test_grok_models_resolve_to_skuld_grok_definition(self):
+        # Regression: every Grok model must be registered in the managed-model
         # catalog with session_definition=skuldGrok. Otherwise a forge session
         # created by model alone (no explicit definition) fails the catalog
         # lookup in ForgeService._resolve_session_definition and falls back to
         # the default skuldClaude definition — provisioning the Claude transport
         # for a Grok session, so no grok ACP worker ever spawns.
-        grok = next((m for m in BifrostConfig().models if m.id == "grok-build"), None)
-        assert grok is not None, "grok-build missing from default model catalog"
-        assert grok.session_definition == "skuldGrok"
-        assert grok.vendor == "xai"
+        #
+        # The ids are the ones `grok models` actually serves. This test used to
+        # name "grok-build", which the CLI has never served: it rejects the id
+        # outright, so every Grok session died at its first prompt while this
+        # test stayed green. Ids here must track the live catalogue.
+        models = BifrostConfig().models
+        for model_id in ("grok-4.6", "grok-4.5"):
+            grok = next((m for m in models if m.id == model_id), None)
+            assert grok is not None, f"{model_id} missing from default model catalog"
+            assert grok.session_definition == "skuldGrok"
+            assert grok.vendor == "xai"
+        assert not [m for m in models if m.id == "grok-build"], (
+            "grok-build is not a real model id and must not reappear in the catalogue"
+        )
 
     def test_provider_for_model_found(self):
         cfg = BifrostConfig(

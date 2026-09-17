@@ -454,7 +454,7 @@ class TestDispatchServiceEmitter:
 
         mock_volundr = MagicMock()
         mock_volundr.list_sessions = AsyncMock(return_value=[])
-        svc._volundr_factory.primary_for_owner = AsyncMock(return_value=mock_volundr)
+        svc._volundr_factory.for_owner = AsyncMock(return_value=[mock_volundr])
         svc._tracker_factory.for_owner = AsyncMock(
             return_value=[self._mock_tracker_with_completed_project()]
         )
@@ -476,7 +476,7 @@ class TestDispatchServiceEmitter:
 
         mock_volundr = MagicMock()
         mock_volundr.list_sessions = AsyncMock(return_value=[])
-        svc._volundr_factory.primary_for_owner = AsyncMock(return_value=mock_volundr)
+        svc._volundr_factory.for_owner = AsyncMock(return_value=[mock_volundr])
         svc._tracker_factory.for_owner = AsyncMock(
             return_value=[self._mock_tracker_with_completed_project()]
         )

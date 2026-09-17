@@ -207,3 +207,95 @@ def test_filter_cli_event_drops_keepalive_and_empty_deltas() -> None:
         "type": "content_block_delta",
         "delta": {"text": "hi"},
     }
+
+
+async def test_runner_keeps_unidentified_stream_chunk_bytes_exact() -> None:
+    text = "Café 東京\n\n```py\nprint('α')\n```"
+    events = [
+        {"type": "content_block_delta", "delta": {"type": "text_delta", "text": char}}
+        for char in text
+    ]
+    events.append({"type": "result", "result": ""})
+    assert (
+        await CliTurnRunner(StubTransport({"prompt": events})).run_prompt("prompt", "request")
+        == text
+    )
+
+
+async def test_runner_reconciles_each_whole_text_item_after_partial_deltas() -> None:
+    events = [
+        {
+            "type": "content_block_start",
+            "item_id": "a",
+            "index": 0,
+            "content_block": {"type": "text", "id": "a", "text": "", "complete": False},
+        },
+        {
+            "type": "content_block_delta",
+            "item_id": "a",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": "Check"},
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "id": "a", "text": "Checking.", "complete": True}]
+            },
+        },
+        {"type": "content_block_stop", "item_id": "a", "index": 0},
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "text",
+                        "id": "b",
+                        "text": "Final answer.",
+                        "phase": "final_answer",
+                        "complete": True,
+                    }
+                ]
+            },
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "text",
+                        "id": "b",
+                        "text": "Final answer.",
+                        "phase": "final_answer",
+                        "complete": True,
+                    }
+                ]
+            },
+        },
+        {"type": "result", "result": ""},
+    ]
+    result = await CliTurnRunner(StubTransport({"prompt": events})).run_prompt("prompt", "request")
+    assert result == "Checking.\n\nFinal answer."
+
+
+async def test_runner_captures_completion_only_block_lists() -> None:
+    transport = StubTransport(
+        {
+            "prompt": [
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "id": "native-a",
+                                "text": "Complete.",
+                                "complete": True,
+                            }
+                        ]
+                    },
+                },
+                {"type": "result", "result": ""},
+            ]
+        }
+    )
+    assert await CliTurnRunner(transport).run_prompt("prompt", "request") == "Complete."

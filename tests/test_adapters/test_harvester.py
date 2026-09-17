@@ -340,3 +340,33 @@ async def test_token_rotation_after_rejection(provider, api, tmp_path):
     assert await provider.get(UUID(int=1)) is None
     assert all(r.headers["authorization"] == "Bearer renewed" for r in api.requests)
     await provider.close()
+
+
+async def test_profile_catalog_exposes_only_safe_details(provider):
+    provider._cloud_init = {"runcmd": ["private-bootstrap-content"]}
+    profiles = await provider.profiles()
+    assert len(profiles) == 1
+    assert profiles[0].name == "small"
+    assert profiles[0].details == {
+        "Image": "images/ubuntu-24.04",
+        "CPU": "2",
+        "Memory": "2048 MiB",
+        "Disk": "10 GiB",
+        "Network": "test-vms/lan",
+        "Architecture": "amd64",
+        "Cloud-init": "Configured",
+    }
+    assert "private-bootstrap-content" not in profiles[0].model_dump_json()
+    assert "test-only-token" not in profiles[0].model_dump_json()
+    await provider.close()
+
+
+async def test_profile_revision_changes_with_bootstrap_and_resources(provider):
+    initial = (await provider.profiles())[0].revision
+    assert initial == (await provider.profiles())[0].revision
+    provider._cloud_init = {"packages": ["git"]}
+    bootstrap_changed = (await provider.profiles())[0].revision
+    assert bootstrap_changed != initial
+    provider._profiles["small"] = provider._profiles["small"].model_copy(update={"cpu": 4})
+    assert (await provider.profiles())[0].revision != bootstrap_changed
+    await provider.close()

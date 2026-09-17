@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
@@ -141,8 +141,10 @@ describe('SessionsPage', () => {
     navigate.mockClear();
   });
 
-  it('renders the sessions page container', () => {
-    wrap();
+  it('renders the sessions page container', async () => {
+    await act(async () => {
+      wrap();
+    });
     expect(screen.getByTestId('sessions-page')).toBeInTheDocument();
   });
 
@@ -327,12 +329,14 @@ describe('SessionsPage', () => {
     expect(screen.queryByTestId('pod-group-active')).not.toBeInTheDocument();
   });
 
-  it('shows loading state initially', () => {
+  it('shows loading state initially', async () => {
     const slowStore: ISessionStore = {
       ...createMockSessionStore(),
       listSessions: () => new Promise(() => {}),
     };
-    wrap(slowStore);
+    await act(async () => {
+      wrap(slowStore);
+    });
     expect(screen.getByText(/loading sessions/i)).toBeInTheDocument();
   });
 

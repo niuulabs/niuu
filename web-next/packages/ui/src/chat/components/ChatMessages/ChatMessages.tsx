@@ -39,7 +39,15 @@ function partsToContentBlocks(parts: readonly ChatMessagePart[]): ToolContentBlo
   const blocks: ToolContentBlock[] = [];
   for (const part of parts) {
     if (part.type === 'text' && part.text != null) {
-      blocks.push({ type: 'text', text: part.text });
+      blocks.push({
+        type: 'text',
+        text: part.text,
+        ...(part.id ? { id: part.id } : {}),
+        ...(part.phase ? { phase: part.phase } : {}),
+        ...(part.turn_id ? { turn_id: part.turn_id } : {}),
+        ...(part.thread_id ? { thread_id: part.thread_id } : {}),
+        ...(part.complete !== undefined ? { complete: part.complete } : {}),
+      });
     } else if (part.type === 'tool_use' && part.id && part.name && part.input) {
       blocks.push({ type: 'tool_use', id: part.id, name: part.name, input: part.input });
     } else if (part.type === 'tool_result' && part.tool_use_id) {
@@ -119,6 +127,27 @@ export function UserMessage({ message }: UserMessageProps) {
   );
 }
 
+/** Structured provider messages retain one component identity across running/settled states. */
+export function hasNativeMessageParts(parts?: readonly ChatMessagePart[]): boolean {
+  return (
+    parts?.some((part) => Boolean(part.turn_id) || (part.type === 'text' && Boolean(part.id))) ??
+    false
+  );
+}
+
+/** REST may replace the broker's generated row id; the native turn remains the same row. */
+export function messageRenderKey(message: ChatMessage): string {
+  if (message.role !== 'assistant') return message.id;
+  const native = message.parts?.find((part) => part.turn_id);
+  const firstAnchor = message.parts?.find(
+    (part) => (part.type === 'text' || part.type === 'tool_use') && part.id,
+  );
+  if (native && firstAnchor)
+    return `native-fragment:${JSON.stringify([native.thread_id ?? '', native.turn_id, firstAnchor.id])}`;
+  const text = message.parts?.find((part) => part.type === 'text' && part.id);
+  return text ? `native-text:${JSON.stringify([text.thread_id ?? '', text.id])}` : message.id;
+}
+
 /* ── AssistantMessage ── */
 
 interface AssistantMessageProps {
@@ -175,6 +204,12 @@ export function AssistantMessage({
           {uxPrefs.timestamp !== 'never' && (
             <span className="niuu-chat-timestamp">{formatTime(message.createdAt)}</span>
           )}
+          {message.status === 'running' && (
+            <span className="niuu-chat-generating-label">
+              <Loader2 className="niuu-chat-spinner-icon" />
+              Generating...
+            </span>
+          )}
           {tokens && (
             <>
               <span className="niuu-chat-header-sep">&middot;</span>
@@ -228,14 +263,20 @@ export function AssistantMessage({
         )}
 
         <div className="niuu-chat-assistant-content">
-          {hasToolParts(message.parts) && message.parts ? (
-            <AssistantContentWithTools parts={message.parts} fallbackContent={message.content} />
+          {message.parts &&
+          (hasToolParts(message.parts) ||
+            message.parts.some((part) => part.type === 'text' && part.id)) ? (
+            <AssistantContentWithTools
+              parts={message.parts}
+              fallbackContent={message.content}
+              isStreaming={message.status === 'running'}
+            />
           ) : (
             <MarkdownContent content={message.content} />
           )}
         </div>
 
-        {uxPrefs.showMessageActions && (
+        {uxPrefs.showMessageActions && message.status !== 'running' && (
           <div className="niuu-chat-action-bar">
             {uxPrefs.copyMode === 'inline' && (
               <button
@@ -301,30 +342,57 @@ export function AssistantMessage({
 function AssistantContentWithTools({
   parts,
   fallbackContent,
+  isStreaming = false,
 }: {
   parts: readonly ChatMessagePart[];
   fallbackContent: string;
+  isStreaming?: boolean;
 }) {
   const blocks = partsToContentBlocks(parts);
   const grouped = groupContentBlocks(blocks);
+  // Older histories retain tool positions but only aggregate prose. Preserve that prose once;
+  // its original position cannot be recovered here. Structured text parts remain authoritative.
+  const hasText = grouped.some((item) => item.kind === 'text' && item.text.trim().length > 0);
 
-  if (grouped.length === 0) return <MarkdownContent content={fallbackContent} />;
+  if (grouped.length === 0)
+    return <MarkdownContent content={fallbackContent} isStreaming={isStreaming} />;
 
   return (
     <>
       {grouped.map((item, i) => {
         if (item.kind === 'text') {
           if (!item.text.trim()) return null;
-          return <MarkdownContent key={i} content={item.text} />;
+          const key = item.id
+            ? `text:${JSON.stringify([item.thread_id ?? '', item.turn_id ?? '', item.id])}`
+            : `legacy-text:${i}`;
+          return (
+            <div key={key} data-text-id={item.id} data-text-phase={item.phase}>
+              <MarkdownContent
+                content={item.text}
+                isStreaming={isStreaming && item.complete !== true && i === grouped.length - 1}
+              />
+            </div>
+          );
         }
         if (item.kind === 'single') {
-          return <ToolBlock key={i} block={item.block} result={item.result} />;
+          return (
+            <ToolBlock key={`tool:${item.block.id}`} block={item.block} result={item.result} />
+          );
         }
         if (item.kind === 'group') {
-          return <ToolGroupBlock key={i} toolName={item.toolName} blocks={item.blocks} />;
+          return (
+            <ToolGroupBlock
+              key={`tools:${item.blocks[0]?.block.id ?? i}`}
+              toolName={item.toolName}
+              blocks={item.blocks}
+            />
+          );
         }
         return null;
       })}
+      {!hasText && fallbackContent && (
+        <MarkdownContent content={fallbackContent} isStreaming={isStreaming} />
+      )}
     </>
   );
 }
@@ -369,7 +437,7 @@ export function StreamingMessage({ content, parts, model }: StreamingMessageProp
             </div>
           )}
           <div className="niuu-chat-assistant-content">
-            <AssistantContentWithTools parts={parts} fallbackContent="" />
+            <AssistantContentWithTools parts={parts} fallbackContent="" isStreaming />
           </div>
         </div>
       </div>
@@ -440,8 +508,8 @@ export function StreamingMessage({ content, parts, model }: StreamingMessageProp
           </span>
         </div>
         <div className="niuu-chat-assistant-content">
-          {hasTools && parts ? (
-            <AssistantContentWithTools parts={parts} fallbackContent={content} />
+          {parts && (hasTools || parts.some((part) => part.type === 'text' && part.id)) ? (
+            <AssistantContentWithTools parts={parts} fallbackContent={content} isStreaming />
           ) : (
             <MarkdownContent content={content} isStreaming />
           )}

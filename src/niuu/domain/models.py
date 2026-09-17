@@ -29,6 +29,7 @@ class IntegrationType(StrEnum):
     MESSAGING = "messaging"
     AI_PROVIDER = "ai_provider"
     CODE_FORGE = "code_forge"
+    MCP = "mcp"
 
 
 class InstanceKind(StrEnum):

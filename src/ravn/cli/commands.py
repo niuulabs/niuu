@@ -1359,17 +1359,23 @@ def _make_channel_tasks(
     channels_cfg: Any,
     gw: Any,
 ) -> list[tuple[Any, str]]:
-    """Create asyncio tasks for the four extended gateway channel adapters.
+    """Create asyncio tasks for the extended gateway channel adapters.
 
     Returns a list of ``(task, name)`` pairs so callers can populate both
     a task list and a display list without duplicating the if-chain.
     """
     from ravn.adapters.channels.gateway_discord import DiscordGateway
     from ravn.adapters.channels.gateway_matrix import MatrixGateway
+    from ravn.adapters.channels.gateway_openclaw import OpenClawGateway
     from ravn.adapters.channels.gateway_slack import SlackGateway
     from ravn.adapters.channels.gateway_whatsapp import WhatsAppGateway
 
     pairs: list[tuple[Any, str]] = []
+    if getattr(channels_cfg, "openclaw", None) is not None and channels_cfg.openclaw.enabled:
+        task = asyncio.create_task(
+            OpenClawGateway(channels_cfg.openclaw, gw).run(), name="openclaw"
+        )
+        pairs.append((task, "openclaw"))
     if channels_cfg.discord.enabled:
         task = asyncio.create_task(DiscordGateway(channels_cfg.discord, gw).run(), name="discord")
         pairs.append((task, "discord"))

@@ -256,25 +256,25 @@ stay key-based.
 
 ### How sign-in tokens stay valid
 
-Nothing you sign into from the wizard has to be redone by hand while the
-platform runs:
+Renewal depends on the configured credential backend. Expired or revoked grants
+can require signing in again:
 
 | Provider | Token lifetime | Who renews it |
 |---|---|---|
 | Claude Code (subscription) | About a year | Sign in again from the same row when the wizard shows *Token expired*. |
-| OpenAI Codex (ChatGPT) | Hours | Sessions fetch tokens from the platform's Codex credential broker, which refreshes them in the store. |
+| OpenAI Codex (ChatGPT) | Hours | Docker mini mode uses its explicit on-demand mini-mode broker for file-backed grants. OpenBao-managed deployments use engine renewal; host-native mini mode uses the local Codex login. |
 | Grok Build | 7 days, no refresh token | Sign in again from the same row when the wizard shows *Token expired*. The file is mounted read-only at `~/.grok/auth.json`; the CLI hot-reloads it, so a new sign-in reaches running sessions on their next start. |
-| GitHub (App sign-in) | 8 hours when the app issues expiring tokens, otherwise unlimited | The platform's token refresher. Add `docker.sign_in_client_secrets.github` for refresh, or turn off *Expire user authorization tokens* on the app. |
-| GitLab (device sign-in) | 2 hours | The platform's token refresher, with the public client id alone. |
+| GitHub (App sign-in) | 8 hours when the app issues expiring tokens, otherwise unlimited | OpenBao for managed grants; the optional mini-mode refresher for unmanaged grants. Add `docker.sign_in_client_secrets.github` for refresh, or turn off *Expire user authorization tokens* on the app. |
+| GitLab (device sign-in) | 2 hours | OpenBao for managed grants; the optional mini-mode refresher for unmanaged grants, with the public client id alone. |
 
-The refresher (`OAuthTokenRefreshService`) runs every five minutes in the
-shared host, the one place that owns integrations in every deployment. It
-refreshes any device-flow token that expires within ten minutes and
-flips the connection to *Sign-in needed* with the reason `refresh_failed` when
-the provider rejects the refresh. The wizard row shows how long the current
-token is still good for and why a sign-in is needed. Sessions never write
-credentials back: the platform is the only writer of the store, and a session
-only ever reads what the platform renders for it.
+The compatibility refresher (`OAuthTokenRefreshService`) runs only when both
+`local_mounts.mini_mode` and `oauth.mini_mode_refresh_enabled` are true. It scans
+all enabled integration connections in the configured database, independently of
+sessions, and skips grants with a declared renewal owner. Production disables it;
+OpenBao owns managed-grant renewal. See [security and renewal](security-and-permissions.md#mini-modes-legacy-refresh-scan)
+for its privileges and how to disable the scan. The wizard reports when a grant
+needs reconnection. Sessions receive current access credentials without owning
+provider refresh tokens.
 
 ### When there is no room for another session
 

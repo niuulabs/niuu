@@ -3,6 +3,8 @@
 import asyncio
 import contextlib
 import json
+from datetime import datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,6 +13,7 @@ from skuld.codex_auth import CodexAuthProviderError, CodexExternalTokens
 from skuld.transports.codex_ws import (
     CodexWebSocketTransport,
     _codex_effort_for_model,
+    _CodexApproval,
     _model_supports_ultra,
     _pick_free_port,
     _rpc_notification,
@@ -248,20 +251,20 @@ class TestConstruction:
     @pytest.mark.asyncio
     async def test_connect_ws_uses_configured_large_message_limit(self, tmp_path):
         t = _make_transport(tmp_path, max_ws_message_bytes=12 * 1024 * 1024)
+        t._codex_socket_path = str(tmp_path / "app-server.sock")
         t._process = FakeRunningProcess()
         ws = FakeWebSocket()
 
         with patch(
-            "skuld.transports.codex_ws.ws_connect",
+            "skuld.transports.codex_ws.unix_connect",
             new=AsyncMock(return_value=ws),
         ) as connect:
             await t._connect_ws()
 
         connect.assert_awaited_once()
-        assert connect.await_args.args == ("ws://127.0.0.1:19999",)
+        assert connect.await_args.kwargs["path"] == t._codex_socket_path
         assert connect.await_args.kwargs["max_size"] == 12 * 1024 * 1024
         assert connect.await_args.kwargs["compression"] is None
-        assert connect.await_args.kwargs["proxy"] is None
         if t._receive_task is not None:
             t._receive_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -495,7 +498,8 @@ class TestSpawnAppServer:
                 "app-server",
                 "--listen",
             )
-            assert call_args[3] == "ws://127.0.0.1:19999"
+            assert call_args[3] == f"unix://{t._codex_socket_path}"
+            assert Path(t._codex_socket_dir).stat().st_mode & 0o777 == 0o700
             assert "-c" in call_args
             assert any(arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args)
             assert mock_exec.call_args.kwargs["env"]["PATH"] == "/tmp/shims:/usr/bin"
@@ -562,11 +566,9 @@ class TestSpawnAppServer:
         assert mock_exec.call_args.kwargs["env"]["CODEX_HOME"] == str(codex_home)
 
 
-class TestAppServerStartupFailure:
+class TestStartupFailure:
     @pytest.mark.asyncio
-    async def test_start_raises_and_reports_when_the_app_server_cannot_start(self, tmp_path):
-        """No subprocess fallback: a Codex that cannot start says so instead of
-        answering a turn with silence on a transport nobody configured."""
+    async def test_start_rejects_app_server_failure_without_substitution(self, tmp_path):
         t = _make_transport(tmp_path, initial_prompt="Investigate this")
         emit = AsyncMock()
         t.on_event(emit)
@@ -575,16 +577,11 @@ class TestAppServerStartupFailure:
         t._handshake = AsyncMock()
         t.stop = AsyncMock()
 
-        with pytest.raises(RuntimeError, match="exited with code 1"):
+        t.send_message = AsyncMock()
+        with pytest.raises(RuntimeError, match="Codex app-server startup failed"):
             await t.start()
-
-        emit.assert_awaited_once()
-        error = emit.await_args.args[0]
-        assert error["type"] == "error"
-        assert "Codex app-server failed to start" in error["error"]
-        assert "exited with code 1" in error["error"]
-        t.stop.assert_awaited_once()
-        assert not hasattr(t, "_fallback_transport")
+        t.send_message.assert_not_awaited()
+        assert not t.is_alive
 
     @pytest.mark.asyncio
     async def test_spawn_app_server_creates_codex_home(self, tmp_path, monkeypatch):
@@ -659,6 +656,11 @@ class TestSendMessage:
 
         assert t._last_result is None
         assert t._last_usage is None
+        # Sending steering input must not renumber blocks in the active turn.
+        assert t._block_index == 5
+        await t._handle_server_message(
+            {"method": "turn/started", "params": {"turn": {"id": "new-turn"}}}
+        )
         assert t._block_index == 0
 
     @pytest.mark.asyncio
@@ -692,10 +694,13 @@ class TestEventNormalization:
         )
 
         events = _emitted_events(emit)
-        assert len(events) == 1
-        assert events[0]["type"] == "content_block_delta"
-        assert events[0]["delta"]["type"] == "text_delta"
-        assert events[0]["delta"]["text"] == "Hello "
+        assert len(events) == 2
+        assert events[0]["type"] == "content_block_start"
+        assert events[0]["content_block"]["id"] == "i1"
+        assert events[1]["type"] == "content_block_delta"
+        assert events[1]["delta"]["type"] == "text_delta"
+        assert events[1]["delta"]["text"] == "Hello "
+        assert events[1]["item_id"] == "i1"
 
     @pytest.mark.asyncio
     async def test_reasoning_delta(self, tmp_path):
@@ -833,6 +838,7 @@ class TestEventNormalization:
             }
         )
 
+        await t._compaction_task
         t._send_rpc.assert_awaited_once_with(
             "thread/compact/start",
             {"threadId": "thread-1"},
@@ -1095,6 +1101,9 @@ class TestItemLifecycle:
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
+        await t._handle_item_started({"type": "commandExecution", "id": "cmd-1", "command": "ls"})
+        emit.reset_mock()
+
         await t._handle_item_completed(
             {
                 "type": "commandExecution",
@@ -1165,6 +1174,10 @@ class TestItemLifecycle:
             "type": "text",
             "id": "msg-1",
             "phase": "commentary",
+            "text": "",
+            "index": 0,
+            "id_source": "native",
+            "complete": False,
         }
 
     @pytest.mark.asyncio
@@ -1191,6 +1204,9 @@ class TestItemLifecycle:
     async def test_reasoning_completed_emits_stop(self, tmp_path):
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
+
+        await t._handle_item_started({"type": "reasoning", "id": "r-1"})
+        emit.reset_mock()
 
         await t._handle_item_completed({"type": "reasoning", "id": "r-1"})
 
@@ -1313,7 +1329,17 @@ class TestControl:
 
         commands = await t.discover_slash_commands(refresh=True)
         command_names = [command["name"] for command in commands]
-        assert command_names == ["/compact", "/review", "/goal", "/title", "/fork"]
+        assert command_names == [
+            "/compact",
+            "/review",
+            "/goal",
+            "/title",
+            "/fork",
+            "/rename",
+            "/status",
+            "/skills",
+            "/mcp",
+        ]
         compact = commands[0]
         assert compact["method"] == "thread/compact/start"
         assert compact["capability"] == "thread.compact"
@@ -1438,25 +1464,23 @@ class TestControl:
         t._thread_id = "thread-1"
         t._send_rpc = AsyncMock(return_value={})
 
-        await t.send_control("slash_command", command="/not-real")
+        with pytest.raises(ValueError, match="not supported"):
+            await t.send_control("slash_command", command="/not-real")
 
         t._send_rpc.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_slash_command_rpc_failure_emits_notice(self, tmp_path):
+    async def test_slash_command_rpc_failure_reaches_caller(self, tmp_path):
         t = _make_transport(tmp_path)
         t._thread_id = "thread-1"
         t._send_rpc = AsyncMock(side_effect=RuntimeError("method not found"))
         emit = _collect_emits(t)
 
-        await t.send_control("slash_command", command="/review")
+        with pytest.raises(RuntimeError, match="method not found"):
+            await t.send_control("slash_command", command="/review")
 
         t._send_rpc.assert_awaited_once()
-        assert emit.await_args.args[0] == {
-            "type": "system",
-            "subtype": "notice",
-            "content": "/review failed: method not found",
-        }
+        emit.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_steer_sends_turn_steer(self, tmp_path):
@@ -1668,7 +1692,7 @@ class TestApprovals:
         assert event["type"] == "control_request"
         assert event["tool"] == "Bash"
         assert event["input"]["command"] == "rm -rf /tmp/test"
-        assert "42" in t._pending_approvals
+        assert event["request_id"] in t._pending_approvals
 
     @pytest.mark.asyncio
     async def test_file_change_approval(self, tmp_path):
@@ -1686,7 +1710,7 @@ class TestApprovals:
         event = emit.call_args[0][0]
         assert event["type"] == "control_request"
         assert event["tool"] == "Edit"
-        assert "99" in t._pending_approvals
+        assert event["request_id"] in t._pending_approvals
 
     @pytest.mark.asyncio
     async def test_exec_command_approval_uses_review_decision_shape(self, tmp_path):
@@ -1715,7 +1739,7 @@ class TestApprovals:
         assert event["tool"] == "Bash"
         assert event["input"]["command"] == "/bin/zsh -lc 'echo hi'"
 
-        await t.send_control_response("43", {"behavior": "allow"})
+        await t.send_control_response(event["request_id"], {"behavior": "allow"})
 
         sent = json.loads(t._ws.sent[0])
         assert sent["id"] == 43
@@ -1725,7 +1749,7 @@ class TestApprovals:
     async def test_send_control_response_approves(self, tmp_path):
         t = _make_transport(tmp_path)
         t._ws = FakeWebSocket()
-        t._pending_approvals["42"] = 42
+        t._pending_approvals["42"] = _CodexApproval(42, "item/commandExecution/requestApproval")
 
         await t.send_control_response("42", {"behavior": "allow"})
 
@@ -1738,7 +1762,7 @@ class TestApprovals:
     async def test_send_control_response_denies(self, tmp_path):
         t = _make_transport(tmp_path)
         t._ws = FakeWebSocket()
-        t._pending_approvals["42"] = 42
+        t._pending_approvals["42"] = _CodexApproval(42, "item/commandExecution/requestApproval")
 
         await t.send_control_response("42", {"behavior": "deny"})
 
@@ -1746,7 +1770,7 @@ class TestApprovals:
         assert sent["result"]["decision"] == "decline"
 
     @pytest.mark.asyncio
-    async def test_unknown_request_auto_approved(self, tmp_path):
+    async def test_unknown_request_rejected_with_method_not_found(self, tmp_path):
         t = _make_transport(tmp_path)
         t._ws = FakeWebSocket()
         _collect_emits(t)
@@ -1761,13 +1785,14 @@ class TestApprovals:
 
         sent = json.loads(t._ws.sent[0])
         assert sent["id"] == 77
-        assert sent["result"]["decision"] == "accept"
+        assert sent["error"]["code"] == -32601
+        assert "result" not in sent
 
     @pytest.mark.asyncio
-    async def test_mcp_elicitation_is_auto_accepted_with_protocol_shape(self, tmp_path):
+    async def test_mcp_elicitation_requires_human_even_when_tool_approval_disabled(self, tmp_path):
         t = _make_transport(tmp_path, approval_policy="never")
         t._ws = FakeWebSocket()
-        _collect_emits(t)
+        emit = _collect_emits(t)
 
         await t._handle_server_request(
             {
@@ -1783,9 +1808,8 @@ class TestApprovals:
             }
         )
 
-        sent = json.loads(t._ws.sent[0])
-        assert sent["id"] == 78
-        assert sent["result"] == {"action": "accept", "content": {}}
+        assert t._ws.sent == []
+        assert emit.call_args[0][0]["auto_approval_allowed"] is False
 
     @pytest.mark.asyncio
     async def test_mcp_elicitation_uses_control_channel_when_approval_is_required(self, tmp_path):
@@ -1810,7 +1834,7 @@ class TestApprovals:
         event = emit.call_args[0][0]
         assert event["type"] == "control_request"
         assert event["tool"] == "MCP"
-        await t.send_control_response("79", {"behavior": "allow"})
+        await t.send_control_response(event["request_id"], {"behavior": "allow", "content": {}})
         sent = json.loads(t._ws.sent[0])
         assert sent["result"] == {"action": "accept", "content": {}}
 
@@ -1888,68 +1912,27 @@ class TestApprovals:
         assert sent["result"]["contentItems"][0]["text"] == "Exit code: 2\nstderr:\nnope\n"
 
     @pytest.mark.asyncio
-    async def test_raw_function_shell_command_injects_output(self, tmp_path):
+    async def test_raw_function_is_observed_and_native_output_completes_it(self, tmp_path):
         t = _make_transport(tmp_path)
         t._thread_id = "thread-1"
         emits = _collect_emits(t)
-        calls = []
-
-        async def fake_send_rpc(method, params=None):
-            calls.append((method, params))
-            if method == "command/exec":
-                return {"exitCode": 0, "stdout": "hello\n", "stderr": ""}
-            if method == "thread/inject_items":
-                return {}
-            raise AssertionError(method)
-
-        t._send_rpc = fake_send_rpc
-
-        await t._handle_server_message(
+        t._send_rpc = AsyncMock()
+        await t._handle_response_item_frame(
             {
-                "method": "rawResponseItem/completed",
-                "params": {
-                    "threadId": "thread-1",
-                    "turnId": "turn-1",
-                    "item": {
-                        "type": "function_call",
-                        "name": "shell_command",
-                        "arguments": json.dumps(
-                            {
-                                "command": "echo hello",
-                                "workdir": str(tmp_path),
-                                "timeout_ms": 10000,
-                            }
-                        ),
-                        "call_id": "call-raw-1",
-                    },
-                },
+                "type": "function_call",
+                "name": "shell_command",
+                "call_id": "call-raw-1",
+                "arguments": json.dumps({"command": "echo hello"}),
             }
         )
-        await asyncio.sleep(0.01)
-
-        assert calls == [
-            (
-                "command/exec",
-                {
-                    "command": ["/bin/zsh", "-lc", "echo hello"],
-                    "cwd": str(tmp_path),
-                    "timeoutMs": 10000,
-                },
-            ),
-            (
-                "thread/inject_items",
-                {
-                    "threadId": "thread-1",
-                    "items": [
-                        {
-                            "type": "function_call_output",
-                            "call_id": "call-raw-1",
-                            "output": "Exit code: 0\nstdout:\nhello\n",
-                        }
-                    ],
-                },
-            ),
-        ]
+        await t._handle_response_item_frame(
+            {
+                "type": "function_call_output",
+                "call_id": "call-raw-1",
+                "output": "hello\n",
+            }
+        )
+        t._send_rpc.assert_not_awaited()
         events = _emitted_events(emits)
         assert any(
             event.get("type") == "assistant"
@@ -1962,48 +1945,6 @@ class TestApprovals:
             and event.get("content_block", {}).get("tool_use_id") == "call-raw-1"
             for event in events
         )
-
-    @pytest.mark.asyncio
-    async def test_response_item_shell_command_frame_injects_output(self, tmp_path):
-        t = _make_transport(tmp_path)
-        t._thread_id = "thread-1"
-        calls = []
-
-        async def fake_send_rpc(method, params=None):
-            calls.append((method, params))
-            if method == "command/exec":
-                return {"exitCode": 0, "stdout": str(tmp_path), "stderr": ""}
-            if method == "thread/inject_items":
-                return {}
-            raise AssertionError(method)
-
-        t._send_rpc = fake_send_rpc
-        _collect_emits(t)
-
-        await t._handle_response_item_frame(
-            {
-                "type": "function_call",
-                "name": "shell_command",
-                "arguments": json.dumps(
-                    {
-                        "command": "pwd",
-                        "workdir": str(tmp_path),
-                    }
-                ),
-                "call_id": "call-response-1",
-            }
-        )
-        await asyncio.sleep(0.01)
-
-        assert calls[0] == (
-            "command/exec",
-            {
-                "command": ["/bin/zsh", "-lc", "pwd"],
-                "cwd": str(tmp_path),
-            },
-        )
-        assert calls[1][0] == "thread/inject_items"
-        assert calls[1][1]["items"][0]["call_id"] == "call-response-1"
 
     @pytest.mark.asyncio
     async def test_raw_custom_tool_call_emits_observable_tool_lifecycle(self, tmp_path):
@@ -2074,7 +2015,7 @@ class TestResume:
 
         async def fake_send_rpc(method, params=None):
             calls.append((method, params))
-            return {"thread": {"id": "resumed-thread"}}
+            return {"thread": {"id": "old-thread-id"}}
 
         t._send_rpc = fake_send_rpc
         emit = _collect_emits(t)
@@ -2083,11 +2024,11 @@ class TestResume:
 
         assert calls[0][0] == "thread/resume"
         assert calls[0][1]["threadId"] == "old-thread-id"
-        assert t._thread_id == "resumed-thread"
+        assert t._thread_id == "old-thread-id"
 
         init_event = emit.call_args[0][0]
         assert init_event["type"] == "system"
-        assert init_event["session_id"] == "resumed-thread"
+        assert init_event["session_id"] == "old-thread-id"
 
 
 # ---------------------------------------------------------------------------
@@ -2250,7 +2191,7 @@ class TestFullTurnFlow:
                             "outputTokens": 20,
                             "reasoningOutputTokens": 0,
                         },
-                        "last": {},
+                        "last": {"inputTokens": 80, "outputTokens": 20, "cachedInputTokens": 0},
                     },
                 },
             }
@@ -2721,20 +2662,36 @@ class TestEmitToolUse:
 class TestItemCompletedEdgeCases:
     @pytest.mark.asyncio
     async def test_file_change_completed_emits_stop(self, tmp_path):
-        """fileChange completion should close both use and result blocks."""
+        """fileChange completion without a start closes only its result block."""
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
         await t._handle_item_completed({"type": "fileChange", "id": "fc-1", "changes": []})
 
         stops = _events_of_type(emit, "content_block_stop")
-        assert len(stops) == 2
+        assert len(stops) == 1
         results = [
             event["content_block"]
             for event in _events_of_type(emit, "content_block_start")
             if event["content_block"]["type"] == "tool_result"
         ]
+        assert len(results) == 1
+        ended_at = results[0].pop("ended_at")
+        assert datetime.fromisoformat(ended_at).tzinfo is not None
         assert results == [{"type": "tool_result", "tool_use_id": "fc-1", "content": ""}]
+        # No tool input block was opened in this completion-only fixture. Close
+        # only the result, never an unrelated public text block. Silent completed
+        # tools still need a result to pair the call and stamp its duration.
+        assert len(stops) == 1
+        # The durable half: a tool_result must ride in a `user` frame (the only shape
+        # the transcript reducer harvests results from).
+        user_results = [
+            e
+            for e in _emitted_events(emit)
+            if e.get("type") == "user"
+            and any(b.get("type") == "tool_result" for b in (e.get("content") or []))
+        ]
+        assert len(user_results) == 1
 
     @pytest.mark.asyncio
     async def test_web_search_completed_preserves_query(self, tmp_path):
@@ -2745,13 +2702,27 @@ class TestItemCompletedEdgeCases:
         await t._handle_item_completed({"type": "webSearch", "id": "ws-1", "query": "test"})
 
         stops = _events_of_type(emit, "content_block_stop")
-        assert len(stops) == 2
+        assert len(stops) == 1
         results = [
             event["content_block"]
             for event in _events_of_type(emit, "content_block_start")
             if event["content_block"]["type"] == "tool_result"
         ]
         assert json.loads(results[0]["content"]) == {"query": "test"}
+
+        # No tool input block was opened in this completion-only fixture. Close
+        # only the result, never an unrelated public text block. Silent completed
+        # tools still need a result to pair the call and stamp its duration.
+        assert len(stops) == 1
+        # The durable half: a tool_result must ride in a `user` frame (the only shape
+        # the transcript reducer harvests results from).
+        user_results = [
+            e
+            for e in _emitted_events(emit)
+            if e.get("type") == "user"
+            and any(b.get("type") == "tool_result" for b in (e.get("content") or []))
+        ]
+        assert len(user_results) == 1
 
     @pytest.mark.asyncio
     async def test_web_search_completed_preserves_activity(self, tmp_path):
@@ -2785,14 +2756,26 @@ class TestItemCompletedEdgeCases:
 
     @pytest.mark.asyncio
     async def test_mcp_tool_call_completed_emits_stop(self, tmp_path):
-        """mcpToolCall completion should close both use and result blocks."""
+        """mcpToolCall completion without a start closes only its result block."""
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
         await t._handle_item_completed({"type": "mcpToolCall", "id": "mcp-1", "tool": "read_file"})
 
         stops = _events_of_type(emit, "content_block_stop")
-        assert len(stops) == 2
+        # No tool input block was opened in this completion-only fixture. Close
+        # only the result, never an unrelated public text block. Silent completed
+        # tools still need a result to pair the call and stamp its duration.
+        assert len(stops) == 1
+        # The durable half: a tool_result must ride in a `user` frame (the only shape
+        # the transcript reducer harvests results from).
+        user_results = [
+            e
+            for e in _emitted_events(emit)
+            if e.get("type") == "user"
+            and any(b.get("type") == "tool_result" for b in (e.get("content") or []))
+        ]
+        assert len(user_results) == 1
 
     @pytest.mark.asyncio
     async def test_command_completed_no_output_emits_empty_tool_result(self, tmp_path):
@@ -2806,13 +2789,29 @@ class TestItemCompletedEdgeCases:
 
         events = _emitted_events(emit)
         stops = _events_of_type(emit, "content_block_stop")
-        assert len(stops) == 2
+        assert len(stops) == 1
         results = [
             event["content_block"]
             for event in _events_of_type(emit, "content_block_start")
             if event["content_block"]["type"] == "tool_result"
         ]
+        assert len(results) == 1
+        ended_at = results[0].pop("ended_at")
+        assert datetime.fromisoformat(ended_at).tzinfo is not None
         assert results == [{"type": "tool_result", "tool_use_id": "cmd-1", "content": ""}]
+        # No tool input block was opened in this completion-only fixture. Close
+        # only the result, never an unrelated public text block. Silent completed
+        # tools still need a result to pair the call and stamp its duration.
+        assert len(stops) == 1
+        # The durable half: a tool_result must ride in a `user` frame (the only shape
+        # the transcript reducer harvests results from).
+        user_results = [
+            e
+            for e in _emitted_events(emit)
+            if e.get("type") == "user"
+            and any(b.get("type") == "tool_result" for b in (e.get("content") or []))
+        ]
+        assert len(user_results) == 1
         # No text delta emitted
         text_deltas = [
             e
@@ -2834,13 +2833,29 @@ class TestItemCompletedEdgeCases:
 
         events = _emitted_events(emit)
         stops = _events_of_type(emit, "content_block_stop")
-        assert len(stops) == 2
+        assert len(stops) == 1
         results = [
             event["content_block"]
             for event in _events_of_type(emit, "content_block_start")
             if event["content_block"]["type"] == "tool_result"
         ]
+        assert len(results) == 1
+        ended_at = results[0].pop("ended_at")
+        assert datetime.fromisoformat(ended_at).tzinfo is not None
         assert results == [{"type": "tool_result", "tool_use_id": "cmd-1", "content": ""}]
+        # No tool input block was opened in this completion-only fixture. Close
+        # only the result, never an unrelated public text block. Silent completed
+        # tools still need a result to pair the call and stamp its duration.
+        assert len(stops) == 1
+        # The durable half: a tool_result must ride in a `user` frame (the only shape
+        # the transcript reducer harvests results from).
+        user_results = [
+            e
+            for e in _emitted_events(emit)
+            if e.get("type") == "user"
+            and any(b.get("type") == "tool_result" for b in (e.get("content") or []))
+        ]
+        assert len(user_results) == 1
         text_deltas = [
             e
             for e in events
@@ -2909,13 +2924,14 @@ class TestSendRpcResponse:
         assert msg["result"]["decision"] == "accept"
 
     @pytest.mark.asyncio
-    async def test_send_rpc_response_ws_none_is_noop(self, tmp_path):
+    async def test_send_rpc_response_ws_none_is_explicit_failure(self, tmp_path):
         """If ws is None, _send_rpc_response should silently do nothing."""
         t = _make_transport(tmp_path)
         t._ws = None
 
         # Should not raise
-        await t._send_rpc_response(42, {"decision": "accept"})
+        with pytest.raises(RuntimeError, match="WebSocket is not connected"):
+            await t._send_rpc_response(42, {"decision": "accept"})
 
 
 # ---------------------------------------------------------------------------
@@ -2932,7 +2948,7 @@ class TestResumeEdgeCases:
 
         async def fake_send_rpc(method, params=None):
             calls.append((method, params))
-            return {"thread": {"id": "resumed-t"}}
+            return {"thread": {"id": "old-id"}}
 
         t._send_rpc = fake_send_rpc
         _collect_emits(t)
@@ -2956,7 +2972,7 @@ class TestResumeEdgeCases:
 
         async def fake_send_rpc(method, params=None):
             calls.append((method, params))
-            return {"thread": {"id": "resumed-t"}}
+            return {"thread": {"id": "old-id"}}
 
         t._send_rpc = fake_send_rpc
         _collect_emits(t)
@@ -2975,7 +2991,7 @@ class TestResumeEdgeCases:
 
         async def fake_send_rpc(method, params=None):
             calls.append((method, params))
-            return {"thread": {"id": "resumed-t"}}
+            return {"thread": {"id": "old-id"}}
 
         t._send_rpc = fake_send_rpc
         _collect_emits(t)
@@ -2993,7 +3009,7 @@ class TestResumeEdgeCases:
 
         async def fake_send_rpc(method, params=None):
             calls.append((method, params))
-            return {"thread": {"id": "resumed-t"}}
+            return {"thread": {"id": "old-id"}}
 
         t._send_rpc = fake_send_rpc
         _collect_emits(t)
@@ -3004,8 +3020,8 @@ class TestResumeEdgeCases:
         assert "model" not in params
 
     @pytest.mark.asyncio
-    async def test_resume_fallback_thread_id(self, tmp_path):
-        """When the response thread has no id, resume uses the passed thread_id."""
+    async def test_resume_missing_native_identity_is_rejected(self, tmp_path):
+        """A successful RPC without a native ID cannot prove a resumed thread."""
         t = _make_transport(tmp_path)
 
         async def fake_send_rpc(method, params=None):
@@ -3014,9 +3030,10 @@ class TestResumeEdgeCases:
         t._send_rpc = fake_send_rpc
         _collect_emits(t)
 
-        await t.resume("fallback-id")
+        with pytest.raises(RuntimeError, match="identify"):
+            await t.resume("requested-id")
 
-        assert t._thread_id == "fallback-id"
+        assert t._thread_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -3026,26 +3043,27 @@ class TestResumeEdgeCases:
 
 class TestSendControlResponseEdgeCases:
     @pytest.mark.asyncio
-    async def test_unknown_request_id_logs_warning(self, tmp_path):
-        """Responding to an unknown request_id should be a no-op (warning logged)."""
+    async def test_unknown_request_id_is_explicitly_rejected(self, tmp_path):
+        """A stale approval must fail visibly without replying to another RPC."""
         t = _make_transport(tmp_path)
         t._ws = FakeWebSocket()
 
-        await t.send_control_response("nonexistent", {"behavior": "allow"})
+        with pytest.raises(ValueError, match="Unknown or already answered"):
+            await t.send_control_response("nonexistent", {"behavior": "allow"})
 
         # Nothing sent
         assert len(t._ws.sent) == 0
 
     @pytest.mark.asyncio
-    async def test_allow_forever_maps_to_accept(self, tmp_path):
+    async def test_allow_forever_maps_to_accept_for_session(self, tmp_path):
         t = _make_transport(tmp_path)
         t._ws = FakeWebSocket()
-        t._pending_approvals["10"] = 10
+        t._pending_approvals["10"] = _CodexApproval(10, "item/commandExecution/requestApproval")
 
         await t.send_control_response("10", {"behavior": "allowForever"})
 
         msg = json.loads(t._ws.sent[0])
-        assert msg["result"]["decision"] == "accept"
+        assert msg["result"]["decision"] == "acceptForSession"
 
 
 # ---------------------------------------------------------------------------
@@ -3135,7 +3153,8 @@ class TestThreadStartedNotification:
         assert t._thread_id == "parent"
         assert t._current_turn_id == "parent-turn"
         assert t._alive
-        emit.assert_not_called()
+        assert all(call.args[0]["type"] == "agent_event" for call in emit.call_args_list)
+        assert all(call.args[0]["agent_id"] == "child" for call in emit.call_args_list)
 
         t._handle_server_request = AsyncMock()
         request = {
@@ -3264,10 +3283,11 @@ class TestEmitTextDelta:
 
         await t._emit_text_delta("hello")
 
-        assert emit.call_count == 1
+        assert emit.call_count == 2  # A late attachment still receives its text anchor.
         event = emit.call_args[0][0]
         assert event["delta"]["type"] == "text_delta"
         assert event["delta"]["text"] == "hello"
+        assert event["item_id"] == emit.call_args_list[0][0][0]["content_block"]["id"]
 
 
 # ---------------------------------------------------------------------------
@@ -3458,7 +3478,7 @@ class TestSteeringCorrelation:
 
 
 # ---------------------------------------------------------------------------
-# Reasoning effort
+# Reasoning effort (GPT-6 Astra / GPT-5.6 Sol Ultra)
 # ---------------------------------------------------------------------------
 
 
@@ -3488,13 +3508,24 @@ class TestReasoningEffort:
         assert _model_supports_ultra("gpt-5.6-sol") is True
         assert _model_supports_ultra("GPT-5.6-Sol") is True
         assert _model_supports_ultra("gpt-5.5") is False
-        assert _codex_effort_for_model("gpt-5.6-sol") == "high"
+        assert _codex_effort_for_model("gpt-5.6-sol") == "ultra"
         assert _codex_effort_for_model("gpt-5.5") == "high"
         assert _codex_effort_for_model("") == "high"
 
-    def test_sol_defaults_to_high(self, tmp_path) -> None:
+    def test_effort_helpers_recognize_astra(self) -> None:
+        # GPT-6 Astra's bundled Codex metadata lists low/medium/high/xhigh/max/ultra;
+        # it launches at `ultra` exactly like Sol.
+        assert _model_supports_ultra("gpt-6-astra") is True
+        assert _model_supports_ultra("GPT-6-Astra") is True
+        assert _codex_effort_for_model("gpt-6-astra") == "ultra"
+
+    def test_sol_defaults_to_ultra(self, tmp_path) -> None:
         t = _make_transport(tmp_path, model="gpt-5.6-sol")
-        assert t._reasoning_effort == "high"
+        assert t._reasoning_effort == "ultra"
+
+    def test_astra_defaults_to_ultra(self, tmp_path) -> None:
+        t = _make_transport(tmp_path, model="gpt-6-astra")
+        assert t._reasoning_effort == "ultra"
 
     def test_non_sol_defaults_to_high(self, tmp_path) -> None:
         t = _make_transport(tmp_path, model="gpt-5.5")
@@ -3505,18 +3536,31 @@ class TestReasoningEffort:
         assert t._reasoning_effort == "low"
 
     @pytest.mark.asyncio
-    async def test_sol_handshake_sends_high_effort(self, tmp_path) -> None:
+    async def test_sol_handshake_sends_ultra_effort(self, tmp_path) -> None:
         t = _make_transport(tmp_path, model="gpt-5.6-sol")
         params = await _capture_thread_start_params(t)
-        assert params["config"]["model_reasoning_effort"] == "high"
+        assert params["config"]["model_reasoning_effort"] == "ultra"
 
     @pytest.mark.asyncio
-    async def test_ultra_clamped_to_high_on_non_sol_model(self, tmp_path) -> None:
-        # A stray `ultra` on a model whose Codex build lacks the tier must not
-        # reach the app-server as `ultra`.
-        t = _make_transport(tmp_path, model="gpt-5.5", reasoning_effort="ultra")
+    async def test_astra_handshake_sends_ultra_effort(self, tmp_path) -> None:
+        t = _make_transport(tmp_path, model="gpt-6-astra")
         params = await _capture_thread_start_params(t)
-        assert params["config"]["model_reasoning_effort"] == "high"
+        assert params["config"]["model_reasoning_effort"] == "ultra"
+
+    @pytest.mark.asyncio
+    async def test_astra_explicit_ultra_not_clamped(self, tmp_path) -> None:
+        t = _make_transport(tmp_path, model="gpt-6-astra", reasoning_effort="ultra")
+        params = await _capture_thread_start_params(t)
+        assert params["config"]["model_reasoning_effort"] == "ultra"
+
+    @pytest.mark.asyncio
+    async def test_launch_effort_preserved_for_native_validation(self, tmp_path) -> None:
+        # A static local catalog must not silently clamp or reject a future native
+        # capability. Launch validation belongs to the server; connected controls
+        # are separately tested against its authoritative model/list response.
+        t = _make_transport(tmp_path, model="future-model", reasoning_effort="xhigh")
+        params = await _capture_thread_start_params(t)
+        assert params["config"]["model_reasoning_effort"] == "xhigh"
 
     @pytest.mark.asyncio
     async def test_high_effort_maps_through(self, tmp_path) -> None:
@@ -3591,7 +3635,7 @@ class TestGatewayReasoningEffort:
         routed = _make_transport(tmp_path, model="llama3.1:8b", model_gateway_url="http://gw")
         assert routed._reasoning_effort == ""
         direct = _make_transport(tmp_path, model="gpt-5.6-sol")
-        assert direct._reasoning_effort == "high"
+        assert direct._reasoning_effort == "ultra"
         explicit = _make_transport(
             tmp_path, model="deepseek-r1", model_gateway_url="http://gw", reasoning_effort="medium"
         )

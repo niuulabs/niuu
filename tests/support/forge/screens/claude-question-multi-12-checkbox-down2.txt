@@ -1,0 +1,16 @@
+←  ☒ Colors  ✔ Submit  →
+
+Which colors?
+
+  1. [✔] Blue
+  Blue
+  2. [ ] Amber
+  Amber
+❯ 3. [✔] Violet
+  Violet
+  4. [ ] Type something
+     Submit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

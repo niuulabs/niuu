@@ -65,13 +65,37 @@ class CredentialStorePort(ABC):
 
 
 class CredentialRefreshLockPort(ABC):
-    """Serialize rotation of one owner-scoped credential across replicas."""
+    """Serialize mini-mode credential rotation across processes sharing a database."""
 
     @abstractmethod
-    def hold(
+    def hold(self, owner_type: str, owner_id: str, name: str) -> AbstractAsyncContextManager[None]:
+        """Hold a credential's lock for one refresh transaction."""
+
+
+class OAuthApplicationStorePort(ABC):
+    """Optional provider-client provisioning capability of a managed OAuth store."""
+
+    @property
+    def supports_resource_indicators(self) -> bool:
+        """Whether the deployed refresh engine preserves RFC 8707 resource binding."""
+        return False
+
+    @property
+    @abstractmethod
+    def manages_oauth_applications(self) -> bool:
+        """Whether this store owns provider-client provisioning."""
+
+    @abstractmethod
+    async def configure_oauth_application(
         self,
-        owner_type: str,
-        owner_id: str,
-        name: str,
-    ) -> AbstractAsyncContextManager[None]:
-        """Hold the credential's distributed refresh lock for one critical section."""
+        *,
+        slug: str,
+        app: str,
+        client_id: str,
+        client_secret: str,
+        authorize_url: str,
+        token_url: str,
+        token_endpoint_auth_method: str = "client_secret_post",
+        public_endpoints_only: bool = False,
+    ) -> None:
+        """Provision the client used by the same enrollment flow and refresh engine."""

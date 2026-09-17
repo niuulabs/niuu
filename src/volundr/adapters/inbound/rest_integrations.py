@@ -14,8 +14,10 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from niuu.adapters.inbound.rest_integration_models import IntegrationResponse
 from niuu.domain.models import SecretType
+from niuu.domain.oauth_credentials import OAUTH_ENGINE, OAuthCredentialUnavailableError
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from volundr.adapters.inbound.auth import extract_principal
+from volundr.adapters.outbound.mcp_oauth import MCPOAuthDiscovery
 from volundr.domain.models import (
     CredentialEnrollment,
     IntegrationConnection,
@@ -535,15 +537,26 @@ def _build_integrations_router(
         metadata = credential.metadata
         expires_at = metadata.get("auth_expires_at")
         auth_state = str(metadata.get("auth_state") or "configured")
+        error_code = metadata.get("auth_error_code")
+        if metadata.get("renewal_owner") == OAUTH_ENGINE:
+            # Check on demand, under the existing authorized connection request.
+            # A vault outage must not be reported as a revoked user grant.
+            expires_at = None
+            try:
+                current = await credential_store.get_value(
+                    "user", connection.owner_id, connection.credential_name
+                )
+                expires_at = (current or {}).get("expires_at")
+            except OAuthCredentialUnavailableError as exc:
+                auth_state = "auth_required" if exc.reconnect else "unavailable"
+                error_code = "oauth_reconnect_required" if exc.reconnect else "oauth_unavailable"
         if expires_at and datetime.fromisoformat(str(expires_at)) <= datetime.now(UTC):
             auth_state = "auth_required"
         return IntegrationResponse.from_connection(
             connection,
             credential_status=auth_state,
             credential_expires_at=str(expires_at) if expires_at else None,
-            credential_error_code=(
-                str(metadata["auth_error_code"]) if metadata.get("auth_error_code") else None
-            ),
+            credential_error_code=str(error_code) if error_code else None,
             credential_status_updated_at=(
                 str(metadata["auth_state_updated_at"])
                 if metadata.get("auth_state_updated_at")
@@ -810,6 +823,8 @@ def _build_integrations_router(
                     canonical_path=canonical_prefix,
                 ),
             )
+        if data.slug == "mcp":
+            raise HTTPException(422, "Connect MCP servers through the MCP connection endpoint")
         definition = (
             registry.get_definition(data.slug) if registry is not None and data.slug else None
         )
@@ -882,15 +897,31 @@ def _build_integrations_router(
                 secret_type=_secret_type_for_definition(definition),
                 data={str(key): str(value) for key, value in credential_data.items()},
                 metadata={
+                    **(
+                        credential_metadata
+                        if isinstance(credential_metadata, dict)
+                        else {"metadata": str(credential_metadata)}
+                    ),
                     "source": "integration",
                     "integration": definition.slug,
                     "integration_type": str(definition.integration_type),
                     "auth_type": definition.auth_type,
                     "auth_state": "active",
-                    **(
-                        credential_metadata
-                        if isinstance(credential_metadata, dict)
-                        else {"metadata": str(credential_metadata)}
+                    "tenant_id": principal.tenant_id,
+                    "oauth_app": str(data.config.get("oauth_app") or "default"),
+                    "oauth_token_field": (
+                        definition.credential_enrollment.credential_field
+                        if definition.credential_enrollment
+                        else next(
+                            (
+                                k
+                                for k, v in definition.oauth.token_field_mapping.items()
+                                if v == "access_token"
+                            ),
+                            "access_token",
+                        )
+                        if definition.oauth
+                        else "token"
                     ),
                 },
             )
@@ -958,6 +989,11 @@ def _build_integrations_router(
                 detail=f"Integration not found: {connection_id}",
             )
 
+        if existing.slug == "mcp" and (
+            data.credential_name is not None
+            or (data.config is not None and data.config != existing.config)
+        ):
+            raise HTTPException(422, "Reconnect the MCP server to change its authentication")
         now = datetime.now(UTC)
         updated = IntegrationConnection(
             id=existing.id,
@@ -1004,6 +1040,10 @@ def _build_integrations_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Integration not found: {connection_id}",
             )
+        if existing.slug == "mcp":
+            if credential_store is None:
+                raise HTTPException(503, "Credential store unavailable")
+            await credential_store.delete("user", existing.owner_id, existing.credential_name)
         await integration_repo.delete_connection(connection_id)
 
     @router.post(
@@ -1033,10 +1073,49 @@ def _build_integrations_router(
                 detail=f"Integration not found: {connection_id}",
             )
 
+        if existing.slug == "mcp":
+            try:
+                if credential_store is None or registry is None:
+                    raise ValueError("MCP credential store unavailable")
+                credential = await credential_store.get(
+                    "user", existing.owner_id, existing.credential_name
+                )
+                spec = registry.mcp_spec(existing)
+                if (
+                    credential is None
+                    or spec is None
+                    or credential.metadata.get("mcp_url") != spec.url
+                    or credential.metadata.get("tenant_id") != principal.tenant_id
+                ):
+                    raise ValueError("MCP credential binding mismatch")
+                values = await credential_store.get_value(
+                    "user", existing.owner_id, existing.credential_name
+                )
+                token = (values or {}).get(spec.token_field)
+                if not token:
+                    raise ValueError("MCP access token missing")
+                await MCPOAuthDiscovery(request_timeout=PROBE_TIMEOUT_SECONDS).initialize(
+                    spec.url, {spec.auth_header: spec.auth_prefix + token}
+                )
+            except Exception:
+                return IntegrationTestResult(
+                    success=False,
+                    provider="MCP",
+                    error="MCP initialization failed; check the endpoint or reconnect",
+                )
+            return IntegrationTestResult(success=True, provider="MCP", detail="MCP initialized")
+
         try:
             if existing.integration_type == IntegrationType.ISSUE_TRACKER:
                 adapter = await tracker_factory.create(existing)
-                conn_status = await adapter.check_connection()
+                try:
+                    conn_status = await adapter.check_connection()
+                finally:
+                    # This endpoint owns the short-lived adapter it creates.
+                    # Stateless third-party adapters may have no close method.
+                    close = getattr(adapter, "close", None)
+                    if close is not None:
+                        await close()
                 return IntegrationTestResult(
                     success=conn_status.connected,
                     provider=conn_status.provider,

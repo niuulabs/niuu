@@ -21,15 +21,22 @@ import signal
 import time
 import uuid
 from collections import deque
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from stat import S_ISREG
 from typing import Any
 
 from niuu.build_info import build_info
+from niuu.domain.reasoning import MODEL_EFFORTS, validate_effort
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.agent_usage import AgentUsageTracker
+from skuld.control_errors import ControlRecoveryError
+from skuld.delivery_errors import DeliveryNotAcceptedError
 from skuld.transports.claude_env import claude_spawn_env
+from skuld.transports.claude_text_order import preceding_tool_text
 from skuld.transports.mcp_config import build_claude_mcp_config
 from skuld.transports.subprocess import _DEFAULT_PERMISSION_MODE
 from skuld.transports.tool_shims import ensure_codex_tool_shims
@@ -38,23 +45,14 @@ logger = logging.getLogger("skuld.transport")
 
 _ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))")
 
-# Appended to Claude's system prompt for interactive (steerable) tmux sessions. The user can steer
-# this session at any time, so we ask Claude to keep its plan + in-progress work VISIBLE via
-# TodoWrite — that list is what surfaces in the client's live Plan/Agents dock and makes steering
-# legible (the user sees what's running and what's queued).
+# Describe input capability only. Project/session instructions own objectives, planning,
+# delegation and communication style; the transport must not prescribe that workflow.
 # Toggle: SKULD__TMUX_STEERING_INSTRUCTIONS.
-_STEERING_TASK_INSTRUCTION = """\
-You are running as a long-lived, STEERABLE coding session: the user can send you new messages at \
-any time while you work, and they are inserted into your flow as you reach the next opportunity. \
-To keep that steering legible, keep your plan and in-progress work VISIBLE at all times:
-
-- Use the TodoWrite tool to maintain a live task list for any multi-step work. Add tasks as you \
-discover them, keep exactly one in_progress while you work it, and complete it before moving on. \
-This list is the user's window into what you are doing and what is queued — keep it current.
-- Decompose work into tasks that can run either serially or as parallel subagents (the Task tool). \
-Prefer subagents for independent, parallelizable work; keep dependent steps serial.
-- When a steering message arrives mid-task, fold it into the task list (a new task or an \
-adjustment) rather than silently dropping your current plan."""
+_STEERING_INPUT_INSTRUCTION = """\
+This session supports additional input while work is in progress. The CLI delivers queued input \
+at its next supported boundary. Follow the applicable session and repository instructions for \
+objectives, planning, delegation and progress reporting; the transport does not prescribe a \
+workflow."""
 
 _PRESENT_FILE_INSTRUCTION = """\
 FILE DELIVERY: when you produce a file the user should SEE or open (a report, image, PDF, diagram, \
@@ -167,6 +165,16 @@ class _PaneState:
     cursor_x: int
     cursor_y: int
     log_path: Path
+    # tmux #{pane_title}: a per-pane identity a teammate can set (OSC title). Empty/default for the
+    # primary REPL; forwarded so the broker can name teammate panes by something other than the
+    # single shared window ("main").
+    pane_title: str = ""
+    # The `--agent-name` from the pane's start command (agent-teams teammates only). This is the
+    # STABLE, authoritative teammate identity — it matches the `teammate_name` on the TeammateIdle
+    # hook, so it is both the display name AND the key that lets an idle/finished teammate be
+    # correlated back to its pane_id (the agents registry is keyed by pane_id). Empty for the
+    # primary REPL pane and any non-teammate split.
+    agent_name: str = ""
 
 
 class TmuxCommandError(RuntimeError):
@@ -195,12 +203,22 @@ class TmuxInteractiveTransport(CLITransport):
         frame_interval_s: float | None = None,
         model_gateway_url: str = "",
         model_gateway_token: str = "",
+        question_transcript_max_bytes: int = 1048576,
+        question_result_history_limit: int = 128,
+        reasoning_effort: str = "",
+        effort_control_timeout_s: float = 15.0,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
         self._model = model
         self._model_gateway_url = model_gateway_url
         self._model_gateway_token = model_gateway_token
+        self._reasoning_effort = (
+            validate_effort(reasoning_effort, MODEL_EFFORTS.get(model, ()))
+            if reasoning_effort
+            else ""
+        )
+        self._effort_control_timeout = effort_control_timeout_s
         self._forge_session_id = session_id or "skuld-interactive"
         self._skip_permissions = skip_permissions
         self._agent_teams = agent_teams
@@ -214,6 +232,18 @@ class TmuxInteractiveTransport(CLITransport):
         # broker port into the hook settings — avoiding the stale-port fragility of reviving an
         # old tmux. Empty -> a brand-new conversation. Wired from SkuldSessionConfig by the broker.
         self._resume_session_id = (resume_session_id or "").strip() or None
+        # Claude's NATIVE conversation id (the ~/.claude/projects/<ws>/<uuid>.jsonl basename),
+        # captured from correlated main-pane hook payloads. This — not the tmux session name —
+        # is what `claude --resume` accepts; reporting the tmux name as cli_session_id made
+        # every resume-aware restart silently start a FRESH conversation (2026-07-13).
+        self._claude_native_session_id: str | None = None
+        if self._resume_session_id:
+            try:
+                self._claude_native_session_id = str(uuid.UUID(self._resume_session_id))
+            except ValueError:
+                # Legacy launch hints sometimes contain a tmux name. It is not
+                # a native conversation identity and must never be persisted as one.
+                pass
 
         self._session_name = self._safe_name(f"skuld-{self._forge_session_id}")[:80]
         base_socket_dir = Path(
@@ -248,6 +278,12 @@ class TmuxInteractiveTransport(CLITransport):
         # Poll cadence while waiting for the menu to render (capped by the pane poll
         # interval). Config-driven so there is no bare literal in the wait loop.
         self._menu_poll_step_s = self._float_env("SKULD__TMUX_MENU_POLL_STEP_SECONDS", None, 0.1)
+        self._question_result_wait_s = self._float_env(
+            "SKULD__TMUX_QUESTION_RESULT_WAIT_SECONDS", None, 5.0
+        )
+        if question_transcript_max_bytes < 1 or question_result_history_limit < 1:
+            raise ValueError("Native question transcript and receipt bounds must be positive")
+        self._question_transcript_max_bytes = question_transcript_max_bytes
         # Initial-prompt fix: the REPL isn't ready to accept input the instant the
         # CLI is spawned — pasting the seed prompt into a still-booting Claude makes
         # it land mid-startup (it was being parsed as a slash command). Wait for a
@@ -292,9 +328,13 @@ class TmuxInteractiveTransport(CLITransport):
             "SKULD__TMUX_HOOK_EVENTS_ENABLED",
             bool(self._sdk_port),
         )
+        # Default ON with hook mode: MessageDisplay is the live channel for the agent's
+        # intermediary prose (hook mode otherwise emits tools only until Stop, so everything
+        # said BETWEEN tool calls never streamed). Env-off remains available if a CLI build
+        # floods it.
         self._message_display_hook_enabled = self._bool_env(
             "SKULD__TMUX_MESSAGE_DISPLAY_HOOK_ENABLED",
-            False,
+            self._hook_events_enabled,
         )
         # Remote Control (default ON): ALSO expose the live CLI on the host's claude.ai
         # login so the same session can be driven / observed from the Anthropic apps
@@ -326,6 +366,22 @@ class TmuxInteractiveTransport(CLITransport):
         self._repl_ready_seen = False
         self._lifecycle_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
+        # In-flight post-Enter submit-confirm loops (fire-and-forget; cancelled on stop()).
+        self._confirm_submit_tasks: set[asyncio.Task[None]] = set()
+        # Assistant texts already emitted via MessageDisplay this turn (re-display dedup +
+        # the Stop-hook final-message twin guard) + per-message flush accumulators.
+        self._turn_displayed_texts: list[str] = []
+        self._display_msg_buffers: dict[str, str] = {}
+        self._text_hook_lock = asyncio.Lock()
+        self._displayed_message_ids: set[str] = set()
+        self._native_pretool_text_ids: set[tuple[str, int]] = set()
+        self._pending_native_display_texts: list[str] = []
+        self._unmatched_display_texts: list[str] = []
+        # A native idle notification can follow a completed MessageDisplay without
+        # a Stop callback when queued input overlaps a teammate's final turn.
+        self._idle_display: tuple[str, str] | None = None
+        self._idle_completed_prompt = ""
+        self._main_hook_tools: set[str] = set()
         # Correlation FIFO of (msg_id, request_id, normalized_text) for each user
         # message pasted into the pane but not yet seen consumed by Claude. A steered
         # message lands in the CLI's own input queue and is inserted "at the right
@@ -341,6 +397,12 @@ class TmuxInteractiveTransport(CLITransport):
         # PostToolUse / SubagentStop emit the "stopped" agent_update, and lets the
         # Task and Subagent* signals for the same agent merge instead of duplicate.
         self._hook_agents: dict[str, dict[str, Any]] = {}
+        # Per-subagent token accounting. SubagentStart hands us the subagent's
+        # transcript_path; the tracker tails that JSONL incrementally so GET /api/agents can
+        # report a live cumulative token total per agent. Deliberately NOT stored on the agent
+        # dict — that dict is emitted verbatim to clients, and the on-disk path is broker-local
+        # detail, not wire contract.
+        self._agent_usage = AgentUsageTracker()
         # Ordered stack of in-flight Task-subagent ids (the Task tool_use_id). A Task tool
         # BLOCKS its parent, so every NON-Task tool hook between a Task PreToolUse and that
         # Task's PostToolUse belongs to the subagent on top. Push in
@@ -359,6 +421,9 @@ class TmuxInteractiveTransport(CLITransport):
         # client can answer structurally; we translate the choice back into pane keystrokes. Popped
         # on answer; cleared when the turn finishes.
         self._pending_tty_prompts: dict[str, dict[str, Any]] = {}
+        self._answer_lock = asyncio.Lock()
+        self._question_result_emit_lock = asyncio.Lock()
+        self._question_result_ids: deque[str] = deque(maxlen=question_result_history_limit)
         self._tty_question_seq = 0
         self._last_result: dict | None = None
         self._slash_commands_cache = self._normalize_slash_command_items(
@@ -382,6 +447,7 @@ class TmuxInteractiveTransport(CLITransport):
     def capabilities(self) -> TransportCapabilities:
         return TransportCapabilities(
             interrupt=True,
+            set_effort=True,
             slash_commands=True,
             steer=True,
             # The interactive CLI inserts queued input at the right moment, so a
@@ -398,7 +464,10 @@ class TmuxInteractiveTransport(CLITransport):
 
     @property
     def session_id(self) -> str | None:
-        return self._session_name
+        # A resumed conversation is known before its first prompt. Fresh sessions
+        # stay unknown until a correlated native hook proves the identity; the
+        # tmux process name cannot be passed to Claude's resume command.
+        return self._claude_native_session_id
 
     @property
     def last_result(self) -> dict | None:
@@ -433,7 +502,13 @@ class TmuxInteractiveTransport(CLITransport):
         return result.stdout or ""
 
     def _repl_looks_ready(self, text: str) -> bool:
+        if self._workspace_trust_pending(text):
+            return False
         return any(marker and marker in text for marker in self._repl_ready_markers)
+
+    @staticmethod
+    def _workspace_trust_pending(text: str) -> bool:
+        return "Yes, I trust this folder" in text and "Accessing workspace:" in text
 
     async def _wait_for_repl_ready(self) -> None:
         """Bound-poll the pane until the CLI's input prompt has rendered, so the seed
@@ -443,7 +518,10 @@ class TmuxInteractiveTransport(CLITransport):
             return
         deadline = time.monotonic() + max(self._repl_ready_timeout_s, 0.0)
         while time.monotonic() < deadline:
-            if self._repl_looks_ready(await self._capture_pane_text()):
+            text = await self._capture_pane_text()
+            if self._workspace_trust_pending(text):
+                raise RuntimeError("Workspace trust requires confirmation in the terminal")
+            if self._repl_looks_ready(text):
                 self._repl_ready_seen = True
                 return
             await asyncio.sleep(self._menu_poll_step_s)
@@ -490,6 +568,9 @@ class TmuxInteractiveTransport(CLITransport):
                 with suppress(asyncio.CancelledError, Exception):
                     await self._turn_watchdog_task
                 self._turn_watchdog_task = None
+            for task in list(self._confirm_submit_tasks):
+                task.cancel()
+            self._confirm_submit_tasks.clear()
             for task in list(self._tail_tasks.values()):
                 task.cancel()
             for task in list(self._frame_tasks.values()):
@@ -710,13 +791,22 @@ class TmuxInteractiveTransport(CLITransport):
                 self._deliver_timeout_s,
                 preview,
             )
-            raise RuntimeError(
+            raise DeliveryNotAcceptedError(
                 "steering message not delivered: the session input channel has been "
                 f"busy for >{self._deliver_timeout_s:.0f}s (prior delivery stuck)"
             ) from exc
         try:
             if not self.is_alive:
                 await self._ensure_started()
+            if self._pending_tty_prompts:
+                raise DeliveryNotAcceptedError(
+                    "Claude is waiting on a native control; answer it before "
+                    "sending another message"
+                )
+            if self._workspace_trust_pending(await self._capture_pane_text()):
+                raise DeliveryNotAcceptedError(
+                    "Workspace trust requires confirmation in the terminal"
+                )
             # A message that arrives while the REPL is still booting must wait
             # for its prompt, exactly like the seed prompt does.
             await self._wait_for_repl_ready()
@@ -786,6 +876,12 @@ class TmuxInteractiveTransport(CLITransport):
         self._turn_stream_started = False
         self._turn_buffer = []
         self._turn_last_clean_text = ""
+        self._turn_displayed_texts = []
+        self._display_msg_buffers = {}
+        self._reset_text_identity_tracking()
+        self._idle_display = None
+        self._idle_completed_prompt = ""
+        self._main_hook_tools.clear()
         self._turn_prompt_text = ""
         # The watchdog captures the `_turn_done` Event it was started with. A fresh
         # turn always gets a freshly-created Event (above), so we MUST bind a live
@@ -803,9 +899,40 @@ class TmuxInteractiveTransport(CLITransport):
     async def interrupt(self) -> None:
         await self.send_control("interrupt")
 
+    async def get_effort(self) -> dict:
+        return {
+            "current": self._reasoning_effort,
+            "levels": list(MODEL_EFFORTS.get(self._model, ())),
+            "mutable": True,
+            "applies_to": "next_turn",
+        }
+
+    async def _set_effort(self, effort: str) -> None:
+        effort = validate_effort(effort, MODEL_EFFORTS.get(self._model, ()))
+        if self._turn_active:
+            raise ValueError("Claude is working. Change /effort after this turn finishes.")
+        async with self._send_lock:
+            await self._wait_for_repl_ready()
+            await self._send_slash_command("effort", arguments=effort)
+            async with asyncio.timeout(self._effort_control_timeout):
+                while True:
+                    text = await self._capture_pane_text()
+                    # Native CLI acknowledgement, never merely the echoed command.
+                    confirmations = re.findall(
+                        r"Set effort level to (low|medium|high|xhigh|max)\b", text
+                    )
+                    if confirmations and confirmations[-1] == effort:
+                        self._reasoning_effort = effort
+                        return
+                    await asyncio.sleep(self._pane_poll_interval_s)
+
     async def send_control(self, subtype: str, **kwargs: object) -> None:
         if not self.is_alive:
             await self.start()
+
+        if subtype == "set_effort":
+            await self._set_effort(str(kwargs.get("effort") or ""))
+            return
 
         if subtype == "interrupt":
             await self._send_key("C-c", pane_id=self._coerce_str(kwargs.get("pane_id")))
@@ -827,46 +954,53 @@ class TmuxInteractiveTransport(CLITransport):
         if subtype in {"terminal_input", "input"}:
             text = self._coerce_str(kwargs.get("data")) or self._coerce_str(kwargs.get("text"))
             if text:
-                await self._paste_text(
-                    text,
-                    enter=bool(kwargs.get("enter", False)),
-                    pane_id=self._coerce_str(kwargs.get("pane_id")),
-                )
+                async with self._send_lock:
+                    await self._paste_text(
+                        text,
+                        enter=bool(kwargs.get("enter", False)),
+                        pane_id=self._coerce_str(kwargs.get("pane_id")),
+                    )
             return
 
         if subtype in {"terminal_key", "key"}:
             raw_keys = kwargs.get("keys")
-            if isinstance(raw_keys, list):
+            # The broker supplies keys=[] for the single-key wire form. Only a
+            # nonempty sequence overrides key; otherwise Enter/Escape silently
+            # disappear between the broker and this adapter.
+            if isinstance(raw_keys, list) and raw_keys:
                 keys = [self._normalize_key(str(key)) for key in raw_keys if str(key)]
             else:
                 key = self._coerce_str(kwargs.get("key")) or self._coerce_str(raw_keys)
                 keys = [self._normalize_key(key)] if key else []
-            for key in keys:
-                await self._send_key(key, pane_id=self._coerce_str(kwargs.get("pane_id")))
+            async with self._send_lock:
+                for key in keys:
+                    await self._send_key(key, pane_id=self._coerce_str(kwargs.get("pane_id")))
             return
 
         if subtype == "terminal_resize":
             cols = int(kwargs.get("cols") or kwargs.get("columns") or 0)
             rows = int(kwargs.get("rows") or 0)
             if cols > 0 and rows > 0:
-                await self._resize_pane(
-                    cols=cols,
-                    rows=rows,
-                    pane_id=self._coerce_str(kwargs.get("pane_id")),
-                )
+                async with self._send_lock:
+                    await self._resize_pane(
+                        cols=cols,
+                        rows=rows,
+                        pane_id=self._coerce_str(kwargs.get("pane_id")),
+                    )
             return
 
         if subtype in {"slash_command", "terminal_slash_command"}:
             command = self._coerce_str(kwargs.get("command"))
             if command:
-                await self._send_slash_command(
-                    command,
-                    arguments=(
-                        self._coerce_str(kwargs.get("arguments"))
-                        or self._coerce_str(kwargs.get("args"))
-                    ),
-                    pane_id=self._coerce_str(kwargs.get("pane_id")),
-                )
+                async with self._send_lock:
+                    await self._send_slash_command(
+                        command,
+                        arguments=(
+                            self._coerce_str(kwargs.get("arguments"))
+                            or self._coerce_str(kwargs.get("args"))
+                        ),
+                        pane_id=self._coerce_str(kwargs.get("pane_id")),
+                    )
             return
 
         if subtype in {"redirect", "steer"}:
@@ -934,12 +1068,23 @@ class TmuxInteractiveTransport(CLITransport):
         )
 
         if event_name == "UserPromptSubmit":
+            if not self._is_child_hook(payload):
+                self._idle_display = None
+                self._idle_completed_prompt = ""
             self._mark_semantic_turn_started()
             prompt = payload.get("prompt")
             prompt_str = prompt if isinstance(prompt, str) else ""
             # Claude just took a user prompt into its flow. Correlate it back to the
             # message we pasted so the client can flip THAT steering bubble to active.
             msg_id, request_id = self._match_prompt_correlation(prompt_str)
+            # NATIVE-ID CAPTURE: a prompt that correlates to something WE pasted is provably
+            # the MAIN pane's conversation (teammate/subagent claude processes share this hook
+            # endpoint and POST their OWN session ids — blind capture would wire a restart to
+            # resume a subagent's conversation). Uncorrelated prompts are ignored.
+            if msg_id or request_id:
+                native = payload.get("session_id")
+                if isinstance(native, str) and native.strip():
+                    self._claude_native_session_id = native.strip()
             event: dict[str, Any] = {
                 "type": "terminal_prompt_submitted",
                 "event_type": "claude.prompt.submitted",
@@ -956,8 +1101,15 @@ class TmuxInteractiveTransport(CLITransport):
             return True
 
         if event_name == "PreToolUse":
-            self._mark_semantic_turn_started()
-            await self._emit_tool_use_from_hook(payload)
+            async with self._text_hook_lock:
+                self._mark_semantic_turn_started()
+                if not self._is_child_hook(payload):
+                    self._idle_display = None
+                    self._idle_completed_prompt = ""
+                    if tool_id := self._coerce_str(payload.get("tool_use_id")):
+                        self._main_hook_tools.add(tool_id)
+                await self._emit_native_text_before_tool(payload)
+                await self._emit_tool_use_from_hook(payload)
             return True
 
         if event_name in {"PostToolUse", "PostToolUseFailure"}:
@@ -965,10 +1117,22 @@ class TmuxInteractiveTransport(CLITransport):
                 payload,
                 is_error=event_name == "PostToolUseFailure",
             )
+            if not self._is_child_hook(payload):
+                self._main_hook_tools.discard(self._coerce_str(payload.get("tool_use_id")))
             return True
 
         if event_name == "PermissionRequest":
             await self._emit_permission_request_from_hook(payload)
+            return True
+
+        if event_name == "MessageDisplay":
+            async with self._text_hook_lock:
+                await self._emit_message_display_from_hook(payload)
+            return True
+
+        if event_name == "Notification" and payload.get("notification_type") == "idle_prompt":
+            async with self._text_hook_lock:
+                await self._finish_native_idle_turn(payload)
             return True
 
         if event_name == "SubagentStart":
@@ -979,7 +1143,26 @@ class TmuxInteractiveTransport(CLITransport):
             await self._surface_subagent_stop(payload)
             return True
 
+        if event_name == "TeammateIdle":
+            # An agent-teams teammate finished its current work and went idle. Its split pane stays
+            # ALIVE (idling for the next message), so neither #{pane_dead} eviction nor the vanished
+            # sweep will ever reap it — this hook is the ONLY "teammate finished" signal, and it was
+            # previously dropped. Evict the teammate so a running/reconnecting session shows only
+            # CURRENTLY active teammates, never idle corpses lifted on replay.
+            await self._finish_teammate_from_idle(payload)
+            return True
+
         if event_name == "Stop":
+            if self._is_child_hook(payload):
+                return True
+            if (
+                not self._turn_active
+                and self._idle_completed_prompt
+                and payload.get("prompt_id") == self._idle_completed_prompt
+                and self._coerce_str(payload.get("last_assistant_message")).strip()
+                == (self._last_result or {}).get("result")
+            ):
+                return True
             await self._finish_hook_turn(
                 content=self._coerce_str(payload.get("last_assistant_message")),
                 reason="stop",
@@ -987,6 +1170,8 @@ class TmuxInteractiveTransport(CLITransport):
             return True
 
         if event_name == "StopFailure":
+            if self._is_child_hook(payload):
+                return True
             await self._finish_hook_turn(
                 content=(
                     self._coerce_str(payload.get("last_assistant_message"))
@@ -1010,27 +1195,195 @@ class TmuxInteractiveTransport(CLITransport):
         )
         return str(event_name)
 
+    def _is_child_hook(self, payload: dict[str, Any]) -> bool:
+        if payload.get("is_sidechain") or payload.get("isSidechain"):
+            return True
+        if payload.get("agent_id") or payload.get("agentId"):
+            return True
+        native = self._coerce_str(payload.get("session_id"))
+        return bool(
+            native and self._claude_native_session_id and native != self._claude_native_session_id
+        )
+
     def _mark_semantic_turn_started(self) -> None:
         if self._turn_active:
             return
-        self._turn_active = True
-        self._turn_started_at = time.monotonic()
+        # Native work can start without another paste (teammates, queued input,
+        # terminal input). Every new turn needs its own completion event/watchdog.
+        self._begin_turn()
         self._turn_last_output_at = self._turn_started_at
-        self._turn_stream_started = False
-        self._turn_buffer = []
-        self._turn_last_clean_text = ""
+
+    async def _finish_native_idle_turn(self, payload: dict[str, Any]) -> None:
+        """Recover a missing Stop only from matching native completion evidence."""
+        prompt_id = self._coerce_str(payload.get("prompt_id"))
+        if (
+            self._is_child_hook(payload)
+            or not self._turn_active
+            or not prompt_id
+            or not self._idle_display
+            or self._idle_display[0] != prompt_id
+            or self._display_msg_buffers
+            or self._main_hook_tools
+            or self._pending_tty_prompts
+            or self._pending_prompt_correlations
+        ):
+            return
+        await self._finish_hook_turn(content=self._idle_display[1], reason="native_idle")
+        self._idle_completed_prompt = prompt_id
+
+    def _reset_text_identity_tracking(self) -> None:
+        self._displayed_message_ids.clear()
+        self._native_pretool_text_ids.clear()
+        self._pending_native_display_texts.clear()
+        self._unmatched_display_texts.clear()
+
+    async def _emit_native_text_before_tool(self, payload: dict[str, Any]) -> None:
+        if self._is_child_hook(payload) or (
+            self._active_subagent_stack and payload.get("tool_name") != "Task"
+        ):
+            return
+        anchor = self._question_native_identity(payload)
+        if not anchor.get("transcript_path"):
+            return
+        # Claude can POST PreToolUse before its asynchronous JSONL write is
+        # visible. Wait only for the exact native tool proof, bounded to 100 ms;
+        # no text (or a writer depending on hook return) falls back to captured
+        # hook order without blocking the native tool indefinitely.
+        try:
+            async with asyncio.timeout(0.1):
+                while True:
+                    items = await asyncio.to_thread(preceding_tool_text, anchor)
+                    if items is not None:
+                        break
+                    await asyncio.sleep(0.005)
+        except TimeoutError:
+            return
+        for item in items:
+            identity = (item["row_id"], item["index"])
+            if identity in self._native_pretool_text_ids:
+                continue
+            text = item["text"]
+            display_text = text.strip()
+            if display_text in self._unmatched_display_texts:
+                self._unmatched_display_texts.remove(display_text)
+                self._native_pretool_text_ids.add(identity)
+                continue
+            await self._emit(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "model": self._model or "interactive",
+                        "content": [{"type": "text", "text": text}],
+                    },
+                    "metadata": {
+                        "source": "claude_native_pretool",
+                        "claude_message_id": item["message_id"],
+                        "native_row_id": item["row_id"],
+                        "native_block_index": item["index"],
+                        "claude_session_id": anchor["native_session_id"],
+                        "before_tool_use_id": anchor["native_tool_use_id"],
+                    },
+                }
+            )
+            self._native_pretool_text_ids.add(identity)
+            self._pending_native_display_texts.append(display_text)
+            self._turn_displayed_texts.append(display_text)
+
+    async def _emit_message_display_from_hook(self, payload: dict[str, Any]) -> None:
+        """MessageDisplay hook → a whole-message assistant frame per displayed message, MID-TURN.
+
+        This is the live channel for the agent's intermediary prose. Hook mode otherwise
+        emits tools only (Pre/PostToolUse) plus ONE final message at Stop, so everything the
+        agent says BETWEEN tool calls never streamed — clients saw tool cards appear while
+        the interleaved "normal messages" were dropped until the durable rebuild.
+
+        Wire shape (CLI ≥2.1.x): the hook fires PER FLUSH with ``turn_id``, ``message_id``
+        (stable across every flush of one message), ``index`` (0-based flush counter),
+        ``final`` (true exactly once, on the last flush) and ``delta`` (the newly completed
+        lines). Flushes are ACCUMULATED per message_id and ONE whole-message ``assistant``
+        frame is emitted on the final flush. Whole messages (not text deltas) on purpose:
+        the shared reducer folds an assistant frame's text into the durable turn's typed
+        ``parts`` — interleaved with the tool parts — whereas a text delta only grows the
+        flat ``content`` string and would VANISH from the durable interleaved transcript."""
+        # Sidechain (subagent) prose has no top-level anchor in the main flow — skip it
+        # (subagent tool frames already nest via parent attribution; prose attribution is
+        # a separate feature).
+        if self._is_child_hook(payload):
+            return
+        delta = payload.get("delta")
+        if not isinstance(delta, str) or not delta:
+            return
+        message_id = self._coerce_str(payload.get("message_id")) or "current"
+        buffer = self._display_msg_buffers.get(message_id, "")
+        if buffer and not buffer.endswith("\n") and not delta.startswith("\n"):
+            buffer += "\n"
+        buffer += delta
+        if not payload.get("final"):
+            self._display_msg_buffers[message_id] = buffer
+            if self._turn_active:
+                # Keep the watchdog fed while a long message is still flushing.
+                self._turn_last_output_at = time.monotonic()
+            return
+        self._display_msg_buffers.pop(message_id, None)
+        text = buffer.strip()
+        if not text:
+            return
+        # LATE-FLUSH RACE (verified live): on a fast turn cycle the final display flush can
+        # land AFTER the Stop hook. The result path already carried this text into the turn
+        # (apply_result_content), so re-emitting it would fabricate a twin turn — and calling
+        # _mark_semantic_turn_started here would open a PHANTOM turn. Drop the echo; only a
+        # genuinely novel post-turn message (never carried by the last result) still emits.
+        if not self._turn_active:
+            last_result_text = str((self._last_result or {}).get("result") or "")
+            if self._normalize_prompt(text) == self._normalize_prompt(last_result_text):
+                return
+        self._mark_semantic_turn_started()
+        prompt_id = self._coerce_str(payload.get("prompt_id"))
+        if prompt_id:
+            self._idle_display = (prompt_id, text)
+            self._idle_completed_prompt = ""
+        # Native and display IDs differ. Consume only ONE exact delayed display
+        # occurrence per pre-tool native item; identical later messages survive.
+        if message_id != "current" and message_id in self._displayed_message_ids:
+            return
+        self._displayed_message_ids.add(message_id)
+        if text in self._pending_native_display_texts:
+            self._pending_native_display_texts.remove(text)
+            return
+        if message_id == "current" and text in self._turn_displayed_texts:
+            return  # Legacy hooks without an identity retain their redraw guard.
+        self._unmatched_display_texts.append(text)
+        self._turn_displayed_texts.append(text)
+        if len(self._turn_displayed_texts) > 32:
+            del self._turn_displayed_texts[:-32]
+        await self._emit(
+            {
+                "type": "assistant",
+                "message": {
+                    "model": self._model or "interactive",
+                    "content": [{"type": "text", "text": text}],
+                },
+                "metadata": {
+                    "source": "claude_hook",
+                    "hook_event_name": "MessageDisplay",
+                    "claude_message_id": message_id,
+                    "claude_session_id": payload.get("session_id"),
+                    "transcript_path": payload.get("transcript_path"),
+                },
+            }
+        )
 
     async def _emit_tool_use_from_hook(self, payload: dict[str, Any]) -> None:
         tool_name = self._coerce_str(payload.get("tool_name"))
         if not tool_name:
             return
         tool_input = payload.get("tool_input")
+        tool_use_id = self._coerce_str(payload.get("tool_use_id")) or (f"hook-{uuid.uuid4().hex}")
         # CLI-mode questions bridge: the AskUserQuestion tool renders its menu in the TTY. Surface
         # it as a structured `ask_user_question` (its tool_input already carries the questions iOS
         # parses) so a remote client can answer; the tool_use is still emitted below for history.
         if tool_name == "AskUserQuestion" and isinstance(tool_input, dict):
-            await self._surface_tty_ask_user_question(tool_input)
-        tool_use_id = self._coerce_str(payload.get("tool_use_id")) or (f"hook-{uuid.uuid4().hex}")
+            await self._surface_tty_ask_user_question(tool_input, payload=payload)
         # Parent attribution: a NON-Task tool firing while a Task subagent is in flight belongs
         # to that subagent (stack top). The Task tool's OWN tool_use is a main-agent action ->
         # parent stays None. Computed BEFORE the Task push below so a Task never self-references.
@@ -1084,6 +1437,17 @@ class TmuxInteractiveTransport(CLITransport):
         tool_use_id = self._coerce_str(payload.get("tool_use_id"))
         if not tool_use_id:
             return
+        question = next(
+            (
+                pending
+                for pending in self._pending_tty_prompts.values()
+                if pending.get("native_tool_use_id") == tool_use_id
+                and pending.get("native_session_id") == payload.get("session_id")
+            ),
+            None,
+        )
+        if tool_use_id in self._question_result_ids:
+            return
         # Parent attribution: compute BEFORE popping so the Task's OWN result carries parent=None
         # (a main-agent action) while a child result nests under the stack top.
         is_task_result = tool_use_id in self._hook_agents
@@ -1117,18 +1481,26 @@ class TmuxInteractiveTransport(CLITransport):
         if parent_id is not None:
             tool_result_block["parent_tool_use_id"] = parent_id
             tool_result_block["agent_id"] = parent_id
-        await self._emit(
-            {
-                "type": "user",
-                "message": {"content": [tool_result_block]},
-                "metadata": {
-                    "source": "claude_hook",
-                    "hook_event_name": ("PostToolUseFailure" if is_error else "PostToolUse"),
-                    "claude_session_id": payload.get("session_id"),
-                    "transcript_path": payload.get("transcript_path"),
-                },
+        frame = {
+            "type": "user",
+            "message": {"content": [tool_result_block]},
+            "metadata": {
+                "source": "claude_hook",
+                "hook_event_name": ("PostToolUseFailure" if is_error else "PostToolUse"),
+                "claude_session_id": payload.get("session_id"),
+                "transcript_path": payload.get("transcript_path"),
+            },
+        }
+        if question is not None:
+            response = payload.get("tool_response")
+            question["native_result"] = {
+                "is_error": is_error,
+                "answers": response.get("answers") if isinstance(response, dict) else None,
+                "frame": frame,
             }
-        )
+            await self._emit_question_result_once(tool_use_id, frame)
+            return
+        await self._emit(frame)
 
     async def _emit_permission_request_from_hook(self, payload: dict[str, Any]) -> None:
         tool_input = payload.get("tool_input")
@@ -1231,7 +1603,13 @@ class TmuxInteractiveTransport(CLITransport):
         agent = self._hook_agents.pop(agent_id, None)
         if agent is None:
             return
-        agent = {**agent, "status": "failed" if is_error else "done"}
+        agent = {
+            **agent,
+            "status": "failed" if is_error else "done",
+            # Pairs with the existing started_at so a client can show a duration, and so a
+            # retained finished row is distinguishable from a live one by data, not by absence.
+            "ended_at": datetime.now(UTC).isoformat(),
+        }
         await self._emit_agent_update(agent, action="stopped")
 
     async def _surface_agent_started_from_task(
@@ -1269,6 +1647,11 @@ class TmuxInteractiveTransport(CLITransport):
             or self._coerce_str(payload.get("name"))
             or "subagent"
         )
+        # The hook's transcript_path is the ONLY place the subagent's JSONL location is
+        # handed to us — register it now so the tracker can tail tokens for this agent id.
+        transcript_path = self._coerce_str(payload.get("transcript_path"))
+        if agent_id and transcript_path:
+            self._agent_usage.register(agent_id, transcript_path)
         await self._start_agent(
             agent_id,
             kind="subagent",
@@ -1281,6 +1664,31 @@ class TmuxInteractiveTransport(CLITransport):
         reason = self._coerce_str(payload.get("reason")).lower()
         is_error = reason in {"failed", "error", "interrupted"} or bool(payload.get("error"))
         await self._finish_agent(self._resolve_agent_id(payload), is_error=is_error)
+
+    async def _finish_teammate_from_idle(self, payload: dict[str, Any]) -> None:
+        """A TeammateIdle hook → evict the teammate from the running-agents registry.
+
+        The registry keys teammates by ``pane_id`` (from ``terminal_pane_opened``), but the hook
+        identifies the teammate by ``teammate_name`` (== the pane's ``--agent-name``). We resolve
+        the pane by that name and emit a ``stopped`` ``agent_update`` on the SAME pane_id key so the
+        broker's existing ``_track_agent_update`` pops the corpse. If the pane is already gone the
+        stopped frame is keyed by name — harmless (dead-pane eviction already handled that case)."""
+        teammate_name = self._coerce_str(payload.get("teammate_name"))
+        if not teammate_name:
+            return
+        pane_id = next(
+            (pid for pid, pane in self._panes.items() if pane.agent_name == teammate_name),
+            None,
+        )
+        await self._emit_agent_update(
+            {
+                "id": pane_id or f"teammate:{teammate_name}",
+                "kind": "teammate",
+                "name": teammate_name,
+                "status": "done",
+            },
+            action="stopped",
+        )
 
     async def _emit_agent_update(self, agent: dict[str, Any], *, action: str) -> None:
         await self._emit(
@@ -1316,6 +1724,22 @@ class TmuxInteractiveTransport(CLITransport):
         """
         tool_name = self._coerce_str(payload.get("tool_name")) or "this action"
         tool_input = payload.get("tool_input")
+        # In bypass mode AskUserQuestion still fires PermissionRequest for the
+        # question itself. PreToolUse already surfaced that exact question. Keep
+        # the advisory hook event, but do not invent a second authorization gate.
+        if (
+            self._skip_permissions
+            and tool_name == "AskUserQuestion"
+            and isinstance(tool_input, dict)
+            and tool_input.get("questions")
+            and any(
+                pending.get("kind") == "question"
+                and not pending.get("answer_uncertain")
+                and pending.get("questions") == tool_input["questions"]
+                for pending in self._pending_tty_prompts.values()
+            )
+        ):
+            return
         detail = self._permission_detail(tool_name, tool_input)
         request_id = self._next_tty_request_id()
         question = {
@@ -1328,10 +1752,17 @@ class TmuxInteractiveTransport(CLITransport):
             ],
             "multiSelect": False,
         }
-        self._pending_tty_prompts[request_id] = {"kind": "permission", "tool_name": tool_name}
+        self._cancel_submit_confirmations()
+        self._pending_tty_prompts[request_id] = {
+            "kind": "permission",
+            "tool_name": tool_name,
+            "questions": [question],
+        }
         await self._emit_ask_user_question(request_id, [question])
 
-    async def _surface_tty_ask_user_question(self, tool_input: dict[str, Any]) -> None:
+    async def _surface_tty_ask_user_question(
+        self, tool_input: dict[str, Any], *, payload: dict[str, Any] | None = None
+    ) -> None:
         """Surface the AskUserQuestion tool's TTY menu as a structured `ask_user_question`.
 
         `tool_input.questions` is already in the shape iOS parses (header/question/options), so this
@@ -1342,8 +1773,168 @@ class TmuxInteractiveTransport(CLITransport):
         if not isinstance(questions, list) or not questions:
             return
         request_id = self._next_tty_request_id()
-        self._pending_tty_prompts[request_id] = {"kind": "question", "questions": questions}
+        self._cancel_submit_confirmations()
+        native = self._question_native_identity(payload or {})
+        self._pending_tty_prompts[request_id] = {
+            "kind": "question",
+            "questions": questions,
+            **native,
+        }
         await self._emit_ask_user_question(request_id, questions)
+
+    def _question_native_identity(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Bind proof to this main native conversation and this exact tool call.
+
+        The authenticated CLI hook supplies the transcript path. Its basename
+        must identify the native session; inode/offset anchoring below prevents
+        an old result or a replaced file from confirming a new answer.
+        """
+        tool_id = self._coerce_str(payload.get("tool_use_id"))
+        native_id = self._coerce_str(payload.get("session_id"))
+        if not tool_id or not native_id or native_id != self._claude_native_session_id:
+            return {}
+        try:
+            native_id = str(uuid.UUID(native_id))
+        except ValueError:
+            return {}
+        result: dict[str, Any] = {
+            "native_tool_use_id": tool_id,
+            "native_session_id": native_id,
+        }
+        path_text = self._coerce_str(payload.get("transcript_path"))
+        if not path_text:
+            return result
+        path = Path(path_text)
+        if not path.is_absolute() or path.name != f"{native_id}.jsonl":
+            return result
+        try:
+            path = path.resolve(strict=True)
+            stat = path.stat()
+        except OSError:
+            return result
+        if path.name != f"{native_id}.jsonl" or not S_ISREG(stat.st_mode):
+            return result
+        result.update(
+            transcript_path=str(path),
+            transcript_offset=stat.st_size,
+            transcript_device=stat.st_dev,
+            transcript_inode=stat.st_ino,
+        )
+        return result
+
+    def _read_native_question_result(self, pending: dict[str, Any]) -> dict[str, Any] | None:
+        """Read only a bounded suffix added after this question was surfaced."""
+        path_text = pending.get("transcript_path")
+        if not path_text:
+            return None
+        try:
+            # Non-blocking/no-follow open also closes the stat→open replacement
+            # race: a FIFO cannot strand the proof worker before fstat rejects it.
+            fd = os.open(path_text, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            with os.fdopen(fd, "rb") as stream:
+                stat = os.fstat(stream.fileno())
+                if (
+                    not S_ISREG(stat.st_mode)
+                    or stat.st_dev != pending["transcript_device"]
+                    or stat.st_ino != pending["transcript_inode"]
+                    or stat.st_size < pending["transcript_offset"]
+                ):
+                    raise ControlRecoveryError("The native question transcript changed identity")
+                stream.seek(pending["transcript_offset"])
+                data = stream.read(self._question_transcript_max_bytes + 1)
+        except OSError:
+            return None
+        if len(data) > self._question_transcript_max_bytes:
+            raise ControlRecoveryError("Native question proof exceeded its bounded transcript read")
+        found = None
+        descendants: set[str] = set()
+        for line in data.splitlines():
+            try:
+                record = json.loads(line)
+            except (ValueError, UnicodeDecodeError):
+                continue  # A concurrent writer may not have finished its last line.
+            if not isinstance(record, dict) or record.get("isSidechain"):
+                continue
+            native_id = record.get("sessionId", record.get("session_id"))
+            if native_id != pending["native_session_id"]:
+                continue
+            if found is not None:
+                if record.get("parentUuid") not in descendants:
+                    continue
+                if record.get("type") == "system" and record.get("subtype") == "turn_duration":
+                    found["turn_completed"] = True
+                    return found
+                if (
+                    record.get("type") == "user"
+                    and record.get("message")
+                    == {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "[Request interrupted by user for tool use]"}
+                        ],
+                    }
+                    and isinstance(record.get("uuid"), str)
+                ):
+                    descendants.add(record["uuid"])
+                continue
+            if record.get("type") != "user":
+                continue
+            message = record.get("message")
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if (
+                    not isinstance(block, dict)
+                    or block.get("type") != "tool_result"
+                    or block.get("tool_use_id") != pending["native_tool_use_id"]
+                ):
+                    continue
+                result = record.get("toolUseResult")
+                found = {
+                    "is_error": bool(block.get("is_error")),
+                    "answers": result.get("answers") if isinstance(result, dict) else None,
+                    "block": block,
+                    "uuid": record.get("uuid"),
+                }
+                if isinstance(record.get("uuid"), str):
+                    descendants.add(record["uuid"])
+                break
+        return found
+
+    async def _native_question_result(self, pending: dict[str, Any]) -> dict[str, Any] | None:
+        result = pending.get("native_result")
+        if result is None:
+            result = await asyncio.to_thread(self._read_native_question_result, pending)
+        if result is None:
+            return None
+        pending["native_result"] = result
+        tool_id = pending["native_tool_use_id"]
+        frame = result.get("frame")
+        if frame is None:
+            frame = {
+                "type": "user",
+                "message": {"content": [result["block"]]},
+                "metadata": {
+                    "source": "claude_native_transcript",
+                    "claude_session_id": pending["native_session_id"],
+                    "claude_message_id": result.get("uuid"),
+                    "transcript_path": pending.get("transcript_path"),
+                },
+            }
+        await self._emit_question_result_once(tool_id, frame)
+        return result
+
+    async def _emit_question_result_once(self, tool_id: str, frame: dict[str, Any]) -> None:
+        async with self._question_result_emit_lock:
+            if tool_id in self._question_result_ids:
+                return
+            await self._emit(frame)
+            # A failed persistence callback must leave emission retryable. The
+            # native action is already consumed; this never replays TTY keys.
+            self._question_result_ids.append(tool_id)
 
     async def _emit_ask_user_question(self, request_id: str, questions: list) -> None:
         # `event_type` makes the broker flip to awaiting_input (its event_type=="ask_user_question"
@@ -1355,7 +1946,15 @@ class TmuxInteractiveTransport(CLITransport):
                 "request_id": request_id,
                 "tool_use_id": request_id,
                 "questions": questions,
-                "metadata": {"source": "tmux_tty_bridge"},
+                "metadata": {
+                    "source": "tmux_tty_bridge",
+                    "control_kind": self._pending_tty_prompts[request_id]["kind"],
+                    **(
+                        {"answerable": False, "recovery_required": True}
+                        if self._pending_tty_prompts[request_id].get("answer_uncertain")
+                        else {}
+                    ),
+                },
             }
         )
 
@@ -1376,45 +1975,475 @@ class TmuxInteractiveTransport(CLITransport):
     async def _answer_tty_prompt(
         self, request_id: str | None, answers: object, *, pane_id: str | None = None
     ) -> None:
-        """Translate a structured `ask_user_answer` into the keystroke that drives the TTY menu.
+        async with self._answer_lock:
+            async with self._send_lock:
+                await self._answer_tty_prompt_locked(request_id, answers, pane_id=pane_id)
 
-        Robust by design: DENY is always `Escape` (cancels any menu shape); ALLOW/option selection
-        reads the LIVE numbered menu and presses the matched row's digit (race-free, and tolerant of
-        2- vs 3-row menus). For the AskUserQuestion tool we confirm the digit with Enter (its
-        select-list needs it); a permission gate acts on the digit alone.
-        """
-        pending = self._pending_tty_prompts.pop(request_id, None) if request_id else None
+    async def _answer_tty_prompt_locked(
+        self, request_id: str | None, answers: object, *, pane_id: str | None = None
+    ) -> None:
+        """Drive the native control once; acknowledge questions only after native proof."""
+        pending = self._pending_tty_prompts.get(request_id) if request_id else None
         if pending is None:
-            # Stale/unknown id (e.g. answered in-terminal). If exactly one prompt is pending, answer
-            # that; otherwise no-op rather than guess.
-            if len(self._pending_tty_prompts) == 1:
-                request_id, pending = self._pending_tty_prompts.popitem()
-            else:
-                return
+            raise ValueError("Unknown or already answered Claude question")
+        if pending.get("answer_uncertain"):
+            raise ControlRecoveryError(
+                "The previous answer may have reached Claude. Inspect the native session "
+                "before answering again."
+            )
 
-        chosen = self._first_answer_text(answers)
         kind = pending.get("kind")
-
-        if kind == "permission" and self._is_deny_answer(chosen):
-            await self._send_key("Escape", pane_id=pane_id)
-            await self._emit_ask_user_resolved(request_id, "deny")
+        if kind == "permission":
+            chosen = self._first_answer_text(answers)
+            low = chosen.strip().casefold()
+            if low not in {"allow", "allow & don't ask again", "deny"}:
+                raise ValueError("The requested answer is not a declared Claude permission option")
+            rows = await self._capture_menu_rows_wait(pane_id=pane_id)
+            digit = self._permission_menu_digit(low, rows)
+            if digit is None:
+                raise ValueError("The requested answer does not match the live Claude menu")
+            pending["answer_uncertain"] = True
+            await self._send_key("Escape" if low == "deny" else str(digit), pane_id=pane_id)
+            await self._resolve_tty_answer(request_id, "deny" if low == "deny" else chosen)
             return
 
-        rows = await self._capture_menu_rows_wait(pane_id=pane_id)
-        digit = self._match_menu_digit(chosen, rows)
+        plans = self._question_answer_plans(pending.get("questions"), answers)
+        if not pending.get("native_tool_use_id") or not pending.get("native_session_id"):
+            raise ControlRecoveryError("This question has no verifiable native tool identity")
+        result = await self._native_question_result(pending)
+        if result is not None:
+            await self._reject_native_question(request_id, result, pane_id=pane_id)
+            raise ValueError("The native Claude question already completed before this answer")
+        # Validate the first page before claiming an attempt. Later transitions
+        # can already have consumed an answer, so any failure then is uncertain.
+        try:
+            await self._wait_question_screen(
+                lambda screen: self._question_page_matches(screen, plans[0]), pane_id=pane_id
+            )
+        except ValueError:
+            result = await self._native_question_result(pending)
+            if result is not None:
+                await self._reject_native_question(request_id, result, pane_id=pane_id)
+            raise
+        if self._pending_tty_prompts.get(request_id) is not pending:
+            raise ValueError("The native Claude question ended while its menu was rendering")
+        result = await self._native_question_result(pending)
+        if result is not None:
+            await self._reject_native_question(request_id, result, pane_id=pane_id)
+            raise ValueError("The native Claude question already completed before this answer")
+        pending["answer_uncertain"] = True
+        pending["answer_in_flight"] = True
+        try:
+            for plan in plans:
+                await self._drive_question_page(plan, pane_id=pane_id)
+            if len(plans) > 1 or any(plan["multi"] for plan in plans):
+                review = await self._wait_question_screen(
+                    lambda screen: self._question_review_matches(screen, plans), pane_id=pane_id
+                )
+                digit = self._match_menu_digit("Submit answers", self._menu_rows(review))
+                await self._send_key(str(digit), pane_id=pane_id)
+            result = await self._wait_native_question_result(pending)
+            actual = result.get("answers")
+            matched = (
+                not result["is_error"]
+                and isinstance(actual, dict)
+                and set(actual) == {plan["text"] for plan in plans}
+                and all(self._question_answer_matches(actual[plan["text"]], plan) for plan in plans)
+            )
+            if not matched:
+                await self._reject_native_question(request_id, result, pane_id=pane_id)
+                raise ValueError("Claude did not consume the requested question answers")
+            decision = (
+                plans[0]["values"][0] if len(plans) == 1 and not plans[0]["multi"] else "answered"
+            )
+            await self._resolve_tty_answer(request_id, decision)
+        except Exception as exc:
+            if request_id in self._pending_tty_prompts:
+                result = await self._native_question_result(pending)
+                if result is not None and not pending.get("resolution_pending"):
+                    await self._reject_native_question(request_id, result, pane_id=pane_id)
+                    raise ValueError(
+                        "Claude question completed outside the expected answer state"
+                    ) from exc
+                await self._emit_ask_user_question(request_id, pending["questions"])
+                raise ControlRecoveryError(
+                    "Claude answer consumption is uncertain; inspect the native question "
+                    "before retrying"
+                ) from exc
+            raise
+        finally:
+            pending.pop("answer_in_flight", None)
+
+    async def _resolve_tty_answer(
+        self, request_id: str | None, decision: str, *, accepted: bool = True
+    ) -> None:
+        pending = self._pending_tty_prompts.get(request_id)
+        if pending is not None:
+            pending["answer_uncertain"] = True
+            pending["resolution_pending"] = True
+        try:
+            await self._emit_ask_user_resolved(request_id, decision, accepted=accepted)
+        except Exception as exc:
+            if pending is not None:
+                await self._emit_ask_user_question(request_id, pending["questions"])
+            raise ControlRecoveryError(
+                "The native control completed but its acknowledgment could not be persisted"
+            ) from exc
+        self._pending_tty_prompts.pop(request_id, None)
+
+    async def _reject_native_question(
+        self, request_id: str | None, result: dict[str, Any], *, pane_id: str | None
+    ) -> None:
+        pending = self._pending_tty_prompts.get(request_id)
+        await self._resolve_tty_answer(request_id, "native_answer_rejected", accepted=False)
+        if not result["is_error"] or not self._turn_active:
+            return
+        # Cancellation skips PostToolUse/Stop in native Claude. Only an exact
+        # failed tool result followed by its own descendant native turn_duration
+        # record closes this turn. An idle-looking composer is not completion.
+        deadline = time.monotonic() + max(self._question_result_wait_s, 0.0)
+        while pending and pending.get("transcript_path") and not result.get("turn_completed"):
+            refreshed = await asyncio.to_thread(self._read_native_question_result, pending)
+            if refreshed is not None:
+                result = refreshed
+            if result.get("turn_completed") or time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(self._menu_poll_step_s)
+        if result.get("turn_completed"):
+            await self._finish_hook_turn(
+                content="", reason="native_question_rejected", is_error=True
+            )
+
+    @staticmethod
+    def _question_answer_plans(questions: object, answers: object) -> list[dict[str, Any]]:
+        """Validate every question/answer association before the first terminal write."""
+        if (
+            not isinstance(questions, list)
+            or not questions
+            or not all(isinstance(q, dict) for q in questions)
+        ):
+            raise ValueError("Claude question descriptors are invalid")
+        if isinstance(answers, str) and len(questions) == 1:
+            answers = [{"answer": answers}]
+        if (
+            not isinstance(answers, list)
+            or len(answers) != len(questions)
+            or not all(isinstance(a, dict) for a in answers)
+        ):
+            raise ValueError("Claude requires one explicit answer for every question")
+        texts = [q.get("question") for q in questions]
+        if any(not isinstance(t, str) or not t.strip() for t in texts) or len(set(texts)) != len(
+            texts
+        ):
+            raise ValueError("Claude question identities are ambiguous")
+        unused = list(answers)
+        plans = []
+        for index, question in enumerate(questions):
+            text = question["question"]
+            named = [
+                a
+                for a in unused
+                if (question.get("id") and a.get("question_id") == question["id"])
+                or a.get("question") == text
+            ]
+            if len(named) > 1:
+                raise ValueError("Duplicate answers for a Claude question")
+            answer = named[0] if named else answers[index]
+            if answer not in unused or (
+                not named and (answer.get("question_id") or answer.get("question"))
+            ):
+                raise ValueError("The answer does not identify the pending Claude question")
+            unused.remove(answer)
+            raw = answer.get("answer")
+            values = raw if isinstance(raw, list) else [raw]
+            if not values or any(not isinstance(v, str) or not v.strip() for v in values):
+                raise ValueError("Claude question requires explicit non-empty answers")
+            multi = bool(question.get("multiSelect"))
+            if len(values) > 1 and not multi:
+                raise ValueError("A single-select Claude question accepts only one option")
+            options = question.get("options", [])
+            if not isinstance(options, list):
+                raise ValueError("Claude question options must be a list")
+            labels = [
+                o["label"]
+                for o in options
+                if isinstance(o, dict) and isinstance(o.get("label"), str)
+            ]
+            canonical = {label.strip().casefold(): label for label in labels}
+            if len(canonical) != len(labels):
+                raise ValueError("Claude option labels are ambiguous")
+            free_text = answer.get("free_text")
+            if free_text not in (None, "") and (
+                not isinstance(free_text, str) or free_text not in values
+            ):
+                raise ValueError("Claude custom text disagrees with its answer")
+            mapped = []
+            custom = None
+            for value in values:
+                label = canonical.get(value.strip().casefold())
+                if label is not None and free_text != value:
+                    mapped.append(label)
+                elif (not labels or free_text == value) and (
+                    multi or not answer.get("option_indexes")
+                ):
+                    if custom is not None or any(ord(c) < 32 or ord(c) == 127 for c in value):
+                        raise ValueError("Claude custom answer requires a single literal text row")
+                    custom = value
+                    mapped.append(value)
+                else:
+                    raise ValueError(
+                        "The requested answer is not a declared Claude question option"
+                    )
+            if len(set(mapped)) != len(mapped):
+                raise ValueError("Duplicate Claude option selections")
+            if multi and custom in labels:
+                raise ValueError(
+                    "Claude checkbox custom text duplicates a declared label; "
+                    "the native answer cannot distinguish these choices"
+                )
+            indexes = answer.get("option_indexes")
+            if indexes is not None and not isinstance(indexes, list):
+                raise ValueError("Claude option indexes must be a list")
+            if indexes:
+                if (
+                    not isinstance(indexes, list)
+                    or any(type(i) is not int or i < 0 or i >= len(labels) for i in indexes)
+                    or len(set(indexes)) != len(indexes)
+                    or {labels[i] for i in indexes}
+                    != set(mapped) - ({custom} if custom is not None else set())
+                ):
+                    raise ValueError("Claude option indexes disagree with the selected labels")
+            plans.append(
+                {
+                    "question": question,
+                    "text": text,
+                    "labels": labels,
+                    "values": mapped,
+                    "custom": custom,
+                    "multi": multi,
+                }
+            )
+        return plans
+
+    @staticmethod
+    def _question_answer_matches(actual: object, plan: dict[str, Any]) -> bool:
+        values = plan["values"]
+        if not plan["multi"]:
+            return actual == values[0]
+        if isinstance(actual, str):
+            if actual == ", ".join(values):
+                return True
+            if any(", " in value for value in values):
+                return False  # A lossy delimiter cannot prove a different ordering.
+            actual = actual.split(", ")
+        return (
+            isinstance(actual, list)
+            and len(actual) == len(values)
+            and all(isinstance(v, str) for v in actual)
+            and set(actual) == set(values)
+        )
+
+    @staticmethod
+    def _menu_rows(screen: str) -> list[tuple[int, str]]:
+        rows: list[tuple[int, str]] = []
+        for line in screen.splitlines():
+            match = _MENU_ROW_RE.match(line)
+            if match:
+                digit = int(match.group(1))
+                if rows and digit <= rows[-1][0]:
+                    rows.clear()
+                rows.append((digit, match.group(2).strip()))
+        return rows
+
+    async def _capture_question_screen(self, *, pane_id: str | None = None) -> str:
+        capture = await self._run_tmux("capture-pane", "-t", self._target_pane(pane_id), "-p")
+        lines = _ANSI_RE.sub("", capture.stdout).splitlines()
+        starts = [i for i, line in enumerate(lines) if "☐" in line or "☒" in line]
+        return "\n".join(lines[starts[-1] :]) if starts else ""
+
+    async def _wait_question_screen(
+        self, predicate: Callable[[str], bool], *, pane_id: str | None = None
+    ) -> str:
+        deadline = time.monotonic() + max(self._menu_render_wait_s, 0.0)
+        while True:
+            screen = await self._capture_question_screen(pane_id=pane_id)
+            if predicate(screen):
+                return screen
+            if time.monotonic() >= deadline:
+                raise ValueError("The live Claude menu does not match the pending question state")
+            await asyncio.sleep(self._menu_poll_step_s)
+
+    @staticmethod
+    def _question_page_matches(screen: str, plan: dict[str, Any]) -> bool:
+        if not screen or "Review your answers" in screen:
+            return False
+        # Only the active widget is inspected; matching words in scrollback or
+        # an earlier page cannot authorize another key.
+        lines = screen.splitlines()
+        first_row = next(
+            (i for i, line in enumerate(lines) if _MENU_ROW_RE.match(line)), len(lines)
+        )
+        if " ".join(plan["text"].split()) != " ".join(" ".join(lines[1:first_row]).split()):
+            return False
+        rows = TmuxInteractiveTransport._menu_rows(screen)
+        labels = []
+        for _, label in rows:
+            checkbox = re.match(r"^\[([ ✔xX])\]\s+(.+)$", label)
+            if plan["multi"] and checkbox:
+                label = checkbox.group(2)
+            elif plan["multi"] and label != "Chat about this":
+                return False
+            labels.append(label)
+        return all(label in labels for label in plan["labels"])
+
+    @staticmethod
+    def _question_review_matches(screen: str, plans: list[dict[str, Any]]) -> bool:
+        if "Review your answers" not in screen or "Ready to submit your answers?" not in screen:
+            return False
+        if TmuxInteractiveTransport._menu_rows(screen) != [(1, "Submit answers"), (2, "Cancel")]:
+            return False
+        observed: dict[str, str] = {}
+        question = None
+        for line in screen.splitlines():
+            value = line.strip()
+            if value.startswith("● "):
+                question = value[2:]
+            elif value.startswith("→ ") and question is not None:
+                if question in observed:
+                    return False
+                observed[question] = value[2:]
+                question = None
+        return set(observed) == {p["text"] for p in plans} and all(
+            TmuxInteractiveTransport._question_answer_matches(observed[p["text"]], p) for p in plans
+        )
+
+    async def _drive_question_page(self, plan: dict[str, Any], *, pane_id: str | None) -> None:
+        screen = await self._wait_question_screen(
+            lambda s: self._question_page_matches(s, plan), pane_id=pane_id
+        )
+        rows = self._menu_rows(screen)
+        if plan["multi"]:
+            await self._drive_checkbox_page(plan, screen, pane_id=pane_id)
+            return
+        target = "Type something." if plan["custom"] is not None else plan["values"][0]
+        digit = self._match_menu_digit(target, rows)
         if digit is None:
-            # No matching numbered row. The affirmative row is the highlighted default, so Enter
-            # accepts it; for a question fall back to the first option then confirm.
-            if kind == "permission":
+            raise ValueError("The requested answer does not match the live Claude menu")
+        await self._send_key(str(digit), pane_id=pane_id)
+        if plan["custom"] is not None:
+            await self._enter_question_text(plan, digit, pane_id=pane_id)
+
+    async def _enter_question_text(
+        self, plan: dict[str, Any], digit: int, *, pane_id: str | None
+    ) -> None:
+        def editor(screen: str, text: str) -> bool:
+            return (
+                self._question_page_matches(screen, plan)
+                and "ctrl+g to edit" in screen
+                and any(
+                    re.match(rf"^\s*❯\s+{digit}\.\s+(?:\[[ ✔xX]\]\s+)?{re.escape(text)}\s*$", line)
+                    for line in screen.splitlines()
+                )
+            )
+
+        await self._wait_question_screen(
+            lambda s: editor(s, "Type something" + ("" if plan["multi"] else ".")), pane_id=pane_id
+        )
+        await self._paste_text(plan["custom"], enter=False, pane_id=pane_id)
+        await self._wait_question_screen(lambda s: editor(s, plan["custom"]), pane_id=pane_id)
+        # Single-select commits its populated editor with Enter. Checkbox text
+        # is selected as it is typed; Enter there would toggle that answer OFF.
+        if not plan["multi"]:
+            await self._send_key("Enter", pane_id=pane_id)
+
+    @staticmethod
+    def _checkbox_values(screen: str) -> dict[str, tuple[int, bool]]:
+        result = {}
+        for digit, label in TmuxInteractiveTransport._menu_rows(screen):
+            match = re.match(r"^\[([ ✔xX])\]\s+(.+)$", label)
+            if match:
+                result[match.group(2)] = (digit, match.group(1) != " ")
+        return result
+
+    async def _drive_checkbox_page(
+        self, plan: dict[str, Any], screen: str, *, pane_id: str | None
+    ) -> None:
+        expected = set(plan["values"])
+        for label in plan["labels"]:
+            rows = self._checkbox_values(screen)
+            digit, checked = rows[label]
+            if checked != (label in expected):
+                await self._send_key(str(digit), pane_id=pane_id)
+                screen = await self._wait_question_screen(
+                    lambda s: (
+                        self._question_page_matches(s, plan)
+                        and self._checkbox_values(s).get(label) == (digit, label in expected)
+                    ),
+                    pane_id=pane_id,
+                )
+        if plan["custom"] is not None:
+            digit = self._checkbox_values(screen).get("Type something", (None, False))[0]
+            if digit is None:
+                raise ValueError("The native checkbox menu has no custom answer row")
+            await self._focus_checkbox_other(plan, digit, screen, pane_id=pane_id)
+            await self._enter_question_text(plan, digit, pane_id=pane_id)
+        # Digit shortcuts toggle boxes without moving focus. Enter toggles the
+        # focused box; it submits only after the unnumbered Submit gains focus.
+        for _ in range(len(plan["labels"]) + 2):
+            screen = await self._wait_question_screen(
+                lambda s: self._question_page_matches(s, plan), pane_id=pane_id
+            )
+            checked = {
+                label for label, (_, selected) in self._checkbox_values(screen).items() if selected
+            }
+            if checked != expected:
+                raise ValueError("The native checkbox selections differ from the requested answers")
+            if any(re.match(r"^\s*❯\s+Submit\s*$", line) for line in screen.splitlines()):
                 await self._send_key("Enter", pane_id=pane_id)
-            else:
-                await self._send_key("1", pane_id=pane_id)
-                await self._send_key("Enter", pane_id=pane_id)
-        else:
-            await self._send_key(str(digit), pane_id=pane_id)
-            if kind == "question":
-                await self._send_key("Enter", pane_id=pane_id)
-        await self._emit_ask_user_resolved(request_id, chosen or "answered")
+                return
+            focus = next(
+                (line for line in screen.splitlines() if line.lstrip().startswith("❯")), None
+            )
+            if focus is None:
+                raise ValueError("The native checkbox focus is unknown")
+            await self._send_key("Down", pane_id=pane_id)
+            await self._wait_question_screen(
+                lambda s: self._question_page_matches(s, plan) and focus not in s.splitlines(),
+                pane_id=pane_id,
+            )
+        raise ValueError("The native checkbox Submit control was not reached")
+
+    async def _focus_checkbox_other(
+        self, plan: dict[str, Any], digit: int, screen: str, *, pane_id: str | None
+    ) -> None:
+        # Checkbox digit shortcuts only toggle selection; they do not focus the
+        # text editor. Navigate one observed focus change at a time instead.
+        for _ in range(len(self._menu_rows(screen)) + 1):
+            if any(re.match(rf"^\s*❯\s+{digit}\.\s+", line) for line in screen.splitlines()):
+                return
+            focus = next(
+                (line for line in screen.splitlines() if line.lstrip().startswith("❯")), None
+            )
+            if focus is None:
+                raise ValueError("The native checkbox focus is unknown")
+            await self._send_key("Down", pane_id=pane_id)
+            screen = await self._wait_question_screen(
+                lambda s: self._question_page_matches(s, plan) and focus not in s.splitlines(),
+                pane_id=pane_id,
+            )
+        raise ValueError("The native checkbox custom editor was not reached")
+
+    async def _wait_native_question_result(self, pending: dict[str, Any]) -> dict[str, Any]:
+        deadline = time.monotonic() + max(self._question_result_wait_s, 0.0)
+        while True:
+            result = await self._native_question_result(pending)
+            if result is not None:
+                return result
+            if time.monotonic() >= deadline:
+                raise ControlRecoveryError(
+                    "Claude has not confirmed consumption of this question answer"
+                )
+            await asyncio.sleep(self._menu_poll_step_s)
 
     async def _capture_menu_rows_wait(self, *, pane_id: str | None = None) -> list[tuple[int, str]]:
         """Capture the numbered menu, bound-polling until it renders (E3 race fix).
@@ -1442,57 +2471,48 @@ class TmuxInteractiveTransport(CLITransport):
         """Numbered option rows currently on screen, e.g. [(1,'Yes'), (2,'…ask'), (3,'No')]."""
         target = self._target_pane(pane_id)
         try:
-            result = await self._run_tmux("capture-pane", "-t", target, "-p", "-S", "-50")
+            result = await self._run_tmux("capture-pane", "-t", target, "-p")
         except Exception:  # pragma: no cover - capture is best-effort
             return []
         out: list[tuple[int, str]] = []
-        seen: set[int] = set()
         for line in result.stdout.splitlines():
             match = _MENU_ROW_RE.match(line)
             if match:
                 digit = int(match.group(1))
-                if digit not in seen:
-                    seen.add(digit)
-                    out.append((digit, match.group(2).strip()))
-        return sorted(out)
+                # If two menus are still visible, the last menu owns input.
+                # Never combine an old first row with a newer menu's later rows.
+                if out and digit <= out[-1][0]:
+                    out.clear()
+                out.append((digit, match.group(2).strip()))
+        return out
 
     @staticmethod
     def _match_menu_digit(chosen: str, rows: list[tuple[int, str]]) -> int | None:
-        """Map the chosen option label to its on-screen menu digit, or None if no clear match."""
-        low = chosen.strip().lower()
-        if not low or not rows:
-            return None
-        # 1a) EXACT label match over ALL rows first — a verbatim choice must win
-        # over any shorter substring row. Without this exact-first pass, choosing
-        # "Allow & don't ask again" would be captured by row "Allow" via the
-        # substring test below and silently downgraded to a one-time allow.
-        for digit, label in rows:
-            if low == label.lower():
-                return digit
-        # 1b) substring match (one label contains the other), in row order.
-        for digit, label in rows:
-            ll = label.lower()
-            if low in ll or ll in low:
-                return digit
-        # 2) "allow & don't ask again" / "always" → the persistent-allow row.
-        if "don't ask" in low or "always" in low:
-            for digit, label in rows:
-                if "don't ask" in label.lower() or "always" in label.lower():
-                    return digit
-        # 3) plain "allow"/"yes" → the first (affirmative) row.
-        if low.startswith(("allow", "yes")):
-            return rows[0][0]
-        # 4) "deny"/"no" → a row that reads as the negative.
-        if low.startswith(("deny", "no")):
-            for digit, label in rows:
-                if label.lower().startswith("no"):
-                    return digit
-        return None
+        """Match a declared choice exactly; substrings can belong to unrelated menus."""
+        target = chosen.strip().casefold()
+        return next(
+            (digit for digit, label in rows if label.strip().casefold() == target),
+            None,
+        )
 
     @staticmethod
-    def _is_deny_answer(chosen: str) -> bool:
-        low = chosen.strip().lower()
-        return low.startswith(("deny", "no"))
+    def _permission_menu_digit(chosen: str, rows: list[tuple[int, str]]) -> int | None:
+        """Resolve only a recognizable permission menu, never an arbitrary first row."""
+        choices: dict[str, int] = {}
+        for digit, label in rows:
+            low = label.strip().casefold()
+            if re.match(r"^(yes|allow)(?:$|[, &])", low):
+                if "don't ask" in low:
+                    choices.setdefault("allow & don't ask again", digit)
+                elif low in {"yes", "allow", "yes, allow this time", "allow once"}:
+                    # A second affirmative row may grant a session-wide policy.
+                    # Unknown scopes must not overwrite the one-time Allow row.
+                    choices.setdefault("allow", digit)
+            elif re.match(r"^(no|deny)(?:$|[, ])", low):
+                choices["deny"] = digit
+        if "allow" not in choices or "deny" not in choices:
+            return None
+        return choices.get(chosen)
 
     @staticmethod
     def _first_answer_text(answers: object) -> str:
@@ -1508,13 +2528,16 @@ class TmuxInteractiveTransport(CLITransport):
             return answers
         return ""
 
-    async def _emit_ask_user_resolved(self, request_id: str | None, decision: str) -> None:
+    async def _emit_ask_user_resolved(
+        self, request_id: str | None, decision: str, *, accepted: bool = True
+    ) -> None:
         await self._emit(
             {
                 "type": "ask_user_resolved",
                 "event_type": "ask_user.resolved",
                 "request_id": request_id or "",
                 "decision": decision,
+                "accepted": accepted,
                 "metadata": {"source": "tmux_tty_bridge"},
             }
         )
@@ -1524,10 +2547,14 @@ class TmuxInteractiveTransport(CLITransport):
         client dismisses its stale card instead of stranding it."""
         if not self._pending_tty_prompts:
             return
-        stale = list(self._pending_tty_prompts.keys())
-        self._pending_tty_prompts.clear()
+        stale = [
+            rid
+            for rid, pending in self._pending_tty_prompts.items()
+            if not pending.get("answer_in_flight")
+        ]
         for request_id in stale:
-            await self._emit_ask_user_resolved(request_id, reason)
+            self._pending_tty_prompts.pop(request_id, None)
+            await self._emit_ask_user_resolved(request_id, reason, accepted=False)
 
     async def _finish_hook_turn(
         self,
@@ -1537,7 +2564,13 @@ class TmuxInteractiveTransport(CLITransport):
         is_error: bool = False,
     ) -> None:
         content = content.strip()
-        if content:
+        # Twin guard: when the MessageDisplay hook already streamed this exact final message
+        # mid-turn, re-emitting it here would append the same prose twice to the pending turn
+        # (the reducer appends distinct segments; only an IDENTICAL trailing segment dedups,
+        # and a tool frame may have landed in between). The result frame below still carries
+        # the content either way.
+        displayed = {self._normalize_prompt(t) for t in self._turn_displayed_texts}
+        if content and self._normalize_prompt(content) not in displayed:
             await self._emit(
                 {
                     "type": "assistant",
@@ -1570,9 +2603,38 @@ class TmuxInteractiveTransport(CLITransport):
         # The turn ended — resolve any TTY prompt still pending (answered in-terminal or moot) so a
         # remote client dismisses its card rather than stranding it.
         await self._clear_pending_tty_prompts("turn_ended")
+        # …and flush any pasted message still awaiting its per-message UserPromptSubmit: the CLI
+        # batches queued steers into ONE submission (or absorbs them silently mid-turn), so the
+        # later ones never fire their own hook and their steering_state strands at "pending"
+        # (the greyed "queued" bubble that never flips) even though the reply addressed them.
+        await self._flush_stale_prompt_correlations("turn_ended")
         self._turn_active = False
         if self._turn_done is not None:
             self._turn_done.set()
+
+    async def _flush_stale_prompt_correlations(self, reason: str) -> None:
+        """Turn boundary: emit the consumed signal for every delivered message that never got
+        its own UserPromptSubmit correlation, so a batched/silently-absorbed steer cannot stay
+        'pending' after the turn that absorbed it ended. Uses the SAME event shape as the real
+        UserPromptSubmit path, so the broker's existing _activate_user_turn flips the bubble."""
+        if not self._pending_prompt_correlations:
+            return
+        stale = list(self._pending_prompt_correlations)
+        self._pending_prompt_correlations.clear()
+        for msg_id, request_id, norm in stale:
+            if not (msg_id or request_id):
+                continue
+            event: dict[str, Any] = {
+                "type": "terminal_prompt_submitted",
+                "event_type": "claude.prompt.submitted",
+                "prompt": norm,
+                "metadata": {"source": "turn_boundary_flush", "reason": reason},
+            }
+            if msg_id:
+                event["msg_id"] = msg_id
+            if request_id:
+                event["request_id"] = request_id
+            await self._emit(event)
 
     @staticmethod
     def _stringify_hook_value(value: Any) -> str:
@@ -1621,6 +2683,8 @@ class TmuxInteractiveTransport(CLITransport):
         cmd = ["claude"]
         if self._model:
             cmd.extend(["--model", self._model])
+        if self._reasoning_effort:
+            cmd.extend(["--effort", self._reasoning_effort])
         if self._resume_session_id:
             # Resume-aware restart: a fresh tmux launching ``claude --resume <id>`` replays the
             # prior conversation while re-writing the CURRENT broker port into the hook settings
@@ -1636,7 +2700,7 @@ class TmuxInteractiveTransport(CLITransport):
                 "claude.ai/code + phone in parallel with the Volundr API",
                 rc_name,
             )
-        if self._hook_events_enabled and self._sdk_port:
+        if self._skip_permissions or (self._hook_events_enabled and self._sdk_port):
             cmd.extend(["--settings", str(self._hook_settings_path)])
         appended_system_prompt = self._composed_system_prompt()
         if appended_system_prompt:
@@ -1648,11 +2712,10 @@ class TmuxInteractiveTransport(CLITransport):
         return cmd
 
     def _composed_system_prompt(self) -> str:
-        """The text appended via --append-system-prompt: the steering/task-tracking guidance (when
-        enabled) followed by any session-supplied system prompt. Either part may be empty."""
+        """Append capability help and session-supplied instructions, not workflow policy."""
         parts: list[str] = []
         if self._steering_instructions_enabled:
-            parts.append(_STEERING_TASK_INSTRUCTION)
+            parts.append(_STEERING_INPUT_INSTRUCTION)
         # Always advertise the present-file capability so any Forge agent can hand the user a file.
         parts.append(_PRESENT_FILE_INSTRUCTION)
         if self._system_prompt:
@@ -1666,18 +2729,23 @@ class TmuxInteractiveTransport(CLITransport):
         return self._safe_name(raw)[:60]
 
     def _write_hook_settings(self) -> None:
-        if not self._hook_events_enabled or not self._sdk_port:
+        settings: dict[str, Any] = {}
+        if self._skip_permissions:
+            # Session settings belong in the CLI overlay: user settings can be
+            # symlinked to a read-only Kubernetes credential projection.
+            settings["skipDangerousModePermissionPrompt"] = True
+        if self._hook_events_enabled and self._sdk_port:
+            events = list(_CLAUDE_HOOK_EVENTS)
+            if self._message_display_hook_enabled:
+                events.extend(_OPTIONAL_HIGH_VOLUME_HOOK_EVENTS)
+            hook = {
+                "type": "http",
+                "url": f"http://127.0.0.1:{self._sdk_port}/api/claude/hooks",
+                "timeout": 5,
+            }
+            settings["hooks"] = {event: [{"matcher": "", "hooks": [hook]}] for event in events}
+        if not settings:
             return
-
-        events = list(_CLAUDE_HOOK_EVENTS)
-        if self._message_display_hook_enabled:
-            events.extend(_OPTIONAL_HIGH_VOLUME_HOOK_EVENTS)
-        hook = {
-            "type": "http",
-            "url": f"http://127.0.0.1:{self._sdk_port}/api/claude/hooks",
-            "timeout": 5,
-        }
-        settings = {"hooks": {event: [{"matcher": "", "hooks": [hook]}] for event in events}}
         self._hook_settings_path.parent.mkdir(parents=True, exist_ok=True)
         self._hook_settings_path.write_text(
             json.dumps(settings, indent=2, sort_keys=True) + "\n",
@@ -1739,30 +2807,6 @@ class TmuxInteractiveTransport(CLITransport):
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
             logger.info("tmux: prepared Claude CLI config at %s (onboarding, trust)", config_path)
-        if not self._skip_permissions:
-            return
-        # The bypass-permissions notice is skipped through the user settings
-        # file, the same switch a person flips by hand for a sandbox.
-        settings_path = self._claude_settings_path(env)
-        settings: dict[str, Any] = {}
-        if settings_path.exists():
-            settings = json.loads(settings_path.read_text(encoding="utf-8"))
-        if settings.get("skipDangerousModePermissionPrompt") is True:
-            return
-        settings["skipDangerousModePermissionPrompt"] = True
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
-        settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
-        logger.info("tmux: acknowledged bypass-permissions mode in %s", settings_path)
-
-    @staticmethod
-    def _claude_settings_path(env: dict[str, str]) -> Path:
-        """The CLI's user settings file: ``$CLAUDE_CONFIG_DIR/settings.json``,
-        else ``~/.claude/settings.json``."""
-        config_dir = env.get("CLAUDE_CONFIG_DIR", "").strip()
-        if config_dir:
-            return Path(config_dir) / "settings.json"
-        home = env.get("HOME", "").strip()
-        return (Path(home) if home else Path.home()) / ".claude" / "settings.json"
 
     async def _emit_system_init(self) -> None:
         await self._emit(
@@ -1805,7 +2849,7 @@ class TmuxInteractiveTransport(CLITransport):
             (
                 "#{pane_id}\t#{pane_index}\t#{window_name}\t#{pane_active}\t"
                 "#{pane_current_command}\t#{pane_width}\t#{pane_height}\t"
-                "#{cursor_x}\t#{cursor_y}"
+                "#{cursor_x}\t#{cursor_y}\t#{pane_dead}\t#{pane_title}"
             ),
             check=False,
         )
@@ -1832,7 +2876,27 @@ class TmuxInteractiveTransport(CLITransport):
             height = self._coerce_int(parts[6] if len(parts) > 6 else None, 50)
             cursor_x = self._coerce_int(parts[7] if len(parts) > 7 else None, 0)
             cursor_y = self._coerce_int(parts[8] if len(parts) > 8 else None, 0)
+            pane_dead = (parts[9].strip() if len(parts) > 9 else "") == "1"
+            # pane_title is last so an (unlikely) embedded tab is recovered intact.
+            pane_title = "\t".join(parts[10:]).strip() if len(parts) > 10 else ""
+
+            # DEAD pane: a corpse left listed by `remain-on-exit on` (kept for the primary REPL's
+            # crash forensics). It never vanishes from `list-panes`, so the disappearance sweep
+            # below would never fire — treat a dead pane as CLOSED here: evict tracking + emit close
+            # event ONCE. A pane that is already dead the first time we see it was never registered,
+            # so _evict_pane simply no-ops (no phantom open, no owed close).
+            if pane_dead:
+                await self._evict_pane(pane_id, window_name=window_name, emit_events=emit_events)
+                continue
+
             seen.add(pane_id)
+            existing = self._panes.get(pane_id)
+            is_new = existing is None
+            # `--agent-name` is immutable per pane, so resolve it once (a targeted tmux query, kept
+            # off the multi-line `list-panes` format) and carry it forward on later polls.
+            agent_name = (
+                await self._resolve_pane_agent_name(pane_id) if is_new else existing.agent_name
+            )
             pane = _PaneState(
                 pane_id=pane_id,
                 pane_index=pane_index,
@@ -1844,8 +2908,9 @@ class TmuxInteractiveTransport(CLITransport):
                 cursor_x=cursor_x,
                 cursor_y=cursor_y,
                 log_path=self._pane_log_path(pane_id),
+                pane_title=pane_title,
+                agent_name=agent_name,
             )
-            is_new = pane_id not in self._panes
             self._panes[pane_id] = pane
             if is_new:
                 await self._start_pipe_for_pane(pane)
@@ -1853,22 +2918,73 @@ class TmuxInteractiveTransport(CLITransport):
                     await self._emit_pane_opened(pane)
 
         for pane_id in set(self._panes) - seen:
-            pane = self._panes.pop(pane_id)
-            task = self._tail_tasks.pop(pane_id, None)
-            if task is not None:
-                task.cancel()
-            frame_task = self._frame_tasks.pop(pane_id, None)
-            if frame_task is not None:
-                frame_task.cancel()
-            self._last_frame_signature.pop(pane_id, None)
-            self._pane_sequences.pop(pane_id, None)
-            if emit_events:
-                await self._emit(
+            await self._evict_pane(pane_id, emit_events=emit_events)
+
+    async def _resolve_pane_agent_name(self, pane_id: str) -> str:
+        """Read the pane's `--agent-name` from its start command (agent-teams teammates only).
+
+        Queried per-pane via ``display-message`` rather than folded into the ``list-panes`` format:
+        the PRIMARY pane's start command carries a multi-line ``--append-system-prompt`` that would
+        corrupt the line-delimited format, whereas a targeted read is single-value and safe. A pane
+        with no ``--agent-name`` (the primary, or a manual shell split) returns ``""``."""
+        result = await self._run_tmux(
+            "display-message",
+            "-p",
+            "-t",
+            pane_id,
+            "#{pane_start_command}",
+            check=False,
+        )
+        if result.returncode != 0:
+            return ""
+        return self._parse_agent_name(result.stdout)
+
+    @staticmethod
+    def _parse_agent_name(start_command: str) -> str:
+        """Extract the value of ``--agent-name <name>`` from a pane start command, else ``""``."""
+        match = re.search(r"--agent-name[=\s]+(\S+)", start_command or "")
+        return match.group(1).strip("\"'") if match else ""
+
+    async def _evict_pane(
+        self, pane_id: str, *, window_name: str | None = None, emit_events: bool
+    ) -> None:
+        """Stop tracking a pane and emit a single ``terminal_pane_closed``. Shared by the two ways a
+        pane leaves: it VANISHED from ``list-panes`` (normal close), or it went DEAD-but-listed
+        under ``remain-on-exit``. A never-registered pane no-ops, so a dead pane we never opened
+        stays unregistered and owes no close event."""
+        pane = self._panes.pop(pane_id, None)
+        if pane is None:
+            return
+        task = self._tail_tasks.pop(pane_id, None)
+        if task is not None:
+            task.cancel()
+        frame_task = self._frame_tasks.pop(pane_id, None)
+        if frame_task is not None:
+            frame_task.cancel()
+        self._last_frame_signature.pop(pane_id, None)
+        self._pane_sequences.pop(pane_id, None)
+        if emit_events:
+            await self._emit(
+                {
+                    "type": "terminal_pane_closed",
+                    "pane_id": pane_id,
+                    "window_name": window_name if window_name is not None else pane.window_name,
+                }
+            )
+            # Belt-and-suspenders teammate eviction: a teammate pane (identified by --agent-name)
+            # that dies or vanishes emits an explicit `stopped` agent_update so a LIVE client drops
+            # it immediately. terminal_pane_closed alone only makes the broker pop the registry row
+            # SILENTLY, so a connected client would keep showing the corpse until its next reconnect
+            # / REST poll. Pairs with the TeammateIdle finish signal: whichever fires first evicts.
+            if pane.agent_name:
+                await self._emit_agent_update(
                     {
-                        "type": "terminal_pane_closed",
-                        "pane_id": pane_id,
-                        "window_name": pane.window_name,
-                    }
+                        "id": pane_id,
+                        "kind": "teammate",
+                        "name": pane.agent_name,
+                        "status": "done",
+                    },
+                    action="stopped",
                 )
 
     async def _start_pipe_for_pane(self, pane: _PaneState) -> None:
@@ -2129,6 +3245,11 @@ class TmuxInteractiveTransport(CLITransport):
         # The turn ended — resolve any TTY prompt still pending (answered in-terminal or moot) so a
         # remote client dismisses its card rather than stranding it.
         await self._clear_pending_tty_prompts("turn_ended")
+        # …and flush any pasted message still awaiting its per-message UserPromptSubmit: the CLI
+        # batches queued steers into ONE submission (or absorbs them silently mid-turn), so the
+        # later ones never fire their own hook and their steering_state strands at "pending"
+        # (the greyed "queued" bubble that never flips) even though the reply addressed them.
+        await self._flush_stale_prompt_correlations("turn_ended")
         self._turn_active = False
         if self._turn_done is not None:
             self._turn_done.set()
@@ -2178,6 +3299,78 @@ class TmuxInteractiveTransport(CLITransport):
         )
         if enter:
             await self._send_key("Enter", pane_id=target)
+            # Fire-and-forget: the confirm loop must not delay send_message's return (the
+            # send is non-blocking by contract) nor hold the send lock through its backoff.
+            task = asyncio.create_task(
+                self._confirm_submit(text, target),
+                name=f"tmux-confirm-submit-{self._session_name}",
+            )
+            self._confirm_submit_tasks.add(task)
+            task.add_done_callback(self._confirm_submit_tasks.discard)
+
+    # Backoff schedule for re-pressing Enter while the composer still holds the pasted text.
+    # The first check settles 0.25s after Enter (immediate captures still show the pre-submit
+    # composer); the total budget stays well inside _deliver_timeout_s AND the 0.5s
+    # send-is-non-blocking contract only pays the first hop (a cleared composer exits the loop).
+    _SUBMIT_RETRY_DELAYS_S = (0.25, 0.6, 1.2)
+
+    def _cancel_submit_confirmations(self) -> None:
+        # The hook precedes the rendered menu. An Enter retry during that window
+        # is buffered by the TTY and answers the upcoming question with its default.
+        for task in list(self._confirm_submit_tasks):
+            task.cancel()
+
+    async def _confirm_submit(self, text: str, target: str) -> None:
+        """Re-press Enter (bounded) while the pasted text still sits in the composer.
+
+        A paste into a BUSY TUI (mid-turn steering) can race the Enter keystroke: the CLI
+        is still processing the bracketed paste when Enter lands, so the message stays
+        TYPED in the input box but never submits — the "first message goes through, later
+        steers hang as sent-but-pending" wedge (the paste returned OK, the broker acked
+        user_delivered, but UserPromptSubmit never fires and steering_state sticks at
+        pending). Submission is confirmed by the composer CLEARING (our text tail leaves
+        the bottom rows); while it hasn't, Enter is re-pressed with backoff. Guards:
+        an extra Enter on an empty/cleared composer is a no-op, we only retry while OUR
+        text is still visibly sitting in the input region, and we never press Enter when
+        an interactive selection menu is open (it would answer the menu).
+        """
+        needle = self._normalize_prompt(text)
+        if not needle:
+            return
+        needle = needle[-60:]
+        for delay in self._SUBMIT_RETRY_DELAYS_S:
+            await asyncio.sleep(delay)
+            if self._pending_tty_prompts:
+                return
+            state = await self._composer_state(needle, target)
+            if state != "holds":
+                return
+            logger.warning(
+                "tmux deliver: composer still holds the message %.1fs after Enter — re-pressing",
+                delay,
+            )
+            await self._send_key("Enter", pane_id=target)
+        if await self._composer_state(needle, target) == "holds":
+            logger.error(
+                "tmux deliver: message may not have submitted — composer still shows it "
+                "after %d Enter retries",
+                len(self._SUBMIT_RETRY_DELAYS_S),
+            )
+
+    async def _composer_state(self, needle: str, target: str) -> str:
+        """One bottom-of-pane observation: 'holds' when our text tail is still visible in
+        the input region and no selection menu is open; 'menu' when a menu row is visible
+        (never press Enter into it); 'clear' otherwise (submitted / can't tell)."""
+        snapshot = await self._run_tmux(
+            "capture-pane", "-p", "-S", "-12", "-t", target, check=False
+        )
+        if snapshot.returncode != 0:
+            return "clear"
+        rows = self._normalize_terminal_rows(snapshot.stdout)
+        if any(_MENU_ROW_RE.match(row) for row in rows):
+            return "menu"
+        joined = self._normalize_prompt(" ".join(rows))
+        return "holds" if needle in joined else "clear"
 
     async def _send_key(self, key: str, *, pane_id: str | None = None) -> None:
         target = self._target_pane(pane_id)
@@ -2248,6 +3441,9 @@ class TmuxInteractiveTransport(CLITransport):
         finally:
             with suppress(Exception):
                 await self._send_key_raw("Escape", pane_id=target)
+                # Claude handles menu dismissal asynchronously. Without a render
+                # tick, the menu consumes C-u and leaves '/' in the next prompt.
+                await asyncio.sleep(self._menu_poll_step_s)
                 await self._send_key_raw("C-u", pane_id=target)
 
         commands: list[dict] = []
@@ -2284,11 +3480,25 @@ class TmuxInteractiveTransport(CLITransport):
                 "pane_id": pane.pane_id,
                 "pane_index": pane.pane_index,
                 "window_name": pane.window_name,
+                "pane_title": pane.pane_title,
+                "agent_name": pane.agent_name,
                 "active": pane.active,
                 "current_command": pane.current_command,
                 "log_path": str(pane.log_path),
             }
         )
+
+    @property
+    def agent_usage(self) -> AgentUsageTracker:
+        """Per-subagent token tracker. Duck-typed by the broker (``getattr(transport,
+        "agent_usage", None)``) so non-tmux transports simply report no token totals."""
+        return self._agent_usage
+
+    @property
+    def live_pane_ids(self) -> set[str]:
+        """Pane ids currently tracked (registered, not evicted/dead). Lets the broker reap teammate
+        rows whose pane no longer exists as a belt-and-suspenders over event-driven eviction."""
+        return set(self._panes)
 
     async def _has_session(self) -> bool:
         result = await self._run_tmux("has-session", "-t", self._session_name, check=False)

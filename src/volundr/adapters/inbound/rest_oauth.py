@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
+from niuu.ports.credentials import CredentialRefreshLockPort
 from volundr.adapters.inbound.auth import extract_principal
 from volundr.adapters.outbound.oauth2_provider import OAuth2Provider
 from volundr.config import OAuthConfig
@@ -34,6 +35,20 @@ from volundr.domain.services.oauth_clients import (
 logger = logging.getLogger(__name__)
 
 STATE_TTL_SECONDS = 300  # 5 minutes
+
+
+class _OAuthAccessFilter(logging.Filter):
+    """Keep callback codes and state out of Uvicorn's otherwise normal access log."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and len(record.args) == 5:
+            path = str(record.args[2]).partition("?")[0]
+            if path in {
+                "/api/v1/integrations/oauth/callback",
+                "/api/v1/integrations/oauth/mcp/callback",
+            }:
+                record.args = (*record.args[:2], path, *record.args[3:])
+        return True
 
 
 class AuthorizeResponse(BaseModel):
@@ -151,6 +166,7 @@ def _build_oauth_router(
         *,
         slug: str,
         user_id: str,
+        tenant_id: str,
         credential_name: str = "",
         oauth_app: str = "",
         config: dict[str, Any] | None = None,
@@ -184,6 +200,7 @@ def _build_oauth_router(
         _pending_states[state] = {
             "slug": slug,
             "user_id": user_id,
+            "tenant_id": tenant_id,
             "redirect_uri": redirect_uri,
             "credential_name": resolved_credential_name,
             "oauth_app": app,
@@ -219,6 +236,7 @@ def _build_oauth_router(
         return _start_authorization(
             slug=slug,
             user_id=principal.user_id,
+            tenant_id=principal.tenant_id,
             credential_name=credential_name,
             oauth_app=oauth_app,
             request_base_url=str(request.base_url),
@@ -235,6 +253,7 @@ def _build_oauth_router(
         return _start_authorization(
             slug=slug,
             user_id=principal.user_id,
+            tenant_id=principal.tenant_id,
             credential_name=data.credential_name,
             oauth_app=data.oauth_app,
             config=data.config,
@@ -290,7 +309,17 @@ def _build_oauth_router(
                 detail="That credential name is already used by another integration",
             )
 
-        metadata = {"source": "oauth2", "integration": slug, "auth_state": "active"}
+        metadata = {
+            "source": "oauth2",
+            "integration": slug,
+            "auth_state": "active",
+            "tenant_id": pending["tenant_id"],
+            "oauth_app": oauth_app,
+            "oauth_token_field": next(
+                (k for k, v in defn.oauth.token_field_mapping.items() if v == "access_token"),
+                "access_token",
+            ),
+        }
         if credentials.get("expires_at"):
             metadata["auth_expires_at"] = credentials["expires_at"]
         await credential_store.store(
@@ -423,9 +452,13 @@ def create_oauth_router(
     credential_store: CredentialStorePort,
     integration_repo: IntegrationRepository,
     oauth_clients: OAuthClientRegistry | None = None,
+    credential_lock: CredentialRefreshLockPort | None = None,
 ) -> APIRouter:
     """Create the canonical shared OAuth router."""
-    return _build_oauth_router(
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(item, _OAuthAccessFilter) for item in access_logger.filters):
+        access_logger.addFilter(_OAuthAccessFilter())
+    router = _build_oauth_router(
         oauth_config,
         integration_registry,
         credential_store,
@@ -433,6 +466,12 @@ def create_oauth_router(
         oauth_clients=oauth_clients,
         prefix="/api/v1/integrations/oauth",
     )
+    from volundr.adapters.inbound.rest_mcp_oauth import create_mcp_oauth_router
+
+    router.include_router(
+        create_mcp_oauth_router(oauth_config, credential_store, integration_repo, credential_lock)
+    )
+    return router
 
 
 def create_canonical_oauth_router(
@@ -441,6 +480,7 @@ def create_canonical_oauth_router(
     credential_store: CredentialStorePort,
     integration_repo: IntegrationRepository,
     oauth_clients: OAuthClientRegistry | None = None,
+    credential_lock: CredentialRefreshLockPort | None = None,
 ) -> APIRouter:
     """Backward-compatible alias for the canonical shared OAuth router."""
     return create_oauth_router(
@@ -449,4 +489,5 @@ def create_canonical_oauth_router(
         credential_store,
         integration_repo,
         oauth_clients,
+        credential_lock,
     )

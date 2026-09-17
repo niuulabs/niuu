@@ -20,6 +20,7 @@ from niuu.adapters.inbound.rest_repos import create_repos_router
 from niuu.adapters.inbound.rest_setup import create_setup_router
 from niuu.adapters.outbound.git_registry import create_git_registry
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
+from niuu.adapters.postgres_credential_refresh_lock import PostgresCredentialRefreshLock
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.adapters.postgres_realms import PostgresRealmRepository
@@ -303,6 +304,7 @@ def create_app(
                     credential_store=credential_store,
                     integration_repo=integration_repo,
                     oauth_clients=oauth_clients,
+                    credential_lock=PostgresCredentialRefreshLock(pool),
                 )
             )
             app.include_router(create_canonical_tracker_router(tracker_service=tracker_service))
@@ -333,22 +335,28 @@ def create_app(
             enrollment_reconcile_task = asyncio.create_task(
                 reconcile_credential_enrollments_loop(credential_enrollment_service)
             )
-            token_refresh_task = asyncio.create_task(
-                refresh_oauth_tokens_loop(
-                    create_oauth_token_refresh_service(
-                        integration_repository=integration_repo,
-                        integration_registry=integration_registry,
-                        credential_store=credential_store,
-                        oauth_clients=oauth_clients,
+            token_refresh_task = None
+            if (
+                loaded_settings.local_mounts.mini_mode
+                and loaded_settings.oauth.mini_mode_refresh_enabled
+            ):
+                token_refresh_task = asyncio.create_task(
+                    refresh_oauth_tokens_loop(
+                        create_oauth_token_refresh_service(
+                            integration_repository=integration_repo,
+                            integration_registry=integration_registry,
+                            credential_store=credential_store,
+                            oauth_clients=oauth_clients,
+                        )
                     )
                 )
-            )
             try:
                 yield
             finally:
-                token_refresh_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await token_refresh_task
+                if token_refresh_task is not None:
+                    token_refresh_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await token_refresh_task
                 enrollment_reconcile_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await enrollment_reconcile_task
@@ -362,6 +370,10 @@ def create_app(
         PATRevocationMiddleware,
         websocket_check_interval=loaded_settings.pat.websocket_check_interval,
     )
+    # Wire compression (2026-07-12) — see niuu.gzip_sse for the numbers + SSE safety.
+    from niuu.gzip_sse import SSESafeGZipMiddleware
+
+    app.add_middleware(SSESafeGZipMiddleware, minimum_size=4096)
 
     @app.get("/health", tags=["Health"])
     async def health_check() -> dict[str, str]:

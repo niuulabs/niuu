@@ -4,8 +4,23 @@ Völundr's `OpenShellGatewayPodManager` creates and manages sandboxes through th
 OpenShell gateway gRPC API. It then starts Skuld with `ExecSandbox` and exposes
 its session service through `ExposeService`.
 
-The gateway can use Kubernetes as its compute driver. An OpenShell sandbox
-configuration is not an arbitrary multi-container Kubernetes pod specification.
+The gateway selects its compute driver independently of the Niuu adapter.
+OpenShell supports Docker on a plain Linux host as well as Kubernetes. Running
+OpenShell on a VM does not require installing Kubernetes inside that VM. The
+`OpenShellGatewayPodManager` name refers to Niuu's session lifecycle port; it does
+not select the gateway's compute driver.
+
+For managed VM provisioning, reuse and automatic cleanup, configure
+`OpenShellVmRuntime` through the [VM compute lifecycle](../../operator/vm-compute.md#openshell-on-managed-vms).
+For an independently managed plain VM, install Docker and run the OpenShell gateway with
+`compute_driver = "docker"` under `[openshell.gateway]` in its version 2 TOML
+configuration. Configure `[openshell.drivers.docker]` with the sandbox image,
+matching supervisor image, Docker network and gateway callback endpoint. Connect
+Niuu through the same authenticated gateway adapter. Use the gateway version's
+configuration preflight before starting its service.
+
+For Kubernetes, an OpenShell sandbox configuration is not an arbitrary
+multi-container Kubernetes pod specification.
 
 ## Prerequisites and configuration owner
 
@@ -20,6 +35,7 @@ Configure these adapter kwargs in the Völundr service, or under
 | Field | Supply from your deployment |
 | --- | --- |
 | `gateway_endpoint` | Reachable gateway gRPC host and port |
+| `compute_driver` | Driver configuration envelope: `kubernetes` by default; select `docker` for Docker mounts |
 | `token_url` | OIDC client-credentials token endpoint |
 | `client_id` | Gateway machine-client identifier |
 | `sandbox_image` | Pinned image containing the required supervisor and session runtime |
@@ -58,8 +74,9 @@ OpenBao backend. Völundr validates the sandbox/session/owner/provider relations
 before returning the requested grant. The provider profile controls the HTTP
 endpoints where it may be used.
 
-Codex subscription support uses the configured OpenBao credential and token-refresh
-path. Claude Code's built-in OpenShell provider profile supports API keys; local
+Codex subscription support uses an OpenBao `oauthapp` grant. OpenBao owns renewal;
+the authenticated broker delivers access tokens and account metadata. See
+[credential renewal](security-and-permissions.md#codex-subscription-credentials). Claude Code's built-in OpenShell provider profile supports API keys; local
 Claude subscription OAuth state is not a supported dynamic provider grant. Host
 login success therefore does not validate an OpenShell Claude session.
 

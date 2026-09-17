@@ -75,7 +75,7 @@ _DEFAULT_TIER_MODES = (SDK, PERSISTENT)
 
 def _tmux_param() -> object:
     """The tmux_interactive param — integration-tier; skips if tmux is missing."""
-    marks = [pytest.mark.integration]
+    marks = [pytest.mark.integration, pytest.mark.tmux]
     if shutil.which("tmux") is None:
         marks.append(pytest.mark.skip(reason="tmux is not installed"))
     return pytest.param(TMUX, marks=marks)
@@ -755,7 +755,7 @@ async def test_steer_does_not_restart_or_duplicate_turn(mode: str, tmp_path, mon
         assert client.frames_of_type("result") == [], (
             "tmux: a mid-turn steer must not close/restart the turn (a result appeared)"
         )
-        page = TmuxPage(str(h.transport._socket_path), h.transport.session_id or "")  # noqa: SLF001
+        page = TmuxPage(str(h.transport._socket_path), h.transport._session_name)  # noqa: SLF001
         snapshot = await page.snapshot()
         assert "interrupted" not in snapshot, "tmux: steer must not interrupt the work turn"
         await page.wait_for_text("STEERED", timeout=8.0)

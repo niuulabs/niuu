@@ -182,6 +182,7 @@ class RootServer(Service):
             import asyncpg
 
             from cli.resources import migration_dir, ordered_migration_files
+            from niuu.adapters.postgres_schema import apply_startup_migrations
 
             volundr_conn = await asyncpg.connect(
                 host=info.host,
@@ -198,15 +199,10 @@ class RootServer(Service):
                         logger.debug("No migrations found for %s", variant)
                         continue
                     sql_files = ordered_migration_files(mig_dir)
-                    applied = 0
-                    for sql_file in sql_files:
-                        sql = sql_file.read_text()
-                        try:
-                            await volundr_conn.execute(sql)
-                            applied += 1
-                        except Exception:
-                            logger.debug("Migration %s skipped: %s", sql_file.name, exc_info=True)
-                    logger.info("Applied %d/%d %s migrations", applied, len(sql_files), variant)
+                    await apply_startup_migrations(
+                        volundr_conn, sql_files, namespace="ting" if variant == "ting" else ""
+                    )
+                    logger.info("Verified %d %s migrations", len(sql_files), variant)
             finally:
                 await volundr_conn.close()
 
@@ -228,7 +224,8 @@ class RootServer(Service):
                     database_name_for_service(service_name),
                 )
         except Exception:
-            logger.exception("Failed to run migrations")
+            logger.exception("Failed to run migrations; schema is not ready")
+            raise
 
     async def stop(self) -> None:
         if self._server:

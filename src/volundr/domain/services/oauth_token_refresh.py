@@ -68,6 +68,9 @@ class OAuthTokenRefreshService:
             definition = self._registry.get_definition(connection.slug)
             if definition is None or definition.oauth is None:
                 continue
+            stored = await self._store.get("user", connection.owner_id, connection.credential_name)
+            if stored and stored.metadata.get("renewal_owner"):
+                continue
             values = await self._store.get_value(
                 "user", connection.owner_id, connection.credential_name
             )

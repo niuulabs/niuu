@@ -371,6 +371,12 @@ class AgentTask:
     workflow_node_id: str = ""  # Active workflow graph node for node-scoped contracts
     tool_outcomes: dict[str, dict[str, Any]] = field(default_factory=dict)
     human_initiated: bool = False  # True when a human message entered through a channel
+    #: What to search memory with, when ``initiative_context`` is an envelope rather than the
+    #: thing that was actually asked. A room message arrives wrapped in framing plus up to 4,000
+    #: characters of prior room context, and recalling on all of that embeds an average of the
+    #: room's recent chatter instead of the question — against documents averaging 158 characters.
+    #: Empty means the context IS the query, which is true for every non-room trigger.
+    recall_query: str = ""
     # Durable resident continuation metadata.  These fields are transport
     # state, not a semantic task taxonomy: the model still selects the action
     # described by ``initiative_context``.

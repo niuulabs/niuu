@@ -49,7 +49,7 @@ DOCKER_LOGIN_RUNNER_ADAPTER = "volundr.adapters.outbound.docker_login_runner.Doc
 # Despite its name this broker only needs the credential store and the
 # Postgres refresh lock, both of which the bundle has.
 CODEX_CREDENTIAL_BROKER_ADAPTER = (
-    "volundr.adapters.outbound.codex_credential_broker.OpenBaoCodexCredentialBroker"
+    "volundr.adapters.outbound.mini_codex_credential_broker.MiniModeCodexCredentialBroker"
 )
 SESSION_SECRET_INJECTION_ADAPTER = (
     "volundr.adapters.outbound.session_file_secret_injection.SessionFileSecretInjectionAdapter"
@@ -329,7 +329,7 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
             if sign_in_clients(settings)
             else {}
         ),
-        # Codex sessions fetch ChatGPT tokens from the platform, which refreshes
+        # Docker mini-mode sessions use the explicitly local broker, which refreshes
         # them in the credential store; without this the bundle's default
         # broker refuses and Codex sessions cannot authenticate.
         "CODEX_CREDENTIAL_BROKER": json.dumps(

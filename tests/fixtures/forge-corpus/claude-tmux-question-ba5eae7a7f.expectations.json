@@ -1,0 +1,374 @@
+{
+  "schema_version": 1,
+  "fixture": "claude-tmux-question-ba5eae7a7f.frames.json",
+  "sha256": "ba5eae7a7f19d70ec01fc92b20fba03f95d3f7555b6fdc2952a21625a2da50ea",
+  "source_slice_sha256": "c9cfa0d776752ee5f220574fd691c5fb02983ba077190bde6cbd522a58b91a75",
+  "redacted": true,
+  "source": "live-provider",
+  "provider": "claude-tmux",
+  "model": "claude-opus-5",
+  "scenario": {
+    "scenario": "question",
+    "passed": true,
+    "checks": [
+      {
+        "name": "terminal-result",
+        "passed": true,
+        "detail": 1
+      },
+      {
+        "name": "correlated-completion",
+        "passed": true,
+        "detail": 1
+      },
+      {
+        "name": "successful-result",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "tool-pairs",
+        "passed": true,
+        "detail": {
+          "unpaired_calls": [],
+          "orphan_results": []
+        }
+      },
+      {
+        "name": "event:ask_user_question",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "file:accent.json",
+        "passed": true,
+        "detail": {
+          "accent": "amber"
+        }
+      }
+    ],
+    "observed": {
+      "calls": {
+        "toolu_018y3qpZWvBKM7N9Aa6sZomy": {
+          "id": "toolu_018y3qpZWvBKM7N9Aa6sZomy",
+          "name": "AskUserQuestion",
+          "type": "tool_use",
+          "input": {
+            "questions": [
+              {
+                "header": "Accent",
+                "options": [
+                  {
+                    "label": "Blue",
+                    "description": "Use blue as the trace accent; accent.json will contain {\"accent\": \"blue\"}."
+                  },
+                  {
+                    "label": "Amber",
+                    "description": "Use amber as the trace accent; accent.json will contain {\"accent\": \"amber\"}."
+                  }
+                ],
+                "question": "Which trace accent should I record in accent.json?",
+                "multiSelect": false
+              }
+            ]
+          }
+        },
+        "toolu_01VK297YdMk7hncKMizyFngU": {
+          "id": "toolu_01VK297YdMk7hncKMizyFngU",
+          "name": "Bash",
+          "type": "tool_use",
+          "input": {
+            "command": "printf '{\"accent\": \"amber\"}\\n' > accent.json && cat accent.json",
+            "description": "Write accent.json and read it back"
+          }
+        }
+      },
+      "results": {
+        "toolu_018y3qpZWvBKM7N9Aa6sZomy": {
+          "type": "tool_result",
+          "content": "{\"annotations\": {}, \"answers\": {\"Which trace accent should I record in accent.json?\": \"Amber\"}, \"questions\": [{\"header\": \"Accent\", \"multiSelect\": false, \"options\": [{\"description\": \"Use blue as the trace accent; accent.json will contain {\\\"accent\\\": \\\"blue\\\"}.\", \"label\": \"Blue\"}, {\"description\": \"Use amber as the trace accent; accent.json will contain {\\\"accent\\\": \\\"amber\\\"}.\", \"label\": \"Amber\"}], \"question\": \"Which trace accent should I record in accent.json?\"}]}",
+          "is_error": false,
+          "tool_use_id": "toolu_018y3qpZWvBKM7N9Aa6sZomy"
+        },
+        "toolu_01VK297YdMk7hncKMizyFngU": {
+          "type": "tool_result",
+          "content": "{\"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false, \"stderr\": \"\", \"stdout\": \"{\\\"accent\\\": \\\"amber\\\"}\"}",
+          "is_error": false,
+          "tool_use_id": "toolu_01VK297YdMk7hncKMizyFngU"
+        }
+      },
+      "tool_families": {
+        "command": 1
+      },
+      "agent_ids": [],
+      "assistant_text": "Asked via the native interactive question tool (options: Blue first, Amber second) and waited for your selection.\n\n- **You chose: Amber**\n- Wrote `accent.json` and read it back: `{\"accent\": \"amber\"}` — accent value in lowercase under key `accent`.\n\n[FORGE_DONE:08d761c1bc714b9aa47e5440efd2fa96:question]",
+      "unpaired_calls": [],
+      "orphan_results": [],
+      "event_counts": {
+        "user": 3,
+        "user_confirmed": 1,
+        "terminal_input_sent": 1,
+        "terminal_key_sent": 7,
+        "user_delivered": 1,
+        "claude_hook": 14,
+        "terminal_prompt_submitted": 1,
+        "user_active": 1,
+        "terminal_frame": 36,
+        "ask_user_question": 2,
+        "assistant": 3,
+        "claude_permission_request": 1,
+        "ask_user_resolved": 2,
+        "result": 1
+      }
+    },
+    "prompt": "Use the native interactive question tool to ask me to choose a trace accent: blue first, amber second. Wait for my explicit answer through that tool. After the answer, write accent.json containing the selected accent in lowercase under key accent. Do not assume an answer or ask only in ordinary prose.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:08d761c1bc714b9aa47e5440efd2fa96:question]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+    "after_seq": 952,
+    "through_seq": 1028,
+    "duration_seconds": 10.046
+  },
+  "review": {
+    "status": "accepted",
+    "reviewer": "Codex project-review agent, 2026-09-07",
+    "source_frames_sha256": "2149d1bd67e044968a034a4bcdd97d8b783adbc27e1cefec3818a2e6eec705a6",
+    "notes": [
+      "Reviewed prompt and captured interval (952, 1028]. All scenario action assertions passed; tool IDs pair with results.",
+      "PostgreSQL raw rows project to these REST frames exactly. Full and cursor fixture replay match. The captured live stream is preserved in database order.",
+      "The running platform's public replay WebSocket remains unavailable until the facade fix is deployed; this fixture certifies the captured scenario, not that deployment.",
+      "Inspected question options and tool output: the explicit second choice Amber produces accent.json with lowercase amber. This is not first-option fallback."
+    ]
+  },
+  "checkpoints": [
+    {
+      "after_seq": 978,
+      "event_type": "ask_user_question",
+      "turn_count": 2,
+      "partial": true,
+      "turns_sha256": "aa357748a706de14e53936fa7ccedb932824635d0f5103d7d5c21c6ff9ed0fb3"
+    },
+    {
+      "after_seq": 982,
+      "event_type": "ask_user_question",
+      "turn_count": 2,
+      "partial": true,
+      "turns_sha256": "8441adef99e3815da0dd7cf018f408b2e479c9c8b0f6e0afe780eca166b54577"
+    },
+    {
+      "after_seq": 986,
+      "event_type": "ask_user_resolved",
+      "turn_count": 2,
+      "partial": true,
+      "turns_sha256": "510438d38d732c0cf9c9264d2a20d25f25f823847fd557fc1df2f4662f26a837"
+    },
+    {
+      "after_seq": 990,
+      "event_type": "ask_user_resolved",
+      "turn_count": 2,
+      "partial": true,
+      "turns_sha256": "db51e69f624b9b1d013e7f36276d16800c8f6e3cd5fd1bc77e67954765d2d91f"
+    },
+    {
+      "after_seq": 1023,
+      "event_type": "result",
+      "turn_count": 2,
+      "partial": false,
+      "turns_sha256": "9af7d3232ea142a4af9316211ff25eecd2fa8a0dfc214aa33278f8bfd656440c"
+    }
+  ],
+  "expected_turns": [
+    {
+      "id": "a0baf115-b369-4434-93b4-49f6bfd1d5b9",
+      "role": "user",
+      "content": "Use the native interactive question tool to ask me to choose a trace accent: blue first, amber second. Wait for my explicit answer through that tool. After the answer, write accent.json containing the selected accent in lowercase under key accent. Do not assume an answer or ask only in ordinary prose.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:08d761c1bc714b9aa47e5440efd2fa96:question]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+      "parts": [],
+      "created_at": "2026-09-07T16:45:53.276389+00:00",
+      "metadata": {
+        "steering_state": "active"
+      },
+      "visibility": "public"
+    },
+    {
+      "id": "23c17d1d-cd3e-5cdd-892a-80ee7447c822",
+      "role": "assistant",
+      "content": "Asked via the native interactive question tool (options: Blue first, Amber second) and waited for your selection.\n\n- **You chose: Amber**\n- Wrote `accent.json` and read it back: `{\"accent\": \"amber\"}` — accent value in lowercase under key `accent`.\n\n[FORGE_DONE:08d761c1bc714b9aa47e5440efd2fa96:question]",
+      "parts": [
+        {
+          "type": "tool_use",
+          "id": "toolu_018y3qpZWvBKM7N9Aa6sZomy",
+          "name": "AskUserQuestion",
+          "input": {
+            "questions": [
+              {
+                "header": "Accent",
+                "options": [
+                  {
+                    "label": "Blue",
+                    "description": "Use blue as the trace accent; accent.json will contain {\"accent\": \"blue\"}."
+                  },
+                  {
+                    "label": "Amber",
+                    "description": "Use amber as the trace accent; accent.json will contain {\"accent\": \"amber\"}."
+                  }
+                ],
+                "question": "Which trace accent should I record in accent.json?",
+                "multiSelect": false
+              }
+            ]
+          },
+          "started_at": "2026-09-07T16:45:56.419903+00:00",
+          "ended_at": "2026-09-07T16:45:56.537344+00:00",
+          "duration_ms": 117
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_018y3qpZWvBKM7N9Aa6sZomy",
+          "content": "{\"annotations\": {}, \"answers\": {\"Which trace accent should I record in accent.json?\": \"Amber\"}, \"questions\": [{\"header\": \"Accent\", \"multiSelect\": false, \"options\": [{\"description\": \"Use blue as the trace accent; accent.json will contain {\\\"accent\\\": \\\"blue\\\"}.\", \"label\": \"Blue\"}, {\"description\": \"Use amber as the trace accent; accent.json will contain {\\\"accent\\\": \\\"amber\\\"}.\", \"label\": \"Amber\"}], \"question\": \"Which trace accent should I record in accent.json?\"}]}",
+          "is_error": false,
+          "ended_at": "2026-09-07T16:45:56.537344+00:00"
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_01VK297YdMk7hncKMizyFngU",
+          "name": "Bash",
+          "input": {
+            "command": "printf '{\"accent\": \"amber\"}\\n' > accent.json && cat accent.json",
+            "description": "Write accent.json and read it back"
+          },
+          "started_at": "2026-09-07T16:45:58.463318+00:00",
+          "ended_at": "2026-09-07T16:45:58.502720+00:00",
+          "duration_ms": 39
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_01VK297YdMk7hncKMizyFngU",
+          "content": "{\"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false, \"stderr\": \"\", \"stdout\": \"{\\\"accent\\\": \\\"amber\\\"}\"}",
+          "is_error": false,
+          "ended_at": "2026-09-07T16:45:58.502720+00:00"
+        },
+        {
+          "type": "text",
+          "text": "Asked via the native interactive question tool (options: Blue first, Amber second) and waited for your selection.\n\n- **You chose: Amber**\n- Wrote `accent.json` and read it back: `{\"accent\": \"amber\"}` — accent value in lowercase under key `accent`.\n\n[FORGE_DONE:08d761c1bc714b9aa47e5440efd2fa96:question]"
+        }
+      ],
+      "created_at": "2026-09-07T16:46:01.025320+00:00",
+      "metadata": {
+        "usage": {
+          "claude-opus-5": {
+            "inputTokens": 165,
+            "outputTokens": 75,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0
+          }
+        },
+        "cost": null,
+        "model": "claude-opus-5",
+        "stop_reason": "stop"
+      },
+      "visibility": "public"
+    }
+  ],
+  "expected_partial": false,
+  "source_run": {
+    "run_id": "claude-tmux-ad948830dc",
+    "session_id": "aba314d5-aafe-4487-afd1-b8306e121e6e",
+    "passed": false,
+    "errors": [
+      "harvest: InvalidStatus: server rejected WebSocket connection: HTTP 403"
+    ]
+  },
+  "observed": {
+    "calls": {
+      "toolu_018y3qpZWvBKM7N9Aa6sZomy": {
+        "id": "toolu_018y3qpZWvBKM7N9Aa6sZomy",
+        "name": "AskUserQuestion",
+        "type": "tool_use",
+        "input": {
+          "questions": [
+            {
+              "header": "Accent",
+              "options": [
+                {
+                  "label": "Blue",
+                  "description": "Use blue as the trace accent; accent.json will contain {\"accent\": \"blue\"}."
+                },
+                {
+                  "label": "Amber",
+                  "description": "Use amber as the trace accent; accent.json will contain {\"accent\": \"amber\"}."
+                }
+              ],
+              "question": "Which trace accent should I record in accent.json?",
+              "multiSelect": false
+            }
+          ]
+        }
+      },
+      "toolu_01VK297YdMk7hncKMizyFngU": {
+        "id": "toolu_01VK297YdMk7hncKMizyFngU",
+        "name": "Bash",
+        "type": "tool_use",
+        "input": {
+          "command": "printf '{\"accent\": \"amber\"}\\n' > accent.json && cat accent.json",
+          "description": "Write accent.json and read it back"
+        }
+      }
+    },
+    "results": {
+      "toolu_018y3qpZWvBKM7N9Aa6sZomy": {
+        "type": "tool_result",
+        "content": "{\"annotations\": {}, \"answers\": {\"Which trace accent should I record in accent.json?\": \"Amber\"}, \"questions\": [{\"header\": \"Accent\", \"multiSelect\": false, \"options\": [{\"description\": \"Use blue as the trace accent; accent.json will contain {\\\"accent\\\": \\\"blue\\\"}.\", \"label\": \"Blue\"}, {\"description\": \"Use amber as the trace accent; accent.json will contain {\\\"accent\\\": \\\"amber\\\"}.\", \"label\": \"Amber\"}], \"question\": \"Which trace accent should I record in accent.json?\"}]}",
+        "is_error": false,
+        "tool_use_id": "toolu_018y3qpZWvBKM7N9Aa6sZomy"
+      },
+      "toolu_01VK297YdMk7hncKMizyFngU": {
+        "type": "tool_result",
+        "content": "{\"interrupted\": false, \"isImage\": false, \"noOutputExpected\": false, \"stderr\": \"\", \"stdout\": \"{\\\"accent\\\": \\\"amber\\\"}\"}",
+        "is_error": false,
+        "tool_use_id": "toolu_01VK297YdMk7hncKMizyFngU"
+      }
+    },
+    "tool_families": {
+      "command": 1
+    },
+    "agent_ids": [],
+    "assistant_text": "Asked via the native interactive question tool (options: Blue first, Amber second) and waited for your selection.\n\n- **You chose: Amber**\n- Wrote `accent.json` and read it back: `{\"accent\": \"amber\"}` — accent value in lowercase under key `accent`.\n\n[FORGE_DONE:08d761c1bc714b9aa47e5440efd2fa96:question]",
+    "unpaired_calls": [],
+    "orphan_results": [],
+    "event_counts": {
+      "user": 3,
+      "user_confirmed": 1,
+      "terminal_input_sent": 1,
+      "terminal_key_sent": 7,
+      "user_delivered": 1,
+      "claude_hook": 14,
+      "terminal_prompt_submitted": 1,
+      "user_active": 1,
+      "terminal_frame": 36,
+      "ask_user_question": 2,
+      "assistant": 3,
+      "claude_permission_request": 1,
+      "ask_user_resolved": 2,
+      "result": 1
+    }
+  },
+  "projection_review": {
+    "status": "accepted",
+    "reviewer": "Codex transport/corpus review agent, 2026-09-08",
+    "source_frames_sha256": "ba5eae7a7f19d70ec01fc92b20fba03f95d3f7555b6fdc2952a21625a2da50ea",
+    "previous_projection_sha256": "cd03d0fcde92201a499a04e25d055173d75c362d9152b6937842a3ca526c00e2",
+    "projection_sha256": "9af7d3232ea142a4af9316211ff25eecd2fa8a0dfc214aa33278f8bfd656440c",
+    "reason": "Remove only verified idle terminal scrollback after a completed result. These paints created phantom assistant turns at EOF or the next human boundary; genuine terminal-only work remains supported.",
+    "all_real_turns_byte_identical": true,
+    "removed_phantom_turns": [
+      {
+        "turn_id": "87b2b51b-db12-5971-90af-f53d9949ece6",
+        "prior_result_seq": 1023,
+        "idle_terminal_seq": 1027,
+        "old_metadata": {
+          "provenance": "terminal_scrape",
+          "status": "interrupted"
+        },
+        "old_text_sha256": "4ce4988527f48aeb2ac2fab36b87406d67ed0537069d4eb5c84fcfcba5a266e0"
+      }
+    ],
+    "reducer_source_sha256": "33f1782405903e2e6b152a3435d36db95c6b2696e3675d67c72e15ed9083317d"
+  }
+}

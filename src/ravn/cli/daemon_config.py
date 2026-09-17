@@ -84,6 +84,15 @@ _SELF_DRIVING_SECTIONS = (
 )
 
 
+# Sections that belong to the resident's own deployment and are never a
+# member's to inherit. A room member is reached through the room; the gateway
+# channels are one specific process's front door, bound to fixed ports and
+# carrying that resident's identity. Inheriting them makes every member try to
+# bind the resident's Telegram/HTTP/OpenClaw ports — the member dies on
+# STARTUP_FAILURE if the resident is up, and impersonates it if it is not.
+_RESIDENT_ONLY_SECTIONS = ("gateway",)
+
+
 def quiet_overlay_yaml() -> str:
     """Render :func:`_quiet_overlay` as top-level YAML sections."""
     return yaml.safe_dump(_quiet_overlay(), sort_keys=False)
@@ -174,7 +183,9 @@ def build_member_config(
     a member joins to take part in the room, not to start generating its own
     work the moment it connects.
     """
-    config = dict(base or {})
+    config = {
+        key: value for key, value in (base or {}).items() if key not in _RESIDENT_ONLY_SECTIONS
+    }
 
     # A detached member's log is its only window, so INFO is the useful floor —
     # mesh, discovery and tool wiring all report there. Applied as a default so
@@ -202,7 +213,17 @@ def build_member_config(
     if not autonomous:
         overlay = _deep_merge(_quiet_overlay(), overlay)
     if memory_db_path is not None:
-        overlay["memory"] = {"backend": "sqlite", "sqlite": {"path": str(memory_db_path)}}
+        # BOTH keys, and `path` is the one that actually decides. The sqlite backend is built from
+        # `settings.memory.path` (`runtime_builders.py`), not from `memory.sqlite.path`, so setting
+        # only the latter left every member inheriting the operator's `~/.ravn/memory.db` from the
+        # base config — the per-member file was never created and Neo's episodes were written into
+        # Travis's memory, where nothing distinguishes them. Two agents sharing one memory are one
+        # agent with two voices, which is the opposite of the point of a room.
+        overlay["memory"] = {
+            "backend": "sqlite",
+            "path": str(memory_db_path),
+            "sqlite": {"path": str(memory_db_path)},
+        }
     if queue_journal_path is not None:
         overlay["initiative"]["queue_journal_path"] = str(queue_journal_path)
 

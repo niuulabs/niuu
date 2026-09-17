@@ -280,7 +280,7 @@ class InMemoryEventBroadcaster(EventBroadcaster):
         """
         return RealtimeEvent(
             type=EventType.SESSION_DELETED,
-            data={"id": str(session_id)},
+            data={"id": str(session_id), "status": "deleted"},
             timestamp=datetime.now(UTC),
         )
 

@@ -1,0 +1,270 @@
+{
+  "schema_version": 1,
+  "fixture": "codex-question-freeform-784c2d0311.frames.json",
+  "sha256": "784c2d03115ec195dec83f3f5edfb0012c8001716dc3cee9a4c64bdeee5927e6",
+  "source_slice_sha256": "784c2d03115ec195dec83f3f5edfb0012c8001716dc3cee9a4c64bdeee5927e6",
+  "redacted": true,
+  "source": "live-provider",
+  "provider": "codex",
+  "model": "gpt-6-astra",
+  "scenario": {
+    "scenario": "question-freeform",
+    "passed": true,
+    "checks": [
+      {
+        "name": "terminal-result",
+        "passed": true,
+        "detail": 1
+      },
+      {
+        "name": "correlated-completion",
+        "passed": true,
+        "detail": 1
+      },
+      {
+        "name": "successful-result",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "tool-pairs",
+        "passed": true,
+        "detail": {
+          "unpaired_calls": [],
+          "orphan_results": []
+        }
+      },
+      {
+        "name": "assistant:remembered sum=42 file=answer.json",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "event:ask_user_question",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "event:ask_user_resolved",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "freeform-question",
+        "passed": true,
+        "detail": null
+      },
+      {
+        "name": "file:label.json",
+        "passed": true,
+        "detail": {
+          "label": "violet comet"
+        }
+      }
+    ],
+    "observed": {
+      "calls": {
+        "exec-c60563ea-1aa0-439e-869d-bc9009ba649c": {
+          "id": "exec-c60563ea-1aa0-439e-869d-bc9009ba649c",
+          "name": "Bash",
+          "type": "tool_use",
+          "input": {
+            "command": "/bin/bash -lc \"python3 - <<'PY'\nimport json\nfrom pathlib import Path\nPath('label.json').write_text(json.dumps({'label': 'violet comet'}) + '\\\\n')\nPY\""
+          }
+        }
+      },
+      "results": {
+        "exec-c60563ea-1aa0-439e-869d-bc9009ba649c": {
+          "type": "tool_result",
+          "content": "",
+          "ended_at": "2026-09-08T10:26:46.213405+00:00",
+          "tool_use_id": "exec-c60563ea-1aa0-439e-869d-bc9009ba649c"
+        }
+      },
+      "tool_families": {
+        "command": 1
+      },
+      "agent_ids": [],
+      "assistant_text": "Wrote `label.json`: `{\"label\": \"violet comet\"}`.\n\nremembered sum=42 file=answer.json\n\n[FORGE_DONE:ca60f951decc470bbfae94e29ff38a70:question-freeform]",
+      "unpaired_calls": [],
+      "orphan_results": [],
+      "event_counts": {
+        "user": 2,
+        "user_confirmed": 1,
+        "user_delivered": 1,
+        "assistant": 2,
+        "user_consumed": 1,
+        "user_active": 1,
+        "content_block_start": 4,
+        "content_block_stop": 4,
+        "ask_user_question": 1,
+        "ask_user_resolved": 1,
+        "message_delta": 3,
+        "content_block_delta": 55,
+        "result": 1
+      }
+    },
+    "prompt": "Use the native interactive question tool to ask me for a two-word trace label as free text. Supply no suggested answers or options. Wait for my explicit answer through that tool, then write label.json containing exactly the answer under key label. Do not assume an answer or ask only in ordinary prose. After writing the file, recall the numeric sum and JSON filename from the earlier workspace task without reading them again, and include remembered sum=42 file=answer.json in your final answer.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:ca60f951decc470bbfae94e29ff38a70:question-freeform]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+    "after_seq": 80,
+    "through_seq": 159,
+    "duration_seconds": 19.058
+  },
+  "review": {
+    "status": "accepted",
+    "reviewer": "Codex investigation review, 2026-09-08",
+    "source_frames_sha256": "8d957ee4ac8a3c7a3f318bd9d737d0f1994638aed90bd231f2d7d011685919bf",
+    "notes": [
+      "Reviewed real Astra async free-text question at sequence90 with empty options, explicit controller answer, and ask_user_resolved at91.",
+      "Independently verified label.json equals the controller-only answer violet comet; final assistant recalled earlier sum42 and answer.json without rereading.",
+      "159 raw PostgreSQL rows project to153 public frames; public full153 and tail76 replay match, and151 observed live events persist in order.",
+      "Native identity stayed01a0808d-cc2f-7701-8404-9a2839260987 throughout the two-request source run. Source run passed after the null-options crash fix.",
+      "This slice is a replay rendering fixture for the successful question path; it does not claim historical incident repair or execution of iOS simulator tests."
+    ]
+  },
+  "checkpoints": [
+    {
+      "after_seq": 90,
+      "event_type": "ask_user_question",
+      "turn_count": 1,
+      "partial": false,
+      "turns_sha256": "5935b196c56091ddbfdaeaf86ebcf413ce56d356059355d5fa7d0d9945b0b478"
+    },
+    {
+      "after_seq": 91,
+      "event_type": "ask_user_resolved",
+      "turn_count": 1,
+      "partial": false,
+      "turns_sha256": "5935b196c56091ddbfdaeaf86ebcf413ce56d356059355d5fa7d0d9945b0b478"
+    },
+    {
+      "after_seq": 158,
+      "event_type": "result",
+      "turn_count": 2,
+      "partial": false,
+      "turns_sha256": "70c171cb63f3cf4ee500b554e681d579ca52ee83dc2468fe6e551e68f202703b"
+    }
+  ],
+  "expected_turns": [
+    {
+      "id": "5b3cc599-f35b-4383-921f-6bdeee8d25e7",
+      "role": "user",
+      "content": "Use the native interactive question tool to ask me for a two-word trace label as free text. Supply no suggested answers or options. Wait for my explicit answer through that tool, then write label.json containing exactly the answer under key label. Do not assume an answer or ask only in ordinary prose. After writing the file, recall the numeric sum and JSON filename from the earlier workspace task without reading them again, and include remembered sum=42 file=answer.json in your final answer.\n\nAcceptance controller: after all requested work and all workers have finished (or you have explained an unavailable capability), append this exact completion marker to your final response: [FORGE_DONE:ca60f951decc470bbfae94e29ff38a70:question-freeform]. Never put this marker in worker instructions or interim updates. It identifies completion of this request only.",
+      "parts": [],
+      "created_at": "2026-09-08T10:26:36.678191+00:00",
+      "metadata": {
+        "steering_state": "active"
+      },
+      "visibility": "public"
+    },
+    {
+      "id": "c80accdd-8a4f-5324-9fee-acf7076dc732",
+      "role": "assistant",
+      "content": "Wrote `label.json`: `{\"label\": \"violet comet\"}`.\n\nremembered sum=42 file=answer.json\n\n[FORGE_DONE:ca60f951decc470bbfae94e29ff38a70:question-freeform]",
+      "parts": [
+        {
+          "type": "tool_use",
+          "id": "exec-c60563ea-1aa0-439e-869d-bc9009ba649c",
+          "name": "Bash",
+          "input": {
+            "command": "/bin/bash -lc \"python3 - <<'PY'\nimport json\nfrom pathlib import Path\nPath('label.json').write_text(json.dumps({'label': 'violet comet'}) + '\\\\n')\nPY\""
+          },
+          "started_at": "2026-09-08T10:26:46.201686+00:00",
+          "ended_at": "2026-09-08T10:26:46.213405+00:00",
+          "duration_ms": 11
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "exec-c60563ea-1aa0-439e-869d-bc9009ba649c",
+          "content": "",
+          "is_error": false,
+          "ended_at": "2026-09-08T10:26:46.213405+00:00"
+        },
+        {
+          "type": "text",
+          "id": "legacy-text-3",
+          "text": "Wrote `label.json`: `{\"label\": \"violet comet\"}`.\n\nremembered sum=42 file=answer.json\n\n[FORGE_DONE:ca60f951decc470bbfae94e29ff38a70:question-freeform]",
+          "complete": true,
+          "id_source": "synthetic",
+          "index": 3
+        }
+      ],
+      "created_at": "2026-09-08T10:26:53.366552+00:00",
+      "metadata": {
+        "usage": {
+          "gpt-6-astra": {
+            "inputTokens": 13079,
+            "outputTokens": 58,
+            "cacheReadInputTokens": 12800,
+            "cacheCreationInputTokens": 0
+          }
+        },
+        "cost": null,
+        "model": "gpt-6-astra",
+        "stop_reason": "end_turn"
+      },
+      "visibility": "public"
+    }
+  ],
+  "expected_partial": false,
+  "source_run": {
+    "run_id": "codex-ea1823a663",
+    "session_id": "f1536a13-c2cf-4e7d-aadc-d7860dacb92e",
+    "passed": true,
+    "errors": []
+  },
+  "observed": {
+    "calls": {
+      "exec-c60563ea-1aa0-439e-869d-bc9009ba649c": {
+        "id": "exec-c60563ea-1aa0-439e-869d-bc9009ba649c",
+        "name": "Bash",
+        "type": "tool_use",
+        "input": {
+          "command": "/bin/bash -lc \"python3 - <<'PY'\nimport json\nfrom pathlib import Path\nPath('label.json').write_text(json.dumps({'label': 'violet comet'}) + '\\\\n')\nPY\""
+        }
+      }
+    },
+    "results": {
+      "exec-c60563ea-1aa0-439e-869d-bc9009ba649c": {
+        "type": "tool_result",
+        "content": "",
+        "ended_at": "2026-09-08T10:26:46.213405+00:00",
+        "tool_use_id": "exec-c60563ea-1aa0-439e-869d-bc9009ba649c"
+      }
+    },
+    "tool_families": {
+      "command": 1
+    },
+    "agent_ids": [],
+    "assistant_text": "Wrote `label.json`: `{\"label\": \"violet comet\"}`.\n\nremembered sum=42 file=answer.json\n\n[FORGE_DONE:ca60f951decc470bbfae94e29ff38a70:question-freeform]",
+    "unpaired_calls": [],
+    "orphan_results": [],
+    "event_counts": {
+      "user": 2,
+      "user_confirmed": 1,
+      "user_delivered": 1,
+      "assistant": 2,
+      "user_consumed": 1,
+      "user_active": 1,
+      "content_block_start": 4,
+      "content_block_stop": 4,
+      "ask_user_question": 1,
+      "ask_user_resolved": 1,
+      "message_delta": 3,
+      "content_block_delta": 55,
+      "result": 1
+    }
+  },
+  "projection_review": {
+    "schema_version": 1,
+    "status": "accepted",
+    "reviewer": "Codex integration review, 2026-09-08",
+    "source_frames_sha256": "784c2d03115ec195dec83f3f5edfb0012c8001716dc3cee9a4c64bdeee5927e6",
+    "previous_projection_sha256": "70c171cb63f3cf4ee500b554e681d579ca52ee83dc2468fe6e551e68f202703b",
+    "projection_sha256": "d6ce2e78c7f7b13482215e7070936ec7a6e99df243590fa53ac5779539d8ed06",
+    "notes": [
+      "Captured final text deltas now produce one ordered text part after the tool burst.",
+      "Exact final prose, every nontext part, turn identity and accounting unchanged.",
+      "Original raw frames and original capture review remain unchanged."
+    ]
+  }
+}

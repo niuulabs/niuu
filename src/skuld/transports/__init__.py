@@ -24,6 +24,11 @@ from skuld.transports.grok import (  # noqa: E402
     GrokACPTransport,
     _map_grok_tool,
 )
+from skuld.transports.muse import (  # noqa: E402
+    _MUSE_TOOL_MAP,
+    MuseMSPTransport,
+    _map_muse_tool,
+)
 from skuld.transports.opencode import OpenCodeHttpTransport  # noqa: E402
 from skuld.transports.persistent_subprocess import (  # noqa: E402
     PersistentSubprocessTransport,
@@ -40,6 +45,7 @@ __all__ = [
     "DshJsonRpcTransport",
     "EventCallback",
     "GrokACPTransport",
+    "MuseMSPTransport",
     "OpenCodeHttpTransport",
     "PersistentSubprocessTransport",
     "SDKTransport",
@@ -49,9 +55,11 @@ __all__ = [
     "TransportCapabilities",
     "_CODEX_TOOL_MAP",
     "_GROK_TOOL_MAP",
+    "_MUSE_TOOL_MAP",
     "_drain_stream",
     "_filter_event",
     "_map_codex_tool",
     "_map_grok_tool",
+    "_map_muse_tool",
     "_stop_process",
 ]

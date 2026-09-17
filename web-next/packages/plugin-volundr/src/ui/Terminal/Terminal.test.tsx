@@ -213,6 +213,7 @@ describe('Terminal', () => {
     const stream = buildStream();
     render(<Terminal sessionId="sess-1" stream={stream} />);
     expect(screen.getByTestId('terminal-reconnect-button')).toBeInTheDocument();
+    await waitFor(() => expect(stream.subscribe).toHaveBeenCalledTimes(1));
   });
 
   it('triggers reconnect on reconnect button click', async () => {

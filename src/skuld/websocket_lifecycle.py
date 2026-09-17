@@ -13,8 +13,18 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from identity.models import Principal, Resource
 from identity.ports import AuthorizationEvaluationError
+from niuu.domain.history_control import history_gap
+from niuu.domain.text_projection import projection_revision
 from niuu.domain.transcript_reducer import PER_CONNECT_MARKER
 from skuld.channels import WebSocketChannel, _is_expected_ws_disconnect
+from skuld.control_errors import control_error_frame
+from skuld.conversation_read import conversation_rows, wait_history_quiet
+from skuld.conversation_snapshot import (
+    ConversationSnapshotTooLargeError,
+    prepare_conversation_snapshot,
+    prepare_history_page,
+    prepare_recent_snapshot,
+)
 from skuld.websocket_auth import (
     _decode_jwt_claims,
     _extract_token_from_websocket,
@@ -161,46 +171,41 @@ class WebSocketLifecycleMixin:
         # FR-7 / INV-10) — NOT the hardcoded WebSocketChannel default — so the live
         # channel, the replay tail, and the cold-read all read the same default and
         # move together when it is flipped.
-        channel = WebSocketChannel(websocket, show_internal=self._settings.default_show_internal)
-        self._channels.add(channel)
+        protocol2 = websocket.query_params.get("history_protocol") == "2"
+        no_history = protocol2 and websocket.query_params.get("history_delivery") == "none"
+        channel = WebSocketChannel(
+            websocket,
+            show_internal=self._settings.default_show_internal,
+            max_frame_bytes=self._settings.live_frame_max_bytes,
+            history_protocol=2 if protocol2 else 0,
+            history_bootstrap_max_frames=self._settings.history_bootstrap_max_frames,
+        )
+        if not protocol2:
+            self._channels.add(channel)
         conn_count = self._channels.count
         logger.info("WebSocket connected, total channels: %d", conn_count)
 
         try:
             if not self._transport:
                 logger.error("handle_websocket: transport not initialized")
-                _transport_err = {"type": "error", "content": "Transport not initialized"}
+                _transport_err = control_error_frame(
+                    "Transport not initialized", code="transport_not_ready"
+                )
                 self._enqueue_event_log(_transport_err)
                 await self._safe_browser_send_json(websocket, _transport_err)
                 return
 
-            # Lazy-start transport on first browser connection
-            if not self._transport.is_alive:
-                if self._is_room_routed_session():
-                    logger.info(
-                        "handle_websocket: room-routed session detected; "
-                        "skipping transport lazy-start"
-                    )
-                else:
-                    logger.info("handle_websocket: transport not alive, starting...")
-                    try:
-                        await self._transport.start()
-                        logger.info("handle_websocket: transport started successfully")
-                    except Exception as e:
-                        logger.error(
-                            "handle_websocket: transport.start() failed: %r",
-                            e,
-                            exc_info=True,
-                        )
-                        _start_err = {
-                            "type": "error",
-                            "content": f"Transport start failed: {e}",
-                        }
-                        self._enqueue_event_log(_start_err)
-                        await self._safe_browser_send_json(websocket, _start_err)
-                        return
-            else:
-                logger.debug("handle_websocket: transport already alive")
+            # Join background resume even when the transport reports alive before
+            # completing its handshake. Every start path uses the same lock.
+            if not self._is_room_routed_session():
+                try:
+                    await self._ensure_transport_started()
+                except Exception as e:
+                    logger.error("handle_websocket: transport start failed: %r", e, exc_info=True)
+                    _start_err = {"type": "error", "content": f"Transport start failed: {e}"}
+                    self._enqueue_event_log(_start_err)
+                    await self._safe_browser_send_json(websocket, _start_err)
+                    return
 
             # Report session start to timeline (once, on first connection)
             asyncio.create_task(self._report_session_start())
@@ -227,35 +232,84 @@ class WebSocketLifecycleMixin:
             if self._transport:
                 caps = {"type": "capabilities", **asdict(self._transport.capabilities)}
                 caps["room_prompt_resend"] = self._room_bridge is not None
+                caps["history_protocol"] = 2
                 if not await self._safe_send_broker_frame_to(websocket, caps):
                     return
                 logger.debug("handle_websocket: capabilities sent")
 
-            # Replay conversation history so late-joining browsers see
-            # earlier messages (including the initial prompt)
-            # Whole-truth unification: replay completed turns PLUS the in-flight turn so a
-            # reconnect mid-run reconstructs the FULL truth (not just new frames from now on).
-            in_progress_turn = self._serialize_in_progress_turn()
-            if self._conversation_turns or in_progress_turn is not None:
-                replay_turns = [asdict(t) for t in self._conversation_turns]
-                if in_progress_turn is not None:
-                    replay_turns.append(in_progress_turn)
-                logger.info(
-                    "Replaying %d conversation turn(s) to new browser",
-                    len(replay_turns),
-                )
-                if not await self._safe_browser_send_json(
-                    websocket,
-                    {
+            # Protocol2 readers wait for a coherent state, without locking or
+            # delaying writers. Register only AFTER synchronous capture so events
+            # included in history cannot also be buffered as post-snapshot deltas.
+            snapshot = None
+            gap = None
+            if not no_history:
+                try:
+                    if protocol2:
+                        await wait_history_quiet(self)
+                    replay_turns = conversation_rows(self)
+                    recent_requested = (
+                        protocol2 or websocket.query_params.get("history") == "recent"
+                    )
+                    frame = {
                         "type": "conversation_history",
                         "turns": replay_turns,
-                        # SRD FR-6: the durable-log head seq at reconnect time. The
-                        # client loads this state, then resumes the live tail from
-                        # head_seq+1 with no gap and no duplicate (the broker keeps
-                        # appending to the SAME monotonic seq it broadcasts from).
+                        "projection_revision": projection_revision(replay_turns),
                         "head_seq": self._event_log_seq,
-                    },
-                ):
+                    }
+                    logger.info(
+                        "Replaying %d recent=%s conversation turns",
+                        len(replay_turns),
+                        recent_requested,
+                    )
+                    if protocol2:
+                        snapshot = prepare_history_page(
+                            {**frame, "history_source": "gateway"},
+                            session_id=self.session_id,
+                            max_bytes=min(
+                                self._settings.conversation_recent_max_bytes,
+                                self._settings.conversation_snapshot_max_bytes,
+                            ),
+                            max_turns=self._settings.conversation_recent_max_turns,
+                        )
+                    elif replay_turns and recent_requested:
+                        snapshot = prepare_recent_snapshot(
+                            frame,
+                            max_bytes=min(
+                                self._settings.conversation_recent_max_bytes,
+                                self._settings.conversation_snapshot_max_bytes,
+                            ),
+                            max_turns=self._settings.conversation_recent_max_turns,
+                        )
+                    elif replay_turns:
+                        snapshot = prepare_conversation_snapshot(
+                            frame, max_bytes=self._settings.conversation_snapshot_max_bytes
+                        )
+                except (ConversationSnapshotTooLargeError, TimeoutError) as exc:
+                    logger.warning("WebSocket conversation replay requires REST: %s", exc)
+                    if protocol2:
+                        gap = history_gap(
+                            "snapshot_race"
+                            if isinstance(exc, TimeoutError)
+                            else "snapshot_too_large",
+                            head_seq=self._event_log_seq,
+                        )
+                    else:
+                        gap = {
+                            "type": "error",
+                            "code": "conversation_history_too_large",
+                            "content": (
+                                "Conversation history is too large for WebSocket replay. "
+                                "Reload history through REST."
+                            ),
+                            PER_CONNECT_MARKER: True,
+                        }
+            if protocol2:
+                self._channels.add(channel)
+            if snapshot is not None:
+                if not await self._safe_browser_send_json(websocket, snapshot):
+                    return
+            if gap is not None:
+                if not await self._safe_send_broker_frame_to(websocket, gap):
                     return
 
             # Send current room state to late-joining browsers when room mode active
@@ -292,12 +346,33 @@ class WebSocketLifecycleMixin:
                     if not await self._safe_browser_send_json(websocket, ask_question):
                         return
 
+            # Persisted question text is evidence, not a usable RPC address after
+            # the native process restarts. Show the retained card honestly and
+            # never route its answer onto a different live prompt.
+            for recovered in [
+                *self._unrestored_questions.values(),
+                *self._unrestored_permissions.values(),
+            ]:
+                if not await self._safe_browser_send_json(websocket, recovered):
+                    return
+                if not await self._safe_browser_send_json(
+                    websocket,
+                    control_error_frame(
+                        "This pending control survived in history, but the native process "
+                        "must reissue it before an answer can be delivered.",
+                        recovered,
+                        code="question_recovery_required",
+                    ),
+                ):
+                    return
+
             # Plan + running agents: a late-joining client should immediately know
             # the current plan and the running fleet without waiting for the next
             # change — same guarantee questions/permissions get above.
             if self._current_plan is not None:
                 if not await self._safe_browser_send_json(websocket, self._current_plan):
                     return
+            self._reap_dead_teammates()
             if self._running_agents:
                 logger.info(
                     "Replaying %d running agent(s) to new browser",
@@ -313,6 +388,9 @@ class WebSocketLifecycleMixin:
                     }
                     if not await self._safe_browser_send_json(websocket, frame):
                         return
+
+            if protocol2:
+                await channel.finish_history_bootstrap()
 
             # Handle messages from browser
             while True:
@@ -339,6 +417,7 @@ class WebSocketLifecycleMixin:
                     )
                     _bad_frame_err = {
                         "type": "error",
+                        "code": "malformed_message",
                         "content": f"malformed message ignored: {e}",
                     }
                     self._enqueue_event_log(_bad_frame_err)
@@ -353,7 +432,7 @@ class WebSocketLifecycleMixin:
                     await self._dispatch_browser_message(data, sender_ws=websocket)
                 except Exception as e:
                     logger.exception("Error processing browser message: %s", _sanitize_log(data))
-                    _dispatch_err = {"type": "error", "content": str(e)}
+                    _dispatch_err = control_error_frame(e, data)
                     self._enqueue_event_log(_dispatch_err)
                     with contextlib.suppress(Exception):
                         await websocket.send_json(_dispatch_err)
@@ -366,7 +445,7 @@ class WebSocketLifecycleMixin:
                 return
             logger.exception("WebSocket error")
             try:
-                _ws_err = {"type": "error", "content": str(e)}
+                _ws_err = control_error_frame(e, code="websocket_error")
                 self._enqueue_event_log(_ws_err)
                 await websocket.send_json(_ws_err)
             except Exception:

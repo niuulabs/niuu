@@ -64,8 +64,16 @@ class RecordingMemory(MemoryPort):
         return self._shared
 
 
-def make_simple_llm(response_text: str = "Done!") -> LLMPort:
-    """Build a mock LLM that streams a simple text response and supports generate."""
+def make_simple_llm(
+    response_text: str = "Done — deployed to staging; the health endpoint returned 200.",
+) -> LLMPort:
+    """Build a mock LLM that streams a simple text response and supports generate.
+
+    The default answer is a realistic one rather than "Done!": a turn whose answer is a bare
+    acknowledgement is no longer recorded as an episode (see `_is_worth_remembering`), because
+    100 of 139 documents in the live corpus were exactly that and they made recall degenerate.
+    A five-character reply is not something an agent actually says.
+    """
 
     async def _stream(*args, **kwargs) -> AsyncIterator[StreamEvent]:
         yield StreamEvent(type=StreamEventType.TEXT_DELTA, text=response_text)
@@ -184,7 +192,7 @@ class TestAgentEpisodeEnrichment:
         assert mem.recorded[0].reflection == ""
 
     async def test_no_memory_works_normally(self) -> None:
-        agent, _ = make_agent(make_simple_llm(), memory=None)
+        agent, _ = make_agent(make_simple_llm("Done!"), memory=None)
         result = await agent.run_turn("hello")
         assert result.response == "Done!"
 
