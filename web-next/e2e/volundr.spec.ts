@@ -1,4 +1,19 @@
 import { test, expect } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+
+const config = JSON.parse(
+  readFileSync(new URL('../apps/niuu/public/config.json', import.meta.url), 'utf8'),
+);
+config.services.setup = { mode: 'http', baseUrl: '/api/v1/niuu/setup' };
+config.services.integrations = { mode: 'http', baseUrl: '/api/v1/integrations' };
+
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/v1/niuu/setup', (route) =>
+    route.fulfill({ json: { enabled: false, completed: true, steps: [], completedSteps: [] } }),
+  );
+  await page.route('**/api/v1/integrations{,/**}', (route) => route.fulfill({ json: [] }));
+  await page.route(/\/config(?:\.live)?\.json$/, (route) => route.fulfill({ json: config }));
+});
 
 test('navigate to /volundr redirects to the forge page', async ({ page }) => {
   await page.goto('/volundr');
