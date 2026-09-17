@@ -2,6 +2,11 @@
 
 **Observed September 17, 2026, 19:13 UTC.** Read-only health requests; no session was stopped, resumed or updated.
 
+**Later change, 20:39 UTC:** the user selected `lexi-macos-interface-parity` for
+refresh. It now matches Thor's latest release, with its native thread, 72 replay
+rows and workspace preserved. [Refresh evidence](macos-parity-skuld-refresh-20260917.md).
+The inventory below remains the historical 19:13 snapshot, not a fresh mesh sweep.
+
 ## Result
 
 - 664 session records returned by the four-host Forge inventory.
