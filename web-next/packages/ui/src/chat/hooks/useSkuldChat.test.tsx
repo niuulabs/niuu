@@ -2415,6 +2415,23 @@ page_path: council/demo/opinion-b.md
     });
   });
 
+  it('shows broker transport startup errors sent in content', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'error',
+          content: 'Transport start failed: Read-only file system',
+        }),
+      );
+    });
+    expect(result.current.messages.at(-1)).toMatchObject({
+      status: 'error',
+      content: 'Transport start failed: Read-only file system',
+    });
+  });
+
   it('drops stale empty assistant streams when the websocket closes', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 
