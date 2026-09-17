@@ -1534,7 +1534,8 @@ export function useSkuldChat(
             const errorMessage =
               typeof event.error === 'string'
                 ? event.error
-                : (event.error?.message ?? event.content ?? 'Unknown error');
+                : (event.error?.message ??
+                  (typeof event.content === 'string' ? event.content : 'Unknown error'));
             finalizeStreaming('error', errorMessage);
             break;
           }
