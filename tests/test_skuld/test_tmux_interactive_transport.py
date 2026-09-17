@@ -164,13 +164,14 @@ async def test_start_answers_the_cli_first_run_dialogs_in_its_config(
     transport._socket_path = transport._socket_dir / f"{transport._session_name}.sock"
 
     await transport.start()
+    settings = json.loads(transport._hook_settings_path.read_text(encoding="utf-8"))
     await transport.stop()
 
     config = json.loads((config_dir / ".claude.json").read_text(encoding="utf-8"))
     assert config["hasCompletedOnboarding"] is True
     assert config["theme"] == "dark"
     assert config["projects"][str(workspace)]["hasTrustDialogAccepted"] is True
-    settings = json.loads((config_dir / "settings.json").read_text(encoding="utf-8"))
+    assert not (config_dir / "settings.json").exists()
     assert settings["skipDangerousModePermissionPrompt"] is True
 
 
@@ -200,15 +201,33 @@ def test_prepare_claude_config_keeps_existing_state(tmp_path: Path) -> None:
     assert config_path.stat().st_mtime_ns == stamp
 
 
-def test_prepare_claude_config_keeps_other_user_settings(tmp_path: Path) -> None:
+@pytest.mark.parametrize("hook_events_enabled,sdk_port", [(False, 0), (True, 8081)])
+def test_prepare_claude_config_keeps_other_user_settings(
+    tmp_path: Path, hook_events_enabled: bool, sdk_port: int
+) -> None:
     settings_path = tmp_path / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True)
-    settings_path.write_text(json.dumps({"model": "opus", "hooks": {}}), encoding="utf-8")
-    transport = FakeTmuxInteractiveTransport(str(tmp_path / "ws"), skip_permissions=True)
+    projected = tmp_path / "projected-settings.json"
+    original = json.dumps({"model": "opus", "hooks": {}})
+    projected.write_text(original, encoding="utf-8")
+    projected.chmod(0o444)
+    settings_path.symlink_to(projected)
+    transport = FakeTmuxInteractiveTransport(
+        str(tmp_path / "ws"),
+        skip_permissions=True,
+        sdk_port=sdk_port,
+    )
 
+    transport._hook_events_enabled = hook_events_enabled
     transport._prepare_claude_config({"HOME": str(tmp_path)})
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
-    assert settings == {"model": "opus", "hooks": {}, "skipDangerousModePermissionPrompt": True}
+    assert settings == {"model": "opus", "hooks": {}}
+    assert settings_path.is_symlink()
+    assert projected.read_text() == original
+    transport._write_hook_settings()
+    argv = transport._interactive_argv()
+    overlay = Path(argv[argv.index("--settings") + 1])
+    assert json.loads(overlay.read_text())["skipDangerousModePermissionPrompt"] is True
 
 
 @pytest.mark.asyncio

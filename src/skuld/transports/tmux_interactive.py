@@ -2700,7 +2700,7 @@ class TmuxInteractiveTransport(CLITransport):
                 "claude.ai/code + phone in parallel with the Volundr API",
                 rc_name,
             )
-        if self._hook_events_enabled and self._sdk_port:
+        if self._skip_permissions or (self._hook_events_enabled and self._sdk_port):
             cmd.extend(["--settings", str(self._hook_settings_path)])
         appended_system_prompt = self._composed_system_prompt()
         if appended_system_prompt:
@@ -2729,18 +2729,23 @@ class TmuxInteractiveTransport(CLITransport):
         return self._safe_name(raw)[:60]
 
     def _write_hook_settings(self) -> None:
-        if not self._hook_events_enabled or not self._sdk_port:
+        settings: dict[str, Any] = {}
+        if self._skip_permissions:
+            # Session settings belong in the CLI overlay: user settings can be
+            # symlinked to a read-only Kubernetes credential projection.
+            settings["skipDangerousModePermissionPrompt"] = True
+        if self._hook_events_enabled and self._sdk_port:
+            events = list(_CLAUDE_HOOK_EVENTS)
+            if self._message_display_hook_enabled:
+                events.extend(_OPTIONAL_HIGH_VOLUME_HOOK_EVENTS)
+            hook = {
+                "type": "http",
+                "url": f"http://127.0.0.1:{self._sdk_port}/api/claude/hooks",
+                "timeout": 5,
+            }
+            settings["hooks"] = {event: [{"matcher": "", "hooks": [hook]}] for event in events}
+        if not settings:
             return
-
-        events = list(_CLAUDE_HOOK_EVENTS)
-        if self._message_display_hook_enabled:
-            events.extend(_OPTIONAL_HIGH_VOLUME_HOOK_EVENTS)
-        hook = {
-            "type": "http",
-            "url": f"http://127.0.0.1:{self._sdk_port}/api/claude/hooks",
-            "timeout": 5,
-        }
-        settings = {"hooks": {event: [{"matcher": "", "hooks": [hook]}] for event in events}}
         self._hook_settings_path.parent.mkdir(parents=True, exist_ok=True)
         self._hook_settings_path.write_text(
             json.dumps(settings, indent=2, sort_keys=True) + "\n",
@@ -2802,30 +2807,6 @@ class TmuxInteractiveTransport(CLITransport):
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
             logger.info("tmux: prepared Claude CLI config at %s (onboarding, trust)", config_path)
-        if not self._skip_permissions:
-            return
-        # The bypass-permissions notice is skipped through the user settings
-        # file, the same switch a person flips by hand for a sandbox.
-        settings_path = self._claude_settings_path(env)
-        settings: dict[str, Any] = {}
-        if settings_path.exists():
-            settings = json.loads(settings_path.read_text(encoding="utf-8"))
-        if settings.get("skipDangerousModePermissionPrompt") is True:
-            return
-        settings["skipDangerousModePermissionPrompt"] = True
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
-        settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
-        logger.info("tmux: acknowledged bypass-permissions mode in %s", settings_path)
-
-    @staticmethod
-    def _claude_settings_path(env: dict[str, str]) -> Path:
-        """The CLI's user settings file: ``$CLAUDE_CONFIG_DIR/settings.json``,
-        else ``~/.claude/settings.json``."""
-        config_dir = env.get("CLAUDE_CONFIG_DIR", "").strip()
-        if config_dir:
-            return Path(config_dir) / "settings.json"
-        home = env.get("HOME", "").strip()
-        return (Path(home) if home else Path.home()) / ".claude" / "settings.json"
 
     async def _emit_system_init(self) -> None:
         await self._emit(
