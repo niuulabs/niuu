@@ -1,0 +1,32 @@
+.forge-session-pin {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: var(--space-8);
+  height: var(--space-8);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+.forge-session-pin:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border-subtle);
+}
+.forge-session-row__actions .forge-session-pin[aria-pressed='true'],
+.forge-session-pin[aria-pressed='true'] {
+  color: var(--color-brand);
+}
+.forge-session-pin[aria-pressed='true'] svg {
+  fill: currentColor;
+}
+.forge-session-pin:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+.forge-session-pinned-group {
+  padding-bottom: var(--space-2);
+  margin-bottom: var(--space-1);
+  border-bottom: 1px solid var(--color-border-subtle);
+}

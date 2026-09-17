@@ -17,6 +17,7 @@ import {
 import type { DotState } from '@niuulabs/ui';
 import {
   Archive,
+  Pin,
   Plus,
   Check,
   ChevronDown,
@@ -34,6 +35,8 @@ import {
 } from 'lucide-react';
 import { LaunchWizard } from './LaunchWizard';
 import { RenameSession } from './RenameSession';
+import { PinSession } from './PinSession';
+import { usePinnedSessions } from './usePinnedSessions';
 import { ImportExternalSessionsDialog } from './ImportExternalSessionsDialog';
 import { useSessionList } from './hooks/useSessionStore';
 import { buildSessionTree, groupByProject, type SessionTreeNode } from '../domain/projectTree';
@@ -373,6 +376,7 @@ function PodEntry({
           aria-label={`Actions for ${primaryLabel}`}
         >
           <RenameSession sessionId={session.id} name={primaryLabel} disabled={busy} />
+          <PinSession sessionId={session.id} name={primaryLabel} />
           {STOPPABLE_STATES.has(session.state) && (
             <button
               type="button"
@@ -471,6 +475,7 @@ function SessionTreeEntry({
 
 function PodGroup({
   groupKey,
+  pinned = false,
   hierarchical = false,
   label,
   sessions,
@@ -485,6 +490,7 @@ function PodGroup({
   busyId,
 }: {
   groupKey?: string;
+  pinned?: boolean;
   hierarchical?: boolean;
   label: string;
   sessions: Session[];
@@ -522,7 +528,10 @@ function PodGroup({
   );
 
   return (
-    <div data-testid={`pod-group-${toGroupTestId(label)}`}>
+    <div
+      data-testid={`pod-group-${toGroupTestId(label)}`}
+      className={pinned ? 'forge-session-pinned-group' : undefined}
+    >
       {!collapsed && (
         <button
           type="button"
@@ -532,6 +541,7 @@ function PodGroup({
         >
           <span className="niuu:flex niuu:items-center niuu:gap-1">
             {folded === '1' ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+            {pinned && <Pin size={12} />}
             {label}
           </span>
           <span
@@ -561,6 +571,7 @@ export function SessionsPage() {
   const { sessionId: routeSessionId } = useParams({ strict: false });
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const { ids: pinnedIds, pinned } = usePinnedSessions();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarMode, setSidebarMode] = useForgePreference<SidebarMode>(
     'grouping',
@@ -613,11 +624,10 @@ export function SessionsPage() {
   );
 
   // Filter by search query
-  const filteredSessions = useMemo(() => {
+  const searchedSessions = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    const visible = allSessions.filter((session) => matchesSessionFilter(session, filter));
-    if (!q) return visible;
-    return visible.filter(
+    if (!q) return allSessions;
+    return allSessions.filter(
       (s) =>
         s.id.toLowerCase().includes(q) ||
         s.name?.toLowerCase().includes(q) ||
@@ -626,7 +636,22 @@ export function SessionsPage() {
         s.clusterName?.toLowerCase().includes(q) ||
         s.clusterId?.toLowerCase().includes(q),
     );
-  }, [allSessions, searchQuery, filter]);
+  }, [allSessions, searchQuery]);
+  const pinnedSessions = useMemo(() => {
+    const byId = new Map(searchedSessions.map((session) => [session.id, session]));
+    return pinnedIds.flatMap((id) => {
+      const session = byId.get(id);
+      return session ? [session] : [];
+    });
+  }, [searchedSessions, pinnedIds]);
+  const filteredSessions = useMemo(
+    () => searchedSessions.filter((session) => matchesSessionFilter(session, filter)),
+    [searchedSessions, filter],
+  );
+  const unpinnedSessions = useMemo(
+    () => filteredSessions.filter((session) => !pinned.has(session.id)),
+    [filteredSessions, pinned],
+  );
   const filteredStoppedSessions = useMemo(
     () => filteredSessions.filter((session) => session.state === 'terminated'),
     [filteredSessions],
@@ -637,22 +662,22 @@ export function SessionsPage() {
   );
 
   // Group by state
-  const grouped = useMemo(() => groupByState(filteredSessions), [filteredSessions]);
+  const grouped = useMemo(() => groupByState(unpinnedSessions), [unpinnedSessions]);
 
   // Build sidebar groups — flatten matching states per display group
   const sidebarGroups = useMemo<SessionSection[]>(() => {
-    if (sidebarMode === 'project') return groupByProject(filteredSessions, projects.data ?? []);
+    if (sidebarMode === 'project') return groupByProject(unpinnedSessions, projects.data ?? []);
     if (sidebarMode === 'repo') {
-      return groupByRepo(filteredSessions);
+      return groupByRepo(unpinnedSessions);
     }
     if (sidebarMode === 'forge') {
-      return groupByForge(filteredSessions);
+      return groupByForge(unpinnedSessions);
     }
     return POD_GROUPS.map((g) => ({
       label: g.label,
       sessions: g.states.flatMap((st) => grouped[st]),
     }));
-  }, [filteredSessions, grouped, sidebarMode, projects.data]);
+  }, [unpinnedSessions, grouped, sidebarMode, projects.data]);
   const requestedSessionId = typeof routeSessionId === 'string' ? routeSessionId : null;
   const resolvedSelectedSessionId = useMemo(() => {
     if (allSessions.length === 0) return null;
@@ -836,6 +861,15 @@ export function SessionsPage() {
                 </button>
               </div>
               <div className="niuu:flex-1 niuu:overflow-y-auto niuu:py-2">
+                <PodGroup
+                  label="Pinned"
+                  groupKey="pinned"
+                  pinned
+                  sessions={pinnedSessions}
+                  selectedId={resolvedSelectedSessionId}
+                  onSelect={handleSelectSession}
+                  collapsed
+                />
                 {sidebarGroups.map((g) => (
                   <PodGroup
                     key={g.id ?? g.label}
@@ -976,6 +1010,20 @@ export function SessionsPage() {
               </div>
 
               <div className="forge-session-scroll niuu:flex-1 niuu:overflow-y-auto niuu:pb-1.5">
+                <PodGroup
+                  label="Pinned"
+                  groupKey="pinned"
+                  pinned
+                  sessions={pinnedSessions}
+                  selectedId={resolvedSelectedSessionId}
+                  onSelect={handleSelectSession}
+                  showDetails={details === '1'}
+                  onAction={(session, action) => void handleRowAction(session, action)}
+                  busyId={rowBusyId}
+                  selectableSessionIds={stoppedSelectionMode ? filteredStoppedIds : undefined}
+                  selectedSessionIds={resolvedSelectedStoppedIds}
+                  onToggleSelection={handleToggleStoppedSelection}
+                />
                 {sidebarMode === 'project' && projects.isLoading && (
                   <p className="forge-session-project-status" role="status">
                     Loading projects…
@@ -986,11 +1034,13 @@ export function SessionsPage() {
                     Project names could not be refreshed. Sessions remain available.
                   </p>
                 )}
-                {filteredSessions.length === 0 && !sessionsQuery.isLoading && (
-                  <p className="niuu:p-4 niuu:text-sm niuu:text-text-muted">
-                    No sessions match these filters.
-                  </p>
-                )}
+                {filteredSessions.length === 0 &&
+                  pinnedSessions.length === 0 &&
+                  !sessionsQuery.isLoading && (
+                    <p className="niuu:p-4 niuu:text-sm niuu:text-text-muted">
+                      No sessions match these filters.
+                    </p>
+                  )}
                 {sidebarGroups.map((g) => (
                   <PodGroup
                     key={g.id ?? g.label}

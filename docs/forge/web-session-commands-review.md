@@ -24,6 +24,9 @@ for the web controls.
 
 ## Skuld API
 
+For the live/source catalogue gap and the proposed expansion sequence, see the
+[slash-command coverage review](web-slash-command-coverage-review.md).
+
 These are session broker endpoints, reached using that session's `chat_endpoint`
 and its `/s/{session-id}/api/…` HTTP proxy. They do not depend on the separate
 Terminal tab or terminal daemon.

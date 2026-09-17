@@ -146,6 +146,83 @@ describe('SessionsPage', () => {
     navigate.mockClear();
   });
 
+  it('keeps pinned sessions above every grouping and state filter without duplicate rows', async () => {
+    const sessions = [
+      makeSession({
+        id: 'active-pin',
+        name: 'active-review',
+        personaName: 'dev',
+        state: 'running',
+      }),
+      makeSession({ id: 'idle-pin', name: 'idle-review', personaName: 'dev', state: 'idle' }),
+      makeSession({
+        id: 'archived-pin',
+        name: 'archived-review',
+        personaName: 'dev',
+        state: 'archived',
+      }),
+      makeSession({ id: 'other', name: 'other-review', personaName: 'dev', state: 'running' }),
+    ];
+    localStorage.setItem(
+      'niuu.forge.pinnedSessions',
+      '["idle-pin","active-pin","archived-pin","missing"]',
+    );
+    wrap(createSessionStoreWithSessions(sessions));
+    const pinned = await screen.findByTestId('pod-group-pinned');
+    expect(
+      within(pinned)
+        .getAllByTestId(/^pod-entry-[^-]+-pin$/)
+        .map((row) => row.dataset.testid),
+    ).toEqual(['pod-entry-idle-pin', 'pod-entry-active-pin', 'pod-entry-archived-pin']);
+    for (const mode of ['state', 'repo', 'forge', 'project']) {
+      fireEvent.click(screen.getByTestId(`pod-group-mode-${mode}`));
+      for (const filter of [
+        'live',
+        'active',
+        'idle',
+        'attention',
+        'stopped',
+        'failed',
+        'all',
+        'archived',
+      ]) {
+        fireEvent.click(screen.getByTestId(`session-filter-${filter}`));
+        expect(screen.getAllByTestId('pod-entry-active-pin')).toHaveLength(1);
+        expect(within(pinned).getByTestId('pod-entry-archived-pin')).toBeInTheDocument();
+      }
+    }
+    fireEvent.click(within(pinned).getByRole('button', { name: /^Pinned/ }));
+    expect(within(pinned).queryByTestId('pod-entry-active-pin')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('pod-group-mode-state'));
+    expect(within(pinned).getByRole('button', { name: /^Pinned/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
+  it('pins beside rename without selecting the row, lets search narrow pins, and unpins to the normal group', async () => {
+    const session = makeSession({
+      id: 'pin-me',
+      name: 'review',
+      personaName: 'dev',
+      state: 'idle',
+    });
+    wrap(createSessionStoreWithSessions([session]));
+    const row = await screen.findByTestId('pod-entry-pin-me');
+    fireEvent.click(within(row.parentElement!).getByRole('button', { name: 'Pin review' }));
+    expect(navigate).not.toHaveBeenCalled();
+    const pinned = screen.getByTestId('pod-group-pinned');
+    expect(within(pinned).getByTestId('pod-entry-pin-me')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('pod-search'), { target: { value: 'no-match' } });
+    expect(screen.queryByTestId('pod-group-pinned')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('pod-search'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Unpin review' }));
+    expect(screen.queryByTestId('pod-group-pinned')).not.toBeInTheDocument();
+    expect(
+      within(screen.getByTestId('pod-group-idle')).getByTestId('pod-entry-pin-me'),
+    ).toBeInTheDocument();
+  });
+
   it('renders the sessions page container', async () => {
     await act(async () => {
       wrap();

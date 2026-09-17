@@ -46,13 +46,13 @@ for implemented and verified items.
 | Row badge                | `SessionStatePill`, elapsed server activity timestamp                        | Dot only. [x] Text badge; keep state readable without relying on color                                                                                             |
 | State timing             | Active/idle/waiting duration derives from `activity_state_since`             | [ ] Surface elapsed activity consistently, distinct from last activity                                                                                             |
 | Search                   | Name, id, model, workspace; native host chips                                | Existing name/workspace/host search. [x] Compose search with state filtering                                                                                       |
-| Grouping                 | Project/repository/status/host/none; remembered; pinned section              | Existing state/repository/Forge. [x] Collapsible remembered groups; [ ] project grouping; [ ] pinning                                                              |
+| Grouping                 | Project/repository/status/host/none; remembered; pinned section              | Existing state/repository/Forge. [x] Collapsible remembered groups; [x] project grouping; [x] pinning                                                              |
 | Archive visibility       | Lazy archive fan-out; explicit All/Archive                                   | Web store currently fetches both live and archived every listing. [x] Explicit archive visibility; [ ] lazy archived fetch                                         |
 | List width               | macOS split view, compact phone list                                         | Fixed 228px. [x] Wider persisted draggable/keyboard-adjustable list                                                                                                |
 | Row details              | `SessionDisplayPreferences`: optional details OFF by default                 | Owner may appear as tracker. [x] Clean default; details toggle; meaningful source summary                                                                          |
 | Row actions              | iPhone swipe/context; Mac context/hover                                      | Detail toolbar + bulk stopped operations. [x] Row Stop/Archive/Restore/Delete; accessible keyboard/touch affordances                                               |
 | Mutation integrity       | Lifecycle API, errors, selection handling                                    | [x] Busy state, visible errors, delete confirmation, refresh relevant caches                                                                                       |
-| Rename / pins            | Native name editor and device-local pin set                                  | [ ] Web rename / pins parity                                                                                                                                       |
+| Rename / pins            | Native name editor and device-local pin set                                  | [x] Web rename and browser-local pins in header/sidebar; pinned group spans state filters                                                                          |
 | Launch                   | Native host/model/effort/folder defaults and MRU                             | Existing web catalog/wizard. [ ] Recover local-folder Quick Launch and defaults separately                                                                         |
 | Hierarchical transcript  | `ForgeFlowAssembly`, `ForgeTranscriptView`, `MacToolTree`                    | Same-name groups only. [x] Mixed adjacent tool groups, separate call/detail disclosures                                                                            |
 | Chronology               | Stable native identities, no grouping across public prose                    | Existing native interleaving fixes. [x] Keep those invariants through new grouping                                                                                 |
@@ -421,3 +421,19 @@ Validation: full production rebuild, workspace type checks, changed-file lint;
 both themes, website/Markdown/image previews, target tooltips, nested link resolution,
 keyboard focus return, hidden-tool boundaries and action colours. Lifecycle operations
 remain fixture-only; the live deployment check is read-only.
+
+## Pinned sessions — September 17
+
+The header and row action overlay have a pin next to the rename pencil. Pinned
+sessions appear once in a collapsible Pinned section above every State, Repo,
+Forge or Project group, regardless of their current state or the selected state
+filter. Pin order is stable (the order they were pinned). Search still narrows
+pinned and ordinary rows. Unpinning returns the session to its normal group;
+unpinned project descendants remain accessible when their parent is pinned.
+
+Pins and the collapsed state are remembered in this browser and synchronize
+between open tabs of the same origin. This is personal presentation state, not a
+Forge session mutation or cross-device account synchronization. Pins remain saved
+if a session is temporarily unavailable; missing/deleted sessions produce no row.
+State-filter counts and stopped-session lifecycle actions retain their existing
+meaning.

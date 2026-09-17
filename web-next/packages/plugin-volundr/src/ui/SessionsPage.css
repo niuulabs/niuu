@@ -41,6 +41,16 @@
   pointer-events: none;
 }
 @media (hover: hover) {
+  /* Keep the five-action strip in the title line, clear of the row's centre hit area. */
+  .forge-session-row__actions {
+    top: 4px;
+    padding: 1px;
+  }
+  .forge-session-row .forge-session-row__actions button {
+    width: 28px;
+    height: 24px;
+    min-height: 24px;
+  }
   .forge-session-row:hover .forge-session-row__actions,
   .forge-session-row:focus-within .forge-session-row__actions {
     opacity: 1;

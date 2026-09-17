@@ -230,6 +230,62 @@ test('renames from the title and sidebar, persisting through a reload', async ({
   ]);
 });
 
+test('pins from the title and sidebar above every grouping and state, remembering collapse and pins', async ({
+  page,
+}, testInfo) => {
+  const mutations = await fixture(page);
+  await page.goto('/volundr/sessions/review');
+  const title = page.locator('.niuu-live-session__identity');
+  await title.getByRole('button', { name: 'Pin Forge UX review', exact: true }).click();
+  const pinned = page.locator('.forge-session-pinned-group');
+  await expect(pinned.getByTestId('pod-entry-review')).toBeVisible();
+  await expect(title.getByRole('button', { name: 'Unpin Forge UX review' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  for (const mode of ['state', 'repo', 'forge', 'project']) {
+    await page.getByTestId(`pod-group-mode-${mode}`).click();
+    await expect(pinned).toBeVisible();
+    expect(
+      await page.locator('.forge-session-scroll > div').first().getAttribute('class'),
+    ).toContain('forge-session-pinned-group');
+    await expect(page.getByTestId('pod-entry-review')).toHaveCount(1);
+  }
+  // A pinned project parent must not hide its unpinned child.
+  await expect(page.getByTestId('pod-group-lexi').getByTestId('pod-entry-idle')).toBeVisible();
+  for (const state of ['active', 'idle', 'attention', 'stopped', 'failed', 'all', 'archived']) {
+    await page.getByTestId(`session-filter-${state}`).click();
+    await expect(pinned.getByTestId('pod-entry-review')).toBeVisible();
+  }
+  const archived = page.getByTestId('pod-entry-archived').locator('..');
+  await archived.hover();
+  await archived.getByRole('button', { name: 'Pin Earlier iteration' }).click();
+  await page.getByTestId('session-filter-live').click();
+  await expect(pinned.getByTestId('pod-entry-archived')).toBeVisible();
+  await expect(pinned.getByTestId('pod-entry-review')).toBeVisible();
+  await expect(page.getByTestId('pod-entry-archived')).toHaveCount(1);
+  await page.screenshot({
+    path: testInfo.outputPath('pinned-sessions.png'),
+    animations: 'disabled',
+  });
+  await pinned.getByRole('button', { name: /^Pinned/ }).click();
+  await page.reload();
+  await expect(pinned.getByRole('button', { name: /^Pinned/ })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+  await pinned.getByRole('button', { name: /^Pinned/ }).click();
+  await expect(pinned.getByTestId('pod-entry-review')).toBeVisible();
+  await page.getByTestId('pod-search').fill('Earlier');
+  await expect(pinned.getByTestId('pod-entry-review')).toHaveCount(0);
+  await expect(pinned.getByTestId('pod-entry-archived')).toBeVisible();
+  await page.getByTestId('pod-search').clear();
+  await title.getByRole('button', { name: 'Unpin Forge UX review' }).click();
+  await expect(page.getByTestId('pod-group-lexi').getByTestId('pod-entry-review')).toBeVisible();
+  await expect(pinned.getByTestId('pod-entry-review')).toHaveCount(0);
+  expect(mutations).toEqual([]);
+});
+
 test('discovers cached commands and submits the selected command through Skuld', async ({
   page,
 }, testInfo) => {
@@ -616,7 +672,7 @@ test('touch users can reveal row actions while the state stays visible at rest',
   });
   const page = await context.newPage();
   try {
-    await fixture(page);
+    const mutations = await fixture(page);
     await page.goto('/volundr/sessions');
     const row = page.getByTestId('pod-entry-review').locator('..');
     const more = row.getByRole('button', { name: 'Actions for Forge UX review' });
@@ -640,8 +696,23 @@ test('touch users can reveal row actions while the state stays visible at rest',
     await page.getByRole('button', { name: 'Cancel', exact: true }).tap();
     await expect(page).toHaveURL(/\/volundr\/sessions$/);
     await expect(row).toContainText('Forge UX review');
+    await row.getByRole('button', { name: 'Pin Forge UX review' }).tap();
+    const pinned = page.locator('.forge-session-pinned-group');
+    await expect(pinned.getByTestId('pod-entry-review')).toBeVisible();
+    await expect(page).toHaveURL(/\/volundr\/sessions$/);
+    await page.screenshot({
+      path: testInfo.outputPath('touch-pinned-session.png'),
+      animations: 'disabled',
+    });
+    // Moving the row remounts its touch action menu, which starts closed.
+    await more.tap();
+    await row.getByRole('button', { name: 'Unpin Forge UX review' }).tap();
+    await expect(pinned).toHaveCount(0);
+    await more.tap();
+    await expect(actions).toHaveCSS('opacity', '1');
     await more.tap();
     await expect(actions).toHaveCSS('opacity', '0');
+    expect(mutations).toEqual([]);
   } finally {
     await context.close();
   }
