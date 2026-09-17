@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import {
   LoadingState,
@@ -11,16 +11,20 @@ import {
   cn,
   Dialog,
   DialogContent,
+  Tooltip,
+  TooltipProvider,
 } from '@niuulabs/ui';
 import type { DotState } from '@niuulabs/ui';
 import {
   Archive,
+  Plus,
   Check,
   ChevronDown,
   ChevronRight,
   RotateCcw,
   Square,
-  Clock3,
+  FolderOpen,
+  MoreHorizontal,
   Download,
   FolderGit2,
   Search,
@@ -31,9 +35,10 @@ import {
 import { LaunchWizard } from './LaunchWizard';
 import { ImportExternalSessionsDialog } from './ImportExternalSessionsDialog';
 import { useSessionList } from './hooks/useSessionStore';
+import { buildSessionTree, groupByProject, type SessionTreeNode } from '../domain/projectTree';
 import { groupByState } from './sessions/groupByState';
 import { LiveSessionDetailPage } from './LiveSessionDetailPage';
-import type { Session, SessionState } from '../domain/session';
+import { sessionHarness, type Session, type SessionState } from '../domain/session';
 import type { IVolundrService } from '../ports/IVolundrService';
 import { useForgePreference } from './useForgePreference';
 import {
@@ -57,11 +62,12 @@ interface PodGroupDef {
   states: SessionState[];
 }
 
-type SidebarMode = 'state' | 'repo' | 'forge';
-const SIDEBAR_MODES = ['state', 'repo', 'forge'] as const;
+type SidebarMode = 'state' | 'repo' | 'forge' | 'project';
+const SIDEBAR_MODES = ['state', 'repo', 'forge', 'project'] as const;
 type RowAction = 'stop' | 'archive' | 'restore' | 'delete';
 
 interface SessionSection {
+  id?: string;
   label: string;
   sessions: Session[];
 }
@@ -233,8 +239,25 @@ function PodEntry({
   const showPreviewFallback = previewLabel && !sourceParts;
   const forgeLabel = session.clusterName ?? session.clusterId;
   const originBadge = sessionOriginBadge(session);
+  const harness = sessionHarness(session);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const localPath =
+    session.source?.type === 'local_mount'
+      ? (session.source.local_path ?? session.source.path ?? session.source.paths?.[0]?.host_path)
+      : undefined;
+  const sourceLabel =
+    session.source?.type === 'git'
+      ? `${shortenRepoLabel(session.source.repo)}${session.source.branch ? ` @${session.source.branch}` : ''}`
+      : (localPath ??
+        (sourceParts
+          ? `${sourceParts.label}${sourceParts.branch ? ` @${sourceParts.branch}` : ''}`
+          : previewLabel));
+  const isLocal =
+    session.source?.type === 'local_mount' ||
+    sourceLabel?.startsWith('/') ||
+    sourceLabel?.startsWith('~/');
   return (
-    <div className="forge-session-row">
+    <div className="forge-session-row" data-actions-open={actionsOpen}>
       <button
         type="button"
         onClick={onSelect}
@@ -275,89 +298,79 @@ function PodEntry({
             <Check className="niuu:h-3 niuu:w-3" />
           </span>
         ) : null}
-        <StateDot
-          state={SESSION_DOT[session.state]}
-          pulse={session.state === 'running' || session.state === 'awaiting_input'}
-        />
-        {collapsed ? null : (
-          <>
-            <div className="niuu:flex-1 niuu:min-w-0 niuu:flex niuu:flex-col niuu:gap-0.5">
-              <div className="forge-session-row__title niuu:text-text-primary niuu:truncate">
-                {primaryLabel}
-              </div>
+        {collapsed ? (
+          <StateDot
+            state={SESSION_DOT[session.state]}
+            pulse={session.state === 'running' || session.state === 'awaiting_input'}
+          />
+        ) : (
+          <div className="forge-session-row__content">
+            <div className="forge-session-row__headline">
+              <span className="forge-session-row__title">{primaryLabel}</span>
               <span className="forge-session-state" data-state={session.state}>
                 {SESSION_STATE_LABELS[session.state]}
               </span>
-              <div className="niuu:flex niuu:min-w-0 niuu:flex-wrap niuu:items-center niuu:gap-x-2 niuu:gap-y-0.5 niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
-                {showDetails && trackerLabel ? (
-                  <span
-                    className="niuu:flex niuu:min-w-0 niuu:items-center niuu:gap-1.5"
-                    title={trackerLabel}
-                  >
-                    <Ticket className="niuu:h-3 niuu:w-3 niuu:flex-shrink-0 niuu:text-text-faint" />
-                    <span className="niuu:truncate niuu:text-brand">{trackerLabel}</span>
-                  </span>
-                ) : null}
-                {showDetails && forgeLabel ? (
-                  <span
-                    className="niuu:inline-flex niuu:min-w-0 niuu:items-center niuu:gap-1.5 niuu:rounded-full niuu:border niuu:border-brand/20 niuu:bg-brand/10 niuu:px-2 niuu:py-0.5"
-                    title={forgeLabel}
-                  >
-                    <span className="niuu:text-[9px] niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
-                      forge
-                    </span>
-                    <span className="niuu:truncate niuu:text-brand">{forgeLabel}</span>
-                  </span>
-                ) : null}
-                {originBadge ? (
-                  <span
-                    className="niuu:inline-flex niuu:flex-shrink-0 niuu:items-center niuu:rounded-full niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-2 niuu:py-0.5"
-                    title={`Imported from ${originBadge}`}
-                    data-testid={`session-origin-badge-${session.id}`}
-                  >
-                    <span className="niuu:text-[9px] niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-secondary">
-                      {originBadge}
-                    </span>
-                  </span>
-                ) : null}
-                {sourceParts ? (
-                  <span
-                    className="niuu:flex niuu:min-w-0 niuu:items-center niuu:gap-1.5"
-                    title={previewLabel}
-                  >
-                    <FolderGit2 className="niuu:h-3 niuu:w-3 niuu:flex-shrink-0 niuu:text-text-faint" />
-                    <span className="niuu:truncate">
-                      {showDetails
-                        ? sourceParts.label
-                        : sourceParts.label.split('/').filter(Boolean).slice(-2).join('/')}
-                    </span>
-                    {sourceParts.branch ? (
-                      <span className="niuu:flex-shrink-0 niuu:text-brand">
-                        @{sourceParts.branch}
-                      </span>
-                    ) : null}
-                  </span>
-                ) : null}
-                {showDetails && showPreviewFallback ? (
-                  <span
-                    className="niuu:flex niuu:min-w-0 niuu:items-center niuu:gap-1.5"
-                    title={previewLabel}
-                  >
-                    <SquareTerminal className="niuu:h-3 niuu:w-3 niuu:flex-shrink-0 niuu:text-text-faint" />
-                    <span className="niuu:truncate">{previewLabel}</span>
-                  </span>
-                ) : null}
-                <span className="niuu:flex niuu:flex-shrink-0 niuu:items-center niuu:gap-1.5">
-                  <Clock3 className="niuu:h-3 niuu:w-3 niuu:flex-shrink-0 niuu:text-text-faint" />
-                  <span>{ageLabel}</span>
-                </span>
-              </div>
             </div>
-          </>
+            <div className="forge-session-row__metadata">
+              {harness && (
+                <span
+                  className="forge-session-harness"
+                  data-harness={harness}
+                  title={originBadge ? `Imported from ${originBadge}` : session.model}
+                  data-testid={originBadge ? `session-origin-badge-${session.id}` : undefined}
+                >
+                  {harness === 'claude' ? 'Claude' : 'Codex'}
+                </span>
+              )}
+              {sourceLabel && (
+                <span className="forge-session-row__source" title={previewLabel ?? sourceLabel}>
+                  {isLocal ? (
+                    <FolderOpen size={13} />
+                  ) : sourceParts || session.source?.type === 'git' ? (
+                    <FolderGit2 size={13} />
+                  ) : (
+                    <SquareTerminal size={13} />
+                  )}
+                  <span>{sourceLabel}</span>
+                </span>
+              )}
+              <span className="forge-session-row__age" title="Last session activity">
+                {ageLabel}
+              </span>
+            </div>
+            {showDetails && (
+              <div className="forge-session-row__details">
+                {trackerLabel && (
+                  <span title={trackerLabel}>
+                    <Ticket size={12} />
+                    {trackerLabel}
+                  </span>
+                )}
+                {forgeLabel && <span title={forgeLabel}>forge · {forgeLabel}</span>}
+                {showPreviewFallback && <span>{previewLabel}</span>}
+              </div>
+            )}
+          </div>
         )}
       </button>
       {!collapsed && onAction && (
-        <div className="forge-session-row__actions" aria-label={`Actions for ${primaryLabel}`}>
+        <button
+          type="button"
+          className="forge-session-row__more"
+          aria-label={`Actions for ${primaryLabel}`}
+          aria-expanded={actionsOpen}
+          aria-controls={`session-actions-${session.id}`}
+          onClick={() => setActionsOpen(!actionsOpen)}
+        >
+          <MoreHorizontal size={18} />
+        </button>
+      )}
+      {!collapsed && onAction && (
+        <div
+          id={`session-actions-${session.id}`}
+          className="forge-session-row__actions"
+          aria-label={`Actions for ${primaryLabel}`}
+        >
           {STOPPABLE_STATES.has(session.state) && (
             <button
               type="button"
@@ -413,7 +426,48 @@ function PodEntry({
 // PodGroup — a state section with label + session entries
 // ---------------------------------------------------------------------------
 
+function SessionTreeEntry({
+  node,
+  renderRow,
+}: {
+  node: SessionTreeNode;
+  renderRow: (session: Session) => React.ReactNode;
+}) {
+  const [folded, setFolded] = useForgePreference(
+    `tree.${node.session.clusterId}.${node.session.id}`,
+    '0',
+    ['0', '1'],
+  );
+  return (
+    <div className="forge-session-tree-entry">
+      <div className="forge-session-tree-row">
+        {node.children.length > 0 && (
+          <button
+            type="button"
+            className="forge-session-tree-toggle"
+            aria-label={`${folded === '1' ? 'Expand' : 'Collapse'} child sessions of ${node.session.name ?? node.session.personaName}`}
+            aria-expanded={folded !== '1'}
+            onClick={() => setFolded(folded === '1' ? '0' : '1')}
+          >
+            {folded === '1' ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+          </button>
+        )}
+        {renderRow(node.session)}
+      </div>
+      {folded !== '1' && node.children.length > 0 && (
+        <div className="forge-session-tree-children">
+          {node.children.map((child) => (
+            <SessionTreeEntry key={child.session.id} node={child} renderRow={renderRow} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PodGroup({
+  groupKey,
+  hierarchical = false,
   label,
   sessions,
   selectedId,
@@ -426,6 +480,8 @@ function PodGroup({
   onAction,
   busyId,
 }: {
+  groupKey?: string;
+  hierarchical?: boolean;
   label: string;
   sessions: Session[];
   selectedId: string | null;
@@ -438,8 +494,28 @@ function PodGroup({
   onAction?: (session: Session, action: RowAction) => void;
   busyId?: string;
 }) {
-  const [folded, setFolded] = useForgePreference(`group.${label}`, '0', ['0', '1']);
+  const [folded, setFolded] = useForgePreference(`group.${groupKey ?? label}`, '0', ['0', '1']);
   if (sessions.length === 0) return null;
+
+  const renderRow = (s: Session) => (
+    <PodEntry
+      key={s.id}
+      session={s}
+      showDetails={showDetails}
+      onAction={onAction}
+      busy={!!busyId}
+      selected={s.id === selectedId}
+      onSelect={() => onSelect(s.id)}
+      collapsed={collapsed}
+      selectable={selectableSessionIds?.has(s.id) ?? false}
+      checked={selectedSessionIds?.has(s.id) ?? false}
+      onToggleSelection={
+        onToggleSelection && selectableSessionIds?.has(s.id)
+          ? () => onToggleSelection(s.id)
+          : undefined
+      }
+    />
+  );
 
   return (
     <div data-testid={`pod-group-${toGroupTestId(label)}`}>
@@ -463,25 +539,11 @@ function PodGroup({
         </button>
       )}
       {(collapsed || folded !== '1') &&
-        sessions.map((s) => (
-          <PodEntry
-            key={s.id}
-            session={s}
-            showDetails={showDetails}
-            onAction={onAction}
-            busy={!!busyId}
-            selected={s.id === selectedId}
-            onSelect={() => onSelect(s.id)}
-            collapsed={collapsed}
-            selectable={selectableSessionIds?.has(s.id) ?? false}
-            checked={selectedSessionIds?.has(s.id) ?? false}
-            onToggleSelection={
-              onToggleSelection && selectableSessionIds?.has(s.id)
-                ? () => onToggleSelection(s.id)
-                : undefined
-            }
-          />
-        ))}
+        (hierarchical && !collapsed
+          ? buildSessionTree(sessions).map((node) => (
+              <SessionTreeEntry key={node.session.id} node={node} renderRow={renderRow} />
+            ))
+          : sessions.map(renderRow))}
     </div>
   );
 }
@@ -503,6 +565,7 @@ export function SessionsPage() {
   );
   const [filter, setFilter] = useForgePreference<SessionFilter>('filter', 'live', SESSION_FILTERS);
   const [details, setDetails] = useForgePreference('details', '0', ['0', '1']);
+  const [tokens, setTokens] = useForgePreference('tokens', '0', ['0', '1']);
   const [storedWidth, setStoredWidth] = useForgePreference<string>(
     'sidebarWidth',
     String(SIDEBAR_WIDTH.default),
@@ -522,6 +585,12 @@ export function SessionsPage() {
   const [importOpen, setImportOpen] = useState(false);
   const volundr = useService<IVolundrService>('volundr');
   const queryClient = useQueryClient();
+  const projects = useQuery({
+    queryKey: ['volundr', 'projects'],
+    queryFn: () => volundr.getProjects(),
+    enabled: sidebarMode === 'project',
+    staleTime: 30_000,
+  });
 
   const sessionsQuery = useSessionList();
   const allSessions = useMemo(() => sessionsQuery.data ?? [], [sessionsQuery.data]);
@@ -568,6 +637,7 @@ export function SessionsPage() {
 
   // Build sidebar groups — flatten matching states per display group
   const sidebarGroups = useMemo<SessionSection[]>(() => {
+    if (sidebarMode === 'project') return groupByProject(filteredSessions, projects.data ?? []);
     if (sidebarMode === 'repo') {
       return groupByRepo(filteredSessions);
     }
@@ -578,7 +648,7 @@ export function SessionsPage() {
       label: g.label,
       sessions: g.states.flatMap((st) => grouped[st]),
     }));
-  }, [filteredSessions, grouped, sidebarMode]);
+  }, [filteredSessions, grouped, sidebarMode, projects.data]);
   const requestedSessionId = typeof routeSessionId === 'string' ? routeSessionId : null;
   const resolvedSelectedSessionId = useMemo(() => {
     if (allSessions.length === 0) return null;
@@ -764,8 +834,10 @@ export function SessionsPage() {
               <div className="niuu:flex-1 niuu:overflow-y-auto niuu:py-2">
                 {sidebarGroups.map((g) => (
                   <PodGroup
-                    key={g.label}
+                    key={g.id ?? g.label}
                     label={g.label}
+                    groupKey={g.id ?? `${sidebarMode}:${g.label}`}
+                    hierarchical={sidebarMode === 'project'}
                     sessions={g.sessions}
                     selectedId={resolvedSelectedSessionId}
                     onSelect={handleSelectSession}
@@ -785,53 +857,80 @@ export function SessionsPage() {
                     Sessions
                   </h2>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setSidebarCollapsed(true)}
-                  className="niuu:font-mono niuu:text-lg niuu:text-text-muted"
-                  data-testid="pod-sidebar-toggle"
-                  aria-label="Collapse pods sidebar"
-                >
-                  ‹
-                </button>
+                <TooltipProvider>
+                  <div className="forge-session-heading-actions">
+                    <Tooltip
+                      content="Launch a new session"
+                      delayMs={100}
+                      className="forge-session-action-tooltip"
+                    >
+                      <button
+                        type="button"
+                        className="forge-session-launch"
+                        onClick={() => setLaunchOpen(true)}
+                        data-testid="pod-launch-button"
+                        aria-label="Launch a new session"
+                      >
+                        <Plus size={26} strokeWidth={3} />
+                      </button>
+                    </Tooltip>
+                    <Tooltip
+                      content="Import CLI sessions"
+                      delayMs={100}
+                      className="forge-session-action-tooltip"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setImportOpen(true)}
+                        data-testid="pod-import-button"
+                        aria-label="Import external CLI sessions"
+                      >
+                        <Download size={18} />
+                      </button>
+                    </Tooltip>
+                    <button
+                      type="button"
+                      onClick={() => setSidebarCollapsed(true)}
+                      data-testid="pod-sidebar-toggle"
+                      aria-label="Collapse pods sidebar"
+                    >
+                      <ChevronRight className="forge-session-collapse" size={19} />
+                    </button>
+                  </div>
+                </TooltipProvider>
               </div>
 
               <div className="forge-session-filters" aria-label="Session states">
-                {SESSION_FILTERS.map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    aria-pressed={filter === value}
-                    data-testid={`session-filter-${value}`}
-                    onClick={() => setFilter(value)}
-                  >
-                    {FILTER_LABELS[value]}
-                    <span>
-                      {allSessions.filter((session) => matchesSessionFilter(session, value)).length}
-                    </span>
-                  </button>
+                {[SESSION_FILTERS.slice(0, 4), SESSION_FILTERS.slice(4)].map((values, index) => (
+                  <div className="forge-session-filter-group" key={index}>
+                    {values.map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        aria-pressed={filter === value}
+                        data-testid={`session-filter-${value}`}
+                        data-filter={value}
+                        onClick={() => setFilter(value)}
+                      >
+                        {FILTER_LABELS[value]}
+                        <span>
+                          {
+                            allSessions.filter((session) => matchesSessionFilter(session, value))
+                              .length
+                          }
+                        </span>
+                      </button>
+                    ))}
+                  </div>
                 ))}
               </div>
-              <label className="niuu:flex niuu:items-center niuu:gap-2 niuu:px-3 niuu:pb-2 niuu:text-xs niuu:text-text-muted">
-                <input
-                  type="checkbox"
-                  checked={details === '1'}
-                  onChange={(event) => setDetails(event.target.checked ? '1' : '0')}
-                />
-                Show session details
-              </label>
-              {actionError && (
-                <div role="alert" className="niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-critical">
-                  {actionError}
-                </div>
-              )}
               <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:px-2.5 niuu:py-1">
                 <span className="niuu:text-xs niuu:text-text-muted">group by</span>
                 <div
                   className="niuu:inline-flex niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:p-0.5"
                   data-testid="pod-group-mode"
                 >
-                  {(['state', 'repo', 'forge'] as const).map((mode) => {
+                  {SIDEBAR_MODES.map((mode) => {
                     const active = sidebarMode === mode;
                     return (
                       <button
@@ -847,7 +946,8 @@ export function SessionsPage() {
                         data-testid={`pod-group-mode-${mode}`}
                         aria-pressed={active}
                       >
-                        {mode}
+                        {mode[0]?.toUpperCase()}
+                        {mode.slice(1)}
                       </button>
                     );
                   })}
@@ -856,26 +956,6 @@ export function SessionsPage() {
 
               <div className="niuu:px-2.5 niuu:pb-1">
                 <div className="niuu:flex niuu:items-center niuu:gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setLaunchOpen(true)}
-                    className="niuu:flex niuu:h-10 niuu:w-10 niuu:flex-shrink-0 niuu:items-center niuu:justify-center niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:text-sm niuu:font-semibold niuu:text-text-muted niuu:transition-colors niuu:hover:border-brand/40 niuu:hover:text-brand"
-                    data-testid="pod-launch-button"
-                    aria-label="Launch a new session"
-                    title="Launch a new session"
-                  >
-                    +
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setImportOpen(true)}
-                    className="niuu:flex niuu:h-10 niuu:w-10 niuu:flex-shrink-0 niuu:items-center niuu:justify-center niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:text-text-muted niuu:transition-colors niuu:hover:border-brand/40 niuu:hover:text-brand"
-                    data-testid="pod-import-button"
-                    aria-label="Import external CLI sessions"
-                    title="Import external CLI sessions"
-                  >
-                    <Download className="niuu:h-3.5 niuu:w-3.5" />
-                  </button>
                   <div className="forge-session-search niuu:flex niuu:min-w-0 niuu:flex-1 niuu:items-center niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] niuu:focus-within:border-brand/50 niuu:focus-within:ring-1 niuu:focus-within:ring-brand/20">
                     <Search
                       className="niuu:h-4 niuu:w-4 niuu:flex-shrink-0 niuu:text-text-muted"
@@ -894,90 +974,17 @@ export function SessionsPage() {
                 </div>
               </div>
 
-              {stoppedSessionCount > 0 && (
-                <details className="forge-session-maintenance">
-                  <summary>Manage stopped sessions ({stoppedSessionCount})</summary>
-                  <div className="niuu:space-y-2">
-                    <button
-                      type="button"
-                      onClick={() => void handleArchiveAllStopped()}
-                      disabled={archiveBusy}
-                      className="niuu:flex niuu:w-full niuu:items-center niuu:justify-between niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:font-mono niuu:text-[10px] niuu:text-text-muted niuu:hover:bg-bg-elevated niuu:disabled:cursor-not-allowed niuu:disabled:opacity-50"
-                      data-testid="archive-stopped-button"
-                    >
-                      <span>
-                        {archiveBusy ? 'archiving stopped sessions…' : 'archive all stopped'}
-                      </span>
-                      <span className="niuu:text-text-faint">{stoppedSessionCount}</span>
-                    </button>
-
-                    <div className="niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:p-2">
-                      <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const next = !stoppedSelectionMode;
-                            setStoppedSelectionMode(next);
-                            if (next) setFilter('stopped');
-                            if (!next) {
-                              setSelectedStoppedIds(new Set());
-                            }
-                          }}
-                          className={cn(
-                            'niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-md niuu:px-2.5 niuu:py-1.5 niuu:text-xs niuu:font-semibold niuu:transition-colors',
-                            stoppedSelectionMode
-                              ? 'niuu:bg-brand/15 niuu:text-brand'
-                              : 'niuu:text-text-muted niuu:hover:bg-bg-elevated niuu:hover:text-text-primary',
-                          )}
-                          data-testid="toggle-stopped-selection-button"
-                        >
-                          <Trash2 className="niuu:h-3.5 niuu:w-3.5" />
-                          {stoppedSelectionMode
-                            ? 'cancel delete select'
-                            : 'select stopped to delete'}
-                        </button>
-                        <span className="niuu:font-mono niuu:text-[10px] niuu:text-text-faint">
-                          {deleteSelectionCount} selected
-                        </span>
-                      </div>
-
-                      {stoppedSelectionMode ? (
-                        <div className="niuu:mt-2 niuu:flex niuu:flex-wrap niuu:gap-2">
-                          <button
-                            type="button"
-                            onClick={handleSelectAllVisibleStopped}
-                            disabled={filteredStoppedSessions.length === 0}
-                            className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:px-2.5 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:text-text-muted niuu:hover:bg-bg-elevated niuu:disabled:cursor-not-allowed niuu:disabled:opacity-50"
-                            data-testid="select-all-stopped-button"
-                          >
-                            select visible stopped ({filteredStoppedSessions.length})
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleClearStoppedSelection}
-                            disabled={deleteSelectionCount === 0}
-                            className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:px-2.5 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:text-text-muted niuu:hover:bg-bg-elevated niuu:disabled:cursor-not-allowed niuu:disabled:opacity-50"
-                            data-testid="clear-stopped-selection-button"
-                          >
-                            clear
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setDeleteStoppedOpen(true)}
-                            disabled={deleteSelectionCount === 0}
-                            className="niuu:rounded-md niuu:border niuu:border-red-500/35 niuu:bg-red-500/10 niuu:px-2.5 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:text-red-200 niuu:hover:bg-red-500/15 niuu:disabled:cursor-not-allowed niuu:disabled:opacity-50"
-                            data-testid="delete-selected-stopped-button"
-                          >
-                            delete selected ({deleteSelectionCount})
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                </details>
-              )}
-
-              <div className="niuu:flex-1 niuu:overflow-y-auto niuu:pb-1.5">
+              <div className="forge-session-scroll niuu:flex-1 niuu:overflow-y-auto niuu:pb-1.5">
+                {sidebarMode === 'project' && projects.isLoading && (
+                  <p className="forge-session-project-status" role="status">
+                    Loading projects…
+                  </p>
+                )}
+                {sidebarMode === 'project' && projects.isError && (
+                  <p className="forge-session-project-status" role="status">
+                    Project names could not be refreshed. Sessions remain available.
+                  </p>
+                )}
                 {filteredSessions.length === 0 && !sessionsQuery.isLoading && (
                   <p className="niuu:p-4 niuu:text-sm niuu:text-text-muted">
                     No sessions match these filters.
@@ -985,8 +992,10 @@ export function SessionsPage() {
                 )}
                 {sidebarGroups.map((g) => (
                   <PodGroup
-                    key={g.label}
+                    key={g.id ?? g.label}
                     label={g.label}
+                    groupKey={g.id ?? `${sidebarMode}:${g.label}`}
+                    hierarchical={sidebarMode === 'project'}
                     sessions={g.sessions}
                     selectedId={resolvedSelectedSessionId}
                     onSelect={handleSelectSession}
@@ -999,6 +1008,101 @@ export function SessionsPage() {
                   />
                 ))}
               </div>
+              <footer
+                role="group"
+                className="forge-session-footer"
+                aria-label="Session list settings"
+              >
+                {actionError && (
+                  <div role="alert" className="niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-critical">
+                    {actionError}
+                  </div>
+                )}
+                <div className="forge-session-footer-settings">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={details === '1'}
+                      onChange={(event) => setDetails(event.target.checked ? '1' : '0')}
+                      aria-label="Show session details"
+                    />
+                    Details
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={tokens === '1'}
+                      onChange={(event) => setTokens(event.target.checked ? '1' : '0')}
+                      aria-label="Show token usage"
+                    />
+                    Token usage
+                  </label>
+                </div>
+                {stoppedSessionCount > 0 && (
+                  <div className="forge-session-maintenance" aria-label="Manage stopped sessions">
+                    <span className="forge-session-maintenance-label">
+                      Manage stopped sessions · {stoppedSessionCount}
+                    </span>
+                    <div className="forge-session-footer-actions">
+                      <button
+                        type="button"
+                        data-testid="toggle-stopped-selection-button"
+                        aria-pressed={stoppedSelectionMode}
+                        onClick={() => {
+                          const next = !stoppedSelectionMode;
+                          setStoppedSelectionMode(next);
+                          if (next) {
+                            setFilter('stopped');
+                            setSelectedStoppedIds(new Set(stoppedSessionIds));
+                          } else setSelectedStoppedIds(new Set());
+                        }}
+                      >
+                        <Check size={14} />
+                        {stoppedSelectionMode ? 'Cancel selection' : 'Select all stopped'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={archiveBusy || deleteBusy}
+                        data-testid="archive-stopped-button"
+                        onClick={() => void handleArchiveAllStopped()}
+                      >
+                        <Archive size={14} />
+                        {archiveBusy ? 'Archiving…' : 'Archive all stopped'}
+                      </button>
+                    </div>
+                    {stoppedSelectionMode && (
+                      <div className="forge-session-footer-actions">
+                        <button
+                          type="button"
+                          onClick={handleSelectAllVisibleStopped}
+                          disabled={filteredStoppedSessions.length === 0}
+                          data-testid="select-all-stopped-button"
+                        >
+                          Select visible ({filteredStoppedSessions.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleClearStoppedSelection}
+                          disabled={deleteSelectionCount === 0}
+                          data-testid="clear-stopped-selection-button"
+                        >
+                          Clear
+                        </button>
+                        <button
+                          type="button"
+                          className="forge-session-delete"
+                          onClick={() => setDeleteStoppedOpen(true)}
+                          disabled={deleteSelectionCount === 0}
+                          data-testid="delete-selected-stopped-button"
+                        >
+                          <Trash2 size={14} />
+                          Delete selected ({deleteSelectionCount})
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </footer>
             </div>
           )}
         </nav>

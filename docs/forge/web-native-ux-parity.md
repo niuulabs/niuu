@@ -273,26 +273,26 @@ Its working folder is host-specific, effort prefers `xhigh`, and models are cura
 Implemented in the web UI:
 
 - [x] Catalogue and dashboard expose exactly two quick-launch standards: Claude
-  (`skuldClaudeInteractive`, interactive tmux) and Codex (`skuldCodex`, Skuld CLI).
+      (`skuldClaudeInteractive`, interactive tmux) and Codex (`skuldCodex`, Skuld CLI).
 - [x] Defaults: `claude-fable-5-1` and `gpt-6-astra`. Explicit alternatives are
-  `claude-opus-5` and `gpt-5.6-sol`; availability comes from the connected Niuu
-  Bifrost catalogue, not an invented model list. Opus 5 is currently unadvertised
-  on all four hosts, so its option is disabled rather than replaced with Opus 4.8.
+      `claude-opus-5` and `gpt-5.6-sol`; availability comes from the connected Niuu
+      Bifrost catalogue, not an invented model list. Opus 5 is currently unadvertised
+      on all four hosts, so its option is disabled rather than replaced with Opus 4.8.
 - [x] Preserve Bifrost effort metadata, including an explicitly empty list; remember
-  effort per model in this browser. Prefer Extra High, then the advertised default.
+      effort per model in this browser. Prefer Extra High, then the advertised default.
 - [x] Direct create, without a review/confirmation step or saved-preset mutation.
-  CPU/memory/GPU, credentials, MCP and rules are optional and omitted in quick launch.
+      CPU/memory/GPU, credentials, MCP and rules are optional and omitted in quick launch.
 - [x] Local mount by default. Absolute working folder, remembered separately per host;
-  configured folder used for a host without a remembered folder. Explicit Git mode
-  retains repository and branch selection. Name and initial prompt are optional.
+      configured folder used for a host without a remembered folder. Explicit Git mode
+      retains repository and branch selection. Name and initial prompt are optional.
 - [x] Advanced launch and custom catalogue preserve the existing full editor,
-  tracker issue selection, resource controls, integrations and saved launch specs.
-- [x] `Forge Hosts` tab (`/volundr/hosts`) lists connection names, actual origins,
-  default folders and availability. Add/edit/test use the existing shared registry.
-  A successful save refreshes the picker; failures remain visible in the form.
+      tracker issue selection, resource controls, integrations and saved launch specs.
+- [x] Connection management lives in Guild (`/guild`), using its existing environment
+      registry and registration flow. Quick Launch links there and reads enabled targets.
+      The duplicate Forge Hosts tab and its editor/service methods have been removed.
 - [x] Tests cover create payloads, resource omission, effort controls, unavailable
-  models, per-host folders, duplicate submission, Git mode, failed create, registry
-  CRUD/probes, preserving embedded transport, advanced access, and iPhone width.
+      models, per-host folders, duplicate submission, Git mode, failed create, registry
+      CRUD/probes, preserving embedded transport, advanced access, and iPhone width.
 
 ### Where configuration lives
 
@@ -309,12 +309,12 @@ UserDefaults (`lexichat.forge.hosts.v1`); this Linux workspace cannot read a pho
 private overrides or Keychain. The matching addresses were resolved and each
 host's health and model catalogue checked directly:
 
-| Label | Forge origin | Initial working folder |
-| --- | --- | --- |
-| Thor | `http://100.66.123.128:8080` | `/home/thor/repos/niuu` |
-| Spark | `http://100.127.141.74:8080` | `/home/xteo/repos` |
-| Build | `http://100.81.183.4:8080` | `/home/horde` |
-| Build Bro | `http://100.115.8.110:8080` | `/home/horde` |
+| Label     | Forge origin                 | Initial working folder  |
+| --------- | ---------------------------- | ----------------------- |
+| Thor      | `http://100.66.123.128:8080` | `/home/thor/repos/niuu` |
+| Spark     | `http://100.127.141.74:8080` | `/home/xteo/repos`      |
+| Build     | `http://100.81.183.4:8080`   | `/home/horde`           |
+| Build Bro | `http://100.115.8.110:8080`  | `/home/horde`           |
 
 Thor retains its existing registry UUID, slug `local`, default status, and
 `config.transport=embedded` to avoid routing the local aggregate into itself.
@@ -340,3 +340,48 @@ model/definition choices use the connected Niuu catalogue rather than a separate
 capability fetch from each host; project assignment, worktree creation and a native
 folder history menu remain outside this quick-launch change. No real provider
 session was created for testing.
+
+## Session sidebar and preview refinement — 2026-09-17
+
+- [x] Filter order: Live, Active, Idle, Needs you; a subtle divider; Stopped, Errors,
+      All, Archived. No extra filter colours. The Sessions heading owns the bold launch
+      plus and CLI import action; the launch tooltip appears after 100 ms.
+- [x] Full-width search; details and token preferences in a persistent bottom bar.
+      Stopped-session selection and archive controls stay visible in that footer, without
+      an extra disclosure. Selecting all stopped does not delete anything; deletion still
+      requires the existing confirmation.
+- [x] CLI import search matches names, IDs, folders, harnesses and models.
+- [x] Project grouping reads the existing Forge `/projects` endpoint and session
+      `coordination` metadata. Registered replicas share a project group. Parent/child
+      sessions form a collapsible tree; filtered parents, missing parents and cycles never
+      hide a session. Unassigned sessions remain under No project. State/Repo/Forge
+      grouping remains available. Project fetch failures preserve the session list.
+- [x] Two-line entries: name + coloured state; Claude/Codex + source icon/path or Git
+      repository/branch + activity age. Claude orange and Codex blue remain constant
+      across themes. Recorded harness takes precedence over legacy model inference.
+      Active is green, attention amber, errors red, idle/stopped neutral, matching the
+      native status vocabulary. The hover/focus action tray overlays the state beside the
+      name with an opaque background; touch users get an explicit actions button.
+- [x] Token usage is off by default, persisted browser-locally, and shared by live and
+      replay views. Counts round compactly, e.g. `150k → 234 tokens`.
+- [x] Document and image dialogs use 90vw × 90dvh (about 81% of window area), with
+      no fixed pixel cap; phone previews keep only a narrow viewport margin.
+- [x] Workspace and HTTP(S) image hyperlinks get lazy hover/focus thumbnails and
+      open the in-app image viewer. Inline Markdown images use the same viewer. Normal
+      website links retain normal navigation. Image links are recognized by the filename
+      extension (query strings ignored) or the workspace resource's image MIME type.
+- [x] Image viewer supports zoom buttons, wheel/pinch zoom, drag panning, keyboard
+      panning/zoom, fit/reset, image copying, downloading, and opening the original in a
+      new tab. Workspace image bytes stay behind the authenticated resource port. Remote
+      transfers omit credentials and require the remote host's CORS permission; failures
+      are shown in the viewer, without redirecting or claiming a copy/download succeeded.
+
+Validation: full production rebuild (including dependent plugins, to remove old bundled
+styles); all workspace type checks; changed-file lint; 6,142 tests in 418 files pass.
+Coverage: 92.66% statements, 85.07% branches, 91.99% functions, 94.21% lines.
+Browser checks cover quick launch, Guild link, sidebar ordering, project disclosure,
+persistent settings, CLI search, responsive document sizing, image hover/focus,
+real clipboard PNG writes and downloads, panning, native-dark/xTeo harness colours,
+desktop action alignment and phone layouts. All 13 browser checks pass, including
+touch menu activation without triggering an underlying action. All mutations in browser tests use fixtures;
+no real provider session is launched, stopped, archived, imported or deleted.

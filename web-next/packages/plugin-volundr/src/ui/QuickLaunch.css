@@ -145,20 +145,6 @@
 .vol-quick details[open] > summary {
   margin-bottom: 12px;
 }
-.vol-quick__host {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-.vol-quick__host code {
-  display: block;
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  margin-top: 6px;
-  overflow-wrap: anywhere;
-}
 .vol-quick__modal {
   width: min(740px, calc(100vw - 24px));
   max-width: 740px;

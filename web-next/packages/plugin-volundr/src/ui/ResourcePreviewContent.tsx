@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { Download, Copy, Check, FileText, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
+import { Download, Copy, Check, FileText } from 'lucide-react';
 import {
+  ImagePreview,
   MarkdownContent,
   MarkdownCodeBlock,
   MermaidDiagram,
@@ -25,7 +26,6 @@ export function ResourcePreviewContent({
   preview: LoadedPreview;
 }) {
   const [source, setSource] = useState(false);
-  const [zoom, setZoom] = useState(1);
   const [mediaError, setMediaError] = useState(false);
   const [copied, copy] = useCopyFeedback(preview.text ?? '');
   const [pathCopied, copyPath] = useCopyFeedback(resource.path);
@@ -36,6 +36,8 @@ export function ResourcePreviewContent({
       : preview.blob.size < 1024 * 1024
         ? `${(preview.blob.size / 1024).toFixed(1)} KB`
         : `${(preview.blob.size / 1024 / 1024).toFixed(1)} MB`;
+  if (preview.kind === 'image')
+    return <ImagePreview src={preview.url} name={resource.name} blob={preview.blob} />;
   return (
     <>
       <div className="forge-resource-toolbar" aria-label="File preview controls">
@@ -53,30 +55,6 @@ export function ResourcePreviewContent({
             </button>
           </div>
         )}
-        {preview.kind === 'image' && (
-          <div className="forge-resource-modes">
-            <button
-              type="button"
-              aria-label="Zoom out"
-              disabled={zoom <= 0.5}
-              onClick={() => setZoom(Math.max(0.5, zoom - 0.25))}
-            >
-              <ZoomOut size={17} />
-            </button>
-            <button type="button" aria-label="Fit image" onClick={() => setZoom(1)}>
-              <Maximize2 size={16} />
-              {Math.round(zoom * 100)}%
-            </button>
-            <button
-              type="button"
-              aria-label="Zoom in"
-              disabled={zoom >= 4}
-              onClick={() => setZoom(Math.min(4, zoom + 0.25))}
-            >
-              <ZoomIn size={17} />
-            </button>
-          </div>
-        )}
         <div className="forge-resource-toolbar__actions">
           {preview.text !== undefined && (
             <button type="button" onClick={copy}>
@@ -91,16 +69,6 @@ export function ResourcePreviewContent({
         </div>
       </div>
       <div className={`forge-resource-preview forge-resource-preview--${preview.kind}`}>
-        {preview.kind === 'image' && (
-          <div className="forge-resource-image-canvas">
-            <img
-              style={{ width: `${zoom * 100}%`, height: `${zoom * 100}%` }}
-              src={preview.url}
-              alt={resource.name}
-              onError={() => setMediaError(true)}
-            />
-          </div>
-        )}
         {preview.kind === 'pdf' && <iframe title={resource.name} src={preview.url} />}
         {preview.kind === 'video' && (
           <video

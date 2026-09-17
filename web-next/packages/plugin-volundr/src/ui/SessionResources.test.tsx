@@ -125,7 +125,7 @@ describe('session file previews', () => {
       'blob:review-file',
     );
     fireEvent.click(screen.getByRole('button', { name: 'Open image Diagram' }));
-    await screen.findByRole('link', { name: 'Download diagram.png' });
+    await screen.findByRole('button', { name: 'Download', exact: true });
     expect(screen.getByRole('img', { name: 'diagram.png' })).toBeInTheDocument();
   });
   it('sandboxes HTML without scripts and offers literal source, with a bounded text preview', async () => {

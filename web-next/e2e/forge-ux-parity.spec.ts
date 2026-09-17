@@ -19,7 +19,7 @@ const parts = [
   {
     type: 'text',
     id: 'after',
-    text: 'Open the [review notes](/home/thor/review/docs/review.md) or the [missing file](./missing.md).\n\n![Diagram](./diagram.svg)',
+    text: 'Open the [image reference](https://images.example.test/reference.png?revision=2) and the [local image](./diagram.svg). Open the [review notes](/home/thor/review/docs/review.md) or the [missing file](./missing.md).\n\n![Diagram](./diagram.svg)',
     complete: true,
   },
   {
@@ -55,7 +55,14 @@ async function fixture(page: Page, rich = false) {
     { id: 'archived', name: 'Earlier iteration', status: 'archived', activity_state: 'stopped' },
   ].map((session) => ({
     ...session,
-    model: 'gpt-6-astra',
+    model: session.id === 'idle' ? 'claude-fable-5-1' : 'gpt-6-astra',
+    coordination: ['review', 'idle'].includes(session.id)
+      ? {
+          project_id: 'lexi',
+          role: session.id === 'review' ? 'coordinator' : 'worker',
+          parent: session.id === 'idle' ? { instance_id: 'thor', session_id: 'review' } : null,
+        }
+      : undefined,
     source: { type: 'local_mount', local_path: '/home/thor/review' },
     created_at: '2026-09-16T00:00:00Z',
     last_active: '2026-09-16T10:00:00Z',
@@ -87,6 +94,33 @@ async function fixture(page: Page, rich = false) {
         });
       return route.fulfill({ json: {} });
     }
+    if (path.endsWith('/projects'))
+      return route.fulfill({
+        json: [{ id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' }],
+      });
+    if (path.endsWith('/external-sessions'))
+      return route.fulfill({
+        json: [
+          {
+            provider: 'claude-code',
+            harness: 'claude',
+            external_id: 'cli-claude',
+            title: 'Review notes',
+            workspace_path: '/home/thor/review',
+            workspace_exists: true,
+            workspace_allowed: true,
+          },
+          {
+            provider: 'codex',
+            harness: 'codex',
+            external_id: 'cli-codex',
+            title: 'iOS improvements',
+            workspace_path: '/home/thor/lexi',
+            workspace_exists: true,
+            workspace_allowed: true,
+          },
+        ],
+      });
     if (path.endsWith('/files/download')) {
       if (url.searchParams.get('path') === 'missing.md')
         return route.fulfill({ status: 404, body: 'File not found' });
@@ -111,6 +145,7 @@ async function fixture(page: Page, rich = false) {
             turns: [
               {
                 id: 'turn',
+                metadata: { usage: { astra: { inputTokens: 150344, outputTokens: 234 } } },
                 role: 'assistant',
                 content: '',
                 parts: rich
@@ -292,4 +327,191 @@ test('phone review keeps theme switch, Chat tab, toolbar and full file preview u
   expect(box.x).toBeGreaterThanOrEqual(0);
   expect(box.x + box.width).toBeLessThanOrEqual(390);
   await page.screenshot({ path: testInfo.outputPath('xteo-phone-preview.png') });
+});
+
+test('sidebar prioritizes live filters, settings, project trees and searchable imports', async ({
+  page,
+}, testInfo) => {
+  await fixture(page);
+  await page.goto('/volundr/sessions/review');
+  const sidebar = page.getByRole('navigation', { name: 'Session list' });
+  await expect(sidebar.locator('[data-filter]')).toHaveText([
+    'Live3',
+    'Active1',
+    'Idle1',
+    'Needs you1',
+    'Stopped1',
+    'Errors0',
+    'All5',
+    'Archived1',
+  ]);
+  const launch = page.getByRole('button', { name: 'Launch a new session' });
+  await launch.hover();
+  await expect(page.getByRole('tooltip', { name: 'Launch a new session' })).toBeVisible();
+  const headingBox = (await sidebar.getByRole('heading', { name: 'Sessions' }).boundingBox())!;
+  expect(Math.abs((await launch.boundingBox())!.y - headingBox.y)).toBeLessThan(15);
+  const footer = sidebar.getByRole('group', { name: 'Session list settings' });
+  await expect(footer.getByRole('button', { name: 'Archive all stopped' })).toBeVisible();
+  await expect(footer.getByRole('checkbox', { name: 'Show token usage' })).not.toBeChecked();
+  await expect(page.getByText('150k → 234 tokens')).toHaveCount(0);
+  await footer.getByRole('checkbox', { name: 'Show token usage' }).check();
+  await expect(page.getByText('150k → 234 tokens')).toBeVisible();
+  await page.reload();
+  await expect(footer.getByRole('checkbox', { name: 'Show token usage' })).toBeChecked();
+  await page.getByTestId('pod-group-mode-project').click();
+  await expect(page.getByTestId('pod-group-lexi')).toBeVisible();
+  await page.getByRole('button', { name: 'Collapse child sessions of Forge UX review' }).click();
+  await expect(page.getByTestId('pod-entry-idle')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Expand child sessions of Forge UX review' }).click();
+  await expect(page.getByTestId('pod-entry-idle')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('sidebar-projects.png') });
+  await page.getByRole('button', { name: 'Import external CLI sessions' }).click();
+  const search = page.getByRole('searchbox', { name: 'Search CLI sessions' });
+  await search.fill('lexi');
+  await expect(page.getByTestId('external-session-row-cli-codex')).toBeVisible();
+  await expect(page.getByTestId('external-session-row-cli-claude')).toHaveCount(0);
+  await search.fill('not-present');
+  await expect(page.getByRole('status').filter({ hasText: 'No CLI sessions match' })).toBeVisible();
+  await page.keyboard.press('Escape');
+});
+
+test('document previews grow with the window, and image hyperlinks preview, pan, copy and download in place', async ({
+  page,
+  context,
+}, testInfo) => {
+  await fixture(page);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  // A real decodable PNG, served by a separate origin with CORS for transfer controls.
+  const png = Buffer.from(
+    await page.evaluate(() => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 300;
+      canvas.height = 200;
+      const context = canvas.getContext('2d')!;
+      context.fillStyle = '#2563eb';
+      context.fillRect(0, 0, 300, 200);
+      return canvas.toDataURL('image/png').split(',')[1]!;
+    }),
+    'base64',
+  );
+  await page.route('https://images.example.test/**', (route) =>
+    route.fulfill({
+      body: png,
+      contentType: 'image/png',
+      headers: { 'access-control-allow-origin': '*' },
+    }),
+  );
+  await page.goto('/volundr/sessions/review');
+  await page.getByRole('button', { name: 'review notes', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  const before = (await dialog.boundingBox())!;
+  expect(before.width).toBeGreaterThan(1440 * 0.85);
+  expect(before.height).toBeGreaterThan(900 * 0.85);
+  await page.setViewportSize({ width: 1800, height: 1200 });
+  await expect
+    .poll(async () => (await dialog.boundingBox())!.height)
+    .toBeGreaterThan(before.height + 200);
+  await expect
+    .poll(async () => (await dialog.boundingBox())!.width)
+    .toBeGreaterThan(before.width + 200);
+  await page.keyboard.press('Escape');
+  const link = page.getByRole('button', { name: 'image reference', exact: true });
+  await link.hover();
+  await expect(page.locator('.niuu-image-link-thumbnail img')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('image-hover.png') });
+  await link.click();
+  await expect(dialog).toHaveAccessibleName('reference.png');
+  await dialog.getByRole('button', { name: 'Zoom in' }).click();
+  await expect(dialog.getByRole('button', { name: 'Fit image' })).toContainText('125%');
+  const image = dialog.getByRole('img', { name: 'reference.png' });
+  const view = await image.getAttribute('viewBox');
+  const canvas = dialog.getByRole('region');
+  const box = (await canvas.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 90, box.y + box.height / 2 + 40, { steps: 4 });
+  await page.mouse.up();
+  expect(await image.getAttribute('viewBox')).not.toBe(view);
+  await canvas.focus();
+  await page.keyboard.press('0');
+  await expect(dialog.getByRole('button', { name: 'Fit image' })).toContainText('100%');
+  await dialog.getByRole('button', { name: 'Copy image' }).click();
+  await expect(dialog.getByText('Image copied')).toBeVisible();
+  const download = page.waitForEvent('download');
+  await dialog.getByRole('button', { name: 'Download', exact: true }).click();
+  expect((await download).suggestedFilename()).toBe('reference.png');
+  await expect(dialog.getByRole('link', { name: 'Open original image' })).toHaveAttribute(
+    'target',
+    '_blank',
+  );
+  await page.screenshot({ path: testInfo.outputPath('image-viewer.png') });
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'local image', exact: true }).focus();
+  await expect(page.locator('.niuu-image-link-thumbnail img')).toBeVisible();
+  await page.keyboard.press('Enter');
+  await expect(dialog).toHaveAccessibleName('diagram.svg');
+});
+
+test('session rows align name and state above harness, workspace and age with overlaid actions', async ({
+  page,
+}, testInfo) => {
+  await fixture(page);
+  await page.goto('/volundr/sessions');
+  const row = page.getByTestId('pod-entry-review');
+  await expect(row.locator('.forge-session-harness')).toHaveText('Codex');
+  const claude = page.getByTestId('pod-entry-idle').locator('.forge-session-harness');
+  await expect(claude).toHaveText('Claude');
+  const blue = await row
+    .locator('.forge-session-harness')
+    .evaluate((el) => getComputedStyle(el).color);
+  const orange = await claude.evaluate((el) => getComputedStyle(el).color);
+  expect(blue).toBe('rgb(96, 165, 250)');
+  expect(orange).toBe('rgb(251, 146, 60)');
+  const name = row.locator('.forge-session-row__title');
+  const state = row.locator('.forge-session-state');
+  const nameBox = (await name.boundingBox())!;
+  const stateBox = (await state.boundingBox())!;
+  expect(Math.abs(nameBox.y - stateBox.y)).toBeLessThan(5);
+  const sourceBox = (await row.locator('.forge-session-row__source').boundingBox())!;
+  const ageBox = (await row.locator('.forge-session-row__age').boundingBox())!;
+  expect(Math.abs(sourceBox.y - ageBox.y)).toBeLessThan(2);
+  expect(sourceBox.y).toBeGreaterThan(nameBox.y + nameBox.height);
+  await row.hover();
+  const actions = row.locator('..').locator('.forge-session-row__actions');
+  const actionsBox = (await actions.boundingBox())!;
+  expect(actionsBox.y).toBeLessThan(nameBox.y + 5);
+  expect(actionsBox.x).toBeLessThan(stateBox.x);
+  expect(actionsBox.x + actionsBox.width).toBeGreaterThan(stateBox.x + stateBox.width);
+  expect((await row.boundingBox())!.width).toBeGreaterThan(300);
+  await page.screenshot({ path: testInfo.outputPath('session-row-hover.png') });
+  await page.getByRole('combobox', { name: 'Color theme' }).selectOption('ice');
+  await expect(row.locator('.forge-session-harness')).toHaveCSS('color', blue);
+});
+
+test('touch users can reveal row actions while the state stays visible at rest', async ({
+  browser,
+}, testInfo) => {
+  const context = await browser.newContext({
+    baseURL: testInfo.project.use.baseURL,
+    viewport: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+  });
+  const page = await context.newPage();
+  try {
+    await fixture(page);
+    await page.goto('/volundr/sessions');
+    const row = page.getByTestId('pod-entry-review').locator('..');
+    const more = row.getByRole('button', { name: 'Actions for Forge UX review' });
+    const actions = row.locator('.forge-session-row__actions');
+    await expect(row.locator('.forge-session-state')).toBeVisible();
+    await expect(actions).toHaveCSS('opacity', '0');
+    await more.tap();
+    await expect(actions).toHaveCSS('opacity', '1');
+    await page.screenshot({ path: testInfo.outputPath('touch-row-actions.png') });
+    await more.tap();
+    await expect(actions).toHaveCSS('opacity', '0');
+  } finally {
+    await context.close();
+  }
 });

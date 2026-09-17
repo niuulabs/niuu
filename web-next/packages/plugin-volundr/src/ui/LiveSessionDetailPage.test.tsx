@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
@@ -2240,9 +2240,14 @@ describe('LiveSessionDetailPage', () => {
       });
     });
 
-    it('shows Tokens metric', async () => {
+    it('hides Tokens by default and shows the metric when enabled in settings', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
+      expect(screen.queryByText('Tokens')).not.toBeInTheDocument();
+      act(() => {
+        localStorage.setItem('niuu.forge.tokens', '1');
+        window.dispatchEvent(new Event('storage'));
+      });
       expect(screen.getByText('Tokens')).toBeInTheDocument();
     });
 

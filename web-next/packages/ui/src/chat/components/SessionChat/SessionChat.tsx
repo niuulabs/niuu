@@ -284,6 +284,8 @@ export interface SessionChatProps {
   className?: string;
   /** Show the built-in toolbar row. */
   showToolbar?: boolean;
+  /** Token counts are opt-in to keep the conversation uncluttered. */
+  showTokenUsage?: boolean;
   /** Hide the built-in internal visibility toggle when the page owns it externally. */
   showInternalToggle?: boolean;
   /** Controlled internal visibility state for external toolbar integrations. */
@@ -350,6 +352,7 @@ export function SessionChat({
   sessionName = 'Session',
   className,
   showToolbar = true,
+  showTokenUsage = false,
   showInternalToggle = true,
   internalVisibility,
   eventRouting = false,
@@ -943,6 +946,7 @@ export function SessionChat({
                   <AssistantMessage
                     key={messageRenderKey(msg)}
                     message={msg}
+                    showTokenUsage={showTokenUsage}
                     onCopy={handleCopy}
                     onRegenerate={handleRegenerate}
                     onBookmark={handleBookmark}

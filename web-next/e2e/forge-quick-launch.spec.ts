@@ -195,25 +195,14 @@ test('Git selection, errors, and the legacy runtime remain explicit choices', as
   await expect(page.getByRole('dialog', { name: 'Launch pod' })).toBeVisible();
 });
 
-test('host names and IPs are visible and edits use the registry while preserving routing', async ({
-  page,
-}) => {
-  const calls = await fixture(page);
-  await page.goto('/volundr/hosts');
-  await expect(page.getByText('http://100.115.8.110:8080')).toBeVisible();
-  await page.getByRole('button', { name: 'Test Spark', exact: true }).click();
-  await expect(page.getByText('Forge is reachable')).toBeVisible();
-  await page.getByRole('button', { name: 'Edit Thor', exact: true }).click();
-  await page.getByLabel('Default folder').fill('/home/thor/review');
-  await page.getByRole('button', { name: 'Save Forge', exact: true }).click();
-  await expect.poll(() => calls.length).toBe(2);
-  expect(calls[1]).toMatchObject({
-    path: '/api/v1/niuu/instances/thor',
-    body: {
-      baseUrl: 'http://100.66.123.128:8080',
-      config: { transport: 'embedded', defaultFolder: '/home/thor/review' },
-    },
-  });
+test('connection management points to Guild without a duplicate Forge tab', async ({ page }) => {
+  await fixture(page);
+  await page.goto('/volundr/catalog');
+  await expect(page.getByRole('link', { name: 'Manage environments in Guild' })).toHaveAttribute(
+    'href',
+    '/guild',
+  );
+  await expect(page.getByRole('link', { name: 'Forge Hosts', exact: true })).toHaveCount(0);
 });
 
 test('quick launch stays readable and inside an iPhone viewport', async ({ page }) => {

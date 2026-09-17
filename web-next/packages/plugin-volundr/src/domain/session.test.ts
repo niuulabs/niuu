@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { canTransition, transitionSession } from './session';
+import { canTransition, transitionSession, sessionHarness } from './session';
 import type { Session, SessionState } from './session';
 
 const BASE_SESSION: Session = {
@@ -142,5 +142,25 @@ describe('transitionSession', () => {
   it('allows failed → terminated (clean-up complete)', () => {
     const failed = { ...BASE_SESSION, state: 'failed' as SessionState };
     expect(transitionSession(failed, 'terminated').state).toBe('terminated');
+  });
+});
+
+describe('session harness identity', () => {
+  it('prefers the recorded harness, then origin, then legacy model names', () => {
+    expect(
+      sessionHarness({ sessionDefinition: 'skuldClaudeInteractive', model: 'gpt-6-astra' }),
+    ).toBe('claude');
+    expect(sessionHarness({ sessionDefinition: 'skuldCodex', model: 'claude-fable-5-1' })).toBe(
+      'codex',
+    );
+    expect(sessionHarness({ origin: 'codex', model: 'claude-fable-5-1' })).toBe('codex');
+    expect(sessionHarness({ model: 'claude-fable-5-1' })).toBe('claude');
+    expect(sessionHarness({ model: 'gpt-6-astra' })).toBe('codex');
+    expect(sessionHarness({ model: 'o3' })).toBe('codex');
+    expect(
+      sessionHarness({ sessionDefinition: 'skuldGemini', model: 'gpt-6-astra' }),
+    ).toBeUndefined();
+    expect(sessionHarness({ model: 'unknown' })).toBeUndefined();
+    expect(sessionHarness({})).toBeUndefined();
   });
 });

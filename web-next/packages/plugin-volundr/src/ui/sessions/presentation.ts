@@ -2,12 +2,12 @@ import type { Session, SessionState } from '../../domain/session';
 
 export const SESSION_FILTERS = [
   'live',
-  'all',
   'active',
   'idle',
   'attention',
   'stopped',
   'failed',
+  'all',
   'archived',
 ] as const;
 export type SessionFilter = (typeof SESSION_FILTERS)[number];

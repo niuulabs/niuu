@@ -71,6 +71,17 @@ function extractTokens(usage: Record<string, { inputTokens?: number; outputToken
   return { input, output };
 }
 
+/** Compact, rounded counts keep the conversation header quiet. */
+export function formatTokenCount(count: number): string {
+  if (!Number.isFinite(count) || count < 0) return '0';
+  return new Intl.NumberFormat('en-US', {
+    notation: 'compact',
+    maximumFractionDigits: 0,
+  })
+    .format(count)
+    .toLowerCase();
+}
+
 /* ── UserMessage ── */
 
 interface UserMessageProps {
@@ -132,6 +143,7 @@ interface AssistantMessageProps {
   onRegenerate?: (messageId: string) => void;
   onBookmark?: (messageId: string, bookmarked: boolean) => void;
   bookmarked?: boolean;
+  showTokenUsage?: boolean;
 }
 
 export function AssistantMessage({
@@ -140,6 +152,7 @@ export function AssistantMessage({
   onRegenerate,
   onBookmark,
   bookmarked = false,
+  showTokenUsage = false,
 }: AssistantMessageProps) {
   const [copied, handleCopyClick] = useCopyFeedback(message.content);
   const [thumbState, setThumbState] = useState<'up' | 'down' | null>(null);
@@ -176,11 +189,11 @@ export function AssistantMessage({
               Generating...
             </span>
           )}
-          {tokens && (
+          {showTokenUsage && tokens && (
             <>
               <span className="niuu-chat-header-sep">&middot;</span>
               <span className="niuu-chat-token-info">
-                {tokens.input}&rarr;{tokens.output} tok
+                {formatTokenCount(tokens.input)} → {formatTokenCount(tokens.output)} tokens
               </span>
             </>
           )}

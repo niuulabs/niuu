@@ -2451,42 +2451,32 @@ describe('session resource byte downloads', () => {
   });
 });
 
-describe('Forge host registry contract', () => {
-  it('reads all hosts, creates personal hosts, patches existing hosts and tests their connection', async () => {
-    const service = buildVolundrHttpAdapter(makeClient());
-    const registry = getDerivedClient('http://localhost:8080/api/v1/niuu');
-    const host = {
-      id: 'thor',
-      slug: 'local',
-      name: 'Thor',
-      baseUrl: 'http://127.0.0.1:8080',
-      enabled: true,
-      isDefault: true,
-      tags: [],
-      config: { transport: 'embedded', defaultFolder: '/home/thor/repos' },
-    };
-    registry.get.mockResolvedValue([host]);
-    expect(await service.getForgeHosts()).toEqual([host]);
-    expect(registry.get).toHaveBeenCalledWith('/instances?kind=volundr');
-    registry.patch.mockResolvedValue(host);
-    const input = {
-      name: host.name,
-      slug: host.slug,
-      baseUrl: host.baseUrl,
-      enabled: true,
-      config: host.config,
-    };
-    expect(await service.saveForgeHost({ id: 'thor', ...input })).toEqual(host);
-    expect(registry.patch).toHaveBeenCalledWith('/instances/thor', input);
-    registry.post.mockResolvedValue(host);
-    await service.saveForgeHost(input);
-    expect(registry.post).toHaveBeenCalledWith('/instances', {
-      ...input,
-      kind: 'volundr',
-      visibility: 'user',
+describe('Forge project grouping contract', () => {
+  it('loads projects from Forge and preserves coordination and parent references on sessions', async () => {
+    const client = makeClient();
+    const project = { id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' };
+    client.get.mockResolvedValue([project]);
+    const service = buildVolundrHttpAdapter(client);
+    expect(await service.getProjects()).toEqual([project]);
+    expect(client.get).toHaveBeenCalledWith('/projects');
+    const normalized = __testables.normalizeSession({
+      id: 'worker',
+      name: 'iOS',
+      source: { type: 'git', repo: 'lexi', branch: 'main' },
+      status: 'running',
+      model: 'astra',
+      coordination: {
+        project_id: 'lexi',
+        role: 'worker',
+        parent: { instance_id: 'thor', session_id: 'coordinator' },
+      },
     });
-    registry.post.mockResolvedValue({ ok: false, message: 'unreachable' });
-    expect(await service.testForgeHost('thor')).toEqual({ ok: false, message: 'unreachable' });
-    expect(registry.post).toHaveBeenCalledWith('/instances/thor/test');
+    expect(normalized.coordination).toEqual({
+      projectId: 'lexi',
+      role: 'worker',
+      parent: { instanceId: 'thor', sessionId: 'coordinator' },
+    });
+    client.get.mockRejectedValue(new Error('host offline'));
+    await expect(service.getProjects()).rejects.toThrow('host offline');
   });
 });

@@ -8,7 +8,7 @@
  * `failed` can transition to `terminated` (clean-up complete).
  */
 
-import type { TrackerIssue } from '../models/volundr.model';
+import type { TrackerIssue, SessionCoordination, SessionSource } from '../models/volundr.model';
 
 export type SessionState =
   | 'requested'
@@ -50,6 +50,10 @@ export interface SessionEvent {
 export type ConnectionType = 'cli' | 'ide' | 'api';
 
 export interface Session {
+  model?: string;
+  sessionDefinition?: string;
+  source?: SessionSource;
+  coordination?: SessionCoordination;
   id: string;
   ravnId: string;
   name?: string;
@@ -119,4 +123,21 @@ export function transitionSession(session: Session, to: SessionState): Session {
     throw new Error(`Invalid session state transition: ${session.state} → ${to}`);
   }
   return { ...session, state: to };
+}
+
+/** Prefer the stamped harness, then imported origin, then the model for legacy sessions. */
+export function sessionHarness(
+  session: Pick<Session, 'model' | 'sessionDefinition' | 'origin'>,
+): 'claude' | 'codex' | undefined {
+  const definition = session.sessionDefinition?.toLowerCase();
+  if (definition) {
+    if (definition.includes('claude')) return 'claude';
+    if (definition.includes('codex')) return 'codex';
+    return undefined;
+  }
+  if (session.origin === 'claude' || session.origin === 'codex') return session.origin;
+  const model = session.model?.toLowerCase() ?? '';
+  if (/^(claude|fable|opus|sonnet|haiku)(-|$)/.test(model)) return 'claude';
+  if (/^(gpt-|codex|o[134](?:-|$))/.test(model)) return 'codex';
+  return undefined;
 }

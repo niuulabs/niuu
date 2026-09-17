@@ -156,7 +156,21 @@ export interface ProjectRepoMapping {
 // Session
 // ---------------------------------------------------------------------------
 
+export interface ForgeProject {
+  id: string;
+  name: string;
+  slug: string;
+  status: 'active' | 'archived';
+}
+export interface SessionCoordination {
+  projectId: string;
+  role: string;
+  parent?: { instanceId: string; sessionId: string } | null;
+}
+
 export interface VolundrSession {
+  sessionDefinition?: string;
+  coordination?: SessionCoordination;
   id: string;
   name: string;
   source: SessionSource;
@@ -248,21 +262,6 @@ export interface VolundrStats {
     costToday?: number[];
     sessionsToday?: number[];
   };
-}
-
-export interface ForgeHostInput {
-  id?: string;
-  name: string;
-  slug: string;
-  baseUrl: string;
-  enabled: boolean;
-  config: Record<string, unknown>;
-}
-
-export interface ForgeHostTest {
-  ok: boolean;
-  message: string;
-  statusCode?: number | null;
 }
 
 export interface VolundrTarget {

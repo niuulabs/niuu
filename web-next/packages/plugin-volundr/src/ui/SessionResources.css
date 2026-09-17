@@ -1,6 +1,6 @@
-.forge-resource-dialog {
-  width: min(1160px, 94vw);
-  height: min(920px, 90dvh);
+.niuu-dialog-content.forge-resource-dialog {
+  width: 90vw;
+  height: 90dvh;
   max-height: 94dvh;
   display: flex;
   flex-direction: column;
@@ -117,7 +117,6 @@
   background: var(--color-bg-primary);
 }
 .forge-resource-document {
-  max-width: 840px;
   margin: auto;
   padding: 26px 36px 48px;
   background: var(--color-bg-secondary);
@@ -148,19 +147,6 @@
   width: 100%;
   height: 100%;
   object-fit: contain;
-}
-.forge-resource-image-canvas {
-  min-height: 100%;
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-start;
-}
-.forge-resource-image-canvas img {
-  display: block;
-  flex-shrink: 0;
-  object-fit: contain;
-  margin: auto;
-  border-radius: 8px;
 }
 .forge-resource-media,
 .forge-resource-empty {
@@ -203,7 +189,7 @@
   outline-offset: 2px;
 }
 @media (max-width: 650px) {
-  .forge-resource-dialog {
+  .niuu-dialog-content.forge-resource-dialog {
     width: calc(100vw - 12px);
     height: calc(100dvh - 20px);
     max-height: calc(100dvh - 20px);
@@ -230,12 +216,6 @@
   .forge-resource-dialog .niuu-dialog-close {
     min-height: 40px;
   }
-}
-.forge-resource-image-canvas {
-  height: 100%;
-}
-.forge-resource-image-canvas img {
-  max-width: none;
 }
 
 [data-theme='xteo'] .forge-resource-toolbar,

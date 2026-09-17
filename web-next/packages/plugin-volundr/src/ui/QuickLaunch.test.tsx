@@ -6,12 +6,7 @@ import { LaunchWizard } from './LaunchWizard';
 import { LaunchCatalogPage } from './LaunchCatalogPage';
 import { createMockVolundrService } from '../adapters/mock';
 import { renderWithVolundr } from '../testing/renderWithVolundr';
-import {
-  FORGE_STANDARDS,
-  normalizeForgeOrigin,
-  selectedEffort,
-  hostDefaultFolder,
-} from './quickLaunchModel';
+import { FORGE_STANDARDS, selectedEffort, hostDefaultFolder } from './quickLaunchModel';
 
 const navigate = vi.fn();
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }));
@@ -65,7 +60,7 @@ function setup(
 ) {
   const base = createMockVolundrService();
   const startSession = vi.fn(base.startSession);
-  const service = { ...base, startSession, getForgeHosts: async () => hosts, ...overrides };
+  const service = { ...base, startSession, getTargets: async () => hosts, ...overrides };
   const bifrost = { ...createMockBifrostService(), getModelCatalog: async () => catalog };
   const onAdvanced = vi.fn();
   const onCreated = vi.fn();
@@ -177,7 +172,7 @@ describe('QuickLaunch', () => {
   });
   it('surfaces load failures and absence of hosts', async () => {
     setup({
-      getForgeHosts: async () => {
+      getTargets: async () => {
         throw new Error('Registry unreachable');
       },
     });
@@ -185,7 +180,7 @@ describe('QuickLaunch', () => {
     expect(screen.getByRole('button', { name: 'Launch Claude' })).toBeDisabled();
   });
   it('does not launch on a disabled host', async () => {
-    setup({ getForgeHosts: async () => hosts.map((h) => ({ ...h, enabled: false })) });
+    setup({ getTargets: async () => hosts.map((h) => ({ ...h, enabled: false })) });
     await screen.findByText('Add an enabled Forge host to launch a session.');
     expect(screen.getByRole('button', { name: 'Launch Claude' })).toBeDisabled();
   });
@@ -233,22 +228,6 @@ describe('QuickLaunch', () => {
 });
 
 describe('launch policy helpers', () => {
-  it('accepts plain IPs, IPv6 and HTTPS origins, rejects non-origins', () => {
-    expect(normalizeForgeOrigin(' 100.66.123.128 ')).toBe('http://100.66.123.128:8080');
-    expect(normalizeForgeOrigin('[::1]:8080')).toBe('http://[::1]:8080');
-    expect(normalizeForgeOrigin('https://forge.example/')).toBe('https://forge.example');
-    for (const value of [
-      '',
-      'hello world',
-      'http://[invalid',
-      'file:///tmp',
-      'https://u:p@forge',
-      'https://forge/api',
-      'https://forge/?a=1',
-      'https://forge/#a',
-    ])
-      expect(() => normalizeForgeOrigin(value)).toThrow();
-  });
   it('resolves effort from advertised metadata and folders from host configuration', () => {
     expect(selectedEffort(undefined, 'xhigh')).toBe('');
     expect(selectedEffort(models['gpt-6-astra'], 'invalid')).toBe('high');

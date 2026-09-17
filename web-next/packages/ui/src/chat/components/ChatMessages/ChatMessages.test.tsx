@@ -71,8 +71,8 @@ describe('AssistantMessage', () => {
     expect(screen.getByTestId('assistant-message')).toBeInTheDocument();
   });
 
-  it('shows model badge and token info', () => {
-    render(<AssistantMessage message={assistantMsg} />);
+  it('shows model badge and token info when enabled', () => {
+    render(<AssistantMessage message={assistantMsg} showTokenUsage />);
     expect(screen.getByText('claude-sonnet')).toBeInTheDocument();
     expect(screen.getByText(/tok/)).toBeInTheDocument();
   });
@@ -203,4 +203,15 @@ describe('SystemMessage', () => {
     expect(screen.getByTestId('system-message')).toBeInTheDocument();
     expect(screen.getByText('Session started')).toBeInTheDocument();
   });
+});
+
+it('hides usage by default and rounds counts with a spaced arrow when enabled', () => {
+  const message = {
+    ...assistantMsg,
+    metadata: { usage: { astra: { inputTokens: 150344, outputTokens: 234 } } },
+  };
+  const view = render(<AssistantMessage message={message} />);
+  expect(screen.queryByText(/tokens/)).not.toBeInTheDocument();
+  view.rerender(<AssistantMessage message={message} showTokenUsage />);
+  expect(screen.getByText('150k → 234 tokens')).toBeInTheDocument();
 });

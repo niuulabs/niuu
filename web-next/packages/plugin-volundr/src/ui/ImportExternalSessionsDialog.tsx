@@ -12,6 +12,7 @@ import {
   relTime,
 } from '@niuulabs/ui';
 import { FolderGit2 } from 'lucide-react';
+import './ImportExternalSessionsDialog.css';
 import { CliBadge } from './atoms/CliBadge';
 import {
   isExternalSessionsUnavailableError,
@@ -154,11 +155,18 @@ export function ImportExternalSessionsDialog({
   const volundr = useService<IVolundrService>('volundr');
   const queryClient = useQueryClient();
   const externalQuery = useExternalSessions({ enabled: open });
+  const [search, setSearch] = useState('');
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [importErrors, setImportErrors] = useState<Record<string, string>>({});
 
   const unavailable = isExternalSessionsUnavailableError(externalQuery.error);
   const sessions = externalQuery.data ?? [];
+  const query = search.trim().toLowerCase();
+  const visibleSessions = sessions.filter((session) =>
+    [session.title, session.externalId, session.workspacePath, session.harness, session.model].some(
+      (value) => value?.toLowerCase().includes(query),
+    ),
+  );
 
   async function handleImport(session: ExternalSession) {
     if (busyKey) return;
@@ -192,6 +200,15 @@ export function ImportExternalSessionsDialog({
         description="Claude Code and Codex sessions discovered on the host can be imported as Völundr sessions."
       >
         <div data-testid="import-external-sessions-panel">
+          <label className="forge-import-search">
+            <span>Search CLI sessions</span>
+            <input
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Name, folder, model or CLI…"
+            />
+          </label>
           {externalQuery.isLoading && <LoadingState label="Discovering external sessions…" />}
           {externalQuery.isError && unavailable && (
             <EmptyState
@@ -213,12 +230,15 @@ export function ImportExternalSessionsDialog({
               description="No Claude Code or Codex sessions were discovered on the host."
             />
           )}
-          {externalQuery.isSuccess && sessions.length > 0 && (
+          {externalQuery.isSuccess && sessions.length > 0 && visibleSessions.length === 0 && (
+            <p role="status">No CLI sessions match your search.</p>
+          )}
+          {externalQuery.isSuccess && visibleSessions.length > 0 && (
             <ul
               className="niuu:max-h-96 niuu:overflow-y-auto niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary"
               data-testid="external-session-list"
             >
-              {sessions.map((session) => {
+              {visibleSessions.map((session) => {
                 const key = externalSessionKey(session);
                 return (
                   <ExternalSessionRow

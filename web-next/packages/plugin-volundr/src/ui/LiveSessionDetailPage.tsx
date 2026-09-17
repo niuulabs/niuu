@@ -3541,7 +3541,9 @@ function LiveSessionDetailPageInner({
   const [dismissedHumanGateIds, setDismissedHumanGateIds] = useState<Set<string>>(new Set());
   const [toolVisibility, setToolVisibility] = useForgePreference('tools', '1', ['0', '1']);
   const showInternalMessages = toolVisibility === '1';
-  const [detailsPreference, setDetailsPreference] = useForgePreference('details', '0', ['0', '1']);
+  const [tokenVisibility] = useForgePreference('tokens', '0', ['0', '1']);
+  const showTokenUsage = tokenVisibility === '1';
+  const [detailsPreference] = useForgePreference('details', '0', ['0', '1']);
   const showDetails = detailsPreference === '1';
   const [visibleMessageCount, setVisibleMessageCount] = useState<number | null>(null);
   const volundr = useService<IVolundrService>('volundr');
@@ -4017,8 +4019,12 @@ function LiveSessionDetailPageInner({
               <HeaderMetric label="Uptime" value={uptimeValue} />
               <HeaderDivider />
               <HeaderMetric label="Msgs" value={formatCount(headerMessageCount)} />
-              <HeaderDivider />
-              <HeaderMetric label="Tokens" value={formatCount(liveSession?.tokensUsed ?? 0)} />
+              {showTokenUsage && (
+                <>
+                  <HeaderDivider />
+                  <HeaderMetric label="Tokens" value={formatCount(liveSession?.tokensUsed ?? 0)} />
+                </>
+              )}
               {trailingMetric ? (
                 <>
                   <HeaderDivider />
@@ -4063,12 +4069,6 @@ function LiveSessionDetailPageInner({
               >
                 Hierarchical
               </span>
-              <SessionToolbarButton
-                icon={FileCode2}
-                title={showDetails ? 'Hide session details' : 'Show session details'}
-                active={showDetails}
-                onClick={() => setDetailsPreference(showDetails ? '0' : '1')}
-              />
               <SessionToolbarButton
                 icon={showInternalMessages ? Eye : EyeOff}
                 title={
@@ -4183,6 +4183,7 @@ function LiveSessionDetailPageInner({
                     showToolbar={false}
                     showInternalToggle={false}
                     internalVisibility={showInternalMessages}
+                    showTokenUsage={showTokenUsage}
                     messages={chat.messages}
                     streamingContent={chat.streamingContent}
                     streamingParts={chat.streamingParts}
@@ -4225,6 +4226,7 @@ function LiveSessionDetailPageInner({
                   showToolbar={false}
                   showInternalToggle={false}
                   internalVisibility={showInternalMessages}
+                  showTokenUsage={showTokenUsage}
                   messages={replayMessages}
                   connected={false}
                   historyLoaded={!transcriptQuery.isLoading}

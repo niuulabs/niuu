@@ -114,6 +114,10 @@ function makeSession(
     sagaId: overrides.sagaId,
     runId: overrides.runId,
     origin: overrides.origin,
+    model: overrides.model,
+    source: overrides.source,
+    sessionDefinition: overrides.sessionDefinition,
+    coordination: overrides.coordination,
   };
 }
 
@@ -406,8 +410,8 @@ describe('SessionsPage', () => {
       expect(screen.getByTestId('toggle-stopped-selection-button')).toBeInTheDocument(),
     );
     fireEvent.click(screen.getByTestId('toggle-stopped-selection-button'));
-    fireEvent.click(screen.getByTestId('stopped-session-checkbox-stopped-1'));
-    fireEvent.click(screen.getByTestId('stopped-session-checkbox-stopped-2'));
+    expect(screen.getByTestId('stopped-session-checkbox-stopped-1')).toBeChecked();
+    expect(screen.getByTestId('stopped-session-checkbox-stopped-2')).toBeChecked();
     fireEvent.click(screen.getByTestId('delete-selected-stopped-button'));
 
     await waitFor(() =>
@@ -433,8 +437,8 @@ describe('SessionsPage', () => {
     await waitFor(() =>
       expect(screen.getByTestId('session-origin-badge-imp-1')).toBeInTheDocument(),
     );
-    expect(screen.getByTestId('session-origin-badge-imp-1')).toHaveTextContent('claude');
-    expect(screen.getByTestId('session-origin-badge-imp-2')).toHaveTextContent('codex');
+    expect(screen.getByTestId('session-origin-badge-imp-1')).toHaveTextContent('Claude');
+    expect(screen.getByTestId('session-origin-badge-imp-2')).toHaveTextContent('Codex');
     expect(screen.queryByTestId('session-origin-badge-native-1')).not.toBeInTheDocument();
     expect(screen.queryByTestId('session-origin-badge-native-2')).not.toBeInTheDocument();
   });
@@ -530,7 +534,7 @@ describe('SessionsPage', () => {
       expect(screen.getByTestId('toggle-stopped-selection-button')).toBeInTheDocument(),
     );
     fireEvent.click(screen.getByTestId('toggle-stopped-selection-button'));
-    fireEvent.click(screen.getByTestId('stopped-session-checkbox-ds-1'));
+    fireEvent.click(screen.getByTestId('stopped-session-checkbox-stopped-2'));
     fireEvent.click(screen.getByTestId('delete-selected-stopped-button'));
     await waitFor(() =>
       expect(screen.getByTestId('confirm-delete-selected-stopped-button')).toBeInTheDocument(),
@@ -596,7 +600,7 @@ describe('Forge session review controls', () => {
       within(screen.getByTestId('pod-group-active')).getByRole('button', { expanded: true }),
     );
     expect(screen.queryByTestId('pod-entry-working')).not.toBeInTheDocument();
-    expect(localStorage.getItem('niuu.forge.group.ACTIVE')).toBe('1');
+    expect(localStorage.getItem('niuu.forge.group.state:ACTIVE')).toBe('1');
   });
   it('reports a failed stop and does not proceed to archive or change selection', async () => {
     const service = createMockVolundrService();
@@ -646,4 +650,44 @@ describe('Forge session review controls', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(service.deleteSession).toHaveBeenCalledTimes(2);
   });
+});
+
+it('groups registered projects as a collapsible session tree and keeps settings in the footer', async () => {
+  const service = createMockVolundrService();
+  service.getProjects = vi
+    .fn()
+    .mockResolvedValue([{ id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' }]);
+  const sessions = [
+    makeSession({
+      id: 'parent',
+      personaName: 'Coordinator',
+      state: 'running',
+      coordination: { projectId: 'lexi', role: 'coordinator' },
+    }),
+    makeSession({
+      id: 'child',
+      personaName: 'iOS work',
+      state: 'idle',
+      coordination: {
+        projectId: 'lexi',
+        role: 'worker',
+        parent: { instanceId: 'cluster-a', sessionId: 'parent' },
+      },
+    }),
+    makeSession({ id: 'other', personaName: 'Independent', state: 'idle' }),
+  ];
+  wrap(createSessionStoreWithSessions(sessions), service);
+  await screen.findByTestId('pod-entry-parent');
+  expect(service.getProjects).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByTestId('pod-group-mode-project'));
+  await screen.findByTestId('pod-group-lexi');
+  expect(screen.getByTestId('pod-group-no-project')).toHaveTextContent('Independent');
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse child sessions of Coordinator' }));
+  expect(screen.queryByTestId('pod-entry-child')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Expand child sessions of Coordinator' }));
+  expect(screen.getByTestId('pod-entry-child')).toBeInTheDocument();
+  const footer = screen.getByRole('group', { name: 'Session list settings' });
+  expect(within(footer).getByRole('checkbox', { name: 'Show token usage' })).not.toBeChecked();
+  fireEvent.click(within(footer).getByRole('checkbox', { name: 'Show token usage' }));
+  expect(localStorage.getItem('niuu.forge.tokens')).toBe('1');
 });

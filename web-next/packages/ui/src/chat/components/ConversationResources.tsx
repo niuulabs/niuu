@@ -2,6 +2,8 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import { File, Image as ImageIcon } from 'lucide-react';
 import type { ToolUseBlock } from './ToolBlock/groupContentBlocks';
 import './ConversationResources.css';
+import { ImagePreview } from './ImagePreview';
+import { Tooltip, TooltipProvider } from '../../primitives/Tooltip/Tooltip';
 import { Dialog, DialogContent } from '../../primitives/Dialog/Dialog';
 
 export interface ConversationResource {
@@ -41,9 +43,96 @@ export function safeExternalUrl(href: string): string | null {
   }
 }
 
+export function isImageLink(href: string, mime?: string): boolean {
+  if (mime?.startsWith('image/')) return true;
+  return /\.(?:png|jpe?g|gif|webp|avif|svg|bmp|ico)$/i.test(href.split(/[?#]/)[0] ?? '');
+}
+
+/** Mounted only while the tooltip is visible; workspace bytes use the authenticated port. */
+function ImageLinkThumbnail({
+  href,
+  resource,
+  port,
+}: {
+  href: string;
+  resource?: ConversationResource;
+  port: ConversationResourcePort | null;
+}) {
+  const [url, setUrl] = useState(resource ? '' : href);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (!resource || !port) return;
+    const abort = new AbortController();
+    let objectUrl: string | undefined;
+    void port
+      .load(resource, abort.signal)
+      .then((blob) => {
+        if (abort.signal.aborted) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      })
+      .catch(() => {
+        if (!abort.signal.aborted) setFailed(true);
+      });
+    return () => {
+      abort.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [resource, port]);
+  return (
+    <span className="niuu-image-link-thumbnail">
+      {failed ? (
+        <span>Preview unavailable</span>
+      ) : url ? (
+        <img src={url} alt="" onError={() => setFailed(true)} />
+      ) : (
+        <span>Loading image…</span>
+      )}
+      <span>Click to view image</span>
+    </span>
+  );
+}
+
 export function ConversationLink({ href, children }: { href: string; children: ReactNode }) {
   const port = useContext(Context);
+  const [imageOpen, setImageOpen] = useState(false);
   const resource = port?.resolve(href);
+  const external = safeExternalUrl(href);
+  const image =
+    isImageLink(resource?.name ?? href, resource?.mime) &&
+    (resource || (external && !external.startsWith('mailto:')));
+  if (image) {
+    const name = resource?.name ?? imageLinkName(href);
+    return (
+      <>
+        <TooltipProvider>
+          <Tooltip
+            delayMs={150}
+            ariaLabel="Image preview. Click to open."
+            className="niuu-image-link-tooltip"
+            content={
+              <ImageLinkThumbnail href={href} resource={resource ?? undefined} port={port} />
+            }
+          >
+            <button
+              type="button"
+              className="niuu-chat-md-link"
+              onClick={() => (resource && port ? port.open(resource) : setImageOpen(true))}
+            >
+              {children}
+            </button>
+          </Tooltip>
+        </TooltipProvider>
+        {!resource && (
+          <Dialog open={imageOpen} onOpenChange={setImageOpen}>
+            <DialogContent title={name} className="niuu-chat-image-dialog">
+              <ImagePreview src={href} originalUrl={href} name={name} />
+            </DialogContent>
+          </Dialog>
+        )}
+      </>
+    );
+  }
   if (resource && port)
     return (
       <button
@@ -55,7 +144,6 @@ export function ConversationLink({ href, children }: { href: string; children: R
         {children}
       </button>
     );
-  const external = safeExternalUrl(href);
   if (external)
     return (
       <a href={external} className="niuu-chat-md-link" target="_blank" rel="noreferrer">
@@ -69,6 +157,14 @@ export function ConversationLink({ href, children }: { href: string; children: R
       </a>
     );
   return <span title="This link is not available in the current session">{children}</span>;
+}
+
+function imageLinkName(href: string): string {
+  try {
+    return decodeURIComponent(new URL(href).pathname.split('/').pop() ?? '') || 'Image preview';
+  } catch {
+    return 'Image preview';
+  }
 }
 
 export function ConversationImage({ href, alt }: { href: string; alt: string }) {
@@ -160,15 +256,11 @@ export function ConversationImage({ href, alt }: { href: string; alt: string }) 
       </button>
       <Dialog open={imageOpen} onOpenChange={setImageOpen}>
         <DialogContent title={alt || 'Image preview'} className="niuu-chat-image-dialog">
-          <img src={imageExternal ?? undefined} alt={alt} />
-          <a
-            className="niuu-chat-md-link"
-            href={imageExternal ?? undefined}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Open original image
-          </a>
+          <ImagePreview
+            src={imageExternal ?? href}
+            originalUrl={imageExternal ?? href}
+            name={alt || imageLinkName(href)}
+          />
         </DialogContent>
       </Dialog>
     </>

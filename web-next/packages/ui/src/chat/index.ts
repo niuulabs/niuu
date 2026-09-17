@@ -78,3 +78,5 @@ export { MarkdownCodeBlock } from './components/MarkdownContent/MarkdownCodeBloc
 export { MermaidDiagram } from './components/MarkdownContent/MermaidDiagram';
 export { useCopyFeedback } from './hooks/useCopyFeedback';
 export { useConversationResources } from './components/ConversationResources';
+
+export { ImagePreview } from './components/ImagePreview';

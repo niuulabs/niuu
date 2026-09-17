@@ -36,8 +36,8 @@ export function QuickLaunch({
   const client = useQueryClient();
   const navigate = useNavigate();
   const hosts = useQuery({
-    queryKey: ['volundr', 'forge-hosts'],
-    queryFn: () => volundr.getForgeHosts(),
+    queryKey: ['volundr', 'targets'],
+    queryFn: () => volundr.getTargets(),
   });
   const catalog = useQuery({
     queryKey: ['bifrost', 'model-catalog', 'quick-launch'],
@@ -186,8 +186,8 @@ export function QuickLaunch({
         <section className="vol-quick__section">
           <div className="vol-quick__actions">
             <h2>Workspace</h2>
-            <a href="/volundr/hosts" className="vol-quick__link">
-              Manage Forge hosts
+            <a href="/guild" className="vol-quick__link">
+              Manage environments in Guild
             </a>
           </div>
           <div className="vol-quick__row">

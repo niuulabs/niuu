@@ -53,3 +53,18 @@ it('opens remote Markdown images in the viewport without navigating away', async
   fireEvent.click(screen.getByRole('button', { name: 'Close', exact: true }));
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 });
+
+it('opens HTTP image hyperlinks in the same preview and preserves ordinary website navigation', async () => {
+  render(
+    <ConversationLink href="https://example.test/diagram.png?revision=2">
+      Image reference
+    </ConversationLink>,
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Image reference' }));
+  expect(screen.getByRole('dialog', { name: 'diagram.png' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Zoom in' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Open original image' })).toHaveAttribute(
+    'href',
+    'https://example.test/diagram.png?revision=2',
+  );
+});

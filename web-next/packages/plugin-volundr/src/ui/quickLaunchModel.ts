@@ -46,31 +46,6 @@ export function hostDefaultFolder(host: VolundrTarget | undefined): string {
   const value = host?.config?.defaultFolder;
   return typeof value === 'string' ? value : '';
 }
-export function normalizeForgeOrigin(input: string): string {
-  const value = input.trim();
-  if (!value || /\s/.test(value))
-    throw new Error('Enter an IP address or hostname, with its port.');
-  let url: URL;
-  try {
-    url = new URL(value.includes('://') ? value : `http://${value}`);
-  } catch {
-    throw new Error('Enter a valid Forge address.');
-  }
-  if (
-    !['http:', 'https:'].includes(url.protocol) ||
-    !url.hostname ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    !['', '/'].includes(url.pathname)
-  ) {
-    throw new Error('Use an HTTP or HTTPS origin without credentials or an API path.');
-  }
-  if (!value.includes('://') && !url.port) url.port = '8080';
-  return url.origin;
-}
-
 export function forgeErrorMessage(error: unknown): string {
   if (error && typeof error === 'object' && 'detail' in error && typeof error.detail === 'string')
     return error.detail;

@@ -97,6 +97,13 @@ interface FileListPayload {
 }
 
 type SessionPayload = {
+  session_definition?: string | null;
+  sessionDefinition?: string;
+  coordination?: {
+    project_id: string;
+    role: string;
+    parent?: { instance_id: string; session_id: string } | null;
+  } | null;
   id: string;
   name: string;
   source: VolundrSession['source'];
@@ -492,9 +499,24 @@ function normalizeSession(session: SessionPayload): VolundrSession {
   return {
     id: session.id,
     name: session.name,
+    ...(session.coordination
+      ? {
+          coordination: {
+            projectId: session.coordination.project_id,
+            role: session.coordination.role,
+            parent: session.coordination.parent
+              ? {
+                  instanceId: session.coordination.parent.instance_id,
+                  sessionId: session.coordination.parent.session_id,
+                }
+              : null,
+          },
+        }
+      : {}),
     source: session.source,
     status: session.status,
     model: session.model,
+    sessionDefinition: session.sessionDefinition ?? session.session_definition ?? undefined,
     personaName: session.personaName ?? session.persona_name ?? undefined,
     lastActive: toEpochMs(session.lastActive ?? session.last_active),
     messageCount: session.messageCount ?? session.message_count ?? 0,
@@ -1511,6 +1533,8 @@ export function buildVolundrHttpAdapter(
           SharedRepoResponse | SharedRepoPayload[] | VolundrRepo[]
         >('/repos'),
       ),
+    getProjects: () => forgeClient.get('/projects'),
+
     getTargets: async () => {
       const targetClient = niuuClient ?? sharedClient;
       const payload = await targetClient.get<InstanceTargetPayload[]>(
@@ -1518,26 +1542,6 @@ export function buildVolundrHttpAdapter(
       );
       return payload.map(normalizeTarget);
     },
-
-    getForgeHosts: async () => {
-      const payload = await (niuuClient ?? sharedClient).get<InstanceTargetPayload[]>(
-        '/instances?kind=volundr',
-      );
-      return payload.map(normalizeTarget);
-    },
-    saveForgeHost: async ({ id, ...host }) => {
-      const registry = niuuClient ?? sharedClient;
-      const payload = id
-        ? await registry.patch<InstanceTargetPayload>(`/instances/${encodeURIComponent(id)}`, host)
-        : await registry.post<InstanceTargetPayload>('/instances', {
-            ...host,
-            kind: 'volundr',
-            visibility: 'user',
-          });
-      return normalizeTarget(payload);
-    },
-    testForgeHost: (id) =>
-      (niuuClient ?? sharedClient).post(`/instances/${encodeURIComponent(id)}/test`),
 
     subscribe: (callback) => {
       sessionSubscribers.add(callback);
