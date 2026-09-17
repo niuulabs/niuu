@@ -191,7 +191,7 @@ export function ShellLayout() {
                     }}
                   >
                     {t.rune && <span className="niuu-shell__tab-rune">{t.rune}</span>}
-                    {t.label}
+                    <span className="niuu-shell__tab-label">{t.label}</span>
                     {t.count != null && t.count > 0 && (
                       <span className="niuu-shell__tab-count" data-testid={`tab-count-${t.id}`}>
                         {t.count}

@@ -161,13 +161,14 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 var(--space-3);
+  padding: var(--space-1) var(--space-3) 0;
   background: transparent;
   border: none;
   cursor: pointer;
   color: var(--color-text-muted);
   font-family: var(--font-sans);
   font-size: 13px;
+  line-height: 1.25;
   font-weight: 400;
   transition: color var(--transition-fast);
 }
@@ -177,12 +178,15 @@
 .niuu-shell__tab--active {
   color: var(--color-text-primary);
 }
-.niuu-shell__tab--active::after {
+.niuu-shell__tab-label {
+  position: relative;
+}
+.niuu-shell__tab--active .niuu-shell__tab-label::after {
   content: '';
   position: absolute;
-  left: var(--space-3);
-  right: var(--space-3);
-  bottom: -1px;
+  left: 0;
+  right: 0;
+  bottom: calc(-1 * var(--space-1));
   height: 2px;
   background: var(--color-brand);
   box-shadow: 0 0 8px color-mix(in srgb, var(--color-brand) 60%, transparent);
@@ -423,7 +427,7 @@
   }
   .niuu-shell__tab {
     flex-shrink: 0;
-    padding: 0 10px;
+    padding-inline: 10px;
   }
   .niuu-shell__topbar-right {
     grid-column: 2;
