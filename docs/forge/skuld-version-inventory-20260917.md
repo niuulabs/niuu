@@ -7,6 +7,11 @@ refresh. It now matches Thor's latest release, with its native thread, 72 replay
 rows and workspace preserved. [Refresh evidence](macos-parity-skuld-refresh-20260917.md).
 The inventory below remains the historical 19:13 snapshot, not a fresh mesh sweep.
 
+**Later change, 21:13–21:14 UTC:** user-selected `lexi-ios-chat-voice-ux-improvement`
+and `lexi-coordinator` also now match Thor's latest release. Their native threads,
+317 combined replay rows and unfinished work are preserved.
+[Refresh evidence](ios-coordinator-skuld-refresh-20260917.md).
+
 ## Result
 
 - 664 session records returned by the four-host Forge inventory.
