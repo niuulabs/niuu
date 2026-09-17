@@ -29,6 +29,7 @@ import {
 } from './orderedPublicText';
 
 const HISTORY_RETRY_DELAY_MS = 1000;
+const MAX_HISTORY_RETRIES = 2;
 
 type WireParticipant = {
   peer_id?: string;
@@ -184,6 +185,8 @@ interface UseSkuldChatResult {
   streamingModel?: string;
   connected: boolean;
   historyLoaded: boolean;
+  historyError: string | null;
+  retryHistory: () => void;
   participants: ReadonlyMap<string, RoomParticipant>;
   meshEvents: MeshEvent[];
   agentEvents: ReadonlyMap<string, readonly AgentInternalEvent[]>;
@@ -684,7 +687,17 @@ export function useSkuldChat(
   const [streamingParts, setStreamingParts] = useState<ChatMessagePart[]>([]);
   const [streamingModel, setStreamingModel] = useState<string>('');
 
+  const [historyRequestVersion, setHistoryRequestVersion] = useState(0);
+  const [historyFailure, setHistoryFailure] = useState<{ url: string; message: string } | null>(
+    null,
+  );
+  const historyAttempts = useRef({ url, count: 0 });
   const historyLoaded = historyLoadedForUrl === url;
+  const retryHistory = useCallback(() => {
+    historyAttempts.current = { url, count: 0 };
+    setHistoryFailure(null);
+    setHistoryRequestVersion((version) => version + 1);
+  }, [url]);
   const participantsRef = useRef(participants);
   const messagesRef = useRef(messages);
   useEffect(() => {
@@ -904,13 +917,14 @@ export function useSkuldChat(
 
     const base = httpBase.endsWith('/') ? httpBase : `${httpBase}/`;
     const historyUrl = new URL('api/conversation/history', base);
+    if (historyAttempts.current.url !== url) historyAttempts.current = { url, count: 0 };
     const evidenceAtStart = historyEvidenceRef.current;
     const snapshotAtStart = snapshotEvidenceRef.current;
 
     fetch(historyUrl.href, { headers })
       .then(async (res) => {
         if (!res.ok) {
-          throw new Error(`history_fetch_failed:${res.status}`);
+          throw new Error(`History request failed (HTTP ${res.status}).`);
         }
         return res.json();
       })
@@ -960,14 +974,19 @@ export function useSkuldChat(
         }
         setHistoryLoadedForUrl(url);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (cancelled) return;
+        setHistoryFailure({
+          url,
+          message: error instanceof Error ? error.message : 'Could not reach the session history.',
+        });
         clearHistoryRetryTimer();
-        historyRetryTimerRef.current = setTimeout(() => {
-          if (!cancelled) {
-            setHistoryLoadedForUrl((current) => (current === url ? null : current));
-          }
-        }, HISTORY_RETRY_DELAY_MS);
+        if (historyAttempts.current.count < MAX_HISTORY_RETRIES) {
+          historyAttempts.current.count++;
+          historyRetryTimerRef.current = setTimeout(() => {
+            if (!cancelled) setHistoryRequestVersion((version) => version + 1);
+          }, HISTORY_RETRY_DELAY_MS);
+        }
       });
 
     return () => {
@@ -979,6 +998,7 @@ export function useSkuldChat(
     ensureSingleParticipant,
     historyLoaded,
     historyMode,
+    historyRequestVersion,
     seedStreamingHistory,
     url,
   ]);
@@ -2258,6 +2278,8 @@ export function useSkuldChat(
     streamingModel: streamingModel || undefined,
     connected,
     historyLoaded,
+    historyError: !historyLoaded && historyFailure?.url === url ? historyFailure.message : null,
+    retryHistory,
     participants: stableParticipants,
     meshEvents,
     agentEvents: stableAgentEvents,

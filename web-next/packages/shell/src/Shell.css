@@ -426,13 +426,25 @@
   .niuu-shell__topbar-right {
     grid-column: 2;
     grid-row: 1;
-    gap: 0;
+    gap: 6px;
   }
-  .niuu-shell__topbar-right > :not(.niuu-shell__theme-select) {
+  .niuu-shell__topbar-right > :not(.niuu-shell__theme-select):not(.niuu-shell__topbar-content) {
     display: none;
   }
   .niuu-shell__theme-select {
     max-width: 112px;
     min-height: 36px;
   }
+}
+
+.niuu-shell__rail .niuu-shell__rail-item--icon {
+  width: 40px;
+  height: 40px;
+  margin: 4px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 9px;
+}
+.niuu-shell__rail-item--icon svg {
+  width: 24px;
+  height: 24px;
 }

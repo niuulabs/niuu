@@ -165,7 +165,30 @@ describe('SessionChat', () => {
   it('shows loading indicator when history not loaded and connected', () => {
     render(<SessionChat {...defaultProps} connected historyLoaded={false} />);
     expect(screen.getByTestId('history-loading')).toBeInTheDocument();
-    expect(screen.getByText('Loading conversation...')).toBeInTheDocument();
+    expect(screen.getByText('Loading conversation…')).toBeInTheDocument();
+  });
+
+  it('hides partial cached messages until history is ready and offers a failed-history retry', () => {
+    const retry = vi.fn();
+    const { rerender } = render(
+      <SessionChat {...defaultProps} messages={[userMessage]} historyLoaded={false} />,
+    );
+    expect(screen.queryByText(userMessage.content)).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    rerender(
+      <SessionChat
+        {...defaultProps}
+        historyLoaded={false}
+        historyError="History request failed"
+        onRetryHistory={retry}
+      />,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent('History request failed');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(retry).toHaveBeenCalledOnce();
+    rerender(<SessionChat {...defaultProps} messages={[userMessage]} historyLoaded />);
+    expect(screen.getByText(userMessage.content)).toBeInTheDocument();
+    expect(screen.queryByTestId('history-loading')).not.toBeInTheDocument();
   });
 
   it('does not show loading indicator when history is loaded', () => {
@@ -173,9 +196,9 @@ describe('SessionChat', () => {
     expect(screen.queryByTestId('history-loading')).not.toBeInTheDocument();
   });
 
-  it('does not show loading indicator when disconnected even if history not loaded', () => {
+  it('keeps loading clean while the socket is still connecting', () => {
     render(<SessionChat {...defaultProps} connected={false} historyLoaded={false} />);
-    expect(screen.queryByTestId('history-loading')).not.toBeInTheDocument();
+    expect(screen.getByTestId('history-loading')).toBeInTheDocument();
   });
 
   /* ── Empty state ── */

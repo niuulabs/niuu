@@ -553,3 +553,29 @@
   border-color: var(--color-critical);
   color: var(--color-text-on-critical);
 }
+
+.forge-session-scroll,
+.forge-session-footer {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-brand) 35%, var(--color-bg-elevated)) transparent;
+}
+.forge-session-scroll::-webkit-scrollbar,
+.forge-session-footer::-webkit-scrollbar {
+  width: 10px;
+}
+.forge-session-scroll::-webkit-scrollbar-track,
+.forge-session-footer::-webkit-scrollbar-track {
+  background: transparent;
+}
+.forge-session-scroll::-webkit-scrollbar-thumb,
+.forge-session-footer::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-brand) 28%, var(--color-bg-elevated));
+  background-clip: padding-box;
+}
+.forge-session-scroll::-webkit-scrollbar-thumb:hover,
+.forge-session-footer::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-brand) 42%, var(--color-bg-elevated));
+  background-clip: padding-box;
+}

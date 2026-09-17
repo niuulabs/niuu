@@ -63,6 +63,7 @@ import { buildPermissionAutoApprovalRequest } from './permissionAutoApproval';
 import { SessionTerminalLive } from './SessionTerminalLive';
 import { StructuredLogViewer } from './components/StructuredLogViewer';
 import './LiveSessionDetailPage.css';
+import { useSessionTabs } from './ForgeSessionSettings';
 import { useForgePreference } from './useForgePreference';
 import { SessionResources } from './SessionResources';
 import { SessionEnvironment } from './SessionEnvironment';
@@ -82,13 +83,6 @@ const ALL_TABS: Array<{ id: SessionTab; label: string; icon: typeof MessageSquar
   { id: 'telemetry', label: 'Telemetry', icon: Sparkles },
   { id: 'logs', label: 'Logs', icon: FileCode2 },
 ];
-
-const FIXED_TAB_ORDER: Partial<Record<SessionTab, number>> = {
-  diffs: 25,
-  chronicles: 50,
-  telemetry: 51,
-  logs: 60,
-};
 
 export function isSessionBooting(status: string | null | undefined): boolean {
   return status === 'starting' || status === 'provisioning';
@@ -3501,16 +3495,6 @@ function LiveSessionDetailPageInner({
     queryFn: () => volundr.getSession(sessionId),
     refetchInterval: 5_000,
   });
-  const sessionFeaturesQuery = useQuery({
-    queryKey: ['volundr', 'feature-modules', 'session'],
-    queryFn: () => volundr.getFeatureModules('session'),
-    staleTime: 30_000,
-  });
-  const featurePrefsQuery = useQuery({
-    queryKey: ['volundr', 'feature-prefs', 'session'],
-    queryFn: () => volundr.getUserFeaturePreferences(),
-    staleTime: 30_000,
-  });
   const liveSession = liveSessionQuery.data;
   const sessionStatus = liveSession?.status ?? null;
   const isRunning = sessionStatus === 'running';
@@ -3573,11 +3557,6 @@ function LiveSessionDetailPageInner({
     sessionQuery.data?.clusterId,
     sessionQuery.data?.clusterName,
   ]);
-  const sessionFeatures = useMemo(
-    () => sessionFeaturesQuery.data ?? [],
-    [sessionFeaturesQuery.data],
-  );
-  const featurePrefs = useMemo(() => featurePrefsQuery.data ?? [], [featurePrefsQuery.data]);
   const transcriptTurns = useMemo(() => transcriptQuery.data?.turns ?? [], [transcriptQuery.data]);
   const replayMessages = useMemo(() => transformTurns(transcriptTurns), [transcriptTurns]);
   const replayParticipants = useMemo(
@@ -3666,38 +3645,8 @@ function LiveSessionDetailPageInner({
   }, [canReplayTranscript, liveSession?.messageCount, replayMessages.length, visibleMessageCount]);
   const isSessionConnected = isReady && chat.connected;
 
-  const tabs = useMemo(() => {
-    const prefMap = new Map(featurePrefs.map((pref) => [pref.featureKey, pref]));
-    const visible = ALL_TABS.filter((tab) => {
-      if (tab.id === 'diffs') return true;
-      if (tab.id === 'telemetry') return true;
-      if (tab.id === 'terminal') {
-        const pref = prefMap.get(tab.id);
-        if (pref && !pref.visible) return false;
-        const feature = sessionFeatures.find((candidate) => candidate.key === tab.id);
-        return Boolean(feature?.enabled || terminalUrl);
-      }
-      const feature = sessionFeatures.find((candidate) => candidate.key === tab.id);
-      if (!feature?.enabled) return false;
-      const pref = prefMap.get(tab.id);
-      if (pref && !pref.visible) return false;
-      return true;
-    });
-
-    visible.sort((left, right) => {
-      const leftFeature = sessionFeatures.find((feature) => feature.key === left.id);
-      const rightFeature = sessionFeatures.find((feature) => feature.key === right.id);
-      const leftPref = prefMap.get(left.id);
-      const rightPref = prefMap.get(right.id);
-      const leftOrder =
-        FIXED_TAB_ORDER[left.id] ?? (leftPref ? leftPref.sortOrder : (leftFeature?.order ?? 0));
-      const rightOrder =
-        FIXED_TAB_ORDER[right.id] ?? (rightPref ? rightPref.sortOrder : (rightFeature?.order ?? 0));
-      return leftOrder - rightOrder;
-    });
-
-    return visible;
-  }, [featurePrefs, sessionFeatures, terminalUrl]);
+  const { enabled: enabledTabs } = useSessionTabs();
+  const tabs = ALL_TABS.filter((tab) => enabledTabs.has(tab.id));
 
   const { connected: chatConnected, sendSetInternalVisibility } = chat;
   useEffect(() => {
@@ -3874,26 +3823,12 @@ function LiveSessionDetailPageInner({
     }
   }
 
-  if (
-    sessionQuery.isLoading ||
-    liveSessionQuery.isLoading ||
-    sessionFeaturesQuery.isLoading ||
-    featurePrefsQuery.isLoading
-  ) {
-    return <LoadingState label="Loading session…" />;
+  if (sessionQuery.isLoading || liveSessionQuery.isLoading) {
+    return <LoadingState className="forge-session-loading" label="Loading session…" />;
   }
 
-  if (
-    sessionQuery.isError ||
-    liveSessionQuery.isError ||
-    sessionFeaturesQuery.isError ||
-    featurePrefsQuery.isError
-  ) {
-    const error =
-      sessionQuery.error ??
-      liveSessionQuery.error ??
-      sessionFeaturesQuery.error ??
-      featurePrefsQuery.error;
+  if (sessionQuery.isError || liveSessionQuery.isError) {
+    const error = sessionQuery.error ?? liveSessionQuery.error;
     return (
       <ErrorState
         title="Failed to load session"
@@ -4142,6 +4077,8 @@ function LiveSessionDetailPageInner({
                     streamingModel={chat.streamingModel}
                     connected={chat.connected}
                     historyLoaded={chat.historyLoaded}
+                    historyError={chat.historyError}
+                    onRetryHistory={chat.retryHistory}
                     participants={chat.participants}
                     meshEvents={chat.meshEvents}
                     agentEvents={chat.agentEvents}

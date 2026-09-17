@@ -49,7 +49,7 @@ function RailTooltipContent({ title, subtitle }: { title: string; subtitle?: str
 
 export function ShellLayout() {
   const { theme, setTheme } = useTheme();
-  const { enabled, brand, version, ctx } = useShellContext();
+  const { enabled, brand, version, ctx, topbarContent } = useShellContext();
   const router = useRouter();
   const { location } = useRouterState({ select: (s) => ({ location: s.location }) });
   const pathname = location.pathname;
@@ -119,13 +119,14 @@ export function ShellLayout() {
                 type="button"
                 className={clsx(
                   'niuu-shell__rail-item',
+                  p.icon && 'niuu-shell__rail-item--icon',
                   active?.id === p.id && 'niuu-shell__rail-item--active',
                 )}
                 title={[p.title, p.subtitle].filter(Boolean).join(' · ')}
                 aria-label={p.title}
                 onClick={() => handleSelect(p.id)}
               >
-                {p.rune}
+                {p.icon ?? p.rune}
               </button>
             </Tooltip>
           ))}
@@ -141,13 +142,14 @@ export function ShellLayout() {
                 type="button"
                 className={clsx(
                   'niuu-shell__rail-item',
+                  p.icon && 'niuu-shell__rail-item--icon',
                   active?.id === p.id && 'niuu-shell__rail-item--active',
                 )}
                 title={[p.title, p.subtitle].filter(Boolean).join(' · ')}
                 aria-label={p.title}
                 onClick={() => handleSelect(p.id)}
               >
-                {p.rune}
+                {p.icon ?? p.rune}
               </button>
             </Tooltip>
           ))}
@@ -225,6 +227,7 @@ export function ShellLayout() {
             >
               <Kbd>⌘K</Kbd>
             </button>
+            {topbarContent && <div className="niuu-shell__topbar-content">{topbarContent}</div>}
           </div>
         </header>
 

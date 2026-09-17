@@ -1,3 +1,4 @@
+import { Settings } from 'lucide-react';
 import { createElement, useEffect } from 'react';
 import { createRoute } from '@tanstack/react-router';
 import { useAuth } from '@niuulabs/auth';
@@ -57,6 +58,7 @@ const guildPlugin = definePlugin({
 const settingsPlugin = definePlugin({
   id: 'settings',
   rune: '\u2699',
+  icon: createElement(Settings, { size: 24, strokeWidth: 1.8 }),
   title: 'Settings',
   subtitle: 'configuration',
   position: 'bottom',
@@ -84,7 +86,7 @@ const logoutPlugin = definePlugin({
   rune: '\u23fb',
   title: 'Sign out',
   subtitle: 'end session',
-  position: 'bottom',
+  system: true,
   routes: (rootRoute) => [
     createRoute({
       getParentRoute: () => rootRoute,

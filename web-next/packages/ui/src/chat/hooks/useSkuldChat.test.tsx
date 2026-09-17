@@ -734,39 +734,46 @@ summary: Fetched review packet ready
     });
   });
 
-  it('retries failed history fetches and clears the retry timer when the url changes', async () => {
+  it('actually retries history, caps automatic attempts, and permits manual recovery', async () => {
     vi.useFakeTimers();
-    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        ok: false,
-        status: 503,
-        json: async () => ({ turns: [] }),
-      })),
-    );
-
+    const fetchHistory = vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({ turns: [] }),
+    }));
+    vi.stubGlobal('fetch', fetchHistory);
     const { result, rerender } = renderHook(({ url }) => useSkuldChat(url), {
-      initialProps: { url: 'ws://localhost:8080/s/test/session' },
+      initialProps: { url: 'ws://localhost:8080/s/retry/session' },
     });
-
     await act(async () => {
       await Promise.resolve();
     });
-
-    expect(result.current.historyLoaded).toBe(false);
-
+    expect(result.current.historyError).toContain('503');
+    expect(fetchHistory).toHaveBeenCalledTimes(1);
     await act(async () => {
-      vi.advanceTimersByTime(1000);
+      await vi.advanceTimersByTimeAsync(1000);
     });
-
+    expect(fetchHistory).toHaveBeenCalledTimes(2);
     await act(async () => {
-      rerender({ url: 'not-a-valid-url-after-retry' });
-      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(1000);
     });
-
+    expect(fetchHistory).toHaveBeenCalledTimes(3);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(fetchHistory).toHaveBeenCalledTimes(3);
+    fetchHistory.mockResolvedValue({ ok: true, status: 200, json: async () => ({ turns: [] }) });
+    await act(async () => {
+      result.current.retryHistory();
+    });
+    expect(fetchHistory).toHaveBeenCalledTimes(4);
     expect(result.current.historyLoaded).toBe(true);
-    expect(clearTimeoutSpy).toHaveBeenCalled();
+    expect(result.current.historyError).toBeNull();
+    await act(async () => {
+      rerender({ url: 'ws://localhost:8080/s/next/session' });
+    });
+    expect(result.current.historyError).toBeNull();
+    expect(result.current.historyLoaded).toBe(true);
   });
 
   it('hydrates participants from conversation_history turn metadata when room_state is missing', async () => {

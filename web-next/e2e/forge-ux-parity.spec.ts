@@ -309,6 +309,12 @@ test('phone review keeps theme switch, Chat tab, toolbar and full file preview u
   expect(themeBox.x + themeBox.width).toBeLessThanOrEqual(390);
   await theme.selectOption('ice');
   await theme.selectOption('xteo');
+  const disconnect = page
+    .locator('.niuu-shell__topbar')
+    .getByRole('button', { name: 'Disconnect' });
+  await expect(disconnect).toBeVisible();
+  const disconnectBox = (await disconnect.boundingBox())!;
+  expect(disconnectBox.x + disconnectBox.width).toBeLessThanOrEqual(390);
   const tab = page.locator('.niuu-live-session__tab').filter({ hasText: 'Chat' });
   await expect(tab).toBeVisible();
   expect((await tab.boundingBox())!.width).toBeGreaterThan(45);
@@ -623,5 +629,150 @@ test('aligns sidebar controls and uses red stop and delete actions in both theme
     await expect(stop).toHaveCSS('background-color', 'rgb(239, 68, 68)');
     await page.screenshot({ path: testInfo.outputPath(`sidebar-${theme}.png`) });
   }
+  expect(mutations).toEqual([]);
+});
+
+test('session tab settings persist, gear is full-sized, and account disconnect lives in the header', async ({
+  page,
+}, testInfo) => {
+  const mutations = await fixture(page);
+  await page.goto('/volundr/sessions/review');
+  const tabs = page.locator('.niuu-live-session__tab');
+  await expect(tabs).toHaveCount(3);
+  await expect(tabs).toContainText(['Chat', 'Diffs', 'Files']);
+  const gear = page
+    .locator('.niuu-shell__rail')
+    .getByRole('button', { name: 'Settings', exact: true });
+  expect((await gear.boundingBox())!.height).toBeGreaterThanOrEqual(40);
+  expect((await gear.locator('svg').boundingBox())!.width).toBeGreaterThanOrEqual(24);
+  await expect(
+    page.locator('.niuu-shell__rail').getByRole('button', { name: /Logout|Disconnect|Sign in/i }),
+  ).toHaveCount(0);
+  await expect(
+    page.locator('.niuu-shell__topbar').getByRole('button', { name: 'Disconnect' }),
+  ).toBeVisible();
+  await gear.click();
+  await page.getByRole('button', { name: 'Session tabs', exact: true }).click();
+  await expect(page.getByRole('checkbox', { name: /Chat/ })).toBeDisabled();
+  for (const name of ['Diff', 'Files'])
+    await expect(page.getByRole('checkbox', { name, exact: true })).toBeChecked();
+  for (const name of ['Terminal', 'Chronicle', 'Telemetry', 'Log'])
+    await expect(page.getByRole('checkbox', { name, exact: true })).not.toBeChecked();
+  await page.getByRole('checkbox', { name: 'Telemetry', exact: true }).check();
+  await page.screenshot({
+    path: testInfo.outputPath('session-tab-settings.png'),
+    animations: 'disabled',
+  });
+  await page.reload();
+  await expect(page.getByRole('checkbox', { name: 'Telemetry', exact: true })).toBeChecked();
+  await page.goto('/volundr/sessions/review');
+  await expect(tabs).toHaveCount(4);
+  await expect(page.getByRole('tab', { name: /Telemetry/ })).toBeVisible();
+  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Disconnected', exact: true })).toBeVisible();
+  await expect(page.locator('.niuu-shell')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Reconnect', exact: true }).click();
+  await expect(page.getByRole('tab', { name: /Chat/ })).toBeVisible();
+  expect(mutations).toEqual([]);
+});
+
+test('delayed history has one clean loading surface and reveals a long conversation at the bottom', async ({
+  page,
+}, testInfo) => {
+  await fixture(page);
+  let release!: () => void;
+  const historyReady = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route('**/api/conversation/history', async (route) => {
+    await historyReady;
+    await route.fulfill({
+      json: {
+        turns: Array.from({ length: 100 }, (_, i) => ({
+          id: `long-${i}`,
+          role: 'assistant',
+          content: `Message ${i + 1}: ${'A long session review paragraph with enough content for several lines. '.repeat(8)}`,
+          created_at: new Date(1700000000000 + i * 1000).toISOString(),
+        })),
+      },
+    });
+  });
+  await page.goto('/volundr/sessions/review');
+  await expect(page.getByRole('status', { name: 'Loading conversation…' })).toBeVisible();
+  await expect(page.locator('.niuu-chat-messages-container')).toHaveCount(0);
+  await expect(page.locator('[data-testid="session-chat"]')).toHaveCount(0);
+  await page.screenshot({
+    path: testInfo.outputPath('clean-session-loading.png'),
+    animations: 'disabled',
+  });
+  // Capture the very first painted transcript position, not merely the eventual position.
+  await page.evaluate(() => {
+    const seen: number[] = [];
+    (window as unknown as { initialScrollDistances: number[] }).initialScrollDistances = seen;
+    const sample = () => {
+      const el = document.querySelector('.niuu-chat-messages-container');
+      if (el) seen.push(el.scrollHeight - el.scrollTop - el.clientHeight);
+      if (seen.length < 8) requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
+  release();
+  await expect(page.getByText(/^Message 100:/)).toBeInViewport();
+  const scroll = page.locator('.niuu-chat-messages-container');
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as unknown as { initialScrollDistances: number[] }).initialScrollDistances.length,
+      ),
+    )
+    .toBe(8);
+  expect(
+    await page.evaluate(() =>
+      (window as unknown as { initialScrollDistances: number[] }).initialScrollDistances.every(
+        (d) => d <= 2,
+      ),
+    ),
+  ).toBe(true);
+  await expect(scroll).toHaveCSS('scrollbar-width', 'thin');
+  await expect(page.locator('.forge-session-scroll')).toHaveCSS('scrollbar-width', 'thin');
+  // Late content growth stays pinned, but readers who scrolled up keep their position.
+  await scroll.locator('.niuu-chat-messages-inner').evaluate((el) => {
+    const content = document.createElement('div');
+    content.style.height = '300px';
+    el.append(content);
+  });
+  await expect
+    .poll(() => scroll.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight))
+    .toBeLessThan(2);
+  await scroll.evaluate((el) => {
+    el.scrollTop = 300;
+    el.dispatchEvent(new Event('scroll'));
+  });
+  await scroll.locator('.niuu-chat-messages-inner').evaluate((el) => {
+    const content = document.createElement('div');
+    content.style.height = '300px';
+    el.append(content);
+  });
+  await expect.poll(() => scroll.evaluate((el) => el.scrollTop)).toBe(300);
+});
+
+test('an enabled Terminal tab explains unsupported hosts without trying to spawn a shell', async ({
+  page,
+}) => {
+  const mutations = await fixture(page);
+  await page.addInitScript(() =>
+    localStorage.setItem('niuu.forge.sessionTabs', 'chat,diffs,files,terminal'),
+  );
+  await page.route('**/terminal/api/terminal/sessions', (route) =>
+    route.fulfill({ contentType: 'text/html', body: '<html>Fallback application</html>' }),
+  );
+  await page.goto('/volundr/sessions/review');
+  await page.getByRole('tab', { name: /Terminal/ }).click();
+  await expect(
+    page.getByText('This Forge host does not provide terminal access for this session.'),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Try again' }).click();
+  await expect(page.getByText('Terminal unavailable', { exact: true })).toBeVisible();
   expect(mutations).toEqual([]);
 });

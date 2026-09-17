@@ -594,6 +594,10 @@ function mockChatState(overrides: Partial<ReturnType<typeof chatHooks.useSkuldCh
 describe('LiveSessionDetailPage', () => {
   beforeEach(() => {
     localStorage.clear();
+    localStorage.setItem(
+      'niuu.forge.sessionTabs',
+      'chat,terminal,diffs,files,chronicles,telemetry,logs',
+    );
     vi.clearAllMocks();
     navigate.mockReset();
     global.fetch = vi.fn(async (input: string | URL | Request) => {
@@ -1376,39 +1380,35 @@ describe('LiveSessionDetailPage', () => {
       expect(await screen.findByRole('tab', { name: /shell 1/i })).toBeInTheDocument();
     });
 
-    it('falls back to the first available tab when chat is hidden', async () => {
+    it('always shows Chat even when the server feature catalog omits it', async () => {
       wrap('test-session-id-1234', {
-        volundr: {
-          getFeatureModules: vi
-            .fn()
-            .mockResolvedValue(SESSION_FEATURES.filter((feature) => feature.key !== 'chat')),
-        },
+        volundr: { getFeatureModules: vi.fn().mockResolvedValue([]) },
       });
       await screen.findByTestId('live-session-detail-page');
-
-      expect(screen.queryByRole('tab', { name: /Chat/i })).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /New terminal/i })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute('aria-selected', 'true');
     });
 
-    it('applies user tab visibility and sort preferences', async () => {
-      wrap('test-session-id-1234', {
-        volundr: {
-          getUserFeaturePreferences: vi.fn().mockResolvedValue([
-            { featureKey: 'terminal', visible: false, sortOrder: 99 },
-            { featureKey: 'logs', visible: false, sortOrder: 98 },
-            { featureKey: 'files', visible: true, sortOrder: 5 },
-          ]),
-        },
-      });
+    it('defaults to Chat, Diffs and Files without optional tabs', async () => {
+      localStorage.removeItem('niuu.forge.sessionTabs');
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      expect(
+        screen.getAllByRole('tab').map((tab) => tab.textContent?.replace(/\d+/g, '').trim()),
+      ).toEqual(['Chat', 'Diffs', 'Files']);
+    });
 
+    it('uses browser tab preferences and returns to Chat when the active tab is hidden', async () => {
+      localStorage.setItem('niuu.forge.sessionTabs', 'chat,files,logs');
+      wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(screen.queryByRole('tab', { name: /Terminal/i })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('tab', { name: /Logs/i }));
+      localStorage.setItem('niuu.forge.sessionTabs', 'chat,files');
+      fireEvent(window, new Event('niuu:forge-preferences'));
+      await waitFor(() =>
+        expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute('aria-selected', 'true'),
+      );
       expect(screen.queryByRole('tab', { name: /Logs/i })).not.toBeInTheDocument();
-
-      const tabLabels = screen
-        .getAllByRole('tab')
-        .map((tab) => tab.textContent?.replace(/\d+/g, '').trim());
-      expect(tabLabels.slice(0, 3)).toEqual(['Files', 'Chat', 'Diffs']);
     });
 
     it('renders diff file metadata and an empty diff state', async () => {

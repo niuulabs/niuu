@@ -4,6 +4,7 @@ import {
   useState,
   useRef,
   useEffect,
+  useLayoutEffect,
   type FormEvent,
   type ReactNode,
 } from 'react';
@@ -17,6 +18,8 @@ import {
   EyeOff,
   Trash2Icon,
 } from 'lucide-react';
+import { LoadingState } from '../../../data/states/LoadingState';
+import { ErrorState } from '../../../data/states/ErrorState';
 import { cn } from '../../../utils/cn';
 import { hideToolParts, useRoomState } from '../../hooks/useRoomState';
 import {
@@ -55,7 +58,6 @@ import type { SlashCommand } from '../../utils/slashCommands';
 import './SessionChat.css';
 
 const SCROLL_THRESHOLD = 150;
-const SCROLL_LOCK_MS = 500;
 
 const THINKING_PRESETS = [
   { label: '4K', value: 4096 },
@@ -259,6 +261,8 @@ export interface SessionChatProps {
   connected?: boolean;
   /** Whether history has been loaded */
   historyLoaded?: boolean;
+  historyError?: string | null;
+  onRetryHistory?: () => void;
   /** Room participants map (peerId → meta) */
   participants?: ReadonlyMap<string, RoomParticipant>;
   /** Mesh events for the cascade panel */
@@ -339,6 +343,8 @@ export function SessionChat({
   streamingModel,
   connected = false,
   historyLoaded = true,
+  historyError,
+  onRetryHistory,
   participants = new Map(),
   meshEvents = [],
   agentEvents = new Map(),
@@ -412,7 +418,7 @@ export function SessionChat({
   const isNearBottomRef = useRef(true);
   const userSentRef = useRef(false);
   const prevMessageCountRef = useRef(0);
-  const scrollLockUntilRef = useRef(0);
+  const initialScrollRef = useRef<string | null | undefined>(undefined);
 
   const participantsMap = useMemo<Map<string, RoomParticipant>>(() => {
     const map = new Map<string, RoomParticipant>();
@@ -531,53 +537,72 @@ export function SessionChat({
     return result;
   }, [visibleMessages, isRoomMode, showInternal]);
 
+  const hasRunningAssistantMessage = visibleMessages.some(
+    (message) => message.role === 'assistant' && message.status === 'running',
+  );
+  const isStreaming =
+    !hasRunningAssistantMessage &&
+    (!!streamingContent || (streamingParts && streamingParts.length > 0));
+
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
-    messagesEndRef.current?.scrollIntoView?.({ behavior });
+    const container = scrollContainerRef.current;
+    if (container) {
+      if (behavior === 'smooth' && container.scrollTo)
+        container.scrollTo({ top: container.scrollHeight, behavior });
+      else container.scrollTop = container.scrollHeight;
+    }
     setNewMessageCount(0);
   }, []);
+
+  // Place the hydrated transcript before the browser paints it, without traversing its history.
+  useLayoutEffect(() => {
+    if (!historyLoaded) {
+      initialScrollRef.current = undefined;
+      return;
+    }
+    const container = scrollContainerRef.current;
+    if (!container || initialScrollRef.current === chatEndpoint) return;
+    container.scrollTop = container.scrollHeight;
+    isNearBottomRef.current = true;
+    prevMessageCountRef.current = visibleMessages.length;
+    initialScrollRef.current = chatEndpoint;
+  }, [historyLoaded, chatEndpoint, visibleMessages.length, streamingContent, streamingParts]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
     const handleScroll = () => {
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      isNearBottomRef.current = distanceFromBottom <= SCROLL_THRESHOLD;
-      setShowScrollBtn(distanceFromBottom > SCROLL_THRESHOLD * 2);
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+      isNearBottomRef.current = distance <= SCROLL_THRESHOLD;
+      setShowScrollBtn(distance > SCROLL_THRESHOLD * 2);
       if (isNearBottomRef.current) setNewMessageCount(0);
     };
     el.addEventListener('scroll', handleScroll, { passive: true });
-    let prevHeight = el.scrollHeight;
-    const resizeObserver = new ResizeObserver(() => {
-      const newHeight = el.scrollHeight;
-      if (newHeight !== prevHeight) {
-        prevHeight = newHeight;
-        scrollLockUntilRef.current = Date.now() + SCROLL_LOCK_MS;
-      }
+    // Observe content too: images, code highlighting and streamed text can grow without resizing
+    // the scroll viewport. Preserve a reader's position once they have scrolled away from the end.
+    const observer = new ResizeObserver(() => {
+      if (isNearBottomRef.current) el.scrollTop = el.scrollHeight;
     });
-    resizeObserver.observe(el);
+    observer.observe(el);
+    if (el.firstElementChild) observer.observe(el.firstElementChild);
     return () => {
       el.removeEventListener('scroll', handleScroll);
-      resizeObserver.disconnect();
+      observer.disconnect();
     };
-  }, [hasConversation]);
+  }, [hasConversation, isStreaming, historyLoaded]);
 
-  useEffect(() => {
-    const messageCount = visibleMessages.length;
-    const countDelta = messageCount - prevMessageCountRef.current;
-    prevMessageCountRef.current = messageCount;
-    if (userSentRef.current) {
+  useLayoutEffect(() => {
+    if (!historyLoaded) return;
+    const countDelta = visibleMessages.length - prevMessageCountRef.current;
+    prevMessageCountRef.current = visibleMessages.length;
+    if (userSentRef.current || (countDelta !== 0 && isNearBottomRef.current)) {
       userSentRef.current = false;
-      messagesEndRef.current?.scrollIntoView?.({ behavior: 'smooth' });
+      const el = scrollContainerRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
       return;
     }
-    if (countDelta === 0) return;
-    if (Date.now() < scrollLockUntilRef.current) return;
-    if (isNearBottomRef.current) {
-      messagesEndRef.current?.scrollIntoView?.({ behavior: 'smooth' });
-      return;
-    }
-    setNewMessageCount((prev) => prev + countDelta);
-  }, [visibleMessages.length]);
+    if (countDelta > 0) setNewMessageCount((prev) => prev + countDelta);
+  }, [visibleMessages.length, historyLoaded]);
 
   useEffect(() => {
     onMessageCountChange?.(visibleMessages.length);
@@ -707,12 +732,28 @@ export function SessionChat({
     (participant) => participant.participantType === 'ravn',
   );
   const showRightPanel = effectiveRightPanelMode !== null;
-  const hasRunningAssistantMessage = visibleMessages.some(
-    (message) => message.role === 'assistant' && message.status === 'running',
-  );
-  const isStreaming =
-    !hasRunningAssistantMessage &&
-    (!!streamingContent || (streamingParts && streamingParts.length > 0));
+
+  if (!historyLoaded) {
+    return (
+      <div className={cn('niuu-chat-session-loading', className)} data-testid="history-loading">
+        {historyError ? (
+          <ErrorState
+            title="Could not load conversation"
+            message={historyError}
+            action={
+              onRetryHistory && (
+                <button type="button" className="niuu-chat-retry" onClick={onRetryHistory}>
+                  Try again
+                </button>
+              )
+            }
+          />
+        ) : (
+          <LoadingState label="Loading conversation…" />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -871,13 +912,6 @@ export function SessionChat({
             >
               Switch
             </button>
-          </div>
-        )}
-
-        {/* ── History loading ── */}
-        {!historyLoaded && connected && (
-          <div className="niuu-chat-history-loading" data-testid="history-loading">
-            Loading conversation...
           </div>
         )}
 

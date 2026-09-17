@@ -2346,3 +2346,10 @@
   background: var(--color-critical);
   border-color: var(--color-critical);
 }
+
+.forge-session-loading {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+  justify-content: center;
+}

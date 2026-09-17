@@ -4,6 +4,7 @@ import type { PluginDescriptor, PluginCtx } from '@niuulabs/plugin-sdk';
 export interface ShellContextValue {
   enabled: PluginDescriptor[];
   brand: ReactNode;
+  topbarContent?: ReactNode;
   version: string;
   ctx: PluginCtx;
 }

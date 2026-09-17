@@ -489,3 +489,20 @@
     flex-direction: column;
   }
 }
+
+.niuu-chat-session-loading {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-primary);
+}
+.niuu-chat-retry {
+  padding: 8px 16px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  color: var(--color-text-primary);
+  background: var(--color-bg-secondary);
+}
