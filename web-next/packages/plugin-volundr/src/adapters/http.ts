@@ -1609,7 +1609,7 @@ export function buildVolundrHttpAdapter(
     connectSession: async (config) =>
       normalizeSession(await forgeClient.post<SessionPayload>('/sessions/connect', config)),
     updateSession: (sessionId, updates) =>
-      forgeClient.patch<SessionPayload>(`/sessions/${sessionId}`, updates).then(normalizeSession),
+      forgeClient.put<SessionPayload>(`/sessions/${sessionId}`, updates).then(normalizeSession),
     stopSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/stop`),
     resumeSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/resume`),
     deleteSession: (sessionId, cleanup) =>

@@ -1,0 +1,77 @@
+.forge-session-rename {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: var(--space-8);
+  height: var(--space-8);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+.forge-session-rename:hover,
+.forge-session-rename[data-state='open'] {
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border-subtle);
+}
+.forge-session-rename:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+.niuu-popover-content.forge-session-rename-popover {
+  width: min(360px, calc(100vw - 24px));
+  border-color: var(--color-border-subtle);
+  padding: var(--space-4);
+}
+.forge-session-rename-popover form {
+  display: grid;
+  gap: var(--space-3);
+}
+.forge-session-rename-popover label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.forge-session-rename-popover input {
+  width: 100%;
+  min-height: var(--space-10);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font: inherit;
+}
+.forge-session-rename-popover input:focus {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+.forge-session-rename-popover p {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+.forge-session-rename-popover [role='alert'] {
+  color: var(--color-critical-fg);
+}
+.forge-session-rename-popover footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.forge-session-rename-popover footer button {
+  min-height: var(--space-10);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.forge-session-rename-popover button[type='submit'] {
+  background: var(--color-brand);
+  color: var(--color-bg-primary);
+  font-weight: 600;
+}
+.forge-session-rename-popover button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

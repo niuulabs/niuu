@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { RenameSession } from './RenameSession';
 import { useNavigate } from '@tanstack/react-router';
 import { useService } from '@niuulabs/plugin-sdk';
 import { getAuthHeaders } from '@niuulabs/query';
@@ -3862,6 +3863,9 @@ function LiveSessionDetailPageInner({
               />
               <div className="niuu-live-session__identity">
                 <span className="niuu-live-session__title">{sessionName}</span>
+                {!readOnly && liveSession && (
+                  <RenameSession sessionId={sessionId} name={sessionName} />
+                )}
                 {showDetails && sessionHandle ? (
                   <span className="niuu-live-session__handle" title={sessionHandle}>
                     {sessionHandle}

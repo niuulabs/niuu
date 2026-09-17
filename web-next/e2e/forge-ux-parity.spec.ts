@@ -87,6 +87,15 @@ async function fixture(page: Page, rich = false) {
     const path = url.pathname;
     if (route.request().method() !== 'GET') {
       mutations.push(`${route.request().method()} ${path}`);
+      const session = sessions.find((item) => path.endsWith(`/sessions/${item.id}`));
+      if (route.request().method() === 'PUT' && session) {
+        const { name } = route.request().postDataJSON();
+        if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name) || name.length > 63) {
+          return route.fulfill({ status: 422, json: { detail: 'Invalid session name' } });
+        }
+        session.name = name;
+        return route.fulfill({ json: session });
+      }
       if (path.endsWith('/stop'))
         return route.fulfill({
           status: 503,
@@ -182,6 +191,82 @@ async function fixture(page: Page, rich = false) {
   });
   return mutations;
 }
+
+test('renames from the title and sidebar, persisting through a reload', async ({
+  page,
+}, testInfo) => {
+  const mutations = await fixture(page);
+  await page.goto('/volundr/sessions/review');
+  const title = page.locator('.niuu-live-session__identity');
+  await title.getByRole('button', { name: 'Rename Forge UX review' }).click();
+  await page.getByRole('textbox', { name: 'Session name' }).fill('title-renamed');
+  await page.screenshot({
+    path: testInfo.outputPath('rename-session.png'),
+    animations: 'disabled',
+  });
+  await page.getByRole('textbox', { name: 'Session name' }).press('Enter');
+  await expect(title).toContainText('title-renamed');
+  const row = page.getByTestId('pod-entry-review').locator('..');
+  await expect(row).toContainText('title-renamed');
+  await row.hover();
+  await row.getByRole('button', { name: 'Rename title-renamed' }).click();
+  await page.getByRole('textbox', { name: 'Session name' }).fill('sidebar-renamed');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(title).toContainText('sidebar-renamed');
+  await expect(row).toContainText('sidebar-renamed');
+  await page.reload();
+  await expect(title).toContainText('sidebar-renamed');
+  expect(mutations).toEqual([
+    'PUT /api/v1/forge/sessions/review',
+    'PUT /api/v1/forge/sessions/review',
+  ]);
+});
+
+test('discovers cached commands and submits the selected command through Skuld', async ({
+  page,
+}, testInfo) => {
+  await fixture(page);
+  const controls: Record<string, unknown>[] = [];
+  await page.routeWebSocket('ws://forge-ux-fixture.invalid/**', (socket) => {
+    socket.send(JSON.stringify({ type: 'capabilities', slash_commands: true }));
+    socket.onMessage((raw) => {
+      const frame = JSON.parse(String(raw));
+      controls.push(frame);
+      if (frame.type === 'discover_slash_commands')
+        socket.send(
+          JSON.stringify({
+            type: 'slash_commands',
+            commands: [
+              {
+                name: '/review',
+                kind: 'command',
+                description: 'Review the current changes',
+                argument_hint: '[focus]',
+              },
+              { name: '/compact', kind: 'command', description: 'Compact the conversation' },
+            ],
+          }),
+        );
+    });
+  });
+  await page.goto('/volundr/sessions/review');
+  await page.getByRole('button', { name: 'Slash commands', exact: true }).click();
+  await expect(page.getByRole('listbox', { name: 'Slash commands' })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('slash-commands.png') });
+  await page.getByRole('option', { name: /Review the current changes/ }).click();
+  expect(controls.some((frame) => frame.type === 'slash_command')).toBe(false);
+  const input = page.getByTestId('chat-textarea');
+  await expect(input).toHaveValue('/review ');
+  await input.fill('/review accessibility');
+  await input.press('Enter');
+  await expect
+    .poll(() => controls.filter((frame) => frame.type === 'slash_command'))
+    .toEqual([expect.objectContaining({ command: '/review', arguments: 'accessibility' })]);
+  expect(controls.filter((frame) => frame.type === 'discover_slash_commands')).toEqual([
+    { type: 'discover_slash_commands', refresh: false },
+  ]);
+  expect(controls.some((frame) => frame.type === 'user')).toBe(false);
+});
 
 test('counted filters, persistent width and safe row actions', async ({ page }, testInfo) => {
   const mutations = await fixture(page);
@@ -533,6 +618,20 @@ test('touch users can reveal row actions while the state stays visible at rest',
     await more.tap();
     await expect(actions).toHaveCSS('opacity', '1');
     await page.screenshot({ path: testInfo.outputPath('touch-row-actions.png') });
+    await row.getByRole('button', { name: 'Rename Forge UX review' }).tap();
+    const rename = page.getByRole('form', { name: 'Rename session' });
+    await expect(rename).toBeVisible();
+    const bounds = await rename.boundingBox();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+    await page.getByRole('textbox', { name: 'Session name' }).fill('touch-review');
+    await page.screenshot({
+      path: testInfo.outputPath('touch-rename.png'),
+      animations: 'disabled',
+    });
+    await page.getByRole('button', { name: 'Cancel', exact: true }).tap();
+    await expect(page).toHaveURL(/\/volundr\/sessions$/);
+    await expect(row).toContainText('Forge UX review');
     await more.tap();
     await expect(actions).toHaveCSS('opacity', '0');
   } finally {

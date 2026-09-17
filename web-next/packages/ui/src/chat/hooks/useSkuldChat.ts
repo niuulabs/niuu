@@ -108,6 +108,7 @@ type CliStreamEvent = {
   is_error?: boolean;
   valid?: boolean;
   request_id?: string;
+  code?: string;
   questions?: Array<{
     question?: string;
     options?: Array<{ label?: string } | unknown>;
@@ -153,6 +154,7 @@ type SlashCommandWireItem =
       name?: string;
       command?: string;
       description?: string;
+      argument_hint?: string;
       kind?: string;
       type?: string;
       source?: string;
@@ -235,7 +237,7 @@ type InternalParticipantStream = {
 };
 
 function commandName(value: string): string {
-  return value.trim().replace(/^\/+/, '');
+  return value.trim().replace(/^\/+/, '').trim();
 }
 
 function normalizeSlashCommandItem(
@@ -251,11 +253,13 @@ function normalizeSlashCommandItem(
   const name = commandName(rawName);
   if (!name) return null;
   const kind = (item.kind ?? item.type ?? item.source ?? '').toLowerCase();
-  const type: SlashCommand['type'] = kind === 'skill' ? 'skill' : fallbackType;
+  const type: SlashCommand['type'] =
+    kind === 'skill' || item.source === 'skill' ? 'skill' : fallbackType;
   return {
     name,
     type,
     description: item.description,
+    ...(item.argument_hint ? { argumentHint: item.argument_hint } : {}),
   };
 }
 
@@ -266,11 +270,11 @@ function normalizeAvailableCommands(
   const deduped = new Map<string, SlashCommand>();
   for (const item of slashCommands) {
     const command = normalizeSlashCommandItem(item, 'command');
-    if (command) deduped.set(`${command.type}:${command.name}`, command);
+    if (command && !deduped.has(command.name)) deduped.set(command.name, command);
   }
   for (const item of skills) {
     const command = normalizeSlashCommandItem(item, 'skill');
-    if (command) deduped.set(`${command.type}:${command.name}`, command);
+    if (command && !deduped.has(command.name)) deduped.set(command.name, command);
   }
   return Array.from(deduped.values());
 }
@@ -282,8 +286,8 @@ function parseAdvertisedSlashCommand(
   const trimmed = input.trim();
   if (!trimmed.startsWith('/')) return null;
 
-  const [rawCommand = '', ...argumentParts] = trimmed.split(/\s+/);
-  const command = commandName(rawCommand);
+  const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(trimmed);
+  const command = commandName(match?.[1] ?? '');
   if (!command) return null;
 
   const isAdvertised = availableCommands.some((item) => commandName(item.name) === command);
@@ -291,7 +295,7 @@ function parseAdvertisedSlashCommand(
 
   return {
     command: `/${command}`,
-    arguments: argumentParts.join(' '),
+    arguments: match?.[2] ?? '',
   };
 }
 
@@ -680,8 +684,13 @@ export function useSkuldChat(
     url: string | null;
     commands: SlashCommand[];
   }>({ url, commands: [] });
-  const [capabilities, setCapabilities] = useState<SessionCapabilities>({});
+  const [capabilitiesState, setCapabilitiesState] = useState<{
+    url: string | null;
+    value: SessionCapabilities;
+  }>({ url, value: {} });
+  const capabilities = capabilitiesState.url === url ? capabilitiesState.value : {};
   const [connected, setConnected] = useState(false);
+  const [connectionVersion, setConnectionVersion] = useState(0);
   const [historyLoadedForUrl, setHistoryLoadedForUrl] = useState<string | null>(null);
   const [streamingContent, setStreamingContent] = useState<string>('');
   const [streamingParts, setStreamingParts] = useState<ChatMessagePart[]>([]);
@@ -1544,7 +1553,27 @@ export function useSkuldChat(
             const errorMessage =
               typeof event.error === 'string'
                 ? event.error
-                : (event.error?.message ?? 'Unknown error');
+                : (event.error?.message ??
+                  (typeof event.content === 'string' ? event.content : 'Unknown error'));
+            if (event.code && event.request_id) {
+              optimisticUserMessagesRef.current.delete(event.request_id);
+              setMessages((previous) => [
+                ...previous.map((message) =>
+                  message.id === event.request_id
+                    ? { ...message, status: 'error' as const }
+                    : message,
+                ),
+                {
+                  id: generateId(),
+                  role: 'system',
+                  content: errorMessage,
+                  createdAt: new Date(),
+                  status: 'error',
+                  metadata: { messageType: 'error' },
+                },
+              ]);
+              break;
+            }
             finalizeStreaming('error', errorMessage);
             break;
           }
@@ -1570,24 +1599,30 @@ export function useSkuldChat(
           }
           case 'capabilities': {
             const caps = event as unknown as Record<string, unknown>;
-            setCapabilities({
-              interrupt: caps.interrupt === true,
-              set_model: caps.set_model === true,
-              set_thinking_tokens: caps.set_thinking_tokens === true,
-              rewind_files: caps.rewind_files === true,
-              slash_commands: caps.slash_commands === true,
-              terminal_output: caps.terminal_output === true,
-              terminal_input: caps.terminal_input === true,
-              terminal_keys: caps.terminal_keys === true,
-              terminal_resize: caps.terminal_resize === true,
-              terminal_panes: caps.terminal_panes === true,
-              room_prompt_resend: caps.room_prompt_resend === true,
+            setCapabilitiesState({
+              url,
+              value: {
+                interrupt: caps.interrupt === true,
+                set_model: caps.set_model === true,
+                set_thinking_tokens: caps.set_thinking_tokens === true,
+                rewind_files: caps.rewind_files === true,
+                slash_commands: caps.slash_commands === true,
+                terminal_output: caps.terminal_output === true,
+                terminal_input: caps.terminal_input === true,
+                terminal_keys: caps.terminal_keys === true,
+                terminal_resize: caps.terminal_resize === true,
+                terminal_panes: caps.terminal_panes === true,
+                room_prompt_resend: caps.room_prompt_resend === true,
+              },
             });
             break;
           }
           case 'available_commands': {
             storeAvailableCommands(
-              normalizeAvailableCommands(event.slash_commands ?? [], event.skills ?? []),
+              normalizeAvailableCommands(
+                [...(event.commands ?? []), ...(event.slash_commands ?? [])],
+                event.skills ?? [],
+              ),
             );
             break;
           }
@@ -2047,7 +2082,11 @@ export function useSkuldChat(
   );
 
   const { sendJson } = useWebSocket(url, {
-    onOpen: () => setConnected(true),
+    onOpen: () => {
+      setConnected(true);
+      setConnectionVersion((version) => version + 1);
+      storeAvailableCommands([]);
+    },
     onMessage: handleMessage,
     onClose: () => {
       setConnected(false);
@@ -2059,7 +2098,11 @@ export function useSkuldChat(
   useEffect(() => {
     if (!connected || !capabilities.slash_commands) return;
     if (availableCommands.length > 0) return;
-    sendJson({ type: 'discover_slash_commands', refresh: true });
+    // A refreshing discovery opens Claude's tmux autocomplete. Normal page loads
+    // must use the advertised/cached catalogue without touching the CLI input.
+    sendJson({ type: 'discover_slash_commands', refresh: false });
+    const controller = new AbortController();
+    let cancelled = false;
 
     const timer = setTimeout(() => {
       const httpBase = url ? wsUrlToHttpBase(url) : null;
@@ -2070,13 +2113,16 @@ export function useSkuldChat(
       );
       requestUrl.searchParams.set('refresh', 'false');
 
-      void fetch(requestUrl.toString(), { headers: getAuthHeaders() })
+      void fetch(requestUrl.toString(), {
+        headers: getAuthHeaders(),
+        signal: controller.signal,
+      })
         .then(async (response) => {
           if (!response.ok) return null;
           return (await response.json()) as SlashCommandsPayload;
         })
         .then((payload) => {
-          if (!payload) return;
+          if (!payload || cancelled) return;
           const commands = normalizeAvailableCommands(
             payload.commands ?? payload.slash_commands ?? [],
             payload.skills ?? [],
@@ -2088,11 +2134,16 @@ export function useSkuldChat(
         });
     }, 1500);
 
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      clearTimeout(timer);
+    };
   }, [
     availableCommands.length,
     capabilities.slash_commands,
     connected,
+    connectionVersion,
     sendJson,
     storeAvailableCommands,
     url,

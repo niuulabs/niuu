@@ -2,6 +2,7 @@ export interface SlashCommand {
   name: string;
   type: 'command' | 'skill';
   description?: string;
+  argumentHint?: string;
 }
 
 /**

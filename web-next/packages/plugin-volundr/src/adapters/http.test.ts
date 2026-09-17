@@ -55,6 +55,19 @@ function makeClient() {
   };
 }
 
+it('renames through the Forge PUT contract and normalizes the returned session', async () => {
+  const client = makeClient();
+  client.put.mockResolvedValue({ id: 'sess-1', name: 'review-renamed', status: 'running' });
+  const updated = await buildVolundrHttpAdapter(client).updateSession('sess-1', {
+    name: 'review-renamed',
+  });
+  expect(client.put).toHaveBeenCalledExactlyOnceWith('/sessions/sess-1', {
+    name: 'review-renamed',
+  });
+  expect(client.patch).not.toHaveBeenCalled();
+  expect(updated).toMatchObject({ id: 'sess-1', name: 'review-renamed', status: 'running' });
+});
+
 function makeClientWithBase(basePath: string) {
   return {
     ...makeClient(),

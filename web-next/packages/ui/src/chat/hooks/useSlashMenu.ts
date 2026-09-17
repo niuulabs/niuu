@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { SlashCommand } from '../utils/slashCommands';
 
@@ -12,30 +12,34 @@ interface UseSlashMenuReturn {
   close: () => void;
 }
 
-export function useSlashMenu(availableCommands?: SlashCommand[]): UseSlashMenuReturn {
-  const [isOpen, setIsOpen] = useState(false);
-  const [filteredCommands, setFilteredCommands] = useState<SlashCommand[]>([]);
-  const [selectedIndex, setSelectedIndex] = useState(0);
+export function useSlashMenu(availableCommands?: readonly SlashCommand[]): UseSlashMenuReturn {
+  const [wantsOpen, setIsOpen] = useState(false);
+  const [query, setQuery] = useState<string | null>(null);
+  const [selection, setSelectedIndex] = useState(0);
+  const filteredCommands = useMemo(() => {
+    if (query === null) return [];
+    return (availableCommands ?? [])
+      .filter((cmd) => cmd.name.toLowerCase().includes(query))
+      .sort((a, b) => {
+        const aPrefix = a.name.toLowerCase().startsWith(query);
+        const bPrefix = b.name.toLowerCase().startsWith(query);
+        return Number(bPrefix) - Number(aPrefix) || a.name.localeCompare(b.name);
+      });
+  }, [availableCommands, query]);
+  const isOpen = wantsOpen && filteredCommands.length > 0;
+  const selectedIndex = Math.min(selection, Math.max(0, filteredCommands.length - 1));
 
   const selectCommand = useCallback((cmd: SlashCommand): string => {
     setIsOpen(false);
     return `/${cmd.name} `;
   }, []);
 
-  const handleChange = useCallback(
-    (value: string) => {
-      if (!value.startsWith('/') || !availableCommands || availableCommands.length === 0) {
-        setIsOpen(false);
-        return;
-      }
-      const query = value.slice(1).toLowerCase();
-      const filtered = availableCommands.filter((cmd) => cmd.name.toLowerCase().includes(query));
-      setFilteredCommands(filtered);
-      setSelectedIndex(0);
-      setIsOpen(filtered.length > 0);
-    },
-    [availableCommands],
-  );
+  const handleChange = useCallback((value: string) => {
+    const query = /^\/\S*$/.test(value) ? value.slice(1).toLowerCase() : null;
+    setQuery(query);
+    setSelectedIndex(0);
+    setIsOpen(query !== null);
+  }, []);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent): boolean => {

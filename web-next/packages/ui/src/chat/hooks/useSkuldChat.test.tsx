@@ -130,7 +130,7 @@ describe('useSkuldChat', () => {
     });
 
     await waitFor(() =>
-      expect(sendJson).toHaveBeenCalledWith({ type: 'discover_slash_commands', refresh: true }),
+      expect(sendJson).toHaveBeenCalledWith({ type: 'discover_slash_commands', refresh: false }),
     );
 
     act(() => {
@@ -201,7 +201,7 @@ describe('useSkuldChat', () => {
     });
 
     await waitFor(() =>
-      expect(sendJson).toHaveBeenCalledWith({ type: 'discover_slash_commands', refresh: true }),
+      expect(sendJson).toHaveBeenCalledWith({ type: 'discover_slash_commands', refresh: false }),
     );
 
     await act(async () => {
@@ -219,6 +219,54 @@ describe('useSkuldChat', () => {
         { name: 'agents', type: 'command', description: 'Manage agent teams and subagents' },
         { name: 'compact', type: 'command', description: 'Compact the current conversation' },
       ]),
+    );
+  });
+
+  it('keeps rich descriptions, argument hints and skill identity without duplicate legacy entries', async () => {
+    const { result, rerender } = renderHook(({ url }) => useSkuldChat(url), {
+      initialProps: { url: 'ws://localhost/s/one/session' },
+    });
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    act(() =>
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'available_commands',
+          commands: [
+            {
+              name: '/review',
+              description: 'Review a change',
+              argument_hint: '[focus]',
+              source: 'skill',
+              kind: 'command',
+            },
+            { name: '/compact', description: 'Compact the thread' },
+          ],
+          slash_commands: ['review', 'compact', 'help'],
+          skills: ['review'],
+        }),
+      ),
+    );
+    expect(result.current.availableCommands).toEqual([
+      { name: 'review', type: 'skill', description: 'Review a change', argumentHint: '[focus]' },
+      { name: 'compact', type: 'command', description: 'Compact the thread' },
+      { name: 'help', type: 'command' },
+    ]);
+    await act(async () => result.current.sendMessage('/review focus  on\nthese files', []));
+    expect(sendJson).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'slash_command',
+        command: '/review',
+        arguments: 'focus  on\nthese files',
+      }),
+    );
+    rerender({ url: 'ws://localhost/s/two/session' });
+    expect(result.current.availableCommands).toEqual([]);
+    await act(async () => result.current.sendMessage('/review ordinary text', []));
+    expect(sendJson).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: 'user',
+        content: '/review ordinary text',
+      }),
     );
   });
 
@@ -1457,6 +1505,48 @@ page_path: council/demo/opinion-b.md
       role: 'user',
       content: '/compact',
     });
+  });
+
+  it('shows a rejected command without ending the active assistant turn or retrying it', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost/s/test/session'));
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({ type: 'available_commands', slash_commands: ['review'] }),
+      );
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'assistant', message: { content: [] } }));
+      wsHandlers.onMessage?.(
+        JSON.stringify({ type: 'content_block_start', content_block: { type: 'text' } }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_delta',
+          delta: { type: 'text_delta', text: 'Still working' },
+        }),
+      );
+    });
+    await act(async () => result.current.sendMessage('/review', []));
+    const request = sendJson.mock.calls.at(-1)![0];
+    act(() =>
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'error',
+          code: 'control_message_rejected',
+          request_id: request.request_id,
+          content: 'Review is unavailable while a turn is active',
+        }),
+      ),
+    );
+    expect(result.current.streamingContent).toBe('Still working');
+    expect(result.current.messages.at(-1)).toMatchObject({
+      role: 'system',
+      status: 'error',
+      content: 'Review is unavailable while a turn is active',
+    });
+    expect(
+      result.current.messages.find((message) => message.id === request.request_id)?.status,
+    ).toBe('error');
+    expect(sendJson.mock.calls.filter(([frame]) => frame.type === 'slash_command')).toHaveLength(1);
   });
 
   it('emits the remaining control websocket commands', async () => {

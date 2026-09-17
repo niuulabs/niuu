@@ -33,6 +33,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { LaunchWizard } from './LaunchWizard';
+import { RenameSession } from './RenameSession';
 import { ImportExternalSessionsDialog } from './ImportExternalSessionsDialog';
 import { useSessionList } from './hooks/useSessionStore';
 import { buildSessionTree, groupByProject, type SessionTreeNode } from '../domain/projectTree';
@@ -371,6 +372,7 @@ function PodEntry({
           className="forge-session-row__actions"
           aria-label={`Actions for ${primaryLabel}`}
         >
+          <RenameSession sessionId={session.id} name={primaryLabel} disabled={busy} />
           {STOPPABLE_STATES.has(session.state) && (
             <button
               type="button"

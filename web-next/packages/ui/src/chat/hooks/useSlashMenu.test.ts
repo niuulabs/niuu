@@ -28,6 +28,21 @@ describe('useSlashMenu', () => {
     expect(result.current.filteredCommands).toHaveLength(3);
   });
 
+  it('updates an already typed slash when the session catalogue arrives, and drops stale entries', () => {
+    const { result, rerender } = renderHook(({ catalog }) => useSlashMenu(catalog), {
+      initialProps: { catalog: [] as SlashCommand[] },
+    });
+    act(() => result.current.handleChange('/'));
+    expect(result.current.isOpen).toBe(false);
+    rerender({ catalog: commands });
+    expect(result.current.isOpen).toBe(true);
+    expect(result.current.filteredCommands).toHaveLength(3);
+    rerender({ catalog: [{ name: 'help', type: 'command' }] });
+    expect(result.current.filteredCommands.map((cmd) => cmd.name)).toEqual(['help']);
+    act(() => result.current.handleChange('/help '));
+    expect(result.current.isOpen).toBe(false);
+  });
+
   it('filters commands by query', () => {
     const { result } = renderHook(() => useSlashMenu(commands));
     act(() => {
