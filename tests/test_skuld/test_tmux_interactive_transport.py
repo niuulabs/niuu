@@ -432,6 +432,34 @@ async def test_discover_slash_commands_scrapes_terminal_menu(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_slash_discovery_waits_for_menu_dismissal_before_clearing_input(
+    tmp_path: Path, monkeypatch
+) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    composer = ""
+    menu_open = False
+
+    def dismiss_menu() -> None:
+        nonlocal menu_open
+        menu_open = False
+
+    async def send_key(key: str, *, pane_id: str | None = None) -> None:
+        nonlocal composer, menu_open
+        if key == "/":
+            composer += key
+            menu_open = True
+        elif key == "Escape" and menu_open:
+            asyncio.get_running_loop().call_later(transport._menu_poll_step_s / 2, dismiss_menu)
+        elif key == "C-u" and not menu_open:
+            composer = ""
+
+    monkeypatch.setattr(transport, "_send_key_raw", send_key)
+    await transport._discover_slash_commands_from_terminal()
+
+    assert composer == ""
+
+
+@pytest.mark.asyncio
 async def test_refresh_panes_emits_transport_stopped_on_session_gone(tmp_path: Path) -> None:
     # When list-panes fails (tmux session vanished) the transport dies. It must emit
     # a one-shot transport_stopped so the broker can report the 'stopped' activity
