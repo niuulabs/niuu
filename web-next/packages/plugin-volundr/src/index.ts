@@ -11,7 +11,7 @@ export const volundrPlugin = definePlugin({
   id: 'volundr',
   rune: 'V',
   title: 'Völundr',
-  subtitle: 'session forge · remote dev pods',
+  subtitle: '',
   tabs: [
     { id: 'forge', label: 'Forge', path: '/volundr/forge' },
     { id: 'sessions', label: 'Sessions', path: '/volundr/sessions' },

@@ -121,7 +121,7 @@ export function ShellLayout() {
                   'niuu-shell__rail-item',
                   active?.id === p.id && 'niuu-shell__rail-item--active',
                 )}
-                title={`${p.title} · ${p.subtitle}`}
+                title={[p.title, p.subtitle].filter(Boolean).join(' · ')}
                 aria-label={p.title}
                 onClick={() => handleSelect(p.id)}
               >
@@ -143,7 +143,7 @@ export function ShellLayout() {
                   'niuu-shell__rail-item',
                   active?.id === p.id && 'niuu-shell__rail-item--active',
                 )}
-                title={`${p.title} · ${p.subtitle}`}
+                title={[p.title, p.subtitle].filter(Boolean).join(' · ')}
                 aria-label={p.title}
                 onClick={() => handleSelect(p.id)}
               >
@@ -161,7 +161,9 @@ export function ShellLayout() {
                 <>
                   <span className="niuu-shell__rune-mark">{active.rune}</span>
                   <h1>{active.title}</h1>
-                  <span className="niuu-shell__topbar-subtitle">{active.subtitle}</span>
+                  {active.subtitle && (
+                    <span className="niuu-shell__topbar-subtitle">{active.subtitle}</span>
+                  )}
                 </>
               )}
             </div>
