@@ -216,6 +216,14 @@ test('renames from the title and sidebar, persisting through a reload', async ({
   await expect(row).toContainText('sidebar-renamed');
   await page.reload();
   await expect(title).toContainText('sidebar-renamed');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await title.getByRole('button', { name: 'Rename sidebar-renamed' }).click();
+  await expect(page.getByRole('textbox', { name: 'Session name' })).toHaveValue('sidebar-renamed');
+  await page.screenshot({
+    path: testInfo.outputPath('phone-title-rename.png'),
+    animations: 'disabled',
+  });
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   expect(mutations).toEqual([
     'PUT /api/v1/forge/sessions/review',
     'PUT /api/v1/forge/sessions/review',
