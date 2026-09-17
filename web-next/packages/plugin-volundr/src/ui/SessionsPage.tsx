@@ -70,6 +70,7 @@ export function SessionsPage() {
   const [stoppedSelectionMode, setStoppedSelectionMode] = useState(false);
   const [selectedStoppedIds, setSelectedStoppedIds] = useState<Set<string>>(new Set());
   const [deleteStoppedOpen, setDeleteStoppedOpen] = useState(false);
+  const [deleteSessionId, setDeleteSessionId] = useState<string | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -238,6 +239,26 @@ export function SessionsPage() {
     await sessionsQuery.refetch();
   }
 
+  async function handleDeleteSession() {
+    if (!deleteSessionId || rowBusy) return;
+    const id = deleteSessionId;
+    setRowBusy(id);
+    setRowError(null);
+    try {
+      await volundr.deleteSession(id);
+      setDeleteSessionId(null);
+      if (resolvedSelectedSessionId === id) {
+        setSelectedSessionId(null);
+        await navigate({ to: '/volundr/sessions', replace: true });
+      }
+      await refreshSessions();
+    } catch (error) {
+      setRowError(error instanceof Error ? error.message : 'Session deletion failed');
+    } finally {
+      setRowBusy(null);
+    }
+  }
+
   // Hover action: stop a session in place.
   async function handleStopSession(id: string) {
     if (rowBusy) return;
@@ -274,7 +295,6 @@ export function SessionsPage() {
 
   return (
     <>
-      {rowError && <p role="alert">{rowError}</p>}
       <div className="niuu:relative niuu:flex niuu:h-full" data-testid="sessions-page">
         {/* ── Left sidebar: pod list ─────────────────────────────── */}
         <nav
@@ -529,6 +549,19 @@ export function SessionsPage() {
                 </div>
               )}
 
+              {rowBusy && (
+                <p
+                  role="status"
+                  className="niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-text-secondary"
+                >
+                  Updating session…
+                </p>
+              )}
+              {rowError && !deleteSessionId && (
+                <p role="alert" className="niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-critical">
+                  {rowError}
+                </p>
+              )}
               <div className="niuu:flex-1 niuu:min-h-0 niuu:overflow-y-auto niuu:pb-1.5 niuu-scroll-themed">
                 {sidebarGroups.map((g) => (
                   <PodGroup
@@ -539,6 +572,7 @@ export function SessionsPage() {
                     onSelect={handleSelectSession}
                     onStop={handleStopSession}
                     onArchive={handleArchiveSession}
+                    onDelete={setDeleteSessionId}
                     busyId={rowBusy}
                     folded={
                       stoppedSelectionMode && g.label === 'STOPPED'
@@ -583,6 +617,41 @@ export function SessionsPage() {
           )}
         </div>
       </div>
+      <Dialog
+        open={deleteSessionId !== null}
+        onOpenChange={(open) => {
+          if (!open && !rowBusy) setDeleteSessionId(null);
+        }}
+      >
+        <DialogContent
+          title="Delete Session"
+          description="This permanently deletes the session and its workspace storage. This action cannot be undone."
+        >
+          <p className="niuu:mb-4 niuu:text-sm niuu:text-text-secondary">
+            {allSessions.find((session) => session.id === deleteSessionId)?.name || deleteSessionId}
+          </p>
+          {rowError && <p role="alert">{rowError}</p>}
+          <div className="niuu:flex niuu:justify-end niuu:gap-2">
+            <button
+              type="button"
+              className="niuu:px-3 niuu:py-2"
+              disabled={!!rowBusy}
+              onClick={() => setDeleteSessionId(null)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="niuu:rounded-md niuu:bg-critical niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
+              disabled={!!rowBusy}
+              onClick={() => void handleDeleteSession()}
+              data-testid="confirm-delete-session-button"
+            >
+              {rowBusy ? 'Deleting…' : 'Delete'}
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
       <Dialog open={deleteStoppedOpen} onOpenChange={setDeleteStoppedOpen}>
         <DialogContent
           title="Delete Selected Stopped Sessions"

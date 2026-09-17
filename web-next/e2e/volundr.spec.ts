@@ -113,3 +113,20 @@ test('archived session shows archived badge', async ({ page }) => {
   await expect(page.getByTestId('live-session-detail-page')).toBeVisible({ timeout: 8_000 });
   await expect(page.getByText('Archived')).toBeVisible();
 });
+
+test('session row delete opens a confirmation and Escape cancels it', async ({ page }) => {
+  await page.goto('/volundr/sessions');
+  const row = page.getByTestId('pod-entry-ds-1');
+  await expect(row).toBeVisible();
+  await row.focus();
+  const remove = page.getByTestId('pod-entry-ds-1-delete');
+  await expect(remove).toBeVisible();
+  await remove.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog', { name: 'Delete Session', exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('workspace storage');
+  await page.keyboard.press('Escape');
+  await expect(dialog).not.toBeVisible();
+  await expect(row).toBeVisible();
+});

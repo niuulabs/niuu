@@ -1,5 +1,5 @@
 import { StateDot, relTime, cn } from '@niuulabs/ui';
-import { Archive, Check, ChevronRight, Square, SquareTerminal, Ticket } from 'lucide-react';
+import { Archive, Check, ChevronRight, Square, SquareTerminal, Ticket, Trash2 } from 'lucide-react';
 import { useShowDebugMeta } from '../uxPrefs';
 import type { Session } from '../../domain/session';
 import {
@@ -22,6 +22,7 @@ function PodEntry({
   onSelect,
   onStop,
   onArchive,
+  onDelete,
   busy = false,
   collapsed = false,
   selectable = false,
@@ -36,6 +37,7 @@ function PodEntry({
   onStop?: (id: string) => void;
   /** Stop (if running) then archive the session (hover action). */
   onArchive?: (id: string) => void;
+  onDelete?: (id: string) => void;
   /** True while this row has an action in flight — disables its buttons. */
   busy?: boolean;
   collapsed?: boolean;
@@ -179,7 +181,7 @@ function PodEntry({
               ) : null}
             </div>
           </div>
-          {(canStop && onStop) || (canArchive && onArchive) ? (
+          {(canStop && onStop) || (canArchive && onArchive) || onDelete ? (
             <div className="lx-pod-actions" onClick={(e) => e.stopPropagation()}>
               {canStop && onStop ? (
                 <button
@@ -213,6 +215,22 @@ function PodEntry({
                   <Archive size={11} />
                 </button>
               ) : null}
+              {onDelete ? (
+                <button
+                  type="button"
+                  className="lx-pod-action-btn lx-pod-action-btn--stop"
+                  title="Delete session"
+                  aria-label={`Delete session ${primaryLabel}`}
+                  data-testid={`pod-entry-${session.id}-delete`}
+                  disabled={busy}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete(session.id);
+                  }}
+                >
+                  <Trash2 size={11} />
+                </button>
+              ) : null}
             </div>
           ) : null}
         </>
@@ -232,6 +250,7 @@ export function PodGroup({
   onSelect,
   onStop,
   onArchive,
+  onDelete,
   busyId,
   collapsed = false,
   selectableSessionIds,
@@ -247,6 +266,7 @@ export function PodGroup({
   onSelect: (id: string) => void;
   onStop?: (id: string) => void;
   onArchive?: (id: string) => void;
+  onDelete?: (id: string) => void;
   /** Id of the session whose row action is currently in flight. */
   busyId?: string | null;
   collapsed?: boolean;
@@ -299,7 +319,8 @@ export function PodGroup({
             onSelect={() => onSelect(s.id)}
             onStop={onStop}
             onArchive={onArchive}
-            busy={busyId === s.id}
+            onDelete={onDelete}
+            busy={!!busyId}
             collapsed={collapsed}
             index={i}
             selectable={selectableSessionIds?.has(s.id) ?? false}

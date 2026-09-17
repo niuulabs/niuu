@@ -553,6 +553,88 @@ describe('SessionsPage', () => {
     fireEvent.click(screen.getByTestId('pod-group-archived-header'));
     expect(screen.getByTestId('pod-entry-archived-1')).toBeInTheDocument();
   });
+  it('shows progress and disables other rows while an archive request is pending', async () => {
+    const volundr = createMockVolundrService();
+    let finish!: () => void;
+    volundr.archiveSession = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    wrap(
+      createSessionStoreWithSessions([
+        makeSession({ id: 'first', state: 'failed' }),
+        makeSession({ id: 'second', state: 'failed' }),
+      ]),
+      volundr,
+    );
+    fireEvent.click(await screen.findByTestId('pod-entry-first-archive'));
+    expect(screen.getByText('Updating session…')).toBeInTheDocument();
+    expect(screen.getByTestId('pod-entry-second-archive')).toBeDisabled();
+    expect(screen.getByTestId('pod-entry-second-delete')).toBeDisabled();
+    finish();
+    await waitFor(() => expect(screen.getByTestId('pod-entry-second-archive')).toBeEnabled());
+    expect(screen.queryByText('Updating session…')).not.toBeInTheDocument();
+  });
+
+  it('archives a failed session without trying to stop it', async () => {
+    const volundr = createMockVolundrService();
+    volundr.stopSession = vi.fn();
+    volundr.archiveSession = vi.fn().mockResolvedValue(undefined);
+    wrap(createSessionStoreWithSessions([makeSession({ id: 'broken', state: 'failed' })]), volundr);
+    fireEvent.click(await screen.findByTestId('pod-entry-broken-archive'));
+    await waitFor(() => expect(volundr.archiveSession).toHaveBeenCalledWith('broken'));
+    expect(volundr.stopSession).not.toHaveBeenCalled();
+  });
+
+  it('confirms deletion of an errored session and refreshes the list', async () => {
+    const volundr = createMockVolundrService();
+    let finish!: () => void;
+    volundr.deleteSession = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const store = createSessionStoreWithSessions([makeSession({ id: 'broken', state: 'failed' })]);
+    const list = vi.spyOn(store, 'listSessions');
+    wrap(store, volundr);
+    fireEvent.click(await screen.findByTestId('pod-entry-broken-delete'));
+    expect(volundr.deleteSession).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(/permanently deletes the session and its workspace storage/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('confirm-delete-session-button'));
+    expect(screen.getByTestId('confirm-delete-session-button')).toBeDisabled();
+    expect(volundr.deleteSession).toHaveBeenCalledWith('broken');
+    finish();
+    await waitFor(() =>
+      expect(screen.queryByTestId('confirm-delete-session-button')).not.toBeInTheDocument(),
+    );
+    await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it('cancels deletion without deleting the session', async () => {
+    const volundr = createMockVolundrService();
+    volundr.deleteSession = vi.fn();
+    wrap(createSessionStoreWithSessions([makeSession({ id: 'broken', state: 'failed' })]), volundr);
+    fireEvent.click(await screen.findByTestId('pod-entry-broken-delete'));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel', exact: true }));
+    expect(volundr.deleteSession).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('confirm-delete-session-button')).not.toBeInTheDocument();
+  });
+
+  it('keeps the delete dialog open and reports deletion failures', async () => {
+    const volundr = createMockVolundrService();
+    volundr.deleteSession = vi.fn().mockRejectedValue(new Error('Deletion denied'));
+    wrap(createSessionStoreWithSessions([makeSession({ id: 'broken', state: 'failed' })]), volundr);
+    fireEvent.click(await screen.findByTestId('pod-entry-broken-delete'));
+    fireEvent.click(screen.getByTestId('confirm-delete-session-button'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Deletion denied');
+    expect(screen.getByTestId('confirm-delete-session-button')).toBeEnabled();
+  });
+
   it('stops before archiving an active session', async () => {
     const volundr = createMockVolundrService();
     const order: string[] = [];
