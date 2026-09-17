@@ -75,8 +75,8 @@ describe('MarkdownContent', () => {
 
   it('renders link', () => {
     render(<MarkdownContent content="See [docs](https://example.com)" />);
-    const link = screen.getByRole('link', { name: 'docs' });
-    expect(link).toHaveAttribute('href', 'https://example.com');
+    const link = screen.getByRole('button', { name: 'docs' });
+    expect(link).toHaveClass('niuu-chat-md-link');
   });
 
   it('renders outcome card embedded in text', () => {

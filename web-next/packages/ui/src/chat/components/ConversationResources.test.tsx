@@ -8,7 +8,7 @@ import {
 } from './ConversationResources';
 
 describe('conversation resource controls', () => {
-  it('keeps external and fragment links navigable while rejecting unsafe schemes', () => {
+  it('previews external links, keeps fragment navigation and rejects unsafe schemes', () => {
     render(
       <>
         <ConversationLink href="https://example.com">External</ConversationLink>
@@ -16,15 +16,22 @@ describe('conversation resource controls', () => {
         <ConversationLink href="javascript:alert(1)">Unsafe</ConversationLink>
       </>,
     );
-    expect(screen.getByRole('link', { name: 'External' })).toHaveAttribute(
-      'href',
-      'https://example.com',
-    );
+    expect(screen.getByRole('button', { name: 'External' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Section' })).toHaveAttribute('href', '#section');
     expect(screen.queryByRole('link', { name: 'Unsafe' })).not.toBeInTheDocument();
     expect(safeExternalUrl('data:text/html,bad')).toBeNull();
     expect(safeExternalUrl('mailto:review@example.com')).toBe('mailto:review@example.com');
     expect(safeExternalUrl('not a URL')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'External' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByTitle('Preview of example.com')).toHaveAttribute(
+      'src',
+      'https://example.com',
+    );
+    expect(screen.getByRole('link', { name: 'Open in new tab' })).toHaveAttribute(
+      'href',
+      'https://example.com',
+    );
   });
   it('shows real image loading errors and unavailable deliveries', () => {
     render(
@@ -54,7 +61,7 @@ it('opens remote Markdown images in the viewport without navigating away', async
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 });
 
-it('opens HTTP image hyperlinks in the same preview and preserves ordinary website navigation', async () => {
+it('opens HTTP image hyperlinks in the same preview without navigating away', async () => {
   render(
     <ConversationLink href="https://example.test/diagram.png?revision=2">
       Image reference

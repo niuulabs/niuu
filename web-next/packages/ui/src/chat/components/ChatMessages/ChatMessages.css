@@ -355,3 +355,11 @@
   background: var(--color-sent-surface);
   box-shadow: var(--shadow-sm);
 }
+
+/* Hidden tools still separate the model's paragraphs without occupying a card. */
+.niuu-chat-tool-separator {
+  border: 0;
+  border-top: 1px solid var(--color-border-subtle);
+  margin: 16px 0;
+  width: 100%;
+}

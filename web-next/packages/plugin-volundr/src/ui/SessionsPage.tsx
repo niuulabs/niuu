@@ -376,6 +376,7 @@ function PodEntry({
               type="button"
               disabled={busy}
               title="Stop session"
+              data-action="stop"
               aria-label={`Stop ${primaryLabel}`}
               data-testid={`pod-entry-${session.id}-stop`}
               onClick={() => onAction(session, 'stop')}
@@ -410,6 +411,7 @@ function PodEntry({
             type="button"
             disabled={busy}
             title="Delete session"
+            data-action="delete"
             aria-label={`Delete ${primaryLabel}`}
             data-testid={`pod-entry-${session.id}-delete`}
             onClick={() => onAction(session, 'delete')}
@@ -871,7 +873,7 @@ export function SessionsPage() {
                         data-testid="pod-launch-button"
                         aria-label="Launch a new session"
                       >
-                        <Plus size={26} strokeWidth={3} />
+                        <Plus size={20} strokeWidth={2} />
                       </button>
                     </Tooltip>
                     <Tooltip
@@ -924,10 +926,12 @@ export function SessionsPage() {
                   </div>
                 ))}
               </div>
-              <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:px-2.5 niuu:py-1">
-                <span className="niuu:text-xs niuu:text-text-muted">group by</span>
+              <div className="forge-session-grouping">
+                <span id="forge-group-label">Group by</span>
                 <div
-                  className="niuu:inline-flex niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:p-0.5"
+                  className="forge-session-group-options"
+                  role="group"
+                  aria-labelledby="forge-group-label"
                   data-testid="pod-group-mode"
                 >
                   {SIDEBAR_MODES.map((mode) => {
@@ -937,12 +941,7 @@ export function SessionsPage() {
                         key={mode}
                         type="button"
                         onClick={() => setSidebarMode(mode)}
-                        className={cn(
-                          'niuu:rounded-md niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:font-semibold niuu:transition-colors',
-                          active
-                            ? 'niuu:bg-brand/15 niuu:text-brand'
-                            : 'niuu:text-text-muted niuu:hover:text-text-primary',
-                        )}
+                        className="forge-session-group-option"
                         data-testid={`pod-group-mode-${mode}`}
                         aria-pressed={active}
                       >

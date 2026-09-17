@@ -6,6 +6,7 @@ import { getAuthHeaders } from '@niuulabs/query';
 import {
   Dialog,
   DialogContent,
+  ConversationLink,
   ErrorState,
   LoadingState,
   SessionChat,
@@ -21,7 +22,6 @@ import {
   ChevronRight,
   Eye,
   EyeOff,
-  ExternalLink,
   FileCode2,
   FileDiff,
   FilePenLine,
@@ -65,6 +65,8 @@ import { StructuredLogViewer } from './components/StructuredLogViewer';
 import './LiveSessionDetailPage.css';
 import { useForgePreference } from './useForgePreference';
 import { SessionResources } from './SessionResources';
+import { SessionEnvironment } from './SessionEnvironment';
+import { sessionModelLabel } from '../domain/sessionModelLabel';
 
 export type LiveSessionTab =
   'chat' | 'terminal' | 'diffs' | 'files' | 'chronicles' | 'telemetry' | 'logs';
@@ -2379,63 +2381,13 @@ function normalizeForgeBadgeLabel(value: string): string {
 }
 
 function SourceMeta({ session }: { session: VolundrSession | null | undefined }) {
-  const [branchCopied, setBranchCopied] = useState(false);
-
   if (!session?.source) return null;
-
-  if (session.source.type === 'git') {
-    const repoUrl = normalizeRepoLink(session.source);
-    const repoLabel = formatRepoLabel(session.source.repo);
-    const branch = session.source.branch ?? 'main';
-
-    return (
-      <span className="niuu-live-session__source">
-        <span className="niuu:text-text-faint" aria-hidden>
-          ›
-        </span>
-        {repoUrl ? (
-          <a
-            href={repoUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="niuu-live-session__source-link"
-            title={repoUrl}
-          >
-            {repoLabel}
-          </a>
-        ) : (
-          <span className="niuu-live-session__source-link" title={session.source.repo}>
-            {repoLabel}
-          </span>
-        )}
-        <button
-          type="button"
-          className="niuu-live-session__branch-button"
-          title={`${branchCopied ? 'Copied' : branch} · click to copy`}
-          onClick={async () => {
-            const copied = await copyText(branch);
-            setBranchCopied(copied);
-            if (copied) {
-              setTimeout(() => setBranchCopied(false), 1200);
-            }
-          }}
-        >
-          {`@${truncateMiddle(branch, 18)}`}
-        </button>
-      </span>
-    );
-  }
-
-  const path = session.source.path ?? 'local mount';
   return (
-    <span className="niuu-live-session__source">
-      <span className="niuu:text-text-faint" aria-hidden>
-        ›
-      </span>
-      <span className="niuu-live-session__source-link" title={path}>
-        {path}
-      </span>
-    </span>
+    <SessionEnvironment
+      session={session}
+      repoUrl={normalizeRepoLink(session.source)}
+      repoLabel={session.source.type === 'git' ? formatRepoLabel(session.source.repo) : undefined}
+    />
   );
 }
 
@@ -2567,16 +2519,9 @@ function TicketLink({ issue }: { issue: VolundrSession['trackerIssue'] }) {
     );
   }
   return (
-    <a
-      href={issue.url}
-      target="_blank"
-      rel="noreferrer"
-      className="niuu-live-session__ticket"
-      title={issue.identifier}
-    >
-      <span>{issue.identifier}</span>
-      <ExternalLink className="niuu:h-3.5 niuu:w-3.5" />
-    </a>
+    <span className="niuu-live-session__ticket">
+      <ConversationLink href={issue.url}>{issue.identifier}</ConversationLink>
+    </span>
   );
 }
 
@@ -4007,6 +3952,19 @@ function LiveSessionDetailPageInner({
                   <SessionForgeBadge label={forgeBadgeLabel} />
                 </>
               ) : null}
+              {liveSession?.model && (
+                <>
+                  <HeaderDivider />
+                  <span
+                    className="niuu-live-session__model"
+                    title={liveSession.model}
+                    data-testid="session-model"
+                  >
+                    <Sparkles size={14} />
+                    {sessionModelLabel(liveSession.model)}
+                  </span>
+                </>
+              )}
               {readOnly ? (
                 <>
                   <HeaderDivider />
@@ -4063,12 +4021,6 @@ function LiveSessionDetailPageInner({
               )}
             </div>
             <div className="niuu-live-session__toolbar">
-              <span
-                className="niuu-live-session__toolbar-label"
-                title="Tool groups expand into calls, then details"
-              >
-                Hierarchical
-              </span>
               <SessionToolbarButton
                 icon={showInternalMessages ? Eye : EyeOff}
                 title={

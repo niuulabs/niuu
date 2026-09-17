@@ -1,4 +1,3 @@
-import { isPresentedFileTool } from '../ToolBlock/groupContentBlocks';
 import {
   useCallback,
   useMemo,
@@ -19,7 +18,7 @@ import {
   Trash2Icon,
 } from 'lucide-react';
 import { cn } from '../../../utils/cn';
-import { useRoomState } from '../../hooks/useRoomState';
+import { hideToolParts, useRoomState } from '../../hooks/useRoomState';
 import {
   UserMessage,
   AssistantMessage,
@@ -966,16 +965,7 @@ export function SessionChat({
                 <StreamingMessage
                   content={streamingContent ?? ''}
                   parts={
-                    showInternal
-                      ? streamingParts
-                      : streamingParts?.filter(
-                          (part) =>
-                            part.type === 'text' ||
-                            part.type === 'reasoning' ||
-                            (part.type === 'tool_use' &&
-                              part.name &&
-                              isPresentedFileTool(part.name)),
-                        )
+                    showInternal ? streamingParts : streamingParts && hideToolParts(streamingParts)
                   }
                   model={streamingModel}
                 />

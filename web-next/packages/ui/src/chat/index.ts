@@ -80,3 +80,6 @@ export { useCopyFeedback } from './hooks/useCopyFeedback';
 export { useConversationResources } from './components/ConversationResources';
 
 export { ImagePreview } from './components/ImagePreview';
+
+export { externalResource } from './components/ConversationResources';
+export { ExternalLinkPreview } from './components/ExternalLinkPreview';

@@ -24,6 +24,7 @@ export interface TextBlock {
 export type ContentBlock = ToolUseBlock | ToolResultBlock | TextBlock | { type: string };
 
 export type GroupedContent =
+  | { kind: 'separator'; id?: string }
   | ({ kind: 'text' } & Omit<TextBlock, 'type'>)
   | { kind: 'single'; block: ToolUseBlock; result?: ToolResultBlock }
   | {
@@ -48,6 +49,12 @@ export function groupContentBlocks(blocks: ContentBlock[], hierarchical = false)
   while (i < blocks.length) {
     const block = blocks[i];
     if (!block) {
+      i++;
+      continue;
+    }
+
+    if (block.type === 'tool_separator') {
+      result.push({ kind: 'separator', id: (block as { id?: string }).id });
       i++;
       continue;
     }

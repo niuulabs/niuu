@@ -2336,3 +2336,13 @@
 .niuu-live-session__chrome {
   flex-shrink: 0;
 }
+
+.niuu-live-session__toolbar-button--critical {
+  color: var(--color-critical-fg);
+  border: 1px solid var(--color-critical-bo);
+}
+.niuu-live-session__toolbar-button--critical:hover:not(:disabled) {
+  color: var(--color-text-on-critical);
+  background: var(--color-critical);
+  border-color: var(--color-critical);
+}

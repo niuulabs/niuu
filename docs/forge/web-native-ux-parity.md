@@ -367,8 +367,8 @@ session was created for testing.
 - [x] Document and image dialogs use 90vw × 90dvh (about 81% of window area), with
       no fixed pixel cap; phone previews keep only a narrow viewport margin.
 - [x] Workspace and HTTP(S) image hyperlinks get lazy hover/focus thumbnails and
-      open the in-app image viewer. Inline Markdown images use the same viewer. Normal
-      website links retain normal navigation. Image links are recognized by the filename
+      open the in-app image viewer. Inline Markdown images use the same viewer. At this iteration, normal
+      website links retained normal navigation (superseded by the next receipt). Image links are recognized by the filename
       extension (query strings ignored) or the workspace resource's image MIME type.
 - [x] Image viewer supports zoom buttons, wheel/pinch zoom, drag panning, keyboard
       panning/zoom, fit/reset, image copying, downloading, and opening the original in a
@@ -385,3 +385,39 @@ real clipboard PNG writes and downloads, panning, native-dark/xTeo harness colou
 desktop action alignment and phone layouts. All 13 browser checks pass, including
 touch menu activation without triggering an underlying action. All mutations in browser tests use fixtures;
 no real provider session is launched, stopped, archived, imported or deleted.
+
+## Session links, header and control alignment — 2026-09-17
+
+- [x] Markdown HTTP(S), email and file links show their resolved target after a
+      150 ms hover/focus delay. Workspace resources, remote images, remote Markdown
+      and websites open in the session's central 90vw × 90dvh preview. Remote Markdown
+      uses the shared renderer and resolves nested links against its URL. Fragment links
+      remain document navigation; unsafe schemes and paths outside the workspace remain
+      unavailable. Opening another document replaces the panel rather than stacking it.
+- [x] Remote websites use a sandboxed iframe, with explicit Copy link and Open in new
+      tab controls. Sites can refuse embedding; the panel explains this limitation.
+      Remote Markdown downloads omit credentials, need CORS permission, abort on close,
+      revoke object URLs, and have the same 2 MiB text-preview limit as workspace files.
+      Copy and download failures remain visible. Closing the session preview restores
+      keyboard focus to its original link.
+- [x] The workspace chip expands into folder, available repository/branch details and
+      a session-ID footer, with copy controls. Repository links use the same preview.
+      Local-mount session metadata currently contains a folder, not a Git remote or
+      branch: this absence is stated explicitly, not inferred from the folder name.
+- [x] The header includes the selected model's readable name, preserving unknown IDs.
+      The redundant Hierarchical label is removed; rendering remains hierarchical.
+- [x] Hiding tools replaces each adjacent run with one thin, padded separator and
+      discards its displayed inputs/results. Native prose identities and delivered file
+      cards are retained in settled, streaming and room views.
+- [x] The two filter rows use aligned, equally sized controls. Grouping uses a centred
+      label and four equal segments. Launch/import/collapse have matching rounded
+      borders; the plus is smaller and lighter. Sidebar and header Stop/Delete use
+      the same red tokens; Stop has an outlined resting state and solid red hover.
+      The explicit touch menu remains isolated from destructive actions.
+
+Validation: full production rebuild, workspace type checks, changed-file lint;
+6,164 unit tests in 421 files, 85.14% branch coverage (other coverage metrics above
+92%), and 15 browser checks. Browser coverage includes desktop and phone layouts,
+both themes, website/Markdown/image previews, target tooltips, nested link resolution,
+keyboard focus return, hidden-tool boundaries and action colours. Lifecycle operations
+remain fixture-only; the live deployment check is read-only.

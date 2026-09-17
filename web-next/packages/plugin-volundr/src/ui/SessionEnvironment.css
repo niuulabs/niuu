@@ -1,0 +1,93 @@
+.forge-environment-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 32px;
+  max-width: 220px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 7px;
+  padding: 4px 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+.forge-environment-trigger > span {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+.forge-environment-trigger svg {
+  flex-shrink: 0;
+}
+.forge-environment-trigger:hover,
+.forge-environment-trigger[data-state='open'] {
+  background: var(--color-bg-tertiary);
+}
+.niuu-popover-content.forge-environment-popover {
+  width: min(420px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  border-color: var(--color-border-subtle);
+  padding: 16px;
+  color: var(--color-text-secondary);
+}
+.forge-environment-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-primary);
+}
+.forge-environment-popover dt {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-top: 14px;
+}
+.forge-environment-popover dd,
+.forge-environment-popover footer > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 5px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.forge-environment-popover button:not(.niuu-chat-md-link) {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+}
+.forge-environment-popover button:hover {
+  color: var(--color-brand);
+}
+.forge-environment-popover footer {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border-subtle);
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+.forge-environment-popover code {
+  font-size: 11px;
+  user-select: all;
+}
+.forge-environment-popover [role='status'] {
+  font-size: 12px;
+  margin-top: 8px;
+}
+.forge-environment-muted {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+.niuu-live-session__model {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+}

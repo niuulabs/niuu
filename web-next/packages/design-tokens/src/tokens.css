@@ -93,6 +93,7 @@
 
   /* ── Critical (reserved — red only) ───────────────────── */
   --color-critical: #ef4444;
+  --color-text-on-critical: #ffffff;
 
   /*
    * Observatory accent hues, from docs/mockups/observatory/index.html.

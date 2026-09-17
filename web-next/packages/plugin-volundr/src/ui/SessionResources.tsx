@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ConversationResourceProvider,
   Dialog,
   DialogContent,
+  ExternalLinkPreview,
+  externalResource,
   type ConversationResource,
 } from '@niuulabs/ui';
 import type { IFileSystemPort } from '../ports/IFileSystemPort';
@@ -24,11 +26,19 @@ export function SessionResources({
   filesystem: IFileSystemPort;
   children: ReactNode;
 }) {
+  const returnFocus = useRef<HTMLElement | null>(null);
+  const isOpen = useRef(false);
   const [selected, setSelected] = useState<ConversationResource | null>(null);
   const [preview, setPreview] = useState<LoadedPreview>();
   const [error, setError] = useState<string>();
   const load = useCallback(
     (resource: ConversationResource, signal: AbortSignal) => {
+      if (resource.kind === 'external') {
+        return fetch(resource.path, { signal, credentials: 'omit' }).then((response) => {
+          if (!response.ok) throw new Error('Could not load linked file');
+          return response.blob();
+        });
+      }
       if (resource.kind === 'presented') {
         if (!filesystem.downloadPresentedFile)
           return Promise.reject(
@@ -43,13 +53,18 @@ export function SessionResources({
     [filesystem, sessionId],
   );
   const open = useCallback((resource: ConversationResource) => {
+    if (!isOpen.current) {
+      returnFocus.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      isOpen.current = true;
+    }
     setPreview(undefined);
     setError(undefined);
     setSelected(resource);
   }, []);
   const port = useMemo(
     () => ({
-      resolve: (href: string) => resolveSessionResource(href, workspace),
+      resolve: (href: string) => resolveSessionResource(href, workspace) ?? externalResource(href),
       load,
       open,
     }),
@@ -60,6 +75,13 @@ export function SessionResources({
     () => ({
       ...port,
       resolve: (href: string) => {
+        if (selected?.kind === 'external' && !href.startsWith('#')) {
+          try {
+            return externalResource(new URL(href, selected.path).href);
+          } catch {
+            return null;
+          }
+        }
         const directory =
           selected?.kind === 'workspace'
             ? selected.path.slice(0, selected.path.lastIndexOf('/') + 1)
@@ -72,7 +94,7 @@ export function SessionResources({
   );
 
   useEffect(() => {
-    if (!selected) return;
+    if (!selected || selected.kind === 'external') return;
     const abort = new AbortController();
     let url: string | undefined;
     void load(selected, abort.signal)
@@ -110,8 +132,15 @@ export function SessionResources({
       >
         <DialogContent
           className="forge-resource-dialog"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            isOpen.current = false;
+            returnFocus.current?.focus();
+          }}
           title={selected?.name ?? 'File preview'}
-          description={selected?.kind === 'workspace' ? selected.path : 'Delivered by this session'}
+          description={
+            selected?.kind !== 'presented' ? selected?.path : 'Delivered by this session'
+          }
         >
           {error && (
             <div className="forge-resource-empty">
@@ -121,10 +150,15 @@ export function SessionResources({
               </button>
             </div>
           )}
-          {!preview && !error && (
+          {selected?.kind !== 'external' && !preview && !error && (
             <div className="forge-resource-empty">
               <p role="status">Loading file…</p>
             </div>
+          )}
+          {selected?.kind === 'external' && (
+            <ConversationResourceProvider port={previewPort}>
+              <ExternalLinkPreview key={selected.path} href={selected.path} name={selected.name} />
+            </ConversationResourceProvider>
           )}
           {preview && selected && (
             <ConversationResourceProvider port={previewPort}>

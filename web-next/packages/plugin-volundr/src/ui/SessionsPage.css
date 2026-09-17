@@ -209,7 +209,7 @@
   letter-spacing: -0.02em;
 }
 .forge-session-filters button {
-  border-radius: 999px;
+  border-radius: 7px;
 }
 .forge-session-list [data-testid='pod-group-mode'] button {
   min-height: 30px;
@@ -262,7 +262,8 @@
   display: grid;
   place-items: center;
   min-width: 36px;
-  min-height: 38px;
+  min-height: 36px;
+  border: 1px solid var(--color-border-subtle);
   border-radius: 8px;
   color: var(--color-text-secondary);
 }
@@ -286,9 +287,9 @@
   padding-block: 8px;
 }
 .forge-session-filter-group {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
 }
 .forge-session-filter-group + .forge-session-filter-group {
   margin-top: 8px;
@@ -492,4 +493,63 @@
 [data-theme='xteo'] .forge-session-row__actions {
   background: var(--color-panel-quiet);
   border-color: var(--color-border-quiet);
+}
+
+.forge-session-filters button {
+  justify-content: center;
+  gap: 4px;
+  padding: 6px 2px;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.forge-session-filters button:not([aria-pressed='true']) {
+  border-color: transparent;
+}
+.forge-session-filters button:not([aria-pressed='true']):hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+.forge-session-grouping {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 10px 12px;
+}
+.forge-session-grouping > span {
+  text-align: center;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+.forge-session-group-options {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 9px;
+}
+.forge-session-group-option {
+  min-width: 0;
+  border-radius: 6px;
+  padding: 6px 2px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  color: var(--color-text-secondary);
+}
+.forge-session-group-option:hover {
+  background: var(--color-bg-tertiary);
+}
+.forge-session-row__actions button[data-action] {
+  color: var(--color-critical-fg);
+  border: 1px solid transparent;
+}
+.forge-session-row__actions button[data-action='stop'] {
+  border-color: color-mix(in srgb, var(--color-critical-fg) 65%, transparent);
+}
+.forge-session-row__actions button[data-action]:hover:not(:disabled),
+.forge-session-row__actions button[data-action]:focus-visible {
+  background: var(--color-critical);
+  border-color: var(--color-critical);
+  color: var(--color-text-on-critical);
 }

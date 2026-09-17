@@ -1,5 +1,5 @@
 import * as RadixDialog from '@radix-ui/react-dialog';
-import type { ReactNode } from 'react';
+import type { ComponentProps, ReactNode } from 'react';
 import { cn } from '../../utils/cn';
 import './Dialog.css';
 
@@ -14,6 +14,7 @@ export interface DialogContentProps {
   description?: string;
   children: ReactNode;
   className?: string;
+  onCloseAutoFocus?: ComponentProps<typeof RadixDialog.Content>['onCloseAutoFocus'];
 }
 
 export function Dialog({ open, onOpenChange, children }: DialogProps) {
@@ -27,12 +28,19 @@ export function Dialog({ open, onOpenChange, children }: DialogProps) {
 export const DialogTrigger = RadixDialog.Trigger;
 export const DialogClose = RadixDialog.Close;
 
-export function DialogContent({ title, description, children, className }: DialogContentProps) {
+export function DialogContent({
+  title,
+  description,
+  children,
+  className,
+  onCloseAutoFocus,
+}: DialogContentProps) {
   return (
     <RadixDialog.Portal>
       <RadixDialog.Overlay className="niuu-dialog-overlay" />
       <RadixDialog.Content
         className={cn('niuu-dialog-content', className)}
+        onCloseAutoFocus={onCloseAutoFocus}
         {...(!description && { 'aria-describedby': undefined })}
       >
         <div className="niuu-dialog-header">

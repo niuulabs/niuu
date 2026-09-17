@@ -884,17 +884,20 @@ describe('LiveSessionDetailPage', () => {
       expect(chip).toBeInTheDocument();
     });
 
-    it('does not show the model label in the compact header', async () => {
+    it('shows the selected model in the compact header', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.queryByText('Claude Sonnet 4.6')).not.toBeInTheDocument();
+      expect(screen.getByTestId('session-model')).toHaveTextContent('Claude Sonnet 4.6');
+      expect(screen.queryByText('Hierarchical')).not.toBeInTheDocument();
     });
 
     it('shows repo and branch for git source', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(screen.getByText('niuulabs/volundr')).toBeInTheDocument();
-      expect(screen.getByText('@main')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Session workspace details' }));
+      expect(screen.getByText('main')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Copy session ID' })).toBeInTheDocument();
     });
 
     it('shows Archived badge in read-only mode', async () => {
@@ -948,8 +951,9 @@ describe('LiveSessionDetailPage', () => {
 
       await screen.findByTestId('live-session-detail-page');
       expect(screen.getByText('worker-17')).toBeInTheDocument();
-      expect(screen.getByRole('link', { name: /ops-42/i })).toHaveAttribute(
-        'href',
+      fireEvent.click(screen.getByRole('button', { name: /ops-42/i }));
+      expect(screen.getByTitle('Preview of OPS-42')).toHaveAttribute(
+        'src',
         'https://linear.app/niuu/issue/OPS-42',
       );
     });
@@ -2176,6 +2180,7 @@ describe('LiveSessionDetailPage', () => {
       };
       wrap('test-session-id-1234', { session: localSession });
       await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('button', { name: 'Session workspace details' }));
       expect(screen.getByText('/home/user/project')).toBeInTheDocument();
     });
   });

@@ -17,7 +17,7 @@ export interface ContentBlock {
 }
 
 export interface ChatMessagePart {
-  readonly type: 'text' | 'tool_use' | 'tool_result' | 'reasoning';
+  readonly type: 'text' | 'tool_use' | 'tool_result' | 'reasoning' | 'tool_separator';
   readonly text?: string;
   readonly id?: string;
   /** Native public text identity; phase is preserved even when a provider adds a new value. */

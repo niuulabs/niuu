@@ -143,3 +143,19 @@ describe('session file previews', () => {
     expect(await screen.findByText(/larger than the 2 MiB/)).toBeInTheDocument();
   });
 });
+
+it('uses the same session panel for websites and external images without invoking the workspace API', async () => {
+  const { filesystem } = setup(
+    undefined,
+    '[Website](https://example.test/page)\n\n[Image](https://example.test/image.png)',
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Website' }));
+  expect(screen.getByRole('dialog')).toHaveClass('forge-resource-dialog');
+  expect(screen.getByTitle('Preview of page')).toHaveAttribute('src', 'https://example.test/page');
+  expect(filesystem.downloadFile).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Close', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Image', exact: true }));
+  expect(screen.getByRole('dialog')).toHaveClass('forge-resource-dialog');
+  expect(screen.getByRole('button', { name: 'Zoom in' })).toBeInTheDocument();
+  expect(filesystem.downloadFile).not.toHaveBeenCalled();
+});

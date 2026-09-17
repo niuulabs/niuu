@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import { useRoomState } from './useRoomState';
+import { hideToolParts, useRoomState } from './useRoomState';
 import type { ChatMessage, RoomParticipant } from '../types';
 
 const now = new Date();
@@ -188,5 +188,40 @@ it('keeps delivered-file cards when ordinary tools are hidden', () => {
   const { result } = renderHook(() => useRoomState([message], new Map(), true));
   expect(result.current.visibleMessages[0]?.parts).toHaveLength(2);
   act(() => result.current.setShowInternal(false));
-  expect(result.current.visibleMessages[0]?.parts).toEqual([message.parts![1]]);
+  expect(result.current.visibleMessages[0]?.parts).toEqual([
+    { type: 'tool_separator', id: 'command' },
+    message.parts![1],
+  ]);
+});
+
+it('coalesces hidden calls and results into one divider between native prose parts', () => {
+  const before = { type: 'text' as const, id: 'before', text: 'First paragraph' };
+  const after = { type: 'text' as const, id: 'after', text: 'Next paragraph' };
+  expect(
+    hideToolParts([
+      before,
+      { type: 'tool_use', id: 'first', name: 'Bash', input: { command: 'secret' } },
+      { type: 'tool_use', id: 'second', name: 'Read', input: {} },
+      { type: 'tool_result', tool_use_id: 'first', content: 'hidden output' },
+      { type: 'tool_result', tool_use_id: 'second', content: 'hidden output' },
+      after,
+      { type: 'tool_result', tool_use_id: 'third', content: 'hidden output' },
+    ]),
+  ).toEqual([
+    before,
+    { type: 'tool_separator', id: 'first' },
+    after,
+    { type: 'tool_separator', id: 'third' },
+  ]);
+});
+it('drops a tool-only message without prose but preserves unstructured prose', () => {
+  const parts = [{ type: 'tool_use' as const, id: 'call', name: 'Read', input: {} }];
+  const { result } = renderHook(() =>
+    useRoomState(
+      [makeMsg({ content: '', parts }), makeMsg({ content: 'Summary', parts })],
+      new Map(),
+    ),
+  );
+  expect(result.current.visibleMessages).toHaveLength(1);
+  expect(result.current.visibleMessages[0]?.content).toBe('Summary');
 });

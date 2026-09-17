@@ -32,10 +32,7 @@ describe('Lexi Markdown in Forge messages', () => {
     expect(container.querySelector('[data-callout="WARNING"]')).toHaveTextContent(
       'Review carefully.',
     );
-    expect(screen.getByRole('link', { name: 'Docs' })).toHaveAttribute(
-      'href',
-      'https://example.com/docs',
-    );
+    expect(screen.getByRole('button', { name: 'Docs' })).toHaveClass('niuu-chat-md-link');
     expect(screen.getByRole('columnheader', { name: 'Cost' })).toHaveStyle({ textAlign: 'right' });
     expect(container.querySelector('math')?.namespaceURI).toBe(
       'http://www.w3.org/1998/Math/MathML',

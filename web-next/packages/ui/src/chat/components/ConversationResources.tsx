@@ -1,13 +1,14 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { File, Image as ImageIcon } from 'lucide-react';
 import type { ToolUseBlock } from './ToolBlock/groupContentBlocks';
 import './ConversationResources.css';
 import { ImagePreview } from './ImagePreview';
+import { ExternalLinkPreview } from './ExternalLinkPreview';
 import { Tooltip, TooltipProvider } from '../../primitives/Tooltip/Tooltip';
 import { Dialog, DialogContent } from '../../primitives/Dialog/Dialog';
 
 export interface ConversationResource {
-  kind: 'workspace' | 'presented';
+  kind: 'workspace' | 'presented' | 'external';
   path: string;
   name: string;
   mime?: string;
@@ -93,75 +94,87 @@ function ImageLinkThumbnail({
   );
 }
 
+export function externalResource(href: string): ConversationResource | null {
+  const url = safeExternalUrl(href);
+  if (!url) return null;
+  return { kind: 'external', path: url, name: imageLinkName(url) };
+}
+
 export function ConversationLink({ href, children }: { href: string; children: ReactNode }) {
   const port = useContext(Context);
-  const [imageOpen, setImageOpen] = useState(false);
-  const resource = port?.resolve(href);
-  const external = safeExternalUrl(href);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const resource = port?.resolve(href) ?? externalResource(href);
+  const target = resource?.path ?? href;
   const image =
-    isImageLink(resource?.name ?? href, resource?.mime) &&
-    (resource || (external && !external.startsWith('mailto:')));
-  if (image) {
-    const name = resource?.name ?? imageLinkName(href);
-    return (
-      <>
-        <TooltipProvider>
-          <Tooltip
-            delayMs={150}
-            ariaLabel="Image preview. Click to open."
-            className="niuu-image-link-tooltip"
-            content={
-              <ImageLinkThumbnail href={href} resource={resource ?? undefined} port={port} />
-            }
+    resource &&
+    !resource.path.toLowerCase().startsWith('mailto:') &&
+    isImageLink(resource.name, resource.mime);
+  const control = resource ? (
+    <button
+      type="button"
+      className="niuu-chat-md-link"
+      ref={trigger}
+      onClick={() => (port ? port.open(resource) : setPreviewOpen(true))}
+    >
+      {children}
+    </button>
+  ) : href.startsWith('#') ? (
+    <a href={href} className="niuu-chat-md-link">
+      {children}
+    </a>
+  ) : (
+    <span tabIndex={0}>{children}</span>
+  );
+  return (
+    <>
+      <TooltipProvider>
+        <Tooltip
+          delayMs={150}
+          ariaLabel={target}
+          className={image ? 'niuu-image-link-tooltip' : 'niuu-chat-link-tooltip'}
+          content={
+            <span className="niuu-chat-link-target">
+              {image && (
+                <ImageLinkThumbnail
+                  href={target}
+                  resource={resource.kind === 'external' ? undefined : resource}
+                  port={port}
+                />
+              )}
+              <span>{target}</span>
+              {!resource && !href.startsWith('#') && <span>Unavailable in this session</span>}
+            </span>
+          }
+        >
+          {control}
+        </Tooltip>
+      </TooltipProvider>
+      {!port && resource?.kind === 'external' && (
+        <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+          <DialogContent
+            onCloseAutoFocus={(event) => {
+              event.preventDefault();
+              trigger.current?.focus();
+            }}
+            title={resource.name}
+            description={resource.path}
+            className="niuu-chat-image-dialog"
           >
-            <button
-              type="button"
-              className="niuu-chat-md-link"
-              onClick={() => (resource && port ? port.open(resource) : setImageOpen(true))}
-            >
-              {children}
-            </button>
-          </Tooltip>
-        </TooltipProvider>
-        {!resource && (
-          <Dialog open={imageOpen} onOpenChange={setImageOpen}>
-            <DialogContent title={name} className="niuu-chat-image-dialog">
-              <ImagePreview src={href} originalUrl={href} name={name} />
-            </DialogContent>
-          </Dialog>
-        )}
-      </>
-    );
-  }
-  if (resource && port)
-    return (
-      <button
-        type="button"
-        className="niuu-chat-md-link"
-        onClick={() => port.open(resource)}
-        title={resource.path}
-      >
-        {children}
-      </button>
-    );
-  if (external)
-    return (
-      <a href={external} className="niuu-chat-md-link" target="_blank" rel="noreferrer">
-        {children}
-      </a>
-    );
-  if (href.startsWith('#'))
-    return (
-      <a href={href} className="niuu-chat-md-link">
-        {children}
-      </a>
-    );
-  return <span title="This link is not available in the current session">{children}</span>;
+            <ExternalLinkPreview href={resource.path} name={resource.name} />
+          </DialogContent>
+        </Dialog>
+      )}
+    </>
+  );
 }
 
 function imageLinkName(href: string): string {
   try {
-    return decodeURIComponent(new URL(href).pathname.split('/').pop() ?? '') || 'Image preview';
+    const url = new URL(href);
+    return (
+      decodeURIComponent(url.pathname.split('/').pop() ?? '') || url.hostname || 'Link preview'
+    );
   } catch {
     return 'Image preview';
   }
@@ -179,10 +192,11 @@ export function ConversationImage({ href, alt }: { href: string; alt: string }) 
   const current = loaded?.href === href && loaded.port === port ? loaded : undefined;
   const localUrl = current?.url;
   const error = current?.error;
-  const external = safeExternalUrl(href);
+  const resolved = port?.resolve(href);
+  const external = safeExternalUrl(resolved?.kind === 'external' ? resolved.path : href);
   const imageExternal = external && !external.startsWith('mailto:') ? external : null;
-  const resource = port?.resolve(href);
-  const resourcePath = resource?.path;
+  const resource = resolved ?? externalResource(href);
+  const resourcePath = resource?.kind === 'external' ? undefined : resource?.path;
 
   useEffect(() => {
     if (!port || !resourcePath) return;

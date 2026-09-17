@@ -33,13 +33,15 @@ function formatFileSize(bytes: number): string {
 }
 
 function hasToolParts(parts?: readonly ChatMessagePart[]): boolean {
-  return parts?.some((p) => p.type === 'tool_use') ?? false;
+  return parts?.some((p) => p.type === 'tool_use' || p.type === 'tool_separator') ?? false;
 }
 
 function partsToContentBlocks(parts: readonly ChatMessagePart[]): ToolContentBlock[] {
   const blocks: ToolContentBlock[] = [];
   for (const part of parts) {
-    if (part.type === 'text' && part.text != null) {
+    if (part.type === 'tool_separator') {
+      blocks.push(part);
+    } else if (part.type === 'text' && part.text != null) {
       blocks.push({
         type: 'text',
         text: part.text,
@@ -320,6 +322,15 @@ function AssistantContentWithTools({
   return (
     <>
       {grouped.map((item, i) => {
+        if (item.kind === 'separator') {
+          return (
+            <hr
+              key={`separator:${item.id ?? i}`}
+              className="niuu-chat-tool-separator"
+              aria-label="Hidden tool calls"
+            />
+          );
+        }
         if (item.kind === 'text') {
           if (!item.text.trim()) return null;
           const key = item.id

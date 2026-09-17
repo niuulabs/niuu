@@ -19,7 +19,7 @@ const parts = [
   {
     type: 'text',
     id: 'after',
-    text: 'Open the [image reference](https://images.example.test/reference.png?revision=2) and the [local image](./diagram.svg). Open the [review notes](/home/thor/review/docs/review.md) or the [missing file](./missing.md).\n\n![Diagram](./diagram.svg)',
+    text: 'See the [website](https://preview.example.test/site) and [remote guide](https://preview.example.test/docs/guide.md). Open the [image reference](https://images.example.test/reference.png?revision=2) and the [local image](./diagram.svg). Open the [review notes](/home/thor/review/docs/review.md) or the [missing file](./missing.md).\n\n![Diagram](./diagram.svg)',
     complete: true,
   },
   {
@@ -223,6 +223,7 @@ test('hierarchical tools preserve prose and file cards through visibility change
   await expect(page.getByTestId('tool-block')).toHaveCount(2);
   await expect(page.getByText('Review the implementation before continuing.')).toBeVisible();
   await page.getByRole('button', { name: 'Hide tool calls and results' }).click();
+  await expect(page.getByRole('separator', { name: 'Hidden tool calls' })).toHaveCount(1);
   await expect(page.getByTestId('tool-group-block')).toHaveCount(0);
   await expect(page.getByTestId('presented-file-card')).toBeVisible();
   await page.getByRole('button', { name: 'review notes' }).click();
@@ -417,7 +418,11 @@ test('document previews grow with the window, and image hyperlinks preview, pan,
   await page.keyboard.press('Escape');
   const link = page.getByRole('button', { name: 'image reference', exact: true });
   await link.hover();
-  await expect(page.locator('.niuu-image-link-thumbnail img')).toBeVisible();
+  await expect(
+    page.locator(
+      '.niuu-image-link-tooltip:not([data-state="closed"]) .niuu-image-link-thumbnail img',
+    ),
+  ).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('image-hover.png') });
   await link.click();
   await expect(dialog).toHaveAccessibleName('reference.png');
@@ -447,7 +452,11 @@ test('document previews grow with the window, and image hyperlinks preview, pan,
   await page.screenshot({ path: testInfo.outputPath('image-viewer.png') });
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'local image', exact: true }).focus();
-  await expect(page.locator('.niuu-image-link-thumbnail img')).toBeVisible();
+  await expect(
+    page.locator(
+      '.niuu-image-link-tooltip:not([data-state="closed"]) .niuu-image-link-thumbnail img',
+    ),
+  ).toBeVisible();
   await page.keyboard.press('Enter');
   await expect(dialog).toHaveAccessibleName('diagram.svg');
 });
@@ -514,4 +523,105 @@ test('touch users can reveal row actions while the state stays visible at rest',
   } finally {
     await context.close();
   }
+});
+
+test('keeps Markdown link previews in one viewport and reveals target tooltips', async ({
+  page,
+}, testInfo) => {
+  const mutations = await fixture(page);
+  await page.route('https://preview.example.test/**', (route) =>
+    route.fulfill({
+      contentType: route.request().url().endsWith('.md') ? 'text/markdown' : 'text/html',
+      headers: { 'access-control-allow-origin': '*' },
+      body: route.request().url().endsWith('.md')
+        ? '# Remote guide\n\n[Next page](../next)'
+        : '<h1>Embedded website</h1>',
+    }),
+  );
+  await page.goto('/volundr/sessions/review');
+  const website = page.getByRole('button', { name: 'website', exact: true });
+  await website.hover();
+  await expect(
+    page.getByRole('tooltip', { name: 'https://preview.example.test/site', exact: true }),
+  ).toBeVisible();
+  await website.click();
+  const panel = page.getByRole('dialog');
+  await expect(panel).toHaveClass(/forge-resource-dialog/);
+  await expect(
+    page
+      .frameLocator('iframe[title="Preview of site"]')
+      .getByRole('heading', { name: 'Embedded website' }),
+  ).toBeVisible();
+  const box = await panel.boundingBox();
+  expect(box!.width).toBeGreaterThan(1200);
+  expect(box!.height).toBeGreaterThan(780);
+  await expect(panel.getByRole('link', { name: 'Open in new tab' })).toHaveAttribute(
+    'href',
+    'https://preview.example.test/site',
+  );
+  expect(page.context().pages()).toHaveLength(1);
+  await page.keyboard.press('Escape');
+  await expect(website).toBeFocused();
+  await page.getByRole('button', { name: 'remote guide', exact: true }).click();
+  await expect(panel.getByRole('heading', { name: 'Remote guide', exact: true })).toBeVisible();
+  await panel.getByRole('button', { name: 'Next page' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(1);
+  await expect(panel.getByRole('link', { name: 'Open in new tab' })).toHaveAttribute(
+    'href',
+    'https://preview.example.test/next',
+  );
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Session workspace details' }).click();
+  await expect(
+    page.getByRole('dialog').getByText('/home/thor/review', { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Copy session ID' })).toBeVisible();
+  await expect(page.getByTestId('session-model')).toHaveText('GPT-6 Astra');
+  await expect(page.getByText('Hierarchical', { exact: true })).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath('workspace-popover.png') });
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button', { name: 'Session workspace details' })).toBeFocused();
+  expect(mutations).toEqual([]);
+});
+
+test('aligns sidebar controls and uses red stop and delete actions in both themes', async ({
+  page,
+}, testInfo) => {
+  const mutations = await fixture(page);
+  await page.goto('/volundr/sessions/review');
+  const sidebar = page.locator('.forge-session-list');
+  await expect(page.getByTestId('pod-entry-review')).toBeVisible();
+  for (const theme of ['xteo', 'ice']) {
+    await page.evaluate(
+      (value) => document.documentElement.setAttribute('data-theme', value),
+      theme,
+    );
+    const filters = await sidebar
+      .locator('.forge-session-filter-group')
+      .first()
+      .locator('button')
+      .evaluateAll((nodes) =>
+        nodes.map((node) => ({
+          x: node.getBoundingClientRect().x,
+          width: node.getBoundingClientRect().width,
+          y: node.getBoundingClientRect().y,
+          scrollWidth: node.scrollWidth,
+          clientWidth: node.clientWidth,
+        })),
+      );
+    expect(new Set(filters.map((box) => box.y)).size).toBe(1);
+    expect(
+      Math.max(...filters.map((box) => box.width)) - Math.min(...filters.map((box) => box.width)),
+    ).toBeLessThan(1);
+    const row = page.getByTestId('pod-entry-review').locator('..');
+    await row.hover();
+    const stop = page.getByTestId('pod-entry-review-stop');
+    const remove = page.getByTestId('pod-entry-review-delete');
+    await expect(stop).toHaveCSS('color', 'rgb(252, 165, 165)');
+    await expect(remove).toHaveCSS('color', 'rgb(252, 165, 165)');
+    await stop.hover();
+    await expect(stop).toHaveCSS('background-color', 'rgb(239, 68, 68)');
+    await page.screenshot({ path: testInfo.outputPath(`sidebar-${theme}.png`) });
+  }
+  expect(mutations).toEqual([]);
 });

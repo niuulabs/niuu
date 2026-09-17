@@ -50,7 +50,7 @@ describe('streaming Markdown block boundaries', () => {
     const table = container.querySelector('table');
     expect(table?.textContent).toContain('café東京');
     expect(container.querySelector('strong')?.textContent).toBe('Summary');
-    expect(container.querySelector('a')?.getAttribute('href')).toBe('https://example.invalid');
+    expect(container.querySelector('.niuu-chat-md-link')).toHaveTextContent('Guide');
     rerender(<MarkdownContent content={markdown} />);
     expect(container.querySelector('table')).toBe(table);
   });
