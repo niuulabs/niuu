@@ -1,5 +1,6 @@
 """Tests for Skuld Helm chart templates."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -9,6 +10,47 @@ import pytest
 import yaml
 
 CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "skuld"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+@pytest.mark.parametrize("chart", ["skuld", "skuld-planner"])
+@pytest.mark.parametrize("configured", [False, True])
+def test_mcp_connections_reach_runtime_configuration(chart, configured):
+    from skuld.config import SkuldSettings
+    from skuld.transports.mcp_config import build_claude_mcp_config, build_codex_mcp_overrides
+
+    servers = (
+        [
+            {
+                "name": "linear",
+                "type": "http",
+                "url": "https://mcp.linear.app/mcp/readonly",
+                "credential_file": "/run/secrets/mcp/test/token",
+                "credential_format": "oauth",
+                "auth_header": "Authorization",
+                "auth_prefix": "Bearer ",
+            },
+            {"name": "local", "type": "stdio", "command": "tools", "args": ["serve"]},
+        ]
+        if configured
+        else []
+    )
+    command = ["helm", "template", "mcp-test", str(CHART_DIR.parent / chart)]
+    if configured:
+        command.extend(["--set-json", "mcpServers=" + json.dumps(servers)])
+    documents = yaml.safe_load_all(subprocess.check_output(command))
+    config = next(
+        yaml.safe_load(doc["data"]["config.yaml"])
+        for doc in documents
+        if doc and doc.get("kind") == "ConfigMap" and "config.yaml" in doc.get("data", {})
+    )
+    settings = SkuldSettings(**config)
+    assert settings.mcp_servers == servers
+    if configured:
+        claude = json.loads(build_claude_mcp_config(settings.mcp_servers))
+        assert "--oauth" in claude["mcpServers"]["linear"]["headersHelper"]
+        codex = dict(build_codex_mcp_overrides(settings.mcp_servers))
+        assert "--oauth" in codex["mcp_servers.linear.http_headers_helper"]
 
 
 class TestChartMetadata:

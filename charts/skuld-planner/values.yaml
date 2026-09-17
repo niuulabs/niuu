@@ -28,6 +28,9 @@ session:
   # -- Initial user message sent when the CLI starts
   initialPrompt: ""
 
+# -- MCP server configurations supplied by session contributors. Use credential references, not tokens.
+mcpServers: []
+
 # Container image for the Skuld broker
 image:
   # -- Skuld broker image repository

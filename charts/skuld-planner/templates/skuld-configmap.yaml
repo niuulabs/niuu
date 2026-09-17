@@ -19,6 +19,7 @@ data:
       initial_prompt: {{ .Values.session.initialPrompt | quote }}
       {{- end }}
 
+    mcp_servers: {{ .Values.mcpServers | default list | toJson }}
     transport: {{ .Values.broker.transport | default "sdk" | quote }}
     skip_permissions: {{ .Values.broker.skipPermissions }}
     agent_teams: {{ .Values.broker.agentTeams | default false }}

@@ -49,6 +49,7 @@ data:
       initial_prompt: {{ .Values.session.initialPrompt | quote }}
       {{- end }}
 
+    mcp_servers: {{ .Values.mcpServers | default list | toJson }}
     transport: {{ .Values.broker.transport | default "sdk" | quote }}
     transport_adapter: {{ .Values.broker.transportAdapter | default "skuld.transports.sdk.SDKTransport" | quote }}
     cli_binary: {{ .Values.broker.cliBinary | default "claude" | quote }}
