@@ -147,7 +147,7 @@ test('onboarding offers MCP setup, loading feedback, errors and keyboard access'
   );
   await page.getByRole('button', { name: 'Discover authentication' }).click();
   await expect(page.getByRole('alert').filter({ hasText: 'Could not connect' })).toBeVisible();
-  await page.getByLabel('Authentication', { exact: true }).selectOption('token');
+  await page.getByRole('combobox', { name: 'Authentication', exact: true }).selectOption('token');
   await page.getByLabel('API token', { exact: true }).fill('test-token');
   await page.route('**/api/v1/integrations/oauth/mcp/connect', (route) =>
     route.fulfill({ json: { connection_id: 'linear' } }),

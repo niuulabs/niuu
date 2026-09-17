@@ -25,17 +25,15 @@ describe('MCP onboarding', () => {
       ]);
       return { connection_id: 'linear' };
     });
-    const test = vi
-      .spyOn(service, 'testIntegration')
-      .mockResolvedValue({
-        success: true,
-        provider: 'mcp',
-        workspace: null,
-        user: null,
-        error: null,
-        detail: 'Connected',
-        repositories: [],
-      });
+    const test = vi.spyOn(service, 'testIntegration').mockResolvedValue({
+      success: true,
+      provider: 'mcp',
+      workspace: null,
+      user: null,
+      error: null,
+      detail: 'Connected',
+      repositories: [],
+    });
     renderWithSetup(<MCPStep />, { service });
     expect(screen.getByRole('status')).toHaveTextContent('Loading MCP');
     await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());

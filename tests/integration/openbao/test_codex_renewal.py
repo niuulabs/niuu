@@ -363,6 +363,36 @@ async def test_mcp_resource_survives_engine_import_and_parallel_refresh(engine):
         assert state["calls"] == 2
         assert len({value["access_token"] for value in values}) == 1
         assert all("refresh_token" not in value for value in values)
+        # Reload the real plugin process and verify its persisted grant survives.
+        await store._request("post", "/v1/sys/plugins/reload/backend", json={"plugin": "oauthapp"})
+        recovered = await store.get_value("user", "alice", "mcp-tools")
+        assert recovered["access_token"] == values[0]["access_token"]
+        state["revoked"] = True
+        await asyncio.sleep(5)
+        from niuu.domain.oauth_credentials import OAuthCredentialUnavailableError
+
+        with pytest.raises(OAuthCredentialUnavailableError):
+            await store.get_value("user", "alice", "mcp-tools")
+        # Re-enrollment imports a fresh provider grant, never replays the revoked one.
+        state["revoked"] = False
+        state["refresh"] = "reconnected-refresh"
+        await store.store(
+            "user",
+            "alice",
+            "mcp-tools",
+            SecretType.OAUTH_TOKEN,
+            {"access_token": "new-grant", "refresh_token": "reconnected-refresh"},
+            {
+                "integration": "mcp",
+                "tenant_id": "tenant-a",
+                "oauth_app": "default",
+                "oauth_token_field": "access_token",
+                "mcp_resource": state["resource"],
+            },
+        )
+        reconnected = await store.get_value("user", "alice", "mcp-tools")
+        assert reconnected["access_token"] != recovered["access_token"]
+        assert "refresh_token" not in reconnected
     finally:
         await store.close()
 
