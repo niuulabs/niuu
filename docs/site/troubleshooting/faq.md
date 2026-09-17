@@ -1,14 +1,36 @@
 # Frequently asked questions
 
+## Is Niuu an operating system for agents?
+
+That is the direction: a distributed environment organized around goals, agents,
+capabilities, resources, memory, and policy. Today's platform supplies execution,
+coordination, collaboration, knowledge, and discovery services, alongside agent
+learning and capability evolution. A unified OS model across these services
+remains work ahead. See [the OS direction](../concepts/operating-system.md).
+
+## Does all work start in the web interface?
+
+No. People, agents, and external systems can initiate work through configured
+APIs and channels. Residents can respond to observations under ongoing mandates.
+The browser, CLI, and custom clients are ways into the same running system.
+
+## Can agents learn from one another?
+
+Agents can share knowledge and reusable capabilities across configured stores
+and communication paths. The agent runtime owns the judgment, verification, and adoption
+involved in learning. Access to shared memory does not automatically grant
+access to every agent's context or authority to install a tool. See
+[memory and knowledge](../concepts/memory-and-knowledge.md).
+
 ## Do I have to install every service?
 
-No. Start with the local host and one session. Add services for the capabilities
-you need. [Choose your next step](../get-started/path-from-small-to-autonomous.md)
+No. Use the services your work needs. The local host and one session are a
+small starting point; individual services can also be used independently. [Choose your next step](../get-started/path-from-small-to-autonomous.md)
 by the result you want, rather than following a mandatory platform ladder.
 
 ## Can agents use the same interfaces as humans?
 
-Yes. APIs and channels can be used by agents as well as people. Skuld adapts
+Yes. APIs and channels can be used by agents as well as people. The session gateway adapts
 runtime communication to those interfaces; shared Niuu libraries provide room
 and mesh mechanics. See [architecture](../concepts/platform-model.md).
 

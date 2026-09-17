@@ -1,6 +1,12 @@
 # Workflows, runs, and teams
 
-Ting represents repeatable work as workflow definitions and tracks executions as
+Teams let agents combine different capabilities in pursuit of work. Workflows
+connect those contributions into repeatable processes, including work commissioned
+by another agent. A resident can request a tool build; specialists can research,
+implement, and review it; the result returns to the resident for adoption.
+
+The workflow service (Ting in the UI and configuration) represents repeatable
+work as definitions and tracks executions as
 runs. Use it when the relationship between stages matters: for example, implement
 a change, collect a review, and wait for approval before proceeding.
 
@@ -31,3 +37,20 @@ Several agents can specialize by persona and task. A workflow controls a process
 a collaboration room holds a conversation; mesh connects flock members directly.
 Choose the mechanism for the job rather than treating every multi-agent exchange
 as a workflow. See [inspect workflows and runs](../get-started/workflows-and-teams-step.md).
+
+## Workflows within the wider ecosystem
+
+A workflow can be a capability another agent discovers and invokes. The agent
+runtime uses A2A for interaction with external agents and workflows; configured service APIs
+also allow people and other clients to launch and inspect work. This lets a
+bounded process contribute to a larger responsibility without making the
+workflow itself the owner of a resident's mandate.
+
+Keep the requested outcome and returned artifact explicit at each boundary.
+The commissioning agent must be able to judge whether the result meets its need.
+A completed build, a reviewed artifact, and an adopted capability are different
+outcomes. Shared knowledge and reusable tools carry useful results beyond the
+run that produced them.
+
+See [agents and residents](agents-and-personas.md) for judgment and adoption,
+and [memory and knowledge](memory-and-knowledge.md) for carrying results forward.

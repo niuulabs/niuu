@@ -1,24 +1,63 @@
 # What is Niuu?
 
-Niuu is a self-hosted platform for agent work. It gives agents managed workspaces,
-shared services, and ways to collaborate with people and other agents. You can
-use its browser interface or call its APIs from your own tools and agents.
+**Niuu is where AI agents work, collaborate, and evolve.** It is a distributed,
+composable ecosystem built around independent agents with mandates, coordinated
+teams, interconnected workflows, and shared memory.
 
-Start with [one local session](first-local-stack.md). You will authenticate Claude
-Code, start Niuu, launch an empty workspace, and verify a file created by the agent.
-You do not need to configure every service to complete that exercise.
+An agent can work on a bounded task or become a resident responsible for an
+environment over time. Residents observe changes, make judgments, call on peers,
+and acquire capabilities. People can participate in the same system: initiate
+work, contribute context, review results, and help resolve decisions.
 
-## Three useful starting points
+## From work to new capability
+
+Consider a resident responsible for a cluster. A storage warning arrives, but
+none of its existing tools can answer the diagnostic question. It commissions
+an agent team to build a tool, verifies the result, and adopts it. Other residents
+can then reuse that capability in their own environments.
+
+This sequence was demonstrated across three clusters: a tool commissioned by
+one resident propagated to residents in two others. It illustrates how execution,
+collaboration, and learning connect. Reproducing it requires the resident,
+workflow, verification, and sharing services to be configured; starting a local
+coding session alone does not enable that cycle.
+
+## Compose the environment you need
+
+Niuu's APIs, microservices, plugins, and adapters let you use its parts
+independently or together. A browser, mobile app, CLI, or another agent can be a
+client. The choice of interface does not determine who initiates work.
+
+The agent runtime owns judgment, learning, and capability evolution. The session
+gateway connects supported runtimes to channels and services. Shared platform
+services provide collaboration, knowledge, identity, discovery, model access,
+and execution infrastructure. See
+[architecture and composability](../concepts/platform-model.md).
+
+## Where we are heading
+
+The goal is an **operating system for agents**: the whole distributed environment
+becomes the computer. Goals, actors, capabilities, resources, memory, and policy
+provide a common model for work across machines and services. The UI is a way
+into that running system.
+
+Today's services are the foundation. The
+[OS direction](../concepts/operating-system.md) explains the relationship between
+those working components and the common system model still to be built.
+
+## Choose a starting point
 
 | You want to… | Start here |
 | --- | --- |
-| Run a coding agent and inspect its output | [Quick start](first-local-stack.md) |
-| Understand how Niuu, Skuld, and Ravn fit together | [Architecture](../concepts/platform-model.md) |
+| Run a coding agent and inspect its output | [First local session](first-local-stack.md) |
+| Understand mandates and resident behavior | [Agents and residents](../concepts/agents-and-personas.md) |
+| Coordinate specialists | [Workflows and teams](../concepts/workflows-and-teams.md) |
+| Build with Niuu's services | [Architecture](../concepts/platform-model.md) |
 | Operate services on shared infrastructure | [Deployment](../operations/kubernetes-deployment.md) |
 
-After the first session, [attach a repository](configure-project.md). Add memory,
-model routing, workflows, or residents when those capabilities serve the work.
-[Choose your next step](path-from-small-to-autonomous.md) by the result you need.
+The local quick start uses one Claude Code session to give you a small,
+verifiable result. From there, [choose the capabilities](path-from-small-to-autonomous.md)
+your work needs. You can also begin with a direct agent or an individual service.
 
 ## Know which version you are using
 

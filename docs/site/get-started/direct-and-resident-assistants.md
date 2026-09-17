@@ -1,8 +1,12 @@
 # Run Ravn directly and understand residents
 
 Ravn can run independently of Forge. A direct conversation is the smallest way
-to use it; a resident adds a purpose, environment, persistent state, and autonomous
-behavior. You need the `ravn` executable and a working model-provider configuration.
+to use it; a resident adds an ongoing mandate, environment, persistent state,
+and autonomous behavior. Within its authority, it can investigate changes,
+commission work, and acquire capabilities that other agents can reuse. See
+[agents and residents](../concepts/agents-and-personas.md) for that model.
+
+You need the `ravn` executable and a working model-provider configuration.
 
 ## Prepare a direct configuration
 

@@ -1,8 +1,8 @@
 # Models and routing
 
 A runtime is the software executing an agent. A model is the inference service
-it calls. Bifröst provides a shared model catalog and gateway for clients
-configured to use it.
+it calls. The model gateway (Bifröst in the UI and configuration) provides a
+shared catalog and inference routing for clients configured to use it.
 
 ## Catalog, provider, and alias
 
@@ -16,7 +16,7 @@ that will use it. The runtime must also support that model's API and behavior.
 
 ## What goes through the gateway
 
-Only clients configured to call Bifröst send inference traffic through it.
+Only clients configured to call the gateway send inference traffic through it.
 Launching Claude Code with its ordinary subscription login does not automatically
 route that subscription through Bifröst. A model selector in the UI is not proof
 that the gateway handled a request.

@@ -1,5 +1,5 @@
 site_name: Niuu
-site_description: A composable platform for agent runtimes, collaborative workflows, shared knowledge, and autonomous residents
+site_description: A distributed, composable ecosystem where AI agents work, collaborate, and evolve. Building toward an operating system for agents.
 site_url: https://docs.niuu.cloud/
 repo_url: https://github.com/niuulabs/niuu
 repo_name: niuulabs/niuu
@@ -58,6 +58,7 @@ nav:
       - Discovery and topology: get-started/shared-discovery-and-topology.md
   - Understand Niuu:
       - Architecture and composability: concepts/platform-model.md
+      - Toward an operating system: concepts/operating-system.md
       - Sessions and workspaces: concepts/sessions-and-workspaces.md
       - Agents, personas, and residents: concepts/agents-and-personas.md
       - Workflows and teams: concepts/workflows-and-teams.md
