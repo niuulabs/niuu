@@ -776,3 +776,48 @@ test('an enabled Terminal tab explains unsupported hosts without trying to spawn
   await expect(page.getByText('Terminal unavailable', { exact: true })).toBeVisible();
   expect(mutations).toEqual([]);
 });
+
+test('centers top-level navigation and keeps compact account controls clear at every width', async ({
+  page,
+}, testInfo) => {
+  await fixture(page);
+  await page.goto('/volundr/sessions/review');
+  const header = page.locator('.niuu-shell__topbar');
+  const tabs = page.locator('.niuu-shell__tabs');
+  const account = header.getByRole('button', { name: 'Disconnect', exact: true });
+  await expect(account).toHaveText('');
+  await expect(page.getByText('Private connection', { exact: true })).toHaveCount(0);
+  await expect(
+    header.getByRole('combobox', { name: 'Color theme' }).locator('option:checked'),
+  ).toHaveText('blue');
+  await account.hover();
+  await expect(page.getByRole('tooltip', { name: 'Disconnect', exact: true })).toBeVisible();
+  await page.mouse.move(0, 0);
+  await account.focus();
+  await expect(page.getByRole('tooltip', { name: 'Disconnect', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  for (const width of [1440, 1024, 820, 761, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    const headerBox = (await header.boundingBox())!;
+    const tabsBox = (await tabs.boundingBox())!;
+    const controlsBox = (await page.locator('.niuu-shell__topbar-right').boundingBox())!;
+    const titleBox = (await page.locator('.niuu-shell__topbar-title').boundingBox())!;
+    expect(
+      Math.abs(tabsBox.x + tabsBox.width / 2 - (headerBox.x + headerBox.width / 2)),
+    ).toBeLessThan(1);
+    expect(controlsBox.x + controlsBox.width).toBeLessThanOrEqual(width);
+    expect(titleBox.x + titleBox.width).toBeLessThanOrEqual(controlsBox.x);
+    if (width > 760) {
+      expect(titleBox.x + titleBox.width).toBeLessThanOrEqual(tabsBox.x + 1);
+      expect(tabsBox.x + tabsBox.width).toBeLessThanOrEqual(controlsBox.x);
+    } else {
+      expect(tabsBox.y).toBeGreaterThanOrEqual(controlsBox.y + controlsBox.height);
+    }
+    await expect(account).toBeVisible();
+    if (width === 1440 || width === 390)
+      await page.screenshot({
+        path: testInfo.outputPath(`centered-header-${width}.png`),
+        animations: 'disabled',
+      });
+  }
+});

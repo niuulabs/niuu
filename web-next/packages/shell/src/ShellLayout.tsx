@@ -157,53 +157,51 @@ export function ShellLayout() {
         </aside>
 
         <header className="niuu-shell__topbar">
-          <div className="niuu-shell__topbar-left">
-            <div className="niuu-shell__topbar-title">
-              {active && (
-                <>
-                  <span className="niuu-shell__rune-mark">{active.rune}</span>
-                  <h1>{active.title}</h1>
-                  {active.subtitle && (
-                    <span className="niuu-shell__topbar-subtitle">{active.subtitle}</span>
-                  )}
-                </>
-              )}
-            </div>
-            {active?.tabs && (
-              <div className="niuu-shell__tabs">
-                {active.tabs.map((t) => {
-                  const tabPath = t.path ?? `/${active.id}/${t.id}`;
-                  const isActive =
-                    active.activeTab != null
-                      ? active.activeTab === t.id
-                      : tabPath === `/${active.id}`
-                        ? pathname === tabPath
-                        : pathname === tabPath || pathname.startsWith(tabPath + '/');
-                  return (
-                    <button
-                      key={t.id}
-                      type="button"
-                      className={clsx('niuu-shell__tab', isActive && 'niuu-shell__tab--active')}
-                      data-testid={`${active.id}-tab-${t.id}`}
-                      onClick={() => {
-                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                        router.navigate({ to: tabPath as any });
-                        active.onTab?.(t.id);
-                      }}
-                    >
-                      {t.rune && <span className="niuu-shell__tab-rune">{t.rune}</span>}
-                      {t.label}
-                      {t.count != null && t.count > 0 && (
-                        <span className="niuu-shell__tab-count" data-testid={`tab-count-${t.id}`}>
-                          {t.count}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
+          <div className="niuu-shell__topbar-title">
+            {active && (
+              <>
+                <span className="niuu-shell__rune-mark">{active.rune}</span>
+                <h1>{active.title}</h1>
+                {active.subtitle && (
+                  <span className="niuu-shell__topbar-subtitle">{active.subtitle}</span>
+                )}
+              </>
             )}
           </div>
+          {active?.tabs && (
+            <div className="niuu-shell__tabs">
+              {active.tabs.map((t) => {
+                const tabPath = t.path ?? `/${active.id}/${t.id}`;
+                const isActive =
+                  active.activeTab != null
+                    ? active.activeTab === t.id
+                    : tabPath === `/${active.id}`
+                      ? pathname === tabPath
+                      : pathname === tabPath || pathname.startsWith(tabPath + '/');
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className={clsx('niuu-shell__tab', isActive && 'niuu-shell__tab--active')}
+                    data-testid={`${active.id}-tab-${t.id}`}
+                    onClick={() => {
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                      router.navigate({ to: tabPath as any });
+                      active.onTab?.(t.id);
+                    }}
+                  >
+                    {t.rune && <span className="niuu-shell__tab-rune">{t.rune}</span>}
+                    {t.label}
+                    {t.count != null && t.count > 0 && (
+                      <span className="niuu-shell__tab-count" data-testid={`tab-count-${t.id}`}>
+                        {t.count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <div className="niuu-shell__topbar-right">
             <PluginSlot render={active?.topbarRight ?? null} ctx={ctx} />
             <select
@@ -212,7 +210,7 @@ export function ShellLayout() {
               value={theme}
               onChange={(event) => setTheme(event.target.value as ThemeName)}
             >
-              <option value="xteo">xTeo blue</option>
+              <option value="xteo">blue</option>
               <option value="ice">Native dark</option>
               <option value="amber">Amber</option>
               <option value="spring">Spring</option>
