@@ -41,8 +41,8 @@ export function MCPConnectionForm({
   const [clientSecret, setClientSecret] = useState('');
   const [method, setMethod] = useState('none');
   const [token, setToken] = useState('');
-  const [header, setHeader] = useState('Authorization');
-  const [prefix, setPrefix] = useState('Bearer ');
+  const [header, setHeader] = useState(String(initial?.config.auth_header ?? 'Authorization'));
+  const [prefix, setPrefix] = useState(String(initial?.config.auth_prefix ?? 'Bearer '));
   const [metadata, setMetadata] = useState<MCPDiscovery | null>(null);
   const [authorizationUrl, setAuthorizationUrl] = useState('');
   const [pendingId, setPendingId] = useState('');
@@ -118,6 +118,12 @@ export function MCPConnectionForm({
             setConnectionId(event.target.value);
             setServerUrl(String(selected?.config.mcp_url ?? ''));
             setName(String(selected?.config.name ?? ''));
+            setHeader(String(selected?.config.auth_header ?? 'Authorization'));
+            setPrefix(String(selected?.config.auth_prefix ?? 'Bearer '));
+            setToken('');
+            setClientId('');
+            setClientSecret('');
+            setMethod('none');
             setMetadata(null);
             setAuthorizationUrl('');
             setConnected(false);

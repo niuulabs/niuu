@@ -88,3 +88,42 @@ describe('MCPConnectionForm', () => {
     );
   });
 });
+
+it('preserves custom authentication headers when reconnecting an MCP', async () => {
+  const connect = vi.fn().mockResolvedValue({ connection_id: 'custom' });
+  render(
+    <MCPConnectionForm
+      connections={[
+        {
+          id: 'custom',
+          config: {
+            name: 'Custom',
+            mcp_url: metadata.resource,
+            auth_header: 'X-API-Key',
+            auth_prefix: '',
+          },
+        },
+      ]}
+      initialConnectionId="custom"
+      discover={vi.fn()}
+      connect={connect}
+      onConnected={vi.fn()}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText('Authentication'), { target: { value: 'token' } });
+  fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'replacement' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Connect MCP server' }));
+  await waitFor(() =>
+    expect(connect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connection_id: 'custom',
+        auth_header: 'X-API-Key',
+        auth_prefix: '',
+        api_token: 'replacement',
+      }),
+    ),
+  );
+  fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'unsaved-secret' } });
+  fireEvent.change(screen.getByLabelText('Connection'), { target: { value: '' } });
+  expect(screen.getByLabelText('API token')).toHaveValue('');
+});
