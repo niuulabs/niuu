@@ -394,9 +394,9 @@ def create_mcp_oauth_router(
         return HTMLResponse(
             "<!doctype html><title>MCP connected</title>"
             "<p>MCP connected. You can close this window and return to Niuu.</p>"
-            "<script>try { localStorage.setItem(\"niuu:mcp-connected\", "
+            '<script>try { localStorage.setItem("niuu:mcp-connected", '
             + json.dumps(connection.id)
-            + "); localStorage.removeItem(\"niuu:mcp-connected\"); } catch {} </script>"
+            + '); localStorage.removeItem("niuu:mcp-connected"); } catch {} </script>'
         )
 
     return router
