@@ -215,6 +215,15 @@ test('hierarchical tools preserve prose and file cards through visibility change
   await fixture(page);
   await page.goto('/volundr/sessions/review');
   await expect(page.getByRole('button', { name: 'Hide tool calls and results' })).toBeVisible();
+  const messageActions = page
+    .getByTestId('assistant-message')
+    .first()
+    .locator('.niuu-chat-action-bar');
+  await expect(messageActions.getByRole('button')).toHaveCount(1);
+  await expect(messageActions.getByRole('button')).toHaveAttribute('title', 'Copy');
+  await expect(
+    page.getByTitle(/^(Regenerate|Helpful|Not helpful|Bookmark|Remove bookmark)$/),
+  ).toHaveCount(0);
   const group = page.getByRole('button', { name: /Expand 2 tool calls/ });
   await expect(group).toBeVisible();
   await expect(page.getByTestId('tool-block')).toHaveCount(0);

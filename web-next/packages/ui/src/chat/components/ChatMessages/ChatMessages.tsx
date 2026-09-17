@@ -5,8 +5,6 @@ import {
   Copy,
   Check,
   RefreshCw,
-  ThumbsUp,
-  ThumbsDown,
   ChevronRight,
   ChevronDown,
   Loader2,
@@ -157,7 +155,6 @@ export function AssistantMessage({
   showTokenUsage = false,
 }: AssistantMessageProps) {
   const [copied, handleCopyClick] = useCopyFeedback(message.content);
-  const [thumbState, setThumbState] = useState<'up' | 'down' | null>(null);
   const [reasoningOpen, setReasoningOpen] = useState(false);
 
   const reasoningParts = (message.parts?.filter((p) => p.type === 'reasoning') ?? []) as Array<{
@@ -265,34 +262,16 @@ export function AssistantMessage({
               <RefreshCw className="niuu-chat-action-icon" />
             </button>
           )}
-          <div className="niuu-chat-action-divider" />
-          <button
-            type="button"
-            className="niuu-chat-action-btn"
-            data-active={thumbState === 'up'}
-            onClick={() => setThumbState((prev) => (prev === 'up' ? null : 'up'))}
-            title="Helpful"
-          >
-            <ThumbsUp className="niuu-chat-action-icon" />
-          </button>
-          <button
-            type="button"
-            className="niuu-chat-action-btn"
-            data-active={thumbState === 'down'}
-            onClick={() => setThumbState((prev) => (prev === 'down' ? null : 'down'))}
-            title="Not helpful"
-          >
-            <ThumbsDown className="niuu-chat-action-icon" />
-          </button>
-          <div className="niuu-chat-action-divider" />
-          <button
-            type="button"
-            className={cn('niuu-chat-action-btn', bookmarked && 'niuu-chat-action-btn--active')}
-            onClick={() => onBookmark?.(message.id, !bookmarked)}
-            title={bookmarked ? 'Remove bookmark' : 'Bookmark'}
-          >
-            <Bookmark className="niuu-chat-action-icon" />
-          </button>
+          {onBookmark && (
+            <button
+              type="button"
+              className={cn('niuu-chat-action-btn', bookmarked && 'niuu-chat-action-btn--active')}
+              onClick={() => onBookmark(message.id, !bookmarked)}
+              title={bookmarked ? 'Remove bookmark' : 'Bookmark'}
+            >
+              <Bookmark className="niuu-chat-action-icon" />
+            </button>
+          )}
         </div>
       </div>
     </div>

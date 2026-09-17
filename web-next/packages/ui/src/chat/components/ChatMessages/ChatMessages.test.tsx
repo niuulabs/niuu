@@ -87,6 +87,11 @@ describe('AssistantMessage', () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('Hello user');
   });
 
+  it('only shows Copy when message actions have no integration handlers', () => {
+    render(<AssistantMessage message={assistantMsg} />);
+    expect(screen.getAllByRole('button').map((button) => button.title)).toEqual(['Copy']);
+  });
+
   it('calls onRegenerate with message id', () => {
     const onRegenerate = vi.fn();
     render(<AssistantMessage message={assistantMsg} onRegenerate={onRegenerate} />);

@@ -689,45 +689,6 @@ export function SessionChat({
     [onCopy],
   );
 
-  const handleRegenerate = useCallback(
-    (messageId: string) => {
-      if (onRegenerate) {
-        onRegenerate(messageId);
-        return;
-      }
-      const idx = messages.findIndex((m) => m.id === messageId);
-      if (idx < 0) return;
-      for (let i = idx - 1; i >= 0; i--) {
-        const m = messages[i];
-        if (m && m.role === 'user') {
-          onSend(m.content, []);
-          return;
-        }
-      }
-    },
-    [messages, onRegenerate, onSend],
-  );
-
-  const handleBookmark = useCallback(
-    (id: string, bookmarked: boolean) => {
-      if (onBookmark) {
-        onBookmark(id, bookmarked);
-        return;
-      }
-      const key = `bookmark:${id}`;
-      try {
-        if (bookmarked) {
-          localStorage.setItem(key, '1');
-        } else {
-          localStorage.removeItem(key);
-        }
-      } catch {
-        // localStorage may not be available
-      }
-    },
-    [onBookmark],
-  );
-
   const hasSidebar = Array.from(participants.values()).some(
     (participant) => participant.participantType === 'ravn',
   );
@@ -949,8 +910,8 @@ export function SessionChat({
                         selectedAgentId={selectedAgentId}
                         onShowDetail={msg.participant ? handleShowDetail : undefined}
                         onCopy={handleCopy}
-                        onRegenerate={handleRegenerate}
-                        onBookmark={handleBookmark}
+                        onRegenerate={onRegenerate}
+                        onBookmark={onBookmark}
                         bookmarked={(() => {
                           try {
                             return localStorage.getItem(`bookmark:${msg.id}`) === '1';
@@ -981,8 +942,8 @@ export function SessionChat({
                     message={msg}
                     showTokenUsage={showTokenUsage}
                     onCopy={handleCopy}
-                    onRegenerate={handleRegenerate}
-                    onBookmark={handleBookmark}
+                    onRegenerate={onRegenerate}
+                    onBookmark={onBookmark}
                     bookmarked={(() => {
                       try {
                         return localStorage.getItem(`bookmark:${msg.id}`) === '1';
