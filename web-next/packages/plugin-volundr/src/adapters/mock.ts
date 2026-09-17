@@ -1150,6 +1150,25 @@ export function createMockVolundrService(): IVolundrService {
     getStats: async () => ({ ...SEED_STATS }),
 
     getRepos: async () => [...SEED_REPOS],
+    getForgeHosts: async () => [
+      {
+        id: 'mock-volundr-default',
+        slug: 'mock-volundr-default',
+        name: 'Mock Volundr',
+        baseUrl: 'http://127.0.0.1:8181',
+        enabled: true,
+        isDefault: true,
+        tags: [],
+        config: { defaultFolder: '/workspace' },
+      },
+    ],
+    saveForgeHost: async (host) => ({
+      ...host,
+      id: host.id ?? 'mock-host',
+      isDefault: false,
+      tags: [],
+    }),
+    testForgeHost: async () => ({ ok: true, message: 'Mock connection is reachable' }),
     getTargets: async () => [
       {
         id: 'mock-volundr-default',

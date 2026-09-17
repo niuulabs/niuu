@@ -26,6 +26,9 @@ describe('buildBifrostHttpAdapter', () => {
               cost_per_million_tokens: 10,
               vram_required: '40Gi',
               session_definition: 'skuldCodex',
+              effort_levels: ['high', 'xhigh', 'ultra'],
+              default_effort: 'xhigh',
+              effort_note: 'Catalog effort metadata',
               supports_tools: true,
               supports_thinking: true,
               enabled: true,
@@ -114,6 +117,11 @@ describe('buildBifrostHttpAdapter', () => {
     const adapter = buildBifrostHttpAdapter(client);
     const models = await adapter.listModels();
     const catalog = await adapter.getModelCatalog();
+    expect(catalog['gpt-5.5']).toMatchObject({
+      effortLevels: ['high', 'xhigh', 'ultra'],
+      defaultEffort: 'xhigh',
+      effortNote: 'Catalog effort metadata',
+    });
     const aliases = await adapter.listAliases();
     const providers = await adapter.listProviders();
     const usage = await adapter.getUsage(25);

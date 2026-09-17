@@ -1,0 +1,193 @@
+.vol-quick {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  color: var(--color-text-primary);
+  min-width: 0;
+}
+.vol-quick-page {
+  max-width: 940px;
+  margin: 0 auto;
+  padding: 22px;
+}
+.vol-quick h1 {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  margin: 0;
+}
+.vol-quick h2 {
+  font-size: 15px;
+  font-weight: 650;
+  margin: 0;
+}
+.vol-quick p {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 6px 0 0;
+}
+.vol-quick__standards,
+.vol-quick__row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.vol-quick__standard {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border: 1px solid var(--color-border-subtle);
+  border-left: 3px solid transparent;
+  border-radius: 9px;
+  background: var(--color-bg-secondary);
+  padding: 18px;
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+.vol-quick__standard strong {
+  font-size: 18px;
+  font-weight: 700;
+}
+.vol-quick__standard span {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.vol-quick__standard[aria-pressed='true'] {
+  border-left-color: var(--color-brand);
+  background: var(--color-bg-tertiary);
+}
+.vol-quick__section {
+  padding: 16px;
+  border: 1px solid var(--color-border-quiet, var(--color-border-subtle));
+  border-radius: 10px;
+  background: var(--color-panel-quiet, var(--color-bg-secondary));
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.vol-quick label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 0;
+}
+.vol-quick input,
+.vol-quick select,
+.vol-quick textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  color: var(--color-text-primary);
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 400;
+}
+.vol-quick input:focus-visible,
+.vol-quick select:focus-visible,
+.vol-quick textarea:focus-visible,
+.vol-quick button:focus-visible,
+.vol-quick a:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 3px;
+}
+.vol-quick__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.vol-quick button.vol-quick__button,
+.vol-quick__link {
+  min-height: 40px;
+  padding: 9px 14px;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.vol-quick button.vol-quick__primary {
+  background: var(--color-brand);
+  color: var(--color-bg-primary);
+  border-color: var(--color-brand);
+}
+.vol-quick button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.vol-quick small {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+.vol-quick [role='alert'] {
+  color: var(--color-danger);
+  font-size: 13px;
+}
+.vol-quick summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 8px 0;
+}
+.vol-quick details[open] > summary {
+  margin-bottom: 12px;
+}
+.vol-quick__host {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.vol-quick__host code {
+  display: block;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+.vol-quick__modal {
+  width: min(740px, calc(100vw - 24px));
+  max-width: 740px;
+}
+@media (max-width: 540px) {
+  .vol-quick-page {
+    padding: 18px 12px;
+  }
+  .vol-quick__row {
+    grid-template-columns: 1fr;
+  }
+  .vol-quick__standard {
+    padding: 14px 12px;
+  }
+  .vol-quick__standard strong {
+    font-size: 16px;
+  }
+  .vol-quick__section {
+    padding: 15px;
+  }
+  .vol-quick {
+    gap: 16px;
+  }
+}
+
+.vol-quick__actions--launch {
+  position: sticky;
+  bottom: 0;
+  padding: 12px 0;
+  background: var(--color-bg-primary);
+  z-index: 1;
+}

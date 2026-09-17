@@ -1,7 +1,7 @@
 import { render, type RenderResult } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
-import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
+import { type IBifrostService, createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import {
   createMockVolundrService,
   createMockClusterAdapter,
@@ -13,6 +13,7 @@ import type { ISessionStore } from '../ports/ISessionStore';
 
 export interface RenderWithVolundrOptions {
   service?: IVolundrService;
+  bifrost?: IBifrostService;
   clusterAdapter?: IClusterAdapter;
   sessionStore?: ISessionStore;
 }
@@ -23,6 +24,7 @@ export function renderWithVolundr(
 ): RenderResult {
   const {
     service = createMockVolundrService(),
+    bifrost = createMockBifrostService(),
     clusterAdapter = createMockClusterAdapter(),
     sessionStore = createMockSessionStore(),
   } = options;
@@ -49,7 +51,7 @@ export function renderWithVolundr(
       <ServicesProvider
         services={{
           'niuu.repos': repoCatalog,
-          bifrost: createMockBifrostService(),
+          bifrost,
           volundr: service,
           'volundr.clusters': clusterAdapter,
           'volundr.sessions': sessionStore,

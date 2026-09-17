@@ -21,6 +21,9 @@ interface RawModel {
   cost_per_million_tokens?: number | null;
   vram_required?: string | null;
   session_definition?: string | null;
+  effort_levels?: string[];
+  default_effort?: string;
+  effort_note?: string;
   supports_tools?: boolean;
   supports_thinking?: boolean;
   enabled?: boolean;
@@ -149,6 +152,9 @@ function toModel(raw: RawModel): BifrostModel {
     cost: raw.cost_per_million_tokens ?? undefined,
     vram: raw.vram_required ?? undefined,
     sessionDefinition: raw.session_definition ?? undefined,
+    effortLevels: raw.effort_levels,
+    defaultEffort: raw.default_effort,
+    effortNote: raw.effort_note,
     supportsTools: raw.supports_tools ?? true,
     supportsThinking: raw.supports_thinking ?? true,
     enabled: raw.enabled ?? true,

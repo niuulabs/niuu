@@ -174,7 +174,9 @@ describe('SessionsPage', () => {
     wrap();
     await waitFor(() => expect(screen.getByTestId('pod-launch-button')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('pod-launch-button'));
-    await waitFor(() => expect(screen.getByText('Launch pod')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('dialog', { name: 'Quick launch' })).toBeInTheDocument(),
+    );
   });
 
   it('renders ACTIVE group with running sessions', async () => {

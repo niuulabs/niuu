@@ -8,6 +8,7 @@ describe('volundrPlugin', () => {
       { id: 'forge', label: 'Forge', path: '/volundr/forge' },
       { id: 'sessions', label: 'Sessions', path: '/volundr/sessions' },
       { id: 'catalog', label: 'Catalog', path: '/volundr/catalog' },
+      { id: 'hosts', label: 'Forge Hosts', path: '/volundr/hosts' },
     ]);
   });
 

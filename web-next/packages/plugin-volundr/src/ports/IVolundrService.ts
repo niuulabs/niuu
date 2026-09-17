@@ -43,6 +43,8 @@ import type {
   SessionSource,
   SessionDefinition,
   VolundrTarget,
+  ForgeHostInput,
+  ForgeHostTest,
   AdminSettings,
   AdminStorageSettings,
   FeatureModule,
@@ -113,6 +115,9 @@ export interface IVolundrService {
   getStats(): Promise<VolundrStats>;
   getRepos(): Promise<VolundrRepo[]>;
   getTargets(): Promise<VolundrTarget[]>;
+  getForgeHosts(): Promise<VolundrTarget[]>;
+  saveForgeHost(host: ForgeHostInput): Promise<VolundrTarget>;
+  testForgeHost(id: string): Promise<ForgeHostTest>;
 
   /** Subscribe to live session updates via SSE. Returns an unsubscribe function. */
   subscribe(callback: (sessions: VolundrSession[]) => void): () => void;

@@ -5,6 +5,7 @@ import { VolundrPage } from './ui/VolundrPage';
 import { SessionsPage } from './ui/SessionsPage';
 import { VolundrSessionRoute, VolundrArchivedRoute } from './ui/routes';
 import { LaunchCatalogPage } from './ui/LaunchCatalogPage';
+import { ForgeHostsPage } from './ui/ForgeHostsPage';
 import { HistoryPage } from './ui/HistoryPage';
 
 export const volundrPlugin = definePlugin({
@@ -16,8 +17,14 @@ export const volundrPlugin = definePlugin({
     { id: 'forge', label: 'Forge', path: '/volundr/forge' },
     { id: 'sessions', label: 'Sessions', path: '/volundr/sessions' },
     { id: 'catalog', label: 'Catalog', path: '/volundr/catalog' },
+    { id: 'hosts', label: 'Forge Hosts', path: '/volundr/hosts' },
   ],
   routes: (rootRoute) => [
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/volundr/hosts',
+      component: ForgeHostsPage,
+    }),
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/volundr',

@@ -261,3 +261,82 @@ pass; the five theme/preview/layout checks also pass after the final phone CSS
 correction. Production build, type checks and lint pass. The xTeo foreground ramp
 is at least 5.04:1 against all five primary/secondary/tertiary/elevated/sent
 surfaces; white on the deep-blue action fill is 5.17:1.
+
+## Quick launch and Forge connections — 2026-09-17
+
+Reviewed Lexi iOS `NewForgeSessionView.swift`, `ForgeEffortProfile.swift`,
+`ForgeHostStore.swift`, `ForgeSettingsView.swift`, and ForgeKit's registry loaders.
+The iOS creation contract uses a selected host, explicit session definition/model,
+`source.local_path` plus a `/workspace` mount, and `workload_config.reasoningEffort`.
+Its working folder is host-specific, effort prefers `xhigh`, and models are curated.
+
+Implemented in the web UI:
+
+- [x] Catalogue and dashboard expose exactly two quick-launch standards: Claude
+  (`skuldClaudeInteractive`, interactive tmux) and Codex (`skuldCodex`, Skuld CLI).
+- [x] Defaults: `claude-fable-5-1` and `gpt-6-astra`. Explicit alternatives are
+  `claude-opus-5` and `gpt-5.6-sol`; availability comes from the connected Niuu
+  Bifrost catalogue, not an invented model list. Opus 5 is currently unadvertised
+  on all four hosts, so its option is disabled rather than replaced with Opus 4.8.
+- [x] Preserve Bifrost effort metadata, including an explicitly empty list; remember
+  effort per model in this browser. Prefer Extra High, then the advertised default.
+- [x] Direct create, without a review/confirmation step or saved-preset mutation.
+  CPU/memory/GPU, credentials, MCP and rules are optional and omitted in quick launch.
+- [x] Local mount by default. Absolute working folder, remembered separately per host;
+  configured folder used for a host without a remembered folder. Explicit Git mode
+  retains repository and branch selection. Name and initial prompt are optional.
+- [x] Advanced launch and custom catalogue preserve the existing full editor,
+  tracker issue selection, resource controls, integrations and saved launch specs.
+- [x] `Forge Hosts` tab (`/volundr/hosts`) lists connection names, actual origins,
+  default folders and availability. Add/edit/test use the existing shared registry.
+  A successful save refreshes the picker; failures remain visible in the form.
+- [x] Tests cover create payloads, resource omission, effort controls, unavailable
+  models, per-host folders, duplicate submission, Git mode, failed create, registry
+  CRUD/probes, preserving embedded transport, advanced access, and iPhone width.
+
+### Where configuration lives
+
+The web app calls `/api/v1/niuu/instances?kind=volundr`. This shared server registry
+is also used by Guild and the `/api/v1/forge` session facade; it is not a separate
+browser list. Creation sends the selected registry UUID as `instance_id`.
+`config.defaultFolder` belongs to each registry host. Browser preferences under
+`niuu.forge.launch.*` hold the last selected host, successful folder, and effort.
+Changing the selected Forge does not change the web frontend's own server URL.
+
+Lexi iOS has the same four bundled hosts in
+`apps/chat/LexiChat/V2/Model/ForgeHostStore.swift`. Device-owned overrides are in
+UserDefaults (`lexichat.forge.hosts.v1`); this Linux workspace cannot read a phone's
+private overrides or Keychain. The matching addresses were resolved and each
+host's health and model catalogue checked directly:
+
+| Label | Forge origin | Initial working folder |
+| --- | --- | --- |
+| Thor | `http://100.66.123.128:8080` | `/home/thor/repos/niuu` |
+| Spark | `http://100.127.141.74:8080` | `/home/xteo/repos` |
+| Build | `http://100.81.183.4:8080` | `/home/horde` |
+| Build Bro | `http://100.115.8.110:8080` | `/home/horde` |
+
+Thor retains its existing registry UUID, slug `local`, default status, and
+`config.transport=embedded` to avoid routing the local aggregate into itself.
+The four connections are owned by the existing local `dev-user`, allowing the
+normal browser identity to edit them. Its visible origin is an ordinary IP URL. The web frontend's `/api` and local
+session proxy still point to `127.0.0.1:8080` on Thor. Names are display labels.
+
+Deployment bootstrap configuration is
+`/home/thor/.config/niuu-forge-thor/config.yaml` (`niuu.instances`); configured seed
+values are reapplied when the backend starts. The shared registry stores UI edits
+between reloads. If changing a seeded host permanently, update its bootstrap
+entry too. Non-seeded hosts created in the UI remain in the database.
+The UI's `/config.json` controls service base URLs, not the host list.
+
+The private HTTPS UI uses nginx in
+`/home/thor/.config/niuu-forge-web/nginx.conf`. The four known HTTP Forge session
+sockets are rewritten to same-origin secure proxy routes. A newly registered HTTP
+host also needs such a session proxy (or an HTTPS Forge endpoint); saving its REST
+origin alone cannot bypass a browser's mixed-content restrictions.
+
+Remaining differences from iOS: on-device overrides are not automatically synced;
+model/definition choices use the connected Niuu catalogue rather than a separate
+capability fetch from each host; project assignment, worktree creation and a native
+folder history menu remain outside this quick-launch change. No real provider
+session was created for testing.

@@ -250,11 +250,27 @@ export interface VolundrStats {
   };
 }
 
+export interface ForgeHostInput {
+  id?: string;
+  name: string;
+  slug: string;
+  baseUrl: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+}
+
+export interface ForgeHostTest {
+  ok: boolean;
+  message: string;
+  statusCode?: number | null;
+}
+
 export interface VolundrTarget {
   id: string;
   slug: string;
   name: string;
   baseUrl: string;
+  config?: Record<string, unknown>;
   enabled: boolean;
   isDefault: boolean;
   visibility?: string;

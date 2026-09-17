@@ -368,6 +368,7 @@ type SharedRepoPayload = {
 type SharedRepoResponse = Record<string, SharedRepoPayload[]>;
 
 type InstanceTargetPayload = {
+  config?: Record<string, unknown>;
   id: string;
   slug: string;
   name: string;
@@ -547,6 +548,7 @@ function normalizeTarget(payload: InstanceTargetPayload): VolundrTarget {
     isDefault: payload.isDefault ?? payload.is_default ?? false,
     visibility: payload.visibility,
     tags: payload.tags ?? [],
+    ...(payload.config ? { config: payload.config } : {}),
   };
 }
 
@@ -1516,6 +1518,26 @@ export function buildVolundrHttpAdapter(
       );
       return payload.map(normalizeTarget);
     },
+
+    getForgeHosts: async () => {
+      const payload = await (niuuClient ?? sharedClient).get<InstanceTargetPayload[]>(
+        '/instances?kind=volundr',
+      );
+      return payload.map(normalizeTarget);
+    },
+    saveForgeHost: async ({ id, ...host }) => {
+      const registry = niuuClient ?? sharedClient;
+      const payload = id
+        ? await registry.patch<InstanceTargetPayload>(`/instances/${encodeURIComponent(id)}`, host)
+        : await registry.post<InstanceTargetPayload>('/instances', {
+            ...host,
+            kind: 'volundr',
+            visibility: 'user',
+          });
+      return normalizeTarget(payload);
+    },
+    testForgeHost: (id) =>
+      (niuuClient ?? sharedClient).post(`/instances/${encodeURIComponent(id)}/test`),
 
     subscribe: (callback) => {
       sessionSubscribers.add(callback);

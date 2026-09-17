@@ -2450,3 +2450,43 @@ describe('session resource byte downloads', () => {
     });
   });
 });
+
+describe('Forge host registry contract', () => {
+  it('reads all hosts, creates personal hosts, patches existing hosts and tests their connection', async () => {
+    const service = buildVolundrHttpAdapter(makeClient());
+    const registry = getDerivedClient('http://localhost:8080/api/v1/niuu');
+    const host = {
+      id: 'thor',
+      slug: 'local',
+      name: 'Thor',
+      baseUrl: 'http://127.0.0.1:8080',
+      enabled: true,
+      isDefault: true,
+      tags: [],
+      config: { transport: 'embedded', defaultFolder: '/home/thor/repos' },
+    };
+    registry.get.mockResolvedValue([host]);
+    expect(await service.getForgeHosts()).toEqual([host]);
+    expect(registry.get).toHaveBeenCalledWith('/instances?kind=volundr');
+    registry.patch.mockResolvedValue(host);
+    const input = {
+      name: host.name,
+      slug: host.slug,
+      baseUrl: host.baseUrl,
+      enabled: true,
+      config: host.config,
+    };
+    expect(await service.saveForgeHost({ id: 'thor', ...input })).toEqual(host);
+    expect(registry.patch).toHaveBeenCalledWith('/instances/thor', input);
+    registry.post.mockResolvedValue(host);
+    await service.saveForgeHost(input);
+    expect(registry.post).toHaveBeenCalledWith('/instances', {
+      ...input,
+      kind: 'volundr',
+      visibility: 'user',
+    });
+    registry.post.mockResolvedValue({ ok: false, message: 'unreachable' });
+    expect(await service.testForgeHost('thor')).toEqual({ ok: false, message: 'unreachable' });
+    expect(registry.post).toHaveBeenCalledWith('/instances/thor/test');
+  });
+});

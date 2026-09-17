@@ -13,6 +13,9 @@ export interface BifrostModel {
   cost?: number;
   vram?: string;
   sessionDefinition?: string;
+  effortLevels?: string[];
+  defaultEffort?: string;
+  effortNote?: string;
   supportsTools: boolean;
   supportsThinking: boolean;
   enabled: boolean;
