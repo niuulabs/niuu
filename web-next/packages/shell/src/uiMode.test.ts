@@ -17,13 +17,13 @@ describe('uiMode', () => {
     localStorage.clear();
   });
 
-  it('defaults to simple and reads back what was cached', () => {
-    expect(readUiMode()).toBe('simple');
-    cacheUiMode('advanced');
-    expect(localStorage.getItem(UI_MODE_STORAGE_KEY)).toBe('advanced');
+  it('defaults to advanced and reads back what was cached', () => {
     expect(readUiMode()).toBe('advanced');
-    localStorage.setItem(UI_MODE_STORAGE_KEY, 'garbage');
+    cacheUiMode('simple');
+    expect(localStorage.getItem(UI_MODE_STORAGE_KEY)).toBe('simple');
     expect(readUiMode()).toBe('simple');
+    localStorage.setItem(UI_MODE_STORAGE_KEY, 'garbage');
+    expect(readUiMode()).toBe('advanced');
   });
 
   it('encodes and decodes the mode through feature preferences', () => {

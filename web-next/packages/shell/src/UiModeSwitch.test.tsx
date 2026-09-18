@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
@@ -31,6 +31,11 @@ function fakeFeatures(saved: UserFeaturePreference[] = [], failUpdate = false) {
 }
 
 describe('UiModeSwitch', () => {
+  // Start from Simple so each test observes a move to Advanced (the default).
+  beforeEach(() => {
+    localStorage.setItem(UI_MODE_STORAGE_KEY, 'simple');
+  });
+
   afterEach(() => {
     cleanup();
     localStorage.clear();
@@ -105,6 +110,11 @@ describe('UiModeSwitch', () => {
 });
 
 describe('useSetUiMode', () => {
+  // Start from Simple so each test observes a move to Advanced (the default).
+  beforeEach(() => {
+    localStorage.setItem(UI_MODE_STORAGE_KEY, 'simple');
+  });
+
   afterEach(() => {
     cleanup();
     localStorage.clear();

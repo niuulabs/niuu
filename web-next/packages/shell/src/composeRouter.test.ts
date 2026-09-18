@@ -124,6 +124,7 @@ describe('composeRouter', () => {
   });
 
   it('lands on the simple-mode landing plugin, ignoring the stored active plugin', () => {
+    window.localStorage.setItem('niuu.compactUx.mode', 'simple');
     window.localStorage.setItem('niuu.active', 'hello');
     const home = { ...makePlugin('home'), simple: { landing: true } };
     const router = composeRouter([makePlugin('hello'), home], {

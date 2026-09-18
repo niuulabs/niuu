@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { readUiMode } from '@niuulabs/shell';
+import { UI_MODE_STORAGE_KEY, readUiMode } from '@niuulabs/shell';
 import type { UserFeaturePreference } from '@niuulabs/plugin-sdk';
 import {
   createMockOdinReviewService,
@@ -212,6 +212,7 @@ describe('HomePage', () => {
   });
 
   it('stays put and says why when the mode cannot be stored', async () => {
+    localStorage.setItem(UI_MODE_STORAGE_KEY, 'simple');
     const user = userEvent.setup();
     const features = fakeFeatures(() => {});
     features.updateUserFeaturePreferences = async () => {

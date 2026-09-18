@@ -52,6 +52,7 @@ describe('RealmPage', () => {
   });
 
   it('sends you to the whole-page launch and workflow screens in Simple mode', async () => {
+    localStorage.setItem(UI_MODE_STORAGE_KEY, 'simple');
     const user = userEvent.setup();
     const log = createCallLog();
     const { router } = renderRealms(
@@ -70,6 +71,7 @@ describe('RealmPage', () => {
   });
 
   it('sends you to the workflows page with the realm repository in Simple mode', async () => {
+    localStorage.setItem(UI_MODE_STORAGE_KEY, 'simple');
     const user = userEvent.setup();
     const log = createCallLog();
     const { router } = renderRealms(

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { createMemoryHistory } from '@tanstack/react-router';
 import {
@@ -66,6 +66,11 @@ function wrap(path: string) {
 }
 
 describe('Shell in simple mode', () => {
+  // Advanced is the default; these tests opt into Simple the way a person does.
+  beforeEach(() => {
+    localStorage.setItem(UI_MODE_STORAGE_KEY, 'simple');
+  });
+
   afterEach(() => {
     cleanup();
     localStorage.clear();
@@ -97,6 +102,15 @@ describe('Shell in simple mode', () => {
     wrap('/observatory');
     await screen.findByTestId('observatory-content');
     expect(screen.getByRole('button', { name: 'Observatory' })).toBeInTheDocument();
+  });
+
+  it('starts in advanced mode when no mode has been chosen', async () => {
+    localStorage.removeItem(UI_MODE_STORAGE_KEY);
+    wrap('/volundr');
+    await screen.findByTestId('volundr-content');
+    expect(screen.getByTestId('ui-mode-switch')).toHaveAttribute('data-mode', 'advanced');
+    expect(screen.getByRole('button', { name: 'Observatory' })).toBeInTheDocument();
+    expect(screen.getByTestId('volundr-tab-catalog')).toBeInTheDocument();
   });
 
   it('shows everything in advanced mode', async () => {

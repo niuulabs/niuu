@@ -22,7 +22,7 @@ export type UiMode = 'simple' | 'advanced';
 export const UI_MODE_STORAGE_KEY = 'niuu.compactUx.mode';
 export const UI_MODE_EVENT = 'niuu:ui-mode';
 export const UI_MODE_PREFERENCE_KEY = 'ui.mode';
-export const DEFAULT_UI_MODE: UiMode = 'simple';
+export const DEFAULT_UI_MODE: UiMode = 'advanced';
 
 const MODES: readonly UiMode[] = ['simple', 'advanced'];
 
