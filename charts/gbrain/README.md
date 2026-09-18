@@ -2,7 +2,7 @@
 
 Deploy upstream gbrain as a standalone knowledge service. The image recipe at
 `containers/gbrain/Dockerfile` pins upstream commit
-`43597b19e50a3abf56409337f248f7966860293c` (0.48.5.0), with Bun 1.4.2.
+`668b9bac302705f3bca0ae4792a49fab0a79a74e` (0.50.5.0), with Bun 1.4.2.
 The Niuu release pipeline publishes the container and chart to GHCR.
 
 For a database managed with the release, set `engine: postgres` and

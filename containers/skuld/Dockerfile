@@ -1,4 +1,4 @@
-FROM ubuntu:26.04@sha256:513c074113a871b51a8d16ab445c88779d6452d937a164fb5cc479f32668a41d AS builder
+FROM ubuntu:26.04@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78 AS builder
 
 ARG TARGETARCH
 
@@ -16,10 +16,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install uv from a pinned release archive and resolve from the committed lockfile.
 RUN set -eux; \
-    UV_VERSION="0.11.10"; \
+    UV_VERSION="0.12.13"; \
     case "${TARGETARCH}" in \
-      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="077e1a0777bcf516e02f4ef245e269c8d1baa780438e4c50e09c5c997f85538a" ;; \
-      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="91d5f4583539640765662ef86edcf3bf4db07439b622c7bed50c961240162046" ;; \
+      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="745765a3b6e360ad76743599ae5c42e9278c7edf8bbff9fc76d05bf2623a04dd" ;; \
+      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="2eaa5d94f5db7b3a1a092156b9420459e42ab0217d917fe74a876309cef9b5e9" ;; \
       *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_ARCHIVE}" -o "/tmp/${UV_ARCHIVE}"; \
@@ -44,7 +44,7 @@ RUN uv pip install --python /opt/venv/bin/python --no-deps --reinstall \
 # ---------------------------------------------------------------------------
 # Runtime — Node.js stays (needed for claude-code/codex CLI at runtime)
 # ---------------------------------------------------------------------------
-FROM ubuntu:26.04@sha256:513c074113a871b51a8d16ab445c88779d6452d937a164fb5cc479f32668a41d
+FROM ubuntu:26.04@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78
 
 
 LABEL org.opencontainers.image.title="skuld"
@@ -56,8 +56,9 @@ LABEL org.opencontainers.image.source="https://github.com/niuulabs/volundr"
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install runtime dependencies. The upgrade picks up base-image security
+# fixes (glibc, gnupg) published after the pinned digest was cut.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     git \
