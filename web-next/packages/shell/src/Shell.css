@@ -470,8 +470,10 @@
   .niuu-shell__topbar-right {
     gap: 8px;
   }
+  /* The centred navigation needs the room; secondary controls step aside. */
   .niuu-shell__topbar-sep,
-  .niuu-shell__cp-btn {
+  .niuu-shell__cp-btn,
+  .niuu-shell__mode {
     display: none;
   }
 }
