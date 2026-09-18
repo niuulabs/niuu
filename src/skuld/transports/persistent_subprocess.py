@@ -95,8 +95,12 @@ class PersistentSubprocessTransport(CLITransport):
         mcp_servers: list[dict] | None = None,
         resume_session_id: str = "",
         ask_user_question_enabled: bool = False,
+        model_gateway_url: str = "",
+        model_gateway_token: str = "",
     ) -> None:
         super().__init__()
+        self._model_gateway_url = model_gateway_url
+        self._model_gateway_token = model_gateway_token
         self.workspace_dir = workspace_dir
         self._model = model
         self._skip_permissions = skip_permissions
@@ -313,7 +317,11 @@ class PersistentSubprocessTransport(CLITransport):
 
     async def _spawn(self) -> None:
         cmd = self._build_command()
-        env = claude_spawn_env()  # subscription auth by default (SKULD__CLAUDE_AUTH)
+        # Subscription auth by default (SKULD__CLAUDE_AUTH); the gateway when set.
+        env = claude_spawn_env(
+            gateway_url=self._model_gateway_url,
+            gateway_token=self._model_gateway_token,
+        )
         if self._agent_teams:
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
         _, shim_env = ensure_codex_tool_shims(

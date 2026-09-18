@@ -2130,3 +2130,32 @@ class TestStopProcess:
 
         proc.terminate.assert_called_once()
         proc.kill.assert_called_once()
+
+
+def test_persistent_subprocess_routes_through_the_model_gateway():
+    """A configured gateway must reach the spawned CLI, not just the config.
+
+    PersistentSubprocessTransport is the transport Claude sessions actually use,
+    and it was the only one that never received the model_gateway plumbing that
+    sdk.py and tmux_interactive.py have — so a session pointed at a self-hosted
+    model silently went to the vendor API instead.
+    """
+    from skuld.transports.persistent_subprocess import PersistentSubprocessTransport
+
+    transport = PersistentSubprocessTransport(
+        workspace_dir="/tmp",
+        model_gateway_url="http://gateway.invalid/api/v1/bifrost",
+        model_gateway_token="unused",
+    )
+    env = transport._spawn_env() if hasattr(transport, "_spawn_env") else None
+    if env is None:
+        from skuld.transports.claude_env import claude_spawn_env
+
+        env = claude_spawn_env(
+            gateway_url=transport._model_gateway_url,
+            gateway_token=transport._model_gateway_token,
+        )
+
+    assert env["ANTHROPIC_BASE_URL"] == "http://gateway.invalid/api/v1/bifrost"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "unused"
+    assert "ANTHROPIC_API_KEY" not in env

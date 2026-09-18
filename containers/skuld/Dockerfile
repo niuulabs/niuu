@@ -169,13 +169,4 @@ EXPOSE 8081
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8081/health || exit 1
 
-# Model gateway wrapper: shadows both CLIs on PATH so a session can be pointed
-# at Bifrost instead of a vendor API. Inert unless SKULD__MODEL_GATEWAY__URL and
-# NIUU_GATEWAY_UPSTREAM are set, so shipping it by default is safe — see
-# src/skuld/transports/codex_ws.py and the wrapper's own docstring.
-COPY containers/skuld/gateway-wrapper /opt/niuu-gateway/claude
-COPY containers/skuld/gateway-wrapper /opt/niuu-gateway/codex
-RUN chmod +x /opt/niuu-gateway/claude /opt/niuu-gateway/codex
-ENV PATH="/opt/niuu-gateway:$PATH"
-
 ENTRYPOINT ["/app/entrypoint.sh"]
