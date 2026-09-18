@@ -1,0 +1,287 @@
+{
+  "date": "2026-09-17",
+  "host": "thor",
+  "scope": "API-only; no gateway/native restart or host reboot",
+  "candidate": {
+    "revision": "45ea08f69bca5fb8c63ed2ef4d98bcf707aa2029",
+    "source_sha256": "1f1156a7d0a9063ffb97e36678d410f58ace879851b9c3584e03296defba4c1c",
+    "dirty": false,
+    "failed_plugins": []
+  },
+  "release_root": "/home/thor/.local/share/niuu/releases/forge-codex-ready-20260917-v1",
+  "rollback": {
+    "revision": "e8c814f854beb30d00d068622d63a3c3ab244976",
+    "source_sha256": "068cb62412746da3e46cedc180f48365577f723c9d9aff994341cd7d29faeae5",
+    "dirty": false,
+    "failed_plugins": []
+  },
+  "window": {
+    "start": "2026-09-17T14:15:00+00:00",
+    "end": "2026-09-17T14:30:00+00:00"
+  },
+  "apply_started_at": "2026-09-17T14:15:33.181202+00:00",
+  "apply_finished_at": "2026-09-17T14:15:55.224496+00:00",
+  "passed": true,
+  "rollback_used": false,
+  "independent_readback_at": "2026-09-17T14:17:03.296965+00:00",
+  "preserved": {
+    "processes": 40,
+    "live_gateways": 13,
+    "local_gateway_stored_statuses": {
+      "running": 5,
+      "archived": 6,
+      "stopped": 2
+    },
+    "aggregate_session_records": 663,
+    "sampled_archived_turn_counts": [
+      20,
+      96
+    ],
+    "all_existing_gateway_health_identities_unchanged": true,
+    "all_session_statuses_and_selected_identity_fields_unchanged": true,
+    "existing_unit_and_config_files_unchanged": true,
+    "independent_agent_http_tls_and_preview_checks_passed": true
+  },
+  "validation": {
+    "candidate_tests": {
+      "passed": 5387,
+      "skipped": 24,
+      "deselected": 95,
+      "xfailed": 1,
+      "warnings": 0
+    },
+    "coverage": {
+      "threshold": 85,
+      "percent": 85.14471598965719,
+      "scope": "17 named server modules; branch measurement enabled, combined score, not whole repo"
+    },
+    "candidate_restart_cases": 4,
+    "rollback_restart_cases": 4,
+    "source_modules_audited": 18,
+    "dependency_sets_equal": true,
+    "provider_calls": 0,
+    "physical_client_reconnect_test": false
+  },
+  "health_observations": {
+    "observations": 179,
+    "first": {
+      "at": "2026-09-17T14:15:33.178873+00:00",
+      "status": 200,
+      "revision": "c6d80980c304f972461d9e31d36ac3aeca35cc8d",
+      "failed_plugins": []
+    },
+    "last": {
+      "at": "2026-09-17T14:17:03.102124+00:00",
+      "status": 200,
+      "revision": "45ea08f69bca5fb8c63ed2ef4d98bcf707aa2029",
+      "failed_plugins": []
+    },
+    "first_failure": {
+      "at": "2026-09-17T14:15:36.203967+00:00",
+      "error": "URLError"
+    },
+    "last_failure": {
+      "at": "2026-09-17T14:15:53.767292+00:00",
+      "error": "URLError"
+    },
+    "first_candidate_success": {
+      "at": "2026-09-17T14:15:54.268797+00:00",
+      "status": 200,
+      "revision": "45ea08f69bca5fb8c63ed2ef4d98bcf707aa2029",
+      "failed_plugins": []
+    },
+    "error_count": 36
+  },
+  "runtime_versions": [
+    {
+      "id": "8f20102d-6da7-58aa-98c2-e0bce2deab97",
+      "name": "lexi-coordinator",
+      "stored_status": "running",
+      "health": {
+        "status": "healthy",
+        "session_id": "8f20102d-6da7-58aa-98c2-e0bce2deab97",
+        "revision": "673b50004fd67f8e8b9256cc07893b9f4b09bfc6",
+        "build": "forge-projects-673b5000",
+        "source_sha256": "f8f9452bd56f6dc8e10ff6f0f1b32d9f704fdef33180aa9d388bf938cdcdd0fc",
+        "dirty": true
+      },
+      "matches_server_source": false
+    },
+    {
+      "id": "1f8e174f-d645-530f-823c-18d1f58af3f6",
+      "name": "lexi-web-chat-restoration",
+      "stored_status": "archived",
+      "health": {
+        "status": "healthy",
+        "session_id": "1f8e174f-d645-530f-823c-18d1f58af3f6",
+        "revision": "49ed405f573b65aee612af8ca4ff3f003c7f67e1",
+        "build": "forge-projects-673b5000",
+        "source_sha256": "f8f9452bd56f6dc8e10ff6f0f1b32d9f704fdef33180aa9d388bf938cdcdd0fc",
+        "dirty": false
+      },
+      "matches_server_source": false
+    },
+    {
+      "id": "2f441fee-583d-580c-b1ec-d51e2fa79655",
+      "name": "physics-coordination",
+      "stored_status": "stopped",
+      "health": {
+        "status": "healthy",
+        "session_id": "2f441fee-583d-580c-b1ec-d51e2fa79655",
+        "revision": "c6d80980c304f972461d9e31d36ac3aeca35cc8d",
+        "build": "forge-project-discovery-44f85dc3",
+        "source_sha256": "e34593b7c6a10add6e50d62d2f9f3202a940f9d14bdf4819a26761d27610b7b0",
+        "dirty": false
+      },
+      "matches_server_source": false
+    },
+    {
+      "id": "1c5d101b-047e-55ce-a70c-7a78a53ac990",
+      "name": "physics-architecture-review",
+      "stored_status": "archived",
+      "health": {
+        "status": "healthy",
+        "session_id": "1c5d101b-047e-55ce-a70c-7a78a53ac990",
+        "revision": "c6d80980c304f972461d9e31d36ac3aeca35cc8d",
+        "build": "forge-project-discovery-44f85dc3",
+        "source_sha256": "e34593b7c6a10add6e50d62d2f9f3202a940f9d14bdf4819a26761d27610b7b0",
+        "dirty": false
+      },
+      "matches_server_source": false
+    },
+    {
+      "id": "39ecce91-924f-52ae-a740-0b988f6aa5bd",
+      "name": "physics-delivery-review",
+      "stored_status": "archived",
+      "health": {
+        "status": "healthy",
+        "session_id": "39ecce91-924f-52ae-a740-0b988f6aa5bd",
+        "revision": "c6d80980c304f972461d9e31d36ac3aeca35cc8d",
+        "build": "forge-project-discovery-44f85dc3",
+        "source_sha256": "e34593b7c6a10add6e50d62d2f9f3202a940f9d14bdf4819a26761d27610b7b0",
+        "dirty": false
+      },
+      "matches_server_source": false
+    },
+    {
+      "id": "4ab99660-05e8-52c3-90d3-85d7463ce8a2",
+      "name": "lexi-forge-niuu-management",
+      "stored_status": "running",
+      "health": {
+        "status": "healthy",
+        "session_id": "4ab99660-05e8-52c3-90d3-85d7463ce8a2",
+        "revision": "c6d80980c304f972461d9e31d36ac3aeca35cc8d",
+        "build": "forge-project-discovery-44f85dc3",
+        "source_sha256": "e34593b7c6a10add6e50d62d2f9f3202a940f9d14bdf4819a26761d27610b7b0",
+        "dirty": false
+      },
+      "matches_server_source": false
+    },
+    {
+      "id": "69c828ae-1512-5dc3-866a-8da74f956895",
+      "name": "physics-gpt-live-upgrade",
+      "stored_status": "archived",
+      "health": {
+        "status": "healthy",
+        "session_id": "69c828ae-1512-5dc3-866a-8da74f956895",
+        "revision": "c6d80980c304f972461d9e31d36ac3aeca35cc8d",
+        "build": "forge-project-discovery-44f85dc3",
+        "source_sha256": "e34593b7c6a10add6e50d62d2f9f3202a940f9d14bdf4819a26761d27610b7b0",
+        "dirty": false
+      },
+      "matches_server_source": false
+    },
+    {
+      "id": "61b01d2d-8a0f-5707-902f-c179ccf370cf",
+      "name": "physics-pmt-capacitance",
+      "stored_status": "archived",
+      "health": {
+        "status": "healthy",
+        "session_id": "61b01d2d-8a0f-5707-902f-c179ccf370cf",
+        "revision": "c6d80980c304f972461d9e31d36ac3aeca35cc8d",
+        "build": "forge-project-discovery-44f85dc3",
+        "source_sha256": "e34593b7c6a10add6e50d62d2f9f3202a940f9d14bdf4819a26761d27610b7b0",
+        "dirty": false
+      },
+      "matches_server_source": false
+    },
+    {
+      "id": "9bca0fd1-534c-5f71-8237-b68d16a1c6ad",
+      "name": "physics-pmt-magnetic-fields",
+      "stored_status": "archived",
+      "health": {
+        "status": "healthy",
+        "session_id": "9bca0fd1-534c-5f71-8237-b68d16a1c6ad",
+        "revision": "c6d80980c304f972461d9e31d36ac3aeca35cc8d",
+        "build": "forge-project-discovery-44f85dc3",
+        "source_sha256": "e34593b7c6a10add6e50d62d2f9f3202a940f9d14bdf4819a26761d27610b7b0",
+        "dirty": false
+      },
+      "matches_server_source": false
+    },
+    {
+      "id": "0a713405-79b2-566c-a953-802e3a080c49",
+      "name": "lexi-codex-subagents-workflow",
+      "stored_status": "stopped",
+      "health": {
+        "status": "healthy",
+        "session_id": "0a713405-79b2-566c-a953-802e3a080c49",
+        "revision": "c6d80980c304f972461d9e31d36ac3aeca35cc8d",
+        "build": "forge-project-discovery-44f85dc3",
+        "source_sha256": "e34593b7c6a10add6e50d62d2f9f3202a940f9d14bdf4819a26761d27610b7b0",
+        "dirty": false
+      },
+      "matches_server_source": false
+    },
+    {
+      "id": "523eb3cd-c325-5aa4-a162-7927438eb61e",
+      "name": "lexi-macos-interface-parity",
+      "stored_status": "running",
+      "health": {
+        "status": "healthy",
+        "session_id": "523eb3cd-c325-5aa4-a162-7927438eb61e",
+        "revision": "c6d80980c304f972461d9e31d36ac3aeca35cc8d",
+        "build": "forge-project-discovery-44f85dc3",
+        "source_sha256": "e34593b7c6a10add6e50d62d2f9f3202a940f9d14bdf4819a26761d27610b7b0",
+        "dirty": false
+      },
+      "matches_server_source": false
+    },
+    {
+      "id": "c8103dc7-a834-5e32-a06d-1a98d7a8e2b5",
+      "name": "lexi-ios-chat-voice-ux-improvement",
+      "stored_status": "running",
+      "health": {
+        "status": "healthy",
+        "session_id": "c8103dc7-a834-5e32-a06d-1a98d7a8e2b5",
+        "revision": "c6d80980c304f972461d9e31d36ac3aeca35cc8d",
+        "build": "forge-project-discovery-44f85dc3",
+        "source_sha256": "e34593b7c6a10add6e50d62d2f9f3202a940f9d14bdf4819a26761d27610b7b0",
+        "dirty": false
+      },
+      "matches_server_source": false
+    },
+    {
+      "id": "1885c699-76bb-4d9d-93ee-4ba28383f94c",
+      "name": "niuu-ux-improvements",
+      "stored_status": "running",
+      "health": {
+        "status": "healthy",
+        "session_id": "1885c699-76bb-4d9d-93ee-4ba28383f94c",
+        "revision": "c6d80980c304f972461d9e31d36ac3aeca35cc8d",
+        "build": "forge-project-discovery-44f85dc3",
+        "source_sha256": "e34593b7c6a10add6e50d62d2f9f3202a940f9d14bdf4819a26761d27610b7b0",
+        "dirty": false
+      },
+      "matches_server_source": false
+    }
+  ],
+  "limitations": [
+    "No existing runtime adopted candidate source",
+    "Health/API interruption about18 seconds; not zero downtime",
+    "No claim about all unflushed buffers or every historical frame",
+    "No automatic fenced idle-upgrade transaction; supervised stop/resume only",
+    "Native settings and actual resume continuity must be checked per selected session"
+  ],
+  "evidence_directory": "/home/thor/repos/worktrees/niuu-forge-runtime-management-20260913/.local/thor-api-upgrade-20260917"
+}
