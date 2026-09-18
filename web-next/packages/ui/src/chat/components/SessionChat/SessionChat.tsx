@@ -60,6 +60,9 @@ import type { FileAttachment } from '../../hooks/useFileAttachments';
 import type { SlashCommand } from '../../utils/slashCommands';
 import { useConversationView } from '../../compactUxPrefs';
 import { ChatDisplayControls } from '../ChatDisplayControls';
+import { ToolImageProvider } from '../ToolImages';
+import { HistoryDetailsContext } from '../HistoryDetailsContext';
+import { HistoryMessagePreview } from '../HistoryMessagePreview';
 import './SessionChat.css';
 import { ChatConnectionsButton } from '../../../ChatConnections';
 
@@ -269,6 +272,10 @@ export interface SessionChatProps {
   historyLoaded?: boolean;
   historyError?: string | null;
   onRetryHistory?: () => void;
+  hasOlderHistory?: boolean;
+  loadingOlderHistory?: boolean;
+  olderHistoryError?: string | null;
+  onLoadOlderHistory?: () => Promise<void>;
   /** Room participants map (peerId → meta) */
   participants?: ReadonlyMap<string, RoomParticipant>;
   /** Mesh events for the cascade panel */
@@ -357,6 +364,10 @@ export function SessionChat({
   historyLoaded = true,
   historyError,
   onRetryHistory,
+  hasOlderHistory = false,
+  loadingOlderHistory = false,
+  olderHistoryError,
+  onLoadOlderHistory,
   participants = new Map(),
   meshEvents = [],
   agentEvents = new Map(),
@@ -409,12 +420,13 @@ export function SessionChat({
     setShowInternal(internalVisibility);
   }, [internalVisibility, setShowInternal]);
 
-  const toggleInternal = useCallback(() => {
-    toggleInternalLocal();
-    if (onSetInternalVisibility) {
-      onSetInternalVisibility(!showInternal);
-    }
-  }, [toggleInternalLocal, onSetInternalVisibility, showInternal]);
+  // Tool visibility is presentation-only. Keep receiving tool results so images
+  // can enter the conversation even while their execution details are hidden.
+  // useRoomState still applies room participant/internal-message visibility.
+  useEffect(() => {
+    if (connected) onSetInternalVisibility?.(true);
+  }, [connected, onSetInternalVisibility]);
+  const toggleInternal = toggleInternalLocal;
 
   const [modelInput, setModelInput] = useState('');
   const [showModelInput, setShowModelInput] = useState(false);
@@ -443,6 +455,34 @@ export function SessionChat({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
+  const olderPendingRef = useRef(false);
+  const prependAnchorRef = useRef<{ id: string; top: number; firstId?: string } | null>(null);
+  const loadOlder = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (
+      !el ||
+      !onLoadOlderHistory ||
+      !hasOlderHistory ||
+      olderPendingRef.current ||
+      loadingOlderHistory
+    )
+      return;
+    const top = el.getBoundingClientRect().top;
+    const anchor = Array.from(el.querySelectorAll<HTMLElement>('[data-history-id]')).find(
+      (row) => row.getBoundingClientRect().bottom > top,
+    );
+    if (anchor)
+      prependAnchorRef.current = {
+        id: anchor.dataset.historyId!,
+        top: anchor.getBoundingClientRect().top,
+        firstId: visibleMessages[0]?.id,
+      };
+    isNearBottomRef.current = false;
+    olderPendingRef.current = true;
+    void onLoadOlderHistory().finally(() => {
+      olderPendingRef.current = false;
+    });
+  }, [hasOlderHistory, loadingOlderHistory, onLoadOlderHistory, visibleMessages]);
   const userSentRef = useRef(false);
   const prevMessageCountRef = useRef(0);
   const initialScrollRef = useRef<string | null | undefined>(undefined);
@@ -721,7 +761,12 @@ export function SessionChat({
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
+    let lastTop = el.scrollTop;
     const handleScroll = () => {
+      const scrollingUp = el.scrollTop < lastTop;
+      lastTop = el.scrollTop;
+      if (scrollingUp && el.scrollTop <= SCROLL_THRESHOLD && !olderHistoryError && !historyError)
+        loadOlder();
       const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
       isNearBottomRef.current = distance <= SCROLL_THRESHOLD;
       setShowScrollBtn(distance > SCROLL_THRESHOLD * 2);
@@ -739,10 +784,22 @@ export function SessionChat({
       el.removeEventListener('scroll', handleScroll);
       observer.disconnect();
     };
-  }, [hasConversation, isStreaming, historyLoaded]);
+  }, [hasConversation, isStreaming, historyLoaded, loadOlder, olderHistoryError, historyError]);
 
   useLayoutEffect(() => {
     if (!historyLoaded) return;
+    const anchor = prependAnchorRef.current;
+    if (anchor && visibleMessages[0]?.id !== anchor.firstId) {
+      const el = scrollContainerRef.current;
+      const row = Array.from(el?.querySelectorAll<HTMLElement>('[data-history-id]') ?? []).find(
+        (item) => item.dataset.historyId === anchor.id,
+      );
+      if (el && row) el.scrollTop += row.getBoundingClientRect().top - anchor.top;
+      prependAnchorRef.current = null;
+      prevMessageCountRef.current = visibleMessages.length;
+      return;
+    }
+    if (!loadingOlderHistory && !olderPendingRef.current) prependAnchorRef.current = null;
     const countDelta = visibleMessages.length - prevMessageCountRef.current;
     prevMessageCountRef.current = visibleMessages.length;
     if (userSentRef.current || (countDelta !== 0 && isNearBottomRef.current)) {
@@ -752,7 +809,7 @@ export function SessionChat({
       return;
     }
     if (countDelta > 0) setNewMessageCount((prev) => prev + countDelta);
-  }, [visibleMessages.length, historyLoaded]);
+  }, [visibleMessages, historyLoaded, loadingOlderHistory]);
 
   useEffect(() => {
     onMessageCountChange?.(visibleMessages.length);
@@ -876,7 +933,8 @@ export function SessionChat({
 
   // Render a single visible message exactly as the expanded loop does. Shared
   // by the expanded view and the compact "Worked" disclosure / final answer.
-  const renderSingleMessage = (msg: (typeof visibleMessages)[number]): ReactNode => {
+  const renderMessageBody = (msg: (typeof visibleMessages)[number]): ReactNode => {
+    if (msg.historyPreview) return <HistoryMessagePreview key={msg.id} message={msg} />;
     if (msg.metadata?.messageType === 'system') {
       return <SystemMessage key={messageRenderKey(msg)} message={msg} />;
     }
@@ -920,6 +978,13 @@ export function SessionChat({
       />
     );
   };
+
+  const renderSingleMessage = (msg: (typeof visibleMessages)[number]): ReactNode => (
+    // Every row is a scroll anchor for history paging, in compact and expanded views alike.
+    <div key={messageRenderKey(msg)} data-history-id={msg.id}>
+      {renderMessageBody(msg)}
+    </div>
+  );
 
   // Compact rendering of one folded turn: question → "Worked" disclosure → answer.
   const renderCompactTurn = (turn: (typeof compactTurns)[number]): ReactNode => {
@@ -1158,40 +1223,72 @@ export function SessionChat({
           </div>
         )}
 
+        {historyError && (
+          <div className="niuu-chat-history-status" role="alert">
+            {historyError}{' '}
+            <button className="niuu-chat-retry" onClick={onRetryHistory}>
+              Try again
+            </button>
+          </div>
+        )}
         {/* ── Messages ── */}
-        {hasConversation || isStreaming ? (
+        {hasConversation || isStreaming || hasOlderHistory ? (
           <div className="niuu-chat-messages-container" ref={scrollContainerRef}>
-            <div className="niuu-chat-messages-inner">
-              {useCompact && !isRoomMode && !isRoomSession
-                ? compactTurns.map((turn) => renderCompactTurn(turn))
-                : (useCompact ? compactRoomGroups : renderedGroups).map((group) => {
-                    if (group.type === 'compact') return renderCompactTurn(group.turn);
-                    if (group.type === 'thread') {
-                      return (
-                        <ThreadGroup
-                          key={group.threadId}
-                          messages={group.messages}
-                          isCollapsed={collapsedThreads.has(group.threadId)}
-                          onToggle={() => toggleThread(group.threadId)}
-                        />
-                      );
-                    }
-                    return renderSingleMessage(group.message);
-                  })}
+            <HistoryDetailsContext.Provider value={chatEndpoint}>
+              <ToolImageProvider endpoint={chatEndpoint}>
+                <div className="niuu-chat-messages-inner">
+                  {(hasOlderHistory || loadingOlderHistory || olderHistoryError) && (
+                    <div className="niuu-chat-history-status">
+                      {olderHistoryError && <p role="alert">{olderHistoryError}</p>}
+                      <button
+                        type="button"
+                        className="niuu-chat-retry"
+                        disabled={loadingOlderHistory}
+                        onClick={loadOlder}
+                      >
+                        {loadingOlderHistory
+                          ? 'Loading earlier messages…'
+                          : olderHistoryError
+                            ? 'Retry earlier messages'
+                            : 'Load earlier messages'}
+                      </button>
+                    </div>
+                  )}
+                  {useCompact && !isRoomMode && !isRoomSession
+                    ? compactTurns.map((turn) => renderCompactTurn(turn))
+                    : (useCompact ? compactRoomGroups : renderedGroups).map((group) => {
+                        if (group.type === 'compact') return renderCompactTurn(group.turn);
+                        if (group.type === 'thread') {
+                          return (
+                            <div key={group.threadId} data-history-id={group.threadId}>
+                              <ThreadGroup
+                                messages={group.messages}
+                                isCollapsed={collapsedThreads.has(group.threadId)}
+                                onToggle={() => toggleThread(group.threadId)}
+                              />
+                            </div>
+                          );
+                        }
+                        return renderSingleMessage(group.message);
+                      })}
 
-              {/* Streaming indicator */}
-              {isStreaming && (
-                <StreamingMessage
-                  content={streamingContent ?? ''}
-                  parts={
-                    showInternal ? streamingParts : streamingParts && hideToolParts(streamingParts)
-                  }
-                  model={streamingModel}
-                />
-              )}
+                  {/* Streaming indicator */}
+                  {isStreaming && (
+                    <StreamingMessage
+                      content={streamingContent ?? ''}
+                      parts={
+                        showInternal
+                          ? streamingParts
+                          : streamingParts && hideToolParts(streamingParts)
+                      }
+                      model={streamingModel}
+                    />
+                  )}
 
-              <div ref={messagesEndRef} />
-            </div>
+                  <div ref={messagesEndRef} />
+                </div>
+              </ToolImageProvider>
+            </HistoryDetailsContext.Provider>
 
             {showScrollBtn && (
               <button

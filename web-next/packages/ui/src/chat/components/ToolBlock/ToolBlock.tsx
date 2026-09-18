@@ -1,3 +1,4 @@
+import { useLazyToolDetail } from '../HistoryDetailsContext';
 import { ConversationLink } from '../ConversationResources';
 import { useState } from 'react';
 import { ChevronRight, ChevronDown } from 'lucide-react';
@@ -11,6 +12,7 @@ const MAX_OUTPUT_LINES = 20;
 
 function extractPreview(block: ToolUseBlock): string {
   const { name, input } = block;
+  if (input?._elided_input) return String(input.preview ?? '');
   switch (name) {
     case 'Bash':
       return (String(input.command ?? '').split('\n')[0] ?? '').slice(0, 80);
@@ -43,7 +45,12 @@ interface ToolDetailProps {
 function ToolDetail({ block, result }: ToolDetailProps) {
   const [showFull, setShowFull] = useState(false);
   const { name, input } = block;
-  const output = result?.content ?? '';
+  const output =
+    typeof result?.content === 'string'
+      ? result.content
+      : result?.content == null
+        ? ''
+        : JSON.stringify(result.content, null, 2);
   const outputLines = output.split('\n');
   const isTruncated = outputLines.length > MAX_OUTPUT_LINES && !showFull;
   const displayedOutput = isTruncated
@@ -178,6 +185,7 @@ interface ToolBlockProps {
 
 export function ToolBlock({ block, result, defaultOpen = false }: ToolBlockProps) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
+  const detail = useLazyToolDetail(block, result, isOpen);
   const label = getToolLabel(block.name);
   const category = getToolCategory(block.name);
   const preview = extractPreview(block);
@@ -214,7 +222,21 @@ export function ToolBlock({ block, result, defaultOpen = false }: ToolBlockProps
           )}
         </span>
       </button>
-      {isOpen && <ToolDetail block={block} result={result} />}
+      {isOpen &&
+        (detail.error ? (
+          <div className="niuu-chat-tool-detail" role="alert">
+            {detail.error}{' '}
+            <button type="button" className="niuu-chat-tool-show-more" onClick={detail.retry}>
+              Try again
+            </button>
+          </div>
+        ) : detail.loading ? (
+          <div className="niuu-chat-tool-detail" role="status">
+            Loading tool details…
+          </div>
+        ) : (
+          <ToolDetail block={detail.block} result={detail.result} />
+        ))}
     </div>
   );
 }

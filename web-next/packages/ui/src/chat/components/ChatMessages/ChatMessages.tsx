@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useCopyFeedback } from '../../hooks/useCopyFeedback';
 import {
   Hammer,
@@ -19,6 +19,7 @@ import type { ChatMessage, ChatMessagePart } from '../../types';
 import type { ContentBlock as ToolContentBlock } from '../ToolBlock';
 import { useCompactUxChatPrefs } from '../../compactUxPrefs';
 import './ChatMessages.css';
+import { ToolImageCard } from '../ToolImages';
 import { PresentedFileCard } from '../ConversationResources';
 import { isPresentedFileTool } from '../ToolBlock/groupContentBlocks';
 
@@ -32,7 +33,11 @@ function formatFileSize(bytes: number): string {
 }
 
 function hasToolParts(parts?: readonly ChatMessagePart[]): boolean {
-  return parts?.some((p) => p.type === 'tool_use' || p.type === 'tool_separator') ?? false;
+  return (
+    parts?.some(
+      (p) => p.type === 'tool_use' || p.type === 'tool_result' || p.type === 'tool_separator',
+    ) ?? false
+  );
 }
 
 function partsToContentBlocks(parts: readonly ChatMessagePart[]): ToolContentBlock[] {
@@ -53,7 +58,7 @@ function partsToContentBlocks(parts: readonly ChatMessagePart[]): ToolContentBlo
     } else if (part.type === 'tool_use' && part.id && part.name && part.input) {
       blocks.push({ type: 'tool_use', id: part.id, name: part.name, input: part.input });
     } else if (part.type === 'tool_result' && part.tool_use_id) {
-      blocks.push({ type: 'tool_result', tool_use_id: part.tool_use_id, content: part.content });
+      blocks.push(part as ToolContentBlock);
     }
   }
   return blocks;
@@ -344,8 +349,7 @@ function AssistantContentWithTools({
   fallbackContent: string;
   isStreaming?: boolean;
 }) {
-  const blocks = partsToContentBlocks(parts);
-  const grouped = groupContentBlocks(blocks, true);
+  const grouped = useMemo(() => groupContentBlocks(partsToContentBlocks(parts), true), [parts]);
   // Older histories retain tool positions but only aggregate prose. Preserve that prose once;
   // its original position cannot be recovered here. Structured text parts remain authoritative.
   const hasText = grouped.some((item) => item.kind === 'text' && item.text.trim().length > 0);
@@ -356,6 +360,13 @@ function AssistantContentWithTools({
   return (
     <>
       {grouped.map((item, i) => {
+        if (item.kind === 'image')
+          return (
+            <ToolImageCard
+              key={`image:${item.image.toolUseId}:${item.image.index}`}
+              image={item.image}
+            />
+          );
         if (item.kind === 'separator') {
           return (
             <hr

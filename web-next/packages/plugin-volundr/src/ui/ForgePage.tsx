@@ -3,8 +3,7 @@ import type { ReactNode } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { LifecycleBadge, LoadingState, Sparkline, StateDot } from '@niuulabs/ui';
 import { CliBadge, ConnectionTypeBadge, MiniBar } from './atoms';
-import { useVolundrStats } from './useVolundrSessions';
-import { useVolundrClusters } from './hooks/useVolundrClusters';
+import { useForgeOverview } from './hooks/useForgeOverview';
 import { useSessionList } from './hooks/useSessionStore';
 import { FORGE_STANDARDS, type ForgeStandardId } from './quickLaunchModel';
 import { LaunchWizard } from './LaunchWizard';
@@ -452,8 +451,8 @@ function RecentFleetItem({ session }: { session: Session }) {
 
 export function ForgePage() {
   const navigate = useNavigate();
-  const stats = useVolundrStats();
-  const clusters = useVolundrClusters();
+  const overview = useForgeOverview();
+  const stats = overview.stats;
   const sessionsQuery = useSessionList();
 
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -496,7 +495,7 @@ export function ForgePage() {
       sessionsByCluster.set(key, (sessionsByCluster.get(key) ?? 0) + 1);
     }
 
-    return (clusters.data ?? []).map((cluster) => {
+    return overview.clusters.map((cluster) => {
       const display = FORGE_CLUSTER_DISPLAY[cluster.id] ?? {
         name: cluster.name,
         realm: cluster.realm,
@@ -516,7 +515,7 @@ export function ForgePage() {
         gpuPct: cluster.capacity.gpu > 0 ? cluster.used.gpu / cluster.capacity.gpu : 0,
       } satisfies ForgeClusterView;
     });
-  }, [dashboardSessions, clusters.data]);
+  }, [dashboardSessions, overview.clusters]);
 
   const clusterLookup = useMemo(() => {
     const entries: Array<[string, ForgeClusterView]> = [];
@@ -550,35 +549,74 @@ export function ForgePage() {
     [dashboardSessions],
   );
 
-  const tokenSparkline = stats.data?.sparklines?.tokensToday ?? [];
-  const activePodSparkline = stats.data?.sparklines?.activePods ?? [];
-  const sessionsTodaySparkline = stats.data?.sparklines?.sessionsToday ?? [];
+  const tokenSparkline = stats?.sparklines?.tokensToday ?? [];
+  const activePodSparkline = stats?.sparklines?.activePods ?? [];
+  const sessionsTodaySparkline = stats?.sparklines?.sessionsToday ?? [];
   const tokenRate = tokenSparkline.length > 0 ? Math.round(average(tokenSparkline, 5) / 100) : 0;
-  const projectedCost = stats.data ? Math.round(stats.data.costToday * 1.07) : 0;
-
-  const isLoading = stats.isLoading || clusters.isLoading || sessionsQuery.isLoading;
+  const projectedCost = stats ? Math.round(stats.costToday * 1.07) : undefined;
+  const connectionStates = [
+    ...overview.states,
+    ...sessionsQuery.sources
+      .filter((source) => !source.archived && source.id !== 'registry')
+      .map((source) => ({
+        ...source,
+        id: `sessions:${source.id}`,
+        name: `${source.name} sessions`,
+      })),
+  ].filter((source) => source.loading || source.error);
+  const incompleteMetrics = overview.states.some((source) => source.loading || source.error);
+  const metricsPlaceholder = overview.states.some((source) => source.loading)
+    ? 'Loading metrics…'
+    : 'Metrics unavailable';
 
   function openWizard(specRef?: ForgeStandardId) {
     setLaunchSpecRef(specRef ?? 'claude');
     setLaunchOpen(true);
   }
 
-  if (isLoading) {
-    return (
-      <div className="vol-forge vol-forge--loading" data-testid="forge-page">
-        <LoadingState label="Loading metrics…" />
-      </div>
-    );
-  }
-
   return (
     <>
       <div className="vol-forge" data-testid="forge-page">
+        {connectionStates.length > 0 && (
+          <div className="vol-forge__connections" aria-label="Forge connections">
+            <p>
+              {incompleteMetrics
+                ? 'Metrics cover loaded hosts; some data is pending or unavailable.'
+                : 'Some sessions are pending or unavailable.'}
+            </p>
+            <ul>
+              {connectionStates.map((source) => (
+                <li key={source.id} title={source.error ?? undefined}>
+                  {source.name}:{' '}
+                  {source.error
+                    ? source.stale
+                      ? 'unavailable · showing saved data'
+                      : 'unavailable'
+                    : 'loading…'}
+                </li>
+              ))}
+            </ul>
+            {connectionStates.some((source) => source.error) && (
+              <button
+                type="button"
+                onClick={() => void Promise.all([overview.refetch(), sessionsQuery.refetch()])}
+              >
+                Retry Forge connections
+              </button>
+            )}
+          </div>
+        )}
         <section className="vol-forge__metrics" aria-label="Forge metrics">
           <MetricTile
             label="ACTIVE PODS"
-            value={activeSessions.length}
-            subline={`${bootingSessions.length} booting · ${erroredSessions.length} error`}
+            value={sessionsQuery.data ? activeSessions.length : '—'}
+            subline={
+              sessionsQuery.data
+                ? `${bootingSessions.length} booting · ${erroredSessions.length} error`
+                : sessionsQuery.isLoading
+                  ? 'Loading sessions…'
+                  : 'Sessions unavailable'
+            }
           >
             {activePodSparkline.length > 0 ? (
               <Sparkline values={activePodSparkline} width={180} height={46} fill />
@@ -586,18 +624,20 @@ export function ForgePage() {
           </MetricTile>
           <MetricTile
             label="TOKENS TODAY"
-            value={stats.data ? tokens(stats.data.tokensToday) : '—'}
-            subline={`${tokenRate}/s · 5m avg`}
+            value={stats ? tokens(stats.tokensToday) : '—'}
+            subline={stats ? `${tokenRate}/s · 5m avg` : metricsPlaceholder}
           />
           <MetricTile
             label="COST TODAY"
-            value={stats.data ? `$${stats.data.costToday.toFixed(2)}` : '—'}
-            subline={`$${projectedCost} projected 24h`}
+            value={stats ? `$${stats.costToday.toFixed(2)}` : '—'}
+            subline={
+              projectedCost !== undefined ? `$${projectedCost} projected 24h` : metricsPlaceholder
+            }
           />
           <MetricTile
             label="SESSIONS TODAY"
-            value={stats.data ? stats.data.sessionsToday : '—'}
-            subline={`${stats.data ? stats.data.totalSessions : '—'} total · last 30d`}
+            value={stats ? stats.sessionsToday : '—'}
+            subline={`${stats ? stats.totalSessions : '—'} total · last 30d`}
             accent="neutral"
           >
             {sessionsTodaySparkline.length > 0 ? (
@@ -627,6 +667,10 @@ export function ForgePage() {
             </header>
 
             <div className="vol-forge__inflight-list">
+              {sessionsQuery.isLoading && <LoadingState label="Loading sessions…" />}
+              {sessionsQuery.isError && (
+                <p role="alert">Could not load sessions. {sessionsQuery.error?.message}</p>
+              )}
               {inflightSessions.map((session) => (
                 <InflightRow
                   key={session.id}

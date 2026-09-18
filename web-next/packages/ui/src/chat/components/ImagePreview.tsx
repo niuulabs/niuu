@@ -18,18 +18,21 @@ export function ImagePreview({
   name,
   blob,
   originalUrl,
+  transferDisabled = false,
 }: {
   src: string;
   name: string;
   blob?: Blob;
   originalUrl?: string;
+  transferDisabled?: boolean;
 }) {
   const canvas = useRef<HTMLDivElement>(null);
   const imageElement = useRef<SVGImageElement>(null);
   const [size, setSize] = useState({ width: 1000, height: 700 });
   const [view, setView] = useState<View>(FIT);
   const [error, setError] = useState('');
-  const [imageFailed, setImageFailed] = useState(false);
+  const [failedSrc, setFailedSrc] = useState('');
+  const imageFailed = failedSrc === src;
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
   const operation = useRef<AbortController | null>(null);
@@ -37,7 +40,7 @@ export function ImagePreview({
 
   useEffect(() => {
     const image = imageElement.current;
-    const failed = () => setImageFailed(true);
+    const failed = () => setFailedSrc(image?.getAttribute('href') ?? '');
     image?.addEventListener('error', failed);
     const element = canvas.current;
     if (!element) return;
@@ -166,25 +169,31 @@ export function ImagePreview({
         <div className="niuu-image-preview-actions">
           <button
             type="button"
-            disabled={busy || imageFailed}
+            disabled={busy || imageFailed || transferDisabled}
             onClick={() => void transfer('copy')}
           >
             <Copy size={16} />
             Copy image
           </button>
-          <button type="button" disabled={busy} onClick={() => void transfer('download')}>
+          <button
+            type="button"
+            disabled={busy || transferDisabled}
+            onClick={() => void transfer('download')}
+          >
             <Download size={16} />
             Download
           </button>
-          <a
-            href={originalUrl ?? src}
-            target="_blank"
-            rel="noreferrer"
-            aria-label="Open original image"
-          >
-            <ExternalLink size={16} />
-            Open in new tab
-          </a>
+          {!transferDisabled && (
+            <a
+              href={originalUrl ?? src}
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Open original image"
+            >
+              <ExternalLink size={16} />
+              Open in new tab
+            </a>
+          )}
         </div>
       </div>
       <div

@@ -7,12 +7,23 @@ import { ExternalLinkPreview } from './ExternalLinkPreview';
 import { Tooltip, TooltipProvider } from '../../primitives/Tooltip/Tooltip';
 import { Dialog, DialogContent } from '../../primitives/Dialog/Dialog';
 
-export interface ConversationResource {
+interface FileConversationResource {
   kind: 'workspace' | 'presented' | 'external';
   path: string;
   name: string;
   mime?: string;
 }
+
+export interface ToolImageResource {
+  kind: 'tool-image';
+  path: string;
+  name: string;
+  mime?: string;
+  description?: string;
+  preview?: Blob;
+  loadFull(signal: AbortSignal): Promise<Blob>;
+}
+export type ConversationResource = FileConversationResource | ToolImageResource;
 
 export interface ConversationResourcePort {
   resolve(href: string): ConversationResource | null;

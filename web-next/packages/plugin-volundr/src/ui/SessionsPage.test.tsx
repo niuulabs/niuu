@@ -146,6 +146,91 @@ describe('SessionsPage', () => {
     navigate.mockClear();
   });
 
+  it('shows healthy sessions while a Forge is unavailable and allows retrying the connection', async () => {
+    const healthy = makeSession({
+      id: 'ds-1',
+      name: 'Healthy session',
+      personaName: 'dev',
+      state: 'running',
+    });
+    const recovered = makeSession({
+      id: 'recovered',
+      name: 'Recovered session',
+      personaName: 'dev',
+      state: 'running',
+    });
+    let offline = true;
+    const store = createSessionStoreWithSessions([healthy, recovered]);
+    store.listSources = async () => [
+      { id: 'thor', name: 'Thor' },
+      { id: 'build', name: 'Build' },
+    ];
+    store.listSessions = async (filters) => {
+      if (filters?.instanceId === 'build') {
+        if (offline) throw new Error('Connection timed out. Check this Forge in Guild.');
+        return filters.archivedOnly ? [] : [recovered];
+      }
+      return filters?.archivedOnly ? [] : [healthy];
+    };
+    wrap(store);
+    expect(await screen.findByTestId('pod-entry-ds-1')).toBeInTheDocument();
+    const unavailable = await screen.findByText('Build: unavailable');
+    expect(unavailable.closest('[role="status"]')).toHaveAttribute(
+      'title',
+      'Connection timed out. Check this Forge in Guild.',
+    );
+    expect(screen.queryByText('Build archive: unavailable')).not.toBeInTheDocument();
+    offline = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Forge connections' }));
+    expect(await screen.findByTestId('pod-entry-recovered')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByLabelText('Forge connections')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('keeps the requested session loading instead of selecting another Forge and reports archive failures', async () => {
+    const other = makeSession({
+      id: 'other',
+      name: 'Other session',
+      personaName: 'dev',
+      state: 'running',
+    });
+    const requested = makeSession({
+      id: 'ds-1',
+      name: 'Requested session',
+      personaName: 'dev',
+      state: 'running',
+    });
+    let finishRequested!: (sessions: Session[]) => void;
+    const pending = new Promise<Session[]>((resolve) => {
+      finishRequested = resolve;
+    });
+    const store = createSessionStoreWithSessions([other, requested]);
+    store.listSources = async () => [
+      { id: 'thor', name: 'Thor' },
+      { id: 'build', name: 'Build' },
+    ];
+    store.listSessions = async (filters) => {
+      if (filters?.archivedOnly) {
+        if (filters.instanceId === 'thor') throw new Error('Archive access denied');
+        return [];
+      }
+      return filters?.instanceId === 'build' ? pending : [other];
+    };
+    wrap(store);
+    expect(await screen.findByTestId('pod-entry-other')).toBeInTheDocument();
+    expect(await screen.findByText('Loading selected session…')).toBeInTheDocument();
+    expect(screen.getByText('Build: loading…')).toBeInTheDocument();
+    expect(screen.getByText('Thor archive: unavailable')).toBeInTheDocument();
+    await act(async () => {
+      finishRequested([requested]);
+    });
+    expect(await screen.findByTestId('pod-entry-ds-1')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText('Loading selected session…')).not.toBeInTheDocument(),
+    );
+  });
+
   it('keeps pinned sessions above every grouping and state filter without duplicate rows', async () => {
     const sessions = [
       makeSession({

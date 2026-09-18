@@ -114,6 +114,11 @@ export interface UserHomeListing {
   }>;
 }
 
+export interface SessionReadOptions {
+  instanceId?: string;
+  signal?: AbortSignal;
+}
+
 export interface IVolundrService {
   // Feature flags
   getFeatures(instanceId?: string): Promise<VolundrFeatures>;
@@ -122,10 +127,10 @@ export interface IVolundrService {
   getSessionDefinitions(): Promise<SessionDefinition[]>;
 
   // Sessions
-  getSessions(): Promise<VolundrSession[]>;
+  getSessions(options?: SessionReadOptions): Promise<VolundrSession[]>;
   getSession(id: string): Promise<VolundrSession | null>;
   getActiveSessions(): Promise<VolundrSession[]>;
-  getStats(): Promise<VolundrStats>;
+  getStats(options?: SessionReadOptions): Promise<VolundrStats>;
   getRepos(): Promise<VolundrRepo[]>;
   getTargets(): Promise<VolundrTarget[]>;
   listUserHome(instanceId: string, path: string): Promise<UserHomeListing>;
@@ -152,7 +157,7 @@ export interface IVolundrService {
     name: string,
     data: Record<string, string>,
   ): Promise<{ name: string; keys: string[] }>;
-  getClusterResources(): Promise<ClusterResourceInfo>;
+  getClusterResources(options?: SessionReadOptions): Promise<ClusterResourceInfo>;
 
   // Session lifecycle
   startSession(config: {
@@ -192,7 +197,7 @@ export interface IVolundrService {
   archiveSession(sessionId: string): Promise<void>;
   archiveStoppedSessions(): Promise<string[]>;
   restoreSession(sessionId: string): Promise<void>;
-  listArchivedSessions(): Promise<VolundrSession[]>;
+  listArchivedSessions(options?: SessionReadOptions): Promise<VolundrSession[]>;
 
   // External CLI sessions (Claude Code / Codex discovered on the host).
   // listExternalSessions rejects with a 503-status error when discovery is

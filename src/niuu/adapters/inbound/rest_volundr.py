@@ -98,7 +98,11 @@ def _instance_websocket_url(instance: RegisteredInstance, path: str) -> str:
 
 
 def _query_params(request: Request) -> list[tuple[str, str]]:
-    return list(request.query_params.multi_items())
+    # The selector belongs to this gateway's registry. A downstream Forge has
+    # its own IDs; forwarding ours makes it look up a target that does not exist.
+    return [
+        (key, value) for key, value in request.query_params.multi_items() if key != "instance_id"
+    ]
 
 
 def _normalize_timestamp(value: Any) -> float:
@@ -1002,10 +1006,12 @@ def create_volundr_router(
         request: Request,
         principal: Principal = Depends(extract_principal),
     ) -> list[dict[str, Any]]:
-        instances = await _visible_instances(service, principal)
         selected = request.query_params.get("instance_id")
-        if selected:
-            instances = [await _resolve_target_instance(service, principal, selected)]
+        instances = (
+            [await _resolve_target_instance(service, principal, selected)]
+            if selected
+            else await _visible_instances(service, principal)
+        )
         params = _query_params(request)
         results = await asyncio.gather(
             *[
@@ -1025,13 +1031,30 @@ def create_volundr_router(
         merged: dict[str, dict[str, Any]] = {}
         for instance, result in zip(instances, results, strict=False):
             if isinstance(result, Exception):
+                if selected:
+                    if isinstance(result, HTTPException):
+                        raise result
+                    raise HTTPException(
+                        status_code=502, detail="Selected Forge host is unavailable"
+                    ) from result
                 continue
             if result.status_code >= 400:
+                if selected:
+                    _ensure_remote_success(result)
                 continue
-            payload = result.json()
+            try:
+                payload = result.json()
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=502, detail="Invalid Forge session response"
+                ) from exc
             if not isinstance(payload, list):
+                if selected:
+                    raise HTTPException(status_code=502, detail="Invalid Forge session response")
                 continue
             for item in payload:
+                if selected and (not isinstance(item, dict) or not item.get("id")):
+                    raise HTTPException(status_code=502, detail="Invalid Forge session response")
                 if not isinstance(item, dict):
                     continue
                 merged[f"{instance.id}:{item.get('id') or ''}"] = _with_instance(item, instance)
@@ -1163,6 +1186,21 @@ def create_volundr_router(
         request: Request,
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
+        selected = request.query_params.get("instance_id")
+        if selected:
+            instance = await _resolve_target_instance(service, principal, selected)
+            response = await _request_remote(
+                instance,
+                request,
+                method="GET",
+                path="/stats",
+                embedded_app=embedded_forge_app,
+            )
+            _ensure_remote_success(response)
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise HTTPException(status_code=502, detail="Unexpected Forge metrics response")
+            return _with_instance(payload, instance, rebase_chat_endpoint=False)
         instances = await _visible_instances(service, principal)
         results = await asyncio.gather(
             *[
@@ -1208,6 +1246,22 @@ def create_volundr_router(
         request: Request,
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
+        selected = request.query_params.get("instance_id")
+        if selected:
+            instance = await _resolve_target_instance(service, principal, selected)
+            response = await _request_remote(
+                instance,
+                request,
+                method="GET",
+                path="/resources",
+                remote_prefix="/api/v1/volundr",
+                embedded_app=embedded_forge_app,
+            )
+            _ensure_remote_success(response)
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise HTTPException(status_code=502, detail="Unexpected Forge resources response")
+            return _merge_cluster_resources([payload], [instance])
         instances = await _visible_instances(service, principal)
         results = await asyncio.gather(
             *[
@@ -1884,6 +1938,7 @@ def create_volundr_router(
             instance,
             request,
             method="GET",
+            params=_query_params(request),
             path=(f"/sessions/{session_id}/tool-result/{quote(tool_use_id, safe='')}/preview"),
             embedded_app=embedded_forge_app,
         )

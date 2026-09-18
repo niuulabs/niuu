@@ -625,3 +625,26 @@ def test_preview_cache_contains_untrusted_identifiers(tmp_path, session_id, tool
     assert cache.has(session_id, tool_use_id)
     assert cache._path(session_id, tool_use_id).resolve().is_relative_to(cache.root.resolve())
     assert list(tmp_path.iterdir()) == [cache.root]
+
+
+@pytest.mark.asyncio
+async def test_multiple_images_use_separate_preview_cache_entries(tmp_path) -> None:
+    event_log = _CountingEventLog()
+    client, repository, _, _ = _build(tmp_path, event_log)
+    session = await _stopped_session(repository)
+    content = json.dumps(
+        [
+            {"type": "input_text", "text": "Landscape then portrait"},
+            {"type": "input_image", "image_url": "data:image/png;base64," + _png_b64(800, 400)},
+            {"type": "input_image", "image_url": "data:image/png;base64," + _png_b64(400, 800)},
+        ]
+    )
+    await event_log.append(_frames(session.id, {"multi": content}))
+    path = _PREVIEW_PATH.format(sid=session.id, tuid="multi")
+    for index, size in [(0, (400, 200)), (1, (200, 400)), (0, (400, 200)), (1, (200, 400))]:
+        response = client.get(path, params={"image_index": index})
+        assert response.status_code == 200
+        with Image.open(io.BytesIO(response.content)) as image:
+            assert image.size == size
+    assert client.get(path, params={"image_index": 2}).status_code == 404
+    assert client.get(path, params={"image_index": -1}).status_code == 422

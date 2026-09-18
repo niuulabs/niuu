@@ -758,7 +758,7 @@ async def test_real_tmux_smoke_with_fake_claude(
     fake_claude = bin_dir / "claude"
     fake_claude.write_text(
         """#!/usr/bin/env bash
-printf 'Fake Claude ready\\n'
+printf 'Fake Claude ready\\n❯ \\n'
 while IFS= read -r line; do
   printf 'assistant: %s\\n' "$line"
 done
@@ -1673,14 +1673,15 @@ async def test_user_message_waits_for_repl_ready_before_pasting(
     monkeypatch.setenv("SKULD__TMUX_MENU_POLL_STEP_SECONDS", "0.02")
     transport = FakeTmuxInteractiveTransport(str(tmp_path))
     transport.capture_stdout = "Welcome to Claude Code\nstill booting"
-    await transport.start()
-
+    # start() itself now waits for the prompt, so the message races a boot in progress.
+    startup = asyncio.create_task(transport.start())
     delivery = asyncio.create_task(transport.send_message("hello there"))
     await asyncio.sleep(0.15)
     assert not any("hello there" in buf for buf in transport.loaded_buffers), (
         "nothing may be pasted before the REPL prompt has rendered"
     )
     transport.capture_stdout = "Welcome to Claude Code\n❯ "
+    await asyncio.wait_for(startup, timeout=3)
     await asyncio.wait_for(delivery, timeout=3)
     assert any("hello there" in buf for buf in transport.loaded_buffers)
 
@@ -1689,22 +1690,23 @@ async def test_user_message_waits_for_repl_ready_before_pasting(
     await transport.send_message("second")
     after = len([args for args, _ in transport.commands if args[0] == "capture-pane"])
     assert after == before + 1
-    assert transport._repl_ready_seen
+    assert transport._startup_ready
     await transport.stop()
 
 
 @pytest.mark.asyncio
-async def test_initial_prompt_falls_through_if_repl_never_signals(
+async def test_initial_prompt_is_not_sent_if_repl_never_signals(
     tmp_path: Path, monkeypatch
 ) -> None:
-    # Best-effort: a missing readiness marker must never wedge startup — after the
-    # bounded timeout the seed prompt is delivered anyway.
+    # A bounded failure is preferable to pasting a task into an unrecognized menu.
     monkeypatch.setenv("SKULD__TMUX_REPL_READY_TIMEOUT_SECONDS", "0.2")
-    transport = FakeTmuxInteractiveTransport(str(tmp_path), initial_prompt="seed anyway")
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), initial_prompt="seed prompt")
     transport.capture_stdout = "still booting, no prompt yet"  # no readiness marker
-    await transport.start()
+    with pytest.raises(RuntimeError, match="not ready for input"):
+        await transport.start()
     await transport.stop()
-    assert any("seed anyway" in buf for buf in transport.loaded_buffers)
+    assert not transport.loaded_buffers
+    assert not transport._initial_prompt_sent
 
 
 # ───────────────────────── steering pending→active correlation ─────────────
@@ -1994,6 +1996,8 @@ async def test_workspace_trust_menu_is_not_a_prompt_and_cannot_receive_chat(tmp_
 @pytest.mark.asyncio
 async def test_seed_prompt_and_command_discovery_reject_workspace_trust_menu(tmp_path):
     transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    transport._repl_ready_timeout_s = 0.02
+    transport._menu_poll_step_s = 0.001
     transport.capture_stdout = "Accessing workspace:\n❯ No, exit\nYes, I trust this folder"
     with pytest.raises(RuntimeError, match="Workspace trust"):
         await transport._wait_for_repl_ready()

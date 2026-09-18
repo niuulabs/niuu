@@ -23,7 +23,7 @@ export class ApiClientError extends Error {
 
 export interface ApiClient {
   basePath?: string;
-  get<T>(endpoint: string): Promise<T>;
+  get<T>(endpoint: string, options?: { signal?: AbortSignal }): Promise<T>;
   post<T>(endpoint: string, body?: unknown): Promise<T>;
   put<T>(endpoint: string, body: unknown): Promise<T>;
   patch<T>(endpoint: string, body: unknown): Promise<T>;
@@ -254,8 +254,8 @@ export function createApiClient(basePath: string): ApiClient {
 
   return {
     basePath,
-    get<T>(endpoint: string): Promise<T> {
-      return request<T>(endpoint, { method: 'GET' });
+    get<T>(endpoint: string, options?: { signal?: AbortSignal }): Promise<T> {
+      return request<T>(endpoint, { ...options, method: 'GET' });
     },
     post<T>(endpoint: string, body?: unknown): Promise<T> {
       if (body instanceof FormData) {

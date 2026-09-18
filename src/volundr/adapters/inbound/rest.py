@@ -3685,6 +3685,7 @@ def create_router(
         request: Request,
         session_id: UUID = Path(description="Unique session identifier"),
         tool_use_id: str = Path(description="tool_use_id of the image result"),
+        image_index: int = Query(default=0, ge=0, description="Image within a multi-image result"),
     ) -> Response:
         """Return a scaled-down JPEG preview of an image tool_result.
 
@@ -3698,6 +3699,8 @@ def create_router(
         501 when Pillow is unavailable.
         """
         sid = str(session_id)
+        # Keep existing first-image cache keys compatible with native clients.
+        cache_key = tool_use_id if image_index == 0 else f"{tool_use_id}:image:{image_index}"
 
         def _jpeg_response(data: bytes) -> Response:
             return Response(
@@ -3706,10 +3709,10 @@ def create_router(
                 headers=dict(_PREVIEW_RESPONSE_HEADERS),
             )
 
-        cached = preview_cache.get(sid, tool_use_id)
+        cached = preview_cache.get(sid, cache_key)
         if cached is not None:
             return _jpeg_response(cached)
-        if preview_cache.is_non_image(sid, tool_use_id):
+        if preview_cache.is_non_image(sid, cache_key):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"tool_result is not an image: {tool_use_id}",
@@ -3727,7 +3730,7 @@ def create_router(
         # rebuild — the first holder pays it once (and warms the whole session);
         # the waiters wake into cache hits.
         async with preview_cache.session_lock(sid):
-            cached = preview_cache.get(sid, tool_use_id)
+            cached = preview_cache.get(sid, cache_key)
             if cached is not None:
                 return _jpeg_response(cached)
 
@@ -3747,7 +3750,7 @@ def create_router(
                             warmed,
                             _sanitize_log(session_id),
                         )
-                    cached = preview_cache.get(sid, tool_use_id)
+                    cached = preview_cache.get(sid, cache_key)
                     if cached is not None:
                         return _jpeg_response(cached)
 
@@ -3758,7 +3761,7 @@ def create_router(
                     )
 
                 try:
-                    extracted = extract_image_bytes(found.get("content"))
+                    extracted = extract_image_bytes(found.get("content"), image_index=image_index)
                 except ValueError:
                     logger.warning(
                         "Corrupt image base64 in tool_result %s (session %s)",
@@ -3767,7 +3770,7 @@ def create_router(
                     )
                     extracted = None
                 if extracted is None:
-                    preview_cache.mark_non_image(sid, tool_use_id)
+                    preview_cache.mark_non_image(sid, cache_key)
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
                         detail=f"tool_result is not an image: {tool_use_id}",
@@ -3784,7 +3787,7 @@ def create_router(
                         _sanitize_log(tool_use_id),
                         _sanitize_log(session_id),
                     )
-                    preview_cache.mark_non_image(sid, tool_use_id)
+                    preview_cache.mark_non_image(sid, cache_key)
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
                         detail=f"tool_result image is undecodable: {tool_use_id}",
@@ -3794,7 +3797,7 @@ def create_router(
                     status_code=status.HTTP_501_NOT_IMPLEMENTED,
                     detail="Preview generation unavailable: Pillow is not installed",
                 ) from None
-            preview_cache.put(sid, tool_use_id, jpeg)
+            preview_cache.put(sid, cache_key, jpeg)
             return _jpeg_response(jpeg)
 
     @router.get(

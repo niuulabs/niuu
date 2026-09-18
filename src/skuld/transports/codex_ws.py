@@ -44,6 +44,7 @@ from niuu.domain.reasoning import MODEL_EFFORTS, normalize_effort, validate_effo
 from niuu.domain.transcript_reducer import TOOL_ENDED_AT
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.codex_auth import CodexAuthProviderError, CodexAuthProviderPort, HostCodexAuthProvider
+from skuld.tool_images import image_payloads
 from skuld.transports.codex import _map_codex_tool, resolve_codex_cli
 from skuld.transports.mcp_config import build_codex_mcp_overrides
 from skuld.transports.owned_codex_process import OwnedCodexProcess, OwnedProcessError
@@ -2191,6 +2192,10 @@ class CodexWebSocketTransport(CLITransport):
     def _dynamic_tool_content_text(content_items: object) -> str:
         if not isinstance(content_items, list):
             return ""
+        # Retain images alongside text. Flattening to text here permanently lost
+        # pixels before the broker could annotate shallow history or make previews.
+        if image_payloads(content_items):
+            return json.dumps(content_items, ensure_ascii=False)
         parts: list[str] = []
         for item in content_items:
             if not isinstance(item, dict):

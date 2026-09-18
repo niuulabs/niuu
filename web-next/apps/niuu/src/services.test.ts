@@ -1186,6 +1186,7 @@ describe('buildServices', () => {
     };
     const liveVolundr = {
       kind: 'volundr',
+      getTargets: vi.fn().mockResolvedValue([{ id: 'thor', name: 'Thor', available: true }]),
       getSessions: vi.fn().mockResolvedValue([activeSession]),
       getSession: vi.fn().mockImplementation(async (id: string) => {
         if (id === activeSession.id) return activeSession;
@@ -1212,6 +1213,23 @@ describe('buildServices', () => {
     expect(services['volundr.sessions']).toBe(services.sessionStore);
 
     const sessionStore = services.sessionStore as any;
+    expect(sessionStore.listRequestTimeoutMs).toBe(8000);
+    await expect(sessionStore.listSources()).resolves.toEqual([{ id: 'thor', name: 'Thor' }]);
+    const signal = new AbortController().signal;
+    await expect(sessionStore.listSessions({ instanceId: 'thor' }, signal)).resolves.toEqual([
+      expect.objectContaining({ id: 'sess-live' }),
+    ]);
+    expect(liveVolundr.getSessions).toHaveBeenLastCalledWith({ instanceId: 'thor', signal });
+    await expect(
+      sessionStore.listSessions({ instanceId: 'thor', archivedOnly: true }, signal),
+    ).resolves.toEqual([expect.objectContaining({ id: 'sess-archived', state: 'archived' })]);
+    expect(liveVolundr.listArchivedSessions).toHaveBeenLastCalledWith({
+      instanceId: 'thor',
+      signal,
+    });
+    await expect(
+      sessionStore.listSessions({ instanceId: 'thor', state: 'archived' }, signal),
+    ).resolves.toEqual([]);
     await expect(sessionStore.listSessions()).resolves.toEqual([
       expect.objectContaining({
         id: 'sess-live',
@@ -1571,12 +1589,7 @@ describe('buildServices', () => {
         ],
       }),
     ]);
-    await expect(clusterAdapter.getClusters()).resolves.toEqual([
-      expect.objectContaining({
-        region: 'shared',
-        status: 'healthy',
-      }),
-    ]);
+    await expect(clusterAdapter.getClusters()).rejects.toThrow('cluster resources unavailable');
   });
 
   it('keeps mock session stores when Volundr is not live', () => {

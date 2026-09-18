@@ -21,7 +21,16 @@ import type { SlashCommand } from '../utils/slashCommands';
 import type { FileAttachment } from './useFileAttachments';
 import { useWebSocket } from './useWebSocket';
 import { wsUrlToHttpBase } from '../transport';
+import {
+  fetchHistoryBatch,
+  historySocketUrl,
+  isHistoryRecovery,
+  HistoryChangedError,
+  type HistoryPage,
+  HISTORY_PAGE_SIZE,
+} from './historyPaging';
 import { repairCanonicalText } from './canonicalTextRepair';
+import { reconcileHistoryMessages } from './historyReconciliation';
 import {
   foldPublicText,
   publicTextContent,
@@ -68,7 +77,7 @@ type CliStreamEvent = {
   text_sha256?: string;
   content?: string | Array<{ type: string; text?: string }>;
   result?: string;
-  error?: string | { message?: string };
+  error?: string | { message?: string; code?: string };
   message?: {
     model?: string;
     usage?: { input_tokens?: number; output_tokens?: number };
@@ -82,6 +91,16 @@ type CliStreamEvent = {
       index?: number;
       name?: string;
       input?: Record<string, unknown>;
+      tool_use_id?: string;
+      content?: unknown;
+      is_error?: boolean;
+      truncated?: boolean;
+      preview?: string;
+      is_image?: boolean;
+      mime_type?: string;
+      img_w?: number;
+      img_h?: number;
+      image_previews?: ChatMessagePart['image_previews'];
     }>;
   };
   content_block?: {
@@ -95,7 +114,15 @@ type CliStreamEvent = {
     name?: string;
     tool_use_id?: string;
     input?: Record<string, unknown>;
-    content?: string;
+    content?: unknown;
+    is_error?: boolean;
+    is_image?: boolean;
+    truncated?: boolean;
+    preview?: string;
+    mime_type?: string;
+    img_w?: number;
+    img_h?: number;
+    image_previews?: ChatMessagePart['image_previews'];
   };
   delta?: {
     type?: string;
@@ -179,6 +206,8 @@ export interface ConversationTurn {
   thread_id?: string;
   visibility?: 'visible' | 'internal';
   in_progress?: boolean;
+  history_preview?: boolean;
+  history_metadata_preview?: boolean;
 }
 
 interface UseSkuldChatResult {
@@ -190,6 +219,10 @@ interface UseSkuldChatResult {
   historyLoaded: boolean;
   historyError: string | null;
   retryHistory: () => void;
+  hasOlderHistory: boolean;
+  loadingOlderHistory: boolean;
+  olderHistoryError: string | null;
+  loadOlderHistory: () => Promise<void>;
   participants: ReadonlyMap<string, RoomParticipant>;
   meshEvents: MeshEvent[];
   agentEvents: ReadonlyMap<string, readonly AgentInternalEvent[]>;
@@ -442,7 +475,7 @@ type RevivedPersistedState = {
 function revivePersistedState(url: string | null): RevivedPersistedState {
   const cached = url ? safeSessionStorageGet(url) : null;
   return {
-    messages: reviveMessages(cached?.messages),
+    messages: reviveMessages(cached?.messages).slice(-HISTORY_PAGE_SIZE),
     participants: new Map(
       (cached?.participants ?? []).map((participant) => [participant.peerId, participant]),
     ),
@@ -495,6 +528,8 @@ export function transformTurns(turns: ConversationTurn[]): ChatMessage[] {
       status: metadataStatus === 'error' ? 'error' : turn.in_progress ? 'running' : 'done',
       parts: turn.parts as ChatMessagePart[] | undefined,
       metadata,
+      historyPreview: turn.history_preview,
+      historyMetadataPreview: turn.history_metadata_preview,
       participant: parseParticipantMeta(
         turn.participant_meta as Record<string, unknown> | undefined,
       ),
@@ -670,6 +705,30 @@ export function parseEvent(raw: string): CliStreamEvent | null {
   }
 }
 
+/** Keep the previously loaded prefix and local live tail around a contiguous recent page. */
+function mergeRecentMessages(
+  current: ChatMessage[],
+  recent: ChatMessage[],
+  preferLive = false,
+): ChatMessage[] {
+  const recentIds = new Set(recent.map((message) => message.id));
+  const first = current.findIndex((message) => recentIds.has(message.id));
+  let last = first;
+  for (let index = first; index < current.length; index++) {
+    if (current[index] && recentIds.has(current[index]!.id)) last = index;
+  }
+  const byId = new Map(current.map((message) => [message.id, message]));
+  const incoming = recent.map((message) =>
+    preferLive ? (byId.get(message.id) ?? message) : message,
+  );
+  if (first < 0) return [...incoming, ...current.filter((message) => !recentIds.has(message.id))];
+  return [
+    ...current.slice(0, first),
+    ...incoming,
+    ...current.slice(last + 1).filter((message) => !recentIds.has(message.id)),
+  ];
+}
+
 interface UseSkuldChatOptions {
   historyMode?: 'session' | 'none';
 }
@@ -712,9 +771,34 @@ export function useSkuldChat(
   );
   const historyAttempts = useRef({ url, count: 0 });
   const historyLoaded = historyLoadedForUrl === url;
+  const [olderHistory, setOlderHistory] = useState<{
+    url: string | null;
+    page?: HistoryPage;
+    loading: boolean;
+    error: string | null;
+  }>({ url, loading: false, error: null });
+  const historyPageRef = useRef<{ url: string; page: HistoryPage } | null>(null);
+  const historyReadRef = useRef<AbortController | null>(null);
+  const historyWorkRef = useRef<Promise<void> | null>(null);
+  const olderReadRef = useRef<AbortController | null>(null);
+  const historyRefreshRef = useRef(false);
+  const queuedRecoveryRef = useRef(false);
+  const requestHistoryRecovery = useCallback(() => {
+    if (historyMode !== 'session') return;
+    if (historyReadRef.current) {
+      queuedRecoveryRef.current = true;
+      return;
+    }
+    olderReadRef.current?.abort();
+    olderReadRef.current = null;
+    historyRefreshRef.current = true;
+    historyAttempts.current = { url, count: 0 };
+    setHistoryRequestVersion((version) => version + 1);
+  }, [historyMode, url]);
   const retryHistory = useCallback(() => {
     historyAttempts.current = { url, count: 0 };
     setHistoryFailure(null);
+    historyRefreshRef.current = true;
     setHistoryRequestVersion((version) => version + 1);
   }, [url]);
   const participantsRef = useRef(participants);
@@ -803,7 +887,9 @@ export function useSkuldChat(
     (turns: ConversationTurn[], revision?: string) => {
       // Every accepted server snapshot replaces the cache projection, including repaired old turns.
       projectionRevisionRef.current = revision;
-      const active = [...turns].reverse().find((turn) => turn.in_progress);
+      // A truncated part sequence cannot seed a complete live turn. Keep its
+      // explicit reader in history; subsequent socket items form the live tail.
+      const active = [...turns].reverse().find((turn) => turn.in_progress && !turn.history_preview);
       for (const turn of turns) {
         if (turn.in_progress) continue;
         for (const part of turn.parts ?? []) {
@@ -915,7 +1001,7 @@ export function useSkuldChat(
   }, [clearHistoryRetryTimer, url]);
 
   useEffect(() => {
-    if (!url || historyLoaded) return;
+    if (!url || (historyLoaded && !historyRefreshRef.current)) return;
     if (historyMode === 'none') {
       queueMicrotask(() => {
         setHistoryLoadedForUrl(url);
@@ -932,38 +1018,54 @@ export function useSkuldChat(
     }
 
     let cancelled = false;
-    const headers = Object.fromEntries(getAuthHeaders().entries());
-
-    const base = httpBase.endsWith('/') ? httpBase : `${httpBase}/`;
-    const historyUrl = new URL('api/conversation/history', base);
+    const controller = new AbortController();
+    historyReadRef.current = controller;
+    const previousPage =
+      historyPageRef.current?.url === url ? historyPageRef.current.page : undefined;
     if (historyAttempts.current.url !== url) historyAttempts.current = { url, count: 0 };
     const evidenceAtStart = historyEvidenceRef.current;
     const snapshotAtStart = snapshotEvidenceRef.current;
+    const idsAtStart = new Set(messagesRef.current.map((message) => message.id));
 
-    fetch(historyUrl.href, { headers })
-      .then(async (res) => {
-        if (!res.ok) {
-          throw new Error(`History request failed (HTTP ${res.status}).`);
-        }
-        return res.json();
-      })
+    historyWorkRef.current = fetchHistoryBatch(url, controller.signal)
       .then((data) => {
         if (cancelled) return;
+        // Finish the post-attachment read before exposing the initial page.
+        if (!historyLoaded && queuedRecoveryRef.current) return;
         clearHistoryRetryTimer();
+        setHistoryFailure(null);
+        historyRefreshRef.current = false;
+        const sharesBoundary =
+          previousPage &&
+          previousPage.projection_revision === data.projection_revision &&
+          messagesRef.current.some((turn) => data.turns.some((next) => next.id === turn.id));
+        const boundary =
+          sharesBoundary && previousPage.window_offset < data.window_offset ? previousPage : data;
+        historyPageRef.current = { url, page: boundary };
+        setOlderHistory({ url, page: boundary, loading: false, error: null });
         // A socket snapshot or live frame can win the initial GET. Never roll it back with this body.
         if (snapshotAtStart !== snapshotEvidenceRef.current) {
           setHistoryLoadedForUrl(url);
           return;
         }
         if (evidenceAtStart !== historyEvidenceRef.current) {
-          // Recover the completed prefix without overwriting a newer socket tail.
-          const prefix = transformTurns(
-            (data.turns ?? []).filter((turn: ConversationTurn) => !turn.in_progress),
-          );
-          setMessages((prev) => {
-            const liveIDs = new Set(prev.map((message) => message.id));
-            return [...prefix.filter((message) => !liveIDs.has(message.id)), ...prev];
-          });
+          // A live frame is only a suffix, not a replacement for its entire REST turn.
+          const previous = messagesRef.current;
+          const live = sharesBoundary
+            ? previous
+            : previous.filter(
+                (message) => message.status === 'running' || !idsAtStart.has(message.id),
+              );
+          const { recent, current } = reconcileHistoryMessages(transformTurns(data.turns), live);
+          const active = recent.find((message) => message.id === streamingMessageIdRef.current);
+          if (active) {
+            streamingPartsRef.current = [...(active.parts ?? [])];
+            streamingTextRef.current = active.content;
+            setStreamingParts([...streamingPartsRef.current]);
+            setStreamingContent(active.content);
+          }
+          projectionRevisionRef.current = data.projection_revision;
+          setMessages(mergeRecentMessages(current, recent));
           setHistoryLoadedForUrl(url);
           return;
         }
@@ -977,24 +1079,37 @@ export function useSkuldChat(
           participantsRef.current.size === 0
         ) {
           const participant = ensureSingleParticipant();
-          setMessages(
-            nextMessages.map((message) =>
+          setMessages((prev) => {
+            const incoming = nextMessages.map((message) =>
               message.role === 'assistant' ? { ...message, participant } : message,
-            ),
-          );
+            );
+            return sharesBoundary ? mergeRecentMessages(prev, incoming) : incoming;
+          });
         } else {
-          setMessages(nextMessages);
+          setMessages((prev) => {
+            if (!sharesBoundary) return nextMessages;
+            return mergeRecentMessages(prev, nextMessages);
+          });
         }
         if (historyParticipants && historyParticipants.size > 0) {
-          setParticipants(historyParticipants);
+          setParticipants((prev) =>
+            sharesBoundary ? new Map([...prev, ...historyParticipants]) : historyParticipants,
+          );
         }
         if (historyMeshEvents && historyMeshEvents.length > 0) {
-          setMeshEvents(historyMeshEvents);
+          setMeshEvents((prev) => {
+            if (!sharesBoundary) return historyMeshEvents;
+            const incoming = new Set(historyMeshEvents.map((event) => event.id));
+            return [...prev.filter((event) => !incoming.has(event.id)), ...historyMeshEvents];
+          });
         }
         setHistoryLoadedForUrl(url);
       })
       .catch((error: unknown) => {
-        if (cancelled) return;
+        if (cancelled || controller.signal.aborted) return;
+        setOlderHistory((previous) =>
+          previous.url === url ? { ...previous, loading: false } : previous,
+        );
         setHistoryFailure({
           url,
           message: error instanceof Error ? error.message : 'Could not reach the session history.',
@@ -1006,10 +1121,21 @@ export function useSkuldChat(
             if (!cancelled) setHistoryRequestVersion((version) => version + 1);
           }, HISTORY_RETRY_DELAY_MS);
         }
+      })
+      .finally(() => {
+        if (historyReadRef.current !== controller) return;
+        historyReadRef.current = null;
+        if (!cancelled && queuedRecoveryRef.current) {
+          queuedRecoveryRef.current = false;
+          historyRefreshRef.current = true;
+          setHistoryRequestVersion((version) => version + 1);
+        }
       });
 
     return () => {
       cancelled = true;
+      controller.abort();
+      if (historyReadRef.current === controller) historyReadRef.current = null;
       clearHistoryRetryTimer();
     };
   }, [
@@ -1022,11 +1148,59 @@ export function useSkuldChat(
     url,
   ]);
 
+  const loadOlderHistory = useCallback(async () => {
+    const held = historyPageRef.current;
+    if (!url || held?.url !== url || held.page.window_offset <= 0 || olderReadRef.current) return;
+    const controller = new AbortController();
+    olderReadRef.current = controller;
+    setOlderHistory({ url, page: held.page, loading: true, error: null });
+    try {
+      if (historyReadRef.current) await historyWorkRef.current;
+      if (controller.signal.aborted || currentUrlRef.current !== url) return;
+      const boundary = historyPageRef.current;
+      if (boundary?.url !== url || boundary.page.window_offset <= 0) return;
+      const page = await fetchHistoryBatch(url, controller.signal, boundary.page);
+      if (controller.signal.aborted || currentUrlRef.current !== url) return;
+      historyPageRef.current = { url, page };
+      const older = transformTurns(page.turns);
+      setMessages((prev) => {
+        const ids = new Set(prev.map((message) => message.id));
+        return [...older.filter((message) => !ids.has(message.id)), ...prev];
+      });
+      setParticipants((prev) => new Map([...participantsFromTurns(page.turns), ...prev]));
+      setMeshEvents((prev) => {
+        const ids = new Set(prev.map((event) => event.id));
+        return [...meshEventsFromTurns(page.turns).filter((event) => !ids.has(event.id)), ...prev];
+      });
+      setOlderHistory({ url, page, loading: false, error: null });
+    } catch (error) {
+      if (controller.signal.aborted || currentUrlRef.current !== url) return;
+      setOlderHistory({
+        url,
+        page: held.page,
+        loading: false,
+        error: error instanceof Error ? error.message : 'Could not load earlier messages.',
+      });
+      if (error instanceof HistoryChangedError) requestHistoryRecovery();
+    } finally {
+      if (olderReadRef.current === controller) olderReadRef.current = null;
+    }
+  }, [url, requestHistoryRecovery]);
+
+  useEffect(
+    () => () => {
+      olderReadRef.current?.abort();
+      olderReadRef.current = null;
+      queuedRecoveryRef.current = false;
+    },
+    [url],
+  );
+
   useEffect(() => {
     if (!url) return;
     safeSessionStorageSet(url, {
       projectionRevision: projectionRevisionRef.current,
-      messages: serializeMessages(messages),
+      messages: serializeMessages(messages.slice(-HISTORY_PAGE_SIZE)),
       meshEvents: serializeMeshEvents(meshEvents),
       participants: Array.from(participants.values()),
       agentEvents: serializeAgentEvents(agentEvents),
@@ -1150,12 +1324,7 @@ export function useSkuldChat(
         if (!base) return;
         textRepairsRef.current.add(key);
         try {
-          const response = await fetch(
-            new URL('api/conversation/history', base.endsWith('/') ? base : `${base}/`),
-            { headers: Object.fromEntries(getAuthHeaders().entries()) },
-          );
-          if (!response.ok || currentUrlRef.current !== url) return;
-          const history = (await response.json()) as { turns?: ConversationTurn[] };
+          const history = await fetchHistoryBatch(url, new AbortController().signal);
           if (currentUrlRef.current !== url) return;
           for (const turn of history.turns ?? []) {
             const block = turn.parts?.find((part) =>
@@ -1200,6 +1369,12 @@ export function useSkuldChat(
       };
 
       for (const event of events) {
+        if (isHistoryRecovery(event)) {
+          requestHistoryRecovery();
+          continue;
+        }
+        // Native socket-only consumers still own their snapshots. Paged sessions use REST.
+        if (event.type === 'conversation_history' && historyMode === 'session') continue;
         if (
           [
             'assistant',
@@ -1216,7 +1391,8 @@ export function useSkuldChat(
         if (
           event.turn_id &&
           closedNativeTurnsRef.current.has(event.turn_id) &&
-          event.type !== 'conversation_history'
+          event.type !== 'conversation_history' &&
+          event.type !== 'user'
         )
           continue;
         if (
@@ -1319,6 +1495,45 @@ export function useSkuldChat(
           continue;
         }
         switch (event.type) {
+          case 'user': {
+            // Claude and Codex emit tool results in a user envelope. They are
+            // tool activity belonging to the assistant, never a new human prompt.
+            const results =
+              event.message?.content?.filter(
+                (block) => block.type === 'tool_result' && block.tool_use_id,
+              ) ?? [];
+            for (const block of results) {
+              const part: ChatMessagePart = { ...block, type: 'tool_result' };
+              const matchesStream = streamingPartsRef.current.some(
+                (existing) =>
+                  existing.id === block.tool_use_id || existing.tool_use_id === block.tool_use_id,
+              );
+              if (matchesStream) {
+                streamingPartsRef.current = upsertToolPart(streamingPartsRef.current, part);
+                setStreamingParts([...streamingPartsRef.current]);
+                syncStreamingMessage();
+              } else {
+                setMessages((current) => {
+                  const index = current.findLastIndex(
+                    (message) =>
+                      message.role === 'assistant' &&
+                      message.parts?.some(
+                        (existing) =>
+                          existing.id === block.tool_use_id ||
+                          existing.tool_use_id === block.tool_use_id,
+                      ),
+                  );
+                  if (index < 0) return current;
+                  return current.map((message, i) =>
+                    i === index
+                      ? { ...message, parts: upsertToolPart(message.parts ?? [], part) }
+                      : message,
+                  );
+                });
+              }
+            }
+            break;
+          }
           case 'assistant': {
             const explicitParticipant = parseParticipantMeta(event.participant);
             if (explicitParticipant) {
@@ -1467,9 +1682,9 @@ export function useSkuldChat(
               const toolUseId = event.content_block?.tool_use_id ?? '';
               if (toolUseId) {
                 streamingPartsRef.current = upsertToolPart(streamingPartsRef.current, {
+                  ...event.content_block,
                   type: 'tool_result',
                   tool_use_id: toolUseId,
-                  content: event.content_block?.content ?? '',
                 });
                 setStreamingParts([...streamingPartsRef.current]);
                 syncStreamingMessage();
@@ -2087,12 +2302,26 @@ export function useSkuldChat(
       getDefaultAssistantParticipant,
       storeAvailableCommands,
       seedStreamingHistory,
+      requestHistoryRecovery,
+      historyMode,
       url,
     ],
   );
 
-  const { sendJson } = useWebSocket(url, {
+  const socketUrl = useMemo(
+    () => historySocketUrl(url, historyMode === 'session'),
+    [url, historyMode],
+  );
+  const { sendJson } = useWebSocket(socketUrl, {
     onOpen: () => {
+      // A read after socket attachment closes the GET-before-connect gap, including reconnects.
+      // Cancel an unfinished initial batch now; do not download it all twice.
+      if (!historyLoaded && historyReadRef.current) {
+        historyReadRef.current.abort();
+        historyReadRef.current = null;
+        queuedRecoveryRef.current = false;
+      }
+      requestHistoryRecovery();
       setConnected(true);
       setConnectionVersion((version) => version + 1);
       storeAvailableCommands([]);
@@ -2332,6 +2561,11 @@ export function useSkuldChat(
     [agentEvents],
   );
 
+  const sendSetInternalVisibility = useCallback(
+    (visible: boolean) => sendJson({ type: 'set_internal_visibility', visible }),
+    [sendJson],
+  );
+
   return {
     messages,
     streamingContent: streamingContent || undefined,
@@ -2339,8 +2573,12 @@ export function useSkuldChat(
     streamingModel: streamingModel || undefined,
     connected,
     historyLoaded,
-    historyError: !historyLoaded && historyFailure?.url === url ? historyFailure.message : null,
+    historyError: historyFailure?.url === url ? historyFailure.message : null,
     retryHistory,
+    hasOlderHistory: olderHistory.url === url && (olderHistory.page?.window_offset ?? 0) > 0,
+    loadingOlderHistory: olderHistory.url === url && olderHistory.loading,
+    olderHistoryError: olderHistory.url === url ? olderHistory.error : null,
+    loadOlderHistory,
     participants: stableParticipants,
     meshEvents,
     agentEvents: stableAgentEvents,
@@ -2359,8 +2597,7 @@ export function useSkuldChat(
     sendSetThinkingTokens: (tokens: number) =>
       sendJson({ type: 'set_max_thinking_tokens', max_thinking_tokens: tokens }),
     sendRewindFiles: () => sendJson({ type: 'rewind_files' }),
-    sendSetInternalVisibility: (visible: boolean) =>
-      sendJson({ type: 'set_internal_visibility', visible }),
+    sendSetInternalVisibility,
     clearMessages,
   };
 }

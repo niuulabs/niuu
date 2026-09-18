@@ -683,7 +683,9 @@ describe('useSkuldChat', () => {
   });
 
   it('hydrates history from websocket conversation_history events', async () => {
-    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+    const { result } = renderHook(() =>
+      useSkuldChat('ws://localhost:8080/s/test/session', { historyMode: 'none' }),
+    );
 
     act(() => {
       wsHandlers.onMessage?.(
@@ -825,7 +827,9 @@ summary: Fetched review packet ready
   });
 
   it('hydrates participants from conversation_history turn metadata when room_state is missing', async () => {
-    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+    const { result } = renderHook(() =>
+      useSkuldChat('ws://localhost:8080/s/test/session', { historyMode: 'none' }),
+    );
 
     act(() => {
       wsHandlers.onMessage?.(
@@ -862,7 +866,9 @@ summary: Fetched review packet ready
   });
 
   it('hydrates assistant history with a synthesized Skuld participant when participant metadata is absent', async () => {
-    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+    const { result } = renderHook(() =>
+      useSkuldChat('ws://localhost:8080/s/test/session', { historyMode: 'none' }),
+    );
 
     act(() => {
       wsHandlers.onMessage?.(
@@ -892,7 +898,9 @@ summary: Fetched review packet ready
   });
 
   it('hydrates mesh outcome events from conversation_history outcome turns', async () => {
-    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+    const { result } = renderHook(() =>
+      useSkuldChat('ws://localhost:8080/s/test/session', { historyMode: 'none' }),
+    );
 
     act(() => {
       wsHandlers.onMessage?.(
@@ -932,7 +940,9 @@ page_path: council/demo/opinion-b.md
   });
 
   it('normalizes punctuation spacing in history-derived outcome summaries', async () => {
-    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+    const { result } = renderHook(() =>
+      useSkuldChat('ws://localhost:8080/s/test/session', { historyMode: 'none' }),
+    );
 
     act(() => {
       wsHandlers.onMessage?.(

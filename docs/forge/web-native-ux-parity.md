@@ -330,10 +330,31 @@ entry too. Non-seeded hosts created in the UI remain in the database.
 The UI's `/config.json` controls service base URLs, not the host list.
 
 The private HTTPS UI uses nginx in
-`/home/thor/.config/niuu-forge-web/nginx.conf`. The four known HTTP Forge session
-sockets are rewritten to same-origin secure proxy routes. A newly registered HTTP
-host also needs such a session proxy (or an HTTPS Forge endpoint); saving its REST
-origin alone cannot bypass a browser's mixed-content restrictions.
+`/home/thor/.config/niuu-forge-web/nginx.conf`. The known HTTP Forge session
+sockets are rewritten to same-origin secure proxy routes. Each `/forge-host/<slug>/`
+route forwards both session sockets and paged REST history to that host. A newly
+registered HTTP host also needs such a session proxy (or an HTTPS Forge endpoint);
+saving its REST origin alone cannot bypass a browser's mixed-content restrictions.
+
+### Guild node management (September 18)
+
+Select a node in **Guild → Instances** to use **Edit settings** or **Delete node**
+in the detail rail. Editing supports the display name, server URL, optional default
+folder, tags, enabled/default flags, and advanced routing slug, visibility and JSON
+configuration. Updating an endpoint preserves transport and credential references.
+The API enforces ownership/tenant/admin permissions. Errors leave the form open
+with its edits intact. Deletion confirms the selected node and removes only its
+registry record; it does not stop the server or its sessions. Registry and Forge
+selector caches are invalidated after successful changes.
+
+Thor's existing `build-kit` registration was corrected to
+`http://100.90.20.64:8080`; the mistaken `horde-build-kit` duplicate was removed.
+Its configuration and visibility were preserved, and other registrations were
+unchanged. The UI proxy now includes `/forge-host/build-kit/`. Tailscale ping
+succeeded, but TCP connections to ports 8080 and 22 timed out from Thor during
+verification. The enabled unreachable host adds about 30 seconds to the current
+aggregate session-list request. Check the listener and network access on Build Kit;
+registration and proxy setup alone cannot make that service reachable.
 
 Remaining differences from iOS: on-device overrides are not automatically synced;
 model/definition choices use the connected Niuu catalogue rather than a separate

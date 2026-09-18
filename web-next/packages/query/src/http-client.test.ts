@@ -375,3 +375,18 @@ describe('createApiClient', () => {
     },
   );
 });
+
+it('passes an inventory read AbortSignal to fetch without dropping authentication', async () => {
+  const request = vi.fn().mockResolvedValue({ status: 200, ok: true, json: async () => [] });
+  vi.stubGlobal('fetch', request);
+  setTokenProvider(() => 'test-token');
+  const controller = new AbortController();
+  await createApiClient('/api/v1/forge').get('/sessions?instance_id=thor', {
+    signal: controller.signal,
+  });
+  const options = request.mock.calls[0]![1];
+  expect(options.signal).toBe(controller.signal);
+  expect(options.headers.get('Authorization')).toBe('Bearer test-token');
+  setTokenProvider(null);
+  vi.unstubAllGlobals();
+});

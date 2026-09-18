@@ -589,3 +589,20 @@
   background: color-mix(in srgb, var(--color-brand) 42%, var(--color-bg-elevated));
   background-clip: padding-box;
 }
+
+.forge-session-source-status {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+.forge-session-source-status p {
+  margin: var(--space-1) 0;
+}
+.forge-session-source-status button {
+  border: 0;
+  padding: var(--space-1) 0;
+  background: transparent;
+  color: var(--color-brand);
+  cursor: pointer;
+}

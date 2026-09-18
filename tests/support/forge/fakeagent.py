@@ -809,6 +809,30 @@ def _install_sigint_handler() -> None:
     signal.signal(signal.SIGINT, _handler)
 
 
+def _workspace_trust_widget() -> bool:
+    """Test-only startup screen: default No, arrow navigation, Enter to confirm."""
+    fd = sys.stdin.fileno()
+    previous = termios.tcgetattr(fd)
+    selected_yes = False
+    try:
+        tty.setcbreak(fd)
+        while True:
+            _emit("\x1b[2J\x1b[HAccessing workspace:\n" + str(Path.cwd()))
+            _emit(("  " if selected_yes else "❯ ") + "No, exit")
+            _emit(("❯ " if selected_yes else "  ") + "Yes, I trust this folder")
+            _emit("Enter to confirm · Esc to cancel")
+            key = _read_widget_key()
+            if key in {"\x1b[A", "\x1b[B"}:
+                selected_yes = not selected_yes
+            elif key in {"\r", "\n"}:
+                _emit("\x1b[2J\x1b[H")
+                return selected_yes
+            elif key in {None, "\x1b"}:
+                return False
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, previous)
+
+
 def run(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     settings_path = _parse_settings_path(argv)
@@ -817,7 +841,9 @@ def run(argv: list[str] | None = None) -> int:
 
     _install_sigint_handler()
 
-    _emit("fakeagent ready")
+    if os.environ.get("FORGE_FAKEAGENT_WORKSPACE_TRUST") == "1" and not _workspace_trust_widget():
+        return 2
+    _emit("fakeagent ready\n❯ ")
 
     boot = os.environ.get("FORGE_FAKEAGENT_BOOT")
     if boot:

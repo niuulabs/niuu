@@ -1076,6 +1076,12 @@ function LiveSessionChat({
         streamingModel={chat.streamingModel}
         connected={chat.connected}
         historyLoaded={chat.historyLoaded}
+        historyError={chat.historyError}
+        onRetryHistory={chat.retryHistory}
+        hasOlderHistory={chat.hasOlderHistory}
+        loadingOlderHistory={chat.loadingOlderHistory}
+        olderHistoryError={chat.olderHistoryError}
+        onLoadOlderHistory={chat.loadOlderHistory}
         participants={chat.participants}
         meshEvents={chat.meshEvents}
         agentEvents={chat.agentEvents}

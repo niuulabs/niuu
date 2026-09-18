@@ -8,6 +8,8 @@ import {
   Building2,
   ChevronRight,
   ExternalLink,
+  Pencil,
+  Trash2,
   RefreshCw,
   Search,
   Shield,
@@ -15,13 +17,21 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import { resolveNiuuRegistryBase } from './services';
+import { resolveNiuuRegistryBase, resolveSettingsServiceBase } from './services';
+import { EditInstanceDialog, DeleteInstanceDialog, guildActionClass } from './GuildInstanceDialogs';
+import {
+  canManageInstance,
+  parseTags,
+  registryError,
+  type InstanceKind,
+  type InstanceRecord,
+  type InstanceUpdate,
+  type VisibilityScope,
+} from './guildInstances';
 
-type InstanceKind = 'volundr' | 'ting' | 'mimir' | 'bifrost' | 'ravn' | 'observatory' | 'generic';
 type WizardStep = 1 | 2 | 3;
 type AuthMethod = 'service-account' | 'personal-token' | 'oauth' | 'mtls' | 'shared-secret';
 type CredentialScope = 'none' | 'user' | 'tenant';
-type VisibilityScope = 'user' | 'tenant' | 'system';
 type InstanceCatalogEntry = {
   kind: InstanceKind;
   label: string;
@@ -30,23 +40,6 @@ type InstanceCatalogEntry = {
   detail: string;
   registerable: boolean;
   filterable: boolean;
-};
-
-type InstanceRecord = {
-  id: string;
-  kind: InstanceKind;
-  slug: string;
-  name: string;
-  baseUrl: string;
-  visibility: VisibilityScope | string;
-  ownerId: string | null;
-  tenantId: string | null;
-  enabled: boolean;
-  isDefault: boolean;
-  config: Record<string, unknown>;
-  tags: string[];
-  createdAt: string;
-  updatedAt: string;
 };
 
 type InstanceTestResult = {
@@ -78,16 +71,6 @@ type WizardState = {
   visibility: VisibilityScope;
   tags: string;
 };
-
-/** Parse a comma/space-separated tag input into a clean, deduped list. */
-function parseTags(value: string): string[] {
-  const seen = new Set<string>();
-  for (const raw of value.split(/[,\s]+/)) {
-    const tag = raw.trim();
-    if (tag) seen.add(tag);
-  }
-  return Array.from(seen);
-}
 
 const FILTER_KIND_OPTIONS: Array<{
   value: Exclude<InstanceKind, 'generic'>;
@@ -593,6 +576,9 @@ function GuildDetailRail({
   onRefresh,
   onCollapse,
   isTesting,
+  onEdit,
+  onDelete,
+  canManage,
 }: {
   instance: InstanceRecord;
   health: HealthSnapshot | null | undefined;
@@ -601,6 +587,9 @@ function GuildDetailRail({
   onRefresh: () => void;
   onCollapse: () => void;
   isTesting: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+  canManage: boolean;
 }) {
   const meta = kindMeta(instance.kind);
   const tone = healthTone(health);
@@ -637,6 +626,39 @@ function GuildDetailRail({
           </button>
         </div>
 
+        <div className="niuu:mt-4 niuu:flex niuu:flex-wrap niuu:gap-2">
+          <button
+            type="button"
+            onClick={onEdit}
+            disabled={!canManage}
+            title={
+              canManage ? 'Edit node settings' : 'You do not have permission to manage this node'
+            }
+            className={guildActionClass}
+          >
+            <Pencil className="niuu:h-4 niuu:w-4" />
+            Edit settings
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={!canManage}
+            title={
+              canManage
+                ? 'Delete node registration'
+                : 'You do not have permission to manage this node'
+            }
+            className={`${guildActionClass} niuu:text-danger`}
+          >
+            <Trash2 className="niuu:h-4 niuu:w-4" />
+            Delete node
+          </button>
+        </div>
+        {!instance.enabled ? (
+          <p className="niuu:mt-3 niuu:text-sm niuu:text-text-muted">
+            Disabled — excluded from environment selectors.
+          </p>
+        ) : null}
         <div className="niuu:mt-5">
           <HealthStrip history={history} />
         </div>
@@ -793,6 +815,9 @@ function RegisterWizard({
   setWizard,
   userCredentials,
   tenantCredentials,
+  credentialError,
+  credentialsLoading,
+  onRetryCredentials,
   createMutationPending,
   createError,
   onSubmit,
@@ -813,6 +838,9 @@ function RegisterWizard({
   setWizard: React.Dispatch<React.SetStateAction<WizardState>>;
   userCredentials: CredentialSummary[];
   tenantCredentials: CredentialSummary[];
+  credentialError?: string;
+  credentialsLoading: boolean;
+  onRetryCredentials: () => void;
   createMutationPending: boolean;
   createError: unknown;
   onSubmit: () => void;
@@ -1062,9 +1090,20 @@ function RegisterWizard({
                       ))}
                     </select>
                     <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
-                      {availableCredentials.length > 0
-                        ? `${availableCredentials.length} reusable credential${availableCredentials.length === 1 ? '' : 's'} available`
-                        : 'No saved credentials in this scope yet.'}
+                      {credentialError ? (
+                        <span role="alert">
+                          {credentialError}{' '}
+                          <button type="button" onClick={onRetryCredentials}>
+                            Retry
+                          </button>
+                        </span>
+                      ) : credentialsLoading ? (
+                        'Loading credentials…'
+                      ) : availableCredentials.length > 0 ? (
+                        `${availableCredentials.length} reusable credential${availableCredentials.length === 1 ? '' : 's'} available`
+                      ) : (
+                        'No saved credentials in this scope yet.'
+                      )}
                     </div>
                   </div>
                 ) : null}
@@ -1225,6 +1264,12 @@ export function GuildPage() {
     return createApiClient(sharedBase);
   }, [sharedBase]);
 
+  const credentialsBase = resolveSettingsServiceBase(config, 'credentials');
+  const credentialsClient = useMemo(
+    () => (credentialsBase ? createApiClient(credentialsBase) : null),
+    [credentialsBase],
+  );
+
   const identityQuery = useQuery({
     queryKey: ['guild-identity'],
     queryFn: () => identity.getIdentity(),
@@ -1253,6 +1298,8 @@ export function GuildPage() {
   const [kindFilter, setKindFilter] = useState<'all' | InstanceKind>('all');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(true);
+  const [editingInstance, setEditingInstance] = useState<InstanceRecord | null>(null);
+  const [deletingInstance, setDeletingInstance] = useState<InstanceRecord | null>(null);
   const [manualRegisterOpen, setManualRegisterOpen] = useState(false);
   const [wizard, setWizard] = useState<WizardState>(makeDefaultWizard);
   const [healthById, setHealthById] = useState<Record<string, HealthSnapshot>>({});
@@ -1280,20 +1327,73 @@ export function GuildPage() {
   });
 
   const userCredentialsQuery = useQuery({
-    queryKey: ['guild-user-credentials'],
-    enabled: client != null,
+    queryKey: ['guild-user-credentials', credentialsBase, currentIdentity?.userId],
+    enabled: credentialsClient != null && registerOpen && wizard.credentialScope === 'user',
+    retry: false,
     queryFn: async () => {
-      const payload = await client!.get<CredentialListPayload>('/credentials/user');
+      const payload = await credentialsClient!.get<CredentialListPayload>('/user');
       return payload.credentials ?? [];
     },
   });
 
   const tenantCredentialsQuery = useQuery({
-    queryKey: ['guild-tenant-credentials', currentIdentity?.tenantId ?? 'none'],
-    enabled: client != null && canCreateTenantScope,
+    queryKey: ['guild-tenant-credentials', credentialsBase, currentIdentity?.tenantId ?? 'none'],
+    enabled:
+      credentialsClient != null &&
+      registerOpen &&
+      wizard.credentialScope === 'tenant' &&
+      canCreateTenantScope,
+    retry: false,
     queryFn: async () => {
-      const payload = await client!.get<CredentialListPayload>('/credentials/tenant');
+      const payload = await credentialsClient!.get<CredentialListPayload>('/tenant');
       return payload.credentials ?? [];
+    },
+  });
+
+  const refreshRegistry = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['guild-instances'] }),
+      queryClient.invalidateQueries({ queryKey: ['volundr', 'targets'] }),
+      queryClient.invalidateQueries({ queryKey: ['volundr', 'clusters'] }),
+      queryClient.invalidateQueries({ queryKey: ['volundr', 'sessions'] }),
+      queryClient.invalidateQueries({ queryKey: ['volundr', 'domain-sessions'] }),
+    ]);
+  };
+  const clearHealth = (id: string) => {
+    setHealthById((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+    setHealthHistory((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  };
+  const updateMutation = useMutation({
+    mutationFn: ({ id, update }: { id: string; update: InstanceUpdate }) =>
+      client!.patch<InstanceRecord>(`/instances/${encodeURIComponent(id)}`, update),
+    onSuccess: async (instance) => {
+      setEditingInstance(null);
+      setSelectedId(instance.id);
+      queryClient.setQueryData<InstanceRecord[]>(['guild-instances'], (current) =>
+        current?.map((entry) => (entry.id === instance.id ? instance : entry)),
+      );
+      clearHealth(instance.id);
+      await refreshRegistry();
+    },
+  });
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => client!.delete<void>(`/instances/${encodeURIComponent(id)}`),
+    onSuccess: async (_, id) => {
+      setDeletingInstance(null);
+      setSelectedId(null);
+      queryClient.setQueryData<InstanceRecord[]>(['guild-instances'], (current) =>
+        current?.filter((entry) => entry.id !== id),
+      );
+      clearHealth(id);
+      await refreshRegistry();
     },
   });
 
@@ -1326,7 +1426,7 @@ export function GuildPage() {
       resetWizard();
       setSelectedId(instance.id);
       setDetailOpen(true);
-      await queryClient.invalidateQueries({ queryKey: ['guild-instances'] });
+      await refreshRegistry();
     },
   });
 
@@ -1335,6 +1435,15 @@ export function GuildPage() {
       client!.post<InstanceTestResult>(`/instances/${instanceId}/test`),
     onSuccess: (result, instanceId) => {
       const snapshot: HealthSnapshot = { ...result, checkedAt: Date.now() };
+      setHealthById((current) => ({ ...current, [instanceId]: snapshot }));
+      setHealthHistory((current) => pushHealthHistory(current, instanceId, snapshot));
+    },
+    onError: (error, instanceId) => {
+      const snapshot: HealthSnapshot = {
+        ok: false,
+        message: registryError(error),
+        checkedAt: Date.now(),
+      };
       setHealthById((current) => ({ ...current, [instanceId]: snapshot }));
       setHealthHistory((current) => pushHealthHistory(current, instanceId, snapshot));
     },
@@ -1557,6 +1666,15 @@ export function GuildPage() {
                   onRefresh={() => void instancesQuery.refetch()}
                   onCollapse={() => setDetailOpen(false)}
                   isTesting={healthMutation.isPending}
+                  canManage={canManageInstance(selectedInstance, currentIdentity)}
+                  onEdit={() => {
+                    updateMutation.reset();
+                    setEditingInstance(selectedInstance);
+                  }}
+                  onDelete={() => {
+                    deleteMutation.reset();
+                    setDeletingInstance(selectedInstance);
+                  }}
                 />
               ) : null}
             </section>
@@ -1564,6 +1682,26 @@ export function GuildPage() {
         </div>
       </div>
 
+      {editingInstance && currentIdentity ? (
+        <EditInstanceDialog
+          key={editingInstance.id}
+          instance={editingInstance}
+          identity={currentIdentity}
+          pending={updateMutation.isPending}
+          error={updateMutation.error}
+          onClose={() => setEditingInstance(null)}
+          onSave={(update) => updateMutation.mutate({ id: editingInstance.id, update })}
+        />
+      ) : null}
+      {deletingInstance ? (
+        <DeleteInstanceDialog
+          instance={deletingInstance}
+          pending={deleteMutation.isPending}
+          error={deleteMutation.error}
+          onClose={() => setDeletingInstance(null)}
+          onDelete={() => deleteMutation.mutate(deletingInstance.id)}
+        />
+      ) : null}
       <RegisterWizard
         key={registerOpen ? 'register-open' : 'register-closed'}
         open={registerOpen}
@@ -1597,6 +1735,24 @@ export function GuildPage() {
         setWizard={setWizard}
         userCredentials={userCredentialsQuery.data ?? []}
         tenantCredentials={tenantCredentialsQuery.data ?? []}
+        credentialsLoading={
+          (wizard.credentialScope === 'tenant' ? tenantCredentialsQuery : userCredentialsQuery)
+            .isFetching
+        }
+        credentialError={
+          !credentialsClient
+            ? 'Credential service is not configured.'
+            : (wizard.credentialScope === 'tenant' ? tenantCredentialsQuery : userCredentialsQuery)
+                  .isError
+              ? 'Could not load credentials.'
+              : undefined
+        }
+        onRetryCredentials={() => {
+          if (credentialsClient)
+            void (
+              wizard.credentialScope === 'tenant' ? tenantCredentialsQuery : userCredentialsQuery
+            ).refetch();
+        }}
         createMutationPending={createMutation.isPending}
         createError={createMutation.error}
         onSubmit={() => createMutation.mutate()}

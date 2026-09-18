@@ -4,6 +4,7 @@ import {
   Dialog,
   DialogContent,
   ExternalLinkPreview,
+  ToolImagePreview,
   externalResource,
   type ConversationResource,
 } from '@niuulabs/ui';
@@ -33,6 +34,7 @@ export function SessionResources({
   const [error, setError] = useState<string>();
   const load = useCallback(
     (resource: ConversationResource, signal: AbortSignal) => {
+      if (resource.kind === 'tool-image') return resource.loadFull(signal);
       if (resource.kind === 'external') {
         return fetch(resource.path, { signal, credentials: 'omit' }).then((response) => {
           if (!response.ok) throw new Error('Could not load linked file');
@@ -94,7 +96,7 @@ export function SessionResources({
   );
 
   useEffect(() => {
-    if (!selected || selected.kind === 'external') return;
+    if (!selected || selected.kind === 'external' || selected.kind === 'tool-image') return;
     const abort = new AbortController();
     let url: string | undefined;
     void load(selected, abort.signal)
@@ -139,7 +141,11 @@ export function SessionResources({
           }}
           title={selected?.name ?? 'File preview'}
           description={
-            selected?.kind !== 'presented' ? selected?.path : 'Delivered by this session'
+            selected?.kind === 'tool-image'
+              ? selected.description
+              : selected?.kind !== 'presented'
+                ? selected?.path
+                : 'Delivered by this session'
           }
         >
           {error && (
@@ -150,10 +156,16 @@ export function SessionResources({
               </button>
             </div>
           )}
-          {selected?.kind !== 'external' && !preview && !error && (
-            <div className="forge-resource-empty">
-              <p role="status">Loading file…</p>
-            </div>
+          {selected?.kind !== 'external' &&
+            selected?.kind !== 'tool-image' &&
+            !preview &&
+            !error && (
+              <div className="forge-resource-empty">
+                <p role="status">Loading file…</p>
+              </div>
+            )}
+          {selected?.kind === 'tool-image' && (
+            <ToolImagePreview key={selected.path} resource={selected} />
           )}
           {selected?.kind === 'external' && (
             <ConversationResourceProvider port={previewPort}>
