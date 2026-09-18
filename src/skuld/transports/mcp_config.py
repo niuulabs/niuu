@@ -4,7 +4,18 @@ from __future__ import annotations
 
 import json
 import shlex
+import sys
+from pathlib import Path
 from typing import Any
+
+from skuld import mcp_credentials
+
+# Run the credential helper as a FILE, not as `-m skuld.mcp_credentials`.
+# Importing the `skuld` package costs ~6.6s in the session image, and the helper
+# is invoked per MCP connection: Codex gives its `http_headers_helper` 10s and
+# opens connections concurrently, so the module form times out and the server is
+# dropped. Executing the file skips the package import and runs in ~0.1s.
+_CREDENTIALS_SCRIPT = str(Path(mcp_credentials.__file__).resolve())
 
 
 def normalize_mcp_servers(raw_servers: object) -> list[dict[str, Any]]:
@@ -138,9 +149,8 @@ def build_codex_mcp_overrides(raw_servers: object) -> list[tuple[str, str]]:
 
 def _header_helper(server: dict[str, Any]) -> str:
     args = [
-        "python3",
-        "-m",
-        "skuld.mcp_credentials",
+        sys.executable or "python3",
+        _CREDENTIALS_SCRIPT,
         "--env" if server.get("credential_env") else "--file",
         server.get("credential_env") or server["credential_file"],
         "--header",

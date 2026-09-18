@@ -117,3 +117,31 @@ def test_codex_stdio_explicitly_inherits_named_credentials_only():
     overrides = dict(build_codex_mcp_overrides(config))
     assert json.loads(overrides["mcp_servers.local.env_vars"]) == ["LINEAR_API_KEY"]
     assert "mcp_servers.local.env.LINEAR_API_KEY" not in overrides
+
+
+def test_header_helper_runs_the_script_not_the_module():
+    """`-m skuld.mcp_credentials` pays a ~6.6s package import per invocation.
+
+    Codex allows its http_headers_helper 10s and opens MCP connections
+    concurrently, so the module form timed out and the server was dropped.
+    """
+    from skuld.transports.mcp_config import build_codex_mcp_overrides
+
+    overrides = dict(
+        build_codex_mcp_overrides(
+            [
+                {
+                    "name": "linear",
+                    "type": "http",
+                    "url": "https://mcp.example.invalid/mcp",
+                    "credential_file": "/run/secrets/mcp/abc/token",
+                    "credential_format": "oauth",
+                }
+            ]
+        )
+    )
+    helper = overrides["mcp_servers.linear.http_headers_helper"]
+
+    assert "-m" not in helper
+    assert "skuld/mcp_credentials.py" in helper
+    assert "--oauth" in helper
