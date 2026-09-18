@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { ChatConnectionsContext } from '@niuulabs/ui';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { ApiClientError } from '@niuulabs/query';
 import { LiveSessionDetailPage, buildTelemetryTimelineRows } from './LiveSessionDetailPage';
@@ -537,6 +538,7 @@ function wrap(
     session?: VolundrSession | null;
     volundr?: Partial<IVolundrService>;
     sessionStore?: Partial<ISessionStore>;
+    openConnections?: () => void;
   } = {},
 ) {
   const session = opts.session === undefined ? RUNNING_SESSION : opts.session;
@@ -555,7 +557,9 @@ function wrap(
           metricsStream: createMockMetricsStream(),
         }}
       >
-        <LiveSessionDetailPage sessionId={sessionId} readOnly={opts.readOnly} />
+        <ChatConnectionsContext.Provider value={opts.openConnections}>
+          <LiveSessionDetailPage sessionId={sessionId} readOnly={opts.readOnly} />
+        </ChatConnectionsContext.Provider>
       </ServicesProvider>
     </QueryClientProvider>,
   );
@@ -2310,6 +2314,28 @@ describe('LiveSessionDetailPage', () => {
       });
     });
 
+    it('offers account reconnect and display preferences in the session toolbar', async () => {
+      const openConnections = vi.fn();
+      wrap('test-session-id-1234', { openConnections });
+      await screen.findByTestId('live-session-detail-page');
+      const toolbar = document.querySelector('.niuu-live-session__toolbar') as HTMLElement;
+      fireEvent.click(screen.getByRole('button', { name: 'Reconnect account' }));
+      expect(openConnections).toHaveBeenCalledOnce();
+      expect(toolbar).toContainElement(screen.getByTestId('conversation-view-toggle'));
+      // The conversation keeps his layout: no second row of display controls.
+      expect(screen.getAllByTestId('conversation-view-toggle')).toHaveLength(1);
+    });
+
+    it('offers no reconnect without a reconnect flow or on an archived session', async () => {
+      const first = wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.queryByRole('button', { name: 'Reconnect account' })).toBeNull();
+      first.unmount();
+      wrap('test-session-id-1234', { readOnly: true, openConnections: vi.fn() });
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.queryByRole('button', { name: 'Reconnect account' })).toBeNull();
+    });
+
     it('hides Tokens by default and shows the metric when enabled in settings', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
@@ -2321,8 +2347,7 @@ describe('LiveSessionDetailPage', () => {
       expect(screen.getByText('Tokens')).toBeInTheDocument();
     });
 
-    it('shows the forge badge with the instance name when debug metadata is enabled', async () => {
-      localStorage.setItem('niuu.compactUx.showDebugMeta', '1');
+    it('shows the forge badge with the instance name', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(screen.getByText('Guild Alpha')).toBeInTheDocument();

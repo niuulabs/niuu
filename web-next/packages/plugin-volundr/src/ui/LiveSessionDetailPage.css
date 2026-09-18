@@ -2374,3 +2374,18 @@
   min-height: 0;
   justify-content: center;
 }
+
+/* Conversation display preferences sit with the session toolbar. */
+.niuu-live-session__display-controls {
+  margin-left: 4px;
+}
+.niuu-live-session__display-controls .niuu-chat-preferences summary {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+@media (max-width: 760px) {
+  /* The phone toolbar keeps its single row; display preferences are a desktop affair. */
+  .niuu-live-session__display-controls {
+    display: none;
+  }
+}

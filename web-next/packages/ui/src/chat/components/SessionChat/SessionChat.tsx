@@ -17,7 +17,6 @@ import {
   Eye,
   EyeOff,
   Trash2Icon,
-  ListCollapse,
   ChevronRight,
   ChevronDown,
   Loader2,
@@ -59,13 +58,8 @@ import type {
 } from '../../types';
 import type { FileAttachment } from '../../hooks/useFileAttachments';
 import type { SlashCommand } from '../../utils/slashCommands';
-import {
-  getConversationView,
-  useCompactUxChatPrefs,
-  setCompactUxChatPref,
-  setConversationView,
-  type ConversationView,
-} from '../../compactUxPrefs';
+import { useConversationView } from '../../compactUxPrefs';
+import { ChatDisplayControls } from '../ChatDisplayControls';
 import './SessionChat.css';
 import { ChatConnectionsButton } from '../../../ChatConnections';
 
@@ -299,6 +293,12 @@ export interface SessionChatProps {
   className?: string;
   /** Show the built-in toolbar row. */
   showToolbar?: boolean;
+  /**
+   * Render the display controls (and account reconnect) above the conversation
+   * when there is no toolbar. Off when the host places `ChatDisplayControls` in
+   * its own toolbar.
+   */
+  showDisplayControls?: boolean;
   /** Token counts are opt-in to keep the conversation uncluttered. */
   showTokenUsage?: boolean;
   /** Hide the built-in internal visibility toggle when the page owns it externally. */
@@ -369,6 +369,7 @@ export function SessionChat({
   sessionName = 'Session',
   className,
   showToolbar = true,
+  showDisplayControls = true,
   showTokenUsage = false,
   showInternalToggle = true,
   internalVisibility,
@@ -425,19 +426,8 @@ export function SessionChat({
   );
   const [peerSidebarCollapsed, setPeerSidebarCollapsed] = useState(false);
   const [cascadePanelCollapsed, setCascadePanelCollapsed] = useState(false);
-  const chatPrefs = useCompactUxChatPrefs();
-  const [conversationView, setConversationViewState] = useState<ConversationView>(() =>
-    getConversationView(),
-  );
+  const conversationView = useConversationView();
   const [expandedTurns, setExpandedTurns] = useState<ReadonlySet<string>>(new Set());
-
-  const toggleConversationView = useCallback(() => {
-    setConversationViewState((prev) => {
-      const next: ConversationView = prev === 'compact' ? 'expanded' : 'compact';
-      setConversationView(next);
-      return next;
-    });
-  }, []);
 
   const toggleTurn = useCallback((turnId: string) => {
     setExpandedTurns((prev) => {
@@ -1000,68 +990,7 @@ export function SessionChat({
   const displayControls = (
     <>
       <ChatConnectionsButton />
-      <button
-        type="button"
-        className={cn(
-          'niuu-chat-control-btn',
-          conversationView === 'expanded' && 'niuu-chat-control-btn--active',
-        )}
-        onClick={toggleConversationView}
-        title={conversationView === 'expanded' ? 'Compact view' : 'Expanded view'}
-        aria-pressed={conversationView === 'expanded'}
-        data-testid="conversation-view-toggle"
-      >
-        <ListCollapse className="niuu-chat-control-icon" />
-      </button>
-      <details className="niuu-chat-preferences">
-        <summary>Display</summary>
-        <div className="niuu-chat-preferences-panel">
-          <label>
-            <input
-              type="checkbox"
-              checked={chatPrefs.showAgentAvatar}
-              onChange={(event) => setCompactUxChatPref('showAgentAvatar', event.target.checked)}
-            />{' '}
-            Agent avatars
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={chatPrefs.showMessageActions}
-              onChange={(event) => setCompactUxChatPref('showMessageActions', event.target.checked)}
-            />{' '}
-            Message actions
-          </label>
-          <label>
-            Timestamps{' '}
-            <select
-              value={chatPrefs.timestamp}
-              onChange={(event) =>
-                setCompactUxChatPref(
-                  'timestamp',
-                  event.target.value as 'hover' | 'always' | 'never',
-                )
-              }
-            >
-              <option value="hover">On hover</option>
-              <option value="always">Always</option>
-              <option value="never">Never</option>
-            </select>
-          </label>
-          <label>
-            Copy button{' '}
-            <select
-              value={chatPrefs.copyMode}
-              onChange={(event) =>
-                setCompactUxChatPref('copyMode', event.target.value as 'hover' | 'inline')
-              }
-            >
-              <option value="hover">On hover</option>
-              <option value="inline">Always</option>
-            </select>
-          </label>
-        </div>
-      </details>
+      <ChatDisplayControls />
     </>
   );
 
@@ -1088,7 +1017,9 @@ export function SessionChat({
       )}
 
       <div className="niuu-chat-wrapper">
-        {!showToolbar && <div className="niuu-chat-display-controls">{displayControls}</div>}
+        {!showToolbar && showDisplayControls && (
+          <div className="niuu-chat-display-controls">{displayControls}</div>
+        )}
         {/* ── Toolbar ── */}
         {showToolbar && (
           <div className="niuu-chat-toolbar">

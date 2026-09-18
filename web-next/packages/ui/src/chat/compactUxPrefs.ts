@@ -60,22 +60,23 @@ export function getCompactUxChatPrefs(): CompactUxChatPrefs {
   };
 }
 
-/** Read the persisted conversation-fold view (defaults to "compact"). */
+/** Read the persisted conversation-fold view (defaults to "expanded"). */
 export function getConversationView(): ConversationView {
   return readEnum(CONVERSATION_VIEW_KEY, CONVERSATION_VIEW_VALUES, CONVERSATION_VIEW_DEFAULT);
 }
 
-/** Persist the conversation-fold view to localStorage. */
+const PREFERENCES_EVENT = 'niuu:chat-preferences';
+
+/** Persist the conversation-fold view and tell every open conversation. */
 export function setConversationView(view: ConversationView): void {
   if (typeof window === 'undefined') return;
   try {
     window.localStorage.setItem(`niuu.compactUx.${CONVERSATION_VIEW_KEY}`, view);
+    window.dispatchEvent(new Event(PREFERENCES_EVENT));
   } catch {
     // localStorage may not be available
   }
 }
-
-const PREFERENCES_EVENT = 'niuu:chat-preferences';
 function subscribe(listener: () => void) {
   window.addEventListener('storage', listener);
   window.addEventListener(PREFERENCES_EVENT, listener);
@@ -87,6 +88,10 @@ function subscribe(listener: () => void) {
 const snapshot = () => JSON.stringify(getCompactUxChatPrefs());
 export function useCompactUxChatPrefs(): CompactUxChatPrefs {
   return JSON.parse(useSyncExternalStore(subscribe, snapshot, () => JSON.stringify(DEFAULTS)));
+}
+/** The conversation-fold view, following changes made anywhere on the page. */
+export function useConversationView(): ConversationView {
+  return useSyncExternalStore(subscribe, getConversationView, () => CONVERSATION_VIEW_DEFAULT);
 }
 export function setCompactUxChatPref<K extends keyof CompactUxChatPrefs>(
   key: K,

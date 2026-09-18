@@ -1,5 +1,4 @@
-import { useShowDebugMeta } from './uxPrefs';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { RenameSession } from './RenameSession';
 import { PinSession } from './PinSession';
@@ -13,7 +12,8 @@ import {
   ErrorState,
   LoadingState,
   SessionChat,
-  ChatConnectionsButton,
+  ChatConnectionsContext,
+  ChatDisplayControls,
   type FileEntry,
   type MeshNotificationEvent,
   cn,
@@ -31,6 +31,7 @@ import {
   FilePenLine,
   FolderOpen,
   GitCommitHorizontal,
+  KeyRound,
   MessageCircleReply,
   MessageSquareText,
   Play,
@@ -3478,6 +3479,8 @@ function LiveSessionDetailPageInner({
   const showTokenUsage = tokenVisibility === '1';
   const [detailsPreference] = useForgePreference('details', '0', ['0', '1']);
   const showDetails = detailsPreference === '1';
+  // Signing an AI or Git account in again without leaving the session.
+  const openConnections = useContext(ChatConnectionsContext);
   const [visibleMessageCount, setVisibleMessageCount] = useState<number | null>(null);
   const volundr = useService<IVolundrService>('volundr');
   const filesystem = useService<IFileSystemPort>('filesystem');
@@ -3535,7 +3538,6 @@ function LiveSessionDetailPageInner({
     if (looksLikeRunLabel(domainRunId)) return domainRunId;
     return sessionName;
   }, [sessionHandle, sessionName, sessionQuery.data?.ravnId]);
-  const showDebugMeta = useShowDebugMeta();
   const forgeBadgeLabel = useMemo(() => {
     const clusterName = sessionQuery.data?.clusterName?.trim();
     if (clusterName) return clusterName;
@@ -3886,7 +3888,7 @@ function LiveSessionDetailPageInner({
                   <SourceMeta session={liveSession} />
                 </>
               ) : null}
-              {showDebugMeta && forgeBadgeLabel ? (
+              {forgeBadgeLabel ? (
                 <>
                   <HeaderDivider />
                   <SessionForgeBadge label={forgeBadgeLabel} />
@@ -3923,7 +3925,7 @@ function LiveSessionDetailPageInner({
                   <HeaderMetric label="Tokens" value={formatCount(liveSession?.tokensUsed ?? 0)} />
                 </>
               )}
-              {trailingMetric && (showDebugMeta || trailingMetric.label !== 'Forge') ? (
+              {trailingMetric ? (
                 <>
                   <HeaderDivider />
                   <HeaderMetric label={trailingMetric.label} value={trailingMetric.value} />
@@ -3961,7 +3963,16 @@ function LiveSessionDetailPageInner({
               )}
             </div>
             <div className="niuu-live-session__toolbar">
-              {!readOnly && !isReady && <ChatConnectionsButton />}
+              {!readOnly && openConnections && (
+                <SessionToolbarButton
+                  icon={KeyRound}
+                  title="Reconnect account"
+                  onClick={openConnections}
+                />
+              )}
+              {resolvedActiveTab === 'chat' && (
+                <ChatDisplayControls className="niuu-live-session__display-controls" />
+              )}
               <SessionToolbarButton
                 icon={showInternalMessages ? Eye : EyeOff}
                 title={
@@ -4092,6 +4103,7 @@ function LiveSessionDetailPageInner({
                   <SessionChat
                     className="niuu:h-full"
                     showToolbar={false}
+                    showDisplayControls={false}
                     showInternalToggle={false}
                     internalVisibility={showInternalMessages}
                     showTokenUsage={showTokenUsage}
@@ -4137,6 +4149,7 @@ function LiveSessionDetailPageInner({
                 <SessionChat
                   className="niuu:h-full"
                   showToolbar={false}
+                  showDisplayControls={false}
                   showInternalToggle={false}
                   internalVisibility={showInternalMessages}
                   showTokenUsage={showTokenUsage}

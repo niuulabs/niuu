@@ -51,6 +51,8 @@ export { MeshCascadePanel } from './components/MeshCascadePanel';
 export { MeshSidebar } from './components/MeshSidebar';
 export { ChatInput } from './components/ChatInput';
 export { SessionChat } from './components/SessionChat';
+export { ChatDisplayControls } from './components/ChatDisplayControls';
+export type { ChatDisplayControlsProps } from './components/ChatDisplayControls';
 export type { SessionChatProps } from './components/SessionChat';
 
 export { repairCanonicalText } from './hooks/canonicalTextRepair';

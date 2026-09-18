@@ -1487,6 +1487,18 @@ describe('SessionChat', () => {
     expect(localStorage.getItem('niuu.compactUx.copyMode')).toBe('hover');
     expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
   });
+  it('leaves the display controls to a host that places them in its own toolbar', () => {
+    render(
+      <SessionChat
+        {...defaultProps}
+        showToolbar={false}
+        showDisplayControls={false}
+        messages={[userMessage, assistantMessage]}
+      />,
+    );
+    expect(screen.queryByTestId('conversation-view-toggle')).toBeNull();
+    expect(screen.queryByText('Display')).toBeNull();
+  });
   it('keeps display controls available when Forge supplies its own toolbar', () => {
     localStorage.clear();
     render(
