@@ -144,6 +144,9 @@ _SLASH_COMMAND_ROW_RE = re.compile(r"^(/\S+)\s{2,}(.+?)\s*$")
 # the tmux test harness (tests/support/forge/tmux_page.py) imports this so it
 # parses menus exactly the way the shipped transport does.
 _MENU_ROW_RE = re.compile(r"^\s*[❯>\s]*([1-9])[.)]\s+(.+?)\s*$")
+_WORKSPACE_TRUST_ROW_RE = re.compile(
+    r"^\s*([❯>])?\s*(?:[1-9][.)]\s+)?(No, exit|Yes, I trust this folder)\s*$"
+)
 
 
 @dataclass
@@ -354,6 +357,9 @@ class TmuxInteractiveTransport(CLITransport):
         )
 
         self._alive = False
+        self._startup_ready = False
+        self._workspace_trust_navigation_sent = False
+        self._workspace_trust_submitted = False
         self._initial_prompt_sent = False
         self._lifecycle_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
@@ -474,11 +480,15 @@ class TmuxInteractiveTransport(CLITransport):
 
     async def start(self) -> None:
         await self._ensure_started()
+        # Monitor the first page even when the session has no seed prompt.
+        # Share the input lock with chat/discovery so startup keys cannot interleave.
+        async with self._send_lock:
+            if not self._startup_ready:
+                await self._wait_for_repl_ready()
 
         if self._initial_prompt and not self._initial_prompt_sent:
             self._initial_prompt_sent = True
             try:
-                await self._wait_for_repl_ready()
                 await self.send_message(self._initial_prompt)
             except Exception:
                 self._initial_prompt_sent = False
@@ -495,24 +505,81 @@ class TmuxInteractiveTransport(CLITransport):
     def _repl_looks_ready(self, text: str) -> bool:
         if self._workspace_trust_pending(text):
             return False
+        # The selection chevron on the next startup/authentication menu is not
+        # evidence that workspace confirmation reached the chat composer.
+        if self._workspace_trust_submitted:
+            return any(
+                marker and marker != "❯" and marker in text for marker in self._repl_ready_markers
+            ) or any(self._is_empty_prompt_row(row) for row in text.splitlines())
         return any(marker and marker in text for marker in self._repl_ready_markers)
 
     @staticmethod
     def _workspace_trust_pending(text: str) -> bool:
         return "Yes, I trust this folder" in text and "Accessing workspace:" in text
 
+    async def _confirm_workspace_trust(self, text: str, *, pane_id: str) -> None:
+        """Answer only the launch workspace's trust menu, one observed step at a time.
+
+        Callers hold the input lock. Wait for the highlight to move to Yes before
+        pressing Enter; never replay either key if tmux captures the old frame.
+        """
+        rows = self._normalize_terminal_rows(text)
+        workspace = re.search(r"(?m)^\s*Accessing workspace:\s*\n\s*(/[^\n]+)", text)
+        if workspace is None:
+            return  # The startup screen may still be rendering.
+        displayed_path = Path(workspace[1].strip()).resolve()
+        if displayed_path != Path(self.workspace_dir).resolve():
+            raise DeliveryNotAcceptedError(
+                "Workspace trust is for a different folder than the configured workspace; "
+                "review it in the terminal"
+            )
+        choices = [match for row in rows if (match := _WORKSPACE_TRUST_ROW_RE.fullmatch(row))]
+        if (
+            len(choices) != 2
+            or {choice[2] for choice in choices} != {"No, exit", "Yes, I trust this folder"}
+            or "Enter to confirm" not in text
+        ):
+            return
+        selected = [index for index, choice in enumerate(choices) if choice[1]]
+        if len(selected) != 1 or self._workspace_trust_submitted:
+            return
+        yes_index = next(i for i, choice in enumerate(choices) if choice[2].startswith("Yes,"))
+        if selected[0] == yes_index:
+            # Mark before sending: an uncertain tmux failure must not replay Enter.
+            self._workspace_trust_submitted = True
+            await self._send_key("Enter", pane_id=pane_id)
+            logger.info("Submitted Claude workspace trust confirmation for %s", displayed_path)
+            return
+        if not self._workspace_trust_navigation_sent:
+            self._workspace_trust_navigation_sent = True
+            await self._send_key("Down" if yes_index > selected[0] else "Up", pane_id=pane_id)
+
     async def _wait_for_repl_ready(self) -> None:
-        """Bound-poll the pane until the CLI's input prompt has rendered, so the seed
-        prompt isn't pasted into a still-booting REPL. Best-effort: returns after the
-        timeout even if no marker appears, so a marker change never wedges startup."""
+        """Monitor startup, confirm workspace trust, then wait for the input prompt.
+
+        Called with the input lock held. A timeout leaves the terminal available
+        for inspection and never pastes a seed/chat/discovery probe into a menu.
+        """
+        target = self._target_pane()
+        self._startup_ready = False
         deadline = time.monotonic() + max(self._repl_ready_timeout_s, 0.0)
+        trust_seen = False
         while time.monotonic() < deadline:
-            text = await self._capture_pane_text()
+            text = self._clean_terminal_text(await self._capture_pane_text(target))
             if self._workspace_trust_pending(text):
-                raise RuntimeError("Workspace trust requires confirmation in the terminal")
-            if self._repl_looks_ready(text):
+                trust_seen = True
+                await self._confirm_workspace_trust(text, pane_id=target)
+            elif self._repl_looks_ready(text):
+                self._startup_ready = True
                 return
             await asyncio.sleep(self._menu_poll_step_s)
+        if trust_seen:
+            raise DeliveryNotAcceptedError(
+                "Workspace trust did not complete before startup timed out; check the terminal"
+            )
+        raise DeliveryNotAcceptedError(
+            "Claude is not ready for input; check the terminal and retry"
+        )
 
     async def _ensure_started(self) -> None:
         async with self._lifecycle_lock:
@@ -524,6 +591,9 @@ class TmuxInteractiveTransport(CLITransport):
 
             if not await self._has_session():
                 await self._create_session()
+                self._startup_ready = False
+                self._workspace_trust_navigation_sent = False
+                self._workspace_trust_submitted = False
                 await self._apply_tmux_options()
             self._alive = True
             await self._refresh_panes(emit_events=True)
@@ -787,10 +857,10 @@ class TmuxInteractiveTransport(CLITransport):
                     "Claude is waiting on a native control; answer it before "
                     "sending another message"
                 )
-            if self._workspace_trust_pending(await self._capture_pane_text()):
-                raise DeliveryNotAcceptedError(
-                    "Workspace trust requires confirmation in the terminal"
-                )
+            if not self._startup_ready or self._workspace_trust_pending(
+                await self._capture_pane_text()
+            ):
+                await self._wait_for_repl_ready()
             if self._turn_active:
                 # Mid-turn steer: keep the SAME turn alive. Refresh the idle
                 # clock so the completion watchdog doesn't fire in the gap
@@ -3344,7 +3414,7 @@ class TmuxInteractiveTransport(CLITransport):
     async def _discover_slash_commands_from_terminal(self) -> list[dict]:
         # Never type the discovery probe (Escape / C-u / "/" / many Down keys) into a
         # still-booting Claude REPL — that corrupts the fresh session (garbled startup,
-        # swallowed initial messages). Wait (bounded, best-effort) for the input prompt
+        # swallowed initial messages). Wait (bounded) for the input prompt
         # to render first, exactly like the seed-prompt delivery does.
         await self._wait_for_repl_ready()
         target = self._target_pane(None)

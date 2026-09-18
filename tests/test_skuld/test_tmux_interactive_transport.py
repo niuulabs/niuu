@@ -37,7 +37,7 @@ class FakeTmuxInteractiveTransport(TmuxInteractiveTransport):
         self.commands: list[tuple[tuple[str, ...], dict[str, str] | None]] = []
         self.loaded_buffers: list[str] = []
         self.session_exists = False
-        self.capture_stdout = ""
+        self.capture_stdout = "❯ "
         self.pane_lines = ["%1\t0\tmain\t1\tclaude\t200\t50\t2\t47"]
         # pane_id -> the pane's `#{pane_start_command}` (what `display-message` returns). Lets a
         # test give a teammate pane a real `--agent-name`; unmapped panes report an empty command.
@@ -646,7 +646,7 @@ async def test_real_tmux_smoke_with_fake_claude(
     fake_claude = bin_dir / "claude"
     fake_claude.write_text(
         """#!/usr/bin/env bash
-printf 'Fake Claude ready\\n'
+printf 'Fake Claude ready\\n❯ \\n'
 while IFS= read -r line; do
   printf 'assistant: %s\\n' "$line"
 done
@@ -1551,17 +1551,18 @@ async def test_initial_prompt_waits_for_repl_ready_then_delivers(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_initial_prompt_falls_through_if_repl_never_signals(
+async def test_initial_prompt_is_not_sent_if_repl_never_signals(
     tmp_path: Path, monkeypatch
 ) -> None:
-    # Best-effort: a missing readiness marker must never wedge startup — after the
-    # bounded timeout the seed prompt is delivered anyway.
+    # A bounded failure is preferable to pasting a task into an unrecognized menu.
     monkeypatch.setenv("SKULD__TMUX_REPL_READY_TIMEOUT_SECONDS", "0.2")
-    transport = FakeTmuxInteractiveTransport(str(tmp_path), initial_prompt="seed anyway")
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), initial_prompt="seed prompt")
     transport.capture_stdout = "still booting, no prompt yet"  # no readiness marker
-    await transport.start()
+    with pytest.raises(RuntimeError, match="not ready for input"):
+        await transport.start()
     await transport.stop()
-    assert any("seed anyway" in buf for buf in transport.loaded_buffers)
+    assert not transport.loaded_buffers
+    assert not transport._initial_prompt_sent
 
 
 # ───────────────────────── steering pending→active correlation ─────────────
@@ -1838,6 +1839,8 @@ async def test_workspace_trust_menu_is_not_a_prompt_and_cannot_receive_chat(tmp_
 @pytest.mark.asyncio
 async def test_seed_prompt_and_command_discovery_reject_workspace_trust_menu(tmp_path):
     transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    transport._repl_ready_timeout_s = 0.02
+    transport._menu_poll_step_s = 0.001
     transport.capture_stdout = "Accessing workspace:\n❯ No, exit\nYes, I trust this folder"
     with pytest.raises(RuntimeError, match="Workspace trust"):
         await transport._wait_for_repl_ready()
