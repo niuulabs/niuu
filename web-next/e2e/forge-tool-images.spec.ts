@@ -60,6 +60,10 @@ async function fixture(page: Page) {
   await page.route(`${origin}/**`, async (route) => {
     const u = new URL(route.request().url()),
       path = u.pathname;
+    if (path.endsWith('/instances'))
+      return route.fulfill({
+        json: [{ id: 'fixture', name: 'Fixture', kind: 'volundr', enabled: true, baseUrl: origin }],
+      });
     if (route.request().method() !== 'GET') return route.abort();
     if (path.includes('/tool-result/')) {
       requests.push(u);

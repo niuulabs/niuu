@@ -2493,3 +2493,59 @@ describe('Forge project grouping contract', () => {
     await expect(service.getProjects()).rejects.toThrow('host offline');
   });
 });
+
+it('isolates host inventory reads, preserves other cached hosts, and routes detail to its owner', async () => {
+  const client = makeClient();
+  const payload = (id: string, instance: string) => ({
+    id,
+    name: id,
+    instance_id: instance,
+    status: 'running',
+    source: { type: 'local_mount', local_path: '/workspace' },
+  });
+  client.get.mockImplementation(async (path: string) =>
+    path.startsWith('/sessions/a?')
+      ? payload('a', 'thor')
+      : path.includes('instance_id=thor')
+        ? [payload('a', 'thor')]
+        : path.includes('instance_id=build')
+          ? [payload('b', 'build')]
+          : [],
+  );
+  const service = buildVolundrHttpAdapter(client);
+  const controller = new AbortController();
+  await service.getSessions({ instanceId: 'thor', signal: controller.signal });
+  await service.getSessions({ instanceId: 'build' });
+  expect(client.get).toHaveBeenCalledWith('/sessions?instance_id=thor', {
+    signal: controller.signal,
+  });
+  await service.getSession('a');
+  expect(client.get).toHaveBeenCalledWith('/sessions/a?instance_id=thor');
+  await service.listArchivedSessions({ instanceId: 'build', signal: controller.signal });
+  expect(client.get).toHaveBeenCalledWith('/sessions?status=archived&instance_id=build', {
+    signal: controller.signal,
+  });
+});
+
+it('routes archived detail directly to its host and removes obsolete archive owners on refresh', async () => {
+  const client = makeClient();
+  const archived = {
+    id: 'old',
+    name: 'Archived',
+    instance_id: 'thor',
+    status: 'archived',
+    source: { type: 'local_mount', local_path: '/workspace' },
+  };
+  client.get.mockResolvedValue([archived]);
+  const service = buildVolundrHttpAdapter(client);
+  await service.listArchivedSessions({ instanceId: 'thor' });
+  client.get.mockResolvedValue(null);
+  await service.getSession('old');
+  expect(client.get).toHaveBeenLastCalledWith('/sessions/old?instance_id=thor');
+  client.get.mockResolvedValue([]);
+  await service.listArchivedSessions({ instanceId: 'build' });
+  await service.listArchivedSessions({ instanceId: 'thor' });
+  client.get.mockResolvedValue(null);
+  await service.getSession('old');
+  expect(client.get).toHaveBeenLastCalledWith('/sessions/old');
+});

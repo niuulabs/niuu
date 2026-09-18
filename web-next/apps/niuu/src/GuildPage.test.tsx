@@ -14,7 +14,12 @@ const identity = {
 };
 vi.mock('@niuulabs/plugin-sdk', async (original) => ({
   ...(await original<object>()),
-  useConfig: () => ({ services: { niuu: { mode: 'http', baseUrl: '/api/v1/niuu' } } }),
+  useConfig: () => ({
+    services: {
+      niuu: { mode: 'http', baseUrl: '/api/v1/niuu' },
+      credentials: { mode: 'http', baseUrl: '/api/v1/credentials' },
+    },
+  }),
   useService: () => ({ getIdentity: async () => identity }),
 }));
 vi.mock('@tanstack/react-router', () => ({ useRouterState: () => ({ search: '' }) }));
@@ -247,4 +252,48 @@ describe('Guild node management', () => {
     expect(canManageInstance({ ...node, visibility: 'system' }, identity)).toBe(true);
     expect(canManageInstance(node)).toBe(false);
   });
+});
+
+it('loads credentials from the credential service only when the selected scope needs them', async () => {
+  renderGuild();
+  await screen.findByRole('button', { name: 'Edit settings' });
+  const credentialCalls = () =>
+    vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes('/credentials/'));
+  expect(credentialCalls()).toHaveLength(0);
+  fireEvent(window, new CustomEvent('guild:open-register'));
+  const dialog = screen.getByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'next' }));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'personal' }));
+  await waitFor(() =>
+    expect(credentialCalls().map(([url]) => url)).toEqual(['/api/v1/credentials/user']),
+  );
+  fireEvent.click(within(dialog).getByRole('button', { name: 'tenant' }));
+  await waitFor(() =>
+    expect(credentialCalls().map(([url]) => url)).toEqual([
+      '/api/v1/credentials/user',
+      '/api/v1/credentials/tenant',
+    ]),
+  );
+});
+
+it('shows credential read errors and allows explicit retry instead of claiming the scope is empty', async () => {
+  const original = vi.mocked(fetch).getMockImplementation()!;
+  let credentialFailure = true;
+  vi.mocked(fetch).mockImplementation(async (...args) =>
+    String(args[0]).endsWith('/credentials/user') && credentialFailure
+      ? Response.json({ detail: 'Forbidden' }, { status: 403 })
+      : original(...args),
+  );
+  renderGuild();
+  await screen.findByRole('button', { name: 'Edit settings' });
+  fireEvent(window, new CustomEvent('guild:open-register'));
+  const dialog = screen.getByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'next' }));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'personal' }));
+  await expect(within(dialog).findByRole('alert')).resolves.toHaveTextContent(
+    'Could not load credentials.',
+  );
+  credentialFailure = false;
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' }));
+  await waitFor(() => expect(within(dialog).queryByRole('alert')).toBeNull());
 });

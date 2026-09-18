@@ -608,6 +608,13 @@ export function SessionsPage() {
   });
 
   const sessionsQuery = useSessionList();
+  const connectionStates = sessionsQuery.sources.filter(
+    (source) =>
+      !source.archived ||
+      !sessionsQuery.sources.some(
+        (other) => other.id === source.id && !other.archived && (other.loading || other.error),
+      ),
+  );
   const allSessions = useMemo(() => sessionsQuery.data ?? [], [sessionsQuery.data]);
   const stoppedSessionCount = useMemo(
     () => allSessions.filter((session) => session.state === 'terminated').length,
@@ -683,7 +690,7 @@ export function SessionsPage() {
     if (allSessions.length === 0) return null;
     if (requestedSessionId) {
       const matchingSession = allSessions.find((session) => session.id === requestedSessionId);
-      if (matchingSession) return matchingSession.id;
+      return matchingSession?.id ?? null;
     }
     if (selectedSessionId) {
       const matchingSession = allSessions.find((session) => session.id === selectedSessionId);
@@ -1009,6 +1016,35 @@ export function SessionsPage() {
                 </div>
               </div>
 
+              {connectionStates.some((source) => source.loading || source.error) && (
+                <div className="forge-session-source-status" aria-label="Forge connections">
+                  {connectionStates
+                    .filter((source) => source.loading || source.error)
+                    .map((source) => (
+                      <p
+                        key={`${source.id}:${source.archived}`}
+                        role="status"
+                        title={source.error ?? undefined}
+                      >
+                        <span>
+                          {source.name}
+                          {source.archived ? ' archive' : ''}:{' '}
+                          {source.error
+                            ? source.stale
+                              ? 'unavailable · showing saved list'
+                              : 'unavailable'
+                            : 'loading…'}
+                        </span>
+                      </p>
+                    ))}
+                  {connectionStates.some((source) => source.error) && (
+                    <button type="button" onClick={() => void sessionsQuery.refetch()}>
+                      Retry Forge connections
+                    </button>
+                  )}
+                </div>
+              )}
+
               <div className="forge-session-scroll niuu:flex-1 niuu:overflow-y-auto niuu:pb-1.5">
                 <PodGroup
                   label="Pinned"
@@ -1036,7 +1072,8 @@ export function SessionsPage() {
                 )}
                 {filteredSessions.length === 0 &&
                   pinnedSessions.length === 0 &&
-                  !sessionsQuery.isLoading && (
+                  !sessionsQuery.isLoading &&
+                  !sessionsQuery.isError && (
                     <p className="niuu:p-4 niuu:text-sm niuu:text-text-muted">
                       No sessions match these filters.
                     </p>
@@ -1231,12 +1268,20 @@ export function SessionsPage() {
               }
             />
           )}
-          {sessionsQuery.data && !resolvedSelectedSessionId && (
-            <EmptyState
-              title="No session selected"
-              description="Select a session from the sidebar."
-            />
-          )}
+          {sessionsQuery.data &&
+            !resolvedSelectedSessionId &&
+            requestedSessionId &&
+            connectionStates.some((source) => source.loading) && (
+              <LoadingState label="Loading selected session…" />
+            )}
+          {sessionsQuery.data &&
+            !resolvedSelectedSessionId &&
+            !(requestedSessionId && connectionStates.some((source) => source.loading)) && (
+              <EmptyState
+                title="No session selected"
+                description="Select a session from the sidebar."
+              />
+            )}
           {sessionsQuery.data && resolvedSelectedSessionId && (
             <LiveSessionDetailPage
               key={resolvedSelectedSessionId}

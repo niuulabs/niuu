@@ -30,6 +30,10 @@ test('native text/tool anchors survive live completion, snapshot repair and lega
   let revision = 'initial';
   await page.route(`${origin}/**`, (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/instances'))
+      return route.fulfill({
+        json: [{ id: 'fixture', name: 'Fixture', kind: 'volundr', enabled: true, baseUrl: origin }],
+      });
     const json = path.includes('/features/modules')
       ? [{ key: 'chat', scope: 'session', enabled: true, label: 'Chat', order: 0 }]
       : path.endsWith('/api/conversation/history') || path.endsWith('/conversation')

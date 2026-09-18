@@ -100,6 +100,11 @@ export interface ResolveWorkflowGateRequest {
   source?: string;
 }
 
+export interface SessionReadOptions {
+  instanceId?: string;
+  signal?: AbortSignal;
+}
+
 export interface IVolundrService {
   // Feature flags
   getFeatures(): Promise<VolundrFeatures>;
@@ -108,7 +113,7 @@ export interface IVolundrService {
   getSessionDefinitions(): Promise<SessionDefinition[]>;
 
   // Sessions
-  getSessions(): Promise<VolundrSession[]>;
+  getSessions(options?: SessionReadOptions): Promise<VolundrSession[]>;
   getSession(id: string): Promise<VolundrSession | null>;
   getActiveSessions(): Promise<VolundrSession[]>;
   getStats(): Promise<VolundrStats>;
@@ -176,7 +181,7 @@ export interface IVolundrService {
   archiveSession(sessionId: string): Promise<void>;
   archiveStoppedSessions(): Promise<string[]>;
   restoreSession(sessionId: string): Promise<void>;
-  listArchivedSessions(): Promise<VolundrSession[]>;
+  listArchivedSessions(options?: SessionReadOptions): Promise<VolundrSession[]>;
 
   // External CLI sessions (Claude Code / Codex discovered on the host).
   // listExternalSessions rejects with a 503-status error when discovery is

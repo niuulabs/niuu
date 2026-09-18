@@ -147,6 +147,18 @@ async function fixture(page: Page, rich = false) {
     if (path.includes('/files/presented/'))
       return route.fulfill({ contentType: 'text/plain', body: 'Delivered review export' });
     const session = sessions.find((item) => path.endsWith(`/sessions/${item.id}`));
+    if (path.endsWith('/instances'))
+      return route.fulfill({
+        json: [
+          {
+            id: 'fixture',
+            name: 'Fixture',
+            kind: 'volundr',
+            enabled: true,
+            baseUrl: 'http://fixture.test',
+          },
+        ],
+      });
     const json = path.includes('/features/modules')
       ? [{ key: 'chat', scope: 'session', enabled: true, label: 'Chat', order: 0 }]
       : path.endsWith('/api/conversation/history') || path.endsWith('/conversation')

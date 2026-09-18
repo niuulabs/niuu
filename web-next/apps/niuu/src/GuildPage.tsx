@@ -17,7 +17,7 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import { resolveNiuuRegistryBase } from './services';
+import { resolveNiuuRegistryBase, resolveSettingsServiceBase } from './services';
 import { EditInstanceDialog, DeleteInstanceDialog, guildActionClass } from './GuildInstanceDialogs';
 import {
   canManageInstance,
@@ -815,6 +815,9 @@ function RegisterWizard({
   setWizard,
   userCredentials,
   tenantCredentials,
+  credentialError,
+  credentialsLoading,
+  onRetryCredentials,
   createMutationPending,
   createError,
   onSubmit,
@@ -835,6 +838,9 @@ function RegisterWizard({
   setWizard: React.Dispatch<React.SetStateAction<WizardState>>;
   userCredentials: CredentialSummary[];
   tenantCredentials: CredentialSummary[];
+  credentialError?: string;
+  credentialsLoading: boolean;
+  onRetryCredentials: () => void;
   createMutationPending: boolean;
   createError: unknown;
   onSubmit: () => void;
@@ -1084,9 +1090,20 @@ function RegisterWizard({
                       ))}
                     </select>
                     <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-faint">
-                      {availableCredentials.length > 0
-                        ? `${availableCredentials.length} reusable credential${availableCredentials.length === 1 ? '' : 's'} available`
-                        : 'No saved credentials in this scope yet.'}
+                      {credentialError ? (
+                        <span role="alert">
+                          {credentialError}{' '}
+                          <button type="button" onClick={onRetryCredentials}>
+                            Retry
+                          </button>
+                        </span>
+                      ) : credentialsLoading ? (
+                        'Loading credentials…'
+                      ) : availableCredentials.length > 0 ? (
+                        `${availableCredentials.length} reusable credential${availableCredentials.length === 1 ? '' : 's'} available`
+                      ) : (
+                        'No saved credentials in this scope yet.'
+                      )}
                     </div>
                   </div>
                 ) : null}
@@ -1247,6 +1264,12 @@ export function GuildPage() {
     return createApiClient(sharedBase);
   }, [sharedBase]);
 
+  const credentialsBase = resolveSettingsServiceBase(config, 'credentials');
+  const credentialsClient = useMemo(
+    () => (credentialsBase ? createApiClient(credentialsBase) : null),
+    [credentialsBase],
+  );
+
   const identityQuery = useQuery({
     queryKey: ['guild-identity'],
     queryFn: () => identity.getIdentity(),
@@ -1304,19 +1327,25 @@ export function GuildPage() {
   });
 
   const userCredentialsQuery = useQuery({
-    queryKey: ['guild-user-credentials'],
-    enabled: client != null,
+    queryKey: ['guild-user-credentials', credentialsBase, currentIdentity?.userId],
+    enabled: credentialsClient != null && registerOpen && wizard.credentialScope === 'user',
+    retry: false,
     queryFn: async () => {
-      const payload = await client!.get<CredentialListPayload>('/credentials/user');
+      const payload = await credentialsClient!.get<CredentialListPayload>('/user');
       return payload.credentials ?? [];
     },
   });
 
   const tenantCredentialsQuery = useQuery({
-    queryKey: ['guild-tenant-credentials', currentIdentity?.tenantId ?? 'none'],
-    enabled: client != null && canCreateTenantScope,
+    queryKey: ['guild-tenant-credentials', credentialsBase, currentIdentity?.tenantId ?? 'none'],
+    enabled:
+      credentialsClient != null &&
+      registerOpen &&
+      wizard.credentialScope === 'tenant' &&
+      canCreateTenantScope,
+    retry: false,
     queryFn: async () => {
-      const payload = await client!.get<CredentialListPayload>('/credentials/tenant');
+      const payload = await credentialsClient!.get<CredentialListPayload>('/tenant');
       return payload.credentials ?? [];
     },
   });
@@ -1706,6 +1735,24 @@ export function GuildPage() {
         setWizard={setWizard}
         userCredentials={userCredentialsQuery.data ?? []}
         tenantCredentials={tenantCredentialsQuery.data ?? []}
+        credentialsLoading={
+          (wizard.credentialScope === 'tenant' ? tenantCredentialsQuery : userCredentialsQuery)
+            .isFetching
+        }
+        credentialError={
+          !credentialsClient
+            ? 'Credential service is not configured.'
+            : (wizard.credentialScope === 'tenant' ? tenantCredentialsQuery : userCredentialsQuery)
+                  .isError
+              ? 'Could not load credentials.'
+              : undefined
+        }
+        onRetryCredentials={() => {
+          if (credentialsClient)
+            void (
+              wizard.credentialScope === 'tenant' ? tenantCredentialsQuery : userCredentialsQuery
+            ).refetch();
+        }}
         createMutationPending={createMutation.isPending}
         createError={createMutation.error}
         onSubmit={() => createMutation.mutate()}

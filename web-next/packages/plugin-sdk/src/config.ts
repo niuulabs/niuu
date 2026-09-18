@@ -40,6 +40,8 @@ export const serviceConfigSchema = z
      */
     wsUrl: absoluteOrRootRelativeWsUrlSchema.optional(),
     mode: z.enum(['http', 'mock', 'ws']).default('http'),
+    /** Deadline for one Forge's session inventory; other hosts continue independently. */
+    sessionListTimeoutMs: z.number().int().positive().optional(),
   })
   .catchall(z.unknown());
 

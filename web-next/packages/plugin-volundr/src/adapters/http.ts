@@ -1251,6 +1251,7 @@ export function buildVolundrHttpAdapter(
   const messageSubscribers = new Map<string, PollingConnection<VolundrMessage>>();
   const logSubscribers = new Map<string, PollingConnection<VolundrLog>>();
   const sessionCache = new Map<string, VolundrSession>();
+  const archivedSessionOwners = new Map<string, string>();
   const chronicleCache = new Map<string, SessionChronicle>();
   let statsCache: VolundrStats | null = null;
   let streamHandle: EventStreamHandle | null = null;
@@ -1279,15 +1280,34 @@ export function buildVolundrHttpAdapter(
     for (const session of sessions) sessionCache.set(session.id, session);
   }
 
-  async function loadSessions(endpoint: string): Promise<VolundrSession[]> {
-    const sessions = (await forgeClient.get<SessionPayload[]>(endpoint)).map(normalizeSession);
-    updateSessionCache(sessions);
+  function readSessionList(endpoint: string, signal?: AbortSignal) {
+    return signal
+      ? forgeClient.get<SessionPayload[]>(endpoint, { signal })
+      : forgeClient.get<SessionPayload[]>(endpoint);
+  }
+
+  async function loadSessions(
+    endpoint: string,
+    options?: { instanceId?: string; signal?: AbortSignal },
+  ): Promise<VolundrSession[]> {
+    const scoped = options?.instanceId
+      ? `${endpoint}${endpoint.includes('?') ? '&' : '?'}instance_id=${encodeURIComponent(options.instanceId)}`
+      : endpoint;
+    const sessions = (await readSessionList(scoped, options?.signal)).map(normalizeSession);
+    if (options?.instanceId) {
+      for (const [id, session] of sessionCache) {
+        if (session.instanceId === options.instanceId) sessionCache.delete(id);
+      }
+      for (const session of sessions) sessionCache.set(session.id, session);
+    } else updateSessionCache(sessions);
     publishSessions();
     return sessions;
   }
 
   async function loadSession(id: string): Promise<VolundrSession | null> {
-    const session = await forgeClient.get<SessionPayload | null>(`/sessions/${id}`);
+    const instanceId = sessionCache.get(id)?.instanceId ?? archivedSessionOwners.get(id);
+    const suffix = instanceId ? `?instance_id=${encodeURIComponent(instanceId)}` : '';
+    const session = await forgeClient.get<SessionPayload | null>(`/sessions/${id}${suffix}`);
     if (!session) {
       sessionCache.delete(id);
       publishSessions();
@@ -1523,7 +1543,7 @@ export function buildVolundrHttpAdapter(
       const payload = await catalogClient.get<SessionDefinitionPayload[]>('/session-definitions');
       return payload.map(normalizeSessionDefinition);
     },
-    getSessions: () => loadSessions('/sessions'),
+    getSessions: (options) => loadSessions('/sessions', options),
     getSession: (id) => loadSession(id),
     getActiveSessions: () => loadSessions('/sessions?active=true'),
     getStats: () => loadStats(),
@@ -1621,10 +1641,23 @@ export function buildVolundrHttpAdapter(
     archiveStoppedSessions: () => forgeClient.post<string[]>('/sessions/archive-stopped'),
     restoreSession: (sessionId) =>
       forgeClient.patch<void>(`/sessions/${sessionId}/restore`, undefined),
-    listArchivedSessions: () =>
-      forgeClient
-        .get<SessionPayload[]>('/sessions?status=archived')
-        .then((sessions) => sessions.map(normalizeSession)),
+    listArchivedSessions: async (options) => {
+      const sessions = (
+        await readSessionList(
+          `/sessions?status=archived${options?.instanceId ? `&instance_id=${encodeURIComponent(options.instanceId)}` : ''}`,
+          options?.signal,
+        )
+      ).map(normalizeSession);
+      if (options?.instanceId) {
+        for (const [id, owner] of archivedSessionOwners) {
+          if (owner === options.instanceId) archivedSessionOwners.delete(id);
+        }
+      } else archivedSessionOwners.clear();
+      for (const session of sessions) {
+        if (session.instanceId) archivedSessionOwners.set(session.id, session.instanceId);
+      }
+      return sessions;
+    },
 
     listExternalSessions: () =>
       forgeClient
