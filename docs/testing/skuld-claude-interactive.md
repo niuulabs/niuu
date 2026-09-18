@@ -11,6 +11,7 @@ Run the focused backend suite:
 ```bash
 uv run pytest \
   tests/test_skuld/test_tmux_interactive_transport.py \
+  tests/test_skuld/test_tmux_workspace_trust.py \
   tests/test_skuld/test_config.py::TestTransportAdapter \
   tests/test_skuld/test_transport.py::TestTransportCapabilities \
   tests/test_skuld/test_broker.py::TestDispatchBrowserMessage \
@@ -22,13 +23,42 @@ Run the real tmux smoke test without Claude credentials:
 
 ```bash
 uv run pytest -m integration \
-  tests/test_skuld/test_tmux_interactive_transport.py::test_real_tmux_smoke_with_fake_claude
+  tests/test_skuld/test_tmux_interactive_transport.py::test_real_tmux_smoke_with_fake_claude \
+  tests/test_skuld/test_tmux_workspace_trust.py::test_real_tmux_workspace_trust_then_chat
 ```
 
 The fake-runner tests validate command construction, pane discovery, pane
 capture events, paste-buffer input, key dispatch, resize dispatch, interrupt,
 capabilities, and synthetic result closure. The integration smoke uses a fake
 `claude` executable but real tmux to verify the pipe-pane/tail loop end to end.
+
+## Workspace trust at startup
+
+The interactive transport monitors the first page on every launch or attachment,
+including sessions without an initial prompt. When Claude shows its workspace
+trust menu for the configured workspace, it moves the selection from **No, exit**
+to **Yes, I trust this folder**, verifies the changed highlight, and presses Enter
+once. If Yes is already selected, no arrow key is needed. This is independent of
+Claude's tool-permission mode; other permission and login prompts remain separate.
+
+The displayed folder must resolve to the configured workspace. Missing or partially
+rendered menu rows are observed until the existing startup deadline; a different
+folder requires terminal review. Repeated captures cannot repeat the arrow or
+confirmation, including after an uncertain key-send failure. A new native process
+gets its own confirmation state.
+
+Startup and chat/discovery share the input lock. Chat is delivered only after the
+normal prompt appears; a timeout reports a delivery failure with the input unsent,
+instead of pasting into the startup screen. The existing
+`SKULD__TMUX_REPL_READY_TIMEOUT_SECONDS` controls the deadline (12 seconds by default).
+The tests cover delayed rendering, both menu orders, an existing selection,
+concurrent startup/chat, attachment, stuck screens, mismatched folders, and a
+following login menu. The real tmux test uses an isolated fake CLI with a working
+trust widget and verifies the subsequent chat result; it does not call Claude.
+
+Existing running gateways keep their loaded transport code. Deploying the change
+affects gateways started from the updated source; adopting it in a running session
+requires that session's normal controlled restart.
 
 ## Live Claude Smoke
 
