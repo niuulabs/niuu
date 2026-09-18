@@ -5,6 +5,7 @@ import { fetchHistoryItem } from '../hooks/historyPaging';
 import { transformTurns } from '../hooks/useSkuldChat';
 import { AssistantMessage, UserMessage } from './ChatMessages';
 import type { ChatMessage } from '../types';
+import { MarkdownContent } from './MarkdownContent';
 
 export function HistoryMessagePreview({ message }: { message: ChatMessage }) {
   const socketUrl = useContext(HistoryDetailsContext);
@@ -30,9 +31,7 @@ export function HistoryMessagePreview({ message }: { message: ChatMessage }) {
       <p>
         {message.historyMetadataPreview ? 'Message details available' : 'Large message — preview'}
       </p>
-      {!message.historyMetadataPreview && (
-        <p className="niuu-chat-history-excerpt">{message.content}</p>
-      )}
+      {!message.historyMetadataPreview && <MarkdownContent content={message.content} />}
       <button
         className="niuu-chat-retry"
         type="button"

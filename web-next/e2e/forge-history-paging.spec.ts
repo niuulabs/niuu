@@ -1,11 +1,12 @@
 import { test, expect, type Page, type WebSocketRoute } from '@playwright/test';
 import { readFileSync } from 'node:fs';
+import type { ConversationTurn } from '../packages/ui/src/chat/hooks/useSkuldChat';
 const config = JSON.parse(
   readFileSync(new URL('../apps/niuu/public/config.json', import.meta.url), 'utf8'),
 );
 const origin = 'http://history-fixture.invalid';
 async function fixture(page: Page, version = 2) {
-  const rows = Array.from({ length: 125 }, (_, n) => ({
+  const rows: ConversationTurn[] = Array.from({ length: 125 }, (_, n) => ({
     id: `message-${n}`,
     role: 'assistant',
     content: `Message ${n}: ${'This is a paragraph in a long conversation. '.repeat(7)}`,
@@ -14,7 +15,9 @@ async function fixture(page: Page, version = 2) {
   const requests: URL[] = [];
   const writes: string[] = [];
   const sockets: WebSocketRoute[] = [];
-  const controls = { failOlder: false };
+  const controls: { failOlder: boolean; onHistory?: () => void; fullTurn?: ConversationTurn } = {
+    failOlder: false,
+  };
   const session = {
     id: 'review',
     name: 'Paged review',
@@ -57,6 +60,9 @@ async function fixture(page: Page, version = 2) {
     }
     if (path.endsWith('/conversation')) {
       requests.push(u);
+      if (u.searchParams.has('turn_id') && controls.fullTurn)
+        return route.fulfill({ json: { turns: [...rows.slice(0, -1), controls.fullTurn] } });
+      controls.onHistory?.();
       const older = u.searchParams.has('cursor') || u.searchParams.has('before');
       await new Promise((resolve) => setTimeout(resolve, older ? 180 : 60));
       if (older && controls.failOlder)
@@ -94,6 +100,62 @@ async function fixture(page: Page, version = 2) {
   return { requests, writes, sockets, controls, rows };
 }
 for (const version of [1, 2]) {
+  test(`protocol ${version}: a live event during history loading retains the earlier active-turn text and tools`, async ({
+    page,
+  }) => {
+    const { rows, controls, sockets, writes } = await fixture(page, version);
+    const part = (id: string, text: string) => ({
+      type: 'text',
+      id,
+      text,
+      turn_id: 'native',
+      complete: true,
+    });
+    rows.splice(1);
+    rows.push({
+      id: 'in-progress',
+      role: 'assistant',
+      content: 'Earlier commentary\n\nOld update',
+      created_at: '2026-09-18T00:00:00Z',
+      in_progress: true,
+      parts: [
+        part('a', 'Earlier commentary'),
+        {
+          type: 'tool_use',
+          id: 'read',
+          name: 'Read',
+          input: { file_path: '/workspace/history.md' },
+        },
+        part('b', 'Old update'),
+      ],
+    });
+    controls.onHistory = () =>
+      sockets.at(-1)?.send(
+        JSON.stringify({
+          type: 'assistant',
+          turn_id: 'native',
+          message: { content: [part('b', 'Latest live update')] },
+        }),
+      );
+    await page.goto('/volundr/sessions/review');
+    const messages = page.locator('[data-history-id]');
+    await expect(messages).toHaveCount(2);
+    await expect(messages.last()).toContainText('Earlier commentary');
+    await expect(messages.last()).toContainText('Latest live update');
+    await expect(messages.last()).toContainText('history.md');
+    await expect(messages.last()).not.toContainText('Old update');
+    sockets.at(-1)!.send(
+      JSON.stringify({
+        type: 'assistant',
+        turn_id: 'native',
+        message: { content: [part('c', 'Following update')] },
+      }),
+    );
+    await expect(messages.last()).toContainText('Following update');
+    await expect(messages.last()).toContainText('Earlier commentary');
+    await expect(messages).toHaveCount(2);
+    expect(writes).toEqual([]);
+  });
   test(`protocol ${version}: 50 recent messages, upward paging, anchored viewport, final page`, async ({
     page,
   }, info) => {
@@ -129,11 +191,39 @@ for (const version of [1, 2]) {
     });
     await expect(messages).toHaveCount(125);
     await expect(page.getByRole('button', { name: 'Load earlier messages' })).toHaveCount(0);
-    expect(requests.every((u) => Number(u.searchParams.get('max_bytes')) === 262144)).toBe(true);
+    expect(requests.every((u) => Number(u.searchParams.get('max_bytes')) === 258048)).toBe(true);
     expect(requests.every((u) => u.pathname.startsWith('/forge-host/build/'))).toBe(true);
     expect(writes).toEqual([]);
   });
 }
+test('a large retained-server turn keeps its Markdown in the flow and opens the exact full message', async ({
+  page,
+}) => {
+  const { rows, controls } = await fixture(page, 1);
+  rows.splice(1);
+  rows.push({
+    id: 'in-progress',
+    role: 'assistant',
+    content:
+      '## Earlier work\n\nSaved commentary before connecting.\n\n## Latest work\n\nMore saved commentary.',
+    created_at: '2026-09-18T00:00:00Z',
+    in_progress: true,
+    history_preview: true,
+  });
+  controls.fullTurn = {
+    ...rows[1]!,
+    history_preview: false,
+    content: '## Complete response\n\nAll saved text and tool details.',
+  };
+  await page.goto('/volundr/sessions/review');
+  await expect(page.getByRole('heading', { name: 'Earlier work' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Latest work' })).toBeVisible();
+  await page.getByRole('button', { name: 'Open full message' }).click();
+  await expect(
+    page.getByRole('dialog').getByRole('heading', { name: 'Complete response' }),
+  ).toBeVisible();
+  await expect(page.getByRole('dialog')).toContainText('All saved text and tool details.');
+});
 test('failed older page stays retryable without replacing the transcript', async ({ page }) => {
   const { controls } = await fixture(page);
   await page.goto('/volundr/sessions/review');

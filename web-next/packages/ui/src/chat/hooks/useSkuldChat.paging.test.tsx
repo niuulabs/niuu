@@ -44,6 +44,24 @@ beforeEach(() => {
   send.mockClear();
 });
 describe('paged session history', () => {
+  it('cancels the pre-attachment initial GET instead of finishing and downloading the batch twice', async () => {
+    const { fetcher } = mockHistory(2);
+    let release!: (response: Response) => void;
+    let initialSignal: AbortSignal | undefined;
+    fetcher.mockImplementationOnce((_, options) => {
+      initialSignal = options?.signal as AbortSignal;
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    });
+    const { result } = renderHook(() => useSkuldChat(url));
+    act(() => handlers.onOpen());
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    expect(initialSignal?.aborted).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    await act(async () => release(Response.json({ turns: [turn(999)] })));
+    expect(result.current.messages.map((row) => row.id)).toEqual(['row-0', 'row-1']);
+  });
   it('starts with 50 and deduplicates simultaneous older loads', async () => {
     const { fetcher } = mockHistory();
     const { result } = renderHook(() => useSkuldChat(url));

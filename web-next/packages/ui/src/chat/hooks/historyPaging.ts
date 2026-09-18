@@ -4,6 +4,9 @@ import type { ConversationTurn } from './useSkuldChat';
 
 export const HISTORY_PAGE_SIZE = 50;
 export const HISTORY_PAGE_BYTES = 256 * 1024;
+// Retained Forge facades append routing/timing metadata after fitting the page.
+// Reserve envelope space without relaxing the browser's hard transfer bound.
+export const HISTORY_REQUEST_BYTES = HISTORY_PAGE_BYTES - 4 * 1024;
 const LEGACY_SEAM_ATTEMPTS = 3;
 
 export interface HistoryPage {
@@ -134,7 +137,7 @@ function requestUrl(socketUrl: string, limit: number): URL {
   url.searchParams.set('history_protocol', '2');
   url.searchParams.set('detail', 'shallow');
   url.searchParams.set('limit', String(limit));
-  url.searchParams.set('max_bytes', String(HISTORY_PAGE_BYTES));
+  url.searchParams.set('max_bytes', String(HISTORY_REQUEST_BYTES));
   return url;
 }
 
@@ -221,7 +224,12 @@ export async function fetchHistoryItem(
   const response = await fetch(url.href, { headers: getAuthHeaders(), signal });
   if (!response.ok) throw new Error(`Could not load this message (HTTP ${response.status}).`);
   const data = await response.json();
-  const turn = data.turn ?? (data.turns?.length === 1 ? data.turns[0] : undefined);
+  // Retained facades can ignore turn_id and return their full transcript. This
+  // explicit expansion still selects exactly the requested identity, never a tail.
+  const matches = Array.isArray(data.turns)
+    ? data.turns.filter((turn: ConversationTurn) => turn.id === id)
+    : [];
+  const turn = data.turn ?? (matches.length === 1 ? matches[0] : undefined);
   if (turn?.id !== id || turn.history_preview)
     throw new Error('This Forge cannot expand this message. Update its history API.');
   return turn;

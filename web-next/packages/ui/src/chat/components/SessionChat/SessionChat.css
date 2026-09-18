@@ -524,11 +524,6 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
 }
-.niuu-chat-history-excerpt {
-  white-space: pre-wrap;
-  max-height: 12rem;
-  overflow: auto;
-}
 .niuu-dialog-content.niuu-chat-history-reader {
   width: 90vw;
   max-width: 90vw;

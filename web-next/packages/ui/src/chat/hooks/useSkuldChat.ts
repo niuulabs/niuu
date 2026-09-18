@@ -29,6 +29,7 @@ import {
   HISTORY_PAGE_SIZE,
 } from './historyPaging';
 import { repairCanonicalText } from './canonicalTextRepair';
+import { reconcileHistoryMessages } from './historyReconciliation';
 import {
   foldPublicText,
   publicTextContent,
@@ -876,7 +877,9 @@ export function useSkuldChat(
     (turns: ConversationTurn[], revision?: string) => {
       // Every accepted server snapshot replaces the cache projection, including repaired old turns.
       projectionRevisionRef.current = revision;
-      const active = [...turns].reverse().find((turn) => turn.in_progress);
+      // A truncated part sequence cannot seed a complete live turn. Keep its
+      // explicit reader in history; subsequent socket items form the live tail.
+      const active = [...turns].reverse().find((turn) => turn.in_progress && !turn.history_preview);
       for (const turn of turns) {
         if (turn.in_progress) continue;
         for (const part of turn.parts ?? []) {
@@ -1036,17 +1039,23 @@ export function useSkuldChat(
           return;
         }
         if (evidenceAtStart !== historyEvidenceRef.current) {
-          // Recover the completed prefix without overwriting a newer socket tail.
-          const prefix = transformTurns(
-            (data.turns ?? []).filter((turn: ConversationTurn) => !turn.in_progress),
-          );
-          setMessages((prev) => {
-            if (sharesBoundary) return mergeRecentMessages(prev, prefix, true);
-            const live = prev.filter(
-              (message) => message.status === 'running' || !idsAtStart.has(message.id),
-            );
-            return mergeRecentMessages(live, prefix, true);
-          });
+          // A live frame is only a suffix, not a replacement for its entire REST turn.
+          const previous = messagesRef.current;
+          const live = sharesBoundary
+            ? previous
+            : previous.filter(
+                (message) => message.status === 'running' || !idsAtStart.has(message.id),
+              );
+          const { recent, current } = reconcileHistoryMessages(transformTurns(data.turns), live);
+          const active = recent.find((message) => message.id === streamingMessageIdRef.current);
+          if (active) {
+            streamingPartsRef.current = [...(active.parts ?? [])];
+            streamingTextRef.current = active.content;
+            setStreamingParts([...streamingPartsRef.current]);
+            setStreamingContent(active.content);
+          }
+          projectionRevisionRef.current = data.projection_revision;
+          setMessages(mergeRecentMessages(current, recent));
           setHistoryLoadedForUrl(url);
           return;
         }
@@ -2296,6 +2305,12 @@ export function useSkuldChat(
   const { sendJson } = useWebSocket(socketUrl, {
     onOpen: () => {
       // A read after socket attachment closes the GET-before-connect gap, including reconnects.
+      // Cancel an unfinished initial batch now; do not download it all twice.
+      if (!historyLoaded && historyReadRef.current) {
+        historyReadRef.current.abort();
+        historyReadRef.current = null;
+        queuedRecoveryRef.current = false;
+      }
       requestHistoryRecovery();
       setConnected(true);
       setConnectionVersion((version) => version + 1);

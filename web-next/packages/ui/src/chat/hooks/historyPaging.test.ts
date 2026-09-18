@@ -4,6 +4,7 @@ import {
   fetchHistoryBatch,
   fetchHistoryItem,
   HISTORY_PAGE_BYTES,
+  HISTORY_REQUEST_BYTES,
   historySocketUrl,
   isHistoryRecovery,
 } from './historyPaging';
@@ -72,7 +73,7 @@ describe('bounded conversation pages', () => {
       expect(last.turns.map((t) => t.id)).toEqual(rows.slice(0, 23).map((t) => t.id));
       expect(last.window_offset).toBe(0);
       expect(
-        calls.every((u) => u.searchParams.get('max_bytes') === String(HISTORY_PAGE_BYTES)),
+        calls.every((u) => u.searchParams.get('max_bytes') === String(HISTORY_REQUEST_BYTES)),
       ).toBe(true);
       expect(calls.every((u) => Number(u.searchParams.get('limit')) <= 51)).toBe(true);
     },
@@ -157,6 +158,19 @@ describe('bounded conversation pages', () => {
     );
     await expect(fetchHistoryBatch(socket, signal())).rejects.toThrow('page size');
   });
+  it('allows retained facade envelope metadata without exceeding the hard browser limit', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (raw: string) => {
+        const requested = Number(new URL(raw).searchParams.get('max_bytes'));
+        expect(requested).toBeLessThan(HISTORY_PAGE_BYTES);
+        return Response.json({ turns: [turn(0)], _prep: { padding: 'x'.repeat(requested) } });
+      }),
+    );
+    expect((await fetchHistoryBatch(socket, signal())).turns.map((row) => row.id)).toEqual([
+      'row-0',
+    ]);
+  });
   it.each([
     { turns: rows },
     { turns: [turn(1), turn(1)] },
@@ -220,6 +234,10 @@ describe('bounded conversation pages', () => {
     expect((await fetchHistoryItem(socket, 'row-0', signal())).id).toBe('row-0');
     expect(new URL(fetcher.mock.calls[0]![0] as string).searchParams.get('turn_id')).toBe('row-0');
     fetcher.mockResolvedValueOnce(Response.json({ turns: rows }));
+    expect((await fetchHistoryItem(socket, 'row-0', signal())).id).toBe('row-0');
+    fetcher.mockResolvedValueOnce(Response.json({ turns: rows.slice(1) }));
+    await expect(fetchHistoryItem(socket, 'row-0', signal())).rejects.toThrow('cannot expand');
+    fetcher.mockResolvedValueOnce(Response.json({ turns: [turn(0), turn(0)] }));
     await expect(fetchHistoryItem(socket, 'row-0', signal())).rejects.toThrow('cannot expand');
     fetcher.mockResolvedValueOnce(Response.json({ turn: { ...turn(0), history_preview: true } }));
     await expect(fetchHistoryItem(socket, 'row-0', signal())).rejects.toThrow('cannot expand');

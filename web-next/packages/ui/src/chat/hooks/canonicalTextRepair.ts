@@ -56,6 +56,17 @@ export function repairCanonicalText(
   )
     return null;
 
+  return mergeCanonicalParts(canonical, current, (part, live) =>
+    matchesTarget(part, target) && live.complete !== true ? part : live,
+  );
+}
+
+/** Canonical anchors restore missing history; matching live items keep their newer state. */
+export function mergeCanonicalParts(
+  canonical: readonly ChatMessagePart[],
+  current: readonly ChatMessagePart[],
+  resolve: (canonical: ChatMessagePart, live: ChatMessagePart) => ChatMessagePart,
+): ChatMessagePart[] {
   const claimed = new Set<number>();
   const buckets = new Map<string, { indexes: number[]; cursor: number }>();
   current.forEach((part, index) => {
@@ -95,7 +106,7 @@ export function repairCanonicalText(
       const live = current[matched]!;
       // A whole native completion may have arrived while the GET was suspended.
       // It must win over this older snapshot, including a same-length correction.
-      next.push(matchesTarget(part, target) && live.complete !== true ? part : live);
+      next.push(resolve(part, live));
     } else {
       next.push(part);
     }
