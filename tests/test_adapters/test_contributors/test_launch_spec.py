@@ -96,9 +96,7 @@ async def test_launch_spec_env_survives_a_contributor_that_also_sets_env(
     provider.get.return_value = _spec()
     contributor = LaunchSpecContributor(launch_spec_provider=provider)
 
-    from_launch_spec = await contributor.contribute(
-        session, SessionContext(launch_spec="standard")
-    )
+    from_launch_spec = await contributor.contribute(session, SessionContext(launch_spec="standard"))
     from_integrations = SessionContribution(
         values={"envVars": [{"name": "SKULD__CLAUDE_AUTH", "value": "subscription"}]}
     )

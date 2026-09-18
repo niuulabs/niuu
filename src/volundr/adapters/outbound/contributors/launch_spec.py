@@ -75,8 +75,7 @@ class LaunchSpecContributor(SessionContributor):
             # list of {name, value}. Emitting the raw mapping here meant a
             # launch spec's env silently never reached the pod.
             values["envVars"] = [
-                {"name": str(name), "value": str(value)}
-                for name, value in source.env_vars.items()
+                {"name": str(name), "value": str(value)} for name, value in source.env_vars.items()
             ]
         if source.env_secret_refs:
             values["envSecretRefs"] = source.env_secret_refs
