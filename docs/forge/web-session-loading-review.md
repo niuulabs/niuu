@@ -59,3 +59,37 @@ and recovery alongside existing history paging, image previews and session contr
 
 Deployment requires only the rebuilt static web app and an nginx reload. It does
 not restart Forge, Skuld, or any active session.
+
+## Remote registry selector regression
+
+The independent inventory requests exposed a backend forwarding bug on September
+18. Thor used its registry's `instance_id` to choose Build Bro, then forwarded the
+same selector to Build Bro's Forge facade. That facade has a different local
+registry ID and returned 404. Thor's aggregate response discarded the error and
+reported a successful empty list. Spark was affected by the same mechanism.
+
+Direct read-only checks found seven non-archived and two archived sessions on
+Build Bro, and nine non-archived and six archived sessions on Spark. Thor's selected
+inventories reported zero for each. This was a routing failure; the underlying
+sessions were still present.
+
+The correction consumes `instance_id` at the receiving gateway and preserves the
+remaining query parameters, including repeated filters and archive selection.
+Selected inventory requests now report remote HTTP, transport, and malformed-data
+failures instead of clearing a host's list. Existing UI error/stale-list handling
+can therefore keep previous rows visible and offer retry. Registry visibility is
+still checked before contacting a selected host.
+
+Regression tests exercise two actual facade routers with different registry IDs,
+archive filters, unrelated offline hosts, duplicate query parameters, access
+checks, and upstream failure responses. A read-only test of the immutable API
+candidate against the real Build Bro and Spark endpoints returned exactly the
+same session IDs as direct requests for all four inventories. Both the candidate
+and rollback pass the four-case isolated restart-preservation fixture.
+
+Unlike the original UI-only change, this correction needs a Thor API release.
+The candidate includes the already-staged dashboard API changes and this routing
+fix; it does not include the later Claude tmux transport change. Production remains
+on the previous API until the [guarded release procedure](local-api-release.md)
+receives a coordinated maintenance window. Existing gateways retain their loaded
+code and are preserved by that API-only procedure.

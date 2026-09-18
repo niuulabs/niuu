@@ -11,7 +11,7 @@ import pytest
 import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from httpx import Response
+from httpx import ConnectError, Response
 
 from niuu.adapters.inbound.rest_volundr import create_volundr_router
 from niuu.domain.models import InstanceKind, InstanceVisibility, Principal, RegisteredInstance
@@ -356,6 +356,102 @@ def test_list_sessions_ignores_errors_and_sorts_last_active_descending() -> None
 
     assert response.status_code == 200
     assert [item["id"] for item in response.json()] == ["s2", "s1"]
+
+
+@pytest.mark.parametrize("archived", [False, True])
+@respx.mock
+def test_selected_host_uses_its_own_registry_and_preserves_filters(archived: bool) -> None:
+    """Two real router layers with independent registry IDs, as on Thor/Build Bro."""
+    embedded = FastAPI()
+
+    @embedded.get("/api/v1/forge/sessions")
+    async def local_sessions(status: str | None = None) -> list[dict[str, Any]]:
+        return [{"id": "bro-session", "status": status or "running"}]
+
+    remote = _client(
+        [_instance("bro-local-id", base_url="embedded://local", config={"transport": "embedded"})],
+        embedded_forge_app=embedded,
+    )
+    outer = _client(
+        [
+            _instance("thor-bro-id", base_url="http://build-bro"),
+            _instance("unreachable", base_url="http://unreachable"),
+        ]
+    )
+
+    def downstream(request):
+        response = remote.get(request.url.raw_path.decode(), headers=_headers())
+        return Response(response.status_code, json=response.json())
+
+    route = respx.get("http://build-bro/api/v1/forge/sessions").mock(side_effect=downstream)
+    suffix = "&status=archived" if archived else ""
+    response = outer.get(
+        "/api/v1/forge/sessions?instance_id=thor-bro-id&tag=a&tag=b" + suffix,
+        headers=_headers(),
+    )
+    assert response.status_code == 200
+    assert response.json()[0]["id"] == "bro-session"
+    assert response.json()[0]["instance_id"] == "thor-bro-id"
+    assert response.json()[0]["status"] == ("archived" if archived else "running")
+    assert len(route.calls) == 1
+    assert "instance_id" not in route.calls.last.request.url.params
+    assert route.calls.last.request.url.params.get_list("tag") == ["a", "b"]
+    assert len(respx.calls) == 1  # An unrelated unavailable host is never contacted.
+
+
+@pytest.mark.parametrize("status_code", [403, 404, 503])
+@respx.mock
+def test_selected_session_inventory_preserves_remote_http_failures(status_code: int) -> None:
+    client = _client([_instance("bro", base_url="http://bro")])
+    respx.get("http://bro/api/v1/forge/sessions").respond(
+        status_code, json={"detail": "Target is unavailable"}
+    )
+    response = client.get("/api/v1/forge/sessions?instance_id=bro", headers=_headers())
+    assert response.status_code == status_code
+    assert "Target is unavailable" in response.json()["detail"]
+
+
+@respx.mock
+def test_selected_session_inventory_reports_transport_failure() -> None:
+    client = _client([_instance("bro", base_url="http://bro")])
+    respx.get("http://bro/api/v1/forge/sessions").mock(side_effect=ConnectError("Offline"))
+    response = client.get("/api/v1/forge/sessions?instance_id=bro", headers=_headers())
+    assert response.status_code == 502
+    assert "unavailable" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("payload", [{}, ["invalid"], [{"status": "running"}]])
+@respx.mock
+def test_selected_session_inventory_rejects_malformed_responses(payload: Any) -> None:
+    client = _client([_instance("bro", base_url="http://bro")])
+    respx.get("http://bro/api/v1/forge/sessions").respond(200, json=payload)
+    response = client.get("/api/v1/forge/sessions?instance_id=bro", headers=_headers())
+    assert response.status_code == 502
+
+
+@respx.mock
+def test_selected_session_inventory_rejects_html_response() -> None:
+    client = _client([_instance("bro", base_url="http://bro")])
+    respx.get("http://bro/api/v1/forge/sessions").respond(200, text="<html>Login</html>")
+    response = client.get("/api/v1/forge/sessions?instance_id=bro", headers=_headers())
+    assert response.status_code == 502
+
+
+def test_selected_session_inventory_reports_missing_embedded_app() -> None:
+    client = _client(
+        [_instance("local", base_url="embedded://local", config={"transport": "embedded"})]
+    )
+    response = client.get("/api/v1/forge/sessions?instance_id=local", headers=_headers())
+    assert response.status_code == 502
+    assert "Embedded Forge" in response.json()["detail"]
+
+
+@respx.mock
+def test_selected_session_inventory_rejects_hidden_target_without_contacting_it() -> None:
+    client = _client([_instance("private", base_url="http://private", tenant_id="other")])
+    response = client.get("/api/v1/forge/sessions?instance_id=private", headers=_headers())
+    assert response.status_code == 404
+    assert len(respx.calls) == 0
 
 
 @respx.mock
