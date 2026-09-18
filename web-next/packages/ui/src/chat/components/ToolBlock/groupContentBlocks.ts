@@ -9,6 +9,8 @@ export interface ToolResultBlock {
   type: 'tool_result';
   tool_use_id: string;
   content?: string;
+  truncated?: boolean;
+  preview?: string;
 }
 
 export interface TextBlock {

@@ -149,7 +149,7 @@ async function fixture(page: Page, rich = false) {
     const session = sessions.find((item) => path.endsWith(`/sessions/${item.id}`));
     const json = path.includes('/features/modules')
       ? [{ key: 'chat', scope: 'session', enabled: true, label: 'Chat', order: 0 }]
-      : path.endsWith('/api/conversation/history')
+      : path.endsWith('/api/conversation/history') || path.endsWith('/conversation')
         ? {
             turns: [
               {
@@ -206,6 +206,7 @@ test('renames from the title and sidebar, persisting through a reload', async ({
   });
   await page.getByRole('textbox', { name: 'Session name' }).press('Enter');
   await expect(title).toContainText('title-renamed');
+  await expect(page.getByRole('textbox', { name: 'Session name' })).toHaveCount(0);
   const row = page.getByTestId('pod-entry-review').locator('..');
   await expect(row).toContainText('title-renamed');
   await row.hover();
@@ -871,16 +872,19 @@ test('delayed history has one clean loading surface and reveals a long conversat
   const historyReady = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await page.route('**/api/conversation/history', async (route) => {
+  await page.route('**/api/v1/forge/sessions/review/conversation?*', async (route) => {
     await historyReady;
     await route.fulfill({
       json: {
-        turns: Array.from({ length: 100 }, (_, i) => ({
-          id: `long-${i}`,
-          role: 'assistant',
-          content: `Message ${i + 1}: ${'A long session review paragraph with enough content for several lines. '.repeat(8)}`,
-          created_at: new Date(1700000000000 + i * 1000).toISOString(),
-        })),
+        turns: Array.from({ length: 50 }, (_, index) => {
+          const i = index + 50;
+          return {
+            id: `long-${i}`,
+            role: 'assistant',
+            content: `Message ${i + 1}: ${'A long session review paragraph with enough content for several lines. '.repeat(8)}`,
+            created_at: new Date(1700000000000 + i * 1000).toISOString(),
+          };
+        }),
       },
     });
   });

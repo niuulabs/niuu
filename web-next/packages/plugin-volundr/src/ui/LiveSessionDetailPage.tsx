@@ -4085,6 +4085,10 @@ function LiveSessionDetailPageInner({
                     streamingModel={chat.streamingModel}
                     connected={chat.connected}
                     historyLoaded={chat.historyLoaded}
+                    hasOlderHistory={chat.hasOlderHistory}
+                    loadingOlderHistory={chat.loadingOlderHistory}
+                    olderHistoryError={chat.olderHistoryError}
+                    onLoadOlderHistory={chat.loadOlderHistory}
                     historyError={chat.historyError}
                     onRetryHistory={chat.retryHistory}
                     participants={chat.participants}

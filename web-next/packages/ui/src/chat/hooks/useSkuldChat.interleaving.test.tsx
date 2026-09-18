@@ -99,30 +99,14 @@ describe('identified text across browser live/history handoff', () => {
     expect(result.current.messages[0]?.content).toBe('Done');
   });
 
-  it('socket snapshot wins delayed REST and accepts same-item completion in place', async () => {
-    let deliver!: (value: unknown) => void;
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(
-        () =>
-          new Promise((resolve) => {
-            deliver = resolve;
-          }),
-      ),
-    );
-    const { result } = renderHook(() => useSkuldChat(url));
+  it('socket-only native history seeds the stream and accepts same-item completion in place', async () => {
+    const { result } = renderHook(() => useSkuldChat(url, { historyMode: 'none' }));
     emit({
       type: 'conversation_history',
       projection_revision: 'repair-2',
       turns: [turn('canonical', 'Newer', true)],
     });
     complete('a', 'Newer complete');
-    await act(async () =>
-      deliver({
-        ok: true,
-        json: async () => ({ projection_revision: 'repair-1', turns: [turn('canonical', 'Old')] }),
-      }),
-    );
     expect(result.current.messages).toHaveLength(1);
     expect(result.current.messages[0]?.content).toBe('Newer complete');
     expect(result.current.messages[0]?.parts).toHaveLength(1);
@@ -179,7 +163,7 @@ describe('identified text across browser live/history handoff', () => {
   });
 
   it('repair revision replaces the cached prefix, then keeps a stable tool position on new tokens', async () => {
-    const { result } = renderHook(() => useSkuldChat(url));
+    const { result } = renderHook(() => useSkuldChat(url, { historyMode: 'none' }));
     await waitFor(() => expect(result.current.historyLoaded).toBe(true));
     emit({
       type: 'conversation_history',

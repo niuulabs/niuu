@@ -52,7 +52,7 @@ function partsToContentBlocks(parts: readonly ChatMessagePart[]): ToolContentBlo
     } else if (part.type === 'tool_use' && part.id && part.name && part.input) {
       blocks.push({ type: 'tool_use', id: part.id, name: part.name, input: part.input });
     } else if (part.type === 'tool_result' && part.tool_use_id) {
-      blocks.push({ type: 'tool_result', tool_use_id: part.tool_use_id, content: part.content });
+      blocks.push({ ...part, type: 'tool_result', tool_use_id: part.tool_use_id });
     }
   }
   return blocks;

@@ -31,6 +31,8 @@ export interface ChatMessagePart {
   readonly input?: Record<string, unknown>;
   readonly tool_use_id?: string;
   readonly content?: string;
+  readonly truncated?: boolean;
+  readonly preview?: string;
 }
 
 export interface ParticipantMeta {
@@ -66,6 +68,8 @@ export interface ChatMessage {
   status?: 'running' | 'done' | 'error';
   parts?: readonly ChatMessagePart[];
   attachments?: AttachmentMeta[];
+  historyPreview?: boolean;
+  historyMetadataPreview?: boolean;
   metadata?: {
     messageType?: string;
     usage?: Record<string, { inputTokens?: number; outputTokens?: number }>;

@@ -19,6 +19,7 @@ const INTERNAL_PART_TYPES = new Set<ChatMessagePart['type']>(['tool_use', 'tool_
 
 function isVisibleMessage(msg: ChatMessage): boolean {
   if (msg.metadata?.messageType === 'system') return false;
+  if (msg.historyPreview) return true;
   if (
     msg.role === 'assistant' &&
     msg.status === 'done' &&
