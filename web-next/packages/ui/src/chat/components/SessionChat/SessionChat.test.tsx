@@ -1478,12 +1478,14 @@ describe('SessionChat', () => {
     localStorage.clear();
     render(<SessionChat {...defaultProps} messages={[userMessage, assistantMessage]} />);
     fireEvent.click(screen.getByLabelText('Agent avatars'));
-    expect(localStorage.getItem('niuu.compactUx.showAgentAvatar')).toBe('true');
+    expect(localStorage.getItem('niuu.compactUx.showAgentAvatar')).toBe('false');
     fireEvent.change(screen.getByLabelText('Timestamps'), { target: { value: 'never' } });
     expect(screen.getByTestId('assistant-message')).toHaveAttribute('data-timestamp', 'never');
+    // Copy starts in the row under the reply; the hover control is the compact option.
+    expect(screen.queryByRole('button', { name: 'Copy message' })).toBeNull();
+    fireEvent.change(screen.getByLabelText('Copy button'), { target: { value: 'hover' } });
+    expect(localStorage.getItem('niuu.compactUx.copyMode')).toBe('hover');
     expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('Copy button'), { target: { value: 'inline' } });
-    expect(localStorage.getItem('niuu.compactUx.copyMode')).toBe('inline');
   });
   it('keeps display controls available when Forge supplies its own toolbar', () => {
     localStorage.clear();
@@ -1497,6 +1499,6 @@ describe('SessionChat', () => {
     expect(screen.getByTestId('conversation-view-toggle')).toBeInTheDocument();
     expect(screen.getByText('Display')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('conversation-view-toggle'));
-    expect(localStorage.getItem('niuu.compactUx.conversationView')).toBe('expanded');
+    expect(localStorage.getItem('niuu.compactUx.conversationView')).toBe('compact');
   });
 });

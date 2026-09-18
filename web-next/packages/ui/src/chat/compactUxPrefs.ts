@@ -2,10 +2,10 @@ import { useSyncExternalStore } from 'react';
 
 // niuu:ux: compact-chat preferences.
 //
-// Defaults make this branch's chat view compact (action icons + agent avatar
-// hidden, timestamp on hover). Each can be flipped back on at runtime via
-// localStorage keys `niuu.compactUx.<key>` (no rebuild needed). A real settings
-// surface can be layered on later — these read from the same keys.
+// Defaults follow the Forge review layout: the agent avatar, timestamps and an
+// inline copy row under each reply, with every turn expanded. The Display menu
+// (and localStorage keys `niuu.compactUx.<key>`) switch to the compact,
+// Codex-style view: hidden actions and avatar, hover timestamps, folded turns.
 export interface CompactUxChatPrefs {
   /** thumbs-up/down, regenerate, bookmark, copy row under each message */
   showMessageActions: boolean;
@@ -21,14 +21,14 @@ export interface CompactUxChatPrefs {
 export type ConversationView = 'compact' | 'expanded';
 
 const DEFAULTS: CompactUxChatPrefs = {
-  showMessageActions: false,
-  showAgentAvatar: false,
-  timestamp: 'hover',
-  copyMode: 'hover',
+  showMessageActions: true,
+  showAgentAvatar: true,
+  timestamp: 'always',
+  copyMode: 'inline',
 };
 
 const CONVERSATION_VIEW_KEY = 'conversationView';
-const CONVERSATION_VIEW_DEFAULT: ConversationView = 'compact';
+const CONVERSATION_VIEW_DEFAULT: ConversationView = 'expanded';
 const CONVERSATION_VIEW_VALUES = ['compact', 'expanded'] as const;
 
 function readBool(key: string, fallback: boolean): boolean {
