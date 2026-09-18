@@ -1825,6 +1825,14 @@ class VolundrBifrostConfig(BifrostConfig):
         gt=0,
         description="Interval between successful Bifrost catalog refreshes.",
     )
+    session_gateway_url: str = Field(
+        default="",
+        description=(
+            "Bifrost URL as reachable from a session pod. When set, sessions on a "
+            "model the catalog marks provider=local get SKULD__MODEL_GATEWAY__URL "
+            "pointing here. Empty disables it."
+        ),
+    )
     auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
 
 

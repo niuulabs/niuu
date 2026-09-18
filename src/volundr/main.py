@@ -813,6 +813,7 @@ def create_app(
                 user_integration=user_integration_service,
                 resource_provider=resource_provider,
                 persona_provider=session_persona_provider,
+                pricing_provider=pricing_provider,
             )
 
             session_service = SessionService(

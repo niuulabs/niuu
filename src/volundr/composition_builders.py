@@ -387,6 +387,20 @@ def _create_contributors(
         contributors.append(IntegrationContributor(**ports))
         logger.info("Session contributor: integrations (auto-wired)")
 
+    if (
+        not _has_contributor("model_gateway")
+        and settings.bifrost.session_gateway_url
+        and ports.get("pricing_provider") is not None
+    ):
+        from volundr.adapters.outbound.contributors.model_gateway import (
+            ModelGatewayContributor,
+        )
+
+        contributors.append(
+            ModelGatewayContributor(gateway_url=settings.bifrost.session_gateway_url, **ports)
+        )
+        logger.info("Session contributor: model_gateway (auto-wired)")
+
     # Auto-wire LocalMountContributor from local_mounts config
     lm = settings.local_mounts
     local_mount_contributor = LocalMountContributor(
