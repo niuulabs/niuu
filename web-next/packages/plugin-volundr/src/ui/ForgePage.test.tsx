@@ -321,8 +321,8 @@ describe('ForgePage', () => {
     await waitFor(() =>
       expect(screen.getAllByTestId('quick-launch-card').length).toBeGreaterThan(0),
     );
-    expect(screen.getByText('standard-claude')).toBeInTheDocument();
-    expect(screen.getByText('standard-codex')).toBeInTheDocument();
+    expect(screen.getByText('Claude')).toBeInTheDocument();
+    expect(screen.getAllByText('Codex').length).toBeGreaterThan(0);
     expect(screen.getByText(/from catalog/i)).toBeInTheDocument();
   });
 

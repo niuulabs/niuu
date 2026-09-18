@@ -106,19 +106,17 @@
 /* ── Topbar ─────────────────────────────────────────── */
 .niuu-shell__topbar {
   grid-area: topbar;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
   padding: 0 var(--space-6);
   background: var(--color-bg-secondary);
   border-bottom: 1px solid var(--color-border-subtle);
 }
-.niuu-shell__topbar-left {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-}
 .niuu-shell__topbar-title {
+  grid-column: 1;
+  min-width: 0;
+  overflow: hidden;
   display: flex;
   align-items: baseline;
   gap: var(--space-3);
@@ -149,6 +147,11 @@
 
 /* topbar tabs */
 .niuu-shell__tabs {
+  grid-column: 2;
+  justify-self: center;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
   display: flex;
   gap: 0;
   align-self: stretch;
@@ -158,13 +161,14 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 var(--space-3);
+  padding: var(--space-1) var(--space-3) 0;
   background: transparent;
   border: none;
   cursor: pointer;
   color: var(--color-text-muted);
   font-family: var(--font-sans);
   font-size: 13px;
+  line-height: 1.25;
   font-weight: 400;
   transition: color var(--transition-fast);
 }
@@ -174,12 +178,15 @@
 .niuu-shell__tab--active {
   color: var(--color-text-primary);
 }
-.niuu-shell__tab--active::after {
+.niuu-shell__tab-label {
+  position: relative;
+}
+.niuu-shell__tab--active .niuu-shell__tab-label::after {
   content: '';
   position: absolute;
-  left: var(--space-3);
-  right: var(--space-3);
-  bottom: -1px;
+  left: 0;
+  right: 0;
+  bottom: calc(-1 * var(--space-1));
   height: 2px;
   background: var(--color-brand);
   box-shadow: 0 0 8px color-mix(in srgb, var(--color-brand) 60%, transparent);
@@ -215,6 +222,8 @@
 }
 
 .niuu-shell__topbar-right {
+  grid-column: 3;
+  justify-self: end;
   display: flex;
   align-items: center;
   gap: var(--space-4);
@@ -348,4 +357,121 @@
 .niuu-shell__footer-chip-sep {
   color: var(--color-text-faint);
   margin: 0 2px;
+}
+
+.niuu-shell__theme-select {
+  min-height: 34px;
+  max-width: 124px;
+  padding: 5px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.niuu-shell__theme-select:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+[data-theme='xteo'] .niuu-shell__topbar {
+  box-shadow: var(--shadow-sm);
+}
+@media (max-width: 650px) {
+  .niuu-shell__topbar-subtitle,
+  .niuu-shell__topbar-right .niuu-live-badge,
+  .niuu-shell__topbar-sep {
+    display: none;
+  }
+  .niuu-shell__topbar-right {
+    gap: 6px;
+  }
+  .niuu-shell__theme-select {
+    max-width: 112px;
+    min-height: 36px;
+  }
+}
+
+@media (min-width: 761px) {
+  [data-theme='xteo'].niuu-shell {
+    grid-template-columns: 56px auto minmax(0, 1fr);
+    grid-template-rows: 52px minmax(0, 1fr) 30px;
+  }
+  [data-theme='xteo'] .niuu-shell__rail-item {
+    width: 56px;
+  }
+}
+
+@media (max-width: 760px) {
+  .niuu-shell {
+    grid-template-rows: 84px minmax(0, 1fr) 28px;
+  }
+  .niuu-shell__topbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: 46px 36px;
+    padding: 0 12px;
+    gap: 0 8px;
+    min-width: 0;
+  }
+  .niuu-shell__topbar-title {
+    grid-column: 1;
+    grid-row: 1;
+    gap: 8px;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .niuu-shell__topbar-title h1 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .niuu-shell__topbar-subtitle {
+    display: none;
+  }
+  .niuu-shell__tabs {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+    overflow-x: auto;
+  }
+  .niuu-shell__tab {
+    flex-shrink: 0;
+    padding-inline: 10px;
+  }
+  .niuu-shell__topbar-right {
+    grid-column: 2;
+    grid-row: 1;
+    gap: 6px;
+  }
+  .niuu-shell__topbar-right > :not(.niuu-shell__theme-select):not(.niuu-shell__topbar-content) {
+    display: none;
+  }
+  .niuu-shell__theme-select {
+    max-width: 112px;
+    min-height: 36px;
+  }
+}
+
+.niuu-shell__rail .niuu-shell__rail-item--icon {
+  width: 40px;
+  height: 40px;
+  margin: 4px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 9px;
+}
+.niuu-shell__rail-item--icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+@media (min-width: 761px) and (max-width: 1100px) {
+  .niuu-shell__topbar-right {
+    gap: 8px;
+  }
+  .niuu-shell__topbar-sep,
+  .niuu-shell__cp-btn {
+    display: none;
+  }
 }

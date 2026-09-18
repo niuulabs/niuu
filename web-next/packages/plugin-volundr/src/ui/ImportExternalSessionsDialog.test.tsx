@@ -270,3 +270,29 @@ describe('ImportExternalSessionsDialog', () => {
     expect(screen.getByText(/discovering external sessions/i)).toBeInTheDocument();
   });
 });
+
+it('searches CLI title, folder, model and harness without changing the discovered sessions', async () => {
+  const volundr = createMockVolundrService();
+  volundr.listExternalSessions = vi.fn().mockResolvedValue([
+    makeExternalSession(),
+    makeExternalSession({
+      externalId: 'codex-1',
+      harness: 'codex',
+      model: 'astra',
+      title: 'UI review',
+      workspacePath: '/repo/lexi',
+    }),
+  ]);
+  wrap(volundr);
+  await screen.findByTestId('external-session-row-ext-1');
+  const search = screen.getByRole('searchbox', { name: 'Search CLI sessions' });
+  for (const query of ['UI review', '/repo/lexi', 'astra', 'CODEX']) {
+    fireEvent.change(search, { target: { value: query } });
+    expect(screen.getByTestId('external-session-row-codex-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('external-session-row-ext-1')).not.toBeInTheDocument();
+  }
+  fireEvent.change(search, { target: { value: 'missing' } });
+  expect(screen.getByRole('status')).toHaveTextContent('No CLI sessions match');
+  fireEvent.change(search, { target: { value: '' } });
+  expect(screen.getByTestId('external-session-row-ext-1')).toBeInTheDocument();
+});

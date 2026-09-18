@@ -38,8 +38,8 @@ describe('OutcomeCard', () => {
         raw={'verdict: pass\nsummary: See [docs](https://example.com)\ndetails: Use `npm test`'}
       />,
     );
-    const link = screen.getByRole('link', { name: 'docs' });
-    expect(link).toHaveAttribute('href', 'https://example.com');
+    const link = screen.getByRole('button', { name: 'docs' });
+    expect(link).toHaveClass('niuu-chat-md-link');
     expect(screen.getByText('npm test')).toBeInTheDocument();
   });
 

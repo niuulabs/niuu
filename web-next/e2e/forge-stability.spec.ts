@@ -12,12 +12,15 @@ config.services.integrations = { mode: 'http', baseUrl: '/api/v1/integrations' }
 // platform nor provider credentials. Transport/replay wires have separate tests.
 test.beforeEach(async ({ page }) => {
   // These contracts describe an already configured installation in Advanced mode.
-  await page.addInitScript(() => localStorage.setItem('niuu.compactUx.mode', 'advanced'));
+  await page.addInitScript(() => {
+    localStorage.setItem('niuu.compactUx.mode', 'advanced');
+    localStorage.setItem('niuu.forge.details', '1');
+  });
   await page.route('**/api/v1/niuu/setup', (route) =>
     route.fulfill({ json: { enabled: false, completed: true, steps: [], completedSteps: [] } }),
   );
   await page.route('**/api/v1/integrations{,/**}', (route) => route.fulfill({ json: [] }));
-  await page.route('**/config.json', (route) => route.fulfill({ json: config }));
+  await page.route(/\/config(?:\.live)?\.json$/, (route) => route.fulfill({ json: config }));
 });
 
 test('Forge entry survives a hard reload', async ({ page }) => {
@@ -60,6 +63,11 @@ test('history filters survive repeated changes without losing rows', async ({ pa
 
 test('launch catalog exposes the standard Claude and Codex definitions', async ({ page }) => {
   await page.goto('/volundr/catalog');
+  const standards = page.getByLabel('Launch standard');
+  await expect(standards.getByRole('button', { name: /^Claude/ })).toBeVisible();
+  await expect(standards.getByRole('button', { name: /^Codex/ })).toBeVisible();
+  // The saved definitions stay reachable behind the standards.
+  await page.getByRole('button', { name: 'Manage custom catalogue' }).click();
   await expect(page.getByRole('button', { name: /standard-claude/ })).toBeVisible();
   await expect(page.getByRole('button', { name: /standard-codex/ })).toBeVisible();
 });

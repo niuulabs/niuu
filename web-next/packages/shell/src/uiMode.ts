@@ -141,6 +141,7 @@ export interface PluginFace {
 export function pluginFace(
   plugin: {
     rune: string;
+    icon?: ReactNode;
     title: string;
     subtitle: string;
     simple?: { icon?: ReactNode; title?: string; subtitle?: string };
@@ -148,12 +149,12 @@ export function pluginFace(
   mode: UiMode,
 ): PluginFace {
   if (mode !== 'simple' || !plugin.simple) {
-    return { title: plugin.title, subtitle: plugin.subtitle, glyph: plugin.rune };
+    return { title: plugin.title, subtitle: plugin.subtitle, glyph: plugin.icon ?? plugin.rune };
   }
   return {
     title: plugin.simple.title ?? plugin.title,
     subtitle: plugin.simple.subtitle ?? plugin.subtitle,
-    glyph: plugin.simple.icon ?? plugin.rune,
+    glyph: plugin.simple.icon ?? plugin.icon ?? plugin.rune,
   };
 }
 

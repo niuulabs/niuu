@@ -3,7 +3,7 @@ import { act, render, screen, fireEvent, waitFor, within } from '@testing-librar
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
-import { LaunchWizard } from './LaunchWizard';
+import { AdvancedLaunchWizard as LaunchWizard } from './AdvancedLaunchWizard';
 import { createMockVolundrService } from '../adapters/mock';
 
 const navigate = vi.fn();

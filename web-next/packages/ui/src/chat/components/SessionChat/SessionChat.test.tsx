@@ -171,7 +171,30 @@ describe('SessionChat', () => {
   it('shows loading indicator when history not loaded and connected', () => {
     render(<SessionChat {...defaultProps} connected historyLoaded={false} />);
     expect(screen.getByTestId('history-loading')).toBeInTheDocument();
-    expect(screen.getByText('Loading conversation...')).toBeInTheDocument();
+    expect(screen.getByText('Loading conversation…')).toBeInTheDocument();
+  });
+
+  it('hides partial cached messages until history is ready and offers a failed-history retry', () => {
+    const retry = vi.fn();
+    const { rerender } = render(
+      <SessionChat {...defaultProps} messages={[userMessage]} historyLoaded={false} />,
+    );
+    expect(screen.queryByText(userMessage.content)).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    rerender(
+      <SessionChat
+        {...defaultProps}
+        historyLoaded={false}
+        historyError="History request failed"
+        onRetryHistory={retry}
+      />,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent('History request failed');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(retry).toHaveBeenCalledOnce();
+    rerender(<SessionChat {...defaultProps} messages={[userMessage]} historyLoaded />);
+    expect(screen.getByText(userMessage.content)).toBeInTheDocument();
+    expect(screen.queryByTestId('history-loading')).not.toBeInTheDocument();
   });
 
   it('does not show loading indicator when history is loaded', () => {
@@ -179,9 +202,9 @@ describe('SessionChat', () => {
     expect(screen.queryByTestId('history-loading')).not.toBeInTheDocument();
   });
 
-  it('does not show loading indicator when disconnected even if history not loaded', () => {
+  it('keeps loading clean while the socket is still connecting', () => {
     render(<SessionChat {...defaultProps} connected={false} historyLoaded={false} />);
-    expect(screen.queryByTestId('history-loading')).not.toBeInTheDocument();
+    expect(screen.getByTestId('history-loading')).toBeInTheDocument();
   });
 
   /* ── Empty state ── */
@@ -551,23 +574,19 @@ describe('SessionChat', () => {
     expect(onRegenerate).toHaveBeenCalledWith(assistantMessage.id);
   });
 
-  it('falls back to resending last user message when onRegenerate not provided', () => {
+  it.each([
+    ['regular', assistantMessage],
+    ['room', roomAssistantMessage],
+  ])('hides unwired message actions in %s conversations and keeps Copy', (_mode, message) => {
     const onSend = vi.fn();
-    render(
-      <SessionChat {...defaultProps} onSend={onSend} messages={[userMessage, assistantMessage]} />,
-    );
-    const regenerateBtn = screen.getByTitle('Regenerate');
-    fireEvent.click(regenerateBtn);
-    expect(onSend).toHaveBeenCalledWith(userMessage.content, []);
-  });
-
-  it('does nothing on regenerate fallback when no preceding user message found', () => {
-    const onSend = vi.fn();
-    render(<SessionChat {...defaultProps} onSend={onSend} messages={[assistantMessage]} />);
-    const regenerateBtn = screen.getByTitle('Regenerate');
-    fireEvent.click(regenerateBtn);
-    // Should not call onSend since there is no user message before the assistant message
+    localStorage.setItem(`bookmark:${message.id}`, '1');
+    render(<SessionChat {...defaultProps} onSend={onSend} messages={[userMessage, message]} />);
+    expect(screen.getByTitle('Copy')).toBeInTheDocument();
+    for (const title of ['Regenerate', 'Helpful', 'Not helpful', 'Bookmark', 'Remove bookmark']) {
+      expect(screen.queryByTitle(title)).not.toBeInTheDocument();
+    }
     expect(onSend).not.toHaveBeenCalled();
+    expect(localStorage.getItem(`bookmark:${message.id}`)).toBe('1');
   });
 
   /* ── handleBookmark ── */
@@ -586,20 +605,18 @@ describe('SessionChat', () => {
     expect(onBookmark).toHaveBeenCalledWith(assistantMessage.id, true);
   });
 
-  it('falls back to localStorage when onBookmark not provided', () => {
-    render(<SessionChat {...defaultProps} messages={[userMessage, assistantMessage]} />);
-    const bookmarkBtn = screen.getByTitle('Bookmark');
-    fireEvent.click(bookmarkBtn);
-    expect(localStorage.getItem(`bookmark:${assistantMessage.id}`)).toBe('1');
-  });
-
-  it('removes bookmark from localStorage on unbookmark', () => {
+  it('uses the explicit bookmark handler to remove an existing bookmark', () => {
+    const onBookmark = vi.fn();
     localStorage.setItem(`bookmark:${assistantMessage.id}`, '1');
-    render(<SessionChat {...defaultProps} messages={[userMessage, assistantMessage]} />);
-    // Message should show as bookmarked, so the title changes to "Remove bookmark"
-    const bookmarkBtn = screen.getByTitle('Remove bookmark');
-    fireEvent.click(bookmarkBtn);
-    expect(localStorage.getItem(`bookmark:${assistantMessage.id}`)).toBeNull();
+    render(
+      <SessionChat
+        {...defaultProps}
+        messages={[userMessage, assistantMessage]}
+        onBookmark={onBookmark}
+      />,
+    );
+    fireEvent.click(screen.getByTitle('Remove bookmark'));
+    expect(onBookmark).toHaveBeenCalledWith(assistantMessage.id, false);
   });
 
   /* ── Permissions rendering ── */
@@ -1408,22 +1425,6 @@ describe('SessionChat', () => {
     render(<SessionChat {...defaultProps} messages={[systemMessage]} />);
     // System-only messages don't count as "conversation"
     expect(screen.getByTestId('session-empty-chat')).toBeInTheDocument();
-  });
-
-  /* ── localStorage error handling in bookmark ── */
-
-  it('handles localStorage errors gracefully in bookmark fallback', () => {
-    const origSetItem = localStorage.setItem.bind(localStorage);
-    localStorage.setItem = () => {
-      throw new Error('Storage full');
-    };
-
-    render(<SessionChat {...defaultProps} messages={[userMessage, assistantMessage]} />);
-    const bookmarkBtn = screen.getByTitle('Bookmark');
-    // Should not throw — the catch block swallows the error
-    expect(() => fireEvent.click(bookmarkBtn)).not.toThrow();
-
-    localStorage.setItem = origSetItem;
   });
 
   /* ── localStorage error in reading bookmark state ── */

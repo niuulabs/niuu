@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { LaunchCatalogPage } from './LaunchCatalogPage';
+import { AdvancedLaunchCatalogPage as LaunchCatalogPage } from './AdvancedLaunchCatalogPage';
 import { renderWithVolundr } from '../testing/renderWithVolundr';
 import { createMockVolundrService } from '../adapters/mock';
 import type { VolundrLaunchSpec } from '../models/volundr.model';

@@ -96,28 +96,28 @@ test('clicking a session in sidebar shows its detail inline', async ({ page }) =
 test('session detail page renders the live diff surface', async ({ page }) => {
   await page.goto('/volundr/session/ds-1');
   await expect(page.getByTestId('live-session-detail-page')).toBeVisible({ timeout: 8_000 });
-  await expect(page.locator('#tab-diffs')).toBeVisible();
+  // Chat opens first; Diff is one of the default session tabs.
+  await expect(page.locator('#tab-chat')).toHaveAttribute('aria-selected', 'true');
+  await page.locator('#tab-diffs').click();
   await expect(page.locator('#tab-diffs')).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByTestId('diffs-tab')).toBeVisible();
 });
 
-test('session id copy chip is shown in the header', async ({ page }) => {
+test('session id copy chip is available in header details', async ({ page }) => {
+  // "Show session details" is a remembered sidebar preference.
+  await page.addInitScript(() => localStorage.setItem('niuu.forge.details', '1'));
   await page.goto('/volundr/session/ds-1');
   await expect(page.getByTestId('session-id-label')).toHaveAttribute(
     'title',
     /^ds-1 · click to copy$/,
-    {
-      timeout: 8_000,
-    },
   );
-  await expect(page.getByTestId('session-id-label')).toHaveText('ds-1', {
-    timeout: 8_000,
-  });
+  await expect(page.getByTestId('session-id-label')).toHaveText('ds-1');
 });
 
 test('session detail shows the default diff viewer state', async ({ page }) => {
   await page.goto('/volundr/session/ds-1');
   await expect(page.getByTestId('live-session-detail-page')).toBeVisible({ timeout: 8_000 });
+  await page.locator('#tab-diffs').click();
   await expect(page.locator('#tab-diffs')).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByText('changed files').first()).toBeVisible();
   await expect(page.getByText('Select a file to view changes')).toBeVisible();
@@ -138,9 +138,9 @@ test('session row delete opens a confirmation and Escape cancels it', async ({ p
   await expect(remove).toBeVisible();
   await remove.focus();
   await page.keyboard.press('Enter');
-  const dialog = page.getByRole('dialog', { name: 'Delete Session', exact: true });
+  const dialog = page.getByRole('dialog', { name: 'Delete session?', exact: true });
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText('workspace storage');
+  await expect(dialog).toContainText('cannot be undone');
   await page.keyboard.press('Escape');
   await expect(dialog).not.toBeVisible();
   await expect(row).toBeVisible();

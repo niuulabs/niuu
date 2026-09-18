@@ -7,6 +7,8 @@ import {
   type PluginDescriptor,
   type PluginCtx,
 } from '@niuulabs/plugin-sdk';
+import { ThemeProvider } from '@niuulabs/design-tokens';
+import { useConfig } from '@niuulabs/plugin-sdk';
 import { CommandPaletteProvider } from '@niuulabs/ui';
 import { ShellContext } from './ShellContext';
 import { composeRouter } from './composeRouter';
@@ -15,12 +17,21 @@ interface ShellProps {
   plugins: PluginDescriptor[];
   brand?: ReactNode;
   version?: string;
+  /** Host-owned account or connection controls, independent of the selected plugin. */
+  topbarContent?: ReactNode;
   /** @internal Override the router history — for tests and Storybook only. */
   _testHistory?: RouterHistory;
 }
 
-export function Shell({ plugins, brand = 'ᚾ', version = '0.0.1', _testHistory }: ShellProps) {
+export function Shell({
+  plugins,
+  brand = 'ᚾ',
+  version = '0.0.1',
+  topbarContent,
+  _testHistory,
+}: ShellProps) {
   const features = useFeatureCatalog();
+  const config = useConfig();
 
   const enabled = useMemo(
     () =>
@@ -50,12 +61,14 @@ export function Shell({ plugins, brand = 'ᚾ', version = '0.0.1', _testHistory 
   );
 
   return (
-    <ShellContext.Provider value={{ enabled, brand, version, ctx }}>
-      <PluginCtxProvider value={ctx}>
-        <CommandPaletteProvider>
-          <RouterProvider key={routeKey} router={router} />
-        </CommandPaletteProvider>
-      </PluginCtxProvider>
-    </ShellContext.Provider>
+    <ThemeProvider theme={config.theme}>
+      <ShellContext.Provider value={{ enabled, brand, version, ctx, topbarContent }}>
+        <PluginCtxProvider value={ctx}>
+          <CommandPaletteProvider>
+            <RouterProvider key={routeKey} router={router} />
+          </CommandPaletteProvider>
+        </PluginCtxProvider>
+      </ShellContext.Provider>
+    </ThemeProvider>
   );
 }

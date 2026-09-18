@@ -4,6 +4,7 @@ import {
   useState,
   useRef,
   useEffect,
+  useLayoutEffect,
   type FormEvent,
   type ReactNode,
 } from 'react';
@@ -21,8 +22,10 @@ import {
   ChevronDown,
   Loader2,
 } from 'lucide-react';
+import { LoadingState } from '../../../data/states/LoadingState';
+import { ErrorState } from '../../../data/states/ErrorState';
 import { cn } from '../../../utils/cn';
-import { useRoomState } from '../../hooks/useRoomState';
+import { hideToolParts, useRoomState } from '../../hooks/useRoomState';
 import {
   UserMessage,
   AssistantMessage,
@@ -67,7 +70,6 @@ import './SessionChat.css';
 import { ChatConnectionsButton } from '../../../ChatConnections';
 
 const SCROLL_THRESHOLD = 150;
-const SCROLL_LOCK_MS = 500;
 
 const THINKING_PRESETS = [
   { label: '4K', value: 4096 },
@@ -271,6 +273,8 @@ export interface SessionChatProps {
   connected?: boolean;
   /** Whether history has been loaded */
   historyLoaded?: boolean;
+  historyError?: string | null;
+  onRetryHistory?: () => void;
   /** Room participants map (peerId → meta) */
   participants?: ReadonlyMap<string, RoomParticipant>;
   /** Mesh events for the cascade panel */
@@ -295,6 +299,8 @@ export interface SessionChatProps {
   className?: string;
   /** Show the built-in toolbar row. */
   showToolbar?: boolean;
+  /** Token counts are opt-in to keep the conversation uncluttered. */
+  showTokenUsage?: boolean;
   /** Hide the built-in internal visibility toggle when the page owns it externally. */
   showInternalToggle?: boolean;
   /** Controlled internal visibility state for external toolbar integrations. */
@@ -349,6 +355,8 @@ export function SessionChat({
   streamingModel,
   connected = false,
   historyLoaded = true,
+  historyError,
+  onRetryHistory,
   participants = new Map(),
   meshEvents = [],
   agentEvents = new Map(),
@@ -361,6 +369,7 @@ export function SessionChat({
   sessionName = 'Session',
   className,
   showToolbar = true,
+  showTokenUsage = false,
   showInternalToggle = true,
   internalVisibility,
   eventRouting = false,
@@ -392,7 +401,7 @@ export function SessionChat({
     visibleMessages,
     collapsedThreads,
     toggleThread,
-  } = useRoomState(messages, participants);
+  } = useRoomState(messages, participants, internalVisibility ?? false);
 
   useEffect(() => {
     if (internalVisibility === undefined) return;
@@ -446,7 +455,7 @@ export function SessionChat({
   const isNearBottomRef = useRef(true);
   const userSentRef = useRef(false);
   const prevMessageCountRef = useRef(0);
-  const scrollLockUntilRef = useRef(0);
+  const initialScrollRef = useRef<string | null | undefined>(undefined);
 
   const participantsMap = useMemo<Map<string, RoomParticipant>>(() => {
     const map = new Map<string, RoomParticipant>();
@@ -688,53 +697,72 @@ export function SessionChat({
 
   const useCompact = conversationView === 'compact';
 
+  const hasRunningAssistantMessage = visibleMessages.some(
+    (message) => message.role === 'assistant' && message.status === 'running',
+  );
+  const isStreaming =
+    !hasRunningAssistantMessage &&
+    (!!streamingContent || (streamingParts && streamingParts.length > 0));
+
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
-    messagesEndRef.current?.scrollIntoView?.({ behavior });
+    const container = scrollContainerRef.current;
+    if (container) {
+      if (behavior === 'smooth' && container.scrollTo)
+        container.scrollTo({ top: container.scrollHeight, behavior });
+      else container.scrollTop = container.scrollHeight;
+    }
     setNewMessageCount(0);
   }, []);
+
+  // Place the hydrated transcript before the browser paints it, without traversing its history.
+  useLayoutEffect(() => {
+    if (!historyLoaded) {
+      initialScrollRef.current = undefined;
+      return;
+    }
+    const container = scrollContainerRef.current;
+    if (!container || initialScrollRef.current === chatEndpoint) return;
+    container.scrollTop = container.scrollHeight;
+    isNearBottomRef.current = true;
+    prevMessageCountRef.current = visibleMessages.length;
+    initialScrollRef.current = chatEndpoint;
+  }, [historyLoaded, chatEndpoint, visibleMessages.length, streamingContent, streamingParts]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
     const handleScroll = () => {
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      isNearBottomRef.current = distanceFromBottom <= SCROLL_THRESHOLD;
-      setShowScrollBtn(distanceFromBottom > SCROLL_THRESHOLD * 2);
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+      isNearBottomRef.current = distance <= SCROLL_THRESHOLD;
+      setShowScrollBtn(distance > SCROLL_THRESHOLD * 2);
       if (isNearBottomRef.current) setNewMessageCount(0);
     };
     el.addEventListener('scroll', handleScroll, { passive: true });
-    let prevHeight = el.scrollHeight;
-    const resizeObserver = new ResizeObserver(() => {
-      const newHeight = el.scrollHeight;
-      if (newHeight !== prevHeight) {
-        prevHeight = newHeight;
-        scrollLockUntilRef.current = Date.now() + SCROLL_LOCK_MS;
-      }
+    // Observe content too: images, code highlighting and streamed text can grow without resizing
+    // the scroll viewport. Preserve a reader's position once they have scrolled away from the end.
+    const observer = new ResizeObserver(() => {
+      if (isNearBottomRef.current) el.scrollTop = el.scrollHeight;
     });
-    resizeObserver.observe(el);
+    observer.observe(el);
+    if (el.firstElementChild) observer.observe(el.firstElementChild);
     return () => {
       el.removeEventListener('scroll', handleScroll);
-      resizeObserver.disconnect();
+      observer.disconnect();
     };
-  }, [hasConversation]);
+  }, [hasConversation, isStreaming, historyLoaded]);
 
-  useEffect(() => {
-    const messageCount = visibleMessages.length;
-    const countDelta = messageCount - prevMessageCountRef.current;
-    prevMessageCountRef.current = messageCount;
-    if (userSentRef.current) {
+  useLayoutEffect(() => {
+    if (!historyLoaded) return;
+    const countDelta = visibleMessages.length - prevMessageCountRef.current;
+    prevMessageCountRef.current = visibleMessages.length;
+    if (userSentRef.current || (countDelta !== 0 && isNearBottomRef.current)) {
       userSentRef.current = false;
-      messagesEndRef.current?.scrollIntoView?.({ behavior: 'smooth' });
+      const el = scrollContainerRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
       return;
     }
-    if (countDelta === 0) return;
-    if (Date.now() < scrollLockUntilRef.current) return;
-    if (isNearBottomRef.current) {
-      messagesEndRef.current?.scrollIntoView?.({ behavior: 'smooth' });
-      return;
-    }
-    setNewMessageCount((prev) => prev + countDelta);
-  }, [visibleMessages.length]);
+    if (countDelta > 0) setNewMessageCount((prev) => prev + countDelta);
+  }, [visibleMessages.length, historyLoaded]);
 
   useEffect(() => {
     onMessageCountChange?.(visibleMessages.length);
@@ -821,55 +849,32 @@ export function SessionChat({
     [onCopy],
   );
 
-  const handleRegenerate = useCallback(
-    (messageId: string) => {
-      if (onRegenerate) {
-        onRegenerate(messageId);
-        return;
-      }
-      const idx = messages.findIndex((m) => m.id === messageId);
-      if (idx < 0) return;
-      for (let i = idx - 1; i >= 0; i--) {
-        const m = messages[i];
-        if (m && m.role === 'user') {
-          onSend(m.content, []);
-          return;
-        }
-      }
-    },
-    [messages, onRegenerate, onSend],
-  );
-
-  const handleBookmark = useCallback(
-    (id: string, bookmarked: boolean) => {
-      if (onBookmark) {
-        onBookmark(id, bookmarked);
-        return;
-      }
-      const key = `bookmark:${id}`;
-      try {
-        if (bookmarked) {
-          localStorage.setItem(key, '1');
-        } else {
-          localStorage.removeItem(key);
-        }
-      } catch {
-        // localStorage may not be available
-      }
-    },
-    [onBookmark],
-  );
-
   const hasSidebar = Array.from(participants.values()).some(
     (participant) => participant.participantType === 'ravn',
   );
   const showRightPanel = effectiveRightPanelMode !== null;
-  const hasRunningAssistantMessage = visibleMessages.some(
-    (message) => message.role === 'assistant' && message.status === 'running',
-  );
-  const isStreaming =
-    !hasRunningAssistantMessage &&
-    (!!streamingContent || (streamingParts && streamingParts.length > 0));
+
+  if (!historyLoaded) {
+    return (
+      <div className={cn('niuu-chat-session-loading', className)} data-testid="history-loading">
+        {historyError ? (
+          <ErrorState
+            title="Could not load conversation"
+            message={historyError}
+            action={
+              onRetryHistory && (
+                <button type="button" className="niuu-chat-retry" onClick={onRetryHistory}>
+                  Try again
+                </button>
+              )
+            }
+          />
+        ) : (
+          <LoadingState label="Loading conversation…" />
+        )}
+      </div>
+    );
+  }
 
   const isBookmarked = (id: string): boolean => {
     try {
@@ -898,8 +903,8 @@ export function SessionChat({
             selectedAgentId={selectedAgentId}
             onShowDetail={msg.participant ? handleShowDetail : undefined}
             onCopy={handleCopy}
-            onRegenerate={handleRegenerate}
-            onBookmark={handleBookmark}
+            onRegenerate={onRegenerate}
+            onBookmark={onBookmark}
             bookmarked={isBookmarked(msg.id)}
           />
         </div>
@@ -917,9 +922,10 @@ export function SessionChat({
       <AssistantMessage
         key={messageRenderKey(msg)}
         message={msg}
+        showTokenUsage={showTokenUsage}
         onCopy={handleCopy}
-        onRegenerate={handleRegenerate}
-        onBookmark={handleBookmark}
+        onRegenerate={onRegenerate}
+        onBookmark={onBookmark}
         bookmarked={isBookmarked(msg.id)}
       />
     );
@@ -1221,13 +1227,6 @@ export function SessionChat({
           </div>
         )}
 
-        {/* ── History loading ── */}
-        {!historyLoaded && connected && (
-          <div className="niuu-chat-history-loading" data-testid="history-loading">
-            Loading conversation...
-          </div>
-        )}
-
         {/* ── Messages ── */}
         {hasConversation || isStreaming ? (
           <div className="niuu-chat-messages-container" ref={scrollContainerRef}>
@@ -1253,7 +1252,9 @@ export function SessionChat({
               {isStreaming && (
                 <StreamingMessage
                   content={streamingContent ?? ''}
-                  parts={streamingParts}
+                  parts={
+                    showInternal ? streamingParts : streamingParts && hideToolParts(streamingParts)
+                  }
                   model={streamingModel}
                 />
               )}

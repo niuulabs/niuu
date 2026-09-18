@@ -1256,6 +1256,7 @@ export function createMockVolundrService(): IVolundrService {
     deleteUserHomePath: async () => {
       throw new Error('Home storage requires a live cluster');
     },
+    getProjects: async () => [],
     getTargets: async () => [
       {
         id: 'mock-volundr-default',

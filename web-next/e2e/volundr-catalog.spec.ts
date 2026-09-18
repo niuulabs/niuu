@@ -11,12 +11,13 @@ test('/volundr/catalog renders the launch catalog page', async ({ page }) => {
 
 test('/volundr/catalog shows preloaded system launch specs', async ({ page }) => {
   await page.goto('/volundr/catalog');
-  await expect(page.getByText('standard-claude')).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByText('standard-codex')).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByRole('button', { name: /^Claude Claude Code/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Codex OpenAI/ })).toBeVisible();
 });
 
 test('/volundr/catalog identifies system-scope specs', async ({ page }) => {
   await page.goto('/volundr/catalog');
+  await page.getByRole('button', { name: 'Manage custom catalogue' }).click();
   await expect(page.getByText('system').first()).toBeVisible({ timeout: 5_000 });
 });
 

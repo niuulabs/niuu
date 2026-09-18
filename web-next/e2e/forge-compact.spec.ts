@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { test, expect, type Page } from '@playwright/test';
 
-async function configure(page: Page, mini: boolean, fail = false, holdFlags?: Promise<void>) {
+async function configure(page: Page) {
+  // The compact, Codex-style conversation is an opt-in display preference.
+  await page.addInitScript(() =>
+    localStorage.setItem('niuu.compactUx.conversationView', 'compact'),
+  );
   const config = JSON.parse(
     readFileSync(new URL('../apps/niuu/public/config.json', import.meta.url), 'utf8'),
   );
@@ -11,7 +15,7 @@ async function configure(page: Page, mini: boolean, fail = false, holdFlags?: Pr
   config.services.volundr = { mode: 'http', baseUrl: '/api/v1/volundr' };
   config.services.setup = { mode: 'http', baseUrl: '/api/v1/setup' };
   config.services.integrations = { mode: 'http', baseUrl: '/api/v1/integrations' };
-  await page.route('**/config.json', (route) => route.fulfill({ json: config }));
+  await page.route(/\/config(?:\.live)?\.json$/, (route) => route.fulfill({ json: config }));
   await page.route('**/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/api/v1/setup')
@@ -47,15 +51,10 @@ async function configure(page: Page, mini: boolean, fail = false, holdFlags?: Pr
       return route.fulfill({
         json: [{ key: 'chat', enabled: true, scope: 'session', order: 0, label: 'Chat' }],
       });
-    if (path.endsWith('/feature-flags')) {
-      await holdFlags;
+    if (path.endsWith('/feature-flags'))
       return route.fulfill({
-        status: fail ? 503 : 200,
-        json: fail
-          ? { detail: 'Forge unavailable' }
-          : { mini_mode: mini, local_mounts_enabled: mini, file_manager_enabled: true },
+        json: { mini_mode: false, local_mounts_enabled: false, file_manager_enabled: true },
       });
-    }
     if (path.endsWith('/session-definitions'))
       return route.fulfill({
         json: [
@@ -83,71 +82,13 @@ async function configure(page: Page, mini: boolean, fail = false, holdFlags?: Pr
       });
     return route.fulfill({ json: [] });
   });
-  await page.goto('/volundr/sessions');
-  await page.getByTestId('pod-launch-button').click();
 }
-
-for (const mini of [true, false]) {
-  test(`compact launch creates a ${mini ? 'local folder' : 'Git repository'} session`, async ({
-    page,
-  }) => {
-    await configure(page, mini);
-    await expect(
-      page.getByRole('status').filter({ hasText: 'Loading launch options' }),
-    ).toHaveCount(0);
-    await page
-      .getByTestId('quick-launch-folder')
-      .fill(mini ? '/tmp/project' : 'https://github.com/acme/project.git');
-    if (!mini) await page.getByRole('textbox', { name: 'Branch' }).fill('dev');
-    await page.screenshot({ path: test.info().outputPath('quick-launch.png') });
-    const request = page.waitForRequest(
-      (request) =>
-        request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/sessions'),
-    );
-    await page.getByTestId('quick-launch-go').click();
-    const body = (await request).postDataJSON();
-    expect(body.source.type).toBe(mini ? 'local_mount' : 'git');
-    await expect(page).toHaveURL(/sessions\/created-session$/);
-  });
-}
-
-test('compact launch shows loading, then an unavailable host error', async ({ page }) => {
-  let release!: () => void;
-  const flags = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await configure(page, false, true, flags);
-  await expect(page.getByText('Loading launch options…')).toBeVisible();
-  await expect(page.getByTestId('quick-launch-go')).toBeDisabled();
-  release();
-  await expect(page.getByRole('alert')).toBeVisible({ timeout: 15000 });
-  await expect(page.getByTestId('quick-launch-go')).toBeDisabled();
-  await page.keyboard.press('Escape');
-  await expect(page.getByTestId('quick-launch')).toHaveCount(0);
-});
-
-test('session list supports keyboard resizing and operator metadata preferences', async ({
-  page,
-}) => {
-  await configure(page, false);
-  await page.keyboard.press('Escape');
-  const resize = page.getByRole('separator', { name: 'Resize session list' });
-  await resize.focus();
-  await page.keyboard.press('End');
-  await expect(resize).toHaveAttribute('aria-valuenow', '560');
-  await page.getByRole('button', { name: 'Details', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Details', exact: true })).toHaveAttribute(
-    'aria-pressed',
-    'true',
-  );
-});
 
 for (const room of [false, true]) {
   test(`shared compact chat folds ${room ? 'room' : 'session'} history and exposes display controls in Forge`, async ({
     page,
   }) => {
-    await configure(page, false);
-    await page.keyboard.press('Escape');
+    await configure(page);
     const session = {
       id: 'chat-1',
       name: 'Compact chat',
@@ -243,28 +184,5 @@ for (const room of [false, true]) {
     await expect(page.getByLabel('Agent avatars')).toBeChecked();
     await page.getByLabel('Timestamps').selectOption('always');
     await page.screenshot({ path: test.info().outputPath('compact-chat.png') });
-  });
-}
-
-for (const mini of [true, false]) {
-  test(`advanced launch preserves ${mini ? 'local' : 'Git'} input`, async ({ page }) => {
-    await configure(page, mini);
-    await expect(page.getByText('Loading launch options…')).toHaveCount(0);
-    const source = mini ? '/tmp/project' : 'https://github.com/acme/project.git';
-    await page.getByTestId('quick-launch-folder').fill(source);
-    await page.getByTestId('quick-launch-name').fill('handoff-check');
-    await page.getByTestId('quick-launch-prompt').fill('Validate the handoff');
-    if (!mini) await page.getByLabel('Branch').fill('dev');
-    await page.getByRole('button', { name: 'Advanced launch' }).click();
-    await expect(
-      page.getByRole('dialog', { name: 'Launch pod' }).locator('input').first(),
-    ).toHaveValue(source);
-    await page.getByTestId('wizard-next').click();
-    await page.getByTestId('wizard-next').click();
-    await expect(page.getByTestId('step-confirm-content')).toContainText(source);
-    await expect(page.getByTestId('step-confirm-content')).toContainText('handoff-check');
-    await expect(page.getByTestId('step-confirm-content')).toContainText('Validate the handoff');
-    await page.keyboard.press('Escape');
-    await expect(page.getByRole('dialog', { name: 'Launch pod' })).toHaveCount(0);
   });
 }

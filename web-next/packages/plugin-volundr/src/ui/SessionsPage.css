@@ -1,0 +1,591 @@
+.forge-session-list {
+  background: var(--color-bg-secondary);
+}
+.forge-session-row {
+  position: relative;
+}
+.forge-session-row__select {
+  min-height: 68px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+.forge-session-row__select--selected {
+  background: color-mix(in srgb, var(--brand-600) 16%, var(--color-bg-secondary));
+}
+.forge-session-row__title {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+.forge-session-search {
+  min-height: 40px;
+}
+.forge-session-list input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--brand-600);
+}
+.forge-session-row__actions {
+  position: absolute;
+  right: 8px;
+  top: 5px;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-bg-secondary);
+  box-shadow: var(--shadow-md);
+  opacity: 0;
+  pointer-events: none;
+}
+@media (hover: hover) {
+  /* Keep the five-action strip in the title line, clear of the row's centre hit area. */
+  .forge-session-row__actions {
+    top: 4px;
+    padding: 1px;
+  }
+  .forge-session-row .forge-session-row__actions button {
+    width: 28px;
+    height: 24px;
+    min-height: 24px;
+  }
+  .forge-session-row:hover .forge-session-row__actions,
+  .forge-session-row:focus-within .forge-session-row__actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+.forge-session-row__actions button {
+  display: grid;
+  place-items: center;
+  min-width: 28px;
+  min-height: 28px;
+  color: var(--color-text-secondary);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.forge-session-row__actions button:hover {
+  color: var(--color-brand);
+  background: var(--color-bg-tertiary);
+}
+.forge-session-row__actions button:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
+.forge-session-row__actions svg {
+  width: 15px;
+  height: 15px;
+}
+.forge-session-state {
+  align-self: flex-start;
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+}
+.forge-session-state[data-state='running'] {
+  color: var(--color-brand);
+}
+.forge-session-state[data-state='awaiting_input'] {
+  color: var(--status-attention);
+}
+.forge-session-state[data-state='failed'] {
+  color: var(--color-critical);
+}
+.forge-session-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 12px 10px;
+}
+.forge-session-filters button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-subtle);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+.forge-session-filters button[aria-pressed='true'] {
+  color: var(--color-accent-on-fill, var(--color-bg-primary));
+  border-color: var(--color-accent-fill, var(--color-brand));
+  background: var(--color-accent-fill, var(--color-brand));
+}
+.forge-session-filters button span {
+  opacity: 1;
+  font-variant-numeric: tabular-nums;
+}
+.forge-session-resizer {
+  flex: 0 0 7px;
+  cursor: col-resize;
+  touch-action: none;
+  border: 0;
+  background: var(--color-border-subtle);
+  padding: 0;
+}
+.forge-session-resizer:hover,
+.forge-session-resizer:focus-visible {
+  background: var(--color-brand);
+  outline: none;
+}
+.forge-session-list button:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: -2px;
+}
+.forge-session-maintenance {
+  padding: 8px 10px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.forge-session-maintenance summary {
+  cursor: pointer;
+  margin-bottom: 6px;
+}
+@media (hover: none) {
+  .forge-session-row .forge-session-row__more {
+    display: grid;
+  }
+  .forge-session-row .forge-session-state {
+    margin-right: 30px;
+  }
+  .forge-session-row .forge-session-row__actions {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .forge-session-row[data-actions-open='true'] .forge-session-row__actions {
+    opacity: 1;
+    pointer-events: auto;
+    right: 36px;
+  }
+  .forge-session-row__actions button {
+    min-width: 38px;
+    min-height: 38px;
+  }
+  .forge-session-filters button {
+    min-height: 36px;
+  }
+}
+.forge-session-back {
+  display: none;
+}
+@media (max-width: 760px) {
+  .forge-sessions .forge-session-list {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    flex-basis: 100% !important;
+  }
+  .forge-session-resizer,
+  .forge-session-detail,
+  .forge-sessions [data-testid='pod-sidebar-toggle'] {
+    display: none;
+  }
+  .forge-sessions[data-detail-open='true'] .forge-session-list {
+    display: none;
+  }
+  .forge-sessions[data-detail-open='true'] .forge-session-detail {
+    display: flex;
+  }
+  .forge-session-back {
+    display: block;
+    text-align: left;
+    min-height: 44px;
+    padding: 8px 12px;
+    color: var(--color-brand);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+}
+
+.forge-session-list input[type='checkbox'] {
+  appearance: auto;
+  width: 14px;
+  height: 14px;
+  accent-color: var(--color-brand);
+}
+
+.forge-session-list h2 {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.forge-session-filters button {
+  border-radius: 7px;
+}
+.forge-session-list [data-testid='pod-group-mode'] button {
+  min-height: 30px;
+}
+.forge-session-list [data-testid='pod-group-mode'] button[aria-pressed='true'] {
+  background: var(--color-accent-fill, var(--color-bg-elevated));
+  color: var(--color-accent-on-fill, var(--color-brand));
+}
+.forge-session-list input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+}
+
+.forge-session-back {
+  flex-shrink: 0;
+}
+.forge-session-detail > [data-testid='live-session-detail-page'] {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+
+/* Quiet xTeo rows: selection is a left marker, without a horizontal frame. */
+[data-theme='xteo'] .forge-session-list {
+  background: var(--color-panel-quiet);
+}
+[data-theme='xteo'] .forge-session-row__select {
+  border-left-width: 3px;
+  border-bottom-color: transparent;
+}
+[data-theme='xteo'] .forge-session-row__select--selected {
+  background: var(--color-selection-surface);
+  border-color: transparent;
+  border-left-color: var(--color-selection-edge);
+  box-shadow: none;
+}
+[data-theme='xteo'] .forge-session-row__select:hover {
+  background: var(--color-selection-surface);
+}
+[data-theme='xteo'] .forge-session-row__actions {
+  background: var(--color-panel-quiet);
+}
+
+.forge-session-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.forge-session-heading-actions button {
+  display: grid;
+  place-items: center;
+  min-width: 36px;
+  min-height: 36px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  color: var(--color-text-secondary);
+}
+.forge-session-heading-actions .forge-session-launch {
+  color: var(--color-text-primary);
+}
+.forge-session-heading-actions button:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-brand);
+}
+.forge-session-collapse {
+  rotate: 180deg;
+}
+.forge-session-action-tooltip {
+  font-size: 15px;
+  font-weight: 650;
+  padding: 9px 13px;
+}
+.forge-session-filters {
+  display: block;
+  padding-block: 8px;
+}
+.forge-session-filter-group {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+.forge-session-filter-group + .forge-session-filter-group {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border-subtle);
+}
+.forge-session-scroll {
+  min-height: 80px;
+}
+.forge-session-footer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--color-border-subtle);
+  padding: 10px;
+  max-height: 35%;
+  overflow: auto;
+  color: var(--color-text-secondary);
+}
+.forge-session-footer-settings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  padding: 2px 2px 8px;
+}
+.forge-session-footer-settings label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.forge-session-maintenance {
+  padding: 6px 0 0;
+  border: 0;
+}
+.forge-session-maintenance-label {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+.forge-session-footer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.forge-session-footer-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+.forge-session-footer-actions button:hover {
+  background: var(--color-bg-tertiary);
+}
+.forge-session-footer-actions button:disabled {
+  opacity: 0.45;
+}
+.forge-session-footer-actions .forge-session-delete {
+  color: var(--color-critical);
+}
+.forge-session-tree-row {
+  display: flex;
+  align-items: center;
+}
+.forge-session-tree-row > .forge-session-row {
+  flex: 1;
+  min-width: 0;
+}
+.forge-session-tree-toggle {
+  flex-shrink: 0;
+  min-width: 22px;
+  min-height: 38px;
+  color: var(--color-text-muted);
+}
+.forge-session-tree-children {
+  margin-left: 14px;
+  border-left: 1px solid var(--color-border-subtle);
+}
+.forge-session-project-status {
+  padding: 10px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* Two-line rows keep identity and activity stable while the action overlay covers the state. */
+.forge-session-row__content {
+  flex: 1;
+  min-width: 0;
+}
+.forge-session-row__headline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 23px;
+}
+.forge-session-row__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
+.forge-session-row__metadata {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 5px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--color-text-muted);
+}
+.forge-session-harness {
+  flex-shrink: 0;
+  font-weight: 700;
+}
+.forge-session-harness[data-harness='codex'] {
+  color: var(--color-harness-codex);
+}
+.forge-session-harness[data-harness='claude'] {
+  color: var(--color-harness-claude);
+}
+.forge-session-row__source {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.forge-session-row__source svg {
+  flex-shrink: 0;
+}
+.forge-session-row__source > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.forge-session-row__age {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.forge-session-row__details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 5px;
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+.forge-session-row__details > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+.forge-session-row__more {
+  display: none;
+  position: absolute;
+  right: 4px;
+  top: 5px;
+  place-items: center;
+  width: 32px;
+  height: 34px;
+  color: var(--color-text-secondary);
+  border-radius: 6px;
+}
+.forge-session-state {
+  align-self: center;
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+.forge-session-state[data-state='running'] {
+  color: var(--status-green);
+}
+.forge-session-state[data-state='awaiting_input'],
+.forge-session-state[data-state='terminating'] {
+  color: var(--status-amber);
+}
+.forge-session-state[data-state='idle'],
+.forge-session-state[data-state='ready'] {
+  color: var(--color-text-secondary);
+}
+.forge-session-state[data-state='requested'],
+.forge-session-state[data-state='provisioning'] {
+  color: var(--color-harness-codex);
+}
+.forge-session-state[data-state='failed'] {
+  color: var(--color-critical-fg);
+}
+.forge-session-state[data-state='terminated'],
+.forge-session-state[data-state='archived'] {
+  color: var(--color-text-muted);
+}
+.forge-session-row__actions {
+  z-index: 1;
+  background: var(--color-bg-secondary);
+  box-shadow: var(--shadow-sm);
+}
+[data-theme='xteo'] .forge-session-row__actions {
+  background: var(--color-panel-quiet);
+  border-color: var(--color-border-quiet);
+}
+
+.forge-session-filters button {
+  justify-content: center;
+  gap: 4px;
+  padding: 6px 2px;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.forge-session-filters button:not([aria-pressed='true']) {
+  border-color: transparent;
+}
+.forge-session-filters button:not([aria-pressed='true']):hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+.forge-session-grouping {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 10px 12px;
+}
+.forge-session-grouping > span {
+  text-align: center;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+.forge-session-group-options {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 9px;
+}
+.forge-session-group-option {
+  min-width: 0;
+  border-radius: 6px;
+  padding: 6px 2px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  color: var(--color-text-secondary);
+}
+.forge-session-group-option:hover {
+  background: var(--color-bg-tertiary);
+}
+.forge-session-row__actions button[data-action] {
+  color: var(--color-critical-fg);
+  border: 1px solid transparent;
+}
+.forge-session-row__actions button[data-action='stop'] {
+  border-color: color-mix(in srgb, var(--color-critical-fg) 65%, transparent);
+}
+.forge-session-row__actions button[data-action]:hover:not(:disabled),
+.forge-session-row__actions button[data-action]:focus-visible {
+  background: var(--color-critical);
+  border-color: var(--color-critical);
+  color: var(--color-text-on-critical);
+}
+
+.forge-session-scroll,
+.forge-session-footer {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-brand) 35%, var(--color-bg-elevated)) transparent;
+}
+.forge-session-scroll::-webkit-scrollbar,
+.forge-session-footer::-webkit-scrollbar {
+  width: 10px;
+}
+.forge-session-scroll::-webkit-scrollbar-track,
+.forge-session-footer::-webkit-scrollbar-track {
+  background: transparent;
+}
+.forge-session-scroll::-webkit-scrollbar-thumb,
+.forge-session-footer::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-brand) 28%, var(--color-bg-elevated));
+  background-clip: padding-box;
+}
+.forge-session-scroll::-webkit-scrollbar-thumb:hover,
+.forge-session-footer::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-brand) 42%, var(--color-bg-elevated));
+  background-clip: padding-box;
+}

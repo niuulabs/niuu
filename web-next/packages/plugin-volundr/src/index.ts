@@ -14,7 +14,7 @@ export const volundrPlugin = definePlugin({
   id: 'volundr',
   rune: 'V',
   title: 'Völundr',
-  subtitle: 'session forge · remote dev pods',
+  subtitle: '',
   simple: {
     tabs: ['sessions'],
     title: 'Sessions',
@@ -214,3 +214,5 @@ export type {
 } from './models/volundr.model';
 
 export { UserStorageSettings } from './ui/UserStorageSettings';
+
+export { ForgeSessionSettings } from './ui/ForgeSessionSettings';

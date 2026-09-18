@@ -44,6 +44,8 @@ export interface PluginSimpleMode {
 export interface PluginDescriptor {
   id: string;
   rune: string;
+  /** Optional full-size navigation icon, in place of the text rune. */
+  icon?: ReactNode;
   title: string;
   subtitle: string;
   /**

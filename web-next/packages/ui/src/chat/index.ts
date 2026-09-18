@@ -62,3 +62,24 @@ export {
   validateTextReceipt,
 } from './hooks/orderedPublicText';
 export type { PublicTextEvent } from './hooks/orderedPublicText';
+
+export {
+  ConversationResourceProvider,
+  ConversationLink,
+  ConversationImage,
+  PresentedFileCard,
+} from './components/ConversationResources';
+export type {
+  ConversationResource,
+  ConversationResourcePort,
+} from './components/ConversationResources';
+
+export { MarkdownCodeBlock } from './components/MarkdownContent/MarkdownCodeBlock';
+export { MermaidDiagram } from './components/MarkdownContent/MermaidDiagram';
+export { useCopyFeedback } from './hooks/useCopyFeedback';
+export { useConversationResources } from './components/ConversationResources';
+
+export { ImagePreview } from './components/ImagePreview';
+
+export { externalResource } from './components/ConversationResources';
+export { ExternalLinkPreview } from './components/ExternalLinkPreview';

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
@@ -594,6 +594,11 @@ function mockChatState(overrides: Partial<ReturnType<typeof chatHooks.useSkuldCh
 
 describe('LiveSessionDetailPage', () => {
   beforeEach(() => {
+    localStorage.clear();
+    localStorage.setItem(
+      'niuu.forge.sessionTabs',
+      'chat,terminal,diffs,files,chronicles,telemetry,logs',
+    );
     vi.clearAllMocks();
     navigate.mockReset();
     global.fetch = vi.fn(async (input: string | URL | Request) => {
@@ -878,22 +883,26 @@ describe('LiveSessionDetailPage', () => {
     });
 
     it('shows session id chip', async () => {
+      localStorage.setItem('niuu.forge.details', '1');
       wrap('test-session-id-1234');
       const chip = await screen.findByTestId('session-id-label');
       expect(chip).toBeInTheDocument();
     });
 
-    it('does not show the model label in the compact header', async () => {
+    it('shows the selected model in the compact header', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.queryByText('Claude Sonnet 4.6')).not.toBeInTheDocument();
+      expect(screen.getByTestId('session-model')).toHaveTextContent('Claude Sonnet 4.6');
+      expect(screen.queryByText('Hierarchical')).not.toBeInTheDocument();
     });
 
     it('shows repo and branch for git source', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(screen.getByText('niuulabs/volundr')).toBeInTheDocument();
-      expect(screen.getByText('@main')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Session workspace details' }));
+      expect(screen.getByText('main')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Copy session ID' })).toBeInTheDocument();
     });
 
     it('shows Archived badge in read-only mode', async () => {
@@ -909,6 +918,7 @@ describe('LiveSessionDetailPage', () => {
     });
 
     it('shows a distinct session handle and linked tracker issue', async () => {
+      localStorage.setItem('niuu.forge.details', '1');
       wrap('test-session-id-1234', {
         session: {
           ...RUNNING_SESSION,
@@ -946,13 +956,15 @@ describe('LiveSessionDetailPage', () => {
 
       await screen.findByTestId('live-session-detail-page');
       expect(screen.getByText('worker-17')).toBeInTheDocument();
-      expect(screen.getByRole('link', { name: /ops-42/i })).toHaveAttribute(
-        'href',
+      fireEvent.click(screen.getByRole('button', { name: /ops-42/i }));
+      expect(screen.getByTitle('Preview of OPS-42')).toHaveAttribute(
+        'src',
         'https://linear.app/niuu/issue/OPS-42',
       );
     });
 
     it('suppresses the handle when the ravn id matches the session id', async () => {
+      localStorage.setItem('niuu.forge.details', '1');
       wrap('test-session-id-1234', {
         sessionStore: {
           getSession: vi.fn().mockResolvedValue({
@@ -1392,39 +1404,35 @@ describe('LiveSessionDetailPage', () => {
       expect(await screen.findByRole('tab', { name: /shell 1/i })).toBeInTheDocument();
     });
 
-    it('falls back to the first available tab when chat is hidden', async () => {
+    it('always shows Chat even when the server feature catalog omits it', async () => {
       wrap('test-session-id-1234', {
-        volundr: {
-          getFeatureModules: vi
-            .fn()
-            .mockResolvedValue(SESSION_FEATURES.filter((feature) => feature.key !== 'chat')),
-        },
+        volundr: { getFeatureModules: vi.fn().mockResolvedValue([]) },
       });
       await screen.findByTestId('live-session-detail-page');
-
-      expect(screen.queryByRole('tab', { name: /Chat/i })).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /New terminal/i })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute('aria-selected', 'true');
     });
 
-    it('applies user tab visibility and sort preferences', async () => {
-      wrap('test-session-id-1234', {
-        volundr: {
-          getUserFeaturePreferences: vi.fn().mockResolvedValue([
-            { featureKey: 'terminal', visible: false, sortOrder: 99 },
-            { featureKey: 'logs', visible: false, sortOrder: 98 },
-            { featureKey: 'files', visible: true, sortOrder: 5 },
-          ]),
-        },
-      });
+    it('defaults to Chat, Diffs and Files without optional tabs', async () => {
+      localStorage.removeItem('niuu.forge.sessionTabs');
+      wrap('test-session-id-1234');
+      await screen.findByTestId('live-session-detail-page');
+      expect(
+        screen.getAllByRole('tab').map((tab) => tab.textContent?.replace(/\d+/g, '').trim()),
+      ).toEqual(['Chat', 'Diffs', 'Files']);
+    });
 
+    it('uses browser tab preferences and returns to Chat when the active tab is hidden', async () => {
+      localStorage.setItem('niuu.forge.sessionTabs', 'chat,files,logs');
+      wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(screen.queryByRole('tab', { name: /Terminal/i })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('tab', { name: /Logs/i }));
+      localStorage.setItem('niuu.forge.sessionTabs', 'chat,files');
+      fireEvent(window, new Event('niuu:forge-preferences'));
+      await waitFor(() =>
+        expect(screen.getByRole('tab', { name: /Chat/i })).toHaveAttribute('aria-selected', 'true'),
+      );
       expect(screen.queryByRole('tab', { name: /Logs/i })).not.toBeInTheDocument();
-
-      const tabLabels = screen
-        .getAllByRole('tab')
-        .map((tab) => tab.textContent?.replace(/\d+/g, '').trim());
-      expect(tabLabels.slice(0, 3)).toEqual(['Files', 'Chat', 'Diffs']);
     });
 
     it('renders diff file metadata and an empty diff state', async () => {
@@ -2063,7 +2071,7 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(
-        screen.getByRole('button', { name: /Show tool calls and results/i }),
+        screen.getByRole('button', { name: /Hide tool calls and results/i }),
       ).toBeInTheDocument();
       expect(screen.queryByText(/^res$/i)).not.toBeInTheDocument();
     });
@@ -2237,6 +2245,7 @@ describe('LiveSessionDetailPage', () => {
       };
       wrap('test-session-id-1234', { session: localSession });
       await screen.findByTestId('live-session-detail-page');
+      fireEvent.click(screen.getByRole('button', { name: 'Session workspace details' }));
       expect(screen.getByText('/home/user/project')).toBeInTheDocument();
     });
   });
@@ -2301,9 +2310,14 @@ describe('LiveSessionDetailPage', () => {
       });
     });
 
-    it('shows Tokens metric', async () => {
+    it('hides Tokens by default and shows the metric when enabled in settings', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
+      expect(screen.queryByText('Tokens')).not.toBeInTheDocument();
+      act(() => {
+        localStorage.setItem('niuu.forge.tokens', '1');
+        window.dispatchEvent(new Event('storage'));
+      });
       expect(screen.getByText('Tokens')).toBeInTheDocument();
     });
 

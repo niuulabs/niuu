@@ -94,14 +94,15 @@ it('mounts the host runtime settings when the setup plugin is enabled', () => {
   );
 });
 
-it('mounts personal storage alongside Volundr service settings', () => {
+it('mounts personal storage and session display alongside Volundr service settings', () => {
   const providers = buildMountedSettingsProviders({
     demoMode: false,
     theme: 'ice',
     plugins: { volundr: { enabled: true, order: 1 } },
     services: {},
   });
-  expect(providers.map((p) => p.id)).toEqual(['storage', 'volundr']);
-  expect(providers[0]).toMatchObject({ source: 'local', scope: 'user' });
-  expect(providers[1]).toMatchObject({ source: 'remote', scope: 'service' });
+  expect(providers.map((p) => p.id)).toEqual(['session-view', 'storage', 'volundr']);
+  expect(providers[0]).toMatchObject({ source: 'local', scope: 'user', defaultSectionId: 'tabs' });
+  expect(providers[1]).toMatchObject({ source: 'local', scope: 'user' });
+  expect(providers[2]).toMatchObject({ source: 'remote', scope: 'service' });
 });

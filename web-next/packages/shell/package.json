@@ -33,10 +33,10 @@
   "dependencies": {
     "@niuulabs/plugin-sdk": "workspace:*",
     "@niuulabs/ui": "workspace:*",
-    "clsx": "^2.1.1"
+    "clsx": "^2.1.1",
+    "@niuulabs/design-tokens": "workspace:*"
   },
   "devDependencies": {
-    "@niuulabs/design-tokens": "workspace:*",
     "@tanstack/react-router": "^1.170.33",
     "@types/react": "^19.2.18",
     "autoprefixer": "^10.5.5",

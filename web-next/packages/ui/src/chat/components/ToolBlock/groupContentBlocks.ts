@@ -24,6 +24,7 @@ export interface TextBlock {
 export type ContentBlock = ToolUseBlock | ToolResultBlock | TextBlock | { type: string };
 
 export type GroupedContent =
+  | { kind: 'separator'; id?: string }
   | ({ kind: 'text' } & Omit<TextBlock, 'type'>)
   | { kind: 'single'; block: ToolUseBlock; result?: ToolResultBlock }
   | {
@@ -32,7 +33,7 @@ export type GroupedContent =
       blocks: Array<{ block: ToolUseBlock; result?: ToolResultBlock }>;
     };
 
-export function groupContentBlocks(blocks: ContentBlock[]): GroupedContent[] {
+export function groupContentBlocks(blocks: ContentBlock[], hierarchical = false): GroupedContent[] {
   // Build a lookup from tool_use_id → tool_result for id-based matching
   const resultMap = new Map<string, ToolResultBlock>();
   for (const b of blocks) {
@@ -48,6 +49,12 @@ export function groupContentBlocks(blocks: ContentBlock[]): GroupedContent[] {
   while (i < blocks.length) {
     const block = blocks[i];
     if (!block) {
+      i++;
+      continue;
+    }
+
+    if (block.type === 'tool_separator') {
+      result.push({ kind: 'separator', id: (block as { id?: string }).id });
       i++;
       continue;
     }
@@ -81,7 +88,10 @@ export function groupContentBlocks(blocks: ContentBlock[]): GroupedContent[] {
         }
         break;
       }
-      if (blk.type !== 'tool_use' || (blk as ToolUseBlock).name !== toolName) break;
+      if (blk.type !== 'tool_use') break;
+      if (!hierarchical && (blk as ToolUseBlock).name !== toolName) break;
+      if (j !== i && isPresentedFileTool((blk as ToolUseBlock).name)) break;
+      if (j !== i && isPresentedFileTool(toolName)) break;
       const tb = blk as ToolUseBlock;
       group.push({ block: tb, result: resultMap.get(tb.id) });
       j++;
@@ -97,4 +107,8 @@ export function groupContentBlocks(blocks: ContentBlock[]): GroupedContent[] {
   }
 
   return result;
+}
+
+export function isPresentedFileTool(name: string): boolean {
+  return ['present_file', 'senduserfile'].includes(name.toLowerCase());
 }

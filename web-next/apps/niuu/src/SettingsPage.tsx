@@ -478,7 +478,9 @@ function SettingsSidebar({
                         )}
                         aria-current={sectionActive ? 'page' : undefined}
                       >
-                        <span className="settings-shell__section-link-mark">◇</span>
+                        <span className="settings-shell__section-link-mark" aria-hidden="true">
+                          ◇
+                        </span>
                         <span className="settings-shell__section-link-label">{section.label}</span>
                       </button>
                     );
@@ -2306,11 +2308,22 @@ export function SettingsPage() {
       <main className="settings-shell__main">
         {activeSnapshot ? (
           activeSnapshot.status === 'ready' && activeSection ? (
-            <SettingsSectionPanel
-              key={activeSection ? `${activeSnapshot.provider.id}:${activeSection.id}` : 'empty'}
-              snapshot={activeSnapshot}
-              section={activeSection}
-            />
+            activeSnapshot.provider.source === 'local' ? (
+              <div
+                className="settings-shell__panel"
+                key={`${activeSnapshot.provider.id}:${activeSection.id}`}
+              >
+                {activeSnapshot.provider.sections
+                  .find((section) => section.id === activeSection.id)
+                  ?.render()}
+              </div>
+            ) : (
+              <SettingsSectionPanel
+                key={`${activeSnapshot.provider.id}:${activeSection.id}`}
+                snapshot={activeSnapshot}
+                section={activeSection}
+              />
+            )
           ) : (
             <ProviderUnavailablePanel snapshot={activeSnapshot} />
           )

@@ -3,14 +3,12 @@
   grid-template-columns: minmax(250px, 330px) minmax(0, 1fr);
   min-height: calc(100vh - 7.5rem);
   border: 1px solid rgba(255, 255, 255, 0.05);
-  background:
-    radial-gradient(circle at top left, rgba(88, 166, 255, 0.06), transparent 20%),
-    linear-gradient(180deg, #121418 0%, #090b10 100%);
+  background: var(--color-bg-primary);
 }
 
 .settings-shell__sidebar {
   border-right: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(18, 20, 26, 0.96);
+  background: var(--color-bg-secondary);
 }
 
 .settings-shell__sidebar-header {
@@ -160,9 +158,7 @@
 
 .settings-shell__main {
   padding: 1.45rem clamp(1.2rem, 2.1vw, 2.35rem) 2rem;
-  background:
-    radial-gradient(circle at top right, rgba(84, 163, 255, 0.04), transparent 20%),
-    linear-gradient(180deg, #090b10 0%, #06080c 100%);
+  background: var(--color-bg-primary);
 }
 
 .settings-shell__panel {

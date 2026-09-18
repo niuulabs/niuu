@@ -1,411 +1,424 @@
-import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useRef, useState } from 'react';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from '@tanstack/react-router';
 import { useService } from '@niuulabs/plugin-sdk';
-import {
-  Dialog,
-  DialogContent,
-  Field,
-  Input,
-  RepoSelect,
-  Textarea,
-  type RepoRecord,
-} from '@niuulabs/ui';
+import type { IBifrostService } from '@niuulabs/plugin-bifrost';
+import { LoadingState, RepoSelect, type RepoRecord } from '@niuulabs/ui';
 import type { IVolundrService } from '../ports/IVolundrService';
-import { validateSessionName } from './launchWizardModel';
 import {
-  defaultTargetId,
-  quickLaunchName,
-  quickLaunchSource,
-  useQuickLaunch,
-} from './hooks/useQuickLaunch';
-import { EngineSelect } from './EngineSelect';
-import { LinkedText } from './LinkedText';
+  FORGE_STANDARDS,
+  forgeErrorMessage,
+  EFFORT_LABELS,
+  hostDefaultFolder,
+  selectedEffort,
+  type ForgeStandardId,
+} from './quickLaunchModel';
+import { slugifySessionName, validateSessionName } from './launchWizardModel';
 import {
   availableEngines,
-  launchModel,
   quickLaunchIntegrationIds,
   selectedEngineProvider,
 } from './launchEngines';
-import { LaunchWizard } from './LaunchWizard';
-import { useFeatures } from './useFeatures';
+import { useForgePreference } from './useForgePreference';
+import './QuickLaunch.css';
 
-/** The shared repository catalog (`niuu.repos`), the same one the advanced launch reads. */
 type RepoCatalog = {
   getRepos(): Promise<RepoRecord[]>;
-  getBranches(repoUrl: string): Promise<string[]>;
+  getBranches(repo: string): Promise<string[]>;
 };
-
-export interface QuickLaunchProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  initialLaunchSpecRef?: string;
-}
-
-const PRIMARY_BTN =
-  'niuu:rounded-md niuu:border niuu:border-brand niuu:bg-brand niuu:px-4 niuu:py-2 niuu:text-xs niuu:font-mono niuu:text-bg-primary niuu:cursor-pointer niuu:disabled:opacity-50 niuu:disabled:cursor-not-allowed';
-const CANCEL_BTN =
-  'niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-4 niuu:py-2 niuu:text-xs niuu:font-mono niuu:text-text-primary niuu:hover:bg-bg-tertiary';
-
-/** Compact launch for local and remote Forge hosts; advanced configuration remains available. */
-export function QuickLaunch({ open, onOpenChange, initialLaunchSpecRef }: QuickLaunchProps) {
+export function QuickLaunch({
+  initialStandard = 'claude',
+  onAdvanced,
+  onCreated,
+}: {
+  initialStandard?: ForgeStandardId;
+  onAdvanced: () => void;
+  onCreated?: () => void;
+}) {
   const volundr = useService<IVolundrService>('volundr');
-  const { launch, creating, error } = useQuickLaunch();
-
-  const definitionsQuery = useQuery({
-    queryKey: ['volundr', 'session-definitions'],
-    queryFn: () => volundr.getSessionDefinitions(),
-    enabled: open,
-  });
-
-  const targetsQuery = useQuery({
+  const bifrost = useService<IBifrostService>('bifrost');
+  const repoCatalog = useService<RepoCatalog>('niuu.repos');
+  const client = useQueryClient();
+  const navigate = useNavigate();
+  const hosts = useQuery({
     queryKey: ['volundr', 'targets'],
     queryFn: () => volundr.getTargets(),
-    enabled: open,
   });
-  // Only engines a connected AI provider powers are offered; the join runs
-  // through the catalog, which says which model vendor each provider unlocks.
-  const integrationsQuery = useQuery({
+  const catalog = useQuery({
+    queryKey: ['bifrost', 'model-catalog', 'quick-launch'],
+    queryFn: () => bifrost.getModelCatalog(),
+  });
+  const definitions = useQuery({
+    queryKey: ['volundr', 'session-definitions'],
+    queryFn: () => volundr.getSessionDefinitions(),
+  });
+  const [standardId, setStandardId] = useState<ForgeStandardId>(initialStandard);
+  const standard = FORGE_STANDARDS.find((s) => s.id === standardId)!;
+  const [modelSelection, setModelSelection] = useState('');
+  const modelId = standard.models.some((m) => m.id === modelSelection)
+    ? modelSelection
+    : standard.models[0].id;
+  const model = catalog.data?.[modelId];
+  const [preferredEffort, setPreferredEffort] = useForgePreference<string>(
+    `launch.effort.${modelId}`,
+    'xhigh',
+  );
+  const effort = selectedEffort(model, preferredEffort);
+  const [preferredHost, setPreferredHost] = useForgePreference<string>('launch.host', '');
+  const enabledHosts = hosts.data?.filter((h) => h.enabled) ?? [];
+  const host =
+    enabledHosts.find((h) => h.id === preferredHost) ??
+    enabledHosts.find((h) => h.isDefault) ??
+    enabledHosts[0];
+  const [savedFolder, setSavedFolder] = useForgePreference<string>(
+    `launch.folder.${host?.id ?? ''}`,
+    hostDefaultFolder(host),
+  );
+  const [folders, setFolders] = useState<Record<string, string>>({});
+  const folder = host ? (folders[host.id] ?? savedFolder) : '';
+  // Local folders exist only where the Forge mounts them; a mini-mode host
+  // defaults to one, a cluster to Git. A source the person picked stays. While
+  // a newly chosen Forge answers, the form keeps its shape but cannot launch.
+  const features = useQuery({
+    queryKey: ['volundr', 'features', host?.id],
+    queryFn: () => volundr.getFeatures(host?.id),
+    enabled: Boolean(host),
+    placeholderData: keepPreviousData,
+  });
+  const localMountsEnabled = Boolean(features.data?.localMountsEnabled);
+  const [pickedSource, setPickedSource] = useState<'git' | 'local_mount' | null>(null);
+  const sourceType =
+    pickedSource ?? (features.data?.miniMode && localMountsEnabled ? 'local_mount' : 'git');
+  const [repo, setRepo] = useState('');
+  const [branch, setBranch] = useState('');
+  const repos = useQuery({
+    queryKey: ['niuu', 'launch-repos'],
+    queryFn: () => repoCatalog.getRepos(),
+    enabled: sourceType === 'git',
+  });
+  const branches = useQuery({
+    queryKey: ['niuu', 'launch-branches', repo],
+    queryFn: () => repoCatalog.getBranches(repo),
+    enabled: sourceType === 'git' && Boolean(repo),
+  });
+  // The session carries the connected AI account that powers this standard and
+  // the Git account that lists the repository, as the advanced launch does.
+  const integrations = useQuery({
     queryKey: ['volundr', 'integrations'],
     queryFn: () => volundr.getIntegrations(),
-    enabled: open,
   });
-  const catalogQuery = useQuery({
+  const integrationCatalog = useQuery({
     queryKey: ['volundr', 'integration-catalog'],
     queryFn: () => volundr.getIntegrationCatalog(),
-    enabled: open,
   });
-  const definitions = definitionsQuery.data ?? [];
-  const engines = useMemo(
-    () =>
-      availableEngines(
-        definitionsQuery.data ?? [],
-        integrationsQuery.data ?? [],
-        catalogQuery.data ?? [],
-      ),
-    [definitionsQuery.data, integrationsQuery.data, catalogQuery.data],
-  );
-  const providerError = integrationsQuery.error ?? catalogQuery.error ?? null;
-  const providersLoading = integrationsQuery.isPending || catalogQuery.isPending;
-  const targets = (targetsQuery.data ?? []).filter((target) => target.enabled);
-  const [targetId, setTargetId] = useState('');
-  const [sourceType, setSourceType] = useState<'git' | 'local_mount' | null>(null);
-  const [branch, setBranch] = useState('');
-  const [advanced, setAdvanced] = useState(false);
-  const selectedTarget = targetId || defaultTargetId(targets);
-  const features = useFeatures(open && targetsQuery.isSuccess, selectedTarget);
-  const local =
-    (sourceType ??
-      (features.data?.miniMode && features.data.localMountsEnabled ? 'local_mount' : 'git')) ===
-    'local_mount';
   const [name, setName] = useState('');
-  const [folder, setFolder] = useState('');
-  // The same repository list the advanced launch offers: every repository
-  // the person's connected Git accounts can reach.
-  const repoCatalog = useService<RepoCatalog>('niuu.repos');
-  const reposQuery = useQuery({
-    queryKey: ['volundr', 'repos'],
-    queryFn: () => repoCatalog.getRepos(),
-    enabled: open && !local,
-  });
-  const repos: RepoRecord[] = reposQuery.data ?? [];
-  const [customRepo, setCustomRepo] = useState(false);
-  const selectedRepo = repos.find((repo) => repo.cloneUrl === folder);
-  const branchesQuery = useQuery({
-    queryKey: ['volundr', 'repo-branches', folder],
-    queryFn: () => repoCatalog.getBranches(folder),
-    enabled: open && !local && Boolean(folder.trim()),
-    staleTime: 60_000,
-    retry: false,
-  });
-  const pickFromList = !local && repos.length > 0 && !customRepo && (!folder || !!selectedRepo);
-  const [definitionKey, setDefinitionKey] = useState('skuldClaude');
   const [prompt, setPrompt] = useState('');
-
-  const selectedEngine =
-    engines.find((engine) => engine.definition.key === definitionKey) ?? engines[0];
-  const selectedDef = selectedEngine?.definition;
-  // Which account runs the engine when several could; the first otherwise.
-  const [providerId, setProviderId] = useState('');
-  const selectedProvider = selectedEngineProvider(selectedEngine, providerId ? [providerId] : []);
-  // The model: what the person picked among the ones a model server serves,
-  // otherwise the engine's own default.
-  const [model, setModel] = useState('');
-  const effectiveModel = launchModel(selectedEngine, selectedProvider, model);
-
-  // Auto-derive the session name from the folder's last path segment when blank.
-  const effectiveName = useMemo(() => quickLaunchName(name, folder), [name, folder]);
-
-  const nameError = validateSessionName(effectiveName);
-  const loadError = definitionsQuery.error ?? features.error ?? targetsQuery.error;
-  const loading =
-    definitionsQuery.isPending || features.isPending || targetsQuery.isPending || providersLoading;
-  const canCreate =
-    Boolean(folder.trim()) &&
-    Boolean(selectedDef) &&
+  const [launching, setLaunching] = useState(false);
+  const submitting = useRef(false);
+  const [launchError, setLaunchError] = useState('');
+  const loadError =
+    hosts.error ??
+    catalog.error ??
+    definitions.error ??
+    features.error ??
+    integrations.error ??
+    integrationCatalog.error;
+  const available = model?.enabled && definitions.data?.some((d) => d.key === standard.definition);
+  const nameError = validateSessionName(name.trim());
+  const validSource =
+    sourceType === 'local_mount'
+      ? localMountsEnabled && folder.trim().startsWith('/')
+      : Boolean(repo.trim() && branch.trim());
+  const canLaunch = Boolean(
+    host &&
+    available &&
+    validSource &&
+    features.data &&
+    !features.isPlaceholderData &&
     !nameError &&
-    !creating &&
-    !loading &&
     !loadError &&
-    !providerError &&
-    (!local || Boolean(features.data?.localMountsEnabled));
+    !launching,
+  );
 
-  async function handleCreate() {
-    if (!canCreate) return;
-    await launch(
-      {
-        name: effectiveName,
-        source: quickLaunchSource(local, folder, branch),
-        definition: selectedDef,
-        instanceId: selectedTarget,
-        initialPrompt: prompt,
-        model: effectiveModel,
-        // Exactly one AI credential (the chosen account), the Git account
-        // that listed the repository, and the rest of the person's
-        // integrations; never every AI account at once.
+  async function launch(event: React.FormEvent) {
+    event.preventDefault();
+    if (!canLaunch || !host || submitting.current) return;
+    submitting.current = true;
+    setLaunching(true);
+    setLaunchError('');
+    try {
+      const autoName =
+        slugifySessionName(
+          (sourceType === 'local_mount' ? folder : repo)
+            .split('/')
+            .filter(Boolean)
+            .at(-1)
+            ?.replace(/\.git$/, '') ?? 'forge-session',
+        ) || 'forge-session';
+      const local = sourceType === 'local_mount';
+      const engine = availableEngines(
+        definitions.data ?? [],
+        integrations.data ?? [],
+        integrationCatalog.data ?? [],
+      ).find((option) => option.definition.key === standard.definition);
+      const session = await volundr.startSession({
+        name: name.trim() || autoName,
+        definition: standard.definition,
+        model: modelId,
+        instanceId: host.id,
         integrationIds: quickLaunchIntegrationIds({
-          provider: selectedProvider,
-          integrations: integrationsQuery.data ?? [],
-          repos,
-          repoUrl: folder,
+          provider: selectedEngineProvider(engine, []),
+          integrations: integrations.data ?? [],
+          repos: repos.data ?? [],
+          repoUrl: repo.trim(),
           local,
         }),
-      },
-      { onCreated: () => onOpenChange(false) },
-    );
-  }
-
-  if (advanced || initialLaunchSpecRef) {
-    return (
-      <LaunchWizard
-        open={open}
-        initialLaunchSpecRef={initialLaunchSpecRef}
-        initialForm={
-          advanced
+        source:
+          sourceType === 'local_mount'
             ? {
-                sourcetype: local ? 'local_mount' : 'git',
-                repo: local ? '' : folder.trim(),
-                mountPath: local ? folder.trim() : '',
-                branch: branch.trim(),
-                sessionName: effectiveName,
-                instanceId: selectedTarget ?? '',
-                initialPrompt: prompt,
-                definition: selectedDef?.key ?? '',
-                model: effectiveModel,
+                type: 'local_mount',
+                local_path: folder.trim(),
+                paths: [{ host_path: folder.trim(), mount_path: '/workspace', read_only: false }],
               }
-            : undefined
-        }
-        onOpenChange={(next) => {
-          if (!next) setAdvanced(false);
-          onOpenChange(next);
-        }}
-      />
-    );
+            : { type: 'git', repo: repo.trim(), branch: branch.trim() },
+        ...(effort ? { workloadConfig: { reasoningEffort: effort } } : {}),
+        ...(prompt.trim() ? { initialPrompt: prompt.trim() } : {}),
+      });
+      setPreferredHost(host.id);
+      if (sourceType === 'local_mount') setSavedFolder(folder.trim());
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ['volundr', 'sessions'] }),
+        client.invalidateQueries({ queryKey: ['volundr', 'domain-sessions'] }),
+        client.invalidateQueries({ queryKey: ['volundr', 'stats'] }),
+      ]);
+      onCreated?.();
+      await navigate({ to: '/volundr/sessions/$sessionId', params: { sessionId: session.id } });
+    } catch (e) {
+      setLaunchError(forgeErrorMessage(e));
+    } finally {
+      submitting.current = false;
+      setLaunching(false);
+    }
   }
-
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent title="New session">
-        <div className="niuu:flex niuu:flex-col niuu:gap-4" data-testid="quick-launch">
-          <Field label="Source">
-            <select
-              className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
-              aria-label="Source type"
-              value={local ? 'local_mount' : 'git'}
-              onChange={(event) => {
-                setSourceType(event.target.value as 'git' | 'local_mount');
-                setFolder('');
+    <form
+      className="vol-quick"
+      onSubmit={(event) => void launch(event)}
+      data-testid="quick-launch-form"
+    >
+      <fieldset
+        disabled={launching}
+        style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}
+        className="vol-quick"
+      >
+        <div className="vol-quick__standards" aria-label="Launch standard">
+          {FORGE_STANDARDS.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              className="vol-quick__standard"
+              aria-pressed={s.id === standardId}
+              onClick={() => {
+                setStandardId(s.id);
+                setModelSelection('');
+                setLaunchError('');
               }}
             >
-              <option value="git">Git repository</option>
-              {features.data?.localMountsEnabled && (
-                <option value="local_mount">Local folder</option>
-              )}
-            </select>
-          </Field>
-          <Field
-            label={local ? 'Folder' : 'Repository'}
-            hint={
-              local
-                ? 'Absolute path on the Forge host; runs in place'
-                : reposQuery.error
-                  ? `Could not list your repositories (${reposQuery.error.message}); paste a clone URL`
-                  : pickFromList
-                    ? 'From your connected Git accounts'
-                    : 'Repository clone URL'
-            }
-          >
-            {!local && reposQuery.isFetching ? <p role="status">Loading repositories…</p> : null}
-            {pickFromList ? (
-              <RepoSelect
-                repos={repos}
-                value={folder}
-                onChange={(value: string) => {
-                  setFolder(value);
-                  setBranch(repos.find((repo) => repo.cloneUrl === value)?.defaultBranch ?? '');
-                }}
-                placeholder="Select repository"
-                testId="quick-launch-repo"
-              />
-            ) : (
-              <Input
-                value={folder}
-                onChange={(e) => setFolder(e.target.value)}
-                placeholder={
-                  local ? '/path/to/checkout' : 'https://git.example.com/group/repository.git'
-                }
-                data-testid="quick-launch-folder"
-              />
-            )}
-            {!local && repos.length > 0 ? (
-              <button
-                type="button"
-                className="niuu:mt-1 niuu:self-start niuu:text-xs niuu:text-text-secondary niuu:hover:text-text-primary"
-                onClick={() => {
-                  setCustomRepo((value) => !value);
-                  setFolder('');
-                  setBranch('');
-                }}
-                data-testid="quick-launch-repo-toggle"
-              >
-                {pickFromList ? 'Paste a clone URL instead' : 'Choose from your repositories'}
-              </button>
-            ) : null}
-          </Field>
-
-          {!local && (
-            <Field
-              label="Branch"
-              hint={
-                branchesQuery.data?.length ? undefined : 'Optional — uses the repository default'
-              }
-            >
-              {branchesQuery.isFetching ? <p role="status">Loading branches…</p> : null}
-              {branchesQuery.error ? (
-                <p role="alert">Could not load branches: {branchesQuery.error.message}</p>
-              ) : null}
-              {branchesQuery.data?.length ? (
-                <select
-                  aria-label="Branch"
-                  value={branch}
-                  onChange={(event) => setBranch(event.target.value)}
-                  className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-sm"
-                  data-testid="quick-launch-branch"
-                >
-                  <option value="">Repository default</option>
-                  {branchesQuery.data.map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <Input
-                  aria-label="Branch"
-                  value={branch}
-                  onChange={(event) => setBranch(event.target.value)}
-                />
-              )}
-            </Field>
-          )}
-          {targets.length > 1 && (
-            <Field label="Forge">
+              <strong>{s.name}</strong>
+              <span>{s.harness}</span>
+              <span>{s.models[0].name} by default</span>
+            </button>
+          ))}
+        </div>
+        {(hosts.isLoading || catalog.isLoading || definitions.isLoading) && (
+          <LoadingState label="Loading launch options…" />
+        )}
+        {loadError && (
+          <p role="alert">Could not load launch options: {forgeErrorMessage(loadError)}</p>
+        )}
+        <section className="vol-quick__section">
+          <div className="vol-quick__actions">
+            <h2>Workspace</h2>
+            <a href="/guild" className="vol-quick__link">
+              Manage environments in Guild
+            </a>
+          </div>
+          <div className="vol-quick__row">
+            <label>
+              Forge
               <select
-                className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
-                aria-label="Forge target"
-                value={selectedTarget}
-                onChange={(event) => {
-                  setTargetId(event.target.value);
-                  // A source the person chose stays; a derived one is derived again
-                  // from the new target's capabilities (which may not allow local
-                  // folders), never pinned by whatever the mode was mid-load.
-                  setSourceType((current) => (current === 'local_mount' ? null : current));
-                  if (local) setFolder('');
+                value={host?.id ?? ''}
+                onChange={(e) => {
+                  setPreferredHost(e.target.value);
+                  // A local folder is re-derived from the new Forge, which may not mount one.
+                  setPickedSource((current) => (current === 'local_mount' ? null : current));
                 }}
+                aria-label="Forge"
               >
-                {targets.map((target) => (
-                  <option key={target.id} value={target.id}>
-                    {target.name}
+                {!host && <option value="">Select a Forge</option>}
+                {enabledHosts.map((h) => (
+                  <option key={h.id} value={h.id}>
+                    {h.name} · {h.baseUrl}
                   </option>
                 ))}
               </select>
-            </Field>
-          )}
-          <Field
-            label="Name"
-            hint={
-              local
-                ? 'Optional — derived from the folder if left blank'
-                : 'Optional — derived from the repository if left blank'
-            }
-            error={nameError ?? undefined}
-          >
-            <Input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder={effectiveName}
-              data-testid="quick-launch-name"
-            />
-          </Field>
-
-          {definitions.length > 0 ? (
-            <EngineSelect
-              engines={engines}
-              value={selectedDef?.key ?? ''}
-              onChange={setDefinitionKey}
-              selectedIntegrationIds={providerId ? [providerId] : []}
-              onProviderChange={setProviderId}
-              model={effectiveModel}
-              onModelChange={setModel}
-              loading={providersLoading}
-              error={providerError}
-              testId="quick-launch-engine"
-            />
-          ) : null}
-
-          <Field label="First instruction" hint="Optional — what should the agent start on?">
-            <Textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              rows={3}
-              placeholder="e.g. Fix the failing auth tests"
-              data-testid="quick-launch-prompt"
-            />
-          </Field>
-
-          {loading && <p role="status">Loading launch options…</p>}
-          {loadError && <p role="alert">{loadError.message}</p>}
-          {!loading && !loadError && definitions.length === 0 && (
-            <p role="status">No session engines are configured.</p>
-          )}
-          {error ? (
-            <p
-              role="alert"
-              className="niuu:text-xs niuu:text-danger"
-              data-testid="quick-launch-error"
-            >
-              <LinkedText text={error} />
-            </p>
-          ) : null}
-
-          <div className="niuu:flex niuu:justify-end niuu:gap-2">
-            <button type="button" onClick={() => setAdvanced(true)} className={CANCEL_BTN}>
-              Advanced launch
-            </button>
-            <button type="button" onClick={() => onOpenChange(false)} className={CANCEL_BTN}>
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleCreate()}
-              disabled={!canCreate}
-              data-testid="quick-launch-go"
-              className={PRIMARY_BTN}
-            >
-              {creating ? 'Creating…' : 'Go →'}
-            </button>
+            </label>
+            <label>
+              Workspace source
+              <select
+                value={sourceType}
+                onChange={(e) => setPickedSource(e.target.value as 'git' | 'local_mount')}
+              >
+                {localMountsEnabled && <option value="local_mount">Local mount</option>}
+                <option value="git">Git repository</option>
+              </select>
+            </label>
           </div>
-        </div>
-      </DialogContent>
-    </Dialog>
+          {!hosts.isLoading && enabledHosts.length === 0 && !hosts.error && (
+            <p role="alert">Add an enabled Forge host to launch a session.</p>
+          )}
+          {sourceType === 'local_mount' ? (
+            <label>
+              Working folder
+              <input
+                aria-label="Working folder"
+                value={folder}
+                onChange={(e) => host && setFolders({ ...folders, [host.id]: e.target.value })}
+                placeholder="Absolute folder path on this Forge"
+              />
+              <small>
+                Existing folder on {host?.name ?? 'the selected Forge'}. Remembered separately for
+                each host.
+              </small>
+            </label>
+          ) : (
+            <>
+              {repos.error && <p role="alert">{repos.error.message}</p>}
+              <label>
+                Repository
+                <RepoSelect
+                  repos={repos.data ?? []}
+                  value={repo}
+                  onChange={(value) => {
+                    setRepo(value);
+                    setBranch(repos.data?.find((r) => r.cloneUrl === value)?.defaultBranch ?? '');
+                  }}
+                  placeholder="Select repository"
+                />
+              </label>
+              <label>
+                Branch
+                <input
+                  list="quick-launch-branches"
+                  value={branch}
+                  onChange={(e) => setBranch(e.target.value)}
+                  placeholder="Branch name"
+                />
+                <datalist id="quick-launch-branches">
+                  {branches.data?.map((b) => (
+                    <option key={b} value={b} />
+                  ))}
+                </datalist>
+              </label>
+              {branches.error && (
+                <p role="alert">Could not load branches: {branches.error.message}</p>
+              )}
+            </>
+          )}
+        </section>
+        <section className="vol-quick__section">
+          <h2>{standard.name} standard</h2>
+          <div className="vol-quick__row">
+            <label>
+              Model
+              <select
+                aria-label="Model"
+                value={modelId}
+                onChange={(e) => setModelSelection(e.target.value)}
+              >
+                {standard.models.map((m) => (
+                  <option key={m.id} value={m.id} disabled={!catalog.data?.[m.id]?.enabled}>
+                    {m.name}
+                    {catalog.data && !catalog.data[m.id]?.enabled ? ' · unavailable' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Effort
+              <select
+                aria-label="Effort"
+                value={effort}
+                disabled={!model?.effortLevels?.length}
+                onChange={(e) => setPreferredEffort(e.target.value)}
+              >
+                {!effort && <option value="">Host default</option>}
+                {model?.effortLevels?.map((level) => (
+                  <option key={level} value={level}>
+                    {EFFORT_LABELS[level] ?? level}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <small>
+            {model?.effortNote ||
+              'Extra High is preferred when supported. Your effort choice is remembered for this model.'}
+          </small>
+          {catalog.data && definitions.data && !available && (
+            <p role="alert">
+              This standard is unavailable in the connected Niuu catalogue. Enable its model and
+              runtime before launching.
+            </p>
+          )}
+          <p>Host defaults apply. Resources, MCP servers and rules are optional.</p>
+        </section>
+        <details>
+          <summary>Session details · optional</summary>
+          <div className="vol-quick">
+            <label>
+              Session name
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Derived from your workspace"
+              />
+              {nameError && <small role="alert">{nameError}</small>}
+            </label>
+            <label>
+              Initial prompt
+              <textarea
+                rows={3}
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                placeholder="What would you like to work on?"
+              />
+            </label>
+            <small>
+              Tracker issues, credentials, MCP servers and custom resources are available in
+              Advanced launch.
+            </small>
+          </div>
+        </details>
+      </fieldset>
+      {launchError && <p role="alert">{launchError}</p>}
+      <div className="vol-quick__actions vol-quick__actions--launch">
+        <button
+          type="button"
+          className="vol-quick__button"
+          disabled={launching}
+          onClick={onAdvanced}
+        >
+          Advanced launch
+        </button>
+        <button
+          type="submit"
+          className="vol-quick__button vol-quick__primary"
+          disabled={!canLaunch}
+        >
+          {launching ? 'Starting session…' : `Launch ${standard.name}`}
+        </button>
+      </div>
+    </form>
   );
 }

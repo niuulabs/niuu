@@ -95,6 +95,13 @@ interface FileListPayload {
 }
 
 type SessionPayload = {
+  session_definition?: string | null;
+  sessionDefinition?: string;
+  coordination?: {
+    project_id: string;
+    role: string;
+    parent?: { instance_id: string; session_id: string } | null;
+  } | null;
   id: string;
   name: string;
   source: VolundrSession['source'];
@@ -366,6 +373,7 @@ type SharedRepoPayload = {
 type SharedRepoResponse = Record<string, SharedRepoPayload[]>;
 
 type InstanceTargetPayload = {
+  config?: Record<string, unknown>;
   id: string;
   slug: string;
   name: string;
@@ -489,9 +497,24 @@ function normalizeSession(session: SessionPayload): VolundrSession {
   return {
     id: session.id,
     name: session.name,
+    ...(session.coordination
+      ? {
+          coordination: {
+            projectId: session.coordination.project_id,
+            role: session.coordination.role,
+            parent: session.coordination.parent
+              ? {
+                  instanceId: session.coordination.parent.instance_id,
+                  sessionId: session.coordination.parent.session_id,
+                }
+              : null,
+          },
+        }
+      : {}),
     source: session.source,
     status: session.status,
     model: session.model,
+    sessionDefinition: session.sessionDefinition ?? session.session_definition ?? undefined,
     personaName: session.personaName ?? session.persona_name ?? undefined,
     lastActive: toEpochMs(session.lastActive ?? session.last_active),
     messageCount: session.messageCount ?? session.message_count ?? 0,
@@ -545,6 +568,7 @@ function normalizeTarget(payload: InstanceTargetPayload): VolundrTarget {
     isDefault: payload.isDefault ?? payload.is_default ?? false,
     visibility: payload.visibility,
     tags: payload.tags ?? [],
+    ...(payload.config ? { config: payload.config } : {}),
   };
 }
 
@@ -1122,6 +1146,32 @@ export function buildVolundrFileSystemHttpAdapter(options: {
       return response.text();
     },
 
+    async downloadFile(sessionId: string, path: string, signal?: AbortSignal): Promise<Blob> {
+      const { root, relativePath } = splitSessionPath(path);
+      const params = new URLSearchParams({ root, path: relativePath });
+      const response = await ensureOk(
+        await fetchImpl(`${sessionApi(sessionId)}/files/download?${params}`, {
+          headers: withAuthHeaders(),
+          signal,
+        }),
+      );
+      return response.blob();
+    },
+
+    async downloadPresentedFile(
+      sessionId: string,
+      fileId: string,
+      signal?: AbortSignal,
+    ): Promise<Blob> {
+      const response = await ensureOk(
+        await fetchImpl(`${sessionApi(sessionId)}/files/presented/${encodeURIComponent(fileId)}`, {
+          headers: withAuthHeaders(),
+          signal,
+        }),
+      );
+      return response.blob();
+    },
+
     async writeFile(sessionId: string, path: string, content: string): Promise<void> {
       const { root, relativePath } = splitSessionPath(path);
       const segments = relativePath.split('/').filter(Boolean);
@@ -1504,6 +1554,8 @@ export function buildVolundrHttpAdapter(
         `/storage/home?${new URLSearchParams({ instance_id: instanceId, path })}`,
       );
     },
+    getProjects: () => forgeClient.get('/projects'),
+
     getTargets: async () => {
       const targetClient = niuuClient ?? sharedClient;
       const payload = await targetClient.get<InstanceTargetPayload[]>(
@@ -1578,7 +1630,7 @@ export function buildVolundrHttpAdapter(
     connectSession: async (config) =>
       normalizeSession(await forgeClient.post<SessionPayload>('/sessions/connect', config)),
     updateSession: (sessionId, updates) =>
-      forgeClient.patch<SessionPayload>(`/sessions/${sessionId}`, updates).then(normalizeSession),
+      forgeClient.put<SessionPayload>(`/sessions/${sessionId}`, updates).then(normalizeSession),
     stopSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/stop`),
     resumeSession: (sessionId) => forgeClient.post<void>(`/sessions/${sessionId}/resume`),
     deleteSession: (sessionId, cleanup) =>

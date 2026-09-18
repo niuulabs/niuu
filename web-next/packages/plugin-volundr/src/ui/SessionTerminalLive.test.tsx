@@ -169,7 +169,7 @@ describe('SessionTerminalLive helpers', () => {
       );
 
     await expect(listSessions('https://example.com')).resolves.toBeNull();
-    await expect(listSessions('https://example.com')).resolves.toEqual([]);
+    await expect(listSessions('https://example.com')).rejects.toThrow('HTTP 500');
     await expect(listSessions('https://example.com')).resolves.toEqual([
       { terminalId: 'term-1', label: 'Main', cli_type: 'shell', status: 'running' },
     ]);
@@ -177,6 +177,14 @@ describe('SessionTerminalLive helpers', () => {
     expect(global.fetch).toHaveBeenLastCalledWith('https://example.com/api/terminal/sessions', {
       headers: { authorization: 'Bearer token-123' },
     });
+  });
+
+  it('rejects malformed JSON and missing session lists', async () => {
+    vi.mocked(global.fetch)
+      .mockResolvedValueOnce(new Response('invalid'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({})));
+    await expect(listSessions('https://example.com')).rejects.toThrow('invalid response');
+    await expect(listSessions('https://example.com')).rejects.toThrow('session list');
   });
 
   it('spawns a terminal session with the selected CLI type', async () => {
@@ -281,9 +289,51 @@ describe('SessionTerminalLive', () => {
     render(<SessionTerminalLive url="ws://localhost:8080/ws" />);
     await waitFor(() =>
       expect(
-        screen.getByText('This backend does not expose the legacy terminal transport yet.'),
+        screen.getByText('This Forge host does not provide terminal access for this session.'),
       ).toBeInTheDocument(),
     );
+  });
+
+  it('treats an HTML fallback as unavailable and never spawns a shell', async () => {
+    vi.mocked(global.fetch).mockResolvedValue(
+      new Response('<html>App</html>', { headers: { 'Content-Type': 'text/html' } }),
+    );
+    render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" />);
+    await screen.findByText('Terminal unavailable');
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(latestWebSocketUrl).toBeNull();
+  });
+
+  it('offers retry after a network failure and restores terminals on retry', async () => {
+    vi.mocked(global.fetch)
+      .mockRejectedValueOnce(new Error('Network unavailable'))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sessions: [
+              {
+                terminalId: 'restored',
+                label: 'Restored shell',
+                cli_type: 'shell',
+                status: 'running',
+              },
+            ],
+          }),
+        ),
+      );
+    render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" />);
+    await screen.findByText('Network unavailable');
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await screen.findByRole('tab', { name: /Restored shell/ });
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not auto-spawn a terminal in a read-only session', async () => {
+    vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify({ sessions: [] })));
+    render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" readOnly />);
+    await screen.findByText('No terminal session is available to view.');
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
   it('restores existing terminal tabs from the backend', async () => {
@@ -449,9 +499,7 @@ describe('SessionTerminalLive', () => {
     render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" />);
 
     await waitFor(() =>
-      expect(
-        screen.getByText('This backend does not expose the legacy terminal transport yet.'),
-      ).toBeInTheDocument(),
+      expect(screen.getByText('The host could not start a terminal.')).toBeInTheDocument(),
     );
   });
 

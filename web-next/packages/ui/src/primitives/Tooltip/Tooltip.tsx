@@ -10,6 +10,7 @@ const DEFAULT_SIDE_OFFSET = 5;
 
 export interface TooltipProps {
   content: ReactNode;
+  ariaLabel?: string;
   children: ReactNode;
   side?: 'top' | 'right' | 'bottom' | 'left';
   delayMs?: number;
@@ -18,6 +19,7 @@ export interface TooltipProps {
 
 export function Tooltip({
   content,
+  ariaLabel,
   children,
   side = 'top',
   delayMs = DEFAULT_DELAY_MS,
@@ -28,6 +30,7 @@ export function Tooltip({
       <RadixTooltip.Trigger asChild>{children}</RadixTooltip.Trigger>
       <RadixTooltip.Portal>
         <RadixTooltip.Content
+          aria-label={ariaLabel}
           className={cn('niuu-tooltip-content', className)}
           side={side}
           sideOffset={DEFAULT_SIDE_OFFSET}

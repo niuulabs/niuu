@@ -1,12 +1,13 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useRef,
   useState,
   type ChangeEvent,
   type KeyboardEvent,
 } from 'react';
-import { ArrowUp, Paperclip, Square, X } from 'lucide-react';
+import { ArrowUp, Paperclip, Slash, Square, X } from 'lucide-react';
 import { cn } from '../../../utils/cn';
 import { useFileAttachments, type FileAttachment } from '../../hooks/useFileAttachments';
 import { useSlashMenu } from '../../hooks/useSlashMenu';
@@ -123,7 +124,9 @@ export function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const slashMenu = useSlashMenu(availableCommands as SlashCommand[] | undefined);
+  const slashMenuId = useId();
+  const slashMenu = useSlashMenu(eventRouting ? undefined : availableCommands);
+  const canBrowseCommands = !eventRouting && Boolean(availableCommands?.length);
   const mentionMenu = useMentionMenu(
     sessionId,
     sessionHost,
@@ -220,6 +223,7 @@ export function ChatInput({
 
     setInput('');
     clearFileAttachments();
+    slashMenu.close();
     for (const mention of mentionMenu.mentions) {
       mentionMenu.removeMention(mentionId(mention));
     }
@@ -234,11 +238,13 @@ export function ChatInput({
     mentionMenu,
     fileAttachmentsList,
     clearFileAttachments,
+    slashMenu,
     participants,
   ]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.nativeEvent.isComposing) return;
       if (slashMenu.isOpen) {
         const handled = slashMenu.handleKeyDown(e);
         if (handled) {
@@ -359,6 +365,7 @@ export function ChatInput({
       <div className="niuu-chat-input-area">
         {slashMenu.isOpen && (
           <SlashCommandMenu
+            id={slashMenuId}
             selectedIndex={slashMenu.selectedIndex}
             commands={slashMenu.filteredCommands}
             onSelect={(cmd) => {
@@ -407,6 +414,12 @@ export function ChatInput({
                 : 'Message...'
           }
           disabled={disabled}
+          aria-label="Message"
+          aria-autocomplete={canBrowseCommands ? 'list' : undefined}
+          aria-controls={slashMenu.isOpen ? slashMenuId : undefined}
+          aria-activedescendant={
+            slashMenu.isOpen ? `${slashMenuId}-${slashMenu.selectedIndex}` : undefined
+          }
           rows={1}
           data-testid="chat-textarea"
         />
@@ -414,6 +427,29 @@ export function ChatInput({
 
       <div className="niuu-chat-input-bottom-bar">
         <div className="niuu-chat-input-left-actions">
+          {canBrowseCommands && (
+            <button
+              type="button"
+              className="niuu-chat-input-icon-btn"
+              aria-label="Slash commands"
+              aria-expanded={slashMenu.isOpen}
+              aria-controls={slashMenu.isOpen ? slashMenuId : undefined}
+              title="Slash commands · type / to browse"
+              disabled={disabled || (input.length > 0 && !/^\/\S*$/.test(input))}
+              onClick={() => {
+                if (slashMenu.isOpen) {
+                  slashMenu.close();
+                } else {
+                  const value = input || '/';
+                  setInput(value);
+                  slashMenu.handleChange(value);
+                }
+                textareaRef.current?.focus();
+              }}
+            >
+              <Slash className="niuu-chat-input-btn-icon" />
+            </button>
+          )}
           {!eventRouting && (
             <>
               <button

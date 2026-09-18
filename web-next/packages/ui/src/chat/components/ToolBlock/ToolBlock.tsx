@@ -1,3 +1,4 @@
+import { ConversationLink } from '../ConversationResources';
 import { useState } from 'react';
 import { ChevronRight, ChevronDown } from 'lucide-react';
 import { cn } from '../../../utils/cn';
@@ -80,7 +81,11 @@ function ToolDetail({ block, result }: ToolDetailProps) {
   if (name === 'Edit') {
     return (
       <div className="niuu-chat-tool-detail">
-        <p className="niuu-chat-tool-filepath">{String(input.file_path ?? input.path ?? '')}</p>
+        <p className="niuu-chat-tool-filepath">
+          <ConversationLink href={String(input.file_path ?? input.path ?? '')}>
+            {String(input.file_path ?? input.path ?? '')}
+          </ConversationLink>
+        </p>
         {input.old_string != null && (
           <pre className="niuu-chat-tool-diff niuu-chat-tool-diff--old">
             {String(input.old_string)}
@@ -98,7 +103,11 @@ function ToolDetail({ block, result }: ToolDetailProps) {
   if (name === 'Write') {
     return (
       <div className="niuu-chat-tool-detail">
-        <p className="niuu-chat-tool-filepath">{String(input.file_path ?? input.path ?? '')}</p>
+        <p className="niuu-chat-tool-filepath">
+          <ConversationLink href={String(input.file_path ?? input.path ?? '')}>
+            {String(input.file_path ?? input.path ?? '')}
+          </ConversationLink>
+        </p>
         {input.content != null && (
           <pre className="niuu-chat-tool-output-text">{String(input.content).slice(0, 200)}</pre>
         )}
@@ -109,7 +118,11 @@ function ToolDetail({ block, result }: ToolDetailProps) {
   if (name === 'Read') {
     return (
       <div className="niuu-chat-tool-detail">
-        <p className="niuu-chat-tool-filepath">{String(input.file_path ?? input.path ?? '')}</p>
+        <p className="niuu-chat-tool-filepath">
+          <ConversationLink href={String(input.file_path ?? input.path ?? '')}>
+            {String(input.file_path ?? input.path ?? '')}
+          </ConversationLink>
+        </p>
         {output && (
           <div className="niuu-chat-tool-output">
             <pre className="niuu-chat-tool-output-text">{displayedOutput}</pre>
@@ -179,6 +192,16 @@ export function ToolBlock({ block, result, defaultOpen = false }: ToolBlockProps
         className="niuu-chat-tool-header"
         onClick={() => setIsOpen((prev) => !prev)}
         aria-expanded={isOpen}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowRight') {
+            event.preventDefault();
+            setIsOpen(true);
+          }
+          if (event.key === 'ArrowLeft' || event.key === 'Escape') {
+            event.preventDefault();
+            setIsOpen(false);
+          }
+        }}
       >
         <ToolIcon toolName={block.name} className="niuu-chat-tool-icon" />
         <span className="niuu-chat-tool-label">{label}</span>

@@ -1,5 +1,5 @@
-import { UserStorageSettings } from '@niuulabs/plugin-volundr';
-import { useMemo } from 'react';
+import { ForgeSessionSettings, UserStorageSettings } from '@niuulabs/plugin-volundr';
+import { createElement, useMemo } from 'react';
 import {
   useConfig,
   type MountedSettingsProviderDescriptor,
@@ -117,6 +117,22 @@ const LOCAL_PROVIDERS: MountedSettingsProviderDescriptor[] = [
         label: 'Home & temporary files',
         description: 'Manage your own home, retained temporary files and caches on each cluster.',
         render: () => <UserStorageSettings />,
+      },
+    ],
+  },
+  {
+    id: 'session-view',
+    pluginId: 'volundr',
+    title: 'Sessions',
+    subtitle: 'session display',
+    scope: 'user',
+    defaultSectionId: 'tabs',
+    sections: [
+      {
+        id: 'tabs',
+        label: 'Session tabs',
+        description: 'Choose the tabs shown in your session view.',
+        render: () => createElement(ForgeSessionSettings),
       },
     ],
   },

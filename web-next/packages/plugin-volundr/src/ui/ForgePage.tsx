@@ -6,12 +6,12 @@ import { CliBadge, ConnectionTypeBadge, MiniBar } from './atoms';
 import { useVolundrStats } from './useVolundrSessions';
 import { useVolundrClusters } from './hooks/useVolundrClusters';
 import { useSessionList } from './hooks/useSessionStore';
-import { useLaunchSpecs } from './useLaunchSpecs';
-import { QuickLaunch } from './QuickLaunch';
+import { FORGE_STANDARDS, type ForgeStandardId } from './quickLaunchModel';
+import { LaunchWizard } from './LaunchWizard';
 import { money, tokens } from './utils/formatters';
 import type { Cluster, ClusterKind } from '../domain/cluster';
 import type { Session, SessionState } from '../domain/session';
-import type { VolundrLaunchSpec } from '../models/volundr.model';
+
 import './ForgePage.css';
 
 const INFLIGHT_STATES: SessionState[] = [
@@ -99,16 +99,6 @@ function compactAge(timestamp: number) {
   if (hours < 24) return `${hours}h`;
   const days = Math.floor(hours / 24);
   return `${days}d`;
-}
-
-function formatSpecResources(spec: VolundrLaunchSpec) {
-  const cpu = spec.resourceConfig.cpu ? `${spec.resourceConfig.cpu}c` : '';
-  const mem = spec.resourceConfig.memory ? spec.resourceConfig.memory : '';
-  const gpu =
-    spec.resourceConfig.gpu && spec.resourceConfig.gpu !== '0'
-      ? `gpu ${spec.resourceConfig.gpu}`
-      : '';
-  return [cpu, mem, gpu, spec.scope].filter(Boolean).join('  ');
 }
 
 function displayCluster(session: Session, clusterMap: Map<string, ForgeClusterView>) {
@@ -412,7 +402,7 @@ function QuickLaunchCard({
   isDefault,
   onClick,
 }: {
-  spec: VolundrLaunchSpec;
+  spec: (typeof FORGE_STANDARDS)[number];
   isDefault: boolean;
   onClick: () => void;
 }) {
@@ -424,14 +414,14 @@ function QuickLaunchCard({
       data-testid="quick-launch-card"
     >
       <div className="vol-forge__launch-head">
-        <CliBadge cli={spec.cliTool} />
+        <CliBadge cli={spec.id} />
         {isDefault ? <span className="vol-forge__launch-default">DEFAULT</span> : null}
       </div>
       <div className="vol-forge__launch-name">{spec.name}</div>
-      <div className="vol-forge__launch-desc">{spec.description || 'catalog launch spec'}</div>
+      <div className="vol-forge__launch-desc">{spec.harness}</div>
       <div className="vol-forge__launch-foot">
-        <span>{formatSpecResources(spec)}</span>
-        {spec.model ? <span>{spec.model}</span> : null}
+        <span>Local mount · optional resources</span>
+        <span>{spec.models[0].name}</span>
       </div>
     </button>
   );
@@ -465,10 +455,9 @@ export function ForgePage() {
   const stats = useVolundrStats();
   const clusters = useVolundrClusters();
   const sessionsQuery = useSessionList();
-  const launchSpecs = useLaunchSpecs('system');
 
   const [launchOpen, setLaunchOpen] = useState(false);
-  const [launchSpecRef, setLaunchSpecRef] = useState<string | null>(null);
+  const [launchSpecRef, setLaunchSpecRef] = useState<ForgeStandardId>('claude');
 
   const allSessions = useMemo(() => sessionsQuery.data ?? [], [sessionsQuery.data]);
   const dashboardSessions = useMemo(() => {
@@ -567,11 +556,10 @@ export function ForgePage() {
   const tokenRate = tokenSparkline.length > 0 ? Math.round(average(tokenSparkline, 5) / 100) : 0;
   const projectedCost = stats.data ? Math.round(stats.data.costToday * 1.07) : 0;
 
-  const isLoading =
-    stats.isLoading || clusters.isLoading || sessionsQuery.isLoading || launchSpecs.isLoading;
+  const isLoading = stats.isLoading || clusters.isLoading || sessionsQuery.isLoading;
 
-  function openWizard(specRef?: string) {
-    setLaunchSpecRef(specRef ?? null);
+  function openWizard(specRef?: ForgeStandardId) {
+    setLaunchSpecRef(specRef ?? 'claude');
     setLaunchOpen(true);
   }
 
@@ -693,19 +681,19 @@ export function ForgePage() {
             </header>
 
             <div className="vol-forge__launch-grid">
-              {(launchSpecs.data ?? []).slice(0, 4).map((spec, index) => (
+              {FORGE_STANDARDS.map((spec, index) => (
                 <QuickLaunchCard
-                  key={spec.id ?? spec.name}
+                  key={spec.id}
                   spec={spec}
-                  isDefault={spec.isDefault || index === 0}
-                  onClick={() => openWizard(spec.id ?? spec.name)}
+                  isDefault={index === 0}
+                  onClick={() => openWizard(spec.id)}
                 />
               ))}
             </div>
 
             <button type="button" className="vol-forge__launch-cta" onClick={() => openWizard()}>
               <span>+</span>
-              <span>custom launch...</span>
+              <span>Quick launch…</span>
             </button>
           </section>
 
@@ -792,11 +780,11 @@ export function ForgePage() {
         </div>
       </div>
 
-      <QuickLaunch
+      <LaunchWizard
         key={launchSpecRef ?? 'forge-custom'}
         open={launchOpen}
         onOpenChange={setLaunchOpen}
-        initialLaunchSpecRef={launchSpecRef ?? undefined}
+        initialStandard={launchSpecRef}
       />
     </>
   );

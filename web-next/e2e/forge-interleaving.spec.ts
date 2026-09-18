@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { test, expect, type WebSocketRoute } from '@playwright/test';
 
 // Every network operation is intercepted: this exercises the actual app, HTTP adapter, socket
@@ -17,9 +18,10 @@ test('native text/tool anchors survive live completion, snapshot repair and lega
     last_active: '2026-09-08T21:00:00Z',
     activity_state: 'active',
   };
-  await page.route('**/config.json', async (route) => {
-    const response = await route.fetch();
-    const config = await response.json();
+  await page.route(/\/config(?:\.live)?\.json$/, async (route) => {
+    const config = JSON.parse(
+      readFileSync(new URL('../apps/niuu/public/config.json', import.meta.url), 'utf8'),
+    );
     config.services.forge = { mode: 'http', baseUrl: `${origin}/api/v1/forge` };
     config.services.volundr = { mode: 'http', baseUrl: `${origin}/api/v1/volundr` };
     await route.fulfill({ json: config });
@@ -49,7 +51,7 @@ test('native text/tool anchors survive live completion, snapshot repair and lega
   });
   await page.goto(`/volundr/session/${session.id}`);
   await page.locator('#tab-chat').click();
-  await page.getByRole('button', { name: 'Show tool calls and results' }).click();
+  await expect(page.getByRole('button', { name: 'Hide tool calls and results' })).toBeVisible();
   await expect.poll(() => Boolean(socket)).toBe(true);
   const send = (frame: object) => socket!.send(JSON.stringify(frame));
   const text = (id: string, value: string, phase: string) => ({

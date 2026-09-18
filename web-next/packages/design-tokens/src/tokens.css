@@ -93,6 +93,7 @@
 
   /* ── Critical (reserved — red only) ───────────────────── */
   --color-critical: #ef4444;
+  --color-text-on-critical: #ffffff;
 
   /*
    * Observatory accent hues, from docs/mockups/observatory/index.html.
@@ -118,6 +119,7 @@
    * Maps to `--color-critical` in web-next.
    * ────────────────────────────────────────────────────── */
   --color-danger: var(--color-critical);
+  --color-danger-text: var(--color-critical-fg);
 
   /* ── Gate (violet — approval / gated states) ──────────── */
   --color-gate: #a855f7;
@@ -154,6 +156,9 @@
   --status-green: #22c55e;
   --status-amber: #f59e0b;
   --status-orange: #f97316;
+  /* Harness identity remains stable when the user switches themes. */
+  --color-harness-claude: #fb923c;
+  --color-harness-codex: #60a5fa;
   --status-red: #ef4444;
   --status-cyan: #06b6d4;
   --status-indigo: #6366f1;
@@ -401,4 +406,61 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Xteo: LexiDesignKit's navy surfaces, with the brighter native macOS text ramp.
+ * Keep foreground accents distinct from deeper filled-button blue. */
+[data-theme='xteo'] {
+  --color-bg-primary: #0a0e1a;
+  --color-bg-secondary: #0f1525;
+  --color-bg-tertiary: #141b2d;
+  --color-bg-elevated: #1a2236;
+  --color-text-primary: #eceff6;
+  --color-text-secondary: #b8c2d5;
+  --color-text-muted: #a7b1c4;
+  --color-text-faint: #96a2b8;
+  --color-border: #334361;
+  --color-border-subtle: #22304a;
+  --brand-100: #dbeafe;
+  --brand-200: #bfdbfe;
+  --brand-300: #93c5fd;
+  --brand-400: #60a5fa;
+  --brand-500: #3b82f6;
+  --brand-600: #2563eb;
+  --brand-700: #1d4ed8;
+  --brand-800: #1e40af;
+  --brand-900: #1e3a5f;
+  --color-brand: #6ba1f8;
+  --color-code-surface: #080c16;
+  --color-panel-quiet: #0c111e;
+  --color-border-quiet: #1a2335;
+  --color-selection-surface: #101725;
+  --color-selection-edge: #344862;
+  --color-sent-surface: #213050;
+  --color-emphasis: #fdba74;
+  --color-tool-agent: var(--brand-300);
+  --color-tool-task: var(--brand-400);
+  --status-processing: var(--brand-300);
+  --status-deciding: var(--brand-300);
+  --color-accent-fill: var(--brand-600);
+  --color-accent-on-fill: #ffffff;
+  --shadow-sm: inset 0 1px 0 rgb(184 209 255 / 0.04), 0 2px 5px rgb(0 3 12 / 0.2);
+  --shadow-md: inset 0 1px 0 rgb(184 209 255 / 0.06), 0 8px 24px rgb(0 3 12 / 0.28);
+  --shadow-lg: 0 20px 60px rgb(0 3 12 / 0.4);
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+  --ops-surface-1: var(--color-bg-secondary);
+  --ops-surface-2: var(--color-bg-tertiary);
+  --ops-surface-3: var(--color-bg-elevated);
+  --ops-surface-accent: var(--color-sent-surface);
+  --ops-surface-ink: var(--color-bg-primary);
+  --ops-border-1: var(--color-border-subtle);
+  --ops-border-2: var(--color-border);
+  --ops-border-strong: var(--brand-600);
+  --ops-border-soft: var(--color-border-subtle);
+  --ops-fill-muted: var(--color-bg-elevated);
+  --ops-fill-brand: var(--brand-300);
+  --ops-text-strong: var(--color-text-primary);
+  --ops-text-body: var(--color-text-secondary);
+  --ops-text-muted: var(--color-text-muted);
+  --ops-text-faint: var(--color-text-faint);
 }

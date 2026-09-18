@@ -151,7 +151,7 @@ vi.mock('@niuulabs/query', () => ({
   })),
 }));
 
-function wrap(children: ReactNode) {
+function wrap(children: ReactNode, enableSessions = false) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -165,6 +165,7 @@ function wrap(children: ReactNode) {
         demoMode: false,
         theme: 'ice',
         plugins: {
+          volundr: { enabled: enableSessions, order: 4 },
           login: { enabled: true, order: 0 },
           credentials: { enabled: true, order: 1 },
           integrations: { enabled: true, order: 2 },
@@ -187,6 +188,22 @@ describe('SettingsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     installDefaultGetMock();
+  });
+
+  it('renders local session checkboxes without fetching or saving a remote schema', () => {
+    localStorage.clear();
+    routerMocks.params = { providerId: 'session-view', sectionId: 'tabs' };
+    wrap(<SettingsPage />, true);
+    const terminal = screen.getByRole('checkbox', { name: 'Terminal' }) as HTMLInputElement;
+    expect(terminal.checked).toBe(false);
+    expect((screen.getByRole('checkbox', { name: /Chat/ }) as HTMLInputElement).disabled).toBe(
+      true,
+    );
+    fireEvent.click(terminal);
+    expect(terminal.checked).toBe(true);
+    expect(localStorage.getItem('niuu.forge.sessionTabs')).toContain('terminal');
+    expect(apiMocks.get).not.toHaveBeenCalled();
+    expect(apiMocks.patch).not.toHaveBeenCalled();
   });
 
   it('renders PAT management in the unified shell without the old aggregate copy', async () => {

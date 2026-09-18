@@ -126,6 +126,55 @@ describe('ChatInput', () => {
     expect((screen.getByTestId('chat-textarea') as HTMLTextAreaElement).value).toBe('/clear ');
   });
 
+  it('browses descriptions and arguments with the slash button, inserts before sending, and preserves drafts', () => {
+    const onSend = vi.fn();
+    render(
+      <ChatInput
+        {...defaultProps}
+        onSend={onSend}
+        availableCommands={[
+          {
+            name: 'review',
+            type: 'skill',
+            description: 'Review a change',
+            argumentHint: '[focus]',
+          },
+        ]}
+      />,
+    );
+    const browse = screen.getByRole('button', { name: 'Slash commands' });
+    const input = screen.getByTestId('chat-textarea');
+    fireEvent.click(browse);
+    expect(input).toHaveFocus();
+    expect(screen.getByRole('listbox', { name: 'Slash commands' })).toBeInTheDocument();
+    expect(screen.getByText('[focus]')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('option', { name: /Review a change/ }));
+    expect(input).toHaveValue('/review ');
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: '/review accessibility' } });
+    expect(browse).toBeDisabled();
+    fireEvent.click(browse);
+    expect(input).toHaveValue('/review accessibility');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('/review accessibility', []);
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+  });
+
+  it('does not surface a catalogue in event routing or when none was advertised', () => {
+    const { rerender } = render(<ChatInput {...defaultProps} />);
+    expect(screen.queryByRole('button', { name: 'Slash commands' })).not.toBeInTheDocument();
+    rerender(
+      <ChatInput
+        {...defaultProps}
+        eventRouting
+        availableCommands={[{ name: 'review', type: 'command' }]}
+      />,
+    );
+    fireEvent.change(screen.getByTestId('chat-textarea'), { target: { value: '/' } });
+    expect(screen.queryByRole('button', { name: 'Slash commands' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+  });
+
   it('calls onSendDirected when agent mentions present', () => {
     const onSend = vi.fn();
     const onSendDirected = vi.fn();

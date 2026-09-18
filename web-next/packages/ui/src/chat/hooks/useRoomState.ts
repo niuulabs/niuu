@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback } from 'react';
 import type { ChatMessage, ChatMessagePart, RoomParticipant } from '../types';
+import { isPresentedFileTool } from '../components/ToolBlock/groupContentBlocks';
 
 export interface UseRoomStateReturn {
   isRoomMode: boolean;
@@ -29,19 +30,25 @@ function isVisibleMessage(msg: ChatMessage): boolean {
   return true;
 }
 
+/** Keep prose boundaries without retaining hidden tool input or output. */
+export function hideToolParts(parts: readonly ChatMessagePart[]): ChatMessagePart[] {
+  const kept: ChatMessagePart[] = [];
+  for (const part of parts) {
+    const hidden =
+      INTERNAL_PART_TYPES.has(part.type) &&
+      !(part.type === 'tool_use' && part.name && isPresentedFileTool(part.name));
+    if (!hidden) kept.push(part);
+    else if (kept.at(-1)?.type !== 'tool_separator') {
+      kept.push({ type: 'tool_separator', id: part.id ?? part.tool_use_id });
+    }
+  }
+  return kept;
+}
+
 function stripInternalParts(msg: ChatMessage): ChatMessage | null {
-  if (!msg.parts || msg.parts.length === 0) {
-    return msg;
-  }
-  const kept = msg.parts.filter((p) => !INTERNAL_PART_TYPES.has(p.type));
-  if (kept.length === msg.parts.length) {
-    return msg;
-  }
-  // If the message had only tool blocks and no text content, drop it entirely
-  // so the chat doesn't render an empty assistant bubble.
-  if (kept.length === 0 && !msg.content.trim()) {
-    return null;
-  }
+  if (!msg.parts?.length) return msg;
+  const kept = hideToolParts(msg.parts);
+  if (kept.every((part) => part.type === 'tool_separator') && !msg.content.trim()) return null;
   return { ...msg, parts: kept };
 }
 
@@ -57,9 +64,10 @@ function stripInternalParts(msg: ChatMessage): ChatMessage | null {
 export function useRoomState(
   messages: readonly ChatMessage[],
   participants: ReadonlyMap<string, RoomParticipant>,
+  initialShowInternal = false,
 ): UseRoomStateReturn {
   const [activeFilter, setActiveFilter] = useState<string>(FILTER_ALL);
-  const [showInternal, setShowInternal] = useState(false);
+  const [showInternal, setShowInternal] = useState(initialShowInternal);
   const [expandedThreads, setExpandedThreads] = useState<ReadonlySet<string>>(new Set());
 
   const isRoomMode = participants.size > 1;
