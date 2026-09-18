@@ -71,7 +71,13 @@ class LaunchSpecContributor(SessionContributor):
         if source.resource_config:
             values["resources"] = source.resource_config
         if source.env_vars:
-            values["env"] = source.env_vars
+            # `env` is not a key the skuld chart renders — only `envVars`, as a
+            # list of {name, value}. Emitting the raw mapping here meant a
+            # launch spec's env silently never reached the pod.
+            values["envVars"] = [
+                {"name": str(name), "value": str(value)}
+                for name, value in source.env_vars.items()
+            ]
         if source.env_secret_refs:
             values["envSecretRefs"] = source.env_secret_refs
         if source.mcp_servers:

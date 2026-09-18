@@ -47,7 +47,7 @@ async def test_explicit_launch_spec_merges_runtime_values(session: Session) -> N
 
     assert result.values == {
         "resources": {"requests": {"cpu": "2"}},
-        "env": {"FEATURE": "enabled"},
+        "envVars": [{"name": "FEATURE", "value": "enabled"}],
         "envSecretRefs": ["skuld-runtime-secret"],
         "mcpServers": [{"name": "mimir", "type": "stdio"}],
         "session": {"systemPrompt": "Stay sharp."},
@@ -79,3 +79,47 @@ async def test_default_absent_returns_empty_contribution(session: Session) -> No
     result = await contributor.contribute(session, SessionContext())
 
     assert result.values == {}
+
+
+async def test_launch_spec_env_survives_a_contributor_that_also_sets_env(
+    session: Session,
+) -> None:
+    """A launch spec's env must not be erased by another contributor's env.
+
+    The integrations contributor always emits at least SKULD__CLAUDE_AUTH, and
+    plain assignment used to let that discard everything the launch spec set.
+    """
+    from volundr.domain.models import SessionSpec
+    from volundr.domain.ports import SessionContribution
+
+    provider = MagicMock()
+    provider.get.return_value = _spec()
+    contributor = LaunchSpecContributor(launch_spec_provider=provider)
+
+    from_launch_spec = await contributor.contribute(
+        session, SessionContext(launch_spec="standard")
+    )
+    from_integrations = SessionContribution(
+        values={"envVars": [{"name": "SKULD__CLAUDE_AUTH", "value": "subscription"}]}
+    )
+
+    merged = SessionSpec.merge([from_launch_spec, from_integrations])
+    names = {entry["name"] for entry in merged.values["envVars"]}
+
+    assert names == {"FEATURE", "SKULD__CLAUDE_AUTH"}
+
+
+async def test_later_contributor_overrides_same_env_var_by_name(
+    session: Session,
+) -> None:
+    from volundr.domain.models import SessionSpec
+    from volundr.domain.ports import SessionContribution
+
+    merged = SessionSpec.merge(
+        [
+            SessionContribution(values={"envVars": [{"name": "A", "value": "first"}]}),
+            SessionContribution(values={"envVars": [{"name": "A", "value": "second"}]}),
+        ]
+    )
+
+    assert merged.values["envVars"] == [{"name": "A", "value": "second"}]

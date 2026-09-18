@@ -1659,6 +1659,9 @@ def _deep_merge(base: dict, override: dict) -> None:
         if key == "mcpServers" and isinstance(base.get(key), list) and isinstance(value, list):
             base[key] = _merge_mcp_server_lists(base[key], value)
             continue
+        if key == "envVars" and isinstance(base.get(key), list) and isinstance(value, list):
+            base[key] = _merge_env_var_lists(base[key], value)
+            continue
         if (
             key == "credentialMappings"
             and isinstance(base.get(key), list)
@@ -1670,6 +1673,35 @@ def _deep_merge(base: dict, override: dict) -> None:
             _deep_merge(base[key], value)
         else:
             base[key] = value
+
+
+def _merge_env_var_lists(existing: list, override: list) -> list:
+    """Merge env var lists by ``name``, preserving order and later overrides.
+
+    Plain assignment used to win here, so a contributor that emitted any env at
+    all (integrations always emits ``SKULD__CLAUDE_AUTH``) silently discarded
+    everything a session definition or launch spec had set. The loss happened
+    after the values were already visible in the rendered ConfigMap and the
+    HelmRelease, so the only place it showed up was the running pod.
+    """
+    merged: list = []
+    index_by_name: dict[str, int] = {}
+
+    for entry in list(existing) + list(override):
+        if not isinstance(entry, dict):
+            merged.append(entry)
+            continue
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            merged.append(dict(entry))
+            continue
+        if name in index_by_name:
+            merged[index_by_name[name]] = dict(entry)
+            continue
+        index_by_name[name] = len(merged)
+        merged.append(dict(entry))
+
+    return merged
 
 
 def _merge_mcp_server_lists(existing: list, override: list) -> list:
