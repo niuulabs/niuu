@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
@@ -56,6 +56,21 @@ function wrap(
 }
 
 describe('ForgePage', () => {
+  it('keeps launch available and explains failed metrics with a working retry', async () => {
+    const service = createMockVolundrService();
+    const getStats = vi.spyOn(service, 'getStats').mockRejectedValue(new Error('Host timed out'));
+    wrap(service);
+    expect(screen.getByTestId('quick-launch-panel')).toBeInTheDocument();
+    expect(await screen.findByText('Forge metrics: unavailable')).toBeInTheDocument();
+    expect(screen.getByLabelText('Forge connections')).toHaveTextContent(
+      'Metrics cover loaded hosts',
+    );
+    getStats.mockRestore();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Forge connections' }));
+    await waitFor(() =>
+      expect(screen.queryByLabelText('Forge connections')).not.toBeInTheDocument(),
+    );
+  });
   it('renders the forge page container', () => {
     wrap();
     expect(screen.getByTestId('forge-page')).toBeInTheDocument();
@@ -137,7 +152,8 @@ describe('ForgePage', () => {
       listSessions: () => new Promise(() => {}),
     };
     wrap(createMockVolundrService(), createMockClusterAdapter(), slowStore);
-    expect(screen.getByText(/loading metrics/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/loading sessions/i).length).toBeGreaterThan(0);
+    expect(screen.getByTestId('quick-launch-panel')).toBeInTheDocument();
   });
 
   // ──────────────────────────────────────────────
@@ -312,8 +328,9 @@ describe('ForgePage', () => {
   it('renders sparklines in KPI tiles when stats include sparklines', async () => {
     wrap();
     await waitFor(() => expect(screen.getByText(/active pods/i)).toBeInTheDocument());
-    const svgs = document.querySelectorAll('svg[aria-hidden="true"]');
-    expect(svgs.length).toBeGreaterThan(0);
+    await waitFor(() =>
+      expect(document.querySelectorAll('svg[aria-hidden="true"]').length).toBeGreaterThan(0),
+    );
   });
 
   it('renders catalog launch specs on quick-launch cards', async () => {
@@ -413,7 +430,9 @@ describe('ForgePage', () => {
     await waitFor(() => expect(screen.getByTestId('inflight-panel')).toBeInTheDocument());
 
     const inflight = screen.getByTestId('inflight-panel');
-    expect(within(inflight).getByTestId('inflight-title')).toHaveTextContent('OIDC auth hardening');
+    expect(await within(inflight).findByTestId('inflight-title')).toHaveTextContent(
+      'OIDC auth hardening',
+    );
     expect(within(inflight).getByTestId('inflight-ticket')).toHaveTextContent('NIU-900');
     expect(within(inflight).queryByText('sess-issue-1')).not.toBeInTheDocument();
     expect(within(inflight).getAllByText('OIDC auth hardening')).toHaveLength(1);

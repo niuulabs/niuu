@@ -574,6 +574,51 @@ def test_get_stats_aggregates_totals_and_merges_sparklines() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "endpoint,remote_path",
+    [("stats", "/api/v1/forge/stats"), ("cluster/resources", "/api/v1/volundr/resources")],
+)
+@respx.mock
+def test_dashboard_reads_target_only_and_preserve_remote_failures(
+    endpoint: str, remote_path: str
+) -> None:
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha"),
+            _instance("offline", base_url="http://offline"),
+        ]
+    )
+    route = respx.get(f"http://alpha{remote_path}").mock(
+        return_value=Response(200, json={"tokens_today": 42, "nodes": []})
+    )
+    response = client.get(f"/api/v1/forge/{endpoint}?instance_id=alpha", headers=_headers())
+    assert response.status_code == 200
+    assert len(respx.calls) == 1
+    if endpoint == "stats":
+        assert response.json()["tokens_today"] == 42
+        assert response.json()["instance_id"] == "alpha"
+    else:
+        assert response.json()["instances"][0]["id"] == "alpha"
+    route.mock(return_value=Response(503, text="Host unavailable"))
+    response = client.get(f"/api/v1/forge/{endpoint}?instance_id=alpha", headers=_headers())
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Host unavailable"
+    route.mock(return_value=Response(200, json=[]))
+    assert (
+        client.get(f"/api/v1/forge/{endpoint}?instance_id=alpha", headers=_headers()).status_code
+        == 502
+    )
+
+
+@pytest.mark.parametrize("endpoint", ["stats", "cluster/resources"])
+@respx.mock
+def test_dashboard_target_must_be_visible(endpoint: str) -> None:
+    client = _client([_instance("private", base_url="http://private", tenant_id="other")])
+    response = client.get(f"/api/v1/forge/{endpoint}?instance_id=private", headers=_headers())
+    assert response.status_code == 404
+    assert len(respx.calls) == 0
+
+
 @respx.mock
 def test_get_cluster_resources_returns_camel_and_snake_resource_keys() -> None:
     client = _client([_instance("alpha", base_url="http://alpha")])

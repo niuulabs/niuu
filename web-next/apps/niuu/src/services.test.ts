@@ -1538,12 +1538,7 @@ describe('buildServices', () => {
         ],
       }),
     ]);
-    await expect(clusterAdapter.getClusters()).resolves.toEqual([
-      expect.objectContaining({
-        region: 'shared',
-        status: 'healthy',
-      }),
-    ]);
+    await expect(clusterAdapter.getClusters()).rejects.toThrow('cluster resources unavailable');
   });
 
   it('keeps mock session stores when Volundr is not live', () => {

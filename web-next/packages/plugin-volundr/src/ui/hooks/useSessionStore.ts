@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import { readForgeSource } from './readForgeSource';
 import { useQueries, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import type { ISessionStore, SessionFilters } from '../../ports/ISessionStore';
@@ -14,32 +15,6 @@ export interface SessionSourceState {
   loading: boolean;
   error: string | null;
   stale: boolean;
-}
-
-async function readSource(store: ISessionStore, filters: SessionFilters, signal: AbortSignal) {
-  const controller = new AbortController();
-  const cancel = () => controller.abort(signal.reason);
-  if (signal.aborted) cancel();
-  else signal.addEventListener('abort', cancel, { once: true });
-  let timedOut = false;
-  const timer =
-    store.listRequestTimeoutMs === undefined
-      ? undefined
-      : setTimeout(() => {
-          timedOut = true;
-          controller.abort();
-        }, store.listRequestTimeoutMs);
-  try {
-    return await store.listSessions(filters, controller.signal);
-  } catch (error) {
-    if (timedOut) {
-      throw new Error('Connection timed out. Check this Forge in Guild.', { cause: error });
-    }
-    throw error;
-  } finally {
-    clearTimeout(timer);
-    signal.removeEventListener('abort', cancel);
-  }
 }
 
 /** Each registered Forge owns a query: slow hosts and archives never gate healthy sessions. */
@@ -98,7 +73,15 @@ export function useSessionList(filters?: SessionFilters) {
       [false, true].map((archived) => ({
         queryKey: ['volundr', 'domain-sessions', 'source', source.id, archived, filters ?? null],
         queryFn: ({ signal }: { signal: AbortSignal }) =>
-          readSource(store, { ...filters, instanceId: source.id, archivedOnly: archived }, signal),
+          readForgeSource(
+            (sourceSignal) =>
+              store.listSessions(
+                { ...filters, instanceId: source.id, archivedOnly: archived },
+                sourceSignal,
+              ),
+            signal,
+            store.listRequestTimeoutMs,
+          ),
         retry: false,
         refetchInterval: (query: { state: { status: string } }) =>
           query.state.status === 'error'

@@ -167,6 +167,8 @@ type ExternalSessionPayload = {
 };
 
 type StatsPayload = {
+  instance_id?: string;
+  instanceId?: string;
   activeSessions?: number;
   active_sessions?: number;
   totalSessions?: number;
@@ -1319,8 +1321,12 @@ export function buildVolundrHttpAdapter(
     return normalized;
   }
 
-  async function loadStats(): Promise<VolundrStats> {
-    statsCache = normalizeStats(await forgeClient.get<StatsPayload>('/stats'));
+  async function loadStats(signal?: AbortSignal): Promise<VolundrStats> {
+    statsCache = normalizeStats(
+      await (signal
+        ? forgeClient.get<StatsPayload>('/stats', { signal })
+        : forgeClient.get<StatsPayload>('/stats')),
+    );
     publishStats();
     return statsCache;
   }
@@ -1546,7 +1552,21 @@ export function buildVolundrHttpAdapter(
     getSessions: (options) => loadSessions('/sessions', options),
     getSession: (id) => loadSession(id),
     getActiveSessions: () => loadSessions('/sessions?active=true'),
-    getStats: () => loadStats(),
+    getStats: (options) =>
+      options?.instanceId
+        ? forgeClient
+            .get<StatsPayload>(`/stats?instance_id=${encodeURIComponent(options.instanceId)}`, {
+              signal: options.signal,
+            })
+            .then((payload) => {
+              if ((payload.instance_id ?? payload.instanceId) !== options.instanceId) {
+                throw new Error(
+                  'This gateway does not support host-specific metrics. Update the Forge gateway.',
+                );
+              }
+              return normalizeStats(payload);
+            })
+        : loadStats(options?.signal),
     getRepos: async () =>
       normalizeRepoList(
         await (niuuClient ?? forgeClient).get<
@@ -1607,7 +1627,27 @@ export function buildVolundrHttpAdapter(
     getAvailableSecrets: () => client.get<string[]>('/secrets'),
     createSecret: (name, data) =>
       client.post<{ name: string; keys: string[] }>('/secrets', { name, data }),
-    getClusterResources: () => forgeClient.get<ClusterResourceInfo>('/cluster/resources'),
+    getClusterResources: (options) =>
+      options?.instanceId
+        ? forgeClient
+            .get<ClusterResourceInfo>(
+              `/cluster/resources?instance_id=${encodeURIComponent(options.instanceId)}`,
+              { signal: options.signal },
+            )
+            .then((payload) => {
+              if (
+                payload.instances?.length !== 1 ||
+                payload.instances[0]?.id !== options.instanceId
+              ) {
+                throw new Error(
+                  'This gateway does not support host-specific resources. Update the Forge gateway.',
+                );
+              }
+              return payload;
+            })
+        : options?.signal
+          ? forgeClient.get<ClusterResourceInfo>('/cluster/resources', { signal: options.signal })
+          : forgeClient.get<ClusterResourceInfo>('/cluster/resources'),
 
     startSession: async (config) =>
       normalizeSession(

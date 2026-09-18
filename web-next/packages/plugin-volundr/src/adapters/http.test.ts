@@ -2549,3 +2549,35 @@ it('routes archived detail directly to its host and removes obsolete archive own
   await service.getSession('old');
   expect(client.get).toHaveBeenLastCalledWith('/sessions/old');
 });
+
+it('scopes metrics and resources, forwards cancellation, and rejects gateways that ignore the host', async () => {
+  const client = makeClient();
+  const service = buildVolundrHttpAdapter(client);
+  const signal = new AbortController().signal;
+  client.get.mockResolvedValue({ instance_id: 'thor', tokens_today: 123 });
+  await expect(service.getStats({ instanceId: 'thor', signal })).resolves.toMatchObject({
+    tokensToday: 123,
+  });
+  expect(client.get).toHaveBeenLastCalledWith('/stats?instance_id=thor', { signal });
+  client.get.mockResolvedValue({ instances: [{ id: 'thor' }], nodes: [] });
+  await expect(service.getClusterResources({ instanceId: 'thor', signal })).resolves.toMatchObject({
+    nodes: [],
+  });
+  expect(client.get).toHaveBeenLastCalledWith('/cluster/resources?instance_id=thor', { signal });
+  client.get.mockResolvedValue({ tokens_today: 999, instances: [{ id: 'thor' }, { id: 'build' }] });
+  await expect(service.getStats({ instanceId: 'thor' })).rejects.toThrow(
+    'Update the Forge gateway',
+  );
+  await expect(service.getClusterResources({ instanceId: 'thor' })).rejects.toThrow(
+    'Update the Forge gateway',
+  );
+  client.get.mockResolvedValue({ instances: [{ id: 'build' }] });
+  await expect(service.getClusterResources({ instanceId: 'thor' })).rejects.toThrow(
+    'Update the Forge gateway',
+  );
+  client.get.mockResolvedValue({ tokens_today: 5 });
+  await expect(service.getStats({ signal })).resolves.toMatchObject({ tokensToday: 5 });
+  expect(client.get).toHaveBeenLastCalledWith('/stats', { signal });
+  await service.getClusterResources({ signal });
+  expect(client.get).toHaveBeenLastCalledWith('/cluster/resources', { signal });
+});

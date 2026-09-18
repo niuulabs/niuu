@@ -916,7 +916,7 @@ function buildSplitVolundrService(
     getSessions: (options) => forge.getSessions(options),
     getSession: (id) => forge.getSession(id),
     getActiveSessions: () => forge.getActiveSessions(),
-    getStats: () => forge.getStats(),
+    getStats: (options) => forge.getStats(options),
     getRepos: () => forge.getRepos(),
     getProjects: () => forge.getProjects(),
     getTargets: () => Promise.resolve(forge.getTargets?.() ?? []),
@@ -925,7 +925,7 @@ function buildSplitVolundrService(
     getAvailableMcpServers: () => forge.getAvailableMcpServers(),
     getAvailableSecrets: () => forge.getAvailableSecrets(),
     createSecret: (name, data) => forge.createSecret(name, data),
-    getClusterResources: () => forge.getClusterResources(),
+    getClusterResources: (options) => forge.getClusterResources(options),
     getAdminSettings: () => forge.getAdminSettings(),
     updateAdminSettings: (data) => forge.updateAdminSettings(data),
     startSession: (config) => forge.startSession(config),
@@ -1269,13 +1269,11 @@ function buildClusterFromParts(
 
 function buildVolundrClusterAdapter(volundr: IVolundrService): IClusterAdapter {
   return {
-    async getClusters() {
+    async getClusters(options) {
       const [resources, sessions, rawTargets] = await Promise.all([
-        volundr
-          .getClusterResources()
-          .catch(() => ({ resourceTypes: [], nodes: [] }) as ClusterResourceRecord),
-        volundr.getSessions().catch(() => [] as VolundrSession[]),
-        Promise.resolve(volundr.getTargets?.() ?? []).catch(() => [] as VolundrTargetRecord[]),
+        volundr.getClusterResources(options),
+        volundr.getSessions(options),
+        options?.instanceId ? Promise.resolve([]) : Promise.resolve(volundr.getTargets?.() ?? []),
       ]);
 
       const nodes = (resources.nodes ?? []).map((node, index) => ({

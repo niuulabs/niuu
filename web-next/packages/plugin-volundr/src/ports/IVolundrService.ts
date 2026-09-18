@@ -116,7 +116,7 @@ export interface IVolundrService {
   getSessions(options?: SessionReadOptions): Promise<VolundrSession[]>;
   getSession(id: string): Promise<VolundrSession | null>;
   getActiveSessions(): Promise<VolundrSession[]>;
-  getStats(): Promise<VolundrStats>;
+  getStats(options?: SessionReadOptions): Promise<VolundrStats>;
   getRepos(): Promise<VolundrRepo[]>;
   getTargets(): Promise<VolundrTarget[]>;
   getProjects(): Promise<ForgeProject[]>;
@@ -141,7 +141,7 @@ export interface IVolundrService {
     name: string,
     data: Record<string, string>,
   ): Promise<{ name: string; keys: string[] }>;
-  getClusterResources(): Promise<ClusterResourceInfo>;
+  getClusterResources(options?: SessionReadOptions): Promise<ClusterResourceInfo>;
 
   // Session lifecycle
   startSession(config: {
