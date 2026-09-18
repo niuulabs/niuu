@@ -26,12 +26,14 @@ test('native text/tool anchors survive live completion, snapshot repair and lega
     config.services.volundr = { mode: 'http', baseUrl: `${origin}/api/v1/volundr` };
     await route.fulfill({ json: config });
   });
+  let history: object[] = [];
+  let revision = 'initial';
   await page.route(`${origin}/**`, (route) => {
     const path = new URL(route.request().url()).pathname;
     const json = path.includes('/features/modules')
       ? [{ key: 'chat', scope: 'session', enabled: true, label: 'Chat', order: 0 }]
-      : path.endsWith('/api/conversation/history')
-        ? { turns: [] }
+      : path.endsWith('/api/conversation/history') || path.endsWith('/conversation')
+        ? { turns: history, projection_revision: revision }
         : path.endsWith(`/sessions/${session.id}`)
           ? session
           : path.endsWith('/sessions')
@@ -47,7 +49,7 @@ test('native text/tool anchors survive live completion, snapshot repair and lega
   });
   let socket: WebSocketRoute | undefined;
   await page.routeWebSocket('ws://forge-interleaving.invalid/**', (ws) => {
-    if (ws.url().endsWith('/session')) socket = ws;
+    if (new URL(ws.url()).pathname.endsWith('/session')) socket = ws;
   });
   await page.goto(`/volundr/session/${session.id}`);
   await page.locator('#tab-chat').click();
@@ -101,36 +103,32 @@ test('native text/tool anchors survive live completion, snapshot repair and lega
       ),
     );
   expect(order).toEqual(['a', 'tool', 'b']);
-  send({
-    type: 'conversation_history',
-    projection_revision: 'repaired-2',
-    turns: [
-      {
-        id: 'canonical',
-        role: 'assistant',
-        content: `${a.text}\n\n${b.text}`,
-        parts: [a, tool, b, { type: 'tool_result', tool_use_id: 'command', content: 'captured' }],
-        created_at: '2026-09-08T00:00:00Z',
-      },
-    ],
-  });
+  revision = 'repaired-2';
+  history = [
+    {
+      id: 'canonical',
+      role: 'assistant',
+      content: `${a.text}\n\n${b.text}`,
+      parts: [a, tool, b, { type: 'tool_result', tool_use_id: 'command', content: 'captured' }],
+      created_at: '2026-09-08T00:00:00Z',
+    },
+  ];
+  send({ type: 'history_gap', code: 'snapshot_race' });
   await expect(before).toHaveCount(1);
   await expect(before).toHaveAttribute('data-observed-anchor', 'retained');
   await expect(final).toHaveAttribute('data-text-phase', 'final_answer');
   await page.screenshot({ path: testInfo.outputPath('structured-replay.png'), fullPage: true });
-  send({
-    type: 'conversation_history',
-    projection_revision: 'legacy',
-    turns: [
-      {
-        id: 'canonical',
-        role: 'assistant',
-        content: 'Legacy prose remains readable once.',
-        parts: [tool],
-        created_at: '2026-09-08T00:00:00Z',
-      },
-    ],
-  });
+  revision = 'legacy';
+  history = [
+    {
+      id: 'canonical',
+      role: 'assistant',
+      content: 'Legacy prose remains readable once.',
+      parts: [tool],
+      created_at: '2026-09-08T00:00:00Z',
+    },
+  ];
+  send({ type: 'history_gap', code: 'snapshot_race' });
   await expect(page.getByText('Legacy prose remains readable once.', { exact: true })).toHaveCount(
     1,
   );

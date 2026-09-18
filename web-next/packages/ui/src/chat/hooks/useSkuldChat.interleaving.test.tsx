@@ -84,6 +84,39 @@ describe('identified text across browser live/history handoff', () => {
     expect(result.current.messages[0]?.status).toBe('done');
   });
 
+  it('attaches Claude user-envelope image results to the assistant and deduplicates native delivery', async () => {
+    const { result } = renderHook(() => useSkuldChat(url));
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    complete('a', 'Inspecting the generated chart');
+    emit({
+      type: 'content_block_start',
+      turn_id: 'native-turn',
+      content_block: {
+        type: 'tool_use',
+        id: 'image-read',
+        name: 'Read',
+        input: { file_path: '/workspace/chart.png' },
+      },
+    });
+    const image = {
+      type: 'tool_result',
+      tool_use_id: 'image-read',
+      is_image: true,
+      mime_type: 'image/png',
+      img_w: 600,
+      img_h: 400,
+      truncated: true,
+    };
+    emit({ type: 'content_block_start', content_block: image });
+    emit({ type: 'result', turn_id: 'native-turn' });
+    emit({ type: 'user', turn_id: 'native-turn', message: { content: [image] } });
+    const results = result.current.messages
+      .flatMap((message) => message.parts ?? [])
+      .filter((part) => part.type === 'tool_result');
+    expect(results).toEqual([image]);
+    expect(result.current.messages.every((message) => message.role === 'assistant')).toBe(true);
+  });
+
   it('preserves a tools-first turn and an authoritative completion-only answer', async () => {
     const { result } = renderHook(() => useSkuldChat(url));
     await waitFor(() => expect(result.current.historyLoaded).toBe(true));

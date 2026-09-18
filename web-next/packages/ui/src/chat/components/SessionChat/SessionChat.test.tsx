@@ -869,7 +869,7 @@ describe('SessionChat', () => {
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
   });
 
-  it('notifies the backend when internal visibility is toggled', () => {
+  it('keeps image events flowing when execution details are hidden', () => {
     const onSetInternalVisibility = vi.fn();
     render(
       <SessionChat
@@ -883,7 +883,7 @@ describe('SessionChat', () => {
     fireEvent.click(screen.getByTestId('internal-toggle'));
     expect(onSetInternalVisibility).toHaveBeenCalledWith(true);
     fireEvent.click(screen.getByTestId('internal-toggle'));
-    expect(onSetInternalVisibility).toHaveBeenCalledWith(false);
+    expect(onSetInternalVisibility).not.toHaveBeenCalledWith(false);
   });
 
   /* ── MeshCascadePanel ── */

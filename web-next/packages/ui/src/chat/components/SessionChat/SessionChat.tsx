@@ -55,6 +55,7 @@ import type {
 } from '../../types';
 import type { FileAttachment } from '../../hooks/useFileAttachments';
 import type { SlashCommand } from '../../utils/slashCommands';
+import { ToolImageProvider } from '../ToolImages';
 import { HistoryDetailsContext } from '../HistoryDetailsContext';
 import { HistoryMessagePreview } from '../HistoryMessagePreview';
 import './SessionChat.css';
@@ -406,12 +407,13 @@ export function SessionChat({
     setShowInternal(internalVisibility);
   }, [internalVisibility, setShowInternal]);
 
-  const toggleInternal = useCallback(() => {
-    toggleInternalLocal();
-    if (onSetInternalVisibility) {
-      onSetInternalVisibility(!showInternal);
-    }
-  }, [toggleInternalLocal, onSetInternalVisibility, showInternal]);
+  // Tool visibility is presentation-only. Keep receiving tool results so images
+  // can enter the conversation even while their execution details are hidden.
+  // useRoomState still applies room participant/internal-message visibility.
+  useEffect(() => {
+    if (connected) onSetInternalVisibility?.(true);
+  }, [connected, onSetInternalVisibility]);
+  const toggleInternal = toggleInternalLocal;
 
   const [modelInput, setModelInput] = useState('');
   const [showModelInput, setShowModelInput] = useState(false);
@@ -943,129 +945,131 @@ export function SessionChat({
         {hasConversation || isStreaming || hasOlderHistory ? (
           <div className="niuu-chat-messages-container" ref={scrollContainerRef}>
             <HistoryDetailsContext.Provider value={chatEndpoint}>
-              <div className="niuu-chat-messages-inner">
-                {(hasOlderHistory || loadingOlderHistory || olderHistoryError) && (
-                  <div className="niuu-chat-history-status">
-                    {olderHistoryError && <p role="alert">{olderHistoryError}</p>}
-                    <button
-                      type="button"
-                      className="niuu-chat-retry"
-                      disabled={loadingOlderHistory}
-                      onClick={loadOlder}
-                    >
-                      {loadingOlderHistory
-                        ? 'Loading earlier messages…'
-                        : olderHistoryError
-                          ? 'Retry earlier messages'
-                          : 'Load earlier messages'}
-                    </button>
-                  </div>
-                )}
-                {renderedGroups
-                  .map((group) => {
-                    if (group.type === 'thread') {
+              <ToolImageProvider endpoint={chatEndpoint}>
+                <div className="niuu-chat-messages-inner">
+                  {(hasOlderHistory || loadingOlderHistory || olderHistoryError) && (
+                    <div className="niuu-chat-history-status">
+                      {olderHistoryError && <p role="alert">{olderHistoryError}</p>}
+                      <button
+                        type="button"
+                        className="niuu-chat-retry"
+                        disabled={loadingOlderHistory}
+                        onClick={loadOlder}
+                      >
+                        {loadingOlderHistory
+                          ? 'Loading earlier messages…'
+                          : olderHistoryError
+                            ? 'Retry earlier messages'
+                            : 'Load earlier messages'}
+                      </button>
+                    </div>
+                  )}
+                  {renderedGroups
+                    .map((group) => {
+                      if (group.type === 'thread') {
+                        return (
+                          <ThreadGroup
+                            key={group.threadId}
+                            messages={group.messages}
+                            isCollapsed={collapsedThreads.has(group.threadId)}
+                            onToggle={() => toggleThread(group.threadId)}
+                          />
+                        );
+                      }
+
+                      const msg = group.message;
+                      if (msg.historyPreview)
+                        return <HistoryMessagePreview key={msg.id} message={msg} />;
+                      if (msg.metadata?.messageType === 'system') {
+                        return <SystemMessage key={messageRenderKey(msg)} message={msg} />;
+                      }
+
+                      if ((isRoomMode && msg.participant) || isRoomSession) {
+                        return (
+                          <div
+                            key={messageRenderKey(msg)}
+                            id={`msg-${msg.id}`}
+                            data-highlighted={highlightedMsgId === msg.id || undefined}
+                          >
+                            <RoomMessage
+                              message={msg}
+                              onSelectAgent={handleSelectAgent}
+                              selectedAgentId={selectedAgentId}
+                              onShowDetail={msg.participant ? handleShowDetail : undefined}
+                              onCopy={handleCopy}
+                              onRegenerate={onRegenerate}
+                              onBookmark={onBookmark}
+                              bookmarked={(() => {
+                                try {
+                                  return localStorage.getItem(`bookmark:${msg.id}`) === '1';
+                                } catch {
+                                  return false;
+                                }
+                              })()}
+                            />
+                          </div>
+                        );
+                      }
+
+                      if (msg.role === 'user') {
+                        return <UserMessage key={messageRenderKey(msg)} message={msg} />;
+                      }
+                      if (msg.status === 'running' && !hasNativeMessageParts(msg.parts)) {
+                        return (
+                          <StreamingMessage
+                            key={messageRenderKey(msg)}
+                            content={msg.content}
+                            parts={msg.parts}
+                          />
+                        );
+                      }
                       return (
-                        <ThreadGroup
-                          key={group.threadId}
-                          messages={group.messages}
-                          isCollapsed={collapsedThreads.has(group.threadId)}
-                          onToggle={() => toggleThread(group.threadId)}
+                        <AssistantMessage
+                          key={messageRenderKey(msg)}
+                          message={msg}
+                          showTokenUsage={showTokenUsage}
+                          onCopy={handleCopy}
+                          onRegenerate={onRegenerate}
+                          onBookmark={onBookmark}
+                          bookmarked={(() => {
+                            try {
+                              return localStorage.getItem(`bookmark:${msg.id}`) === '1';
+                            } catch {
+                              return false;
+                            }
+                          })()}
                         />
                       );
-                    }
-
-                    const msg = group.message;
-                    if (msg.historyPreview)
-                      return <HistoryMessagePreview key={msg.id} message={msg} />;
-                    if (msg.metadata?.messageType === 'system') {
-                      return <SystemMessage key={messageRenderKey(msg)} message={msg} />;
-                    }
-
-                    if ((isRoomMode && msg.participant) || isRoomSession) {
+                    })
+                    .map((element, index) => {
+                      const group = renderedGroups[index]!;
+                      const id = group.type === 'single' ? group.message.id : group.threadId;
                       return (
                         <div
-                          key={messageRenderKey(msg)}
-                          id={`msg-${msg.id}`}
-                          data-highlighted={highlightedMsgId === msg.id || undefined}
+                          key={group.type === 'single' ? messageRenderKey(group.message) : id}
+                          data-history-id={id}
                         >
-                          <RoomMessage
-                            message={msg}
-                            onSelectAgent={handleSelectAgent}
-                            selectedAgentId={selectedAgentId}
-                            onShowDetail={msg.participant ? handleShowDetail : undefined}
-                            onCopy={handleCopy}
-                            onRegenerate={onRegenerate}
-                            onBookmark={onBookmark}
-                            bookmarked={(() => {
-                              try {
-                                return localStorage.getItem(`bookmark:${msg.id}`) === '1';
-                              } catch {
-                                return false;
-                              }
-                            })()}
-                          />
+                          {element}
                         </div>
                       );
-                    }
+                    })}
 
-                    if (msg.role === 'user') {
-                      return <UserMessage key={messageRenderKey(msg)} message={msg} />;
-                    }
-                    if (msg.status === 'running' && !hasNativeMessageParts(msg.parts)) {
-                      return (
-                        <StreamingMessage
-                          key={messageRenderKey(msg)}
-                          content={msg.content}
-                          parts={msg.parts}
-                        />
-                      );
-                    }
-                    return (
-                      <AssistantMessage
-                        key={messageRenderKey(msg)}
-                        message={msg}
-                        showTokenUsage={showTokenUsage}
-                        onCopy={handleCopy}
-                        onRegenerate={onRegenerate}
-                        onBookmark={onBookmark}
-                        bookmarked={(() => {
-                          try {
-                            return localStorage.getItem(`bookmark:${msg.id}`) === '1';
-                          } catch {
-                            return false;
-                          }
-                        })()}
-                      />
-                    );
-                  })
-                  .map((element, index) => {
-                    const group = renderedGroups[index]!;
-                    const id = group.type === 'single' ? group.message.id : group.threadId;
-                    return (
-                      <div
-                        key={group.type === 'single' ? messageRenderKey(group.message) : id}
-                        data-history-id={id}
-                      >
-                        {element}
-                      </div>
-                    );
-                  })}
+                  {/* Streaming indicator */}
+                  {isStreaming && (
+                    <StreamingMessage
+                      content={streamingContent ?? ''}
+                      parts={
+                        showInternal
+                          ? streamingParts
+                          : streamingParts && hideToolParts(streamingParts)
+                      }
+                      model={streamingModel}
+                    />
+                  )}
 
-                {/* Streaming indicator */}
-                {isStreaming && (
-                  <StreamingMessage
-                    content={streamingContent ?? ''}
-                    parts={
-                      showInternal
-                        ? streamingParts
-                        : streamingParts && hideToolParts(streamingParts)
-                    }
-                    model={streamingModel}
-                  />
-                )}
-
-                <div ref={messagesEndRef} />
-              </div>
+                  <div ref={messagesEndRef} />
+                </div>
+              </ToolImageProvider>
             </HistoryDetailsContext.Provider>
 
             {showScrollBtn && (

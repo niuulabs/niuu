@@ -89,6 +89,16 @@ type CliStreamEvent = {
       index?: number;
       name?: string;
       input?: Record<string, unknown>;
+      tool_use_id?: string;
+      content?: unknown;
+      is_error?: boolean;
+      truncated?: boolean;
+      preview?: string;
+      is_image?: boolean;
+      mime_type?: string;
+      img_w?: number;
+      img_h?: number;
+      image_previews?: ChatMessagePart['image_previews'];
     }>;
   };
   content_block?: {
@@ -102,7 +112,15 @@ type CliStreamEvent = {
     name?: string;
     tool_use_id?: string;
     input?: Record<string, unknown>;
-    content?: string;
+    content?: unknown;
+    is_error?: boolean;
+    is_image?: boolean;
+    truncated?: boolean;
+    preview?: string;
+    mime_type?: string;
+    img_w?: number;
+    img_h?: number;
+    image_previews?: ChatMessagePart['image_previews'];
   };
   delta?: {
     type?: string;
@@ -1354,7 +1372,8 @@ export function useSkuldChat(
         if (
           event.turn_id &&
           closedNativeTurnsRef.current.has(event.turn_id) &&
-          event.type !== 'conversation_history'
+          event.type !== 'conversation_history' &&
+          event.type !== 'user'
         )
           continue;
         if (
@@ -1457,6 +1476,45 @@ export function useSkuldChat(
           continue;
         }
         switch (event.type) {
+          case 'user': {
+            // Claude and Codex emit tool results in a user envelope. They are
+            // tool activity belonging to the assistant, never a new human prompt.
+            const results =
+              event.message?.content?.filter(
+                (block) => block.type === 'tool_result' && block.tool_use_id,
+              ) ?? [];
+            for (const block of results) {
+              const part: ChatMessagePart = { ...block, type: 'tool_result' };
+              const matchesStream = streamingPartsRef.current.some(
+                (existing) =>
+                  existing.id === block.tool_use_id || existing.tool_use_id === block.tool_use_id,
+              );
+              if (matchesStream) {
+                streamingPartsRef.current = upsertToolPart(streamingPartsRef.current, part);
+                setStreamingParts([...streamingPartsRef.current]);
+                syncStreamingMessage();
+              } else {
+                setMessages((current) => {
+                  const index = current.findLastIndex(
+                    (message) =>
+                      message.role === 'assistant' &&
+                      message.parts?.some(
+                        (existing) =>
+                          existing.id === block.tool_use_id ||
+                          existing.tool_use_id === block.tool_use_id,
+                      ),
+                  );
+                  if (index < 0) return current;
+                  return current.map((message, i) =>
+                    i === index
+                      ? { ...message, parts: upsertToolPart(message.parts ?? [], part) }
+                      : message,
+                  );
+                });
+              }
+            }
+            break;
+          }
           case 'assistant': {
             const explicitParticipant = parseParticipantMeta(event.participant);
             if (explicitParticipant) {
@@ -1605,9 +1663,9 @@ export function useSkuldChat(
               const toolUseId = event.content_block?.tool_use_id ?? '';
               if (toolUseId) {
                 streamingPartsRef.current = upsertToolPart(streamingPartsRef.current, {
+                  ...event.content_block,
                   type: 'tool_result',
                   tool_use_id: toolUseId,
-                  content: event.content_block?.content ?? '',
                 });
                 setStreamingParts([...streamingPartsRef.current]);
                 syncStreamingMessage();
@@ -2478,6 +2536,11 @@ export function useSkuldChat(
     [agentEvents],
   );
 
+  const sendSetInternalVisibility = useCallback(
+    (visible: boolean) => sendJson({ type: 'set_internal_visibility', visible }),
+    [sendJson],
+  );
+
   return {
     messages,
     streamingContent: streamingContent || undefined,
@@ -2509,8 +2572,7 @@ export function useSkuldChat(
     sendSetThinkingTokens: (tokens: number) =>
       sendJson({ type: 'set_max_thinking_tokens', max_thinking_tokens: tokens }),
     sendRewindFiles: () => sendJson({ type: 'rewind_files' }),
-    sendSetInternalVisibility: (visible: boolean) =>
-      sendJson({ type: 'set_internal_visibility', visible }),
+    sendSetInternalVisibility,
     clearMessages,
   };
 }

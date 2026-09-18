@@ -3650,11 +3650,6 @@ function LiveSessionDetailPageInner({
   const { enabled: enabledTabs } = useSessionTabs();
   const tabs = ALL_TABS.filter((tab) => enabledTabs.has(tab.id));
 
-  const { connected: chatConnected, sendSetInternalVisibility } = chat;
-  useEffect(() => {
-    if (isReady && chatConnected) sendSetInternalVisibility(showInternalMessages);
-  }, [isReady, chatConnected, sendSetInternalVisibility, showInternalMessages]);
-
   const handleToggleInternalMessages = useCallback(() => {
     const next = !showInternalMessages;
     setToolVisibility(next ? '1' : '0');
@@ -4129,6 +4124,7 @@ function LiveSessionDetailPageInner({
                   internalVisibility={showInternalMessages}
                   showTokenUsage={showTokenUsage}
                   messages={replayMessages}
+                  chatEndpoint={chatEndpoint}
                   connected={false}
                   historyLoaded={!transcriptQuery.isLoading}
                   participants={replayParticipants}

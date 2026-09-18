@@ -1329,6 +1329,7 @@ def test_tool_result_preview_byte_proxies_jpeg_from_owner() -> None:
     response = client.get(
         "/api/v1/forge/sessions/s2/tool-result/tu-img/preview",
         headers=_headers(),
+        params={"image_index": 1},
     )
 
     assert response.status_code == 200
@@ -1336,6 +1337,7 @@ def test_tool_result_preview_byte_proxies_jpeg_from_owner() -> None:
     assert response.headers["content-type"] == "image/jpeg"
     assert "immutable" in response.headers["cache-control"]
     assert route.called
+    assert route.calls[0].request.url.params["image_index"] == "1"
 
 
 @respx.mock

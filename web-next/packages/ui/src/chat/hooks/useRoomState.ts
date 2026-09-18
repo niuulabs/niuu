@@ -1,5 +1,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import type { ChatMessage, ChatMessagePart, RoomParticipant } from '../types';
+import { toolImages } from '../toolImages';
+import type { ToolResultBlock } from '../components/ToolBlock/groupContentBlocks';
 import { isPresentedFileTool } from '../components/ToolBlock/groupContentBlocks';
 
 export interface UseRoomStateReturn {
@@ -33,10 +35,18 @@ function isVisibleMessage(msg: ChatMessage): boolean {
 
 /** Keep prose boundaries without retaining hidden tool input or output. */
 export function hideToolParts(parts: readonly ChatMessagePart[]): ChatMessagePart[] {
+  const imageIds = new Set(
+    parts
+      .filter(
+        (part) => part.type === 'tool_result' && toolImages(part as ToolResultBlock).length > 0,
+      )
+      .map((part) => part.tool_use_id),
+  );
   const kept: ChatMessagePart[] = [];
   for (const part of parts) {
     const hidden =
       INTERNAL_PART_TYPES.has(part.type) &&
+      !imageIds.has(part.type === 'tool_use' ? part.id : part.tool_use_id) &&
       !(part.type === 'tool_use' && part.name && isPresentedFileTool(part.name));
     if (!hidden) kept.push(part);
     else if (kept.at(-1)?.type !== 'tool_separator') {

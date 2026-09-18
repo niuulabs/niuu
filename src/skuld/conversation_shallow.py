@@ -25,6 +25,7 @@ import json
 from typing import Any
 
 from niuu.domain.transcript_reducer import TOOL_ENDED_AT
+from skuld.tool_images import image_metadata
 
 SHALLOW_DETAIL = "shallow"
 """``?detail=shallow`` query-param value that selects elided serialization."""
@@ -96,30 +97,16 @@ def _content_image_info(content: Any) -> tuple[bool, str | None, int | None, int
     carry an image hint so the client can render a thumbnail chip WITHOUT fetching the
     (always-elided, >1 KB) base64 payload.
     """
-    parsed = content
-    if isinstance(content, str):
-        try:
-            parsed = json.loads(content)
-        except (TypeError, ValueError):
-            return (False, None, None, None)
-    if isinstance(parsed, dict) and parsed.get("type") == "image":
-        file = parsed.get("file")
-        if isinstance(file, dict):
-            mime = file.get("type")
-            dims = file.get("dimensions")
-            width = height = None
-            if isinstance(dims, dict):
-                width = _coerce_int(dims.get("displayWidth"))
-                height = _coerce_int(dims.get("displayHeight"))
-            return (True, mime if isinstance(mime, str) else None, width, height)
-        return (True, None, None, None)
-    if isinstance(parsed, list):
-        for item in parsed:
-            if isinstance(item, dict) and item.get("type") == "image":
-                source = item.get("source")
-                mime = source.get("media_type") if isinstance(source, dict) else None
-                return (True, mime if isinstance(mime, str) else None, None, None)
-    return (False, None, None, None)
+    images = image_metadata(content)
+    if not images:
+        return (False, None, None, None)
+    first = images[0]
+    return (
+        True,
+        first.get("mime_type"),
+        _coerce_int(first.get("img_w")),
+        _coerce_int(first.get("img_h")),
+    )
 
 
 def is_elided_block(block: Any) -> bool:
@@ -274,9 +261,12 @@ def elide_tool_result_block(block: Any, *, inline_limit: int = INLINE_BYTE_LIMIT
     # placeholder above carries no type signal (the preview is a truncated base64 blob). Stamp
     # is_image / mime_type / dimensions so the client can hoist a thumbnail chip and size it by
     # aspect ratio WITHOUT fetching the payload. Additive — omitted entirely for non-images.
-    is_image, mime, width, height = _content_image_info(content)
-    if is_image:
+    images = image_metadata(content)
+    if images:
+        first = images[0]
+        mime, width, height = first.get("mime_type"), first.get("img_w"), first.get("img_h")
         placeholder["is_image"] = True
+        placeholder["image_previews"] = images
         if mime:
             placeholder["mime_type"] = mime
         if width is not None:

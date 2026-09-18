@@ -83,3 +83,6 @@ export { ImagePreview } from './components/ImagePreview';
 
 export { externalResource } from './components/ConversationResources';
 export { ExternalLinkPreview } from './components/ExternalLinkPreview';
+
+export { ToolImagePreview } from './components/ToolImagePreview';
+export type { ToolImageResource } from './components/ConversationResources';

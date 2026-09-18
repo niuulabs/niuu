@@ -45,7 +45,12 @@ interface ToolDetailProps {
 function ToolDetail({ block, result }: ToolDetailProps) {
   const [showFull, setShowFull] = useState(false);
   const { name, input } = block;
-  const output = result?.content ?? '';
+  const output =
+    typeof result?.content === 'string'
+      ? result.content
+      : result?.content == null
+        ? ''
+        : JSON.stringify(result.content, null, 2);
   const outputLines = output.split('\n');
   const isTruncated = outputLines.length > MAX_OUTPUT_LINES && !showFull;
   const displayedOutput = isTruncated

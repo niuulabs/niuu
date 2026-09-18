@@ -28,12 +28,13 @@ import base64
 import binascii
 import hashlib
 import io
-import json
 import logging
 import os
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
+from skuld.tool_images import image_payloads
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ class PreviewUnavailableError(RuntimeError):
     """Pillow is not installed — previews cannot be generated (map to HTTP 501)."""
 
 
-def extract_image_bytes(content: Any) -> tuple[bytes, str] | None:
+def extract_image_bytes(content: Any, *, image_index: int = 0) -> tuple[bytes, str] | None:
     """Return ``(raw_bytes, mime)`` when a tool_result ``content`` is an image.
 
     Accepts the Skuld ``Read`` envelope — a JSON STRING (or already-parsed dict)
@@ -76,27 +77,12 @@ def extract_image_bytes(content: Any) -> tuple[bytes, str] | None:
     ``ValueError`` (via ``binascii.Error``) when the envelope IS an image but its
     base64 payload is corrupt — the caller maps that to 404, not a 500.
     """
-    parsed = content
-    if isinstance(content, str):
-        try:
-            parsed = json.loads(content)
-        except (TypeError, ValueError):
-            return None
-    b64: Any = None
-    mime: Any = None
-    if isinstance(parsed, dict) and parsed.get("type") == "image":
-        file = parsed.get("file")
-        if isinstance(file, dict):
-            b64 = file.get("base64")
-            mime = file.get("type")
-    elif isinstance(parsed, list):
-        for item in parsed:
-            if isinstance(item, dict) and item.get("type") == "image":
-                source = item.get("source")
-                if isinstance(source, dict):
-                    b64 = source.get("data")
-                    mime = source.get("media_type")
-                break
+    images = image_payloads(content)
+    if not 0 <= image_index < len(images):
+        return None
+    image = images[image_index]
+    b64 = image.get("data")
+    mime = image.get("mime_type")
     if not isinstance(b64, str) or not b64:
         return None
     try:
