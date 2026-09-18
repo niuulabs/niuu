@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import re
 import stat
 import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = ROOT / "scripts" / "install.sh"
+NVIDIA_TOOLKIT_GUIDE = (
+    "https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html"
+)
 
 FAKE_DOCKER = """\
 case "$1" in
@@ -92,7 +96,8 @@ def test_without_the_toolkit_it_points_at_the_install_guide(tmp_path: Path) -> N
     result = host.run()
     assert result.returncode == 1
     assert "Install the NVIDIA Container Toolkit" in result.stderr
-    assert "docs.nvidia.com" in result.stderr
+    # The exact guide, not merely something mentioning the NVIDIA docs host.
+    assert re.findall(r"https://[^\s)]+", result.stderr) == [NVIDIA_TOOLKIT_GUIDE]
     assert not host.sudo_ran()
     assert not host.installed()
 

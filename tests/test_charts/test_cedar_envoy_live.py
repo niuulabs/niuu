@@ -145,6 +145,7 @@ async def test_real_envoy_enforces_jwt_and_cedar_before_upstream(tmp_path, chart
 
     jwks_server = ThreadingHTTPServer(("0.0.0.0", 0), JWKS)
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.minimum_version = ssl.TLSVersion.TLSv1_2
     tls.load_cert_chain(cert_path, key_path)
     jwks_server.socket = tls.wrap_socket(jwks_server.socket, server_side=True)
     jwks_thread = threading.Thread(target=jwks_server.serve_forever, daemon=True)
