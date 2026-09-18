@@ -1110,6 +1110,21 @@ def create_volundr_router(
         request: Request,
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
+        selected = request.query_params.get("instance_id")
+        if selected:
+            instance = await _resolve_target_instance(service, principal, selected)
+            response = await _request_remote(
+                instance,
+                request,
+                method="GET",
+                path="/stats",
+                embedded_app=embedded_forge_app,
+            )
+            _ensure_remote_success(response)
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise HTTPException(status_code=502, detail="Unexpected Forge metrics response")
+            return _with_instance(payload, instance, rebase_chat_endpoint=False)
         instances = await _visible_instances(service, principal)
         results = await asyncio.gather(
             *[
@@ -1155,6 +1170,22 @@ def create_volundr_router(
         request: Request,
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
+        selected = request.query_params.get("instance_id")
+        if selected:
+            instance = await _resolve_target_instance(service, principal, selected)
+            response = await _request_remote(
+                instance,
+                request,
+                method="GET",
+                path="/resources",
+                remote_prefix="/api/v1/volundr",
+                embedded_app=embedded_forge_app,
+            )
+            _ensure_remote_success(response)
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise HTTPException(status_code=502, detail="Unexpected Forge resources response")
+            return _merge_cluster_resources([payload], [instance])
         instances = await _visible_instances(service, principal)
         results = await asyncio.gather(
             *[
