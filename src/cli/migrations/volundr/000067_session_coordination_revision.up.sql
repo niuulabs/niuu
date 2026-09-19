@@ -1,0 +1,1 @@
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS coordination_revision BIGINT NOT NULL DEFAULT 0;

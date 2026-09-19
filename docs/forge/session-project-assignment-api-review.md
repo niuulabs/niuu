@@ -94,7 +94,7 @@ now expose `project_assignment_enabled` and honor the selected Guild host.
 - An atomic repository operation compares `coordination_revision` and owner/tenant
   scope, persists the relationship and increments the revision. Ordinary lifecycle
   updates preserve membership and cannot restore a stale project brief. Migration
-  `000067` adds the revision with default zero in both migration distributions.
+  `000067` adds the revision with default zero in the source, CLI bundle and Helm chart.
 - A successful write emits the normal session-updated event. Historical receipts
   and launch dispatch identities retain their original project provenance.
 - Cross-host registration and assignment are not one distributed transaction. An
