@@ -51,14 +51,24 @@ Startup and chat/discovery share the input lock. Chat is delivered only after th
 normal prompt appears; a timeout reports a delivery failure with the input unsent,
 instead of pasting into the startup screen. The existing
 `SKULD__TMUX_REPL_READY_TIMEOUT_SECONDS` controls the deadline (12 seconds by default).
+If a hook-backed question or permission request arrives during startup, attachment
+can finish so the existing question UI can answer it. This is a waiting-for-answer
+state, not chat readiness: chat remains blocked and any seed stays unsent until
+startup is retried after the question resolves.
 The tests cover delayed rendering, both menu orders, an existing selection,
 concurrent startup/chat, attachment, stuck screens, mismatched folders, and a
-following login menu. The real tmux test uses an isolated fake CLI with a working
+login menu before or after trust. A selection chevron followed by an option is
+never a ready prompt, including while the trust screen is partially rendered.
+An explicit `SKULD__TMUX_REPL_READY_MARKER` remains required after confirmation
+when configured. The real tmux test uses an isolated fake CLI with a working
 trust widget and verifies the subsequent chat result; it does not call Claude.
 
 Existing running gateways keep their loaded transport code. Deploying the change
 affects gateways started from the updated source; adopting it in a running session
 requires that session's normal controlled restart.
+
+General terminal choices without structured Claude hooks are deferred; see the
+[future terminal-question requirement](../forge/claude-terminal-questions-future.md).
 
 ## Live Claude Smoke
 

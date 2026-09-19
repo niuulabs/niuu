@@ -158,6 +158,106 @@ async def test_incomplete_trust_menu_waits_for_selection_before_enter(tmp_path):
         await transport.stop()
 
 
+async def test_partial_trust_screen_does_not_look_ready_before_yes_renders(tmp_path):
+    partial = f"Accessing workspace:\n\n{tmp_path}\n\n❯ No, exit"
+    transport = StartupTransport(
+        tmp_path, [partial, trust_screen(tmp_path), trust_screen(tmp_path, yes=True), "❯"]
+    )
+    try:
+        await transport.start()
+        assert transport.keys == ["Down", "Enter"]
+        assert transport._startup_ready
+        assert not transport.screens
+    finally:
+        await transport.stop()
+
+
+async def test_startup_menu_without_trust_does_not_receive_seed_or_chat(tmp_path):
+    transport = StartupTransport(
+        tmp_path,
+        ["Choose login method\n❯ Claude account\n  API key"],
+        initial_prompt="Review this",
+    )
+    try:
+        with pytest.raises(RuntimeError, match="not ready for input"):
+            await transport.start()
+        with pytest.raises(RuntimeError, match="not ready for input"):
+            await transport.send_message("Still must remain unsent")
+        assert transport.keys == []
+        assert not transport.loaded_buffers
+        assert not transport._initial_prompt_sent
+        assert not transport._startup_ready
+    finally:
+        await transport.stop()
+
+
+async def test_custom_ready_marker_is_required_after_trust(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKULD__TMUX_REPL_READY_MARKER", "Ready for input")
+    transport = StartupTransport(tmp_path, [trust_screen(tmp_path, yes=True), "❯"])
+    try:
+        with pytest.raises(RuntimeError, match="Workspace trust did not complete"):
+            await transport.start()
+        assert transport.keys == ["Enter"]
+        transport.screens.append("Ready for input")
+        await transport.start()
+        assert transport._startup_ready
+        assert transport.keys == ["Enter"]
+    finally:
+        await transport.stop()
+
+
+@pytest.mark.parametrize("seed", ["", "Review this"])
+@pytest.mark.parametrize("pane", ["❯", "Which database?\n❯ 1. Postgres\n  2. SQLite"])
+async def test_known_question_during_startup_allows_connection_but_blocks_chat(
+    tmp_path, monkeypatch, seed, pane
+):
+    transport = StartupTransport(tmp_path, [pane], initial_prompt=seed)
+    capture = transport._capture_pane_text
+    question_received = False
+
+    async def receive_question(pane_id=None):
+        nonlocal question_received
+        text = await capture(pane_id)
+        if not question_received:
+            question_received = True
+            await transport.handle_claude_hook(
+                {
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "AskUserQuestion",
+                    "tool_input": {
+                        "questions": [
+                            {
+                                "question": "Which database?",
+                                "options": [{"label": "Postgres"}, {"label": "SQLite"}],
+                            }
+                        ]
+                    },
+                }
+            )
+        return text
+
+    monkeypatch.setattr(transport, "_capture_pane_text", receive_question)
+    try:
+        await transport.start()
+        assert transport._pending_tty_prompts
+        assert not transport._startup_ready
+        assert not transport._send_lock.locked()
+        with pytest.raises(RuntimeError, match="native control"):
+            await transport.send_message("Must remain unsent")
+        assert transport.keys == []
+        assert not transport.loaded_buffers
+        assert not transport._initial_prompt_sent
+
+        # Once the native question resolves, startup can be retried normally.
+        transport._pending_tty_prompts.clear()
+        transport.screens.append("❯")
+        await transport.start()
+        assert transport._startup_ready
+        assert transport.loaded_buffers == ([seed] if seed else [])
+    finally:
+        await transport.stop()
+
+
 async def test_trust_confirmation_does_not_answer_a_following_startup_menu(tmp_path):
     transport = StartupTransport(
         tmp_path,
