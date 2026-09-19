@@ -128,6 +128,39 @@ describe('session file previews', () => {
     await screen.findByRole('button', { name: 'Download', exact: true });
     expect(screen.getByRole('img', { name: 'diagram.png' })).toBeInTheDocument();
   });
+  it('reports an image outside the workspace instead of displaying a loading placeholder', () => {
+    const download = vi.fn();
+    setup(download, '![Screenshot](/home/thor/other-worktree/screenshot.png)');
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Screenshot: Image is unavailable in this session’s workspace.',
+    );
+    expect(screen.queryByText('Loading image…')).not.toBeInTheDocument();
+    expect(download).not.toHaveBeenCalled();
+  });
+  it('loads image bytes asynchronously through the owning session and retries a failed download', async () => {
+    let resolve!: (value: Blob) => void;
+    const download = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Forge is temporarily unreachable'))
+      .mockImplementationOnce(() => new Promise<Blob>((done) => (resolve = done)));
+    const { unmount } = setup(download, '![Screenshot](docs/landing-forge.png)');
+    expect(screen.getByRole('status')).toHaveTextContent('Loading image');
+    await screen.findByText(/Forge is temporarily unreachable/);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry image' }));
+    expect(screen.getByRole('status')).toHaveTextContent('Loading image');
+    expect(download).toHaveBeenLastCalledWith(
+      'owning-session',
+      '/workspace/docs/landing-forge.png',
+      expect.any(AbortSignal),
+    );
+    resolve(blob('image bytes', 'application/octet-stream'));
+    expect(await screen.findByRole('img', { name: 'Screenshot' })).toHaveAttribute(
+      'src',
+      'blob:review-file',
+    );
+    unmount();
+    expect(revokeUrl).toHaveBeenCalledWith('blob:review-file');
+  });
   it('sandboxes HTML without scripts and offers literal source, with a bounded text preview', async () => {
     const download = vi.fn().mockResolvedValue(blob('<script>bad()</script>', 'text/html'));
     const first = setup(download, '[HTML](./page.html)');

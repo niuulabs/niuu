@@ -193,14 +193,19 @@ function imageLinkName(href: string): string {
 
 export function ConversationImage({ href, alt }: { href: string; alt: string }) {
   const [imageOpen, setImageOpen] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const port = useContext(Context);
   const [loaded, setLoaded] = useState<{
     href: string;
     port: ConversationResourcePort | null;
+    attempt: number;
     url?: string;
     error?: string;
   }>();
-  const current = loaded?.href === href && loaded.port === port ? loaded : undefined;
+  const current =
+    loaded?.href === href && loaded.port === port && loaded.attempt === attempt
+      ? loaded
+      : undefined;
   const localUrl = current?.url;
   const error = current?.error;
   const resolved = port?.resolve(href);
@@ -220,13 +225,14 @@ export function ConversationImage({ href, alt }: { href: string; alt: string }) 
       .then((blob) => {
         if (abort.signal.aborted) return;
         objectUrl = URL.createObjectURL(blob);
-        setLoaded({ href, port, url: objectUrl });
+        setLoaded({ href, port, attempt, url: objectUrl });
       })
       .catch((error: unknown) => {
         if (!abort.signal.aborted)
           setLoaded({
             href,
             port,
+            attempt,
             error: error instanceof Error ? error.message : 'Image unavailable',
           });
       });
@@ -234,28 +240,35 @@ export function ConversationImage({ href, alt }: { href: string; alt: string }) 
       abort.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [port, href, resourcePath]);
+  }, [port, href, resourcePath, attempt]);
 
   const src = imageExternal ?? localUrl;
-  if (error)
+  const unavailable = !imageExternal && (!port || !resourcePath);
+  if (error || unavailable)
     return (
-      <span role="status" className="niuu-chat-resource-error">
-        {alt || 'Image'}: {error}
+      <span role="status" className="niuu-chat-resource-error" title={href}>
+        {alt || 'Image'}: {error || 'Image is unavailable in this session’s workspace.'}
+        {!unavailable && (
+          <button type="button" onClick={() => setAttempt((value) => value + 1)}>
+            Retry image
+          </button>
+        )}
       </span>
     );
   if (!src)
     return (
-      <span className="niuu-chat-resource-loading">
+      <span role="status" className="niuu-chat-resource-loading">
         <ImageIcon size={16} />
-        {resource ? 'Loading image…' : alt || 'Image unavailable'}
+        Loading image…
       </span>
     );
   const content = (
     <img
+      key={attempt}
       src={src}
       alt={alt}
       loading="lazy"
-      onError={() => setLoaded({ href, port, error: 'Could not load image' })}
+      onError={() => setLoaded({ href, port, attempt, error: 'Could not load image' })}
     />
   );
   if (resource && port)

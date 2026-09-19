@@ -19,6 +19,11 @@
 .niuu-chat-resource-error {
   color: var(--color-critical);
 }
+.niuu-chat-resource-error button {
+  margin-inline-start: var(--space-2, 8px);
+  color: var(--color-brand);
+  text-decoration: underline;
+}
 .niuu-chat-presented-file {
   display: flex;
   align-items: flex-start;

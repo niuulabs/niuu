@@ -1,5 +1,31 @@
 # Tool images in the web conversation
 
+## September 19 inline screenshot diagnosis
+
+Lexi iOS `ForgeFileService.downloadURL` uses
+`/s/{session}/api/files/download?root=workspace&path={relativePath}`. Its
+`LocalPath.workspaceRelative` rejects paths outside the session workspace. The
+web uses the equivalent authenticated Forge facade route
+`/api/v1/forge/sessions/{session}/files/download` and asynchronously renders its
+response as a Blob URL. Both routes returned the same 91,182-byte screenshot in
+the live Thor check, including the broker's `application/octet-stream` MIME type.
+
+The broken example linked the sibling UI worktree while the session workspace
+was `/home/thor/repos/niuu`. It was correctly rejected, but the component displayed
+the image alt text with a loading icon indefinitely. Unresolvable images now show
+an explicit unavailable state; failed downloads and image decoding offer retry.
+The corrected workspace-relative `docs/site/images/landing/landing-forge.png`
+link rendered at its natural 1440 × 1000 size in the browser and opened the central
+image viewer with zoom and download enabled. The browser check issued only reads
+and blocked outgoing WebSocket controls.
+
+The tool-output issue is separate: the native Codex rollout contains the
+`input_image`, but the retained running gateway's tool-result response contains
+only the 47-character text envelope. The mixed-image preservation fix below is
+already in this branch; it still requires an updated session gateway. This UI
+fix does not restart gateways, recover discarded tool images, broaden workspace
+access, or remap an outside path to a different file with the same name.
+
 Reviewed September 18, 2026. Web branch: `forge/ux-improvement`. Native reference:
 Lexi iOS `main` at `9980a1ab`. This is a source review, not a new device test.
 
