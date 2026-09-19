@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { RenameSession } from './RenameSession';
+import { AssignSessionProject } from './AssignSessionProject';
 import { PinSession } from './PinSession';
 import { useNavigate } from '@tanstack/react-router';
 import { useService } from '@niuulabs/plugin-sdk';
@@ -3863,6 +3864,11 @@ function LiveSessionDetailPageInner({
                   <>
                     <RenameSession sessionId={sessionId} name={sessionName} />
                     <PinSession sessionId={sessionId} name={sessionName} />
+                    <AssignSessionProject
+                      sessionId={sessionId}
+                      name={sessionName}
+                      instanceId={liveSession.instanceId}
+                    />
                   </>
                 )}
                 {showDetails && sessionHandle ? (

@@ -68,6 +68,50 @@ it('renames through the Forge PUT contract and normalizes the returned session',
   expect(updated).toMatchObject({ id: 'sess-1', name: 'review-renamed', status: 'running' });
 });
 
+it('assigns a project from a different host while keeping the session owner selector', async () => {
+  const client = makeClient();
+  const service = buildVolundrHttpAdapter(client);
+  client.get.mockResolvedValue({ session_id: 'worker', revision: 0, coordination: null });
+  expect(await service.getSessionProject('worker', { instanceId: 'thor' })).toMatchObject({
+    projectId: null,
+    revision: 0,
+  });
+  expect(client.get).toHaveBeenLastCalledWith('/sessions/worker/project?instance_id=thor', {
+    signal: undefined,
+  });
+  client.put.mockResolvedValue({
+    session_id: 'worker',
+    revision: 1,
+    coordination: { project_id: 'kit', role: 'worker' },
+  });
+  expect(
+    await service.assignSessionProject(
+      'worker',
+      { projectId: 'kit', projectInstanceId: 'build', expectedRevision: 0 },
+      { instanceId: 'thor' },
+    ),
+  ).toMatchObject({ projectId: 'kit', revision: 1 });
+  expect(client.put).toHaveBeenLastCalledWith('/sessions/worker/project?instance_id=thor', {
+    project_id: 'kit',
+    project_instance_id: 'build',
+    expected_revision: 0,
+  });
+  client.get.mockResolvedValue([]);
+  const signal = new AbortController().signal;
+  await service.getProjects({ instanceId: 'build', signal });
+  expect(client.get).toHaveBeenLastCalledWith('/projects?instance_id=build', { signal });
+  client.get.mockResolvedValue({});
+  await expect(service.getSessionProject('worker')).rejects.toThrow('versioned project assignment');
+  client.put.mockRejectedValue(new Error('Project host unavailable'));
+  await expect(
+    service.assignSessionProject('worker', {
+      projectId: 'kit',
+      projectInstanceId: 'build',
+      expectedRevision: 0,
+    }),
+  ).rejects.toThrow('Project host unavailable');
+});
+
 function makeClientWithBase(basePath: string) {
   return {
     ...makeClient(),

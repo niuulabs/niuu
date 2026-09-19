@@ -354,6 +354,7 @@ class Session(BaseModel):
     """A Claude Code coding session."""
 
     coordination: SessionCoordination | None = None
+    coordination_revision: int = Field(default=0, ge=0)
 
     id: UUID = Field(
         default_factory=uuid4,

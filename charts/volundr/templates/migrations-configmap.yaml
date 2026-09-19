@@ -1779,4 +1779,9 @@ data:
         }
       ]
     }
+  000067_session_coordination_revision.up.sql: |
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS coordination_revision BIGINT NOT NULL DEFAULT 0;
+
+  000067_session_coordination_revision.down.sql: |
+    ALTER TABLE sessions DROP COLUMN IF EXISTS coordination_revision;
 {{- end }}

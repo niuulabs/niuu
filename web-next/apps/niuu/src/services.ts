@@ -918,7 +918,10 @@ function buildSplitVolundrService(
     getActiveSessions: () => forge.getActiveSessions(),
     getStats: (options) => forge.getStats(options),
     getRepos: () => forge.getRepos(),
-    getProjects: () => forge.getProjects(),
+    getProjects: (options) => forge.getProjects(options),
+    getSessionProject: (id, options) => forge.getSessionProject(id, options),
+    assignSessionProject: (id, assignment, options) =>
+      forge.assignSessionProject(id, assignment, options),
     getTargets: () => Promise.resolve(forge.getTargets?.() ?? []),
     subscribe: (callback) => forge.subscribe(callback),
     subscribeStats: (callback) => forge.subscribeStats(callback),

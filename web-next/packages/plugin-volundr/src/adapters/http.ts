@@ -92,6 +92,30 @@ interface FileEntryPayload {
   size?: number;
 }
 
+interface SessionProjectPayload {
+  session_id: string;
+  revision: number;
+  coordination: { project_id: string; role: string } | null;
+}
+
+function sessionProjectPath(id: string, instanceId?: string): string {
+  return `/sessions/${encodeURIComponent(id)}/project${instanceId ? `?instance_id=${encodeURIComponent(instanceId)}` : ''}`;
+}
+
+function normalizeSessionProject(payload: SessionProjectPayload) {
+  if (!Number.isInteger(payload.revision) || payload.revision < 0) {
+    throw new Error(
+      'This Forge host does not support versioned project assignment. Update it first.',
+    );
+  }
+  return {
+    sessionId: payload.session_id,
+    revision: payload.revision,
+    projectId: payload.coordination?.project_id ?? null,
+    role: payload.coordination?.role,
+  };
+}
+
 interface FileListPayload {
   entries: FileEntryPayload[];
 }
@@ -1573,7 +1597,31 @@ export function buildVolundrHttpAdapter(
           SharedRepoResponse | SharedRepoPayload[] | VolundrRepo[]
         >('/repos'),
       ),
-    getProjects: () => forgeClient.get('/projects'),
+    getProjects: (options) =>
+      options
+        ? forgeClient.get(
+            `/projects${options?.instanceId ? `?instance_id=${encodeURIComponent(options.instanceId)}` : ''}`,
+            { signal: options?.signal },
+          )
+        : forgeClient.get('/projects'),
+    getSessionProject: async (id, options) => {
+      const payload = await forgeClient.get<SessionProjectPayload>(
+        sessionProjectPath(id, options?.instanceId),
+        { signal: options?.signal },
+      );
+      return normalizeSessionProject(payload);
+    },
+    assignSessionProject: async (id, assignment, options) => {
+      const payload = await forgeClient.put<SessionProjectPayload>(
+        sessionProjectPath(id, options?.instanceId),
+        {
+          project_id: assignment.projectId,
+          project_instance_id: assignment.projectInstanceId,
+          expected_revision: assignment.expectedRevision,
+        },
+      );
+      return normalizeSessionProject(payload);
+    },
 
     getTargets: async () => {
       const targetClient = niuuClient ?? sharedClient;

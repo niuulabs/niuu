@@ -161,6 +161,15 @@ export interface ForgeProject {
   name: string;
   slug: string;
   status: 'active' | 'archived';
+  instance_id?: string;
+  instance_name?: string;
+  workspace_path?: string;
+}
+export interface SessionProjectMembership {
+  sessionId: string;
+  revision: number;
+  projectId: string | null;
+  role?: string;
 }
 export interface SessionCoordination {
   projectId: string;

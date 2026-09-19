@@ -115,6 +115,38 @@ class ProjectService:
         if session.coordination.project_id != project_id:
             raise ValueError("Referenced session belongs to a different project")
 
+    async def session_membership(self, session_id: UUID, principal, *, access: str = "read"):
+        session = await self.sessions.get_session(session_id)
+        if session is None:
+            raise ProjectNotFoundError("Session not found")
+        await self.sessions._check_access(session, principal, access)
+        return session
+
+    async def assign_session(self, session_id: UUID, project_id: UUID, revision: int, principal):
+        session = await self.session_membership(session_id, principal)
+        await self.sessions._check_access(session, principal, "update")
+        project = await self.get(project_id, principal)
+        if project.status != "active":
+            raise ProjectConflictError("Restore the archived project before assigning sessions")
+        if session.coordination_revision != revision:
+            raise ProjectConflictError("Session project changed; reload before assigning")
+        previous = session.coordination
+        if previous and previous.project_id == project_id:
+            return session
+        if previous and previous.role == "coordinator":
+            raise ProjectConflictError(
+                "Create a coordinator in the destination project and archive this coordinator"
+            )
+        # Assignment does not start work or deliver project instructions. A moved
+        # worker leaves its old parent; no other session follows this move.
+        coordination = SessionCoordination(
+            project_id=project_id,
+            role=previous.role if previous else "worker",
+            objective=previous.objective if previous else "",
+            labels=previous.labels if previous else [],
+        )
+        return await self.sessions.update_coordination(session, coordination, principal)
+
     async def briefing(self, coordination: SessionCoordination, principal):
         project = await self.get(coordination.project_id, principal)
         if project.status != "active":

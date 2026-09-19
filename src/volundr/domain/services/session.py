@@ -672,6 +672,20 @@ class SessionService:
 
         return result
 
+    async def update_coordination(
+        self, session: Session, coordination: SessionCoordination, principal: Principal | None
+    ) -> Session:
+        """Persist a validated project assignment without touching its runtime."""
+        from volundr.domain.project_ports import ProjectConflictError
+
+        await self._check_access(session, principal, "update")
+        result = await self._repository.update_coordination(session, coordination)
+        if result is None:
+            raise ProjectConflictError("Session project changed; reload before assigning")
+        if self._broadcaster is not None:
+            await self._broadcaster.publish_session_updated(result)
+        return result
+
     async def delete_session(
         self,
         session_id: UUID,

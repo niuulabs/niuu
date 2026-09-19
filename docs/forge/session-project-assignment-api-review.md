@@ -1,234 +1,140 @@
-# Organising existing sessions into projects
+# Assigning existing sessions to projects
 
-Reviewed September 19, 2026 on `forge/ux-improvement` at `de5e912e` and against
-the five live Guild hosts. This is an API review and proposed contract; the new
-relationship endpoints described below are not implemented or deployed.
+Implemented on `forge/ux-improvement`, September 19, 2026. Deployment requires the
+updated Guild facade and assignment support on each session-owning Forge host.
 
-## What creates a project today
+## What creates a project
 
-A Forge project is a durable, owner/tenant-scoped registration of a Git repository
-and optionally its checkout on a particular host. It has a stable UUID, name,
-description, active/archive state and revision. It can supply shared instructions
-and receive durable handoff receipts. It exists independently of any coordinator;
-several coordinator sessions can belong to the same project.
+A Forge project is an owner/tenant-scoped registration with a stable UUID,
+repository URL, name, active/archive state and optional host checkout. It exists
+independently of its coordinator sessions. Several hosts can register the same
+project UUID; a session belongs to one project and keeps its own execution host.
 
-The existing APIs, under `/api/v1/forge`, are:
+Under `/api/v1/forge`:
 
-| Operation | API | Behaviour |
-| --- | --- | --- |
-| Inspect an existing checkout | `POST /projects/discover` | Validates the folder, remote and context without registering or editing files. |
-| Connect that checkout | `POST /projects/connect` | Discovers and registers it; accepts `workspace_path` and an optional name. The facade accepts a selected Guild `instance_id`. |
-| Register known project metadata | `POST /projects` | Requires an explicit stable project UUID and repository URL. A host can register a replica without a checkout for browsing. |
-| Read/edit a project | `GET/PATCH /projects/{project_id}` | Editing uses the expected project revision; identity stays immutable. |
-| Launch into a project | `POST /sessions` | Accepts `coordination` and requires a stable `dispatch_id` for project launches. |
-| Find related sessions | `GET /sessions` | Supports project, role, parent session and parent instance filters. |
+| Operation | API |
+| --- | --- |
+| Inspect an existing checkout | `POST /projects/discover` |
+| Register its project | `POST /projects/connect` |
+| Register known metadata, without a checkout | `POST /projects` |
+| Read/edit project metadata | `GET/PATCH /projects/{project_id}` |
+| Launch a coordinator or worker in a project | `POST /sessions` with `coordination` and a stable `dispatch_id` |
+| Find a project's sessions | `GET /sessions?project_id={project_id}` |
 
-Checkout discovery uses `project.json` when present; otherwise it derives a stable
-UUID from the canonical Git remote. Connecting does not create a Git repository,
-clone one, move files, create a coordinator or start a session. A project's context
-repository may describe work across several code repositories; membership does not
-mean the session must execute in that repository's folder.
+Discovery uses `project.json` when present; otherwise it derives the UUID from the
+canonical Git remote. Connecting a checkout does not clone a repository, create a
+coordinator or start a session. A project may coordinate work in several code
+repositories, so membership does not require changing the session's workspace.
 
-For example, connecting an existing host checkout uses:
+## Assign or move an existing session
 
-```http
-POST /api/v1/forge/projects/connect
-Content-Type: application/json
+The title bar and session-row actions now have **Assign or move to project**.
+Select `Project · Host` and save. Healthy Guild hosts load independently, so an
+unavailable node does not prevent using projects from the other nodes. Group by
+Project reflects the persisted assignment while the row continues to show the
+session's actual host.
 
-{
-  "instance_id": "56499f00-02b3-4d80-8137-09d6d3238056",
-  "workspace_path": "/home/thor/projects/lexi",
-  "name": "Lexi"
-}
-```
-
-This illustrates the existing API; no registration write was performed during
-this review. Reconnecting an existing registration does not rename it.
-
-## The missing operation
-
-`SessionCoordination` already stores `project_id`, `role`, `parent`, `objective`,
-`context_revision` and `labels`. A parent is an instance/session pair. A session
-can have one project and one parent; it can belong to a project without a parent.
-Roles are metadata, not permission grants or an automatic scheduling policy.
-
-These fields are accepted at launch, persisted in `sessions.coordination`, and
-returned to clients. There is no supported API to attach, move, detach, reparent
-or change a session's project role after launch. The ordinary session PUT accepts
-only name, model, branch and tracker issue. An isolated validation check confirmed
-that adding `coordination` to that request is silently discarded by the current
-request model. A successful ordinary update is not evidence that membership changed.
-
-The web port currently reads projects and relationships for grouping/tree display;
-it has no project-assignment mutation. This needs a server contract usable by both
-the web and native clients, not browser-local grouping preferences or a database
-edit exposed through the UI.
-
-## Live findings
-
-Read-only GETs inspected direct host feature flags/OpenAPI, Guild-scoped project
-and session lists, and current parent references. No sessions were modified or
-messaged.
-
-| Host | Direct project identity | Registered projects observed | Relationship edit API |
-| --- | --- | --- | --- |
-| Thor | `thor` | Physics, Lexi | Absent |
-| Build | No Projects capability advertised | Projects API absent | Absent |
-| Build Bro | `100.115.8.110` | Kit | Absent |
-| Build-Kit | `100.90.20.64` | None | Absent |
-| Spark | `spark` | Lexi, with the same UUID as Thor's Lexi | Absent |
-
-Thor's facade currently ignores `instance_id` on `/feature-flags` and selects its
-default host. Thus it reported Thor's Projects support and identity even for
-Build, where Projects routes are absent. Selected project reads from Build returned
-503 through the facade. Capability discovery must become host-specific before an
-editor can reliably decide whether a selected host supports an operation.
-
-Guild's registry UUIDs are also distinct from durable project-reference instance
-IDs. Existing links use `thor`, `spark`, and Build Bro's IP. The facade replaces
-top-level session `instance_id` with the receiving registry's UUID but leaves the
-stored parent reference intact. A new editor must resolve both forms explicitly;
-a display name or a foreign registry UUID is not a portable parent identity.
-
-Current server validation checks local parents for access and project membership,
-but accepts foreign-host references as links without resolving them. That is not
-sufficient validation for a user-facing relationship editor. The web tree also
-uses a session-ID-only match when there is a single candidate, which should be
-replaced with resolved instance/session identity when adding the editor.
-
-## Proposed API
-
-Reuse `coordination`; add a dedicated resource with explicit replacement and
-concurrency semantics:
+The dedicated resource is:
 
 ```http
-GET /api/v1/forge/sessions/{session_id}/coordination?instance_id={owning_guild_id}
-PUT /api/v1/forge/sessions/{session_id}/coordination?instance_id={owning_guild_id}
+GET /api/v1/forge/sessions/{session_id}/project?instance_id={session_host}
+PUT /api/v1/forge/sessions/{session_id}/project?instance_id={session_host}
 ```
 
-GET returns the canonical session reference, coordination object or null, and a
-`coordination_revision` (zero for an unassigned legacy session). PUT requires the
-revision and the desired complete writable relationship. The following proposed
-body assigns an existing session to Lexi under the existing Thor coordinator:
+GET returns:
 
 ```json
 {
-  "expected_revision": 0,
-  "coordination": {
-    "project_id": "4b011f7f-87fb-4f4f-a53d-5eb4025c510f",
-    "role": "worker",
-    "parent": {
-      "instance_id": "thor",
-      "session_id": "8f20102d-6da7-58aa-98c2-e0bce2deab97"
-    },
-    "objective": "",
-    "labels": []
-  }
+  "session_id": "00000000-0000-0000-0000-000000000001",
+  "revision": 0,
+  "coordination": null
 }
 ```
 
-The session stays on its current host, with the same ID, runtime, workspace and
-conversation. The registry selector routes the write to that session's owner;
-the parent uses a resolved canonical project-reference identity.
+The facade also includes the session-owning instance's ID and name. PUT accepts:
 
-| User action | Desired relationship |
-| --- | --- |
-| Add a free-floating session to a project | Set project and role; parent may remain null. |
-| Attach/change coordinator | Keep project, replace parent; preserve the session's objective and labels. |
-| Move to another project | Replace project and explicitly choose a compatible parent or null. |
-| Remove coordinator only | Keep project and role, set parent to null. |
-| Make free-floating again | Set the entire coordination object to null. |
-| Promote to coordinator | Set role to coordinator; the UI exposes parent selection separately. |
+```json
+{
+  "project_id": "dd605b70-4d95-5f10-b698-e25a1b7b3bca",
+  "project_instance_id": "be6dfc3b-3bdc-4e2e-805f-69e945038775",
+  "expected_revision": 0
+}
+```
 
-PUT returns the stored relationship and incremented revision. Stale revisions
-return 409 with the current version; clients reload and reconcile rather than
-blindly resubmitting. After a lost response, GET establishes whether the requested
-state was stored. Unknown request fields must be rejected. Advertise relationship
-editing separately from Projects v1, per host; older hosts must not appear to save
-an edit they ignore.
+`instance_id` selects the session's owning node; `project_instance_id` selects the
+node where the chosen project is registered. Both are Guild registry selectors,
+not display names. For example, a Thor session can join Kit registered on Build
+Bro. Omitting the project selector uses the session's node. A direct Forge host
+accepts only `project_id` and `expected_revision`, after project registration.
 
-## Required semantics and implementation boundaries
+The facade verifies session access, assignment support and revision before
+registering anything. It then reads the chosen active project from its host. If
+needed, it registers a metadata-only replica on the session's host using the
+**same project UUID**, name, slug, description and repository URL. It does not
+copy another host's checkout path, scope or credentials. Conflicting registrations
+fail explicitly. The session owner then performs the authoritative assignment.
 
-- Check session update permission, project access/status, and parent access. Resolve
-  foreign parents through their authenticated host; verify same-project membership.
-  Never infer a parent from its name or accept an unresolved host as validated.
-- Keep a project registration with the same stable identity on the session's
-  owning host. Existing metadata-only registration can support organisation without
-  requiring a checkout. Preparing a checkout is a separate prerequisite for context
-  loading or project launches, not for changing the sidebar grouping.
-- Reject self-parenting and cycles. Changing project or detaching a coordinator
-  with dependent sessions must return a conflict and describe the affected links;
-  moving an entire subtree should be a separate, explicit operation. Do not
-  silently move its workers. An incomplete/offline dependency inventory cannot be
-  treated as proof that it has no children.
-- Cross-host cycle and dependent-child guarantees require a project-scoped
-  authoritative relationship index or an equivalent serialized protocol. A local
-  revision check plus remote GETs cannot prevent simultaneous conflicting graph
-  edits. This is a backend design gate before claiming arbitrary cross-host tree
-  reorganisation; do not hide this limitation behind a UI-only ancestor check.
-- Add a dedicated repository operation that updates relationship fields with
-  compare-and-swap and records old/new values and actor in one transaction. Ordinary
-  lifecycle writes must preserve those fields; the current whole-session update
-  also writes coordination and could overwrite a concurrent assignment. A separate
-  relationship revision needs migrations in both repository migration locations.
-- Publish a normal session update after persistence so existing polling/SSE and
-  shared client stores refresh the tree. The write must not start/stop a runtime,
-  alter Git state, change the working folder, rewrite replay or send a model message.
-- Preserve historical receipts and dispatch identities under their original
-  project. Moving a session must not rewrite earlier handoffs, context provenance
-  or idempotent launch records. New receipts validate the current membership.
+PUT returns the stored membership and revision. Revision mismatches return 409;
+reload before retrying. A lost response can be resolved with GET. Unknown fields
+and null project IDs are rejected. Older session hosts return an upgrade-required
+error instead of appearing to accept an ignored update. Per-host feature flags
+now expose `project_assignment_enabled` and honor the selected Guild host.
 
-## Project instructions are a separate action
+## Preservation and concurrency
 
-Launch currently snapshots project context into
-`workload_config.project_context` and records its revision. Changing metadata does
-not change instructions already delivered to a running Claude/Codex session.
+- Assignment keeps the session ID, execution host, running process, working
+  directory, conversation and lifecycle state. It sends no model message and
+  performs no runtime start or stop.
+- A free-floating session becomes a worker. Moving an existing worker preserves
+  its role, objective and labels but clears its former parent and context revision.
+- The former `workload_config.project_context` launch snapshot is removed so a
+  future restart cannot inject the old project's saved brief. Already-delivered
+  model instructions remain unchanged. Assignment does not claim the destination
+  project's instructions have been consumed.
+- An atomic repository operation compares `coordination_revision` and owner/tenant
+  scope, persists the relationship and increments the revision. Ordinary lifecycle
+  updates preserve membership and cannot restore a stale project brief. Migration
+  `000067` adds the revision with default zero in both migration distributions.
+- A successful write emits the normal session-updated event. Historical receipts
+  and launch dispatch identities retain their original project provenance.
+- Cross-host registration and assignment are not one distributed transaction. An
+  unsuccessful final assignment may leave a valid metadata-only registration,
+  which is reused by a retry; no session is reassigned until the owner commits.
 
-The relationship API should report that distinction. It must not label a newly
-attached session as having consumed project context or overwrite the running
-system prompt. Moving/detaching must invalidate any saved project launch brief
-that would otherwise reinject the former project on a subsequent start; changes
-to role/objective need the same stale-brief handling. Preserve historical context
-provenance rather than relabelling it as the destination project's revision.
+## Deliberately limited scope
 
-An explicit **Apply project context / send handoff** action can later fetch the
-bounded context and use the existing durable message-delivery API. Organisation
-alone should not wake a coordinator or add an unsolicited message to a worker.
+Create new coordinators inside their project and archive them when no longer
+needed. This editor does not move existing coordinators, change parents or roles,
+remove membership, move dependent subtrees, or deliver project instructions.
+Mutable cross-host coordinator graphs need a separate authoritative relationship
+protocol and are not part of this assignment feature.
 
-## UI and implementation order
+A metadata-only replica supports organisation and project session discovery. It
+does not make shared project files available on that node; preparing a checkout
+for context loading or future project launches remains a separate action.
 
-Add **Organise session…** to both the session-row actions and title bar. The compact
-editor has Project (including No project), Coordinator (including None, labelled
-with host), and optional Role. Preserve existing objective/labels unless edited.
-Selecting a coordinator suggests its project and makes any project move explicit.
-Selecting a free-floating coordinator first requires assigning it a project under
-the current data contract. Save persists through the API, then updates the project
-tree immediately; host/capability/network errors keep the editor open with retry.
+The September 19 read-only inventory found Kit registered on **Build Bro**,
+Lexi on Thor and Spark with the same UUID, Physics on Thor, and no projects on
+Build-Kit. Build lacked the Projects API entirely. Session-owning hosts must be
+upgraded before their existing sessions can be assigned. The project-holding host
+only needs the existing Projects read API. ForgeKit/iOS/macOS can adopt this same
+resource; their native assignment editors are not implemented by this web change.
 
-There is no name-only, repository-free project creation contract today. That could
-be a separate extension for lightweight organisational projects; it is not needed
-to support reassignment among the existing Lexi, Physics and Kit projects.
+## Validation
 
-Implementation checklist:
-
-- [ ] Fix selected-host feature discovery and expose canonical relationship identities.
-- [ ] Settle cross-host graph authority/serialization before mutable parent links ship.
-- [ ] Add relationship read/write service, owner routing, authorization, revision,
-  persistence, audit and stale-context handling.
-- [ ] Cover attach/move/detach, same/cross-host parents, stale writes, cycle races,
-  dependent coordinators, offline hosts, lifecycle-write races and retained servers.
-- [ ] Verify session/runtime/transcript preservation and correct updates in two clients.
-- [ ] Add web service methods and the title/sidebar editor, using the existing tree.
-- [ ] Add the same contract to ForgeKit for iOS/macOS; verify cross-client changes.
-- [ ] Keep explicit context delivery and bulk subtree movement as separate features.
+Tests cover native and facade APIs, cross-host metadata replication, session
+ownership/access, stale edits, offline/unsupported hosts, archived projects,
+coordinator restrictions and late lifecycle writes. Web tests cover owner routing,
+per-host loading, successful cache updates, conflicts and retries. Browser tests
+exercise title/sidebar assignment on desktop and touch layouts, retained host
+identity and persistence after reload. The real PostgreSQL compare-and-swap race
+and stale-writer test is marked integration and runs in PostgreSQL CI.
 
 ## Source references
 
-- [Project models](../../src/volundr/domain/projects.py)
-- [Project registration, dispatch and validation](../../src/volundr/domain/services/projects.py)
-- [Project REST API](../../src/volundr/adapters/inbound/rest_projects.py)
-- [Session request/update API](../../src/volundr/adapters/inbound/rest.py)
+- [Project service](../../src/volundr/domain/services/projects.py)
+- [Native project API](../../src/volundr/adapters/inbound/rest_projects.py)
 - [Session persistence](../../src/volundr/adapters/outbound/postgres.py)
-- [Guild facade routing](../../src/niuu/adapters/inbound/rest_volundr.py)
+- [Guild facade](../../src/niuu/adapters/inbound/rest_volundr.py)
+- [Web editor](../../web-next/packages/plugin-volundr/src/ui/AssignSessionProject.tsx)
 - [Checkout discovery](project-checkout-discovery.md)
-- [Web project tree](../../web-next/packages/plugin-volundr/src/domain/projectTree.ts)

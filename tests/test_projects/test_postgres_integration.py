@@ -59,6 +59,26 @@ async def test_migration_and_session_roundtrip(isolated_pool):
         await apply_startup_migrations(connection, sorted(MIGRATIONS.glob("*.up.sql")))
 
 
+async def test_assignment_race_and_stale_lifecycle_writer_preserve_membership(isolated_pool):
+    _, project = await seed(isolated_pool)
+    sessions = PostgresSessionRepository(isolated_pool)
+    session = await sessions.create(
+        Session(
+            name="running-worker",
+            workload_config={"effort": "high", "project_context": "old"},
+        )
+    )
+    coordination = SessionCoordination(project_id=project.id)
+    results = await asyncio.gather(
+        *(sessions.update_coordination(session, coordination) for _ in range(2))
+    )
+    assert sum(result is not None for result in results) == 1
+    updated = await sessions.update(session.model_copy(update={"name": "renamed"}))
+    assert updated.coordination == coordination and updated.coordination_revision == 1
+    assert updated.workload_config == {"effort": "high"}
+    assert (await sessions.get(session.id)) == updated
+
+
 async def test_more_dispatchers_than_pool_connections_do_not_deadlock(isolated_pool):
     repo, _ = await seed(isolated_pool)
     keys = [uuid4() for _ in range(12)]

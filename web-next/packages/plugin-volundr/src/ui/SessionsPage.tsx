@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import { LaunchWizard } from './LaunchWizard';
 import { RenameSession } from './RenameSession';
+import { AssignSessionProject } from './AssignSessionProject';
 import { PinSession } from './PinSession';
 import { usePinnedSessions } from './usePinnedSessions';
 import { ImportExternalSessionsDialog } from './ImportExternalSessionsDialog';
@@ -384,6 +385,12 @@ function PodEntry({
         >
           <RenameSession sessionId={session.id} name={primaryLabel} disabled={busy} />
           <PinSession sessionId={session.id} name={primaryLabel} />
+          <AssignSessionProject
+            sessionId={session.id}
+            name={primaryLabel}
+            instanceId={session.clusterId}
+            disabled={busy}
+          />
           {STOPPABLE_STATES.has(session.state) && (
             <button
               type="button"

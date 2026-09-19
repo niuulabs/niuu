@@ -171,6 +171,8 @@ export type {
   StoredCredential,
   SecretType,
   SessionSource,
+  ForgeProject,
+  SessionProjectMembership,
   SessionDefinition,
   SessionOrigin,
   ExternalSession,
