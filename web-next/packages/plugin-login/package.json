@@ -26,19 +26,19 @@
     "dev": "tsup --watch"
   },
   "peerDependencies": {
-    "@tanstack/react-router": "^1.170.33",
-    "react": "^19.2.8"
+    "@tanstack/react-router": "^1.170.36",
+    "react": "^19.3.0"
   },
   "dependencies": {
     "@niuulabs/auth": "workspace:*",
     "@niuulabs/plugin-sdk": "workspace:*"
   },
   "devDependencies": {
-    "@tanstack/react-router": "^1.170.33",
-    "@types/react": "^19.2.18",
-    "react": "^19.2.8",
+    "@tanstack/react-router": "^1.170.36",
+    "@types/react": "^19.3.0",
+    "react": "^19.3.0",
     "tsup": "^8.3.5",
     "typescript": "^6.0.3",
-    "vite": "^8.2.2"
+    "vite": "^8.3.0"
   }
 }
