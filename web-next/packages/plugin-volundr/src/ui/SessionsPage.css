@@ -425,6 +425,15 @@
 .forge-session-harness[data-harness='claude'] {
   color: var(--color-harness-claude);
 }
+.forge-session-row__host {
+  flex-shrink: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
 .forge-session-row__source {
   display: flex;
   align-items: center;

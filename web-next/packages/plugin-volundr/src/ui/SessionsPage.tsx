@@ -326,8 +326,16 @@ function PodEntry({
                   {harness === 'claude' ? 'Claude' : 'Codex'}
                 </span>
               )}
+              {forgeLabel && (
+                <span className="forge-session-row__host" title={`Host: ${forgeLabel}`}>
+                  {forgeLabel}
+                </span>
+              )}
               {sourceLabel && (
-                <span className="forge-session-row__source" title={previewLabel ?? sourceLabel}>
+                <span
+                  className="forge-session-row__source"
+                  title={localPath ?? previewLabel ?? sourceLabel}
+                >
                   {isLocal ? (
                     <FolderOpen size={13} />
                   ) : sourceParts || session.source?.type === 'git' ? (
@@ -335,7 +343,7 @@ function PodEntry({
                   ) : (
                     <SquareTerminal size={13} />
                   )}
-                  <span>{sourceLabel}</span>
+                  <span>{sourceLabel.replace(/^\/home\/[^/]+(?:\/|$)/, '~/')}</span>
                 </span>
               )}
               <span className="forge-session-row__age" title="Last session activity">
@@ -350,7 +358,6 @@ function PodEntry({
                     {trackerLabel}
                   </span>
                 )}
-                {forgeLabel && <span title={forgeLabel}>forge · {forgeLabel}</span>}
                 {showPreviewFallback && <span>{previewLabel}</span>}
               </div>
             )}
