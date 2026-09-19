@@ -3,4 +3,4 @@ name: gbrain
 description: Persistent gbrain knowledge service for Niuu
 type: application
 version: 0.1.0
-appVersion: "0.48.5.0"
+appVersion: "0.51.0.0"
