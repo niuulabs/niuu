@@ -63,8 +63,12 @@ async def test_claude_cli_authorization_code_is_consumed_and_token_is_kept_priva
         "assert 'ANTHROPIC_API_KEY' not in os.environ\n"
         "print('https://claude.ai/oauth/authorize?state=test-only',flush=True)\n"
         "print('Paste code here if prompted >',flush=True)\n"
-        "assert os.read(sys.stdin.fileno(),4096)==b'test-browser-code'\n"
-        "assert os.read(sys.stdin.fileno(),4096)==b'\\r'\n"
+        # The worker sends Enter after the code with only `interval` between them, so a
+        # busy machine may deliver both in one read. Read until Enter, then compare.
+        "typed=b''\n"
+        "while not typed.endswith(b'\\r'):\n"
+        "    typed+=os.read(sys.stdin.fileno(),4096)\n"
+        "assert typed==b'test-browser-code\\r'\n"
         "print('Your OAuth token (valid for 1 year):\\n'\n"
         "      'sk-ant-oat01-test-only-\\nsecret\\nStore this token securely.',flush=True)\n"
     )
