@@ -11,7 +11,7 @@ OpenShell on a VM does not require installing Kubernetes inside that VM. The
 not select the gateway's compute driver.
 
 For managed VM provisioning, reuse and automatic cleanup, configure
-`OpenShellVmRuntime` through the [VM compute lifecycle](../../operator/vm-compute.md#openshell-on-managed-vms).
+`OpenShellVmRuntime` through the [VM compute lifecycle](https://github.com/niuulabs/niuu/blob/dev/docs/operator/vm-compute.md#openshell-on-managed-vms).
 For an independently managed plain VM, install Docker and run the OpenShell gateway with
 `compute_driver = "docker"` under `[openshell.gateway]` in its version 2 TOML
 configuration. Configure `[openshell.drivers.docker]` with the sandbox image,
