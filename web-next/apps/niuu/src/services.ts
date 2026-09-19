@@ -1,3 +1,4 @@
+import { forgeHistoryEndpoint, type ISessionHistoryLocator } from '@niuulabs/ui';
 import { buildBifrostHttpAdapter, createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import type { IBifrostService } from '@niuulabs/plugin-bifrost';
 import {
@@ -1493,6 +1494,11 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const metricsStream = forgeMetricsBase
     ? buildVolundrMetricsSseAdapter({ urlTemplate: forgeMetricsBase })
     : demoService(config, 'forge.metrics', createMockMetricsStream);
+  // Session gateways can live on another host than the Forge API; history always pages there.
+  const forgeHistoryBase = resolveForgeServiceBase(config);
+  const forgeHistory: ISessionHistoryLocator | undefined = forgeHistoryBase
+    ? { historyEndpoint: (socketUrl) => forgeHistoryEndpoint(socketUrl, forgeHistoryBase) }
+    : undefined;
   const filesystem = filesystemBase
     ? buildVolundrFileSystemHttpAdapter({ baseUrl: filesystemBase })
     : demoService(config, 'filesystem', createMockFileSystemPort);
@@ -1613,6 +1619,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     volundr,
     'niuu.repos': repoCatalogService,
     ptyStream,
+    ...(forgeHistory && { 'forge.history': forgeHistory }),
     metricsStream,
     features: featureCatalogService,
     identity: identityService,

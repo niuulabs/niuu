@@ -491,6 +491,26 @@ describe('buildServices live base selection', () => {
     expect(services['observatory.agents']).toEqual({ kind: 'mock-observatory-agents' });
   });
 
+  it('locates session history on the Forge API rather than the session gateway host', () => {
+    const services = buildServices({
+      demoMode: true,
+      services: { forge: { mode: 'http', baseUrl: 'https://app.test/api/v1/forge' } },
+    } as any);
+    const locator = services['forge.history'] as {
+      historyEndpoint(url: string | null): string | null;
+    };
+
+    expect(locator.historyEndpoint('wss://sessions.cluster.test/s/abc/session')).toBe(
+      'https://app.test/api/v1/forge/sessions/abc/conversation',
+    );
+  });
+
+  it('registers no history locator without a live Forge base', () => {
+    const services = buildServices({ demoMode: true, services: {} } as any);
+
+    expect(services['forge.history']).toBeUndefined();
+  });
+
   it('leaves the agent directory unavailable outside demo mode', () => {
     const services = buildServices({ demoMode: false, services: {} } as any);
 

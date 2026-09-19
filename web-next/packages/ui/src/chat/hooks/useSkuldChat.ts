@@ -731,13 +731,20 @@ function mergeRecentMessages(
 
 interface UseSkuldChatOptions {
   historyMode?: 'session' | 'none';
+  /** Resolved Forge history endpoint; required when the gateway is not the Forge API host. */
+  historyEndpoint?: string | null;
 }
 
 export function useSkuldChat(
   url: string | null,
   options: UseSkuldChatOptions = {},
 ): UseSkuldChatResult {
-  const { historyMode = 'session' } = options;
+  const { historyMode = 'session', historyEndpoint = null } = options;
+  const historyUrlRef = useRef(historyEndpoint);
+  // Declared before the history effects so they read the endpoint for the current url.
+  useEffect(() => {
+    historyUrlRef.current = historyEndpoint;
+  }, [historyEndpoint]);
   const initialPersistedState = useMemo(() => revivePersistedState(url), [url]);
   const [messages, setMessages] = useState<ChatMessage[]>(() => initialPersistedState.messages);
   const [participants, setParticipants] = useState<Map<string, RoomParticipant>>(
@@ -1027,7 +1034,7 @@ export function useSkuldChat(
     const snapshotAtStart = snapshotEvidenceRef.current;
     const idsAtStart = new Set(messagesRef.current.map((message) => message.id));
 
-    historyWorkRef.current = fetchHistoryBatch(url, controller.signal)
+    historyWorkRef.current = fetchHistoryBatch(historyUrlRef.current ?? url, controller.signal)
       .then((data) => {
         if (cancelled) return;
         // Finish the post-attachment read before exposing the initial page.
@@ -1159,7 +1166,11 @@ export function useSkuldChat(
       if (controller.signal.aborted || currentUrlRef.current !== url) return;
       const boundary = historyPageRef.current;
       if (boundary?.url !== url || boundary.page.window_offset <= 0) return;
-      const page = await fetchHistoryBatch(url, controller.signal, boundary.page);
+      const page = await fetchHistoryBatch(
+        historyUrlRef.current ?? url,
+        controller.signal,
+        boundary.page,
+      );
       if (controller.signal.aborted || currentUrlRef.current !== url) return;
       historyPageRef.current = { url, page };
       const older = transformTurns(page.turns);
@@ -1324,7 +1335,10 @@ export function useSkuldChat(
         if (!base) return;
         textRepairsRef.current.add(key);
         try {
-          const history = await fetchHistoryBatch(url, new AbortController().signal);
+          const history = await fetchHistoryBatch(
+            historyUrlRef.current ?? url,
+            new AbortController().signal,
+          );
           if (currentUrlRef.current !== url) return;
           for (const turn of history.turns ?? []) {
             const block = turn.parts?.find((part) =>

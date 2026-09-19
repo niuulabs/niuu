@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { RenameSession } from './RenameSession';
 import { PinSession } from './PinSession';
 import { useNavigate } from '@tanstack/react-router';
-import { useService } from '@niuulabs/plugin-sdk';
+import { useOptionalService, useService } from '@niuulabs/plugin-sdk';
 import { getAuthHeaders } from '@niuulabs/query';
 import {
   Dialog,
@@ -12,6 +12,7 @@ import {
   ErrorState,
   LoadingState,
   SessionChat,
+  type ISessionHistoryLocator,
   ChatConnectionsContext,
   ChatDisplayControls,
   type FileEntry,
@@ -3504,7 +3505,12 @@ function LiveSessionDetailPageInner({
     sessionStatus === 'failed' ||
     sessionStatus === 'error';
   const terminalUrl = deriveTerminalWsUrl(chatEndpoint);
-  const chat = useSkuldChat(chatEndpoint);
+  const historyLocator = useOptionalService<ISessionHistoryLocator>('forge.history');
+  const historyEndpoint = useMemo(
+    () => historyLocator?.historyEndpoint(chatEndpoint) ?? null,
+    [chatEndpoint, historyLocator],
+  );
+  const chat = useSkuldChat(chatEndpoint, { historyEndpoint });
   const workflowGatesQuery = useQuery({
     queryKey: ['volundr', 'workflow-gates', sessionId],
     queryFn: () => volundr.getWorkflowGates(sessionId),
@@ -4121,6 +4127,7 @@ function LiveSessionDetailPageInner({
                     availableCommands={chat.availableCommands}
                     capabilities={chat.capabilities}
                     chatEndpoint={chatEndpoint}
+                    historyEndpoint={historyEndpoint}
                     sessionName={sessionName}
                     onSend={chat.sendMessage}
                     onSendDirected={chat.sendDirectedMessages}

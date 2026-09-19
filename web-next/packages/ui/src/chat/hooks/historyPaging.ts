@@ -26,16 +26,47 @@ export class HistoryChangedError extends Error {
   }
 }
 
-/** Preserve the host/proxy prefix. The Forge facade also pages retained old gateways. */
-export function conversationUrl(socketUrl: string): URL {
-  const url = new URL(normalizeSessionUrl(socketUrl) ?? socketUrl);
+const HISTORY_PATH = /\/(?:sessions\/[^/]+\/conversation|api\/conversation\/history)$/;
+const GATEWAY_SESSION_PATH = /^(.*)\/s\/([^/]+)\/(?:api\/)?session$/;
+
+/**
+ * The Forge facade pages history, including for retained old gateways. Session gateways can
+ * live on another host than the Forge API, so callers that know the configured Forge base
+ * resolve the endpoint once with `forgeHistoryEndpoint` and pass that here instead.
+ */
+export function conversationUrl(endpoint: string): URL {
+  const url = new URL(normalizeSessionUrl(endpoint) ?? endpoint);
+  if (/^https?:$/.test(url.protocol) && HISTORY_PATH.test(url.pathname)) {
+    url.search = '';
+    return url;
+  }
   url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
-  const match = url.pathname.match(/^(.*)\/s\/([^/]+)\/(?:api\/)?session$/);
+  const match = url.pathname.match(GATEWAY_SESSION_PATH);
   url.pathname = match
     ? `${match[1]}/api/v1/forge/sessions/${match[2]}/conversation`
-    : `${new URL(wsUrlToHttpBase(socketUrl)!).pathname.replace(/\/$/, '')}/api/conversation/history`;
+    : `${new URL(wsUrlToHttpBase(endpoint)!).pathname.replace(/\/$/, '')}/api/conversation/history`;
   url.search = '';
   return url;
+}
+
+/** Injected as the optional `forge.history` service by hosts whose gateway is not the Forge API. */
+export interface ISessionHistoryLocator {
+  historyEndpoint(socketUrl: string | null): string | null;
+}
+
+/** History endpoint on the configured Forge API for a gateway-routed session socket. */
+export function forgeHistoryEndpoint(
+  socketUrl: string | null,
+  forgeBaseUrl: string | null | undefined,
+): string | null {
+  if (!socketUrl || !forgeBaseUrl) return null;
+  const socket = new URL(normalizeSessionUrl(socketUrl) ?? socketUrl);
+  const match = socket.pathname.match(GATEWAY_SESSION_PATH);
+  if (!match) return null;
+  const base = new URL(forgeBaseUrl, globalThis.location?.href);
+  base.pathname = `${base.pathname.replace(/\/$/, '')}/sessions/${match[2]}/conversation`;
+  base.search = '';
+  return base.href;
 }
 
 export function historySocketUrl(socketUrl: string | null, enabled: boolean): string | null {

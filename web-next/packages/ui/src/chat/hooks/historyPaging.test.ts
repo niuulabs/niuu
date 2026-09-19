@@ -3,6 +3,7 @@ import {
   conversationUrl,
   fetchHistoryBatch,
   fetchHistoryItem,
+  forgeHistoryEndpoint,
   HISTORY_PAGE_BYTES,
   HISTORY_REQUEST_BYTES,
   historySocketUrl,
@@ -243,5 +244,36 @@ describe('bounded conversation pages', () => {
     await expect(fetchHistoryItem(socket, 'row-0', signal())).rejects.toThrow('cannot expand');
     fetcher.mockResolvedValueOnce(new Response(null, { status: 404 }));
     await expect(fetchHistoryItem(socket, 'row-0', signal())).rejects.toThrow('404');
+  });
+});
+
+describe('forgeHistoryEndpoint', () => {
+  const gateway = 'wss://sessions.cluster.test/s/abc/session?instance=valhalla';
+  it('targets the configured Forge API instead of the session gateway host', () => {
+    const endpoint = forgeHistoryEndpoint(gateway, 'https://app.test/api/v1/forge/');
+    expect(endpoint).toBe('https://app.test/api/v1/forge/sessions/abc/conversation');
+    expect(conversationUrl(endpoint!).href).toBe(endpoint);
+  });
+  it('resolves a relative Forge base against the page origin', () => {
+    expect(forgeHistoryEndpoint(gateway, '/api/v1/forge')).toBe(
+      `${window.location.origin}/api/v1/forge/sessions/abc/conversation`,
+    );
+  });
+  it('leaves direct gateways and unconfigured Forge bases to the socket host', () => {
+    expect(
+      forgeHistoryEndpoint('wss://pod.test/session', 'https://app.test/api/v1/forge'),
+    ).toBeNull();
+    expect(forgeHistoryEndpoint(gateway, undefined)).toBeNull();
+    expect(forgeHistoryEndpoint(null, 'https://app.test/api/v1/forge')).toBeNull();
+  });
+  it('pages history from the resolved endpoint', async () => {
+    const { calls } = serve();
+    await fetchHistoryBatch(
+      forgeHistoryEndpoint(gateway, 'https://app.test/api/v1/forge')!,
+      signal(),
+    );
+    expect(calls[0]!.origin + calls[0]!.pathname).toBe(
+      'https://app.test/api/v1/forge/sessions/abc/conversation',
+    );
   });
 });

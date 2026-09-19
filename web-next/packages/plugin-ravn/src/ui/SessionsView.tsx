@@ -6,10 +6,11 @@ import {
   LoadingState,
   SessionChat,
   cn,
+  type ISessionHistoryLocator,
   normalizeSessionUrl,
   useSkuldChat,
 } from '@niuulabs/ui';
-import { useService } from '@niuulabs/plugin-sdk';
+import { useOptionalService, useService } from '@niuulabs/plugin-sdk';
 import { LiveLogsTab, TelemetryTab, type IVolundrService } from '@niuulabs/plugin-volundr';
 import type { PersonaRole } from '@niuulabs/domain';
 import { Eye, EyeOff, FileCode2, MessageSquareText, Sparkles } from 'lucide-react';
@@ -1056,8 +1057,14 @@ function LiveSessionChat({
   showInternalMessages: boolean;
   onInternalVisibilitySender: (sender: ((visible: boolean) => void) | null) => void;
 }) {
+  const historyLocator = useOptionalService<ISessionHistoryLocator>('forge.history');
+  const historyEndpoint = useMemo(
+    () => historyLocator?.historyEndpoint(chatEndpoint) ?? null,
+    [chatEndpoint, historyLocator],
+  );
   const chat = useSkuldChat(chatEndpoint, {
     historyMode: socketHistory ? 'none' : 'session',
+    historyEndpoint,
   });
 
   useEffect(() => {
@@ -1090,6 +1097,7 @@ function LiveSessionChat({
         availableCommands={chat.availableCommands}
         capabilities={chat.capabilities}
         chatEndpoint={chatEndpoint}
+        historyEndpoint={historyEndpoint}
         sessionName={sessionName}
         showInternalToggle={false}
         internalVisibility={showInternalMessages}

@@ -294,6 +294,8 @@ export interface SessionChatProps {
   sessionHost?: string | null;
   /** Full chat endpoint URL */
   chatEndpoint?: string | null;
+  /** Resolved Forge history endpoint when the gateway is not the Forge API host */
+  historyEndpoint?: string | null;
   /** Session name shown in empty state */
   sessionName?: string;
   /** Optional extra class on the outer wrapper */
@@ -377,6 +379,7 @@ export function SessionChat({
   capabilities = {},
   sessionHost = null,
   chatEndpoint = null,
+  historyEndpoint = null,
   sessionName = 'Session',
   className,
   showToolbar = true,
@@ -1234,8 +1237,8 @@ export function SessionChat({
         {/* ── Messages ── */}
         {hasConversation || isStreaming || hasOlderHistory ? (
           <div className="niuu-chat-messages-container" ref={scrollContainerRef}>
-            <HistoryDetailsContext.Provider value={chatEndpoint}>
-              <ToolImageProvider endpoint={chatEndpoint}>
+            <HistoryDetailsContext.Provider value={historyEndpoint ?? chatEndpoint}>
+              <ToolImageProvider endpoint={historyEndpoint ?? chatEndpoint}>
                 <div className="niuu-chat-messages-inner">
                   {(hasOlderHistory || loadingOlderHistory || olderHistoryError) && (
                     <div className="niuu-chat-history-status">
