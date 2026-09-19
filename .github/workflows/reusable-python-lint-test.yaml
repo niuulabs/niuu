@@ -61,17 +61,6 @@ jobs:
       fail-fast: false
       matrix:
         pkg:
-          - name: Volundr
-            flag: backend-volundr
-            paths: >-
-              tests/
-              --ignore=tests/test_ting
-              --ignore=tests/test_ravn
-              --ignore=tests/ravn
-              --ignore=tests/test_bifrost
-              --ignore=tests/test_sleipnir
-              --ignore=tests/integration
-            cov: "--cov=src/audit --cov=src/volundr --cov=src/cli --cov=src/credentials --cov=src/features --cov=src/identity --cov=src/integrations --cov=src/niuu --cov=src/tracker --cov=src/skuld --cov=src/mimir"
           - name: Ting
             flag: backend-ting
             paths: "tests/test_ting"
@@ -100,12 +89,6 @@ jobs:
 
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
-
-      - name: Set up Helm for chart rendering tests
-        if: matrix.pkg.name == 'Volundr'
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: v3.14.0
 
       - name: Run tests with coverage
         run: |
@@ -141,6 +124,127 @@ jobs:
         with:
           files: coverage.xml
           flags: ${{ matrix.pkg.flag }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # The Volundr selection is ~10k tests: about five minutes on one runner even
+  # under xdist. It runs as four file-balanced shards (tests/conftest.py
+  # --shard); the "Python: Test Volundr" job below combines their coverage and
+  # owns the 85% gate, keeping the required check name.
+  test-volundr-shard:
+    name: "Python: Test Volundr shard ${{ matrix.shard }}/4"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      COVERAGE_FILE: .coverage.shard-${{ matrix.shard }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python + uv
+        uses: ./.github/actions/setup-python-env
+
+      - name: Set up Helm for chart rendering tests
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.14.0
+
+      - name: Run test shard
+        run: |
+          set -o pipefail
+          set +e
+          output_file="$(mktemp)"
+          uv run pytest tests/ \
+            --ignore=tests/test_ting \
+            --ignore=tests/test_ravn \
+            --ignore=tests/ravn \
+            --ignore=tests/test_bifrost \
+            --ignore=tests/test_sleipnir \
+            --ignore=tests/integration \
+            -v --tb=short \
+            -n auto --dist loadfile \
+            --shard=${{ matrix.shard }}/4 \
+            --override-ini="addopts=" \
+            -m 'not integration and not broker and not kind_integration and not live_cli' \
+            --cov=src/audit --cov=src/volundr --cov=src/cli --cov=src/credentials \
+            --cov=src/features --cov=src/identity --cov=src/integrations --cov=src/niuu \
+            --cov=src/tracker --cov=src/skuld --cov=src/mimir \
+            --cov-report= 2>&1 | tee "$output_file"
+          status=${PIPESTATUS[0]}
+          set -e
+          if (( status != 0 )); then
+            failure_summary="$(grep -E '^(FAILED|ERROR) ' "$output_file" | tail -n 60 || true)"
+            failure_tail="$(tail -n 20 "$output_file")"
+            failure_output="${failure_summary}"$'\n'"${failure_tail}"
+            failure_output="${failure_output//'%'/'%25'}"
+            failure_output="${failure_output//$'\n'/'%0A'}"
+            failure_output="${failure_output//$'\r'/'%0D'}"
+            echo "::error title=Python test failure (Volundr shard ${{ matrix.shard }})::${failure_output}"
+          fi
+          exit "$status"
+
+      - name: Upload shard coverage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: volundr-coverage-${{ matrix.shard }}
+          path: .coverage.shard-${{ matrix.shard }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 1
+
+  test-volundr:
+    name: "Python: Test Volundr"
+    needs: test-volundr-shard
+    # always(): a job skipped because a shard failed would report "skipped",
+    # which branch rules accept as passing. Run and fail instead.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Require every shard to have passed
+        if: needs.test-volundr-shard.result != 'success'
+        run: |
+          echo "::error title=Python test failure (Volundr)::test shards finished with result '${{ needs.test-volundr-shard.result }}'"
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # coverage arrives with pytest-cov in the dev group; combining needs the
+      # sources on disk, not the project's dependencies.
+      - name: Set up Python + uv
+        uses: ./.github/actions/setup-python-env
+        with:
+          extras: "--frozen --only-group dev"
+
+      - name: Download shard coverage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: volundr-coverage-*
+          path: coverage-shards
+          merge-multiple: true
+
+      - name: Combine coverage and enforce 85%
+        run: |
+          uv run --no-sync coverage combine coverage-shards/
+          uv run --no-sync coverage xml -q
+          uv run --no-sync coverage report --show-missing --fail-under=85
+
+      - name: Upload coverage to Codecov
+        if: always() && hashFiles('coverage.xml') != ''
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          files: coverage.xml
+          flags: backend-volundr
           token: ${{ secrets.CODECOV_TOKEN }}
 
   # Mímir retrieval-quality eval (NIU-1055/NIU-1057). HARD GATE: fails when
