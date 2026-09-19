@@ -62,7 +62,9 @@ def delivery_claim_api(monkeypatch):
 
     monkeypatch.setattr(module, "claim_message", claim)
     monkeypatch.setattr(module, "settle_message", AsyncMock())
-    monkeypatch.setattr(Broker, "_get_http_client", AsyncMock())
+    client = AsyncMock()
+    client.post.return_value = MagicMock(status_code=204)
+    monkeypatch.setattr(Broker, "_get_http_client", AsyncMock(return_value=client))
 
 
 # --------------------------------------------------------------------------- local fixtures

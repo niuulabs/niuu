@@ -135,3 +135,38 @@ async def test_project_compare_and_swap_and_registration_conflict(isolated_pool)
     )
     assert sum(isinstance(result, ForgeProject) for result in results) == 1
     assert sum(isinstance(result, ProjectConflictError) for result in results) == 1
+
+
+async def test_late_usage_write_cannot_restore_working_after_idle(isolated_pool):
+    from datetime import UTC, datetime, timedelta
+
+    from volundr.domain.models import SessionActivityState
+
+    await seed(isolated_pool)
+    repo = PostgresSessionRepository(isolated_pool)
+    start = datetime.now(UTC)
+    busy = await repo.create(
+        Session(
+            name="activity-race",
+            activity_state=SessionActivityState.ACTIVE,
+            activity_state_since=start,
+            turn_started_at=start,
+            last_active=start,
+        )
+    )
+    finish = start + timedelta(minutes=2)
+    idle = await repo.update(
+        busy.model_copy(
+            update={
+                "activity_state": SessionActivityState.IDLE,
+                "activity_state_since": finish,
+                "turn_started_at": None,
+                "last_active": finish,
+            }
+        )
+    )
+    late = await repo.update(busy.model_copy(update={"tokens_used": 100}))
+    assert late.activity_state == idle.activity_state == SessionActivityState.IDLE
+    assert late.activity_state_since == finish and late.turn_started_at is None
+    assert late.last_active == finish and late.tokens_used == 100
+    assert (await repo.get(busy.id)).activity_state == SessionActivityState.IDLE

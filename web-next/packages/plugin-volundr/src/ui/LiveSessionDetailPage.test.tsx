@@ -2186,10 +2186,11 @@ describe('LiveSessionDetailPage', () => {
   });
 
   describe('header metrics', () => {
-    it('shows Uptime metric', async () => {
+    it('shows the activity timer instead of heartbeat-based uptime', async () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
-      expect(screen.getByText('Uptime')).toBeInTheDocument();
+      expect(screen.queryByText('Uptime')).not.toBeInTheDocument();
+      expect(screen.getByTestId('session-activity-elapsed')).toBeInTheDocument();
     });
 
     it('shows Msgs metric', async () => {

@@ -1392,6 +1392,68 @@ def test_sse_stream_embedded_without_broadcaster_returns_503() -> None:
     assert response.status_code == 503
 
 
+@pytest.mark.parametrize(
+    "query, expected",
+    [("?all_instances=true", ["local", "bro"]), ("?instance_id=bro", ["bro"]), ("", ["local"])],
+)
+@respx.mock
+def test_session_stream_scopes_visible_hosts_and_stamps_owning_instance(
+    monkeypatch, query, expected
+):
+    from niuu.adapters.inbound import rest_volundr
+
+    embedded = FastAPI()
+
+    async def subscribe():
+        yield SimpleNamespace(
+            type=SimpleNamespace(value="session_activity"),
+            data={"session_id": "local-session", "state": "idle"},
+        )
+
+    embedded.state.broadcaster = SimpleNamespace(subscribe=subscribe)
+    remote = respx.get("http://bro/api/v1/forge/sessions/stream").mock(
+        return_value=Response(
+            200,
+            text='event: session_activity\ndata: {"session_id":"bro-session","state":"active"}\n\n',
+        )
+    )
+    captured = []
+
+    async def finite_merge(sources):
+        captured.extend(sources)
+        for source in sources.values():
+            reader = source()
+            try:
+                name, data = await anext(reader)
+                yield f"{name}:{data['instance_id']}:{data['session_id']}\n".encode()
+            finally:
+                await reader.aclose()
+
+    monkeypatch.setattr(rest_volundr, "merge_events", finite_merge)
+    client = _client(
+        [
+            _instance(
+                "local",
+                base_url="embedded://local",
+                is_default=True,
+                config={"transport": "embedded"},
+            ),
+            _instance("bro", base_url="http://bro"),
+            _instance("private", base_url="http://private", tenant_id="other"),
+            _instance("disabled", base_url="http://disabled", enabled=False),
+        ],
+        embedded_forge_app=embedded,
+    )
+    response = client.get("/api/v1/forge/sessions/stream" + query, headers=_headers())
+    assert response.status_code == 200
+    assert captured == expected
+    for host in expected:
+        assert f"session_activity:{host}:{host}-session" in response.text
+    if "bro" in expected:
+        assert remote.calls[0].request.url.query == b""  # No recursive fleet fan-out.
+        assert remote.calls[0].request.headers["x-auth-user-id"] == "user-a"
+
+
 @respx.mock
 def test_event_log_proxies_forward_to_owner() -> None:
     """Broker log ingest + cursor replay route through the aggregate."""

@@ -625,3 +625,40 @@ class TestSessionActivityState:
         assert SessionActivityState.AWAITING_INPUT.needs_attention
         assert not SessionActivityState.ACTIVE.needs_attention
         assert not SessionActivityState.IDLE.needs_attention
+
+
+@pytest.mark.asyncio
+async def test_delayed_busy_report_does_not_overwrite_idle(repository, pod_manager, broadcaster):
+    from datetime import UTC, datetime, timedelta
+
+    service = SessionService(
+        repository=repository, pod_manager=pod_manager, broadcaster=broadcaster
+    )
+    session = await repository.create(Session(name="ordered"))
+    start = datetime.now(UTC)
+    await service.update_activity(session.id, SessionActivityState.IDLE, {}, state_since=start)
+    broadcaster._events.clear()
+    actual = await service.update_activity(
+        session.id,
+        SessionActivityState.ACTIVE,
+        {},
+        state_since=start - timedelta(seconds=10),
+        turn_started_at=start - timedelta(seconds=10),
+    )
+    assert actual.activity_state == SessionActivityState.IDLE
+    assert actual.turn_started_at is None
+    assert broadcaster._events == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_heartbeats_keep_elapsed_anchor(repository, pod_manager):
+    service = SessionService(repository=repository, pod_manager=pod_manager)
+    session = await repository.create(Session(name="legacy"))
+    first = await service.update_activity(session.id, SessionActivityState.ACTIVE, {})
+    anchor = first.activity_state_since
+    tool = await service.update_activity(
+        session.id, SessionActivityState.TOOL_EXECUTING, {"heartbeat": True}
+    )
+    assert tool.activity_state_since == anchor
+    idle = await service.update_activity(session.id, SessionActivityState.IDLE, {})
+    assert idle.activity_state_since >= anchor and idle.turn_started_at is None

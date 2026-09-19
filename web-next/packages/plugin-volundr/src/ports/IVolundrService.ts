@@ -132,7 +132,10 @@ export interface IVolundrService {
   ): Promise<SessionProjectMembership>;
 
   /** Subscribe to live session updates via SSE. Returns an unsubscribe function. */
-  subscribe(callback: (sessions: VolundrSession[]) => void): () => void;
+  subscribe(
+    callback: (sessions: VolundrSession[]) => void,
+    options?: { hydrate?: boolean },
+  ): () => void;
   /** Subscribe to live stats updates via SSE. Returns an unsubscribe function. */
   subscribeStats(callback: (stats: VolundrStats) => void): () => void;
 

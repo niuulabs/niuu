@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.auth import extract_principal
+from niuu.adapters.inbound.forge_session_stream import merge_events, remote_events
 from niuu.adapters.inbound.remote_urls import build_remote_url
 from niuu.adapters.inbound.ws_forge_replay import forward_replay
 from niuu.domain.models import InstanceKind, Principal, RegisteredInstance
@@ -1028,51 +1029,38 @@ def create_volundr_router(
         request: Request,
         principal: Principal = Depends(extract_principal),
     ) -> StreamingResponse:
-        """Proxy the backing instance's Server-Sent Events session stream.
+        """Stream a selected/default host, or opt in to every visible Guild host.
 
-        MUST be declared before GET /sessions/{session_id} — otherwise the
-        literal path "stream" is captured as a session id, the request falls
-        through to a session lookup, and the frontend's FleetStream hangs on a
-        connection that never emits an event (status frozen until a manual
-        reload). Single-instance/mini deployments stream the default backing
-        instance; fleet-wide fan-in across instances is a separate feature.
+        Remote reads deliberately omit all_instances so facade-to-facade
+        connections never recursively fan out to each other's registries.
         """
-        instance = await _resolve_target_instance(service, principal, None)
+        selected = request.query_params.get("instance_id")
+        fleet = request.query_params.get("all_instances") == "true" and not selected
+        instances = (
+            await _visible_instances(service, principal)
+            if fleet
+            else [await _resolve_target_instance(service, principal, selected)]
+        )
         headers = _forward_headers(request)
-        embedded = _uses_embedded_transport(instance)
+        broadcaster = getattr(getattr(embedded_forge_app, "state", None), "broadcaster", None)
+        if not fleet and _uses_embedded_transport(instances[0]) and broadcaster is None:
+            raise HTTPException(status_code=503, detail="Session event stream unavailable")
 
-        # For the in-process instance, subscribe to its event bus directly.
-        # httpx's ASGITransport buffers the entire response and never returns for
-        # an infinite stream, so it cannot proxy SSE — but the embedded volundr
-        # app shares this process, so we read its broadcaster. If it is somehow
-        # unavailable, fail fast with 503 so the frontend degrades to polling
-        # (a hung 200 stream would freeze status until a manual reload).
-        broadcaster = None
-        if embedded:
-            broadcaster = getattr(getattr(embedded_forge_app, "state", None), "broadcaster", None)
-            if broadcaster is None:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Session event stream unavailable",
-                )
-
-        async def _proxy() -> Any:
-            if embedded:
+        async def events(instance: RegisteredInstance) -> Any:
+            if _uses_embedded_transport(instance):
+                if broadcaster is None:
+                    raise RuntimeError("Session event stream unavailable")
                 async for event in broadcaster.subscribe():
-                    if await request.is_disconnected():
-                        break
-                    yield (
-                        f"event: {event.type.value}\ndata: {json.dumps(event.data)}\n\n"
-                    ).encode()
-                return
-            url = build_remote_url(instance.base_url, "/api/v1/forge", "/sessions/stream")
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("GET", url, headers=headers) as resp:
-                    async for chunk in resp.aiter_raw():
-                        yield chunk
+                    yield event.type.value, _with_instance(event.data, instance)
+            else:
+                url = build_remote_url(instance.base_url, "/api/v1/forge", "/sessions/stream")
+                async for name, payload in remote_events(url, headers):
+                    yield name, _with_instance(payload, instance)
 
         return StreamingResponse(
-            _proxy(),
+            merge_events(
+                {instance.id: lambda item=instance: events(item) for instance in instances}
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

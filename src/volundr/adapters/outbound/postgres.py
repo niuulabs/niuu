@@ -136,18 +136,30 @@ class PostgresSessionRepository(SessionRepository):
             UPDATE sessions
             SET name = $2, model = $3, source = $4, status = $5,
                 chat_endpoint = $6, code_endpoint = $7, updated_at = $8,
-                last_active = $9, message_count = $10, tokens_used = $11,
+                last_active = GREATEST(last_active, $9), message_count = $10, tokens_used = $11,
                 pod_name = $12, error = $13, tracker_issue_id = $14,
                 issue_tracker_url = $15, launch_spec_id = $16, archived_at = $17,
                 owner_id = $18, tenant_id = $19, workload_type = $20,
                 origin = $21, external_session_id = $22, cli_session_id = $23,
-                session_definition = $24, activity_state = $25,
-                activity_metadata = $26, activity_state_since = $27,
+                session_definition = $24,
+                activity_state = CASE
+                    WHEN activity_state_since IS NULL OR $27 >= activity_state_since
+                    THEN $25 ELSE activity_state END,
+                activity_metadata = CASE
+                    WHEN activity_state_since IS NULL OR $27 >= activity_state_since
+                    THEN $26::jsonb ELSE activity_metadata END,
+                activity_state_since = CASE
+                    WHEN activity_state_since IS NULL OR $27 >= activity_state_since
+                    THEN $27 ELSE activity_state_since END,
                 workload_config = CASE WHEN coordination_revision = $30
                     THEN $28::jsonb ELSE ($28::jsonb - 'project_context') END,
-                turn_started_at = $29
+                turn_started_at = CASE
+                    WHEN activity_state_since IS NULL OR $27 >= activity_state_since
+                    THEN $29 ELSE turn_started_at END
             WHERE id = $1
-            RETURNING coordination, coordination_revision, workload_config
+            RETURNING coordination, coordination_revision, workload_config,
+                      activity_state, activity_metadata, activity_state_since,
+                      turn_started_at, last_active
             """,
             session.id,
             session.name,
@@ -188,6 +200,11 @@ class PostgresSessionRepository(SessionRepository):
                 "coordination": self._parse_json_dict(row["coordination"]) or None,
                 "coordination_revision": row["coordination_revision"],
                 "workload_config": self._parse_json_dict(row["workload_config"]) or {},
+                "activity_state": self._parse_activity_state(row["activity_state"]),
+                "activity_metadata": self._parse_activity_metadata(row["activity_metadata"]),
+                "activity_state_since": row["activity_state_since"],
+                "turn_started_at": row["turn_started_at"],
+                "last_active": row["last_active"],
             }
         )
 

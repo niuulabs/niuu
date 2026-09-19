@@ -371,9 +371,9 @@ class SessionService:
         ``turn_started_at`` is the broker-stamped UTC timestamp of when the
         CURRENT turn started (the prompt instant), stable across intra-turn
         state flips; None when no turn is in flight OR the broker is too old to
-        report it. Unlike ``state_since`` it is persisted VERBATIM (no now()
-        fallback) — a null is meaningful ("no turn / unknown"), and clients then
-        fall back to ``state_since`` for the running elapsed.
+        report it. An unstamped heartbeat retains the known current turn;
+        idle/stopped/error always clear it. No artificial turn start is invented;
+        clients use ``state_since`` when the turn start is unknown.
 
         Raises SessionNotFoundError if the session doesn't exist.
         """
@@ -393,14 +393,32 @@ class SessionService:
         previous_state = session.activity_state
         previous_request_id = (session.activity_metadata or {}).get("request_id")
 
+        # Ignore delayed reports before mutating any fields or emitting an SSE event.
+        if (
+            state_since
+            and session.activity_state_since
+            and state_since < session.activity_state_since
+        ):
+            return session
+        same_bucket = previous_state == state or (
+            previous_state is not None and previous_state.is_busy and state.is_busy
+        )
+        previous_since = session.activity_state_since
+        previous_turn = session.turn_started_at
         session.activity_state = state
         # The broker stamps state_since only on a real change; fall back to "now"
         # when an older broker omits it so the field is never null for a live
         # session that just transitioned.
-        session.activity_state_since = state_since or datetime.now(UTC)
-        # Persisted VERBATIM (incl. None) — a null turn anchor is meaningful
-        # (no turn in flight / old broker), and clients fall back to state_since.
-        session.turn_started_at = turn_started_at
+        session.activity_state_since = (
+            state_since or (previous_since if same_bucket else None) or datetime.now(UTC)
+        )
+        # Preserve a known anchor on old-broker heartbeats, clear it on turn end.
+        session.turn_started_at = (
+            None
+            if state
+            in (SessionActivityState.IDLE, SessionActivityState.STOPPED, SessionActivityState.ERROR)
+            else turn_started_at or (previous_turn if same_bucket else None)
+        )
         session.activity_metadata = metadata
         if state is SessionActivityState.ERROR:
             message = str(metadata.get("error") or metadata.get("message") or "").strip()
@@ -414,6 +432,13 @@ class SessionService:
         if session.error and session.error.startswith("liveness:"):
             session.error = None
         updated = await self._repository.update(session)
+        # A concurrent newer activity report may have won the database comparison.
+        # Never publish the stale caller's state/timing pair over that winner.
+        if (updated.activity_state, updated.activity_state_since) != (
+            state,
+            session.activity_state_since,
+        ):
+            return updated
 
         is_new_attention = self._is_new_attention_request(
             state, previous_state, metadata, previous_request_id

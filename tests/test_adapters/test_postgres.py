@@ -21,7 +21,16 @@ def mock_pool():
     pool = MagicMock()
     pool.execute = AsyncMock()
     pool.fetchrow = AsyncMock(
-        return_value={"coordination": None, "coordination_revision": 0, "workload_config": {}}
+        return_value={
+            "coordination": None,
+            "coordination_revision": 0,
+            "workload_config": {},
+            "activity_state": None,
+            "activity_metadata": {},
+            "activity_state_since": None,
+            "turn_started_at": None,
+            "last_active": None,
+        }
     )
     pool.fetch = AsyncMock()
     return pool
@@ -351,8 +360,8 @@ class TestActivityStatePersistence:
 
         call_args = mock_pool.fetchrow.call_args[0]
         sql = call_args[0]
-        assert "activity_state = $25" in sql
-        assert "activity_metadata = $26" in sql
+        assert "THEN $25 ELSE activity_state END" in sql
+        assert "THEN $26::jsonb ELSE activity_metadata END" in sql
         assert call_args[25] == "awaiting_input"
         assert '"request_id": "askq-1-abc"' in call_args[26]
 
@@ -437,7 +446,7 @@ class TestActivityStatePersistence:
 
         call_args = mock_pool.fetchrow.call_args[0]
         sql = call_args[0]
-        assert "activity_state_since = $27" in sql
+        assert "THEN $27 ELSE activity_state_since END" in sql
         assert call_args[27] == since
 
     async def test_row_round_trips_activity_state_since(
@@ -489,7 +498,7 @@ class TestActivityStatePersistence:
         await repository.update(awaiting_session)
 
         call_args = mock_pool.fetchrow.call_args[0]
-        assert "turn_started_at = $29" in call_args[0]
+        assert "THEN $29 ELSE turn_started_at END" in call_args[0]
         assert call_args[29] == turn_start
 
     async def test_row_round_trips_turn_started_at(
@@ -590,6 +599,11 @@ async def test_ordinary_write_returns_newer_membership_instead_of_stale_caller_c
         "coordination": coordination.model_dump_json(),
         "coordination_revision": 2,
         "workload_config": {"effort": "high"},
+        "activity_state": None,
+        "activity_metadata": {},
+        "activity_state_since": None,
+        "turn_started_at": None,
+        "last_active": None,
     }
     stale = sample_session.model_copy(update={"workload_config": {"project_context": "old"}})
     actual = await repository.update(stale)
@@ -601,3 +615,22 @@ async def test_ordinary_write_returns_newer_membership_instead_of_stale_caller_c
     mock_pool.fetchrow.return_value = None
     with pytest.raises(LookupError):
         await repository.update(stale)
+
+
+async def test_update_returns_winning_activity_tuple(repository, mock_pool, sample_session):
+    since = datetime(2026, 9, 19, 12, tzinfo=UTC)
+    mock_pool.fetchrow.return_value.update(
+        activity_state="idle", activity_state_since=since, turn_started_at=None, last_active=since
+    )
+    stale = sample_session.model_copy(
+        update={
+            "activity_state": SessionActivityState.ACTIVE,
+            "turn_started_at": datetime(2026, 9, 19, 11, tzinfo=UTC),
+        }
+    )
+    actual = await repository.update(stale)
+    assert actual.activity_state == SessionActivityState.IDLE
+    assert actual.activity_state_since == since and actual.turn_started_at is None
+    assert actual.last_active == since
+    sql = mock_pool.fetchrow.call_args.args[0]
+    assert sql.count("$27 >= activity_state_since") == 4

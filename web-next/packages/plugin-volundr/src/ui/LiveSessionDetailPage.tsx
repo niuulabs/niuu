@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { RenameSession } from './RenameSession';
 import { AssignSessionProject } from './AssignSessionProject';
 import { PinSession } from './PinSession';
+import { SessionActivityElapsed } from './SessionActivityElapsed';
 import { useNavigate } from '@tanstack/react-router';
 import { useService } from '@niuulabs/plugin-sdk';
 import { getAuthHeaders } from '@niuulabs/query';
@@ -3624,7 +3625,6 @@ function LiveSessionDetailPageInner({
     };
   }, [chat.meshEvents, chat.participants, dismissedHumanGateIds, workflowGates]);
   const sessionDetail = sessionQuery.data;
-  const uptimeValue = formatElapsedSince(sessionDetail?.startedAt);
   const costValue =
     sessionDetail?.costCents != null ? formatCurrencyCents(sessionDetail.costCents) : null;
   const trailingMetric = useMemo(() => {
@@ -3918,7 +3918,7 @@ function LiveSessionDetailPageInner({
             </div>
 
             <div className="niuu-live-session__metrics-row" data-testid="session-stats">
-              <HeaderMetric label="Uptime" value={uptimeValue} />
+              {sessionDetail && <SessionActivityElapsed session={sessionDetail} />}
               <HeaderDivider />
               <HeaderMetric label="Msgs" value={formatCount(headerMessageCount)} />
               {showTokenUsage && (
