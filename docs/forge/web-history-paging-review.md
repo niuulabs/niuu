@@ -7,7 +7,7 @@ The web chat requested a complete WebSocket replay while also loading complete R
 - The shared Skuld chat reader requests up to the newest 10 turns in one REST page. Scrolling upward or selecting **Load earlier messages** requests up to another 10. Shorter conversations stop at their beginning. The reader holds a visible message anchor when prepending rows.
 - Each history-page response is capped at 256 KiB. Requests reserve 4 KiB for routing/timing metadata that retained facades append after fitting the page. Gateway limits and large messages can reduce an individual page. The client displays that smaller page immediately and does not fetch older pages to fill the requested count. Oversized responses are rejected during streaming, before JSON decoding.
 - Session URLs retain their owning host/proxy prefix. The Forge conversation facade pages both current and retained older gateways. Current servers use opaque cursors; older servers use `before` with an overlapping message ID/index check and bounded retries when appends move the tail. A changed projection requires a recent read rather than silently stitching unrelated pages.
-- WebSockets request `history=recent&history_protocol=2&history_delivery=none`. Current gateways stream live events only; retained gateways may supply a recent snapshot, which cannot replace the REST window. A read after socket attachment closes the initial-read/connection gap; an unfinished pre-attachment batch is cancelled immediately instead of downloading the complete batch twice. Reconnect refreshes recent history and retains loaded older rows when the windows overlap in the same projection.
+- WebSockets request `history=recent&history_protocol=2&history_delivery=none`. Current gateways stream live events only; retained gateways may supply a recent snapshot, which cannot replace the REST window. A read after socket attachment closes the initial-read/connection gap. The single initial page displays as soon as it arrives; a queued post-attachment read then reconciles in the background, without cancelling/repeating the foreground request or holding the loading screen. Reconnect refreshes recent history and retains loaded older rows when the windows overlap in the same projection.
 - Typed replay errors and `history_gap` request coalesced REST recovery. They never become messages or terminal agent failures and never resend user input. Ordinary errors and ordinary text quoting the warning remain visible. Failed initial, older, and recovery reads remain retryable. Session changes cancel pending reads.
 - Large tool input/output is fetched from the owning session only when its tool card opens. When a history page truncates a message, the client automatically reads that exact turn before rendering the batch. It requests shallow tool detail but complete prose, so the message uses the ordinary inline Markdown and streaming renderer, without a preview card, open button or modal. These per-message reads are not capped by the page byte budget. Retained facades that ignore `turn_id` may return a whole shallow transcript; the reader selects exactly one matching identity and rejects missing/duplicate identities. Metadata-only rows are replaced with the actual message and author. Reads are sequential and share the batch cancellation signal; failures use the normal history retry flow.
 - The cached transcript is limited to the latest 10 messages. Loading older pages does not turn the next initial view into an unbounded cache replay.
@@ -40,8 +40,9 @@ that data:
    are not joined by text, timestamps or status. A turn completed while the GET
    was pending remains completed.
 2. Pre-attachment loading completed the whole batch and then repeated it after
-   socket attachment. It now cancels the first batch promptly and starts the
-   post-attachment read.
+   socket attachment. The September 18 repair cancelled that large batch. With
+   the September 19 single-page window, the initial page instead finishes and
+   displays immediately; the post-attachment read catches up in the background.
 3. Retained facades can append metadata after fitting the requested byte budget.
    The browser now requests slightly less than its hard receive limit. The large
    preview also no longer traps Markdown inside a 12-rem nested scroller, and its
@@ -85,3 +86,9 @@ until the user scrolls up or presses Load earlier messages.
 Regression tests cover the 10-turn limit, accepting a smaller byte-limited page,
 continuous legacy boundaries when appends shorten a page, reaching the earliest
 message without gaps, anchored upward scrolling, reconnects and live streaming.
+
+Post-publication timing exposed a second delay: socket attachment cancelled the
+first request and restarted the same remote history build. The initial page now
+finishes and renders before the queued post-attachment refresh. That refresh still
+closes the REST/WebSocket connection gap, merges live events and reports failures;
+it does not block the first page or discard it on a failed catch-up.

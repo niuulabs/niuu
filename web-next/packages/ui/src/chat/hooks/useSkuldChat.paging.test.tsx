@@ -44,23 +44,54 @@ beforeEach(() => {
   send.mockClear();
 });
 describe('paged session history', () => {
-  it('cancels the pre-attachment initial GET instead of finishing and downloading the batch twice', async () => {
+  it('shows the initial page before a queued post-attachment refresh finishes', async () => {
     const { fetcher } = mockHistory(2);
     let release!: (response: Response) => void;
+    let refresh!: (response: Response) => void;
     let initialSignal: AbortSignal | undefined;
-    fetcher.mockImplementationOnce((_, options) => {
-      initialSignal = options?.signal as AbortSignal;
-      return new Promise((resolve) => {
-        release = resolve;
-      });
-    });
+    fetcher
+      .mockImplementationOnce((_, options) => {
+        initialSignal = options?.signal as AbortSignal;
+        return new Promise((resolve) => {
+          release = resolve;
+        });
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            refresh = resolve;
+          }),
+      );
     const { result } = renderHook(() => useSkuldChat(url));
     act(() => handlers.onOpen());
+    expect(initialSignal?.aborted).toBe(false);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await act(async () => release(Response.json({ turns: [turn(0)] })));
     await waitFor(() => expect(result.current.historyLoaded).toBe(true));
-    expect(initialSignal?.aborted).toBe(true);
-    expect(fetcher).toHaveBeenCalledTimes(2);
-    await act(async () => release(Response.json({ turns: [turn(999)] })));
+    expect(result.current.messages.map((row) => row.id)).toEqual(['row-0']);
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    await act(async () => refresh(Response.json({ turns: [turn(0), turn(1)] })));
     expect(result.current.messages.map((row) => row.id)).toEqual(['row-0', 'row-1']);
+    expect(send).not.toHaveBeenCalled();
+  });
+  it('keeps the first page visible and reports a failed background catch-up', async () => {
+    const { fetcher } = mockHistory(2);
+    let release!: (response: Response) => void;
+    fetcher
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    const { result } = renderHook(() => useSkuldChat(url));
+    act(() => handlers.onOpen());
+    await act(async () => release(Response.json({ turns: [turn(0)] })));
+    await waitFor(() => expect(result.current.historyError).toContain('503'));
+    expect(result.current.historyLoaded).toBe(true);
+    expect(result.current.messages.map((row) => row.id)).toEqual(['row-0']);
+    expect(send).not.toHaveBeenCalled();
   });
   it('starts with 10 and deduplicates simultaneous older loads', async () => {
     const { fetcher } = mockHistory(23);

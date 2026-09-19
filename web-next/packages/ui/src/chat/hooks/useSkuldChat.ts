@@ -1020,8 +1020,8 @@ export function useSkuldChat(
     historyWorkRef.current = fetchHistoryBatch(url, controller.signal)
       .then((data) => {
         if (cancelled) return;
-        // Finish the post-attachment read before exposing the initial page.
-        if (!historyLoaded && queuedRecoveryRef.current) return;
+        // Show this page immediately. A queued post-attachment read closes the
+        // connection gap in the background and reconciles with live events.
         clearHistoryRetryTimer();
         setHistoryFailure(null);
         historyRefreshRef.current = false;
@@ -2305,12 +2305,8 @@ export function useSkuldChat(
   const { sendJson } = useWebSocket(socketUrl, {
     onOpen: () => {
       // A read after socket attachment closes the GET-before-connect gap, including reconnects.
-      // Cancel an unfinished initial batch now; do not download it all twice.
-      if (!historyLoaded && historyReadRef.current) {
-        historyReadRef.current.abort();
-        historyReadRef.current = null;
-        queuedRecoveryRef.current = false;
-      }
+      // Let the single initial page finish; cancelling it still leaves the remote
+      // history build running and delays the first paint with a duplicate build.
       requestHistoryRecovery();
       setConnected(true);
       setConnectionVersion((version) => version + 1);
