@@ -2,7 +2,8 @@
 
 This procedure is for the **local-process** Forge API. It is not a Kubernetes
 deployment, a gateway upgrade, a native-session restart, or a database operation.
-It replaces the untracked orchestration used in the [September 13 incident](codex-rollout-incident-20260913.md).
+It replaces the untracked orchestration used in the September 13 incident
+(`docs/forge/codex-rollout-incident-20260913.md`, git history at `99e41f83a`).
 
 ## What must remain alive
 
@@ -123,5 +124,6 @@ procedure and `39da0146` as safe rollback. All 14 session identities and four
 protected owners remained unchanged; no live gateway existed at this cutover.
 One newly timed archive intentionally gains its correct live display grouping;
 the other 13 session payloads and 2,357 test log entries are unchanged. This is not
-an iOS live-deduplication fix or a new active-turn reconnect proof. See the
-[readback and remaining native work](codex-live-dedup-followup-20260914.md).
+an iOS live-deduplication fix or a new active-turn reconnect proof. The
+readback and remaining native work were written up in
+`docs/forge/codex-live-dedup-followup-20260914.md` (git history, last present at `99e41f83a`).

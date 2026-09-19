@@ -6,7 +6,8 @@ utility and their interaction model. This document is a future-work inventory,
 bulk expose the Codex TUI menu through Forge or treat command-looking user prose
 as privileged API operations.
 
-The [dated inventory](codex-command-inventory-20260913.json) accounts for 54 names
+The dated inventory (`codex-command-inventory-20260913.json`, git history at
+`99e41f83a`) accounts for 54 names
 from the [official command reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
 and release notes. A TUI affordance does not necessarily correspond to an
 app-server method. Existing bounded command mappings remain compatible; their

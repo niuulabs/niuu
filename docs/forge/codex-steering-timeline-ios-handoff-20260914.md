@@ -168,7 +168,8 @@ the new broker removes that difference for newly recorded inputs.
 
 ## Follow-up from the fresh timeline-v3 gateway
 
-[Live deduplication and filesystem archive follow-up](codex-live-dedup-followup-20260914.md)
+The live deduplication and filesystem archive follow-up
+(`codex-live-dedup-followup-20260914.md`, in git history at `99e41f83a`)
 adds real fresh-gateway evidence, precise frozen-tool/result and mutable-cache
 boundary findings, an explicit native-owner escalation, and a shared synthetic
 fixture. It also corrects the prior overly broad archive parity claim: the

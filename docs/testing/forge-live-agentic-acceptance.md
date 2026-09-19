@@ -2,8 +2,7 @@
 
 This is the executable acceptance plan for remote Forge sessions through Skuld,
 with Claude Code in tmux and Codex app-server as the active providers. It builds
-on the [stability review](forge-stability-review-2026-09-07.md) and
-[deterministic fault workflow](forge-stability-workflow.md).
+on the [deterministic fault workflow](forge-stability-workflow.md).
 
 The [native question acceptance extension](forge-native-question-acceptance.md)
 adds actual iOS custom answers, restored drafts, multiple questions and checkbox
@@ -88,8 +87,8 @@ A passing replay of the captured database is insufficient if recovery quietly
 started a fresh native conversation. The September 8 Lexi Astra incident exposed
 that failure alongside an unhandled `options: null` free-text question; both now
 have explicit regression contracts.
-See the [incident investigation](forge-lexi-astra-incident-2026-09-08.md) for the
-native/database comparison and verified recovery limits.
+The incident investigation, with the native/database comparison and verified
+recovery limits, is `docs/testing/forge-lexi-astra-incident-2026-09-08.md` (git history, last present at `99e41f83a`).
 
 An additional opt-in native recovery test terminates only its own app-server
 after storing a random token in the conversation. It restarts the same adapter,
@@ -376,5 +375,5 @@ Do not accept a release based solely on unit test counts, a prompt saying "done"
 a green screenshot, a replay built only from mocks, or an overall score averaging
 away a lost question/tool/agent event. Critical contracts are individual gates.
 
-The measured first campaign and unresolved deployment differences are recorded in
-[the live results report](forge-live-results-2026-09-07.md).
+The measured first campaign (2026-09-07) and the dated incident and results
+reports are in git history under `docs/testing/`, last present at `99e41f83a`.

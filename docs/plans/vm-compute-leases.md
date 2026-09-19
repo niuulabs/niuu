@@ -1,5 +1,8 @@
 # VM execution through Völundr: verification and implementation plan
 
+> The sanitized JSON evidence this plan cites (`docs/plans/evidence/harvester-*-2026-09-16.json`)
+> is no longer kept in the tree. It is in git history, last present at `99e41f83a`.
+
 Status: the selected local Harvester deployment and shared VM backend are implemented. The disposable VM allocation layer, Harvester
 API adapter, PostgreSQL repository, and operator lifecycle proof command are
 implemented. Live Harvester VM lifecycle proof passed on 2026-09-16. Forge
@@ -88,7 +91,6 @@ Live Harvester verification passed on Vanaheim (Harvester 1.8.2), using namespac
 cloud image. A 2-vCPU, 2-GiB VM with an 8-GiB disk reached running state and
 reported `192.168.90.7`. The durable claim reached `released`; a separate API
 inventory confirmed no remaining VM, VMI, PVC or Secret belonging to the proof.
-See the [recorded evidence](evidence/harvester-live-proof-2026-09-16.json).
 
 The live run exposed two adapter defects, now fixed: image references must
 accept DNS subdomains containing dots, and this cluster requires explicit guest
@@ -121,14 +123,13 @@ Focused validation: 167 tests passed without warnings; combined line/branch
 coverage across compute and VM modules was 91.30%. Live checks established real
 Skuld health, its WebSocket handshake, platform callbacks, workspace archive and
 restore into a replacement VM, and reconnection after graceful controller restart.
-See [Forge runtime evidence](evidence/harvester-forge-proof-2026-09-16.json) for
-cleanup results and the limits of this proof.
+The recorded run also covers cleanup results and the limits of this proof.
 
 Follow-up crash recovery now supervises SSH lifetime through a controller-owned
 pipe and persists runtime-start completion. Reconciliation resumes interrupted
 startup in a tracked background task; failures retain capacity and remain visible.
 Live SIGKILL tests recovered both provisioning and running sessions on the same
-allocation. See [crash-recovery evidence](evidence/harvester-crash-recovery-2026-09-16.json).
+allocation.
 
 Live model execution now passes using Skuld's existing Codex credential adapter
 and the selected connection on the Spark's existing Niuu credential broker.
@@ -136,7 +137,6 @@ Codex (`gpt-5.6-sol`) created and read a workspace file; a separate pinned SSH
 read confirmed its contents. Stop preserved that file in the local workspace
 archive and disposed of the allocation. No subscription refresh credential was
 copied into the VM, and no new login or renewal protocol was introduced.
-See [Codex execution evidence](evidence/harvester-codex-execution-2026-09-16.json).
 
 Unattended inventory recovery, durable retry deadlines, clean standby pools,
 interrupted stop recovery and admin settings are implemented. Production
@@ -556,7 +556,7 @@ the first session's marker.
 Final validation: 144 focused compute/application/migration/lifecycle tests
 (91.01% coverage), and the full web suite of 6,648 tests passed its
 coverage gates; web build, typecheck and formatting also passed. Sanitized live
-measurements are recorded in `evidence/harvester-warm-pool-2026-09-16.json`.
+measurements were recorded as `evidence/harvester-warm-pool-2026-09-16.json`.
 The local pool is left paused and drained pending replacement of the temporary
 Harvester credential. The controller and admin UI remain available. Sustained
 high-capacity load and production identity/OpenBao deployment are not certified
@@ -603,8 +603,8 @@ coverage after installing the missing optional telemetry dependency and rerunnin
 its tests; it emitted eight pre-existing SQLite resource warnings on Python 3.13.
 No coverage gate was lowered.
 
-Sanitized measurements are in
-[`evidence/harvester-load-10vm-2026-09-16.json`](evidence/harvester-load-10vm-2026-09-16.json).
+Sanitized measurements were recorded as
+`evidence/harvester-load-10vm-2026-09-16.json`.
 The final check confirms all ten sessions stopped, zero owned provider VMs and
 zero active allocations. The controller/admin UI remain available; the pool is
 paused and drained. This is a bounded load/churn proof, not a sustained-capacity

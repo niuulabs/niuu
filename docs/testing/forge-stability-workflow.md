@@ -1,7 +1,8 @@
 # Forge stability tests and release workflow
 
-This is the execution companion to the
-[2026-09-07 review](forge-stability-review-2026-09-07.md). It defines what must be
+This is the execution companion to the 2026-09-07 stability review (in git
+history as `docs/testing/forge-stability-review-2026-09-07.md`, last present at
+`99e41f83a`). It defines what must be
 proved across Claude/tmux, Claude SDK modes, Codex, Grok and Muse, and separates
 the gates implemented now from the acceptance work still required.
 
