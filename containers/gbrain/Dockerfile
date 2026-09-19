@@ -1,5 +1,5 @@
 FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895
-ARG GBRAIN_REF=43597b19e50a3abf56409337f248f7966860293c
+ARG GBRAIN_REF=d13aa742fd68b71bfd6c98be3dda5813791f1d6c
 USER root
 # The pinned base carries fixed-upstream CVEs in glibc, pcre2, sqlite and gzip
 # (the scan gate fails on the glibc one); take Debian's security updates.
@@ -10,6 +10,7 @@ WORKDIR /opt/gbrain
 RUN git init && git remote add origin https://github.com/garrytan/gbrain.git \
     && git fetch --depth 1 origin "$GBRAIN_REF" && git checkout FETCH_HEAD \
     && bun install --frozen-lockfile \
+    && bun pm cache rm \
     && printf '#!/bin/sh\nexec bun /opt/gbrain/src/cli.ts "$@"\n' > /usr/local/bin/gbrain \
     && chmod +x /usr/local/bin/gbrain
 RUN mkdir -p /data && chown 1000:1000 /data

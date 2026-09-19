@@ -44,10 +44,10 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
 
 # Install uv from a pinned release archive.
 RUN set -eux; \
-    UV_VERSION="0.11.10"; \
+    UV_VERSION="0.12.13"; \
     case "${TARGETARCH}" in \
-      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="077e1a0777bcf516e02f4ef245e269c8d1baa780438e4c50e09c5c997f85538a" ;; \
-      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="91d5f4583539640765662ef86edcf3bf4db07439b622c7bed50c961240162046" ;; \
+      amd64) UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"; UV_SHA256="745765a3b6e360ad76743599ae5c42e9278c7edf8bbff9fc76d05bf2623a04dd" ;; \
+      arm64) UV_ARCHIVE="uv-aarch64-unknown-linux-gnu.tar.gz"; UV_SHA256="2eaa5d94f5db7b3a1a092156b9420459e42ab0217d917fe74a876309cef9b5e9" ;; \
       *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_ARCHIVE}" -o "/tmp/${UV_ARCHIVE}"; \
@@ -85,19 +85,20 @@ RUN echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg ma
     && apt-get install -y --no-install-recommends postgresql-16 \
     && rm -rf /var/lib/apt/lists/*
 
-# Upgrade pip to fix GHSA-4xh5-x5gv-qwph / GHSA-6vgw-5pg2-w6jp
-RUN uv pip install --system --break-system-packages --upgrade pip==26.1.1
+# Pin pip past its published advisories. --no-cache keeps a second, scannable
+# copy of every wheel out of /root/.cache/uv.
+RUN uv pip install --system --break-system-packages --no-cache --upgrade pip==26.2.1
 
-# Common Python packages for web dev
-RUN uv pip install --system --break-system-packages \
-    uvicorn==0.41.0 \
-    fastapi==0.136.3 \
-    starlette==1.1.0 \
+# Common Python packages for web dev (kept in step with uv.lock)
+RUN uv pip install --system --break-system-packages --no-cache \
+    uvicorn==0.52.4 \
+    fastapi==0.141.1 \
+    starlette==1.6.0 \
     flask==3.1.3 \
     gunicorn==25.1.0 \
     psycopg2-binary==2.9.11 \
     pyyaml==6.0.3 \
-    aiohttp==3.13.3
+    aiohttp==3.14.3
 
 # Install Homebrew dependencies (so users can brew install without root)
 RUN apt-get update && apt-get install -y --no-install-recommends \
