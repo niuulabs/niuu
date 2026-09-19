@@ -78,6 +78,9 @@ RUN sh /tmp/install-muse.sh "$TARGETARCH" && rm /tmp/install-muse.sh
 
 ENV UV_PROJECT_ENVIRONMENT=/opt/niuu
 COPY pyproject.toml uv.lock README.md /app/
+# Dependencies resolve from the lockfile alone, so this layer survives source
+# edits; only the project itself is installed after src/ is copied.
+RUN uv sync --frozen --no-dev --no-editable --no-cache --no-install-project --extra nats --extra dsh
 COPY src/ /app/src/
 COPY scripts/openshell-run-installed-skuld.sh /usr/local/bin/openshell-run-installed-skuld
 RUN uv sync --frozen --no-dev --no-editable --no-cache --extra nats --extra dsh \

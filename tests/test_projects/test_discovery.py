@@ -90,7 +90,12 @@ async def test_manifest_identity_and_existing_repository_url_are_preserved(repo)
         "[]",
         "{}",
         '{"id":"invalid"}',
-        json.dumps({"id": str(uuid4()), "repo_url": "https://github.com/wrong/repository"}),
+        json.dumps(
+            {
+                "id": "3f2b8c1e-6d4a-4e9b-9c57-1a2b3c4d5e6f",
+                "repo_url": "https://github.com/wrong/repository",
+            }
+        ),
     ],
 )
 async def test_invalid_manifest_is_not_silently_replaced(repo, content):

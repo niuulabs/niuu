@@ -189,7 +189,9 @@ def test_rest_backfill_success_and_unavailable(recovery):
 
 
 @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer invalid"}])
-@pytest.mark.parametrize("endpoint", ["sessions/import", f"sessions/{uuid4()}/history/import"])
+@pytest.mark.parametrize(
+    "endpoint", ["sessions/import", "sessions/3f2b8c1e-6d4a-4e9b-9c57-1a2b3c4d5e6f/history/import"]
+)
 def test_history_mutations_require_valid_identity_when_configured(recovery, headers, endpoint):
     from volundr.domain.ports import IdentityPort, InvalidTokenError
 

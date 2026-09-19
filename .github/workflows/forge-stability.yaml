@@ -37,7 +37,6 @@ jobs:
       - uses: ./.github/actions/setup-python-env
         with:
           python-version: ${{ matrix.python }}
-          extras: "--frozen --all-extras --dev"
       - name: Install real tmux
         if: matrix.lane == 'tmux'
         run: sudo apt-get update && sudo apt-get install -y tmux
@@ -78,8 +77,6 @@ jobs:
           egress-policy: audit
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: ./.github/actions/setup-python-env
-        with:
-          extras: "--frozen --all-extras --dev"
       - name: Exercise actual database and HTTP/SSE boundaries
         env:
           TEST_DATABASE_HOST: localhost

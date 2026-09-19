@@ -1,9 +1,9 @@
 # Reusable: build multi-arch container images and publish manifest tags.
 #
-# Splits into two matrix jobs:
+# Splits into two jobs:
 #   1. build   — per (container × platform), pushes <image>:<tag-prefix>-<platform>
-#   2. manifest — per container, creates multi-arch manifests pointing at the
-#      per-platform tags for every entry in `manifest-tags`.
+#   2. manifest — one job; for each container creates multi-arch manifests
+#      pointing at the per-platform tags for every entry in `manifest-tags`.
 #
 # The tag scheme (prefix + manifest list) is deliberately caller-controlled —
 # PR/feature/dev callers all need different tagging.
@@ -40,6 +40,25 @@ on:
         description: Container registry.
         type: string
         default: ghcr.io
+      cache-write:
+        description: >-
+          Export the BuildKit layer cache to <image>:buildcache-<platform>.
+          Only the integration branch should write; every caller reads it.
+        type: boolean
+        default: false
+      cache-scope:
+        description: >-
+          Optional private cache, read and written at
+          <image>:<cache-scope>-buildcache-<platform> in addition to reading the
+          integration branch's. PR builds pass pr-<number>: later pushes to the
+          same PR reuse its own layers (a changed lockfile, a rebuilt web bundle)
+          without overwriting the integration branch's cache. Scoped builds also
+          read and write <image>:pr-shared-buildcache-<platform>, the most recent
+          scoped build of any PR — BuildKit cannot wildcard cache refs, so "any
+          PR's cache" has to be one tag. The pr- prefix lets
+          cleanup-containers.yaml collect both.
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -85,21 +104,28 @@ jobs:
           labels: |
             ${{ inputs.labels }}
             org.opencontainers.image.licenses=${{ matrix.container == 'gbrain' && 'MIT' || 'Apache-2.0' }}
-          cache-from: type=gha,scope=${{ matrix.container }}-${{ matrix.platform }}
-          cache-to: type=gha,mode=max,ignore-error=true,scope=${{ matrix.container }}-${{ matrix.platform }}
+          # Registry-backed layer cache. The GitHub Actions cache is capped at
+          # 10 GB per repository; sixteen mode=max scopes overflowed it and
+          # evicted each other, so builds ran cold. The registry has no cap.
+          cache-from: |
+            type=registry,ref=${{ inputs.registry }}/${{ github.repository_owner }}/${{ matrix.container }}:buildcache-${{ matrix.platform }}
+            ${{ inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:pr-shared-buildcache-{3}', inputs.registry, github.repository_owner, matrix.container, matrix.platform) || '' }}
+            ${{ inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:{3}-buildcache-{4}', inputs.registry, github.repository_owner, matrix.container, inputs.cache-scope, matrix.platform) || '' }}
+          cache-to: |
+            ${{ inputs.cache-write && format('type=registry,ref={0}/{1}/{2}:buildcache-{3},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, matrix.platform) || '' }}
+            ${{ inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:{3}-buildcache-{4},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, inputs.cache-scope, matrix.platform) || '' }}
+            ${{ inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:pr-shared-buildcache-{3},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, matrix.platform) || '' }}
           platforms: linux/${{ matrix.platform }}
           provenance: false
 
+  # One job for every container: publishing a manifest is seconds of registry
+  # API calls, so a runner per container spent longer booting than working.
   manifest:
-    name: "Manifest ${{ matrix.container }}"
+    name: "Manifests"
     needs: build
     runs-on: ubuntu-latest
     permissions:
       packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        container: ${{ fromJson(inputs.containers) }}
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -115,7 +141,8 @@ jobs:
 
       - name: Create and push manifests
         env:
-          IMAGE: ${{ inputs.registry }}/${{ github.repository_owner }}/${{ matrix.container }}
+          IMAGE_BASE: ${{ inputs.registry }}/${{ github.repository_owner }}
+          CONTAINERS: ${{ inputs.containers }}
           TAG_PREFIX: ${{ inputs.tag-prefix }}
           PLATFORMS: ${{ inputs.platforms }}
           MANIFEST_TAGS: ${{ inputs.manifest-tags }}
@@ -147,15 +174,19 @@ jobs:
             done
           }
 
-          # Collect per-platform source tags
-          SOURCES=()
-          for plat in $(echo "${PLATFORMS}" | jq -r '.[]'); do
-            SOURCES+=("${IMAGE}:${TAG_PREFIX}-${plat}")
-          done
-          echo "Source images: ${SOURCES[*]}"
+          for container in $(echo "${CONTAINERS}" | jq -r '.[]'); do
+            IMAGE="${IMAGE_BASE}/${container}"
 
-          for tag in ${MANIFEST_TAGS}; do
-            echo "::group::manifest ${IMAGE}:${tag}"
-            retry_manifest_publish "${tag}"
-            echo "::endgroup::"
+            # Collect per-platform source tags
+            SOURCES=()
+            for plat in $(echo "${PLATFORMS}" | jq -r '.[]'); do
+              SOURCES+=("${IMAGE}:${TAG_PREFIX}-${plat}")
+            done
+            echo "Source images: ${SOURCES[*]}"
+
+            for tag in ${MANIFEST_TAGS}; do
+              echo "::group::manifest ${IMAGE}:${tag}"
+              retry_manifest_publish "${tag}"
+              echo "::endgroup::"
+            done
           done

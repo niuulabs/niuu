@@ -71,6 +71,50 @@ _AMBIENT_PREFIXES = (
 )
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--shard",
+        default=None,
+        metavar="INDEX/TOTAL",
+        help="Run one slice of the collected test files (1-based), e.g. --shard=2/4.",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Split the suite across CI runners by whole files.
+
+    Files go to the currently lightest shard, heaviest first, so every runner
+    (and every xdist worker inside it) derives the same balanced partition from
+    the same collection. Whole files keep module-scoped fixtures together.
+    """
+    spec = config.getoption("--shard")
+    if spec is None:
+        return
+    index_text, _, total_text = spec.partition("/")
+    index, total = int(index_text), int(total_text)
+    if not 1 <= index <= total:
+        raise pytest.UsageError(f"--shard={spec}: INDEX must be within 1..TOTAL")
+
+    counts: dict[str, int] = {}
+    for item in items:
+        path = item.nodeid.split("::", 1)[0]
+        counts[path] = counts.get(path, 0) + 1
+
+    loads = [0] * total
+    owner: dict[str, int] = {}
+    for path, count in sorted(counts.items(), key=lambda entry: (-entry[1], entry[0])):
+        lightest = loads.index(min(loads))
+        owner[path] = lightest
+        loads[lightest] += count
+
+    selected, deselected = [], []
+    for item in items:
+        mine = owner[item.nodeid.split("::", 1)[0]] == index - 1
+        (selected if mine else deselected).append(item)
+    config.hook.pytest_deselected(items=deselected)
+    items[:] = selected
+
+
 @pytest.fixture(autouse=True)
 def _hermetic_settings_env(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     saved = {k: v for k, v in os.environ.items() if k.startswith(_AMBIENT_PREFIXES)}

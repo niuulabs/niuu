@@ -5,23 +5,21 @@ WORKDIR /app
 
 RUN corepack enable
 
-# Copy workspace manifests for dependency resolution
-COPY web-next/package.json ./
-COPY web-next/pnpm-lock.yaml ./
-COPY web-next/pnpm-workspace.yaml ./
-COPY web-next/tsconfig.base.json ./
-COPY web-next/tsconfig.json ./
-COPY web-next/build ./build
+ENV NODE_OPTIONS="--max-old-space-size=4096"
 
-# Copy the app and workspace packages
+# Fetch needs only the lockfile, so the package store survives source edits.
+COPY web-next/package.json web-next/pnpm-lock.yaml web-next/pnpm-workspace.yaml ./
+RUN pnpm fetch
+
+COPY web-next/tsconfig.base.json web-next/tsconfig.json ./
+COPY web-next/build ./build
 COPY web-next/apps ./apps
 COPY web-next/packages ./packages
+RUN pnpm install --frozen-lockfile --offline
 
+# Declared last: callers pass the commit sha, which must not invalidate the install.
 ARG APP_VERSION=dev
-ENV NODE_OPTIONS="--max-old-space-size=4096"
 ENV VITE_APP_VERSION=${APP_VERSION}
-
-RUN pnpm install --frozen-lockfile
 RUN pnpm build
 
 # Stage 2: Serve with nginx
@@ -42,7 +40,7 @@ RUN addgroup -g 1001 -S volundr && \
     touch /var/run/nginx.pid && \
     chown volundr:volundr /var/run/nginx.pid
 
-COPY containers/volundr-web/nginx.conf /etc/nginx/conf.d/default.conf
+COPY containers/niuu-web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/apps/niuu/dist /usr/share/nginx/html
 
 RUN echo "OK" > /usr/share/nginx/html/health

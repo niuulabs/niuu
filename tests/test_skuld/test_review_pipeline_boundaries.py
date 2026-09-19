@@ -598,7 +598,10 @@ async def test_summary_failure_preserves_artifact_fallback(tmp_path, monkeypatch
         b._transport.send_message.side_effect = RuntimeError("closed")
     b._transport.last_result = None if fault == "timeout" else {"result": "not json"}
     if fault == "timeout":
-        monkeypatch.setattr(importlib.import_module("skuld.broker"), "SUMMARY_TIMEOUT_SECONDS", 0)
+        # chronicle.py reads the constant; patching the broker's re-export is a no-op.
+        monkeypatch.setattr(
+            importlib.import_module("skuld.chronicle"), "SUMMARY_TIMEOUT_SECONDS", 0
+        )
     result = await b._generate_summary()
     assert result == {"summary": None, "key_changes": ["report.md"], "unfinished_work": None}
 

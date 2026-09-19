@@ -67,7 +67,6 @@ updates:
       - /containers/agent
       - /containers/skuld
       - /containers/devrunner
-      - /containers/volundr-web
       - /containers/niuu-web
     target-branch: dev
     schedule:

@@ -1,0 +1,26 @@
+# Every image builds with the repo root as context. Keep it to what the
+# Dockerfiles actually COPY so context upload stays small and unrelated edits
+# (docs, charts, CI) cannot invalidate build layers.
+.git
+.github
+.claude
+.venv
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+coverage.xml
+htmlcov
+.forge-results
+**/__pycache__
+**/*.pyc
+**/node_modules
+**/dist
+**/.turbo
+web-next/coverage
+web-next/playwright-report
+web-next/test-results
+web-next/.packed
+charts
+docs
+migrations

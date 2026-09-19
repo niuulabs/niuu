@@ -43,7 +43,7 @@ jobs:
     strategy:
       matrix:
         platform: [amd64, arm64]
-        container: [agent, skuld, openshell, devrunner, volundr-web, niuu-web, niuu, gbrain]
+        container: [agent, skuld, openshell, devrunner, niuu-web, niuu, gbrain]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -87,8 +87,8 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.documentation=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.version.outputs.version }}
-          cache-from: type=gha,scope=${{ matrix.container }}-${{ matrix.platform }}
-          cache-to: type=gha,mode=max,ignore-error=true,scope=${{ matrix.container }}-${{ matrix.platform }}
+          # Read-only: dev.yaml owns the registry layer cache (see reusable-container-build.yaml).
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.container }}:buildcache-${{ matrix.platform }}
           platforms: linux/${{ matrix.platform }}
           provenance: false
 
@@ -102,7 +102,7 @@ jobs:
       id-token: write
     strategy:
       matrix:
-        container: [agent, skuld, openshell, devrunner, volundr-web, niuu-web, niuu, gbrain]
+        container: [agent, skuld, openshell, devrunner, niuu-web, niuu, gbrain]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -183,7 +183,7 @@ jobs:
       packages: read
     strategy:
       matrix:
-        container: [agent, skuld, openshell, devrunner, volundr-web, niuu-web, niuu, gbrain]
+        container: [agent, skuld, openshell, devrunner, niuu-web, niuu, gbrain]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1

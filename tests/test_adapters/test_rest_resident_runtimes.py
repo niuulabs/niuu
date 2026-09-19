@@ -324,7 +324,7 @@ def test_create_maps_domain_failures(error, expected_status) -> None:
         ("record_usage", "post", "/usage", {"tokens": 1}),
         ("list_sessions", "get", "/sessions", None),
         ("create_session", "post", "/sessions", {"title": "Work"}),
-        ("delete_session", "delete", f"/sessions/{uuid4()}", None),
+        ("delete_session", "delete", "/sessions/3f2b8c1e-6d4a-4e9b-9c57-1a2b3c4d5e6f", None),
         ("set_desired_state", "post", "/suspend", None),
         ("set_desired_state", "post", "/resume", None),
         ("delete", "delete", "", None),

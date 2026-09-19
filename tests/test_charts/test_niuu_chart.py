@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import shutil
 import subprocess
 from pathlib import Path
@@ -111,11 +112,8 @@ def test_guild_envoy_accepts_websocket_upgrades() -> None:
     assert "- upgrade_type: websocket" in envoy_template
 
 
-def _render_niuu_chart(*extra_args: str) -> str:
-    helm = shutil.which("helm")
-    if not helm:
-        pytest.skip("helm is not installed")
-
+@functools.cache
+def _build_niuu_chart_dependencies(helm: str) -> None:
     dependency_result = subprocess.run(
         [helm, "dependency", "build", str(CHART_DIR)],
         capture_output=True,
@@ -127,6 +125,17 @@ def _render_niuu_chart(*extra_args: str) -> str:
             f"stdout:\n{dependency_result.stdout}\n"
             f"stderr:\n{dependency_result.stderr}"
         )
+
+
+# Rendering is a pure function of the chart and its arguments; the dependency
+# build alone costs seconds, and most tests render with identical arguments.
+@functools.cache
+def _render_niuu_chart(*extra_args: str) -> str:
+    helm = shutil.which("helm")
+    if not helm:
+        pytest.skip("helm is not installed")
+
+    _build_niuu_chart_dependencies(helm)
 
     result = subprocess.run(
         [

@@ -32,9 +32,12 @@ RUN set -eux; \
 WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
-COPY src/ /app/src/
 # --extra dsh bundles the DeepSeek Harness runtime (single-file exe, exact-pinned)
 # for DshJsonRpcTransport; the binary needs no Node at runtime.
+# Dependencies resolve from the lockfile alone, so this layer survives source
+# edits; only the project itself is installed after src/ is copied.
+RUN uv sync --frozen --no-dev --no-editable --no-install-project --extra otel --extra dsh
+COPY src/ /app/src/
 RUN uv sync --frozen --no-dev --no-editable --extra otel --extra dsh
 # xds-protos also ships obsolete OpenTelemetry modules. Restore the locked
 # official package after installation so enabled OTLP exporters can start.
