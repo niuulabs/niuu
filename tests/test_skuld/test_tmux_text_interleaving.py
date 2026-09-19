@@ -29,8 +29,8 @@ def tool(identifier="tool-a"):
     return {"type": "tool_use", "id": identifier, "name": "Bash", "input": {"command": "true"}}
 
 
-async def probe(tmp_path):
-    transport = TmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+async def probe(tmp_path, **kwargs):
+    transport = TmuxInteractiveTransport(str(tmp_path), sdk_port=8081, **kwargs)
     transport._claude_native_session_id = NATIVE
     events = []
 
@@ -206,7 +206,9 @@ async def test_concurrent_late_display_waits_for_native_prefix_proof(tmp_path, m
 
 
 async def test_native_file_append_becomes_visible_before_bounded_deadline(tmp_path):
-    transport, events = await probe(tmp_path)
+    # The append lands 20 ms in. The production 100 ms bound is too close to thread-pool
+    # and disk latency on a loaded runner, so this test owns a deadline it cannot miss.
+    transport, events = await probe(tmp_path, native_text_wait_s=10.0)
     path = tmp_path / f"{NATIVE}.jsonl"
     path.write_text("")
 
@@ -258,3 +260,11 @@ async def test_cancelled_native_proof_releases_hook_lock_for_next_display(tmp_pa
         await transport.handle_claude_hook(display("Still connected."))
     assert [b["text"] for b in blocks(events)] == ["Still connected."]
     assert not transport._text_hook_lock.locked()
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"native_text_wait_s": 0}, {"native_text_poll_s": 0}, {"native_text_wait_s": -1}]
+)
+def test_native_text_bounds_must_be_positive(tmp_path, kwargs):
+    with pytest.raises(ValueError, match="Native text wait and poll"):
+        TmuxInteractiveTransport(str(tmp_path), sdk_port=8081, **kwargs)

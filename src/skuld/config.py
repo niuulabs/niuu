@@ -806,6 +806,19 @@ class SkuldSettings(BaseSettings):
         ge=1,
         description="Maximum retained native question receipt identities for deduplication.",
     )
+    tmux_native_text_wait_s: float = Field(
+        default=0.1,
+        gt=0,
+        description=(
+            "Longest a PreToolUse hook waits for Claude's native transcript to show the "
+            "text preceding that tool before falling back to captured hook order."
+        ),
+    )
+    tmux_native_text_poll_s: float = Field(
+        default=0.005,
+        gt=0,
+        description="Interval between native transcript reads while that wait is open.",
+    )
     codex_receive_max_bytes: int = Field(default=16 * 1024 * 1024, ge=1024)
     # Unified internal-visibility default for a freshly-connected live channel
     # (SRD FR-7 / INV-10). The read paths thread the SAME configured default

@@ -56,6 +56,8 @@ data:
     muse_bin: {{ .Values.broker.museBin | default "" | quote }}
     tmux_question_transcript_max_bytes: {{ .Values.broker.tmuxQuestionTranscriptMaxBytes | default 1048576 }}
     tmux_question_result_history_limit: {{ .Values.broker.tmuxQuestionResultHistoryLimit | default 128 }}
+    tmux_native_text_wait_s: {{ .Values.broker.tmuxNativeTextWaitSeconds | default 0.1 }}
+    tmux_native_text_poll_s: {{ .Values.broker.tmuxNativeTextPollSeconds | default 0.005 }}
     remote_control_permission_mode: {{ .Values.broker.remoteControlPermissionMode | default "" | quote }}
     skip_permissions: {{ .Values.broker.skipPermissions }}
     agent_teams: {{ .Values.broker.agentTeams | default false }}

@@ -258,6 +258,10 @@ broker:
   # Native question proof bounds and optional Muse executable override.
   tmuxQuestionTranscriptMaxBytes: 1048576
   tmuxQuestionResultHistoryLimit: 128
+  # -- Longest a PreToolUse hook waits for the native transcript text before that tool
+  tmuxNativeTextWaitSeconds: 0.1
+  # -- Interval between native transcript reads while that wait is open
+  tmuxNativeTextPollSeconds: 0.005
   museBin: ""
   # -- (DEPRECATED) AI CLI backend: "claude" (Claude Code, default) or "codex" (OpenAI Codex).
   # Use broker.transportAdapter instead. Kept for backward compatibility during rollout.

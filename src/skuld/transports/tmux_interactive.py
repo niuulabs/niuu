@@ -208,6 +208,8 @@ class TmuxInteractiveTransport(CLITransport):
         model_gateway_token: str = "",
         question_transcript_max_bytes: int = 1048576,
         question_result_history_limit: int = 128,
+        native_text_wait_s: float = 0.1,
+        native_text_poll_s: float = 0.005,
         reasoning_effort: str = "",
         effort_control_timeout_s: float = 15.0,
     ) -> None:
@@ -287,6 +289,10 @@ class TmuxInteractiveTransport(CLITransport):
         if question_transcript_max_bytes < 1 or question_result_history_limit < 1:
             raise ValueError("Native question transcript and receipt bounds must be positive")
         self._question_transcript_max_bytes = question_transcript_max_bytes
+        if native_text_wait_s <= 0 or native_text_poll_s <= 0:
+            raise ValueError("Native text wait and poll intervals must be positive")
+        self._native_text_wait_s = native_text_wait_s
+        self._native_text_poll_s = native_text_poll_s
         # Initial-prompt fix: the REPL isn't ready to accept input the instant the
         # CLI is spawned — pasting the seed prompt into a still-booting Claude makes
         # it land mid-startup (it was being parsed as a slash command). Wait for a
@@ -1316,16 +1322,16 @@ class TmuxInteractiveTransport(CLITransport):
         if not anchor.get("transcript_path"):
             return
         # Claude can POST PreToolUse before its asynchronous JSONL write is
-        # visible. Wait only for the exact native tool proof, bounded to 100 ms;
+        # visible. Wait only for the exact native tool proof, bounded by config;
         # no text (or a writer depending on hook return) falls back to captured
         # hook order without blocking the native tool indefinitely.
         try:
-            async with asyncio.timeout(0.1):
+            async with asyncio.timeout(self._native_text_wait_s):
                 while True:
                     items = await asyncio.to_thread(preceding_tool_text, anchor)
                     if items is not None:
                         break
-                    await asyncio.sleep(0.005)
+                    await asyncio.sleep(self._native_text_poll_s)
         except TimeoutError:
             return
         for item in items:

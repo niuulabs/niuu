@@ -1534,6 +1534,8 @@ class LocalProcessPodManager(PodManager):
                 "historyHydrationMaxBytes": "history_hydration_max_bytes",
                 "tmuxQuestionTranscriptMaxBytes": "tmux_question_transcript_max_bytes",
                 "tmuxQuestionResultHistoryLimit": "tmux_question_result_history_limit",
+                "tmuxNativeTextWaitSeconds": "tmux_native_text_wait_s",
+                "tmuxNativeTextPollSeconds": "tmux_native_text_poll_s",
                 "effortControlTimeoutSeconds": "effort_control_timeout_s",
                 "museBin": "muse_bin",
                 "pi": "pi",
