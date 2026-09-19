@@ -7,7 +7,7 @@ client, and assert the structured ``plan`` / ``agent_update`` frames surface, ar
 tracked, and replay on reconnect. Default-tier tests cover the broker helpers and
 the ``/api/plan`` / ``/api/agents`` read endpoints without tmux.
 
-See docs/forge-plan-and-agents-surfacing.md for the contract + decision log.
+See docs/forge/forge-plan-and-agents-surfacing.md for the contract + decision log.
 """
 
 from __future__ import annotations

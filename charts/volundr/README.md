@@ -904,7 +904,7 @@ stringData:
 
 The default in-memory credential store requires one worker and one replica.
 Its credentials are lost on restart. Configure a shared OpenBao credential store
-before increasing either count (see [OpenBao setup](../../docs/openbao-ymir-bootstrap.md)).
+before increasing either count (see [OpenBao setup](../../docs/operations/openbao-ymir-bootstrap.md)).
 
 ```yaml
 replicaCount: 1

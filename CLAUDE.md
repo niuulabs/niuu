@@ -41,10 +41,10 @@ cd web-next && pnpm test          # web tests (coverage-gated)
 - New adapters use dynamic `adapter:` + kwargs config — `.claude/rules/dynamic-adapters.md`
 - Preserve the Ravn/Niuu ownership and communication boundaries — `.claude/rules/ravn-niuu-boundary.md`
 - No placeholders or incomplete implementations outside tests — `.claude/rules/implementation-completeness.md`
-- `web-next/` is Tailwind + tokens and has its own `web-next/CLAUDE.md`; legacy `web/` rules differ
+- `web-next/` is Tailwind + tokens and has its own `web-next/CLAUDE.md`
 
 ## Docs
 
-- `docs/openclaw-session-orchestrator-guide.md` — how an AI controller drives
+- `docs/forge/openclaw-session-orchestrator-guide.md` — how an AI controller drives
   Forge sessions end to end (API contracts, SSE, WebSocket, event-log replay)
 - `docs/operator/` — operator-facing feature guides

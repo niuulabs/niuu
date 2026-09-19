@@ -1,7 +1,6 @@
 # Skuld / Forge tmux — Comprehensive Test Plan
 
-Current cross-provider assessment and execution gates:
-[Forge stability review](forge-stability-review-2026-09-07.md) and
+Current cross-provider execution gates: the
 [testing workflow](forge-stability-workflow.md). Run `make test-forge-tmux` for
 the required real-tmux lane; historical outcomes below describe their original run.
 

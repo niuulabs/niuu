@@ -7,7 +7,7 @@ and feeds parsed timeline events to the Volundr chronicles API.
 Designed to run as an asyncio task inside skuld's broker, sharing the same
 event loop and HTTP client pattern.
 
-DISPOSITION (SRD FR-10 — see ``docs/forge-chronicle-vs-event-log.md``):
+DISPOSITION (SRD FR-10 — see ``docs/forge/forge-chronicle-vs-event-log.md``):
 this watcher produces a DERIVED, NON-AUTHORITATIVE UI timeline aggregate.
 It is NOT a source of truth. The single source of truth for the transcript
 is ``session_event_log`` (folded by the shared reducer / transcript rebuild).

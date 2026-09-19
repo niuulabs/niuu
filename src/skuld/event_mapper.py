@@ -5,7 +5,7 @@ timeline-reportable events (file changes, git commits, terminal commands,
 token usage).  Reuses classification logic from the broker's SessionArtifacts
 but operates on the JSONL on-disk format rather than the SDK WebSocket stream.
 
-DISPOSITION (SRD FR-10 — see ``docs/forge-chronicle-vs-event-log.md``):
+DISPOSITION (SRD FR-10 — see ``docs/forge/forge-chronicle-vs-event-log.md``):
 the output of this mapper is a DERIVED, NON-AUTHORITATIVE, Claude-CLI-only UI
 timeline aggregate, NOT a source of truth. The single source of truth for the
 transcript is ``session_event_log`` (folded by the shared reducer).

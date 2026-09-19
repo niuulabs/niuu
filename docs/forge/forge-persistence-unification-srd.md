@@ -6,7 +6,7 @@
 | **Owner** | Forge / Volundr platform (lead architect: API-consolidation effort) |
 | **Branch** | `lexi/api-consolidation` (off `lexi/dev-api-integration`) |
 | **Supersedes** | ad-hoc divergence between live broker stream and durable `session_event_log` |
-| **Related** | `docs/forge-session-state-reporting.md`, `docs/openclaw-session-orchestrator-guide.md`, `docs/testing/skuld-tmux-comprehensive-test-plan.md` |
+| **Related** | `docs/forge/forge-session-state-reporting.md`, `docs/forge/openclaw-session-orchestrator-guide.md`, `docs/testing/skuld-tmux-comprehensive-test-plan.md` |
 
 ---
 

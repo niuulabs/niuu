@@ -1,9 +1,0 @@
-{
-  "web/src/**/*.{ts,tsx}": [
-    "web/node_modules/.bin/eslint --fix --config web/eslint.config.js",
-    "web/node_modules/.bin/prettier --write"
-  ],
-  "web/src/**/*.css": [
-    "web/node_modules/.bin/prettier --write"
-  ]
-}

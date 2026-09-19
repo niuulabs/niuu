@@ -148,8 +148,7 @@ pnpm format:check
 pnpm test
 ```
 
-For workspace execution checks, see the [Forge test workflow](docs/testing/forge-stability-workflow.md),
-[stability review](docs/testing/forge-stability-review-2026-09-07.md), and
+For workspace execution checks, see the [Forge test workflow](docs/testing/forge-stability-workflow.md) and the
 [live agentic acceptance plan](docs/testing/forge-live-agentic-acceptance.md).
 From the repository root, `make test-forge` runs contract checks and
 `make test-forge-tmux` runs real-tmux acceptance. Use `make test-forge-live`

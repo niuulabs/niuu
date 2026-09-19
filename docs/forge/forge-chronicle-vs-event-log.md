@@ -1,7 +1,7 @@
 # Forge chronicle vs. session event log
 
 Status: normative for FR-10 of the
-[Forge persistence-unification SRD](./forge-persistence-unification-srd.md)
+[Forge persistence-unification SRD](forge-persistence-unification-srd.md)
 (see §3.7 "A parallel, lossy, Claude-only timeline exists" and §6 FR-10
 "Chronicle as derived").
 

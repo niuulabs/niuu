@@ -319,7 +319,7 @@ Kubernetes syncs projected ConfigMaps within **~60 s** by default (controlled by
    ```bash
    kubectl get configmap kubelet-config -n kube-system -o yaml | grep syncFrequency
    ```
-3. If the edit is more than 90 s old and still not visible, check RBAC (see [Troubleshooting](troubleshooting.md#persona-edit-didnt-reach-sidecar)).
+3. If the edit is more than 90 s old and still not visible, check RBAC (see [Troubleshooting](../archive/site-legacy/getting-started/troubleshooting.md#persona-edit-didnt-reach-sidecar)).
 
 ### Verify ConfigMap content directly
 

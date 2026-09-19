@@ -4,8 +4,8 @@
 > targets. Codex emits the shared `plan` and `agent_update` surfaces when its native
 > runtime supplies those events; scoped worker notifications use additive
 > `agent_event` frames. Installed models may lack the native plan tool, so absence
-> still requires graceful handling. See the [live acceptance plan](testing/forge-live-agentic-acceptance.md)
-> and [reviewed corpus](../tests/fixtures/forge-corpus/README.md) for executable
+> still requires graceful handling. See the [live acceptance plan](../testing/forge-live-agentic-acceptance.md)
+> and [reviewed corpus](../../tests/fixtures/forge-corpus/README.md) for executable
 > examples, question answers, reconnect checkpoints, and the iOS test matrix.
 
 > **Audience:** an iOS engineer building against the Forge session API. You can
@@ -13,7 +13,7 @@
 > shape, enum, and reconciliation rule below was verified against the emitting
 > code (`src/skuld/transports/tmux_interactive.py`) and the broker
 > (`src/skuld/broker.py`). The companion design/decision log is
-> `docs/forge-plan-and-agents-surfacing.md`.
+> `docs/forge/forge-plan-and-agents-surfacing.md`.
 
 ---
 

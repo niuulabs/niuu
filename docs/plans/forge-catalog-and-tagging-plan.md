@@ -129,13 +129,13 @@ changes; no breaking renames — external surfaces stay and are only deprecated.
 ## Load-bearing facts (from the usage map)
 
 - `ForgeProfile` is already deprecated in favour of `WorkspaceTemplate`; `TemplateContributor`
-  already prefers `template_name` and falls back to `profile_name` ([template.py:42](../src/volundr/adapters/outbound/contributors/template.py)).
+  already prefers `template_name` and falls back to `profile_name` (the since-removed `contributors/template.py`).
 - **Presets are stored but not applied at launch** — the pipeline only consumes
-  `definition`/`template_name`/`profile_name`/raw config ([session.py:769-790](../src/volundr/domain/services/session.py)).
+  `definition`/`template_name`/`profile_name`/raw config ([session.py:769-790](../../src/volundr/domain/services/session.py)).
   We keep that behaviour (presets remain a managed library; applying them is a separate feature).
 - session-definition is genuinely distinct (runtime type + Helm `defaults` deep-merge) — keep.
 - **Do not touch** ting's `SpawnRequest.profile` — it is a *persona* name, a different concept
-  that only collides by name ([dispatch_service.py:1143](../src/ting/domain/services/dispatch_service.py)).
+  that only collides by name ([dispatch_service.py:1143](../../src/ting/domain/services/dispatch_service.py)).
 - Parity-critical merge: SessionDefinitionContributor (base) → TemplateContributor →
   Prompt (after template) → … → SessionMCP; deep-merge, last-writer-wins, `mcpServers` by name.
 

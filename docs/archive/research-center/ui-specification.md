@@ -1,6 +1,6 @@
 # Research Center — UI Specification
 
-Companion to `IMPLEMENTATION.md`. This document describes the UI itself — every screen, every component, every state, every interaction. It is the design contract: what's built today, what each piece is for, and what must be true for it to ship.
+Companion to [`implementation-guide.md`](implementation-guide.md). This document describes the UI itself — every screen, every component, every state, every interaction. It is the design contract: what's built today, what each piece is for, and what must be true for it to ship.
 
 The prototype lives at `ting/Research Center.html`. Open it for the live reference; this doc captures it in writing.
 

@@ -128,4 +128,4 @@ broker thread-resume identity. Confirm unrelated active session processes were
 preserved during platform maintenance. Do not commit native logs or credentials.
 
 The Lexi Astra repair is recorded in
-[the incident report](forge-lexi-astra-incident-2026-09-08.md).
+`docs/testing/forge-lexi-astra-incident-2026-09-08.md` (git history, last present at `99e41f83a`).
