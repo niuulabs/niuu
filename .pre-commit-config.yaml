@@ -23,21 +23,6 @@ repos:
         types: [python]
         stages: [pre-commit]
 
-      # ── Web (TypeScript / CSS) ──────────────────────────────
-      - id: prettier
-        name: Prettier format
-        entry: npx prettier --write
-        language: system
-        files: ^web/src/.*\.(ts|tsx|css)$
-        stages: [pre-commit]
-
-      - id: eslint
-        name: ESLint
-        entry: bash -c 'cd web && npx eslint --fix "${@/#web\//}"' --
-        language: system
-        files: ^web/src/.*\.(ts|tsx)$
-        stages: [pre-commit]
-
       # ── web-next (TS / TSX / CSS / Markdown / JSON / YAML) ──
       # Shared PATH extension so child pnpm processes (spawned by
       # `pnpm -r`) can resolve pnpm regardless of how the dev installed
