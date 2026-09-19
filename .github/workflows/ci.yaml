@@ -626,6 +626,7 @@ jobs:
     with:
       containers: ${{ needs.changes.outputs.container-names }}
       platforms: '["amd64"]'
+      cache-scope: pr-${{ github.event.number }}
       tag-prefix: pr-${{ github.event.number }}
       manifest-tags: "pr-${{ github.event.number }} pr-${{ github.event.number }}-${{ github.sha }}"
       labels: |
