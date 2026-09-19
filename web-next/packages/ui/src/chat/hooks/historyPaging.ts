@@ -122,6 +122,7 @@ async function pageRequest(url: URL, signal: AbortSignal): Promise<HistoryPage> 
       ![data.window_offset, data.window_end, data.total_turns].every(Number.isSafeInteger)) ||
     ![start, total, end].every(Number.isSafeInteger) ||
     start < 0 ||
+    (start > 0 && data.turns.length === 0) ||
     end !== start + data.turns.length ||
     end > total ||
     (data.history_protocol === 2 && start > 0 && !data.older_cursor) ||

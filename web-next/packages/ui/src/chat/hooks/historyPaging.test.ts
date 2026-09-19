@@ -162,6 +162,18 @@ describe('bounded conversation pages', () => {
     );
     await expect(fetchHistoryBatch(socket, signal(), first)).rejects.toThrow('history changed');
   });
+  it('rejects an empty older page that would leave scrolling at the same boundary', async () => {
+    const { fetcher } = serve();
+    const first = await fetchHistoryBatch(socket, signal());
+    fetcher.mockResolvedValueOnce(
+      Response.json({
+        ...first,
+        turns: [],
+        window_end: first.window_offset,
+      }),
+    );
+    await expect(fetchHistoryBatch(socket, signal(), first)).rejects.toThrow('boundary');
+  });
   it.each([
     ['history_cursor_invalid', 'history changed'],
     ['conflict', 'HTTP 409'],
