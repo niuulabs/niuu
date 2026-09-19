@@ -46,7 +46,7 @@ export default defineConfig({
     },
   },
   test: {
-    maxWorkers: isCi ? 2 : undefined,
+    maxWorkers: isCi ? 4 : undefined,
     minWorkers: isCi ? 1 : undefined,
     environment: 'jsdom',
     globals: true,
