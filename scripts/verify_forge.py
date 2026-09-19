@@ -87,7 +87,12 @@ def command_for(lane: str, report: Path, *, coverage: bool = False) -> list[str]
     for warning in TOLERATED_UPSTREAM_WARNINGS:
         command += ["-W", warning]
     if lane == "unit":
+        # loadfile keeps each module on one worker, matching serial fixture scope.
         command += UNIT_PATHS + [
+            "-n",
+            "auto",
+            "--dist",
+            "loadfile",
             "-m",
             "not integration and not broker and not kind_integration and not live_cli",
         ]

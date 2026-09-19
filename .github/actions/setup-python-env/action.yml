@@ -12,7 +12,7 @@ inputs:
   extras:
     description: uv sync extras flag(s) (e.g. "--all-extras --dev" or "--extra test --extra nats")
     required: false
-    default: "--all-extras --dev"
+    default: "--frozen --all-extras --dev"
 runs:
   using: composite
   steps:
