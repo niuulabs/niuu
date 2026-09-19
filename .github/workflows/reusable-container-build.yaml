@@ -50,10 +50,13 @@ on:
         description: >-
           Optional private cache, read and written at
           <image>:<cache-scope>-buildcache-<platform> in addition to reading the
-          shared one. PR builds pass pr-<number>: later pushes to the same PR
-          reuse its own layers (a changed lockfile, a rebuilt web bundle) without
-          overwriting the integration branch's cache. The pr- prefix lets
-          cleanup-containers.yaml collect it.
+          integration branch's. PR builds pass pr-<number>: later pushes to the
+          same PR reuse its own layers (a changed lockfile, a rebuilt web bundle)
+          without overwriting the integration branch's cache. Scoped builds also
+          read and write <image>:pr-shared-buildcache-<platform>, the most recent
+          scoped build of any PR — BuildKit cannot wildcard cache refs, so "any
+          PR's cache" has to be one tag. The pr- prefix lets
+          cleanup-containers.yaml collect both.
         type: string
         default: ""
 
@@ -106,10 +109,12 @@ jobs:
           # evicted each other, so builds ran cold. The registry has no cap.
           cache-from: |
             type=registry,ref=${{ inputs.registry }}/${{ github.repository_owner }}/${{ matrix.container }}:buildcache-${{ matrix.platform }}
+            ${{ inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:pr-shared-buildcache-{3}', inputs.registry, github.repository_owner, matrix.container, matrix.platform) || '' }}
             ${{ inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:{3}-buildcache-{4}', inputs.registry, github.repository_owner, matrix.container, inputs.cache-scope, matrix.platform) || '' }}
           cache-to: |
             ${{ inputs.cache-write && format('type=registry,ref={0}/{1}/{2}:buildcache-{3},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, matrix.platform) || '' }}
             ${{ inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:{3}-buildcache-{4},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, inputs.cache-scope, matrix.platform) || '' }}
+            ${{ inputs.cache-scope != '' && format('type=registry,ref={0}/{1}/{2}:pr-shared-buildcache-{3},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true', inputs.registry, github.repository_owner, matrix.container, matrix.platform) || '' }}
           platforms: linux/${{ matrix.platform }}
           provenance: false
 
