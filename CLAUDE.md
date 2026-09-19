@@ -45,6 +45,6 @@ cd web-next && pnpm test          # web tests (coverage-gated)
 
 ## Docs
 
-- `docs/openclaw-session-orchestrator-guide.md` — how an AI controller drives
+- `docs/forge/openclaw-session-orchestrator-guide.md` — how an AI controller drives
   Forge sessions end to end (API contracts, SSE, WebSocket, event-log replay)
 - `docs/operator/` — operator-facing feature guides

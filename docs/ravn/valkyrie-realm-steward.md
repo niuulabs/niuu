@@ -512,7 +512,7 @@ link back through `topologyNodeId`; skills and tags provide capability search, w
 tenant, Environment membership, and visibility constrain what the steward may see. Cross-realm
 or cross-cluster discovery uses Guild's partial-result aggregate and retains source provenance.
 Only equivalent, signed Agent Cards may collapse into one canonical identity. Operational and
-protocol details live in [A2A Agent Directory](operator/a2a-agent-directory.md).
+protocol details live in [A2A Agent Directory](../operator/a2a-agent-directory.md).
 
 ## 5. Data, events, config, boundaries
 

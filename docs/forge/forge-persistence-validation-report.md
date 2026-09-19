@@ -1,7 +1,7 @@
 # Forge Persistence Unification — Validation Report
 
 **Branch:** `lexi/api-consolidation`
-**Binding spec:** `docs/forge-persistence-unification-srd.md` — §4 (objectives), §6 (FR-1..10), §7 (INV-1..10), §11 (definition of done)
+**Binding spec:** `docs/forge/forge-persistence-unification-srd.md` — §4 (objectives), §6 (FR-1..10), §7 (INV-1..10), §11 (definition of done)
 **Scope under review (already committed):** Epics A–G — `96ea379a` (A, superset), `91a74d49` (B, one reducer), `50604a3d` (E, liveness), `14a754a5` (G, chronicle), `5f705f38` (C, durable delivery), `5f906e35` (D, read-path), `c507c827` / `a7905b79` (F, cross-transport tests).
 **Method:** 6 adversarial lenses (fr-inv-matrix, delivery-integrity, read-path-equality, durability, liveness-routing, one-reducer-capture), synthesized by the validation lead. The most-skeptical well-evidenced view is preferred on every disagreement. The validation lead independently re-confirmed every blocker/major against live source and ran the headline tests (43 passed, env scrubbed of `SKULD__*/VOLUNDR__*/BIFROST__*`).
 

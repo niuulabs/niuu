@@ -118,7 +118,7 @@ credentialStore:
 
 For shared user credentials, Volundr, Niuu shared services, and Ting must use
 the same URL, namespace, and KV mount. The umbrella chart overlay
-[`charts/niuu/values-openbao.yaml`](../charts/niuu/values-openbao.yaml) configures
+[`charts/niuu/values-openbao.yaml`](../../charts/niuu/values-openbao.yaml) configures
 all three with the Ymir URL and `volundr` mount above. Apply it after your base
 values. Each service authenticates with its projected Kubernetes ServiceAccount
 JWT and its own role (`volundr-app`, `niuu-shared-app`, or `ting-app`). For other
