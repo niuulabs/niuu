@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
 
 const isCi = Boolean(process.env.CI);
+const isShard = Boolean(process.env.VITEST_SHARD);
 
 export default defineConfig({
   plugins: [react()],
@@ -58,12 +59,16 @@ export default defineConfig({
       reporter: isCi ? ['text', 'lcov'] : ['text', 'html', 'lcov'],
       include: ['packages/*/src/**/*.{ts,tsx}'],
       exclude: ['**/*.test.{ts,tsx}', '**/index.{ts,tsx}', '**/ports.ts', '**/*.d.ts'],
-      thresholds: {
-        statements: 85,
-        branches: 85,
-        functions: 85,
-        lines: 85,
-      },
+      // A CI shard sees only its slice of the suite; the 85% gate is enforced
+      // once, on the merged report (`vitest run --merge-reports --coverage`).
+      thresholds: isShard
+        ? undefined
+        : {
+            statements: 85,
+            branches: 85,
+            functions: 85,
+            lines: 85,
+          },
     },
   },
 });
