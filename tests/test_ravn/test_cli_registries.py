@@ -13,6 +13,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+import ravn
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ravn.cli.commands import (
     _looks_like_path,
@@ -22,6 +23,12 @@ from ravn.cli.commands import (
     _resolve_profile,
     app,
 )
+
+# The bundled persona file. These tests need a persona that exists on disk in
+# every checkout; resolving one through the loader instead picks up whatever
+# project-local .ravn/personas/ the developer happens to have.
+_BUILTIN_REVIEWER = Path(ravn.__file__).parent / "personas" / "reviewer.yaml"
+
 
 runner = CliRunner()
 
@@ -45,7 +52,7 @@ class TestPersonaByPath:
         by_name = loader.load("reviewer")
         assert by_name is not None, "bundled 'reviewer' persona is expected to exist"
 
-        source = Path(loader.source("reviewer"))
+        source = _BUILTIN_REVIEWER
         copied = tmp_path / "custom-reviewer.yaml"
         copied.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 
@@ -59,7 +66,7 @@ class TestPersonaByPath:
     def test_load_path_injects_outcome_instruction_like_load(self, tmp_path: Path) -> None:
         """load_path mirrors load — otherwise a file persona would lose its outcome block."""
         loader = FilesystemPersonaAdapter()
-        source = Path(loader.source("reviewer"))
+        source = _BUILTIN_REVIEWER
         copied = tmp_path / "copy.yaml"
         copied.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 

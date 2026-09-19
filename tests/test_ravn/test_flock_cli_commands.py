@@ -285,7 +285,8 @@ def test_list_shows_available_personas() -> None:
     result = runner.invoke(flock_app, ["list"])
     assert result.exit_code == 0, result.output
     assert "Available personas" in result.output
-    assert "coordinator" in result.output
+    # A bundled persona: the listing must not depend on a project-local .ravn/.
+    assert "reviewer" in result.output
     assert "[built-in]" in result.output
 
 
