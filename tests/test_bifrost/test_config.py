@@ -239,14 +239,14 @@ class TestBifrostConfig:
 # ---------------------------------------------------------------------------
 
 #: Absolute path to the Pi-mode example config shipped in the repo root.
-_PI_CONFIG = Path(__file__).parents[2] / "bifrost.pi.example.yaml"
+_PI_CONFIG = Path(__file__).parents[2] / "examples" / "bifrost-pi.yaml"
 
 
 class TestPiModeConfig:
     """Verify that BifrostConfig boots cleanly with only Ollama configured."""
 
     def test_pi_example_file_exists(self):
-        assert _PI_CONFIG.exists(), "bifrost.pi.example.yaml must exist in repo root"
+        assert _PI_CONFIG.exists(), "examples/bifrost-pi.yaml must exist"
 
     def test_pi_config_loads_without_error(self):
         cfg = _load_config(str(_PI_CONFIG))

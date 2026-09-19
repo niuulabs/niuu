@@ -1,4 +1,4 @@
-# ravn.example.yaml — Ravn application configuration reference
+# examples/ravn.yaml — Ravn application configuration reference
 #
 # Copy this file to one of the default search paths and edit to taste:
 #   ~/.ravn/config.yaml  (recommended for personal installs)

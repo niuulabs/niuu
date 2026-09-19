@@ -78,49 +78,28 @@ pod_manager:
 #   secret_kwargs_env:
 #     client_secret: OPENSHELL_OIDC_CLIENT_SECRET
 
-# Forge profiles (argument templates for workload instantiation)
-# Profiles define the base set of values assembled into session specs.
-profiles:
-  - name: standard
-    description: "Standard coding session"
-    workload_type: session
-    model: "claude-sonnet-4-20250514"
-    resource_config:
-      cpu: "500m"
-      memory: "1Gi"
+# Launch specs (system-scope session blueprints offered in the launch catalog)
+# A launch spec is a complete blueprint: runtime, model, resources and workspace.
+# Setting this list REPLACES the built-in catalog (standard-claude and
+# standard-codex); omit it to keep those defaults.
+launch_specs:
+  - name: standard-claude
+    description: "Default Claude Code session with modest resources."
     is_default: true
-
-  # - name: gpu-heavy
-  #   description: "GPU-accelerated data science"
-  #   workload_type: session
-  #   model: "claude-sonnet-4-20250514"
-  #   resource_config:
-  #     cpu: "2"
-  #     memory: "8Gi"
-  #     gpu: "1"
-  #   mcp_servers:
-  #     - name: filesystem
-  #       command: mcp-fs
-  #   env_vars:
-  #     CUDA_VISIBLE_DEVICES: "0"
-  #   is_default: false
-
-# Workspace templates (unified session blueprints)
-# Each template is a complete session blueprint including workspace + runtime config.
-templates:
-  - name: default-session
-    description: "Default coding session"
+    session_definition: skuldClaude
     workload_type: session
-    model: "claude-sonnet-4-20250514"
+    model: "claude-sonnet-4-6"
+    cli_tool: claude
     resource_config:
-      cpu: "500m"
-      memory: "1Gi"
-    is_default: true
+      cpu: "1"
+      memory: "2Gi"
 
   # - name: data-science
-  #   description: "Data science workspace"
+  #   description: "GPU-accelerated data science workspace"
+  #   session_definition: skuldClaude
   #   workload_type: session
-  #   model: "claude-sonnet-4-20250514"
+  #   model: "claude-sonnet-4-6"
+  #   cli_tool: claude
   #   resource_config:
   #     cpu: "2"
   #     memory: "8Gi"
@@ -130,13 +109,11 @@ templates:
   #       command: mcp-fs
   #   env_vars:
   #     CUDA_VISIBLE_DEVICES: "0"
+  #   env_secret_refs: []
   #   repos:
   #     - url: "https://github.com/org/data-repo"
   #       branch: main
-  #   setup_scripts:
-  #     - "pip install -r requirements.txt"
-  #   workspace_layout:
-  #     editor: vscode
+  #   setup_scripts: []
 
 # Available MCP servers (shown in the launch wizard for users to select)
 mcp_servers:

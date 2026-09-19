@@ -80,7 +80,7 @@ RUN --mount=type=bind,from=switchyard-wheel,source=/wheels,target=/wheels \
     && cp /wheels/switchyard-build.json /opt/venv/share/niuu/
 
 FROM builder AS switchyard-tests
-COPY bifrost.pi.example.yaml /app/
+COPY examples/bifrost-pi.yaml /app/examples/
 COPY tests/conftest.py tests/__init__.py /app/tests/
 COPY tests/test_bifrost/ /app/tests/test_bifrost/
 RUN --mount=type=bind,from=switchyard-wheel,source=/wheels,target=/wheels \

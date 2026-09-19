@@ -56,7 +56,7 @@ DATA_DIR_MAPPINGS = [
 
 DATA_FILE_MAPPINGS = [
     # Example TUI config
-    (REPO_ROOT / "ravn.tui.example.yaml", "ravn/config/ravn.tui.example.yaml"),
+    (REPO_ROOT / "examples" / "ravn-tui.yaml", "ravn/config/ravn.tui.example.yaml"),
 ]
 
 NOFOLLOW_IMPORTS = [

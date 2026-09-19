@@ -13,7 +13,7 @@
 #        ollama pull llama3.1:8b      # best  — 4.7 GB, ~6 tok/s on Pi 5
 #
 # Start the gateway:
-#   bifrost --config bifrost.pi.example.yaml
+#   bifrost --config examples/bifrost-pi.yaml
 #
 # The server will be available at http://localhost:8088
 

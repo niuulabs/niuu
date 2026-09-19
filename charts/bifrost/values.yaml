@@ -347,7 +347,7 @@ externalSecrets:
 # ---------------------------------------------------------------------------
 # The contents of this section are rendered verbatim into the bifrost.yaml
 # ConfigMap that is mounted at /etc/bifrost/bifrost.yaml.
-# See bifrost.yaml.example in the repository root for all available options.
+# See examples/bifrost.yaml in the repository for all available options.
 config:
   routing_strategy: failover
   # -- Optional dynamic routing adapter; null keeps existing routing unchanged.

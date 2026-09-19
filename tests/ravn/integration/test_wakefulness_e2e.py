@@ -441,7 +441,7 @@ class TestTrustGradient:
         assert set(forbidden_never) == set(forbidden_approval)
 
     def test_default_config_matches_example_yaml(self) -> None:
-        """Default TrustGradientConfig matches the values in ravn.example.yaml."""
+        """Default TrustGradientConfig matches the values in examples/ravn.yaml."""
         config = TrustGradientConfig()
 
         assert config.reading == "free"
