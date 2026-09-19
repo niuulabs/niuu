@@ -1572,7 +1572,7 @@ web:
     # -- Web UI image registry
     registry: ghcr.io
     # -- Web UI image repository
-    repository: niuulabs/volundr-web
+    repository: niuulabs/niuu-web
     # -- Web UI image tag (defaults to Chart.appVersion)
     tag: ""
     # -- Web UI image pull policy

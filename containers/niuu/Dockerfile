@@ -42,21 +42,28 @@ RUN python build_switchyard.py
 FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS web-build
 WORKDIR /app
 RUN corepack enable
+ENV NODE_OPTIONS="--max-old-space-size=4096"
 COPY web-next/package.json web-next/pnpm-lock.yaml web-next/pnpm-workspace.yaml ./
+# Fetch needs only the lockfile, so the package store survives source edits.
+RUN pnpm fetch
 COPY web-next/tsconfig.base.json web-next/tsconfig.json ./
 COPY web-next/build ./build
 COPY web-next/apps ./apps
 COPY web-next/packages ./packages
+RUN pnpm install --frozen-lockfile --offline
+# Declared last: callers pass the commit sha, which must not invalidate the install.
 ARG APP_VERSION=dev
-ENV NODE_OPTIONS="--max-old-space-size=4096"
 ENV VITE_APP_VERSION=${APP_VERSION}
-RUN pnpm install --frozen-lockfile
 RUN pnpm build
 
 FROM python-build AS builder
 WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
+# Dependencies resolve from the lockfile alone, so this layer survives source
+# edits; only the project itself is installed after src/ is copied.
+RUN uv sync --frozen --no-dev --no-editable --no-install-project --extra cli --extra k8s --extra nats \
+    --extra openshell --extra otel --extra switchyard --no-install-package nemo-switchyard
 COPY src/ /app/src/
 RUN uv sync --frozen --no-dev --no-editable --extra cli --extra k8s --extra nats --extra openshell \
     --extra otel --extra switchyard --no-install-package nemo-switchyard \

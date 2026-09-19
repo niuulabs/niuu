@@ -30,7 +30,7 @@ Build all 4 containers (run in parallel):
 docker buildx build --platform linux/amd64 -t ghcr.io/niuulabs/ting:ting -f containers/ting/Dockerfile --push .
 docker buildx build --platform linux/amd64 -t ghcr.io/niuulabs/volundr:ting -f containers/volundr/Dockerfile --push .
 docker buildx build --platform linux/amd64 -t ghcr.io/niuulabs/skuld:ting -f containers/skuld/Dockerfile --push .
-docker buildx build --platform linux/amd64 -t ghcr.io/niuulabs/volundr-web:ting -f containers/volundr-web/Dockerfile --push .
+docker buildx build --platform linux/amd64 -t ghcr.io/niuulabs/niuu-web:ting -f containers/niuu-web/Dockerfile --push .
 ```
 
 Image tag is `ting` (matches what noatun deploys).

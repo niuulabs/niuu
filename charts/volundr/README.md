@@ -706,7 +706,7 @@ Session definitions are Kubernetes custom resources that describe how session po
 | `web.enabled` | bool | `false` | Enable the Volundr web UI component |
 | `web.replicaCount` | int | `1` | Number of web replicas |
 | `web.image.registry` | string | `"ghcr.io"` | Web UI image registry |
-| `web.image.repository` | string | `"niuulabs/volundr-web"` | Web UI image repository |
+| `web.image.repository` | string | `"niuulabs/niuu-web"` | Web UI image repository |
 | `web.image.tag` | string | `""` | Web UI image tag (defaults to Chart.appVersion) |
 | `web.image.pullPolicy` | string | `"Always"` | Web UI image pull policy |
 | `web.service.type` | string | `"ClusterIP"` | Web UI service type |
