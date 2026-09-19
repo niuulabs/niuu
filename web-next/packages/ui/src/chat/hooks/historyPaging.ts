@@ -209,7 +209,15 @@ export async function fetchHistoryBatch(
     turns = [...older.turns, ...turns];
     page = older;
   }
-  return { ...page, turns, window_end: newest.window_end, head_seq: newest.head_seq };
+  // Page budgets are a transport detail, not a different kind of message.
+  // Resolve truncated rows before they enter the normal history/live merge.
+  const complete: ConversationTurn[] = [];
+  for (const turn of turns) {
+    signal.throwIfAborted();
+    complete.push(turn.history_preview ? await fetchHistoryItem(socketUrl, turn.id, signal) : turn);
+  }
+  signal.throwIfAborted();
+  return { ...page, turns: complete, window_end: newest.window_end, head_seq: newest.head_seq };
 }
 
 export async function fetchHistoryItem(
@@ -218,14 +226,14 @@ export async function fetchHistoryItem(
   signal: AbortSignal,
 ): Promise<ConversationTurn> {
   const url = conversationUrl(socketUrl);
-  // Explicit item expansion is separate from bounded automatic reads.
+  // Load all prose for this identity; large tool bodies keep their normal lazy reads.
   url.searchParams.set('turn_id', id);
-  url.searchParams.set('detail', 'full');
+  url.searchParams.set('detail', 'shallow');
   const response = await fetch(url.href, { headers: getAuthHeaders(), signal });
   if (!response.ok) throw new Error(`Could not load this message (HTTP ${response.status}).`);
   const data = await response.json();
   // Retained facades can ignore turn_id and return their full transcript. This
-  // explicit expansion still selects exactly the requested identity, never a tail.
+  // item read still selects exactly the requested identity, never a tail.
   const matches = Array.isArray(data.turns)
     ? data.turns.filter((turn: ConversationTurn) => turn.id === id)
     : [];

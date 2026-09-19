@@ -196,7 +196,7 @@ for (const version of [1, 2]) {
     expect(writes).toEqual([]);
   });
 }
-test('a large retained-server turn keeps its Markdown in the flow and opens the exact full message', async ({
+test('a truncated retained-server turn loads automatically into the normal conversation', async ({
   page,
 }) => {
   const { rows, controls } = await fixture(page, 1);
@@ -216,13 +216,11 @@ test('a large retained-server turn keeps its Markdown in the flow and opens the 
     content: '## Complete response\n\nAll saved text and tool details.',
   };
   await page.goto('/volundr/sessions/review');
-  await expect(page.getByRole('heading', { name: 'Earlier work' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Latest work' })).toBeVisible();
-  await page.getByRole('button', { name: 'Open full message' }).click();
-  await expect(
-    page.getByRole('dialog').getByRole('heading', { name: 'Complete response' }),
-  ).toBeVisible();
-  await expect(page.getByRole('dialog')).toContainText('All saved text and tool details.');
+  await expect(page.getByRole('heading', { name: 'Complete response' })).toBeVisible();
+  await expect(page.getByText('All saved text and tool details.')).toBeVisible();
+  await expect(page.getByText('Large message — preview')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Open full message' })).toHaveCount(0);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 test('failed older page stays retryable without replacing the transcript', async ({ page }) => {
   const { controls } = await fixture(page);

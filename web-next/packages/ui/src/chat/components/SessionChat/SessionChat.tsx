@@ -57,7 +57,6 @@ import type { FileAttachment } from '../../hooks/useFileAttachments';
 import type { SlashCommand } from '../../utils/slashCommands';
 import { ToolImageProvider } from '../ToolImages';
 import { HistoryDetailsContext } from '../HistoryDetailsContext';
-import { HistoryMessagePreview } from '../HistoryMessagePreview';
 import './SessionChat.css';
 
 const SCROLL_THRESHOLD = 150;
@@ -978,8 +977,6 @@ export function SessionChat({
                       }
 
                       const msg = group.message;
-                      if (msg.historyPreview)
-                        return <HistoryMessagePreview key={msg.id} message={msg} />;
                       if (msg.metadata?.messageType === 'system') {
                         return <SystemMessage key={messageRenderKey(msg)} message={msg} />;
                       }

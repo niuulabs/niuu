@@ -228,6 +228,89 @@ describe('bounded conversation pages', () => {
       }),
     ).toBe(false);
   });
+  it.each([false, true])(
+    'automatically fills normal and metadata-only rows (metadata: %s)',
+    async (metadata) => {
+      const page = {
+        turns: [
+          {
+            ...turn(0),
+            content: 'Tail',
+            history_preview: true,
+            history_metadata_preview: metadata,
+          },
+          turn(1),
+        ],
+        total_turns: 2,
+        window_offset: 0,
+        window_end: 2,
+        history_protocol: 2,
+        projection_revision: 'same',
+      };
+      const complete = {
+        ...turn(0),
+        role: 'user',
+        content: '# Complete message\n\n' + 'Text 📝 '.repeat(50000),
+      };
+      const controller = new AbortController();
+      const fetcher = vi
+        .fn()
+        .mockResolvedValueOnce(Response.json(page))
+        .mockResolvedValueOnce(Response.json({ turn: complete }));
+      vi.stubGlobal('fetch', fetcher);
+      const result = await fetchHistoryBatch(socket, controller.signal);
+      expect(result.turns).toEqual([complete, turn(1)]);
+      expect(result.window_end).toBe(2);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      const request = new URL(fetcher.mock.calls[1]![0]);
+      expect(request.pathname).toBe('/forge-host/build/api/v1/forge/sessions/session/conversation');
+      expect(request.searchParams.get('turn_id')).toBe('row-0');
+      expect(request.searchParams.get('detail')).toBe('shallow');
+      expect(fetcher.mock.calls[1]![1].signal).toBe(controller.signal);
+    },
+  );
+  it('fills truncated older pages before prepending them', async () => {
+    const current = {
+      turns: [turn(1)],
+      total_turns: 2,
+      window_offset: 1,
+      window_end: 2,
+      history_protocol: 2,
+      projection_revision: 'same',
+      older_cursor: 'older',
+    };
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({
+          ...current,
+          turns: [{ ...turn(0), history_preview: true }],
+          window_offset: 0,
+          window_end: 1,
+          older_cursor: null,
+        }),
+      )
+      .mockResolvedValueOnce(Response.json({ turn: turn(0) }));
+    vi.stubGlobal('fetch', fetcher);
+    const result = await fetchHistoryBatch(socket, signal(), current);
+    expect(result.turns).toEqual([turn(0)]);
+    expect(result.window_end).toBe(1);
+  });
+  it('does not expose an incomplete page when automatic message loading fails or is cancelled', async () => {
+    const page = { turns: [{ ...turn(0), history_preview: true }] };
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json(page))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    vi.stubGlobal('fetch', fetcher);
+    await expect(fetchHistoryBatch(socket, signal())).rejects.toThrow('503');
+    const controller = new AbortController();
+    fetcher.mockResolvedValueOnce(Response.json(page)).mockImplementationOnce(async () => {
+      controller.abort();
+      return Response.json({ turn: turn(0) });
+    });
+    await expect(fetchHistoryBatch(socket, controller.signal)).rejects.toThrow();
+  });
   it('only accepts an explicitly requested complete item', async () => {
     const fetcher = vi.fn(async () => Response.json({ turn: turn(0) }));
     vi.stubGlobal('fetch', fetcher);
