@@ -29,20 +29,24 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Ruff needs no project dependencies; the dev group alone avoids
+      # installing every extra (torch included) to run a two-second lint.
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
+        with:
+          extras: "--frozen --only-group dev"
 
       - name: Run ruff linting
-        run: uv run ruff check --output-format=github src/ tests/
+        run: uv run --no-sync ruff check --output-format=github src/ tests/
 
       - name: Check ruff formatting
         run: |
-          output="$(uv run ruff format --check src/ tests/ 2>&1)" || {
+          output="$(uv run --no-sync ruff format --check src/ tests/ 2>&1)" || {
             printf '%s\n' "$output"
             printf '%s\n' "$output" | sed -n 's/^Would reformat: //p' | while IFS= read -r file; do
               echo "::error file=${file}::Ruff formatting required"
             done
-            diff_output="$(uv run ruff format --diff src/ tests/ 2>&1 || true)"
+            diff_output="$(uv run --no-sync ruff format --diff src/ tests/ 2>&1 || true)"
             diff_output="${diff_output//'%'/'%25'}"
             diff_output="${diff_output//$'\n'/'%0A'}"
             diff_output="${diff_output//$'\r'/'%0D'}"
@@ -108,7 +112,10 @@ jobs:
           set -o pipefail
           set +e
           output_file="$(mktemp)"
+          # loadfile keeps each test module on one worker, so module-scoped
+          # fixtures and per-file state behave as they do serially.
           uv run pytest ${{ matrix.pkg.paths }} -v --tb=short \
+            -n auto --dist loadfile \
             --override-ini="addopts=" \
             -m 'not integration and not broker and not kind_integration and not live_cli' \
             ${{ matrix.pkg.cov }} \

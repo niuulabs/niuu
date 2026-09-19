@@ -75,7 +75,7 @@ jobs:
               return any(regex.search(path) for path in changed)
 
           all_containers = [
-              "agent", "skuld", "openshell", "devrunner", "volundr-web", "niuu-web", "niuu", "gbrain"
+              "agent", "skuld", "openshell", "devrunner", "niuu-web", "niuu", "gbrain"
           ]
 
           if full_tier:
@@ -97,7 +97,6 @@ jobs:
                   "openshell": r"^containers/openshell/|^(src/|pyproject\.toml$|uv\.lock$)",
                   "devrunner": r"^containers/devrunner/",
                   "gbrain": r"^containers/gbrain/",
-                  "volundr-web": r"^containers/volundr-web/|^web-next/",
                   "niuu-web": r"^containers/niuu-web/|^web-next/",
                   "niuu": r"^containers/niuu/|^tests/(container/|test_bifrost/|conftest\.py$|__init__\.py$)|^(src/|pyproject\.toml$|uv\.lock$|bifrost\.pi\.example\.yaml$)",
               }
@@ -293,39 +292,6 @@ jobs:
           printf '%s\n' "$output"
 
   # ---------------------------------------------------------------------------
-  # End-to-end tests — full tier only
-  # ---------------------------------------------------------------------------
-  e2e-test:
-    name: "E2E: Playwright"
-    needs: changes
-    if: needs.changes.outputs.tier == 'full' && (needs.changes.outputs.python == 'true' || needs.changes.outputs.web_next == 'true')
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: volundr_test
-          POSTGRES_PASSWORD: volundr_test
-          POSTGRES_DB: volundr_test
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Playwright temporarily disabled
-        run: echo "Skipping Playwright until visual baselines are stabilized."
-
-  # ---------------------------------------------------------------------------
   # web-next — composable plugin UI. Delegated to reusable workflow.
   # ---------------------------------------------------------------------------
   web-next:
@@ -336,53 +302,12 @@ jobs:
     secrets: inherit
 
   # ---------------------------------------------------------------------------
-  # web-next — publish dry-run (verifies all @niuulabs/* packages are publishable)
-  # ---------------------------------------------------------------------------
-  web-next-publish-dryrun:
-    name: "web-next: Publish dry-run"
-    needs: changes
-    if: needs.changes.outputs.web_next == 'true'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web-next
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 9
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: web-next/pnpm-lock.yaml
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build packages
-        run: pnpm -r --filter='./packages/*' build
-
-      - name: Dry-run publish all @niuulabs/* packages
-        # --no-git-checks skips the "working dir must be clean" guard.
-        # --dry-run stops before actually pushing to the registry.
-        # workspace:* deps are resolved to version numbers before packaging.
-        run: pnpm publish -r --filter='./packages/*' --no-git-checks --dry-run
-
-  # ---------------------------------------------------------------------------
-  # web-next — consumer E2E (proves the composability loop externally)
+  # web-next — publish dry-run + consumer E2E. One job: both prove the
+  # @niuulabs/* packages are consumable externally and share a single
+  # install + package build.
   # ---------------------------------------------------------------------------
   web-next-consumer-e2e:
-    name: "web-next: Consumer E2E"
+    name: "web-next: Publish dry-run + Consumer E2E"
     needs: changes
     if: needs.changes.outputs.web_next == 'true'
     runs-on: ubuntu-latest
@@ -414,6 +339,13 @@ jobs:
       - name: Build all packages
         working-directory: web-next
         run: pnpm -r --filter='./packages/*' build
+
+      - name: Dry-run publish all @niuulabs/* packages
+        # --no-git-checks skips the "working dir must be clean" guard.
+        # --dry-run stops before actually pushing to the registry.
+        # workspace:* deps are resolved to version numbers before packaging.
+        working-directory: web-next
+        run: pnpm publish -r --filter='./packages/*' --no-git-checks --dry-run
 
       - name: Pack all @niuulabs/* packages
         # pnpm pack converts workspace:* → resolved version numbers in the tarball.

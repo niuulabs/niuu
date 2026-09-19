@@ -114,37 +114,6 @@ jobs:
             --override-ini="addopts="
 
   # ---------------------------------------------------------------------------
-  # End-to-end tests (Playwright against real backend + frontend)
-  # ---------------------------------------------------------------------------
-  e2e-test:
-    name: "E2E: Playwright"
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: volundr_test
-          POSTGRES_PASSWORD: volundr_test
-          POSTGRES_DB: volundr_test
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U volundr_test -d volundr_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Playwright temporarily disabled
-        run: echo "Skipping Playwright until visual baselines are stabilized."
-
-  # ---------------------------------------------------------------------------
   # web-next — lint + unit tests. Delegated to reusable workflow.
   # ---------------------------------------------------------------------------
   web-next:
@@ -170,10 +139,11 @@ jobs:
       packages: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
-      containers: '["agent","skuld","openshell","devrunner","volundr-web","niuu-web","niuu","gbrain"]'
+      containers: '["agent","skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
       platforms: '["amd64","arm64"]'
       tag-prefix: ${{ github.sha }}
       manifest-tags: "dev dev-${{ github.sha }}"
+      cache-write: true
       build-args: |
         APP_VERSION=dev-${{ github.sha }}
       labels: |
@@ -194,7 +164,7 @@ jobs:
       security-events: write
     uses: ./.github/workflows/reusable-container-scan.yaml
     with:
-      containers: '["agent","skuld","openshell","devrunner","volundr-web","niuu-web","niuu","gbrain"]'
+      containers: '["agent","skuld","openshell","devrunner","niuu-web","niuu","gbrain"]'
       tag: dev
 
   # ---------------------------------------------------------------------------

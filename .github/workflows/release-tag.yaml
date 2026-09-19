@@ -51,7 +51,7 @@ jobs:
     strategy:
       matrix:
         platform: [amd64, arm64]
-        container: [agent, skuld, openshell, devrunner, volundr-web, niuu-web, niuu]
+        container: [agent, skuld, openshell, devrunner, niuu-web, niuu]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -78,8 +78,8 @@ jobs:
             org.opencontainers.image.vendor=Niuu Labs
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.documentation=https://github.com/${{ github.repository }}
-          cache-from: type=gha,scope=${{ matrix.container }}-${{ matrix.platform }}
-          cache-to: type=gha,mode=max,ignore-error=true,scope=${{ matrix.container }}-${{ matrix.platform }}
+          # Read-only: dev.yaml owns the registry layer cache (see reusable-container-build.yaml).
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.container }}:buildcache-${{ matrix.platform }}
           platforms: linux/${{ matrix.platform }}
           provenance: false
 
@@ -92,7 +92,7 @@ jobs:
       packages: write
     strategy:
       matrix:
-        container: [agent, skuld, openshell, devrunner, volundr-web, niuu-web, niuu]
+        container: [agent, skuld, openshell, devrunner, niuu-web, niuu]
     steps:
       - name: Log in to Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
