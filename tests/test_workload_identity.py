@@ -678,3 +678,183 @@ def _render_chart(chart: str) -> str:
     if result.returncode != 0:
         pytest.fail(f"helm template failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
     return result.stdout
+
+
+@pytest.mark.asyncio
+async def test_exchange_skips_unrelated_unavailable_issuer(monkeypatch) -> None:
+    from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(key)
+    offline = JwtWorkloadIdentityVerifier(
+        issuer="https://offline.example", jwks_uri="https://offline.example/jwks"
+    )
+
+    def unexpected_fetch(token):
+        pytest.fail("An unrelated issuer must never be contacted")
+
+    monkeypatch.setattr(offline, "_resolve_key", unexpected_fetch)
+    service._verifiers["offline"] = offline
+    service._config.mappings.insert(0, SimpleNamespace(verifier="offline"))
+    result = await service.exchange(_workload_token(key))
+    assert result.principal.user_id == OWNER_ID
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fails", [False, True])
+async def test_exchange_verifies_once_per_request_and_preserves_mapping_order(fails) -> None:
+    from unittest.mock import AsyncMock
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(key)
+    original = service._config.mappings[0]
+    service._config.mappings.insert(
+        0, SimpleNamespace(**{**vars(original), "subject": "another-workload"})
+    )
+    verifier = service._verifiers["kubernetes"]
+    verifier.verify = AsyncMock(
+        side_effect=ValueError("issuer unavailable") if fails else verifier.verify
+    )
+    for request in range(2):
+        if fails:
+            with pytest.raises(WorkloadIdentityError, match="issuer unavailable"):
+                await service.exchange(_workload_token(key))
+        else:
+            result = await service.exchange(_workload_token(key))
+            assert result.workload_name == original.name
+        assert verifier.verify.await_count == request + 1
+
+
+@pytest.mark.asyncio
+async def test_slow_jwks_does_not_block_other_issuers_or_event_loop(monkeypatch) -> None:
+    import asyncio
+    import threading
+
+    from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    entered = threading.Event()
+    release = threading.Event()
+    slow = JwtWorkloadIdentityVerifier(issuer=WORKLOAD_ISSUER, jwks_uri="https://slow.example")
+
+    def fetch(token):
+        entered.set()
+        if not release.wait(2):
+            raise TimeoutError("test release never arrived")
+        return key.public_key()
+
+    monkeypatch.setattr(slow, "_resolve_key", fetch)
+    task = asyncio.create_task(slow.verify(_workload_token(key)))
+    try:
+        async with asyncio.timeout(1):
+            while not entered.is_set():
+                await asyncio.sleep(0)
+            assert not task.done()
+            result = await _service(key).exchange(_workload_token(key))
+            assert result.principal.user_id == OWNER_ID
+    finally:
+        release.set()
+        await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["signature", "issuer", "audience", "expired", "algorithm"])
+async def test_remote_jwks_still_requires_valid_signed_claims(monkeypatch, failure) -> None:
+    from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    verifier = JwtWorkloadIdentityVerifier(
+        issuer=WORKLOAD_ISSUER,
+        audiences=["volundr-api"],
+        jwks_uri="https://issuer.example/jwks",
+    )
+    monkeypatch.setattr(verifier, "_resolve_key", lambda token: key.public_key())
+    claims = jwt.decode(_workload_token(key), options={"verify_signature": False})
+    if failure == "issuer":
+        claims["iss"] = "untrusted"
+    if failure == "audience":
+        claims["aud"] = "untrusted"
+    if failure == "expired":
+        claims["exp"] = int(time.time()) - 60
+    signing_key = key
+    if failure == "signature":
+        signing_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    token = jwt.encode(claims, signing_key, algorithm="RS256")
+    if failure == "algorithm":
+        token = jwt.encode(claims, "diagnostic-test-secret-at-least-32-bytes", algorithm="HS256")
+    with pytest.raises(jwt.InvalidTokenError):
+        await verifier.verify(token)
+
+
+def test_jwks_timeout_is_configurable_and_positive() -> None:
+    from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
+
+    verifier = JwtWorkloadIdentityVerifier(jwks_uri="https://issuer.example", timeout_seconds=2)
+    assert verifier._client.timeout == 2
+    with pytest.raises(ValueError, match="must be positive"):
+        JwtWorkloadIdentityVerifier(timeout_seconds=0)
+
+
+@pytest.mark.asyncio
+async def test_clusters_sharing_an_issuer_are_distinguished_by_signature() -> None:
+    from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
+
+    trusted = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(trusted)
+    service._verifiers["other-cluster"] = JwtWorkloadIdentityVerifier(
+        issuer=WORKLOAD_ISSUER,
+        audiences=["volundr-api"],
+        static_jwks={"keys": [_jwk_from_key(other, kid="k8s-proof")]},
+    )
+    original = service._config.mappings[0]
+    service._config.mappings.insert(
+        0, SimpleNamespace(**{**vars(original), "verifier": "other-cluster", "name": "wrong"})
+    )
+    result = await service.exchange(_workload_token(trusted))
+    assert result.workload_name == original.name
+
+
+@pytest.mark.asyncio
+async def test_remote_jwks_cache_and_key_rotation(monkeypatch) -> None:
+    import io
+    import json
+    import urllib.request
+
+    from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    rotated = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    fetches = []
+    keys = [_jwk_from_key(key, kid="k8s-proof")]
+
+    def fetch(request, *, timeout, context):
+        fetches.append(request.full_url)
+        assert timeout == 5
+        return io.BytesIO(json.dumps({"keys": keys}).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fetch)
+    verifier = JwtWorkloadIdentityVerifier(
+        issuer=WORKLOAD_ISSUER, audiences="volundr-api", jwks_uri="https://issuer.example/jwks"
+    )
+    token = _workload_token(key)
+    assert (await verifier.verify(token))["sub"] == WORKLOAD_SUBJECT
+    await verifier.verify(token)
+    assert len(fetches) == 1
+
+    keys.append(_jwk_from_key(rotated, kid="rotated"))
+    claims = jwt.decode(token, options={"verify_signature": False})
+    rotated_token = jwt.encode(claims, rotated, algorithm="RS256", headers={"kid": "rotated"})
+    assert (await verifier.verify(rotated_token))["sub"] == WORKLOAD_SUBJECT
+    assert len(fetches) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("jwks", [None, {"keys": []}])
+async def test_verifier_rejects_missing_key_material(jwks) -> None:
+    from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    verifier = JwtWorkloadIdentityVerifier(static_jwks=jwks)
+    with pytest.raises((ValueError, jwt.PyJWKSetError)):
+        await verifier.verify(_workload_token(key))
