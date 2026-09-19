@@ -316,10 +316,10 @@ async def test_slash_command_control_pastes_terminal_input_without_chat_turn(
 
 
 @pytest.mark.asyncio
-async def test_discover_slash_commands_scrapes_terminal_menu(tmp_path: Path) -> None:
+async def test_discover_slash_commands_scrapes_terminal_menu(tmp_path: Path, monkeypatch) -> None:
     transport = FakeTmuxInteractiveTransport(str(tmp_path))
     events = await _collect_events(transport)
-    transport.capture_stdout = "\n".join(
+    menu = "\n".join(
         [
             "❯ /",
             "────────────────",
@@ -329,6 +329,15 @@ async def test_discover_slash_commands_scrapes_terminal_menu(tmp_path: Path) -> 
             "/compact                      Free up context",
         ]
     )
+    send_key = transport._send_key_raw
+
+    async def render_menu_on_probe(key, *, pane_id=None):
+        await send_key(key, pane_id=pane_id)
+        if key == "/":
+            transport.capture_stdout = menu
+
+    # The autocomplete menu renders after the discovery probe, not at startup.
+    monkeypatch.setattr(transport, "_send_key_raw", render_menu_on_probe)
     await transport.start()
 
     commands = await transport.discover_slash_commands(refresh=True)
