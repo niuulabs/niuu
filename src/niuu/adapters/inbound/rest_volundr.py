@@ -1884,6 +1884,7 @@ def create_volundr_router(
             instance,
             request,
             method="GET",
+            params=_query_params(request),
             path=(f"/sessions/{session_id}/tool-result/{quote(tool_use_id, safe='')}/preview"),
             embedded_app=embedded_forge_app,
         )
