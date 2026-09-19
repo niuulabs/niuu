@@ -8,6 +8,7 @@ export { buildCommandList } from './utils/slashCommands';
 export type { SlashCommand } from './utils/slashCommands';
 
 /* Transport */
+export { forgeHistoryEndpoint, type ISessionHistoryLocator } from './hooks/historyPaging';
 export { deriveTerminalWsUrl, normalizeSessionUrl, wsUrlToHttpBase } from './transport';
 
 /* Hooks */

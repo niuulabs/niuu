@@ -333,6 +333,21 @@ describe('SessionsView', () => {
 // ── Live SessionChat surface ─────────────────────────────────────────────────
 
 describe('SessionsView — live chat', () => {
+  it('pages history from the injected Forge locator, not the gateway host', async () => {
+    const historyEndpoint = 'https://app.test/api/v1/forge/sessions/live-1/conversation';
+    render(<SessionsView />, {
+      wrapper: wrap({
+        ...servicesWith(singleSessionStream(liveRunningSession())),
+        'forge.history': { historyEndpoint: () => historyEndpoint },
+      }),
+    });
+    expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
+    expect(useSkuldChatMock).toHaveBeenCalledWith(
+      LIVE_CHAT_ENDPOINT,
+      expect.objectContaining({ historyEndpoint }),
+    );
+  });
+
   it('renders the shared SessionChat for a running session with a chatEndpoint', async () => {
     render(<SessionsView />, {
       wrapper: wrap(servicesWith(singleSessionStream(liveRunningSession()))),
@@ -341,6 +356,7 @@ describe('SessionsView — live chat', () => {
     expect(screen.getByTestId('session-chat')).toBeInTheDocument();
     expect(useSkuldChatMock).toHaveBeenCalledWith(LIVE_CHAT_ENDPOINT, {
       historyMode: 'none',
+      historyEndpoint: null,
     });
     // The synthesized read-only transcript must NOT be present.
     expect(screen.queryByTestId('sessions-composer')).not.toBeInTheDocument();
@@ -381,6 +397,7 @@ describe('SessionsView — live chat', () => {
     expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
     expect(useSkuldChatMock).toHaveBeenCalledWith(LIVE_CHAT_ENDPOINT, {
       historyMode: 'none',
+      historyEndpoint: null,
     });
   });
 
@@ -424,6 +441,7 @@ describe('SessionsView — live chat', () => {
     expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
     expect(useSkuldChatMock).toHaveBeenCalledWith(LIVE_CHAT_ENDPOINT, {
       historyMode: 'none',
+      historyEndpoint: null,
     });
     expect(getPersona).not.toHaveBeenCalled();
     expect(getMessages).not.toHaveBeenCalled();
