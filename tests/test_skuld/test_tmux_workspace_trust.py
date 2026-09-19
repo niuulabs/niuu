@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from skuld.delivery_errors import DeliveryNotAcceptedError
 from skuld.transports.tmux_interactive import TmuxInteractiveTransport
 from tests.support.forge.fakeclaude_shim import install_fake_claude
 from tests.support.forge.hook_server import HookServer
@@ -114,6 +115,35 @@ async def test_already_trusted_startup_sends_no_keys(tmp_path):
     transport = StartupTransport(tmp_path, ["❯"])
     try:
         await transport.start()
+        assert transport.keys == []
+    finally:
+        await transport.stop()
+
+
+QUESTION_SCREEN = " ☐ Db\n\nWhich database?\n\n❯ 1. Postgres\n  2. SQLite"
+
+
+async def test_native_control_at_boot_completes_startup_without_keys(tmp_path):
+    # The control hides the composer; start() must still return so a browser
+    # can attach and answer it.
+    transport = StartupTransport(tmp_path, [QUESTION_SCREEN])
+    transport._repl_ready_markers = ("fakeagent ready",)
+    transport._pending_tty_prompts["tty-1"] = {"kind": "ask_user_question"}
+    try:
+        await transport.start()
+        assert transport._startup_ready
+        assert transport.keys == []
+    finally:
+        await transport.stop()
+
+
+async def test_native_control_does_not_satisfy_callers_about_to_type(tmp_path):
+    transport = StartupTransport(tmp_path, [QUESTION_SCREEN])
+    transport._repl_ready_markers = ("fakeagent ready",)
+    transport._pending_tty_prompts["tty-1"] = {"kind": "ask_user_question"}
+    try:
+        with pytest.raises(DeliveryNotAcceptedError, match="not ready for input"):
+            await transport._wait_for_repl_ready()
         assert transport.keys == []
     finally:
         await transport.stop()

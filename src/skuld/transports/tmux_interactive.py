@@ -488,7 +488,7 @@ class TmuxInteractiveTransport(CLITransport):
         # Share the input lock with chat/discovery so startup keys cannot interleave.
         async with self._send_lock:
             if not self._startup_ready:
-                await self._wait_for_repl_ready()
+                await self._wait_for_repl_ready(native_control_completes_startup=True)
 
         if self._initial_prompt and not self._initial_prompt_sent:
             self._initial_prompt_sent = True
@@ -558,11 +558,18 @@ class TmuxInteractiveTransport(CLITransport):
             self._workspace_trust_navigation_sent = True
             await self._send_key("Down" if yes_index > selected[0] else "Up", pane_id=pane_id)
 
-    async def _wait_for_repl_ready(self) -> None:
+    async def _wait_for_repl_ready(self, *, native_control_completes_startup: bool = False) -> None:
         """Monitor startup, confirm workspace trust, then wait for the input prompt.
 
         Called with the input lock held. A timeout leaves the terminal available
         for inspection and never pastes a seed/chat/discovery probe into a menu.
+
+        ``native_control_completes_startup`` is for ``start()`` only: a CLI that
+        has raised a native control (a resumed question, a permission menu) is
+        past its startup screens even though the control hides the composer.
+        Waiting for the composer there deadlocks — the browser that would answer
+        the control cannot attach until ``start()`` returns. Callers that are
+        about to type leave it False; they must see the composer itself.
         """
         target = self._target_pane()
         self._startup_ready = False
@@ -573,6 +580,9 @@ class TmuxInteractiveTransport(CLITransport):
             if self._workspace_trust_pending(text):
                 trust_seen = True
                 await self._confirm_workspace_trust(text, pane_id=target)
+            elif native_control_completes_startup and self._pending_tty_prompts:
+                self._startup_ready = True
+                return
             elif self._repl_looks_ready(text):
                 self._startup_ready = True
                 return
