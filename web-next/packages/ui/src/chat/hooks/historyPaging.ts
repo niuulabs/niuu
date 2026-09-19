@@ -2,7 +2,7 @@ import { getAuthHeaders } from '@niuulabs/query';
 import { normalizeSessionUrl, wsUrlToHttpBase } from '../transport';
 import type { ConversationTurn } from './useSkuldChat';
 
-export const HISTORY_PAGE_SIZE = 50;
+export const HISTORY_PAGE_SIZE = 10;
 export const HISTORY_PAGE_BYTES = 256 * 1024;
 // Retained Forge facades append routing/timing metadata after fitting the page.
 // Reserve envelope space without relaxing the browser's hard transfer bound.
@@ -153,6 +153,7 @@ async function pageRequest(url: URL, signal: AbortSignal): Promise<HistoryPage> 
       ![data.window_offset, data.window_end, data.total_turns].every(Number.isSafeInteger)) ||
     ![start, total, end].every(Number.isSafeInteger) ||
     start < 0 ||
+    (start > 0 && data.turns.length === 0) ||
     end !== start + data.turns.length ||
     end > total ||
     (data.history_protocol === 2 && start > 0 && !data.older_cursor) ||
@@ -222,25 +223,24 @@ async function olderPage(
   throw new HistoryChangedError();
 }
 
-/** A visual batch is 50 rows; servers may split it into smaller byte-bounded pages. */
+/** Show one page immediately; only upward scrolling requests preceding pages. */
 export async function fetchHistoryBatch(
   socketUrl: string,
   signal: AbortSignal,
   before?: HistoryPage,
 ): Promise<HistoryPage> {
-  let page = before
+  const page = before
     ? await olderPage(socketUrl, before, HISTORY_PAGE_SIZE, signal)
     : await pageRequest(requestUrl(socketUrl, HISTORY_PAGE_SIZE), signal);
-  let turns = page.turns;
-  const newest = page;
-  while (turns.length < HISTORY_PAGE_SIZE && page.window_offset > 0) {
-    const older = await olderPage(socketUrl, page, HISTORY_PAGE_SIZE - turns.length, signal);
-    if (!older.turns.length || older.window_offset >= page.window_offset)
-      throw new HistoryChangedError();
-    turns = [...older.turns, ...turns];
-    page = older;
+  // Page budgets are a transport detail, not a different kind of message.
+  // Resolve truncated rows before they enter the normal history/live merge.
+  const complete: ConversationTurn[] = [];
+  for (const turn of page.turns) {
+    signal.throwIfAborted();
+    complete.push(turn.history_preview ? await fetchHistoryItem(socketUrl, turn.id, signal) : turn);
   }
-  return { ...page, turns, window_end: newest.window_end, head_seq: newest.head_seq };
+  signal.throwIfAborted();
+  return { ...page, turns: complete };
 }
 
 export async function fetchHistoryItem(
@@ -249,14 +249,14 @@ export async function fetchHistoryItem(
   signal: AbortSignal,
 ): Promise<ConversationTurn> {
   const url = conversationUrl(socketUrl);
-  // Explicit item expansion is separate from bounded automatic reads.
+  // Load all prose for this identity; large tool bodies keep their normal lazy reads.
   url.searchParams.set('turn_id', id);
-  url.searchParams.set('detail', 'full');
+  url.searchParams.set('detail', 'shallow');
   const response = await fetch(url.href, { headers: getAuthHeaders(), signal });
   if (!response.ok) throw new Error(`Could not load this message (HTTP ${response.status}).`);
   const data = await response.json();
   // Retained facades can ignore turn_id and return their full transcript. This
-  // explicit expansion still selects exactly the requested identity, never a tail.
+  // item read still selects exactly the requested identity, never a tail.
   const matches = Array.isArray(data.turns)
     ? data.turns.filter((turn: ConversationTurn) => turn.id === id)
     : [];

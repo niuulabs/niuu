@@ -62,5 +62,11 @@
       "filename": "000066_forge_projects.up.sql",
       "sha256": "d3628fef1c1118f1398dea4ca663fbffbc193dc3eda5dc4494dbc4ef641604e4"
     }
+  ],
+  "000074_session_coordination_revision.up.sql": [
+    {
+      "filename": "000067_session_coordination_revision.up.sql",
+      "sha256": "2e82f5a71bf5f14422d775f2a65b907bb58c863ea677c60bb7a5b2b0d6531e36"
+    }
   ]
 }

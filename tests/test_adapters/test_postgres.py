@@ -20,7 +20,9 @@ def mock_pool():
     """Create a mock asyncpg pool."""
     pool = MagicMock()
     pool.execute = AsyncMock()
-    pool.fetchrow = AsyncMock()
+    pool.fetchrow = AsyncMock(
+        return_value={"coordination": None, "coordination_revision": 0, "workload_config": {}}
+    )
     pool.fetch = AsyncMock()
     return pool
 
@@ -218,8 +220,8 @@ class TestPostgresSessionRepositoryUpdate:
         """Test that update executes UPDATE statement."""
         await repository.update(sample_session)
 
-        mock_pool.execute.assert_called_once()
-        call_args = mock_pool.execute.call_args
+        mock_pool.fetchrow.assert_called_once()
+        call_args = mock_pool.fetchrow.call_args
         sql = call_args[0][0]
         assert "UPDATE sessions" in sql
         assert "WHERE id = $1" in sql
@@ -347,7 +349,7 @@ class TestActivityStatePersistence:
     ):
         await repository.update(awaiting_session)
 
-        call_args = mock_pool.execute.call_args[0]
+        call_args = mock_pool.fetchrow.call_args[0]
         sql = call_args[0]
         assert "activity_state = $25" in sql
         assert "activity_metadata = $26" in sql
@@ -433,7 +435,7 @@ class TestActivityStatePersistence:
         awaiting_session.activity_state_since = since
         await repository.update(awaiting_session)
 
-        call_args = mock_pool.execute.call_args[0]
+        call_args = mock_pool.fetchrow.call_args[0]
         sql = call_args[0]
         assert "activity_state_since = $27" in sql
         assert call_args[27] == since
@@ -486,7 +488,7 @@ class TestActivityStatePersistence:
         awaiting_session.turn_started_at = turn_start
         await repository.update(awaiting_session)
 
-        call_args = mock_pool.execute.call_args[0]
+        call_args = mock_pool.fetchrow.call_args[0]
         assert "turn_started_at = $29" in call_args[0]
         assert call_args[29] == turn_start
 
@@ -535,7 +537,7 @@ class TestSessionQueryArity:
                     if (
                         isinstance(call, ast.Call)
                         and isinstance(call.func, ast.Attribute)
-                        and call.func.attr == "execute"
+                        and call.func.attr in {"execute", "fetchrow"}
                     ):
                         sql = call.args[0]
                         sql_text = ast.get_source_segment(source, sql) or ""
@@ -550,3 +552,52 @@ class TestSessionQueryArity:
     def test_update_arity(self):
         placeholders, args = self._execute_arg_counts("update")
         assert placeholders == args
+
+    def test_coordination_arity(self):
+        placeholders, args = self._execute_arg_counts("update_coordination")
+        assert placeholders == args
+
+
+async def test_assignment_compares_revision_and_returns_persisted_state(
+    repository, mock_pool, sample_session, sample_row
+):
+    from volundr.domain.projects import SessionCoordination
+
+    coordination = SessionCoordination(project_id=uuid4())
+    mock_pool.fetchrow.return_value = {
+        **sample_row,
+        "coordination": coordination.model_dump_json(),
+        "coordination_revision": 1,
+    }
+    actual = await repository.update_coordination(sample_session, coordination)
+    assert actual.coordination == coordination and actual.coordination_revision == 1
+    sql, *args = mock_pool.fetchrow.call_args.args
+    assert "coordination_revision = $4" in sql
+    assert "owner_id IS NOT DISTINCT FROM $5" in sql
+    assert "tenant_id IS NOT DISTINCT FROM $6" in sql
+    assert args[0] == sample_session.id and args[3] == 0
+    mock_pool.fetchrow.return_value = None
+    assert await repository.update_coordination(sample_session, coordination) is None
+
+
+async def test_ordinary_write_returns_newer_membership_instead_of_stale_caller_copy(
+    repository, mock_pool, sample_session
+):
+    from volundr.domain.projects import SessionCoordination
+
+    coordination = SessionCoordination(project_id=uuid4())
+    mock_pool.fetchrow.return_value = {
+        "coordination": coordination.model_dump_json(),
+        "coordination_revision": 2,
+        "workload_config": {"effort": "high"},
+    }
+    stale = sample_session.model_copy(update={"workload_config": {"project_context": "old"}})
+    actual = await repository.update(stale)
+    assert actual.coordination == coordination and actual.coordination_revision == 2
+    assert actual.workload_config == {"effort": "high"}
+    sql = mock_pool.fetchrow.call_args.args[0]
+    assert "coordination =" not in sql
+    assert "CASE WHEN coordination_revision = $30" in sql
+    mock_pool.fetchrow.return_value = None
+    with pytest.raises(LookupError):
+        await repository.update(stale)

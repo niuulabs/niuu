@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import { LaunchWizard } from './LaunchWizard';
 import { RenameSession } from './RenameSession';
+import { AssignSessionProject } from './AssignSessionProject';
 import { PinSession } from './PinSession';
 import { usePinnedSessions } from './usePinnedSessions';
 import { ImportExternalSessionsDialog } from './ImportExternalSessionsDialog';
@@ -326,8 +327,16 @@ function PodEntry({
                   {harness === 'claude' ? 'Claude' : 'Codex'}
                 </span>
               )}
+              {forgeLabel && (
+                <span className="forge-session-row__host" title={`Host: ${forgeLabel}`}>
+                  {forgeLabel}
+                </span>
+              )}
               {sourceLabel && (
-                <span className="forge-session-row__source" title={previewLabel ?? sourceLabel}>
+                <span
+                  className="forge-session-row__source"
+                  title={localPath ?? previewLabel ?? sourceLabel}
+                >
                   {isLocal ? (
                     <FolderOpen size={13} />
                   ) : sourceParts || session.source?.type === 'git' ? (
@@ -335,7 +344,7 @@ function PodEntry({
                   ) : (
                     <SquareTerminal size={13} />
                   )}
-                  <span>{sourceLabel}</span>
+                  <span>{sourceLabel.replace(/^\/home\/[^/]+(?:\/|$)/, '~/')}</span>
                 </span>
               )}
               <span className="forge-session-row__age" title="Last session activity">
@@ -350,7 +359,6 @@ function PodEntry({
                     {trackerLabel}
                   </span>
                 )}
-                {forgeLabel && <span title={forgeLabel}>forge · {forgeLabel}</span>}
                 {showPreviewFallback && <span>{previewLabel}</span>}
               </div>
             )}
@@ -377,6 +385,12 @@ function PodEntry({
         >
           <RenameSession sessionId={session.id} name={primaryLabel} disabled={busy} />
           <PinSession sessionId={session.id} name={primaryLabel} />
+          <AssignSessionProject
+            sessionId={session.id}
+            name={primaryLabel}
+            instanceId={session.clusterId}
+            disabled={busy}
+          />
           {STOPPABLE_STATES.has(session.state) && (
             <button
               type="button"

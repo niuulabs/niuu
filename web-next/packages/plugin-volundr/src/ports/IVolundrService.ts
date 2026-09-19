@@ -26,6 +26,7 @@ import type {
   TrackerIssue,
   ProjectRepoMapping,
   ForgeProject,
+  SessionProjectMembership,
   VolundrIdentity,
   VolundrUser,
   VolundrTenant,
@@ -135,7 +136,16 @@ export interface IVolundrService {
   getTargets(): Promise<VolundrTarget[]>;
   listUserHome(instanceId: string, path: string): Promise<UserHomeListing>;
   deleteUserHomePath(instanceId: string, path: string): Promise<void>;
-  getProjects(): Promise<ForgeProject[]>;
+  getProjects(options?: SessionReadOptions): Promise<ForgeProject[]>;
+  getSessionProject(
+    sessionId: string,
+    options?: SessionReadOptions,
+  ): Promise<SessionProjectMembership>;
+  assignSessionProject(
+    sessionId: string,
+    assignment: { projectId: string; projectInstanceId: string; expectedRevision: number },
+    options?: SessionReadOptions,
+  ): Promise<SessionProjectMembership>;
 
   /** Subscribe to live session updates via SSE. Returns an unsubscribe function. */
   subscribe(callback: (sessions: VolundrSession[]) => void): () => void;

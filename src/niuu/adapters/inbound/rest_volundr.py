@@ -25,6 +25,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.auth import extract_principal
@@ -37,6 +38,13 @@ from niuu.adapters.inbound.remote_urls import (
 from niuu.adapters.inbound.ws_forge_replay import forward_replay
 from niuu.domain.models import InstanceKind, Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
+
+
+class SessionProjectAssignment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project_id: UUID
+    project_instance_id: str | None = Field(default=None, min_length=1, max_length=100)
+    expected_revision: int = Field(ge=0)
 
 
 async def _visible_instances(
@@ -1765,6 +1773,121 @@ def create_volundr_router(
         _ensure_remote_success(response)
         payload = response.json()
         return _with_instance(payload, instance) if isinstance(payload, dict) else {}
+
+    @router.get("/sessions/{session_id}/project")
+    async def get_session_project(
+        request: Request,
+        session_id: UUID,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service, principal, request, str(session_id), embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/project",
+            embedded_app=embedded_forge_app,
+        )
+        if response.status_code == 404:
+            raise HTTPException(
+                501, "Update this session's Forge host to enable project assignment"
+            )
+        _ensure_remote_success(response)
+        return _with_instance(response.json(), instance)
+
+    @router.put("/sessions/{session_id}/project")
+    async def assign_session_project(
+        request: Request,
+        session_id: UUID,
+        data: SessionProjectAssignment,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        owner, _ = await _find_session_owner(
+            service, principal, request, str(session_id), embedded_app=embedded_forge_app
+        )
+        # Check support/revision before making a metadata replica on a worker host.
+        current = await _request_remote(
+            owner,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/project",
+            embedded_app=embedded_forge_app,
+        )
+        if current.status_code == 404:
+            raise HTTPException(
+                501, "Update this session's Forge host to enable project assignment"
+            )
+        _ensure_remote_success(current)
+        if current.json().get("revision") != data.expected_revision:
+            raise HTTPException(409, "Session project changed; reload before assigning")
+        holder = await _resolve_target_instance(
+            service, principal, data.project_instance_id or owner.id
+        )
+        path = f"/projects/{data.project_id}"
+        project_response = await _request_remote(
+            holder, request, method="GET", path=path, embedded_app=embedded_forge_app
+        )
+        _ensure_remote_success(project_response)
+        project = project_response.json()
+        if not isinstance(project, dict) or str(project.get("id")) != str(data.project_id):
+            raise HTTPException(502, "Project host returned a different project")
+        if any(
+            not isinstance(project.get(key), str) or not project[key]
+            for key in ("slug", "name", "repo_url")
+        ):
+            raise HTTPException(502, "Project host returned incomplete project metadata")
+        if project.get("status") != "active":
+            raise HTTPException(409, "Restore the archived project before assigning sessions")
+        if holder.id != owner.id:
+            existing = await _request_remote(
+                owner, request, method="GET", path=path, embedded_app=embedded_forge_app
+            )
+            if existing.status_code == 404:
+                # Existing registration is the durable membership index. Only copy
+                # public identity, never another host's checkout, scope or credentials.
+                replica = {key: project[key] for key in ("id", "slug", "name", "repo_url")}
+                replica.update(description=project.get("description", ""), workspace_path="")
+                registered = await _request_remote(
+                    owner,
+                    request,
+                    method="POST",
+                    path="/projects",
+                    json_body=replica,
+                    embedded_app=embedded_forge_app,
+                )
+                if registered.status_code != 409:
+                    _ensure_remote_success(registered)
+                # A simultaneous registration may have won; validate the actual record.
+                existing = await _request_remote(
+                    owner, request, method="GET", path=path, embedded_app=embedded_forge_app
+                )
+            _ensure_remote_success(existing)
+            local_project = existing.json()
+            if not isinstance(local_project, dict) or (
+                str(local_project.get("id")),
+                local_project.get("repo_url"),
+                local_project.get("status"),
+            ) != (
+                str(data.project_id),
+                project.get("repo_url"),
+                "active",
+            ):
+                raise HTTPException(409, "Project registration on the session host conflicts")
+        response = await _request_remote(
+            owner,
+            request,
+            method="PUT",
+            path=f"/sessions/{session_id}/project",
+            json_body={
+                "project_id": str(data.project_id),
+                "expected_revision": data.expected_revision,
+            },
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return _with_instance(response.json(), owner)
 
     @router.put("/sessions/{session_id}")
     async def update_session(

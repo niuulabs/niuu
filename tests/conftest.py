@@ -168,8 +168,39 @@ class InMemorySessionRepository(SessionRepository):
         return sessions
 
     async def update(self, session: Session) -> Session:
-        self._sessions[session.id] = session
-        return session
+        current = self._sessions[session.id]
+        config = dict(session.workload_config)
+        if session.coordination_revision != current.coordination_revision:
+            config.pop("project_context", None)
+        updated = session.model_copy(
+            update={
+                "coordination": current.coordination,
+                "coordination_revision": current.coordination_revision,
+                "workload_config": config,
+            }
+        )
+        self._sessions[session.id] = updated
+        return updated
+
+    async def update_coordination(self, session, coordination):
+        current = self._sessions.get(session.id)
+        if current is None or (
+            current.coordination_revision,
+            current.owner_id,
+            current.tenant_id,
+        ) != (session.coordination_revision, session.owner_id, session.tenant_id):
+            return None
+        config = dict(current.workload_config)
+        config.pop("project_context", None)
+        updated = current.model_copy(
+            update={
+                "coordination": coordination,
+                "coordination_revision": current.coordination_revision + 1,
+                "workload_config": config,
+            }
+        )
+        self._sessions[session.id] = updated
+        return updated
 
     async def list_stale_running(self, older_than):
         return [

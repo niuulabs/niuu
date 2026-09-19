@@ -63,23 +63,42 @@ describe('bounded conversation pages', () => {
     expect(historySocketUrl('invalid', true)).toBe('invalid');
   });
   it.each([1, 2])(
-    'loads exactly 50 initially, then 50 and the final 23 with protocol %s',
+    'loads 10 initially and only fetches preceding pages when requested with protocol %s',
     async (version) => {
       const { calls } = serve(version);
       const first = await fetchHistoryBatch(socket, signal());
-      expect(first.turns.map((t) => t.id)).toEqual(rows.slice(-50).map((t) => t.id));
+      expect(first.turns.map((t) => t.id)).toEqual(rows.slice(-10).map((t) => t.id));
+      expect(calls).toHaveLength(1);
       const older = await fetchHistoryBatch(socket, signal(), first);
-      expect(older.turns.map((t) => t.id)).toEqual(rows.slice(23, 73).map((t) => t.id));
-      const last = await fetchHistoryBatch(socket, signal(), older);
-      expect(last.turns.map((t) => t.id)).toEqual(rows.slice(0, 23).map((t) => t.id));
-      expect(last.window_offset).toBe(0);
+      expect(older.turns.map((t) => t.id)).toEqual(rows.slice(103, 113).map((t) => t.id));
+      let page = older;
+      const collected = [...older.turns, ...first.turns];
+      while (page.window_offset > 0) {
+        page = await fetchHistoryBatch(socket, signal(), page);
+        expect(page.turns.length).toBeLessThanOrEqual(10);
+        collected.unshift(...page.turns);
+      }
+      expect(collected.map((t) => t.id)).toEqual(rows.map((t) => t.id));
+      expect(page.turns).toHaveLength(3);
       expect(
         calls.every((u) => u.searchParams.get('max_bytes') === String(HISTORY_REQUEST_BYTES)),
       ).toBe(true);
-      expect(calls.every((u) => Number(u.searchParams.get('limit')) <= 51)).toBe(true);
+      expect(calls.every((u) => Number(u.searchParams.get('limit')) <= 11)).toBe(true);
     },
   );
-  it('retries the old offset seek when appends move the tail; joins by held identity', async () => {
+  it.each([1, 2])(
+    'returns a small byte-limited page without chasing older rows (protocol %s)',
+    async (version) => {
+      const { calls } = serve(version, 2);
+      const page = await fetchHistoryBatch(socket, signal());
+      expect(page.turns.map((t) => t.id)).toEqual(['row-121', 'row-122']);
+      expect(calls).toHaveLength(1);
+      const older = await fetchHistoryBatch(socket, signal(), page);
+      expect(older.turns.length).toBeGreaterThan(0);
+      expect(calls).toHaveLength(2);
+    },
+  );
+  it('keeps a continuous legacy boundary when appends shorten the next page', async () => {
     const { fetcher } = serve(1, 51);
     const first = await fetchHistoryBatch(socket, signal());
     let added = false;
@@ -93,7 +112,9 @@ describe('bounded conversation pages', () => {
     });
     try {
       const older = await fetchHistoryBatch(socket, signal(), first);
-      expect(older.turns.map((t) => t.id)).toEqual(rows.slice(23, 73).map((t) => t.id));
+      expect(older.turns.map((t) => t.id)).toEqual(rows.slice(105, 113).map((t) => t.id));
+      const preceding = await fetchHistoryBatch(socket, signal(), older);
+      expect(preceding.turns.map((t) => t.id)).toEqual(rows.slice(95, 105).map((t) => t.id));
     } finally {
       rows.splice(123);
     }
@@ -105,7 +126,7 @@ describe('bounded conversation pages', () => {
       Response.json({
         turns: [turn(999)],
         total_turns: 123,
-        window_offset: 73,
+        window_offset: 113,
         projection_revision: 'same',
       }),
     );
@@ -116,15 +137,15 @@ describe('bounded conversation pages', () => {
     const first = await fetchHistoryBatch(socket, signal());
     fetcher.mockResolvedValueOnce(
       Response.json({
-        turns: [rows[73]],
+        turns: [rows[113]],
         total_turns: 123,
-        window_offset: 73,
+        window_offset: 113,
         projection_revision: 'same',
       }),
     );
     const older = await fetchHistoryBatch(socket, signal(), first);
-    expect(older.turns).toHaveLength(50);
-    expect(older.turns.at(-1)?.id).toBe('row-72');
+    expect(older.turns).toHaveLength(10);
+    expect(older.turns.at(-1)?.id).toBe('row-112');
   });
   it('rejects an ignored cursor and an incorrect page boundary', async () => {
     const { fetcher } = serve();
@@ -141,6 +162,18 @@ describe('bounded conversation pages', () => {
       }),
     );
     await expect(fetchHistoryBatch(socket, signal(), first)).rejects.toThrow('history changed');
+  });
+  it('rejects an empty older page that would leave scrolling at the same boundary', async () => {
+    const { fetcher } = serve();
+    const first = await fetchHistoryBatch(socket, signal());
+    fetcher.mockResolvedValueOnce(
+      Response.json({
+        ...first,
+        turns: [],
+        window_end: first.window_offset,
+      }),
+    );
+    await expect(fetchHistoryBatch(socket, signal(), first)).rejects.toThrow('boundary');
   });
   it.each([
     ['history_cursor_invalid', 'history changed'],
@@ -228,6 +261,89 @@ describe('bounded conversation pages', () => {
         error: 'Conversation history is too large for WebSocket replay.',
       }),
     ).toBe(false);
+  });
+  it.each([false, true])(
+    'automatically fills normal and metadata-only rows (metadata: %s)',
+    async (metadata) => {
+      const page = {
+        turns: [
+          {
+            ...turn(0),
+            content: 'Tail',
+            history_preview: true,
+            history_metadata_preview: metadata,
+          },
+          turn(1),
+        ],
+        total_turns: 2,
+        window_offset: 0,
+        window_end: 2,
+        history_protocol: 2,
+        projection_revision: 'same',
+      };
+      const complete = {
+        ...turn(0),
+        role: 'user',
+        content: '# Complete message\n\n' + 'Text 📝 '.repeat(50000),
+      };
+      const controller = new AbortController();
+      const fetcher = vi
+        .fn()
+        .mockResolvedValueOnce(Response.json(page))
+        .mockResolvedValueOnce(Response.json({ turn: complete }));
+      vi.stubGlobal('fetch', fetcher);
+      const result = await fetchHistoryBatch(socket, controller.signal);
+      expect(result.turns).toEqual([complete, turn(1)]);
+      expect(result.window_end).toBe(2);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      const request = new URL(fetcher.mock.calls[1]![0]);
+      expect(request.pathname).toBe('/forge-host/build/api/v1/forge/sessions/session/conversation');
+      expect(request.searchParams.get('turn_id')).toBe('row-0');
+      expect(request.searchParams.get('detail')).toBe('shallow');
+      expect(fetcher.mock.calls[1]![1].signal).toBe(controller.signal);
+    },
+  );
+  it('fills truncated older pages before prepending them', async () => {
+    const current = {
+      turns: [turn(1)],
+      total_turns: 2,
+      window_offset: 1,
+      window_end: 2,
+      history_protocol: 2,
+      projection_revision: 'same',
+      older_cursor: 'older',
+    };
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({
+          ...current,
+          turns: [{ ...turn(0), history_preview: true }],
+          window_offset: 0,
+          window_end: 1,
+          older_cursor: null,
+        }),
+      )
+      .mockResolvedValueOnce(Response.json({ turn: turn(0) }));
+    vi.stubGlobal('fetch', fetcher);
+    const result = await fetchHistoryBatch(socket, signal(), current);
+    expect(result.turns).toEqual([turn(0)]);
+    expect(result.window_end).toBe(1);
+  });
+  it('does not expose an incomplete page when automatic message loading fails or is cancelled', async () => {
+    const page = { turns: [{ ...turn(0), history_preview: true }] };
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json(page))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    vi.stubGlobal('fetch', fetcher);
+    await expect(fetchHistoryBatch(socket, signal())).rejects.toThrow('503');
+    const controller = new AbortController();
+    fetcher.mockResolvedValueOnce(Response.json(page)).mockImplementationOnce(async () => {
+      controller.abort();
+      return Response.json({ turn: turn(0) });
+    });
+    await expect(fetchHistoryBatch(socket, controller.signal)).rejects.toThrow();
   });
   it('only accepts an explicitly requested complete item', async () => {
     const fetcher = vi.fn(async () => Response.json({ turn: turn(0) }));

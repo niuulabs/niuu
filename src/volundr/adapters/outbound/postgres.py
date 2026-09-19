@@ -14,6 +14,7 @@ from volundr.domain.models import (
     SessionStatus,
 )
 from volundr.domain.ports import SessionRepository
+from volundr.domain.projects import SessionCoordination
 
 
 class PostgresSessionRepository(SessionRepository):
@@ -130,7 +131,7 @@ class PostgresSessionRepository(SessionRepository):
     async def update(self, session: Session) -> Session:
         """Update an existing session."""
         source_json = json.dumps(session.source.model_dump())
-        await self._pool.execute(
+        row = await self._pool.fetchrow(
             """
             UPDATE sessions
             SET name = $2, model = $3, source = $4, status = $5,
@@ -142,8 +143,11 @@ class PostgresSessionRepository(SessionRepository):
                 origin = $21, external_session_id = $22, cli_session_id = $23,
                 session_definition = $24, activity_state = $25,
                 activity_metadata = $26, activity_state_since = $27,
-                workload_config = $28, turn_started_at = $29, coordination = $30
+                workload_config = CASE WHEN coordination_revision = $30
+                    THEN $28::jsonb ELSE ($28::jsonb - 'project_context') END,
+                turn_started_at = $29
             WHERE id = $1
+            RETURNING coordination, coordination_revision, workload_config
             """,
             session.id,
             session.name,
@@ -174,9 +178,39 @@ class PostgresSessionRepository(SessionRepository):
             session.activity_state_since,
             json.dumps(session.workload_config or {}),
             session.turn_started_at,
-            session.coordination.model_dump_json() if session.coordination else None,
+            session.coordination_revision,
         )
-        return session
+        if row is None:
+            raise LookupError(f"Session no longer exists: {session.id}")
+        return Session.model_validate(
+            {
+                **session.model_dump(),
+                "coordination": self._parse_json_dict(row["coordination"]) or None,
+                "coordination_revision": row["coordination_revision"],
+                "workload_config": self._parse_json_dict(row["workload_config"]) or {},
+            }
+        )
+
+    async def update_coordination(
+        self, session: Session, coordination: SessionCoordination
+    ) -> Session | None:
+        row = await self._pool.fetchrow(
+            """UPDATE sessions SET coordination = $2::jsonb,
+                   coordination_revision = coordination_revision + 1,
+                   workload_config = COALESCE(workload_config, '{}'::jsonb) - 'project_context',
+                   updated_at = $3
+               WHERE id = $1 AND coordination_revision = $4
+                 AND owner_id IS NOT DISTINCT FROM $5
+                 AND tenant_id IS NOT DISTINCT FROM $6
+               RETURNING *""",
+            session.id,
+            coordination.model_dump_json(),
+            datetime.now(UTC),
+            session.coordination_revision,
+            session.owner_id,
+            session.tenant_id,
+        )
+        return self._row_to_session(row) if row is not None else None
 
     async def list_stale_running(self, older_than: datetime) -> "list[Session]":
         """Return RUNNING sessions whose last_active is at/before older_than."""
@@ -248,6 +282,7 @@ class PostgresSessionRepository(SessionRepository):
             workload_type=row.get("workload_type") or "session",
             workload_config=self._parse_json_dict(row.get("workload_config")),
             coordination=self._parse_json_dict(row.get("coordination")) or None,
+            coordination_revision=row.get("coordination_revision", 0),
             origin=row.get("origin") or "volundr",
             external_session_id=row.get("external_session_id"),
             cli_session_id=row.get("cli_session_id"),

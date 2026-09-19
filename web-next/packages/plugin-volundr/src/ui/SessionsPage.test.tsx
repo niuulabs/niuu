@@ -735,7 +735,8 @@ describe('Forge session review controls', () => {
     expect(screen.queryByTestId('pod-entry-stopped')).not.toBeInTheDocument();
     expect(screen.queryByTestId('pod-entry-archived')).not.toBeInTheDocument();
     expect(screen.getByTestId('pod-entry-working')).not.toHaveTextContent('dev-user');
-    expect(screen.getByTestId('pod-entry-working')).not.toHaveTextContent('Thor');
+    expect(screen.getByTestId('pod-entry-working')).toHaveTextContent('Thor');
+    expect(screen.getByTestId('pod-entry-working')).toHaveTextContent('~/repos/niuu');
     fireEvent.click(screen.getByTestId('session-filter-all'));
     expect(screen.getByTestId('pod-entry-archived')).toBeInTheDocument();
     fireEvent.change(screen.getByTestId('pod-search'), { target: { value: 'Release review' } });
@@ -745,6 +746,35 @@ describe('Forge session review controls', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Show session details' }));
     expect(screen.getByTestId('pod-entry-working')).toHaveTextContent('Thor');
   });
+  it.each([
+    ['/home/horde/repos/niuu', '~/repos/niuu'],
+    ['/home/horde', '~/'],
+    ['/home/horde/', '~/'],
+    ['/workspace/niuu', '/workspace/niuu'],
+    ['~/repos/niuu', '~/repos/niuu'],
+    ['/home', '/home'],
+    ['/homebrew/niuu', '/homebrew/niuu'],
+  ])(
+    'shows the agent, host and compact folder for %s with its full path on hover',
+    async (path, label) => {
+      wrap(
+        createSessionStoreWithSessions([
+          makeSession({
+            id: 'host-row',
+            personaName: 'Workspace review',
+            state: 'running',
+            clusterName: 'Build Bro',
+            model: 'gpt-6-astra',
+            source: { type: 'local_mount', local_path: path },
+          }),
+        ]),
+      );
+      const row = await screen.findByTestId('pod-entry-host-row');
+      expect(row).toHaveTextContent(`CodexBuild Bro${label}`);
+      expect(within(row).getByTitle('Host: Build Bro')).toHaveTextContent('Build Bro');
+      expect(within(row).getByTitle(path)).toHaveTextContent(label);
+    },
+  );
   it('persists keyboard resizing and collapsed groups', async () => {
     wrap(createSessionStoreWithSessions(sessions));
     await screen.findByTestId('pod-entry-working');

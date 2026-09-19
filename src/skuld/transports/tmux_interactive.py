@@ -488,7 +488,11 @@ class TmuxInteractiveTransport(CLITransport):
         # Share the input lock with chat/discovery so startup keys cannot interleave.
         async with self._send_lock:
             if not self._startup_ready:
-                await self._wait_for_repl_ready(native_control_completes_startup=True)
+                ready = await self._wait_for_repl_ready(allow_pending_question=True)
+                if not ready:
+                    # Let the client finish attaching so it can answer the existing
+                    # hook-backed question. A seed remains unsent until startup retries.
+                    return
 
         if self._initial_prompt and not self._initial_prompt_sent:
             self._initial_prompt_sent = True
@@ -509,13 +513,14 @@ class TmuxInteractiveTransport(CLITransport):
     def _repl_looks_ready(self, text: str) -> bool:
         if self._workspace_trust_pending(text):
             return False
-        # The selection chevron on the next startup/authentication menu is not
-        # evidence that workspace confirmation reached the chat composer.
-        if self._workspace_trust_submitted:
-            return any(
-                marker and marker != "❯" and marker in text for marker in self._repl_ready_markers
-            ) or any(self._is_empty_prompt_row(row) for row in text.splitlines())
-        return any(marker and marker in text for marker in self._repl_ready_markers)
+        # A menu's selection chevron is not the chat composer, even before the
+        # trust menu has fully rendered or when the workspace is already trusted.
+        return any(
+            marker and marker != "❯" and marker in text for marker in self._repl_ready_markers
+        ) or (
+            "❯" in self._repl_ready_markers
+            and any(self._is_empty_prompt_row(row) for row in text.splitlines())
+        )
 
     @staticmethod
     def _workspace_trust_pending(text: str) -> bool:
@@ -558,18 +563,19 @@ class TmuxInteractiveTransport(CLITransport):
             self._workspace_trust_navigation_sent = True
             await self._send_key("Down" if yes_index > selected[0] else "Up", pane_id=pane_id)
 
-    async def _wait_for_repl_ready(self, *, native_control_completes_startup: bool = False) -> None:
+    async def _wait_for_repl_ready(self, *, allow_pending_question: bool = False) -> bool:
         """Monitor startup, confirm workspace trust, then wait for the input prompt.
 
         Called with the input lock held. A timeout leaves the terminal available
         for inspection and never pastes a seed/chat/discovery probe into a menu.
 
-        ``native_control_completes_startup`` is for ``start()`` only: a CLI that
-        has raised a native control (a resumed question, a permission menu) is
-        past its startup screens even though the control hides the composer.
-        Waiting for the composer there deadlocks — the browser that would answer
-        the control cannot attach until ``start()`` returns. Callers that are
-        about to type leave it False; they must see the composer itself.
+        ``allow_pending_question`` is for ``start()`` only: a CLI that has raised
+        a native control (a resumed question, a permission menu) hides the
+        composer. Waiting for the composer there deadlocks — the browser that
+        would answer the control cannot attach until ``start()`` returns. It
+        returns False without marking startup ready, so nothing is typed into
+        the control. Callers that are about to type leave it False; they must
+        see the composer itself.
         """
         target = self._target_pane()
         self._startup_ready = False
@@ -577,15 +583,14 @@ class TmuxInteractiveTransport(CLITransport):
         trust_seen = False
         while time.monotonic() < deadline:
             text = self._clean_terminal_text(await self._capture_pane_text(target))
+            if allow_pending_question and self._pending_tty_prompts:
+                return False
             if self._workspace_trust_pending(text):
                 trust_seen = True
                 await self._confirm_workspace_trust(text, pane_id=target)
-            elif native_control_completes_startup and self._pending_tty_prompts:
-                self._startup_ready = True
-                return
             elif self._repl_looks_ready(text):
                 self._startup_ready = True
-                return
+                return True
             await asyncio.sleep(self._menu_poll_step_s)
         if trust_seen:
             raise DeliveryNotAcceptedError(

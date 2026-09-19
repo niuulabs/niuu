@@ -44,23 +44,35 @@ beforeEach(() => {
   send.mockClear();
 });
 describe('paged session history', () => {
-  it('cancels the pre-attachment initial GET instead of finishing and downloading the batch twice', async () => {
+  it('shows the initial page before a queued post-attachment refresh finishes', async () => {
     const { fetcher } = mockHistory(2);
     let release!: (response: Response) => void;
+    let refresh!: (response: Response) => void;
     let initialSignal: AbortSignal | undefined;
-    fetcher.mockImplementationOnce((_, options) => {
-      initialSignal = options?.signal as AbortSignal;
-      return new Promise((resolve) => {
-        release = resolve;
-      });
-    });
+    fetcher
+      .mockImplementationOnce((_, options) => {
+        initialSignal = options?.signal as AbortSignal;
+        return new Promise((resolve) => {
+          release = resolve;
+        });
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            refresh = resolve;
+          }),
+      );
     const { result } = renderHook(() => useSkuldChat(url));
     act(() => handlers.onOpen());
+    expect(initialSignal?.aborted).toBe(false);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await act(async () => release(Response.json({ turns: [turn(0)] })));
     await waitFor(() => expect(result.current.historyLoaded).toBe(true));
-    expect(initialSignal?.aborted).toBe(true);
-    expect(fetcher).toHaveBeenCalledTimes(2);
-    await act(async () => release(Response.json({ turns: [turn(999)] })));
+    expect(result.current.messages.map((row) => row.id)).toEqual(['row-0']);
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    await act(async () => refresh(Response.json({ turns: [turn(0), turn(1)] })));
     expect(result.current.messages.map((row) => row.id)).toEqual(['row-0', 'row-1']);
+    expect(send).not.toHaveBeenCalled();
   });
   it('reads recent and older pages from the resolved Forge endpoint, not the gateway host', async () => {
     const { fetcher } = mockHistory();
@@ -68,28 +80,47 @@ describe('paged session history', () => {
     const { result } = renderHook(() => useSkuldChat(url, { historyEndpoint }));
     await waitFor(() => expect(result.current.historyLoaded).toBe(true));
     await act(async () => result.current.loadOlderHistory());
-    expect(result.current.messages).toHaveLength(100);
+    expect(result.current.messages).toHaveLength(20);
     const targets = fetcher.mock.calls.map(([raw]) => new URL(raw));
     expect(targets.map((target) => target.origin + target.pathname)).toEqual([
       historyEndpoint,
       historyEndpoint,
     ]);
   });
-  it('starts with 50 and deduplicates simultaneous older loads', async () => {
-    const { fetcher } = mockHistory();
+  it('keeps the first page visible and reports a failed background catch-up', async () => {
+    const { fetcher } = mockHistory(2);
+    let release!: (response: Response) => void;
+    fetcher
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    const { result } = renderHook(() => useSkuldChat(url));
+    act(() => handlers.onOpen());
+    await act(async () => release(Response.json({ turns: [turn(0)] })));
+    await waitFor(() => expect(result.current.historyError).toContain('503'));
+    expect(result.current.historyLoaded).toBe(true);
+    expect(result.current.messages.map((row) => row.id)).toEqual(['row-0']);
+    expect(send).not.toHaveBeenCalled();
+  });
+  it('starts with 10 and deduplicates simultaneous older loads', async () => {
+    const { fetcher } = mockHistory(23);
     const { result } = renderHook(() => useSkuldChat(url));
     await waitFor(() => expect(result.current.historyLoaded).toBe(true));
-    expect(result.current.messages).toHaveLength(50);
+    expect(result.current.messages).toHaveLength(10);
     expect(socketUrl).toContain('history_delivery=none');
     await act(async () => {
       await Promise.all([result.current.loadOlderHistory(), result.current.loadOlderHistory()]);
     });
     expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(result.current.messages).toHaveLength(100);
+    expect(result.current.messages).toHaveLength(20);
     await act(async () => {
       await result.current.loadOlderHistory();
     });
-    expect(result.current.messages).toHaveLength(120);
+    expect(result.current.messages).toHaveLength(23);
     expect(result.current.hasOlderHistory).toBe(false);
     expect(send).not.toHaveBeenCalled();
   });
@@ -104,8 +135,8 @@ describe('paged session history', () => {
     rows.push(turn(120));
     act(() => handlers.onOpen());
     await waitFor(() => expect(result.current.messages.at(-1)?.id).toBe('row-120'));
-    expect(result.current.messages[0]?.id).toBe('row-20');
-    expect(result.current.messages).toHaveLength(101);
+    expect(result.current.messages[0]?.id).toBe('row-100');
+    expect(result.current.messages).toHaveLength(21);
   });
   it('treats recovery controls as reads and preserves the live stream', async () => {
     const { fetcher } = mockHistory(2);
@@ -159,12 +190,12 @@ describe('paged session history', () => {
     await act(async () => {
       await result.current.loadOlderHistory();
     });
-    expect(result.current.messages).toHaveLength(50);
+    expect(result.current.messages).toHaveLength(10);
     expect(result.current.olderHistoryError).toContain('503');
     await act(async () => {
       await result.current.loadOlderHistory();
     });
-    expect(result.current.messages).toHaveLength(100);
+    expect(result.current.messages).toHaveLength(20);
     expect(result.current.olderHistoryError).toBeNull();
   });
   it('recovers an invalid cursor from recent history without resending input', async () => {
@@ -178,7 +209,7 @@ describe('paged session history', () => {
       await result.current.loadOlderHistory();
     });
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
-    expect(result.current.messages).toHaveLength(50);
+    expect(result.current.messages).toHaveLength(10);
     expect(send).not.toHaveBeenCalled();
   });
   it('cancels older reads and rejects late results from a previous session', async () => {

@@ -22,11 +22,12 @@ const call = (id: string) => ({
   name: 'Read',
   input: { file_path: `/workspace/${id}.png` },
 });
-async function fixture(page: Page) {
+async function fixture(page: Page, markdown?: string) {
   const requests: URL[] = [];
   const visibility: boolean[] = [];
   const sockets: WebSocketRoute[] = [];
-  const controls = { failThumbnail: false, delay: 300 };
+  const controls = { failThumbnail: false, failDownload: false, delay: 300 };
+  const downloads: URL[] = [];
   const session = {
     id: 'review',
     name: 'Image review',
@@ -65,6 +66,13 @@ async function fixture(page: Page) {
         json: [{ id: 'fixture', name: 'Fixture', kind: 'volundr', enabled: true, baseUrl: origin }],
       });
     if (route.request().method() !== 'GET') return route.abort();
+    if (path.endsWith('/files/download')) {
+      downloads.push(u);
+      await new Promise((resolve) => setTimeout(resolve, controls.delay));
+      return controls.failDownload
+        ? route.fulfill({ status: 502, json: { detail: 'Forge unreachable' } })
+        : route.fulfill({ contentType: 'application/octet-stream', body: landscape });
+    }
     if (path.includes('/tool-result/')) {
       requests.push(u);
       await new Promise((resolve) => setTimeout(resolve, controls.delay));
@@ -91,31 +99,33 @@ async function fixture(page: Page) {
             {
               id: 'images',
               role: 'assistant',
-              content: 'I inspected both generated layouts.',
+              content: markdown ?? 'I inspected both generated layouts.',
               created_at: session.created_at,
-              parts: [
-                { type: 'text', text: 'I inspected both generated layouts.' },
-                {
-                  type: 'tool_use',
-                  id: 'terminal',
-                  name: 'Bash',
-                  input: { command: 'ls /workspace' },
-                },
-                {
-                  type: 'tool_result',
-                  tool_use_id: 'terminal',
-                  content: 'portrait.png landscape.png',
-                },
-                call('portrait'),
-                hint('portrait'),
-                { type: 'text', text: 'The portrait keeps its original proportions.' },
-                call('landscape'),
-                hint('landscape', 640, 400),
-                {
-                  type: 'text',
-                  text: 'The wider chart is easy to inspect without leaving the conversation.',
-                },
-              ],
+              parts: markdown
+                ? [{ type: 'text', text: markdown }]
+                : [
+                    { type: 'text', text: 'I inspected both generated layouts.' },
+                    {
+                      type: 'tool_use',
+                      id: 'terminal',
+                      name: 'Bash',
+                      input: { command: 'ls /workspace' },
+                    },
+                    {
+                      type: 'tool_result',
+                      tool_use_id: 'terminal',
+                      content: 'portrait.png landscape.png',
+                    },
+                    call('portrait'),
+                    hint('portrait'),
+                    { type: 'text', text: 'The portrait keeps its original proportions.' },
+                    call('landscape'),
+                    hint('landscape', 640, 400),
+                    {
+                      type: 'text',
+                      text: 'The wider chart is easy to inspect without leaving the conversation.',
+                    },
+                  ],
             },
           ],
           total_turns: 1,
@@ -140,8 +150,47 @@ async function fixture(page: Page) {
                 : [],
     });
   });
-  return { requests, visibility, sockets, controls };
+  return { requests, downloads, visibility, sockets, controls };
 }
+
+test('Markdown screenshots download asynchronously and open the full session preview', async ({
+  page,
+}) => {
+  const { downloads, controls } = await fixture(
+    page,
+    '![Forge screenshot](docs/landing-forge.png)\n\n![Outside screenshot](/other/worktree/screenshot.png)',
+  );
+  controls.failDownload = true;
+  await page.goto('/volundr/sessions/review');
+  await expect(
+    page.getByText('Outside screenshot: Image is unavailable in this session’s workspace.'),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Retry image' }).click();
+  await expect(page.getByText('Loading image…', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Retry image' })).toBeVisible();
+  controls.failDownload = false;
+  await page.getByRole('button', { name: 'Retry image' }).click();
+  const image = page.getByRole('img', { name: 'Forge screenshot', exact: true });
+  await expect(image).toBeVisible();
+  await expect.poll(() => image.evaluate((el: HTMLImageElement) => el.naturalWidth)).toBe(640);
+  expect(downloads.every((url) => url.pathname.endsWith('/sessions/review/files/download'))).toBe(
+    true,
+  );
+  expect(
+    downloads.every(
+      (url) =>
+        url.searchParams.get('path') === 'docs/landing-forge.png' &&
+        url.searchParams.get('root') === 'workspace',
+    ),
+  ).toBe(true);
+  await page.getByRole('button', { name: 'Open image Forge screenshot', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('button', { name: 'Download', exact: true })).toBeEnabled();
+  await expect(dialog.getByRole('button', { name: 'Zoom in' })).toBeEnabled();
+  const box = await dialog.boundingBox();
+  expect(box!.width).toBeGreaterThan(page.viewportSize()!.width * 0.8);
+  expect(box!.height).toBeGreaterThan(page.viewportSize()!.height * 0.8);
+});
 
 test('images are top-level, reserve aspect ratio, and open the existing full image viewer', async ({
   page,

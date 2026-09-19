@@ -47,6 +47,22 @@ describe('conversation resource controls', () => {
     expect(screen.getByRole('button', { name: 'Open file' })).toBeDisabled();
     expect(screen.getByText('File delivery is incomplete.')).toBeInTheDocument();
   });
+  it('marks local images without a session as unavailable instead of loading forever', () => {
+    render(<ConversationImage href="/other/repo/image.png" alt="Outside image" />);
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Outside image: Image is unavailable in this session’s workspace.',
+    );
+    expect(screen.queryByText('Loading image…')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry image' })).not.toBeInTheDocument();
+  });
+  it('retries remote image decoding without opening a new tab', () => {
+    render(<ConversationImage href="https://example.com/image.png" alt="Diagram" />);
+    const first = screen.getByRole('img');
+    fireEvent.error(first);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry image' }));
+    expect(screen.getByRole('img')).not.toBe(first);
+    expect(screen.getByRole('img')).toHaveAttribute('src', 'https://example.com/image.png');
+  });
 });
 
 it('opens remote Markdown images in the viewport without navigating away', async () => {

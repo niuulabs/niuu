@@ -62,7 +62,6 @@ import { useConversationView } from '../../compactUxPrefs';
 import { ChatDisplayControls } from '../ChatDisplayControls';
 import { ToolImageProvider } from '../ToolImages';
 import { HistoryDetailsContext } from '../HistoryDetailsContext';
-import { HistoryMessagePreview } from '../HistoryMessagePreview';
 import './SessionChat.css';
 import { ChatConnectionsButton } from '../../../ChatConnections';
 
@@ -937,7 +936,6 @@ export function SessionChat({
   // Render a single visible message exactly as the expanded loop does. Shared
   // by the expanded view and the compact "Worked" disclosure / final answer.
   const renderMessageBody = (msg: (typeof visibleMessages)[number]): ReactNode => {
-    if (msg.historyPreview) return <HistoryMessagePreview key={msg.id} message={msg} />;
     if (msg.metadata?.messageType === 'system') {
       return <SystemMessage key={messageRenderKey(msg)} message={msg} />;
     }

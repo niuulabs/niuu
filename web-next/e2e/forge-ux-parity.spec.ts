@@ -55,6 +55,8 @@ async function fixture(page: Page, rich = false) {
     { id: 'archived', name: 'Earlier iteration', status: 'archived', activity_state: 'stopped' },
   ].map((session) => ({
     ...session,
+    instance_id: 'fixture',
+    instance_name: 'Build Bro',
     model: session.id === 'idle' ? 'claude-fable-5-1' : 'gpt-6-astra',
     coordination: ['review', 'idle'].includes(session.id)
       ? {
@@ -157,7 +159,7 @@ async function fixture(page: Page, rich = false) {
         json: [
           {
             id: 'fixture',
-            name: 'Fixture',
+            name: 'Build Bro',
             kind: 'volundr',
             enabled: true,
             baseUrl: 'http://fixture.test',
@@ -644,13 +646,21 @@ test('document previews grow with the window, and image hyperlinks preview, pan,
   await expect(dialog).toHaveAccessibleName('diagram.svg');
 });
 
-test('session rows align name and state above harness, workspace and age with overlaid actions', async ({
+test('session rows align name and state above agent, host, folder and age with overlaid actions', async ({
   page,
 }, testInfo) => {
   await fixture(page);
   await page.goto('/volundr/sessions');
   const row = page.getByTestId('pod-entry-review');
   await expect(row.locator('.forge-session-harness')).toHaveText('Codex');
+  const host = row.locator('.forge-session-row__host');
+  await expect(host).toHaveText('Build Bro');
+  await expect(host).toHaveAttribute('title', 'Host: Build Bro');
+  await expect(row.locator('.forge-session-row__source')).toHaveText('~/review');
+  await expect(row.locator('.forge-session-row__source')).toHaveAttribute(
+    'title',
+    '/home/thor/review',
+  );
   const claude = page.getByTestId('pod-entry-idle').locator('.forge-session-harness');
   await expect(claude).toHaveText('Claude');
   const blue = await row
@@ -666,6 +676,10 @@ test('session rows align name and state above harness, workspace and age with ov
   expect(Math.abs(nameBox.y - stateBox.y)).toBeLessThan(5);
   const sourceBox = (await row.locator('.forge-session-row__source').boundingBox())!;
   const ageBox = (await row.locator('.forge-session-row__age').boundingBox())!;
+  const agentBox = (await row.locator('.forge-session-harness').boundingBox())!;
+  const hostBox = (await host.boundingBox())!;
+  expect(agentBox.x + agentBox.width).toBeLessThan(hostBox.x);
+  expect(hostBox.x + hostBox.width).toBeLessThan(sourceBox.x);
   expect(Math.abs(sourceBox.y - ageBox.y)).toBeLessThan(2);
   expect(sourceBox.y).toBeGreaterThan(nameBox.y + nameBox.height);
   await row.hover();
@@ -678,6 +692,10 @@ test('session rows align name and state above harness, workspace and age with ov
   await page.screenshot({ path: testInfo.outputPath('session-row-hover.png') });
   await page.getByRole('combobox', { name: 'Color theme' }).selectOption('ice');
   await expect(row.locator('.forge-session-harness')).toHaveCSS('color', blue);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(host).toBeVisible();
+  expect(await host.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  expect(await row.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
 });
 
 test('touch users can reveal row actions while the state stays visible at rest', async ({

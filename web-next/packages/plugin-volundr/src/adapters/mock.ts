@@ -1226,6 +1226,7 @@ const SEED_EXTERNAL_SESSIONS: ExternalSession[] = [
 
 export function createMockVolundrService(): IVolundrService {
   const sessions = [...SEED_SESSIONS];
+  const projectRevisions = new Map<string, number>();
   const externalSessions = SEED_EXTERNAL_SESSIONS.map((session) => ({ ...session }));
   const credentials = new Map(SEED_CREDENTIALS.map((credential) => [credential.name, credential]));
   const launchSpecs = [...SEED_LAUNCH_SPECS];
@@ -1257,6 +1258,36 @@ export function createMockVolundrService(): IVolundrService {
       throw new Error('Home storage requires a live cluster');
     },
     getProjects: async () => [],
+    getSessionProject: async (id) => {
+      const session = sessions.find((item) => item.id === id);
+      if (!session) throw new Error('Session not found');
+      return {
+        sessionId: id,
+        revision: projectRevisions.get(id) ?? 0,
+        projectId: session.coordination?.projectId ?? null,
+        role: session.coordination?.role,
+      };
+    },
+    assignSessionProject: async (id, assignment) => {
+      const session = sessions.find((item) => item.id === id);
+      if (!session) throw new Error('Session not found');
+      const revision = projectRevisions.get(id) ?? 0;
+      if (revision !== assignment.expectedRevision)
+        throw new Error('Session project changed; reload before assigning');
+      if (session.coordination?.role === 'coordinator')
+        throw new Error('Create a coordinator in the destination project');
+      session.coordination = {
+        projectId: assignment.projectId,
+        role: session.coordination?.role ?? 'worker',
+      };
+      projectRevisions.set(id, revision + 1);
+      return {
+        sessionId: id,
+        revision: revision + 1,
+        projectId: assignment.projectId,
+        role: session.coordination.role,
+      };
+    },
     getTargets: async () => [
       {
         id: 'mock-volundr-default',

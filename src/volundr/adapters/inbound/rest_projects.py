@@ -27,6 +27,42 @@ class ProjectUpdate(BaseModel):
     workspace_path: str | None = Field(default=None, max_length=2048)
 
 
+class SessionProjectAssignment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project_id: UUID
+    expected_revision: int = Field(ge=0)
+
+
+def create_session_projects_router(service: ProjectService, principal_for_request) -> APIRouter:
+    router = APIRouter(prefix="/sessions", tags=["Projects"])
+
+    def membership(session):
+        return {
+            "session_id": session.id,
+            "revision": session.coordination_revision,
+            "coordination": session.coordination,
+        }
+
+    @router.get("/{session_id}/project")
+    async def get_membership(request: Request, session_id: UUID) -> dict:
+        principal = await principal_for_request(request)
+        return membership(
+            await project_result(service.session_membership(session_id, principal, access="update"))
+        )
+
+    @router.put("/{session_id}/project")
+    async def assign_project(
+        request: Request, session_id: UUID, data: SessionProjectAssignment
+    ) -> dict:
+        principal = await principal_for_request(request)
+        session = await project_result(
+            service.assign_session(session_id, data.project_id, data.expected_revision, principal)
+        )
+        return membership(session)
+
+    return router
+
+
 async def project_result(operation):
     try:
         return await operation

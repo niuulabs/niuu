@@ -37,7 +37,11 @@ from skuld.tool_result_preview import (
     warm_previews_from_turns,
 )
 from volundr.adapters.inbound.auth import extract_principal, require_role
-from volundr.adapters.inbound.rest_projects import create_projects_router, project_result
+from volundr.adapters.inbound.rest_projects import (
+    create_projects_router,
+    create_session_projects_router,
+    project_result,
+)
 from volundr.config import PermissionAutoApprovalConfig
 from volundr.domain.history_import import (
     HistoryImportConflictError,
@@ -1608,6 +1612,7 @@ def create_router(
             return await _optional_principal(request)
 
         router.include_router(create_projects_router(project_service, project_principal))
+        router.include_router(create_session_projects_router(project_service, project_principal))
 
     @router.get("/feature-flags", tags=["Features"])
     async def get_feature_flags(request: Request) -> dict:
@@ -1626,6 +1631,7 @@ def create_router(
             "mini_mode": settings.local_mounts.mini_mode,
             "local_mounts_allowed_prefixes": settings.local_mounts.allowed_prefixes,
             "projects_enabled": project_service is not None,
+            "project_assignment_enabled": project_service is not None,
             "project_contract_version": 1 if project_service is not None else 0,
             "project_instance_id": project_service.instance_id if project_service else None,
         }
