@@ -62,23 +62,42 @@ describe('bounded conversation pages', () => {
     expect(historySocketUrl('invalid', true)).toBe('invalid');
   });
   it.each([1, 2])(
-    'loads exactly 50 initially, then 50 and the final 23 with protocol %s',
+    'loads 10 initially and only fetches preceding pages when requested with protocol %s',
     async (version) => {
       const { calls } = serve(version);
       const first = await fetchHistoryBatch(socket, signal());
-      expect(first.turns.map((t) => t.id)).toEqual(rows.slice(-50).map((t) => t.id));
+      expect(first.turns.map((t) => t.id)).toEqual(rows.slice(-10).map((t) => t.id));
+      expect(calls).toHaveLength(1);
       const older = await fetchHistoryBatch(socket, signal(), first);
-      expect(older.turns.map((t) => t.id)).toEqual(rows.slice(23, 73).map((t) => t.id));
-      const last = await fetchHistoryBatch(socket, signal(), older);
-      expect(last.turns.map((t) => t.id)).toEqual(rows.slice(0, 23).map((t) => t.id));
-      expect(last.window_offset).toBe(0);
+      expect(older.turns.map((t) => t.id)).toEqual(rows.slice(103, 113).map((t) => t.id));
+      let page = older;
+      const collected = [...older.turns, ...first.turns];
+      while (page.window_offset > 0) {
+        page = await fetchHistoryBatch(socket, signal(), page);
+        expect(page.turns.length).toBeLessThanOrEqual(10);
+        collected.unshift(...page.turns);
+      }
+      expect(collected.map((t) => t.id)).toEqual(rows.map((t) => t.id));
+      expect(page.turns).toHaveLength(3);
       expect(
         calls.every((u) => u.searchParams.get('max_bytes') === String(HISTORY_REQUEST_BYTES)),
       ).toBe(true);
-      expect(calls.every((u) => Number(u.searchParams.get('limit')) <= 51)).toBe(true);
+      expect(calls.every((u) => Number(u.searchParams.get('limit')) <= 11)).toBe(true);
     },
   );
-  it('retries the old offset seek when appends move the tail; joins by held identity', async () => {
+  it.each([1, 2])(
+    'returns a small byte-limited page without chasing older rows (protocol %s)',
+    async (version) => {
+      const { calls } = serve(version, 2);
+      const page = await fetchHistoryBatch(socket, signal());
+      expect(page.turns.map((t) => t.id)).toEqual(['row-121', 'row-122']);
+      expect(calls).toHaveLength(1);
+      const older = await fetchHistoryBatch(socket, signal(), page);
+      expect(older.turns.length).toBeGreaterThan(0);
+      expect(calls).toHaveLength(2);
+    },
+  );
+  it('keeps a continuous legacy boundary when appends shorten the next page', async () => {
     const { fetcher } = serve(1, 51);
     const first = await fetchHistoryBatch(socket, signal());
     let added = false;
@@ -92,7 +111,9 @@ describe('bounded conversation pages', () => {
     });
     try {
       const older = await fetchHistoryBatch(socket, signal(), first);
-      expect(older.turns.map((t) => t.id)).toEqual(rows.slice(23, 73).map((t) => t.id));
+      expect(older.turns.map((t) => t.id)).toEqual(rows.slice(105, 113).map((t) => t.id));
+      const preceding = await fetchHistoryBatch(socket, signal(), older);
+      expect(preceding.turns.map((t) => t.id)).toEqual(rows.slice(95, 105).map((t) => t.id));
     } finally {
       rows.splice(123);
     }
@@ -104,7 +125,7 @@ describe('bounded conversation pages', () => {
       Response.json({
         turns: [turn(999)],
         total_turns: 123,
-        window_offset: 73,
+        window_offset: 113,
         projection_revision: 'same',
       }),
     );
@@ -115,15 +136,15 @@ describe('bounded conversation pages', () => {
     const first = await fetchHistoryBatch(socket, signal());
     fetcher.mockResolvedValueOnce(
       Response.json({
-        turns: [rows[73]],
+        turns: [rows[113]],
         total_turns: 123,
-        window_offset: 73,
+        window_offset: 113,
         projection_revision: 'same',
       }),
     );
     const older = await fetchHistoryBatch(socket, signal(), first);
-    expect(older.turns).toHaveLength(50);
-    expect(older.turns.at(-1)?.id).toBe('row-72');
+    expect(older.turns).toHaveLength(10);
+    expect(older.turns.at(-1)?.id).toBe('row-112');
   });
   it('rejects an ignored cursor and an incorrect page boundary', async () => {
     const { fetcher } = serve();

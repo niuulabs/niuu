@@ -156,14 +156,21 @@ for (const version of [1, 2]) {
     await expect(messages).toHaveCount(2);
     expect(writes).toEqual([]);
   });
-  test(`protocol ${version}: 50 recent messages, upward paging, anchored viewport, final page`, async ({
+  test(`protocol ${version}: 10 recent messages, upward paging, anchored viewport, final page`, async ({
     page,
   }, info) => {
-    const { requests, writes } = await fixture(page, version);
+    const { requests, writes, rows } = await fixture(page, version);
+    rows.splice(0, 100);
     await page.goto('/volundr/sessions/review');
     const scroll = page.locator('.niuu-chat-messages-container');
     const messages = page.locator('[data-history-id]');
-    await expect(messages).toHaveCount(50);
+    await expect(messages).toHaveCount(10);
+    expect(
+      requests.every(
+        (request) => !request.searchParams.has('before') && !request.searchParams.has('cursor'),
+      ),
+    ).toBe(true);
+    expect(requests.every((request) => request.searchParams.get('limit') === '10')).toBe(true);
     await expect(messages.last()).toContainText('Message 124:');
     await expect
       .poll(() => scroll.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight))
@@ -179,7 +186,7 @@ for (const version of [1, 2]) {
       )!;
       return { id: row.dataset.historyId, y: row.getBoundingClientRect().top };
     });
-    await expect(messages).toHaveCount(100);
+    await expect(messages).toHaveCount(20);
     const held = page.locator(`[data-history-id="${anchor.id}"]`);
     await expect
       .poll(async () => Math.abs((await held.boundingBox())!.y - anchor.y))
@@ -189,7 +196,7 @@ for (const version of [1, 2]) {
       el.scrollTop = 0;
       el.dispatchEvent(new Event('scroll'));
     });
-    await expect(messages).toHaveCount(125);
+    await expect(messages).toHaveCount(25);
     await expect(page.getByRole('button', { name: 'Load earlier messages' })).toHaveCount(0);
     expect(requests.every((u) => Number(u.searchParams.get('max_bytes')) === 258048)).toBe(true);
     expect(requests.every((u) => u.pathname.startsWith('/forge-host/build/'))).toBe(true);
@@ -225,24 +232,24 @@ test('a truncated retained-server turn loads automatically into the normal conve
 test('failed older page stays retryable without replacing the transcript', async ({ page }) => {
   const { controls } = await fixture(page);
   await page.goto('/volundr/sessions/review');
-  await expect(page.locator('[data-history-id]')).toHaveCount(50);
+  await expect(page.locator('[data-history-id]')).toHaveCount(10);
   controls.failOlder = true;
   await page.locator('.niuu-chat-messages-container').evaluate((el) => {
     el.scrollTop = 0;
     el.dispatchEvent(new Event('scroll'));
   });
   await expect(page.getByRole('button', { name: 'Retry earlier messages' })).toBeVisible();
-  await expect(page.locator('[data-history-id]')).toHaveCount(50);
+  await expect(page.locator('[data-history-id]')).toHaveCount(10);
   controls.failOlder = false;
   await page.getByRole('button', { name: 'Retry earlier messages' }).click();
-  await expect(page.locator('[data-history-id]')).toHaveCount(100);
+  await expect(page.locator('[data-history-id]')).toHaveCount(20);
 });
 test('replay recovery stays out of messages and refreshes history without sending input', async ({
   page,
 }) => {
   const { sockets, rows, writes } = await fixture(page);
   await page.goto('/volundr/sessions/review');
-  await expect(page.locator('[data-history-id]')).toHaveCount(50);
+  await expect(page.locator('[data-history-id]')).toHaveCount(10);
   rows.push({ ...rows[0]!, id: 'after-reconnect', content: 'Latest message after recovery' });
   sockets.at(-1)!.send(
     JSON.stringify({
@@ -265,9 +272,9 @@ test('phone supports keyboard/manual paging', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await fixture(page);
   await page.goto('/volundr/sessions/review');
-  await expect(page.locator('[data-history-id]')).toHaveCount(50);
+  await expect(page.locator('[data-history-id]')).toHaveCount(10);
   const older = page.getByRole('button', { name: 'Load earlier messages' });
   await older.focus();
   await page.keyboard.press('Enter');
-  await expect(page.locator('[data-history-id]')).toHaveCount(100);
+  await expect(page.locator('[data-history-id]')).toHaveCount(20);
 });

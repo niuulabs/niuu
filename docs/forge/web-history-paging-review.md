@@ -4,13 +4,13 @@ The web chat requested a complete WebSocket replay while also loading complete R
 
 ## Implemented behavior
 
-- The shared Skuld chat reader loads the newest 50 turns through REST. Scrolling upward or selecting **Load earlier messages** loads another 50. Shorter conversations stop at their beginning. The reader holds a visible message anchor when prepending rows.
-- Each history-page response is capped at 256 KiB. Requests reserve 4 KiB for routing/timing metadata that retained facades append after fitting the page. A 50-turn batch may require several smaller requests because gateway limits and large messages can reduce an individual page. Oversized responses are rejected during streaming, before JSON decoding.
+- The shared Skuld chat reader requests up to the newest 10 turns in one REST page. Scrolling upward or selecting **Load earlier messages** requests up to another 10. Shorter conversations stop at their beginning. The reader holds a visible message anchor when prepending rows.
+- Each history-page response is capped at 256 KiB. Requests reserve 4 KiB for routing/timing metadata that retained facades append after fitting the page. Gateway limits and large messages can reduce an individual page. The client displays that smaller page immediately and does not fetch older pages to fill the requested count. Oversized responses are rejected during streaming, before JSON decoding.
 - Session URLs retain their owning host/proxy prefix. The Forge conversation facade pages both current and retained older gateways. Current servers use opaque cursors; older servers use `before` with an overlapping message ID/index check and bounded retries when appends move the tail. A changed projection requires a recent read rather than silently stitching unrelated pages.
 - WebSockets request `history=recent&history_protocol=2&history_delivery=none`. Current gateways stream live events only; retained gateways may supply a recent snapshot, which cannot replace the REST window. A read after socket attachment closes the initial-read/connection gap; an unfinished pre-attachment batch is cancelled immediately instead of downloading the complete batch twice. Reconnect refreshes recent history and retains loaded older rows when the windows overlap in the same projection.
 - Typed replay errors and `history_gap` request coalesced REST recovery. They never become messages or terminal agent failures and never resend user input. Ordinary errors and ordinary text quoting the warning remain visible. Failed initial, older, and recovery reads remain retryable. Session changes cancel pending reads.
 - Large tool input/output is fetched from the owning session only when its tool card opens. When a history page truncates a message, the client automatically reads that exact turn before rendering the batch. It requests shallow tool detail but complete prose, so the message uses the ordinary inline Markdown and streaming renderer, without a preview card, open button or modal. These per-message reads are not capped by the page byte budget. Retained facades that ignore `turn_id` may return a whole shallow transcript; the reader selects exactly one matching identity and rejects missing/duplicate identities. Metadata-only rows are replaced with the actual message and author. Reads are sequential and share the batch cancellation signal; failures use the normal history retry flow.
-- The cached transcript is limited to the latest 50 messages. Loading older pages does not turn the next initial view into an unbounded cache replay.
+- The cached transcript is limited to the latest 10 messages. Loading older pages does not turn the next initial view into an unbounded cache replay.
 
 ## Compatibility and scope
 
@@ -50,7 +50,7 @@ that data:
 The September 19 refinement removes the preview presentation. A truncated row
 is automatically resolved before the history/live merge, so its complete part
 sequence can seed streaming and merge with new activity in one normal message.
-The 50-turn paging and page byte budget remain; individual message reads may
+The incremental paging and page byte budget remain; individual message reads may
 exceed that budget. Tool bodies retain their lazy expansion behavior.
 
 Regression tests exercise both paging protocols with socket events during REST
@@ -59,3 +59,29 @@ legacy full-item expansion and extra facade metadata. The read-only staging
 browser also opened the real Build session and its full-message reader without
 provider input or outbound socket controls. Deployment requires static UI files
 only; it does not require an API or gateway restart.
+
+## Smaller activation window (September 19)
+
+Opening `build-storage-spike` on the deployed UI took 17.3 seconds in a clean
+browser and 17.7 seconds on reload. The client started 19 history requests to
+assemble 50 turns, including reads for older oversized messages. That work was
+unnecessary for entering the current conversation.
+
+The reader now requests one page of up to 10 turns and accepts a smaller page
+without chasing earlier history. Upward scroll/manual paging requests the next
+page with the same 10-turn limit. Legacy seam validation, complete inline message
+loading, live-event reconciliation and cancellation remain. Previously loaded
+older pages stay available while the conversation is open; reopening restores
+only the small recent cache.
+
+With candidate assets against the same live APIs, the first view took 1.71 seconds,
+reload 1.62 seconds and a channel switch 0.86 seconds. Each needed one history
+request and displayed the available latest two turns. These are measured runs,
+not a guarantee for every host or network. The 256-KiB page ceiling remains: lowering
+it would turn complete large messages into transport previews and force additional
+full-message requests, increasing transfer and delay. No older page is requested
+until the user scrolls up or presses Load earlier messages.
+
+Regression tests cover the 10-turn limit, accepting a smaller byte-limited page,
+continuous legacy boundaries when appends shorten a page, reaching the earliest
+message without gaps, anchored upward scrolling, reconnects and live streaming.
