@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from volundr.domain.services.stats import StatsService
     from volundr.domain.services.token import TokenService
     from volundr.domain.services.workspace import WorkspaceService
+    from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 
     from .session import SessionService
 
@@ -157,6 +158,19 @@ class ForgeService:
             definition = str(getattr(candidate, "session_definition", "") or "").strip()
             return definition or None
         return None
+
+    async def with_read_states(
+        self, sessions: list[Session], principal: Principal | None
+    ) -> list[Session]:
+        return await self._session_service.with_read_states(sessions, principal)
+
+    async def get_read_state(self, session_id: UUID, principal: Principal) -> SessionReadState:
+        return await self._session_service.get_read_state(session_id, principal)
+
+    async def change_read_state(
+        self, session_id: UUID, change: SessionReadStateChange, principal: Principal
+    ) -> SessionReadState:
+        return await self._session_service.change_read_state(session_id, change, principal)
 
     async def get_session(self, session_id: UUID) -> Session | None:
         return await self._session_service.reconcile_session_if_active(session_id)

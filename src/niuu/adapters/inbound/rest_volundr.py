@@ -1664,6 +1664,46 @@ def create_volundr_router(
         payload = response.json()
         return _with_instance(payload, instance) if isinstance(payload, dict) else {}
 
+    @router.get("/sessions/{session_id}/read-state")
+    async def get_session_read_state(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/read-state",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return response.json()
+
+    @router.patch("/sessions/{session_id}/read-state")
+    async def change_session_read_state(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        body: dict[str, Any] = Body(...),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="PATCH",
+            path=f"/sessions/{session_id}/read-state",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return response.json()
+
     @router.patch("/sessions/{session_id}/archive")
     async def archive_session(
         request: Request,

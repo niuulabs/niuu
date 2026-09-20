@@ -27,6 +27,7 @@ from identity.models import (  # noqa: F401
 from niuu.domain import models as shared_models
 from tracker.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue  # noqa: F401
 from volundr.domain.projects import SessionCoordination
+from volundr.domain.session_read_state import SessionReadState
 
 CIStatus = shared_models.CIStatus
 GitProviderType = shared_models.GitProviderType
@@ -135,6 +136,7 @@ class EventType(StrEnum):
     CHRONICLE_EVENT = "chronicle_event"
     PR_CREATED = "pr_created"
     PR_MERGED = "pr_merged"
+    SESSION_READ_STATE = "session_read_state"
     SESSION_ACTIVITY = "session_activity"
     SESSION_NEEDS_INPUT = "session_needs_input"
 
@@ -354,6 +356,7 @@ class Session(BaseModel):
     """A Claude Code coding session."""
 
     coordination: SessionCoordination | None = None
+    read_state: SessionReadState | None = None
 
     id: UUID = Field(
         default_factory=uuid4,

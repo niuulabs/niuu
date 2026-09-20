@@ -98,6 +98,11 @@ from volundr.domain.services import (
 from volundr.domain.services.permission_auto_approval import (
     evaluate_permission_auto_approval,
 )
+from volundr.domain.session_read_state import (
+    SessionReadState,
+    SessionReadStateChange,
+    SessionReadStateConflictError,
+)
 from volundr.log_aggregate import aggregate_workspace_logs
 from volundr.session_archive import load_workspace_transcript
 
@@ -810,6 +815,8 @@ class DeviceResponse(BaseModel):
 class SessionResponse(BaseModel):
     """Response model for a session."""
 
+    read_state: SessionReadState | None = None
+
     coordination: SessionCoordination | None = None
 
     id: UUID = Field(description="Unique session identifier")
@@ -966,6 +973,7 @@ class SessionResponse(BaseModel):
     ) -> "SessionResponse":
         """Create response from domain model."""
         return cls(
+            read_state=session.read_state,
             id=session.id,
             coordination=session.coordination,
             name=session.name,
@@ -1698,6 +1706,7 @@ def create_router(
                     or s.coordination.parent.instance_id == parent_instance_id
                 )
             ]
+        sessions = await forge.with_read_states(sessions, principal)
         return [_session_response(s) for s in sessions]
 
     @router.get(
@@ -1974,7 +1983,44 @@ def create_router(
                 detail=f"Access denied to session {session_id}",
             )
 
+        session = (await forge.with_read_states([session], principal))[0]
         return _session_response(session)
+
+    @router.get(
+        "/sessions/{session_id}/read-state", response_model=SessionReadState, tags=["Sessions"]
+    )
+    async def get_session_read_state(request: Request, session_id: UUID) -> SessionReadState:
+        principal = await _optional_principal(request, strict=True)
+        if principal is None:
+            raise HTTPException(status_code=401, detail="Reader identity is required")
+        try:
+            return await forge.get_read_state(session_id, principal)
+        except SessionNotFoundError:
+            raise HTTPException(status_code=404, detail="Session not found") from None
+        except SessionAccessDeniedError:
+            raise HTTPException(status_code=403, detail="Access denied") from None
+
+    @router.patch(
+        "/sessions/{session_id}/read-state", response_model=SessionReadState, tags=["Sessions"]
+    )
+    async def change_session_read_state(
+        request: Request,
+        session_id: UUID,
+        change: SessionReadStateChange,
+    ) -> SessionReadState:
+        principal = await _optional_principal(request, strict=True)
+        if principal is None:
+            raise HTTPException(status_code=401, detail="Reader identity is required")
+        try:
+            return await forge.change_read_state(session_id, change, principal)
+        except SessionNotFoundError:
+            raise HTTPException(status_code=404, detail="Session not found") from None
+        except SessionAccessDeniedError:
+            raise HTTPException(status_code=403, detail="Access denied") from None
+        except SessionReadStateConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
 
     @router.post(
         "/sessions/{session_id}/permissions/auto-approval/evaluate",

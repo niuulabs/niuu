@@ -380,3 +380,45 @@ class TestDetectConflictsDefaultImpl:
         )
 
         assert conflicts == [1]
+
+
+class TestInboxHints:
+    def test_only_public_successful_final_append_requests_reader_refresh(self):
+        from unittest.mock import AsyncMock, patch
+
+        service = AsyncMock()
+        service.get_session.return_value = None
+        log = InMemoryLog()
+        app = FastAPI()
+        app.include_router(create_session_log_router(log, session_service=service))
+        client = TestClient(app)
+        sid = str(uuid4())
+        path = f"/api/v1/forge/sessions/{sid}/log"
+        final = {
+            "type": "conversation.turn",
+            "turn": {
+                "id": "final",
+                "role": "assistant",
+                "content": "Done",
+                "metadata": {"final_output": True},
+            },
+        }
+        with patch("volundr.adapters.inbound.auth.extract_principal", new=AsyncMock()):
+            assert client.post(path, json={"entries": [_frame(1)]}).status_code == 201
+            service.notify_read_state_changed.assert_not_called()
+            assert (
+                client.post(
+                    path,
+                    json={"entries": [{"seq": 2, "kind": "conversation.turn", "payload": final}]},
+                ).status_code
+                == 201
+            )
+            service.notify_read_state_changed.assert_awaited_once()
+            service.notify_read_state_changed.reset_mock()
+            # A different payload reusing an existing raw frame seq remains a conflict, not a final.
+            response = client.post(
+                path, json={"entries": [{"seq": 1, "kind": "conversation.turn", "payload": final}]}
+            )
+            assert response.json()["conflicts"] == [1]
+            service.notify_read_state_changed.assert_not_called()
+        client.close()
