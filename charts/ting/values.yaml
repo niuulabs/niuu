@@ -226,8 +226,10 @@ database:
 workflowRepository:
   adapter: "ting.adapters.filesystem_workflows.FilesystemWorkflowRepository"
   seedBundled: false
-  kwargs:
-    create_directory: true
+  # Extra adapter constructor kwargs. The filesystem adapter defaults to
+  # catalog_path=/data/ting/workflows and create_directory=true; other
+  # adapters receive exactly what is set here.
+  kwargs: {}
 
 workflowImport:
   maxUploadBytes: 4194304

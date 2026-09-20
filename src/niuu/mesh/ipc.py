@@ -18,7 +18,12 @@ def _socket_root_dir() -> Path:
 
 def _socket_namespace(flock_dir: Path) -> str:
     """Return a short deterministic namespace for *flock_dir*."""
-    digest = hashlib.sha1(str(flock_dir.resolve()).encode("utf-8")).hexdigest()
+    # Not a security boundary: this only shortens a path into a stable directory
+    # name. The algorithm must not change, or sockets of sessions adopted across
+    # an upgrade would no longer be found.
+    digest = hashlib.sha1(
+        str(flock_dir.resolve()).encode("utf-8"), usedforsecurity=False
+    ).hexdigest()
     return digest[:12]
 
 

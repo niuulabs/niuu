@@ -54,7 +54,7 @@ data:
       adapter: {{ .Values.workflowRepository.adapter | quote }}
       seed_bundled: {{ .Values.workflowRepository.seedBundled }}
       {{- if eq .Values.workflowRepository.adapter $filesystemWorkflowAdapter }}
-      kwargs: {{ mergeOverwrite (dict "catalog_path" "/data/ting/workflows") (.Values.workflowRepository.kwargs | default dict) | toJson }}
+      kwargs: {{ mergeOverwrite (dict "catalog_path" "/data/ting/workflows" "create_directory" true) (.Values.workflowRepository.kwargs | default dict) | toJson }}
       {{- else }}
       kwargs: {{ .Values.workflowRepository.kwargs | default dict | toJson }}
       {{- end }}
