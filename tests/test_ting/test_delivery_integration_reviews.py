@@ -19,6 +19,16 @@ from ting.ports.volundr import ActivityEvent
 def _context():
     execution = replace(
         _execution(state=ExecutionState.RUNNING),
+        workflow_snapshot={
+            "graph": {
+                "reviewAttestation": {
+                    "version": 1,
+                    "scope": "integration",
+                    "eventType": "developer.integration.reviewed",
+                    "roles": {"integration": "developer-integration-verifier"},
+                },
+            }
+        },
         integration_allocation={
             "allocation_id": "integration-attempt-1",
             "campaign_id": "campaign",

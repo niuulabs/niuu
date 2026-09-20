@@ -1175,7 +1175,7 @@ class WorkflowTaskHandler(RequestHandler):
             "workload_workflow_execution_id": str(execution.id),
             "workload_child_attempt_id": str(child.id),
             "workload_child_intent_id": str(child.intent_id),
-            "workload_sub": f"developer-child:{child.id}",
+            "workload_sub": f"workflow-child:{child.id}",
         }
         if any(str(claims.get(key) or "") != value for key, value in expected.items()):
             raise HTTPException(
@@ -1225,7 +1225,7 @@ class WorkflowTaskHandler(RequestHandler):
             or child.execution_id != execution.id
             or child.task_id != slug
             or str(child.intent_id) != str(claims.get("workload_child_intent_id") or "")
-            or str(claims.get("workload_sub") or "") != f"developer-child:{child.id}"
+            or str(claims.get("workload_sub") or "") != f"workflow-child:{child.id}"
         ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

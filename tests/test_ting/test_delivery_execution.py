@@ -977,7 +977,6 @@ class RecordingContinuation:
         self,
         execution,
         *,
-        event_type,
         generation,
         correlation_revision,
         children,
@@ -985,7 +984,6 @@ class RecordingContinuation:
         self.notifications.append(
             (
                 execution.id,
-                event_type,
                 generation,
                 correlation_revision,
                 children,
@@ -1402,13 +1400,9 @@ async def test_completed_child_with_invalid_result_blocks_join() -> None:
     assert repository.children[0].state == ChildExecutionState.BLOCKED
     assert repository.children[0].failure_kind.value == "contract_invalid"
     assert repository.execution.state == ExecutionState.BLOCKED
-    assert continuation.notifications[0][1:4] == (
-        "developer.children.blocked",
-        1,
-        1,
-    )
+    assert continuation.notifications[0][1:3] == (1, 1)
     assert repository.execution.blocker_notified_revision == 1
-    assert continuation.notifications[0][4][0]["childKey"] == "api"
+    assert continuation.notifications[0][3][0]["childKey"] == "api"
 
     await service._project_join(execution.id)
     assert len(continuation.notifications) == 1
@@ -1977,9 +1971,9 @@ async def test_a2a_input_required_notifies_parent_and_accepts_exact_reply() -> N
     assert repository.execution.state == ExecutionState.BLOCKED
     child = repository.children[0]
     assert child.state == ChildExecutionState.BLOCKED
-    assert continuation.notifications[0][1] == "developer.children.blocked"
-    assert continuation.notifications[0][4][0]["detail"] == ("Confirm the expected output format.")
-    assert continuation.notifications[0][4][0]["pendingQuestions"] == [
+    assert len(continuation.notifications) == 1
+    assert continuation.notifications[0][3][0]["detail"] == ("Confirm the expected output format.")
+    assert continuation.notifications[0][3][0]["pendingQuestions"] == [
         {
             "requestId": "request-question-1",
             "persona": "developer-coder",
@@ -2067,13 +2061,13 @@ async def test_later_parallel_child_question_notifies_once_and_accepts_exact_rep
 
     await service.reconcile(execution.id)
     assert len(continuation.notifications) == 1
-    assert continuation.notifications[0][3] == 1
-    assert [item["childKey"] for item in continuation.notifications[0][4]] == ["api"]
+    assert continuation.notifications[0][2] == 1
+    assert [item["childKey"] for item in continuation.notifications[0][3]] == ["api"]
 
     await service.reconcile(execution.id)
     assert len(continuation.notifications) == 2
-    assert continuation.notifications[1][3] == 2
-    assert [item["childKey"] for item in continuation.notifications[1][4]] == ["api", "ui"]
+    assert continuation.notifications[1][2] == 2
+    assert [item["childKey"] for item in continuation.notifications[1][3]] == ["api", "ui"]
 
     await service.reconcile(execution.id)
     assert len(continuation.notifications) == 2
@@ -2201,8 +2195,8 @@ async def test_new_blocker_during_child_snapshot_does_not_ack_stale_snapshot() -
     assert repository.execution.blocker_notified_revision == 0
 
     await service._project_join(execution.id)
-    assert continuation.notifications[0][3] == 2
-    assert [item["childKey"] for item in continuation.notifications[0][4]] == ["api", "ui"]
+    assert continuation.notifications[0][2] == 2
+    assert [item["childKey"] for item in continuation.notifications[0][3]] == ["api", "ui"]
     assert repository.execution.blocker_notified_revision == 2
 
 

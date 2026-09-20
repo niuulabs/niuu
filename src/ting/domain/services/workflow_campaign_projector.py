@@ -78,7 +78,9 @@ class WorkflowCampaignProjector:
         if campaign is None:
             return False
 
-        delivery = _authoritative_delivery(event.metadata)
+        delivery = _authoritative_delivery(
+            event.metadata, completion_event=_campaign_completion_event(campaign)
+        )
         if event.state == "error" or event.session_status in {"failed", "cancelled", "canceled"}:
             error = str(event.metadata.get("error") or event.metadata.get("message") or "").strip()
             if not error:
@@ -179,7 +181,10 @@ class WorkflowCampaignProjector:
         activity_metadata = getattr(session, "activity_metadata", {}) or {}
         if (
             next_status != WorkflowCampaignStatus.FAILED
-            and _authoritative_delivery(activity_metadata) is not None
+            and _authoritative_delivery(
+                activity_metadata, completion_event=_campaign_completion_event(campaign)
+            )
+            is not None
         ):
             next_status = WorkflowCampaignStatus.COMPLETED
         elif next_status == WorkflowCampaignStatus.RUNNING and await self._session_awaits_input(
@@ -339,11 +344,33 @@ def _with_delivery(campaign: WorkflowCampaign, activity_metadata: dict) -> dict:
     return metadata
 
 
-def _authoritative_delivery(activity_metadata: dict) -> dict | None:
-    """Extract Skuld's terminal developer result without trusting generic idle metadata."""
+def _campaign_completion_event(campaign: WorkflowCampaign) -> str:
+    """Return the event type the campaign's own pinned graph names for completion.
+
+    Read from the graph's ``end`` node rather than assumed, so this projector
+    works for whatever workflow the campaign is running. An empty result means
+    the campaign's workflow declares no completion event, so the authoritative
+    fast path simply does not apply to it.
+    """
+    snapshot = campaign.workflow_snapshot
+    graph = snapshot.get("graph") if isinstance(snapshot, dict) else None
+    if not isinstance(graph, dict):
+        return ""
+    for node in graph.get("nodes") or []:
+        if isinstance(node, dict) and node.get("kind") == "end":
+            event_type = str(node.get("completionEvent") or "").strip()
+            if event_type:
+                return event_type
+    return ""
+
+
+def _authoritative_delivery(activity_metadata: dict, *, completion_event: str) -> dict | None:
+    """Extract Skuld's terminal result without trusting generic idle metadata."""
+    if not completion_event:
+        return None
     if activity_metadata.get("completion_source") != "ravn_flock":
         return None
-    if activity_metadata.get("completion_event_type") != "developer.workstream.completed":
+    if activity_metadata.get("completion_event_type") != completion_event:
         return None
     if not str(activity_metadata.get("completion_peer_id") or "").startswith("workflow-stop:"):
         return None

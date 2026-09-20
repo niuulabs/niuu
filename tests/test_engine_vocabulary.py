@@ -26,26 +26,7 @@ _FEATURE_VOCABULARY = re.compile(
     r"""|["']developer[-.][a-z]"""
 )
 
-BURN_DOWN: frozenset[str] = frozenset(
-    {
-        "src/ravn/adapters/tools/delivery.py",
-        "src/ravn/cli/tool_builders.py",
-        "src/ravn/drive_loop.py",
-        "src/skuld/broker.py",
-        "src/ting/adapters/delivery_integration_reviews.py",
-        "src/ting/adapters/parent_workflow_continuation.py",
-        "src/ting/api/a2a.py",
-        "src/ting/api/workflow_executions.py",
-        "src/ting/config.py",
-        "src/ting/domain/services/delivery_execution.py",
-        "src/ting/domain/services/workflow_campaign_projector.py",
-        "src/ting/system_workflows.py",
-        "src/volundr/adapters/outbound/execution_credential_file.py",
-        "src/volundr/adapters/outbound/execution_credential_k8s.py",
-        "src/volundr/domain/services/session.py",
-        "src/volundr/domain/services/workflow_execution_credentials.py",
-    }
-)
+BURN_DOWN: frozenset[str] = frozenset()
 
 
 def _offenders() -> set[str]:

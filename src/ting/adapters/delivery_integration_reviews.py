@@ -18,13 +18,14 @@ from niuu.domain.delivery import (
 from niuu.ports.delivery import EvidenceAuthenticator
 from ting.domain.delivery_execution import (
     TERMINAL_EXECUTION_STATES,
+    DeliveryExecution,
     ExecutionState,
     WorkflowExecutionError,
 )
+from ting.domain.exceptions import WorkflowDocumentError
+from ting.domain.workflow_document import ReviewAttestationBinding, workflow_review_attestation
 from ting.ports.delivery_execution import DeliveryExecutionRepository
 from ting.ports.volundr import ActivityEvent
-
-_INTEGRATION_PERSONA = "developer-integration-verifier"
 
 
 class TrustedIntegrationReviewProjector:
@@ -65,7 +66,8 @@ class TrustedIntegrationReviewProjector:
             raise WorkflowExecutionError(
                 "Integration review arrived before trusted candidate inspection"
             )
-        self._validate(raw, event, allocation, candidate)
+        binding = self._review_binding(execution)
+        self._validate(raw, event, allocation, candidate, binding)
         receipt = self._receipt(execution, raw, allocation, candidate)
         provenance = self._authenticator.sign(
             evidence_payload(receipt),
@@ -111,17 +113,20 @@ class TrustedIntegrationReviewProjector:
         event: ActivityEvent,
         allocation: dict[str, Any],
         candidate: dict[str, Any],
+        binding: ReviewAttestationBinding,
     ) -> None:
         findings = raw.get("findings") or []
         if not isinstance(findings, list) or any(not isinstance(item, dict) for item in findings):
             raise WorkflowExecutionError("Integration review findings are malformed")
+        role = str(raw.get("role") or "")
+        expected_persona = binding.roles.get(role)
         if (
             int(raw.get("schemaVersion") or 0) != 1
             or raw.get("valid") is not True
             or str(raw.get("eventId") or "") == ""
             or str(raw.get("sessionId") or "") != event.session_id
-            or str(raw.get("role") or "") != "integration"
-            or str(raw.get("personaId") or "") != _INTEGRATION_PERSONA
+            or expected_persona is None
+            or str(raw.get("personaId") or "") != expected_persona
             or str(raw.get("attemptId") or "") != str(allocation.get("allocation_id") or "")
             or str(raw.get("candidateSha") or "") != str(candidate.get("candidate_sha") or "")
             or str(raw.get("candidateTree") or "") != str(candidate.get("candidate_tree") or "")
@@ -166,13 +171,29 @@ class TrustedIntegrationReviewProjector:
                 base_sha=execution.base_sha,
                 reviewer_id=str(raw["reviewerId"]),
                 worker_id=str(allocation["worker_id"]),
-                role="integration",
+                role=str(raw.get("role") or ""),
                 verdict=verdict,
                 summary=str(raw.get("summary") or f"integration review {verdict.value}"),
                 findings=findings,
             )
         except (KeyError, TypeError, ValueError, ValidationError) as exc:
             raise WorkflowExecutionError("Integration review receipt is invalid") from exc
+
+    @staticmethod
+    def _review_binding(execution: DeliveryExecution) -> ReviewAttestationBinding:
+        snapshot = execution.workflow_snapshot
+        graph = snapshot.get("graph") if isinstance(snapshot, dict) else None
+        if not isinstance(graph, dict):
+            raise WorkflowExecutionError("Execution has no pinned workflow graph")
+        try:
+            binding = workflow_review_attestation(graph)
+        except WorkflowDocumentError as exc:
+            raise WorkflowExecutionError("frozen execution review attestation is invalid") from exc
+        if binding is None:
+            raise WorkflowExecutionError(
+                "frozen execution workflow has no review attestation binding"
+            )
+        return binding
 
 
 def _finding(

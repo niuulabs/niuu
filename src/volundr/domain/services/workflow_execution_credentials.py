@@ -331,7 +331,7 @@ class WorkflowExecutionCredentialService:
         if self._task is not None:
             return
         await self.reconcile_once()
-        self._task = asyncio.create_task(self._run(), name="developer-credential-rotation")
+        self._task = asyncio.create_task(self._run(), name="execution-credential-rotation")
         self._task.add_done_callback(self._log_if_rotation_loop_died)
 
     @staticmethod

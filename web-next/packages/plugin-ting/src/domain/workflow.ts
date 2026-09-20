@@ -161,6 +161,12 @@ export const workflowSubworkflowNodeSchema = z.object({
   maxAttempts: z.number().int().positive(),
   maxActiveChildren: z.number().int().positive().optional(),
   joinMode: z.literal('all'),
+  /**
+   * Event published to the parent session when this node's children block.
+   * The joined event is not listed separately: it is read from this node's
+   * own outgoing edge, the same way any other node's continuation is.
+   */
+  blockedEvent: z.string().min(1).optional(),
 });
 export type WorkflowSubworkflowNode = z.input<typeof workflowSubworkflowNodeSchema>;
 

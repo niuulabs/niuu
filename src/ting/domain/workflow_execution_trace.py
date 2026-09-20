@@ -103,7 +103,7 @@ def workflow_event_sources(graph: dict[str, Any]) -> dict[str, tuple[str, ...]]:
         node_id = str(raw_node.get("id") or "").strip()
         if not node_id:
             continue
-        for key in ("dispatchEvent", "completionEvent"):
+        for key in ("dispatchEvent", "completionEvent", "blockedEvent"):
             event_type = str(raw_node.get(key) or "").strip()
             if event_type and event_type not in sources:
                 sources[event_type] = [node_id]

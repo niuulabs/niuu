@@ -1,4 +1,4 @@
-"""REST API for durable developer-delivery parent/child executions."""
+"""REST API for durable workflow parent/child executions."""
 
 from __future__ import annotations
 

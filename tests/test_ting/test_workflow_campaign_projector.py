@@ -22,8 +22,14 @@ from ting.ports.volundr import ActivityEvent
 def _campaign(
     status: WorkflowCampaignStatus = WorkflowCampaignStatus.RUNNING,
     connection_id: str | None = None,
+    completion_event: str = "",
 ) -> WorkflowCampaign:
     now = datetime.now(UTC)
+    workflow_snapshot: dict = {}
+    if completion_event:
+        workflow_snapshot = {
+            "graph": {"nodes": [{"id": "done", "kind": "end", "completionEvent": completion_event}]}
+        }
     return WorkflowCampaign(
         id=uuid4(),
         slug="tool-build-test",
@@ -32,7 +38,7 @@ def _campaign(
         workflow_id=uuid4(),
         workflow_name="Tool & Skill Builder",
         workflow_version="1.0.0",
-        workflow_snapshot={},
+        workflow_snapshot=workflow_snapshot,
         session_id="session-123",
         session_name="tool-build-test",
         status=status,
@@ -386,10 +392,16 @@ async def test_sse_error_event_fails_and_queues_error_push() -> None:
     push_dispatcher.queue_campaign.assert_awaited_once_with(terminal)
 
 
+_AUTHORITATIVE_COMPLETION_EVENT = "workflow.child.completed"
+"""Deliberately distinct from any bundled workflow's own vocabulary: the
+projector must read the expected event from the campaign's pinned graph, not
+assume a fixed name."""
+
+
 def _authoritative_delivery_metadata(delivery: dict) -> dict:
     return {
         "completion_source": "ravn_flock",
-        "completion_event_type": "developer.workstream.completed",
+        "completion_event_type": _AUTHORITATIVE_COMPLETION_EVENT,
         "completion_peer_id": "workflow-stop:workstream-result",
         "structured_outcome": {"result": delivery["result"]},
         "outcome_valid": True,
@@ -399,7 +411,7 @@ def _authoritative_delivery_metadata(delivery: dict) -> dict:
 
 @pytest.mark.asyncio
 async def test_idle_delivery_event_completes_before_releasing_session() -> None:
-    campaign = _campaign()
+    campaign = _campaign(completion_event=_AUTHORITATIVE_COMPLETION_EVENT)
     delivery = {
         "schemaVersion": 1,
         "result": {"attemptId": "attempt-1", "candidateSha": "b" * 40},
@@ -450,7 +462,7 @@ async def test_reconnect_projects_persisted_authoritative_idle_delivery() -> Non
     )
     projector, repo, _ = _projector(adapter)
 
-    await projector._refresh_campaign(_campaign())
+    await projector._refresh_campaign(_campaign(completion_event=_AUTHORITATIVE_COMPLETION_EVENT))
 
     terminal = repo.save_campaign.await_args_list[0].args[0]
     assert terminal.status == WorkflowCampaignStatus.COMPLETED
@@ -482,7 +494,7 @@ async def test_reconnect_projects_persisted_authoritative_idle_delivery() -> Non
 async def test_idle_delivery_fails_closed_without_authoritative_matching_envelope(
     metadata: dict,
 ) -> None:
-    campaign = _campaign()
+    campaign = _campaign(completion_event=_AUTHORITATIVE_COMPLETION_EVENT)
     adapter = _Adapter()
     projector, repo, _ = _projector(adapter)
     repo.get_active_campaign_by_session.return_value = campaign

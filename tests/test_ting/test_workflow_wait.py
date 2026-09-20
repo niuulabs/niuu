@@ -34,6 +34,19 @@ def _bound_execution(**changes):
             "integration_allocation_id": "integration-2",
         },
         integration_allocation={"allocation_id": "integration-2"},
+        workflow_snapshot={
+            "graph": {
+                "nodes": [{"id": "delivery-publication-wait", "kind": "wait"}],
+                "edges": [
+                    {
+                        "id": "delivery-wait-publish",
+                        "source": "delivery-publication-wait",
+                        "target": "delivery-publish",
+                        "label": "developer.delivery.observed -> developer.delivery.observed",
+                    },
+                ],
+            }
+        },
     )
     return replace(execution, **changes)
 

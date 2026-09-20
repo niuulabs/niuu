@@ -63,7 +63,7 @@ def load_bundled_workflow(
         include_builtin=True,
     )
     # Transport paths in a workflow document are package-root relative (for
-    # example ``workflows/developer-workstream.yaml``), never relative to the
+    # example ``workflows/child.yaml``), never relative to the
     # document itself.  Keep the direct loader consistent with
     # ``load_system_workflows`` so callers cannot accidentally resolve a
     # dependency under ``workflows/workflows``.

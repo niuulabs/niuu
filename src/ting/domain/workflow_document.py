@@ -205,6 +205,7 @@ def load_workflow_document(text: str) -> WorkflowDocument:
     _validate_review_verdict_policies(graph)
     _validate_wait_nodes(graph, schema_version=schema_version)
     _validate_tool_actions(graph)
+    _validate_disabled_tools(graph)
 
     dependencies_raw = raw["persona_dependencies"]
     if not isinstance(dependencies_raw, dict):
@@ -615,6 +616,34 @@ def _validate_tool_actions(graph: dict[str, Any]) -> None:
             )
 
 
+def _validate_disabled_tools(graph: dict[str, Any]) -> None:
+    """Validate the optional graph-level list of tools withheld from every persona.
+
+    `disabledTools` names tools that a persona running this graph does not
+    receive at all, whatever its own document allows. It can only remove. The
+    names are opaque here: no tool is privileged by the engine.
+    """
+    if "disabledTools" not in graph:
+        return
+    disabled = graph["disabledTools"]
+    if (
+        not isinstance(disabled, list)
+        or not disabled
+        or any(not isinstance(name, str) or not name.strip() for name in disabled)
+    ):
+        raise WorkflowDocumentError(
+            "Workflow graph disabledTools must be a non-empty list of tool names"
+        )
+    if len(set(disabled)) != len(disabled):
+        raise WorkflowDocumentError("Workflow graph disabledTools must not repeat tool names")
+    overlap = sorted(set(disabled) & set(graph.get("toolActions") or {}))
+    if overlap:
+        raise WorkflowDocumentError(
+            f"Workflow graph disabledTools and toolActions both name {overlap}; "
+            "a tool is either withheld or narrowed"
+        )
+
+
 def _validate_graph_structure(graph: dict[str, Any]) -> None:
     for field_name in ("nodes", "edges"):
         value = graph.get(field_name, [])
@@ -736,11 +765,23 @@ def _validate_review_verdict_policies(graph: dict[str, Any]) -> None:
 
 
 def _validate_wait_nodes(graph: dict[str, Any], *, schema_version: int) -> None:
-    """Validate passive external waits without turning them into agent or human gates."""
+    """Validate passive external waits without turning them into agent or human gates.
+
+    The runtime observes a durable wait against the execution alone; it has no
+    node identifier to disambiguate between several passive waits, so a graph
+    may declare at most one. Its outgoing edges must also agree on exactly one
+    event type — that is the event the runtime publishes once the wait is
+    observed, read directly from the graph rather than duplicated onto the
+    node.
+    """
     edges = graph.get("edges", [])
-    for node in graph.get("nodes", []):
-        if node.get("kind") != "wait":
-            continue
+    wait_nodes = [node for node in graph.get("nodes", []) if node.get("kind") == "wait"]
+    if len(wait_nodes) > 1:
+        raise WorkflowDocumentError(
+            "Workflow graph must declare at most one wait node; the runtime cannot "
+            "attribute an observation to a specific one"
+        )
+    for node in wait_nodes:
         node_id = _required_string(node.get("id"), "wait node id")
         _required_string(node.get("label"), f"wait node {node_id!r} label")
         if schema_version < 2:
@@ -762,6 +803,13 @@ def _validate_wait_nodes(graph: dict[str, Any], *, schema_version: int) -> None:
                 raise WorkflowDocumentError(
                     f"Wait node {node_id!r} edges require source and target event types"
                 )
+        observed_events = {
+            _split_edge_label_for_validation(edge.get("label"))[0] for edge in outgoing
+        }
+        if len(observed_events) != 1:
+            raise WorkflowDocumentError(
+                f"Wait node {node_id!r} outgoing edges must agree on exactly one observed event"
+            )
 
 
 def _split_edge_label_for_validation(value: object) -> tuple[str, str]:
@@ -824,6 +872,24 @@ def _validate_subworkflow_nodes(
         if join_mode not in {"all", "any"}:
             raise WorkflowDocumentError(
                 f"Subworkflow node {node_id!r} joinMode must be 'all' or 'any'"
+            )
+        blocked_event = _required_string(
+            node.get("blockedEvent"),
+            f"subworkflow node {node_id!r} blockedEvent",
+        )
+        joined_events = {
+            _split_edge_label_for_validation(edge.get("label"))[0]
+            for edge in graph.get("edges", [])
+            if isinstance(edge, dict) and str(edge.get("source") or "") == node_id
+        }
+        if len(joined_events) != 1 or not next(iter(joined_events)):
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} requires exactly one outgoing edge naming "
+                "the event published once its children join"
+            )
+        if blocked_event in joined_events:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} blockedEvent must differ from its joined event"
             )
 
 

@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from ting.domain.delivery_execution import DeliveryExecution
+from ting.domain.workflow_continuation_events import (
+    subworkflow_blocked_event,
+    subworkflow_joined_event,
+    wait_observed_event,
+)
 from ting.domain.workflow_wait import (
     WaitObservation,
     WorkflowWait,
@@ -26,64 +32,40 @@ class VolundrParentWorkflowContinuation(ParentWorkflowContinuation):
         results: list[dict],
     ) -> None:
         adapter = await self._adapter(execution)
-        continuation_id = str(
-            uuid5(
-                NAMESPACE_URL,
-                f"niuulabs:workflow-execution:{execution.id}:{generation}:verified",
-            )
-        )
-        payload = {
-            "type": "developer.children.verified",
-            "continuationId": continuation_id,
-            "executionId": str(execution.id),
-            "parentNodeId": execution.parent_node_id,
-            "generation": generation,
-            "results": results,
-        }
-        await adapter.publish_workflow_event(
-            execution.parent_session_id,
-            "developer.children.verified",
-            json.dumps(payload, sort_keys=True, separators=(",", ":")),
-            payload=payload,
-            request_id=continuation_id,
+        event_type = subworkflow_joined_event(self._graph(execution), execution.parent_node_id)
+        await self._deliver(
+            adapter,
+            execution,
+            event_type,
+            seed=f"{generation}:verified",
+            fields={
+                "parentNodeId": execution.parent_node_id,
+                "generation": generation,
+                "results": results,
+            },
         )
 
     async def notify_parent(
         self,
         execution: DeliveryExecution,
         *,
-        event_type: str,
         generation: int,
         correlation_revision: int,
         children: list[dict],
     ) -> None:
-        if event_type != "developer.children.blocked":
-            raise ValueError(f"unsupported developer parent event {event_type!r}")
         adapter = await self._adapter(execution)
-        continuation_id = str(
-            uuid5(
-                NAMESPACE_URL,
-                (
-                    f"niuulabs:workflow-execution:{execution.id}:{generation}:"
-                    f"blocked:{correlation_revision}"
-                ),
-            )
-        )
-        payload = {
-            "type": event_type,
-            "continuationId": continuation_id,
-            "executionId": str(execution.id),
-            "parentNodeId": execution.parent_node_id,
-            "generation": generation,
-            "revision": correlation_revision,
-            "children": children,
-        }
-        await adapter.publish_workflow_event(
-            execution.parent_session_id,
+        event_type = subworkflow_blocked_event(self._graph(execution), execution.parent_node_id)
+        await self._deliver(
+            adapter,
+            execution,
             event_type,
-            json.dumps(payload, sort_keys=True, separators=(",", ":")),
-            payload=payload,
-            request_id=continuation_id,
+            seed=f"{generation}:blocked:{correlation_revision}",
+            fields={
+                "parentNodeId": execution.parent_node_id,
+                "generation": generation,
+                "revision": correlation_revision,
+                "children": children,
+            },
         )
 
     async def notify_delivery_observation(
@@ -93,36 +75,64 @@ class VolundrParentWorkflowContinuation(ParentWorkflowContinuation):
         observation: WaitObservation,
     ) -> None:
         adapter = await self._adapter(execution)
-        continuation_id = str(
-            uuid5(
-                NAMESPACE_URL,
-                f"niuulabs:workflow-execution:{execution.id}:delivery-wait:{wait.id}",
-            )
-        )
-        payload = {
-            "schemaVersion": 1,
-            "type": "developer.delivery.observed",
-            "continuationId": continuation_id,
-            "waitId": str(wait.id),
-            "requestDigest": wait.request_digest,
-            "executionId": str(execution.id),
-            "parentNodeId": execution.parent_node_id,
-            "generation": wait.execution_generation,
-            "candidateDigest": wait.candidate_digest,
-            "mode": wait.request.mode.value,
-            **observation.to_dict(),
-        }
-        await adapter.publish_workflow_event(
-            execution.parent_session_id,
-            "developer.delivery.observed",
-            json.dumps(payload, sort_keys=True, separators=(",", ":")),
-            payload=payload,
-            request_id=continuation_id,
+        event_type = wait_observed_event(self._graph(execution))
+        await self._deliver(
+            adapter,
+            execution,
+            event_type,
+            seed=f"delivery-wait:{wait.id}",
+            fields={
+                "schemaVersion": 1,
+                "waitId": str(wait.id),
+                "requestDigest": wait.request_digest,
+                "parentNodeId": execution.parent_node_id,
+                "generation": wait.execution_generation,
+                "candidateDigest": wait.candidate_digest,
+                "mode": wait.request.mode.value,
+                **observation.to_dict(),
+            },
         )
 
     async def stop_parent(self, execution: DeliveryExecution) -> None:
         adapter = await self._adapter(execution)
         await adapter.stop_session(execution.parent_session_id)
+
+    @staticmethod
+    def _graph(execution: DeliveryExecution) -> dict[str, Any]:
+        snapshot = execution.workflow_snapshot
+        graph = snapshot.get("graph") if isinstance(snapshot, dict) else None
+        if not isinstance(graph, dict):
+            raise RuntimeError(
+                f"Workflow execution {execution.id} has no pinned graph snapshot to resolve "
+                "its continuation events"
+            )
+        return graph
+
+    @staticmethod
+    async def _deliver(
+        adapter: Any,
+        execution: DeliveryExecution,
+        event_type: str,
+        *,
+        seed: str,
+        fields: dict[str, Any],
+    ) -> None:
+        continuation_id = str(
+            uuid5(NAMESPACE_URL, f"niuulabs:workflow-execution:{execution.id}:{seed}")
+        )
+        payload = {
+            "type": event_type,
+            "continuationId": continuation_id,
+            "executionId": str(execution.id),
+            **fields,
+        }
+        await adapter.publish_workflow_event(
+            execution.parent_session_id,
+            event_type,
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            payload=payload,
+            request_id=continuation_id,
+        )
 
     async def _adapter(self, execution: DeliveryExecution):
         if execution.connection_id:

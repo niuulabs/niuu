@@ -32,6 +32,22 @@ persona_dependencies:
 workflow_dependencies: {}
 graph:
   executionContract: developer-workstream/v1
+  # Ravn-validated (not part of the workflow schema's toolActions, which
+  # requires a non-empty action list per tool): tools fully removed for every
+  # persona running this child graph, regardless of what their own document's
+  # allowed_tools grants. The parent-only durable execution and publish tools
+  # have no place inside an isolated work order.
+  disabledTools:
+    - workflow_execution_expand
+    - workflow_execution_reconcile
+    - workflow_execution_retry
+    - workflow_execution_cancel
+    - workflow_execution_message
+    - workflow_execution_complete
+    - workflow_execution_record_integration
+    - workflow_execution_wait_delivery
+    - delivery_forge
+    - delivery_evidence
   toolActions:
     delivery_workspace: [verify]
   reviewAttestation:

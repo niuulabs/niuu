@@ -525,6 +525,34 @@ def test_execution_snapshot_rejects_invalid_workflow_dependency_closure(mutation
         )
 
 
+def _subworkflow_snapshot() -> dict:
+    """A minimal pinned graph naming the joined/blocked events for one node.
+
+    Deliberately uses event names distinct from any bundled workflow's own
+    vocabulary, to prove the continuation adapter reads them from the graph
+    rather than assuming a fixed name.
+    """
+    return {
+        "graph": {
+            "nodes": [
+                {
+                    "id": "delivery-workstreams",
+                    "kind": "subworkflow",
+                    "blockedEvent": "workstreams.blocked",
+                },
+            ],
+            "edges": [
+                {
+                    "id": "workstreams-joined",
+                    "source": "delivery-workstreams",
+                    "target": "delivery-integrate",
+                    "label": "workstreams.verified -> workstreams.verified",
+                },
+            ],
+        }
+    }
+
+
 @pytest.mark.asyncio
 async def test_verified_children_resume_parent_as_deterministic_mesh_event() -> None:
     class Adapter:
@@ -551,6 +579,7 @@ async def test_verified_children_resume_parent_as_deterministic_mesh_event() -> 
         connection_id="",
         parent_session_id="session-1",
         parent_node_id="delivery-workstreams",
+        workflow_snapshot=_subworkflow_snapshot(),
     )
     continuation = VolundrParentWorkflowContinuation(volundr_factory=Factory())
 
@@ -562,7 +591,7 @@ async def test_verified_children_resume_parent_as_deterministic_mesh_event() -> 
 
     assert len(adapter.calls) == 1
     args, kwargs = adapter.calls[0]
-    assert args[:2] == ("session-1", "developer.children.verified")
+    assert args[:2] == ("session-1", "workstreams.verified")
     assert kwargs["payload"]["parentNodeId"] == "delivery-workstreams"
     assert kwargs["payload"]["generation"] == 2
     assert kwargs["request_id"] == kwargs["payload"]["continuationId"]
@@ -644,6 +673,7 @@ async def test_blocked_children_notify_parent_with_stable_correlation() -> None:
         connection_id="",
         parent_session_id="session-1",
         parent_node_id="delivery-workstreams",
+        workflow_snapshot=_subworkflow_snapshot(),
     )
     continuation = VolundrParentWorkflowContinuation(volundr_factory=Factory())
     children = [
@@ -660,14 +690,13 @@ async def test_blocked_children_notify_parent_with_stable_correlation() -> None:
 
     await continuation.notify_parent(
         execution,
-        event_type="developer.children.blocked",
         generation=3,
         correlation_revision=7,
         children=children,
     )
 
     args, kwargs = adapter.calls[0]
-    assert args[:2] == ("session-1", "developer.children.blocked")
+    assert args[:2] == ("session-1", "workstreams.blocked")
     assert kwargs["payload"]["children"] == children
     assert kwargs["payload"]["revision"] == 7
     assert kwargs["request_id"] == kwargs["payload"]["continuationId"]

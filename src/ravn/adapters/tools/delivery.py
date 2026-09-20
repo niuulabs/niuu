@@ -64,8 +64,9 @@ class _WorkflowExecutionTool(ToolPort):
             ),
             "wait_delivery": (
                 "Persist a restart-safe wait for the exact review candidate's checks or merge. "
-                "After registration, yield the workflow; developer.delivery.observed resumes "
-                "the coordinator with the terminal observation. This tool never merges."
+                "After registration, yield the workflow; the workflow's declared continuation "
+                "event resumes the coordinator with the terminal observation. This tool never "
+                "merges."
             ),
         }[self.operation]
 
@@ -295,7 +296,7 @@ class _DeliveryServiceTool(ToolPort):
     @property
     def description(self) -> str:
         common = (
-            "Invoke a narrow deterministic developer-delivery operation. Raw commands, source "
+            "Invoke a narrow deterministic workflow-delivery operation. Raw commands, source "
             "edits, credentials, and policy bodies are rejected."
         )
         if self.tool_name == "delivery_workspace":

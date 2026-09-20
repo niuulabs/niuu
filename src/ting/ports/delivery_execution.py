@@ -344,19 +344,26 @@ class ParentWorkflowContinuation(ABC):
         generation: int,
         results: list[dict],
     ) -> None:
-        """Deliver an idempotently identified continuation to the parent session."""
+        """Deliver an idempotently identified continuation to the parent session.
+
+        The event type is the pinned graph's own outgoing edge from the
+        expanding subworkflow node, not a caller-supplied literal.
+        """
 
     @abstractmethod
     async def notify_parent(
         self,
         execution: DeliveryExecution,
         *,
-        event_type: str,
         generation: int,
         correlation_revision: int,
         children: list[dict],
     ) -> None:
-        """Deliver a durable child-state notification to the exact parent session."""
+        """Deliver a durable child-blocked notification to the exact parent session.
+
+        The event type is the pinned graph's own ``blockedEvent`` declaration
+        for the expanding subworkflow node, not a caller-supplied literal.
+        """
 
     @abstractmethod
     async def notify_delivery_observation(

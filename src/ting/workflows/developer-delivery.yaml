@@ -37,8 +37,8 @@ persona_dependencies:
 workflow_dependencies:
   workstream:
     id: 98133eab-cd89-44d1-b32d-26c82f99dddc
-    revision: sha256:7a1cb02ab9f5c96b851e74d556e71dc0401acc74865df333703391bf1bb95175
-    digest: sha256:7a1cb02ab9f5c96b851e74d556e71dc0401acc74865df333703391bf1bb95175
+    revision: sha256:c35c9217a08015b6341c2e7cc730353d5ee7469de4c956dfdb3ade55decb198c
+    digest: sha256:c35c9217a08015b6341c2e7cc730353d5ee7469de4c956dfdb3ade55decb198c
     path: workflows/developer-workstream.yaml
 graph:
   executionContract: developer-delivery/v1
@@ -106,6 +106,7 @@ graph:
       maxActiveChildren: 4
       maxAttempts: 3
       joinMode: all
+      blockedEvent: developer.children.blocked
       inputSchema:
         type: object
         properties:

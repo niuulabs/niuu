@@ -83,7 +83,7 @@ class FileExecutionCredentialProjection(ExecutionCredentialProjectionPort):
 
         if runtime_backend != "docker":
             return ExecutionCredentialProjection(token_file=str(directory / "token"))
-        volume_name = f"developer-credential-{session_id.hex[:12]}"
+        volume_name = f"execution-credential-{session_id.hex[:12]}"
         return ExecutionCredentialProjection(
             token_file=f"{self._container_directory}/token",
             pod_spec=PodSpecAdditions(

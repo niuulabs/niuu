@@ -687,7 +687,6 @@ class DeliveryExecutionService:
         ]
         await self._continuation.notify_parent(
             execution,
-            event_type="developer.children.blocked",
             generation=generation,
             correlation_revision=execution.blocker_revision,
             children=blocked,
@@ -741,7 +740,7 @@ class DeliveryExecutionService:
                 tenant_id=execution.tenant_id,
                 roles=list(self._admission_roles),
             ),
-            workload_subject=f"developer-child:{child.id}",
+            workload_subject=f"workflow-child:{child.id}",
             workload_name=execution.policy.coordinator_id,
             audiences=[],
             token_use="valkyrie_build",

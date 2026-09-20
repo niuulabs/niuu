@@ -71,14 +71,15 @@ def _attested_review_id(session_id: str, peer_id: str, source_event_id: str) -> 
     return str(
         uuid.uuid5(
             uuid.NAMESPACE_URL,
-            f"niuulabs:developer-review:{session_id}:{peer_id}:event:{source_event_id}",
+            f"niuulabs:attested-review:{session_id}:{peer_id}:event:{source_event_id}",
         )
     )
 
 
 # A workflow graph declaring an explicit review attestation for the three
-# candidate reviewer roles, plus the joinMode-all stage their personas must
-# belong to for that binding to validate.
+# candidate reviewer roles, the joinMode-all stage their personas must belong
+# to for that binding to validate, and the end node whose completion event
+# the broker attaches those attested reviews to.
 _WORKSTREAM_REVIEW_GRAPH = {
     "executionContract": "developer-workstream/v1",
     "reviewAttestation": {
@@ -93,6 +94,7 @@ _WORKSTREAM_REVIEW_GRAPH = {
     },
     "nodes": [
         {
+            "id": "workstream-reviews",
             "kind": "stage",
             "joinMode": "all",
             "stageMembers": [
@@ -100,7 +102,56 @@ _WORKSTREAM_REVIEW_GRAPH = {
                 {"personaId": "developer-security-reviewer"},
                 {"personaId": "developer-adversarial-reviewer"},
             ],
-        }
+        },
+        {
+            "id": "workstream-complete",
+            "kind": "end",
+            "joinMode": "all",
+            "completionEvent": "developer.workstream.completed",
+        },
+    ],
+    "edges": [
+        {
+            "id": "workstream-reviews-complete",
+            "source": "workstream-reviews",
+            "target": "workstream-complete",
+            "label": "developer.workstream.completed -> developer.workstream.completed",
+        },
+    ],
+}
+
+# A second graph reusing none of _WORKSTREAM_REVIEW_GRAPH's event names, to
+# prove the broker's attested-terminal-delivery branch is driven by the
+# graph's own reviewAttestation and terminal node rather than a literal
+# event name.
+_RENAMED_ATTESTED_GRAPH = {
+    "reviewAttestation": {
+        "version": 1,
+        "scope": "workstream",
+        "eventType": "acme.review.completed",
+        "roles": {"code": "developer-code-reviewer"},
+    },
+    "nodes": [
+        {
+            "id": "acme-review",
+            "kind": "stage",
+            "joinMode": "all",
+            "stageMembers": [{"personaId": "developer-code-reviewer"}],
+        },
+        {
+            "id": "acme-complete",
+            "kind": "end",
+            "joinMode": "all",
+            "completionEvent": "acme.workflow.completed",
+        },
+    ],
+    "edges": [
+        {
+            "id": "acme-review-complete",
+            "source": "acme-review",
+            "target": "acme-complete",
+            "label": "acme.workflow.completed -> acme.workflow.completed",
+        },
     ],
 }
 
@@ -2346,6 +2397,139 @@ class TestBroker:
                 "valid": True,
             }
         ]
+
+    @pytest.mark.asyncio
+    async def test_attested_terminal_envelope_follows_graph_declared_event_names(self, tmp_path):
+        """The delivery envelope is attached by graph structure, not a literal.
+
+        Nothing here is named `developer.workstream.completed` or
+        `developer.review.completed`: the review-attestation event type and
+        the terminal completion event are both declared under different
+        names, and the broker must still recognize its own graph's terminal
+        completion and attach the attested review to it.
+        """
+        settings = SkuldSettings(
+            session={"id": "acme-session", "workspace_dir": str(tmp_path)},
+            room={"enabled": True},
+            workflow={"graph": _RENAMED_ATTESTED_GRAPH},
+        )
+        broker_under_test = Broker(settings=settings)
+        broker_under_test._room_bridge = MagicMock()
+        broker_under_test._room_bridge.participants = {
+            "review-peer": MagicMock(persona="developer-code-reviewer"),
+            "workflow-stop:acme-complete": MagicMock(persona="workflow-runtime"),
+        }
+        broker_under_test._emit_pipeline_event = AsyncMock()
+        broker_under_test._maybe_activate_workflow_gate = AsyncMock()
+        broker_under_test._maybe_emit_workflow_terminal_outcome = AsyncMock()
+        broker_under_test._report_activity_state = AsyncMock()
+        broker_under_test._is_room_only_workflow_session = MagicMock(return_value=True)
+
+        await broker_under_test._emit_peer_outcome_pipeline_event(
+            "review-peer",
+            {
+                "metadata": {
+                    "event_type": "acme.review.completed",
+                    "task_id": "acme-review-event-1",
+                },
+                "data": {
+                    "event_type": "acme.review.completed",
+                    "valid": True,
+                    "fields": {
+                        "attempt_id": "attempt-1",
+                        "candidate_sha": "a" * 40,
+                        "candidate_tree": "b" * 40,
+                        "verdict": "pass",
+                        "summary": "Reviewed immutable candidate",
+                        "findings": [],
+                    },
+                },
+            },
+        )
+        await broker_under_test._maybe_report_flock_completion(
+            "workflow-stop:acme-complete",
+            {
+                "metadata": {"event_type": "acme.workflow.completed"},
+                "data": {
+                    "valid": True,
+                    "fields": {
+                        "result": {
+                            "attemptId": "attempt-1",
+                            "candidateSha": "a" * 40,
+                            "candidateTree": "b" * 40,
+                        }
+                    },
+                },
+            },
+        )
+
+        metadata = broker_under_test._report_activity_state.await_args.kwargs["extra_metadata"]
+        assert metadata["completion_event_type"] == "acme.workflow.completed"
+        envelope = metadata["delivery"]
+        assert envelope["result"]["attemptId"] == "attempt-1"
+        assert [review["role"] for review in envelope["reviews"]] == ["code"]
+
+    @pytest.mark.asyncio
+    async def test_terminal_outcome_without_review_attestation_has_no_delivery_envelope(
+        self, tmp_path
+    ):
+        """A graph with no `reviewAttestation` never gets a `delivery` envelope.
+
+        `self._review_attestation` is `None` for a graph that declares none,
+        so the attested-terminal check must not fire purely because the
+        outcome carries a `result` object.
+        """
+        graph = {
+            "nodes": [
+                {
+                    "id": "plain-complete",
+                    "kind": "end",
+                    "joinMode": "all",
+                    "completionEvent": "plain.workflow.completed",
+                },
+            ],
+            "edges": [
+                {
+                    "id": "plain-start-complete",
+                    "source": "plain-start",
+                    "target": "plain-complete",
+                    "label": "plain.workflow.completed -> plain.workflow.completed",
+                },
+            ],
+        }
+        settings = SkuldSettings(
+            session={"id": "plain-session", "workspace_dir": str(tmp_path)},
+            room={"enabled": True},
+            workflow={"graph": graph},
+        )
+        broker_under_test = Broker(settings=settings)
+        broker_under_test._room_bridge = MagicMock()
+        broker_under_test._room_bridge.participants = {
+            "workflow-stop:plain-complete": MagicMock(persona="workflow-runtime"),
+        }
+        broker_under_test._report_activity_state = AsyncMock()
+        broker_under_test._is_room_only_workflow_session = MagicMock(return_value=True)
+        assert broker_under_test._review_attestation is None
+
+        await broker_under_test._maybe_report_flock_completion(
+            "workflow-stop:plain-complete",
+            {
+                "metadata": {"event_type": "plain.workflow.completed"},
+                "data": {
+                    "valid": True,
+                    "fields": {
+                        "result": {
+                            "attemptId": "attempt-1",
+                            "candidateSha": "a" * 40,
+                            "candidateTree": "b" * 40,
+                        }
+                    },
+                },
+            },
+        )
+
+        metadata = broker_under_test._report_activity_state.await_args.kwargs["extra_metadata"]
+        assert "delivery" not in metadata
 
     @pytest.mark.asyncio
     async def test_repaired_child_terminal_envelope_selects_current_candidate_reviews(

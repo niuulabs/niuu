@@ -26,8 +26,17 @@ def payload():
             "maxChildren": 100,
             "maxAttempts": 3,
             "joinMode": "all",
+            "blockedEvent": "children.blocked",
             "inputSchema": {"type": "object", "properties": {}},
             "resultSchema": {"type": "object", "properties": {}},
+        }
+    )
+    raw["graph"]["edges"].append(
+        {
+            "id": "children-joined",
+            "source": "children",
+            "target": "review",
+            "label": "children.joined -> children.joined",
         }
     )
     return raw
@@ -58,6 +67,8 @@ def payload():
         (("graph", "nodes", 1, "maxAttempts"), 0, "integer"),
         (("graph", "nodes", 1, "joinMode"), "silent", "joinMode"),
         (("graph", "nodes", 1, "passingVerdicts"), ["pass"], "end node"),
+        (("graph", "nodes", 1, "blockedEvent"), "", "non-empty"),
+        (("graph", "nodes", 1, "blockedEvent"), "children.joined", "differ from its joined event"),
     ],
 )
 def test_rejects_invalid_child_contracts_at_portable_boundary(path, value, reason):
@@ -83,6 +94,27 @@ def test_child_contract_survives_yaml_round_trip():
     raw["workflow_dependencies"]["worker"]["path"] = "workflows/child.yaml"
     document = load_workflow_document(yaml.safe_dump(raw))
     assert workflow_document_payload(document) == raw
+
+
+def test_rejects_subworkflow_node_without_an_outgoing_joined_event() -> None:
+    raw = payload()
+    raw["graph"]["edges"] = []
+    with pytest.raises(WorkflowDocumentError, match="exactly one outgoing edge"):
+        load_workflow_document(yaml.safe_dump(raw))
+
+
+def test_rejects_subworkflow_node_with_an_ambiguous_joined_event() -> None:
+    raw = payload()
+    raw["graph"]["edges"].append(
+        {
+            "id": "children-joined-2",
+            "source": "children",
+            "target": "review",
+            "label": "children.other -> children.other",
+        }
+    )
+    with pytest.raises(WorkflowDocumentError, match="exactly one outgoing edge"):
+        load_workflow_document(yaml.safe_dump(raw))
 
 
 def test_passive_wait_node_survives_round_trip_without_a_persona() -> None:
@@ -153,4 +185,62 @@ def test_rejects_invalid_passive_wait_nodes(mutation: str, reason: str) -> None:
         wait["label"] = ""
 
     with pytest.raises(WorkflowDocumentError, match=reason):
+        load_workflow_document(yaml.safe_dump(raw))
+
+
+def test_rejects_wait_node_with_an_ambiguous_observed_event() -> None:
+    raw = payload()
+    raw["graph"]["nodes"].append(
+        {"id": "external-wait", "kind": "wait", "label": "Await observation"}
+    )
+    raw["graph"]["edges"].extend(
+        [
+            {
+                "id": "wait-in",
+                "source": "review",
+                "target": "external-wait",
+                "label": "review.waiting -> review.waiting",
+            },
+            {
+                "id": "wait-out-1",
+                "source": "external-wait",
+                "target": "review",
+                "label": "review.observed -> review.observed",
+            },
+            {
+                "id": "wait-out-2",
+                "source": "external-wait",
+                "target": "children",
+                "label": "review.other -> review.other",
+            },
+        ]
+    )
+    with pytest.raises(WorkflowDocumentError, match="agree on exactly one observed event"):
+        load_workflow_document(yaml.safe_dump(raw))
+
+
+def test_rejects_more_than_one_wait_node() -> None:
+    raw = payload()
+    for suffix in ("a", "b"):
+        raw["graph"]["nodes"].append(
+            {"id": f"external-wait-{suffix}", "kind": "wait", "label": "Await observation"}
+        )
+        raw["graph"]["edges"].extend(
+            [
+                {
+                    "id": f"wait-in-{suffix}",
+                    "source": "review",
+                    "target": f"external-wait-{suffix}",
+                    "label": "review.waiting -> review.waiting",
+                },
+                {
+                    "id": f"wait-out-{suffix}",
+                    "source": f"external-wait-{suffix}",
+                    "target": "review",
+                    "label": "review.observed -> review.observed",
+                },
+            ]
+        )
+
+    with pytest.raises(WorkflowDocumentError, match="at most one wait node"):
         load_workflow_document(yaml.safe_dump(raw))

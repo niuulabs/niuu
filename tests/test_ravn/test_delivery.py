@@ -1107,14 +1107,34 @@ def test_coordinator_runtime_explicit_anonymous_dev_avoids_platform_base_auth(tm
     assert "Authorization" not in execution._service._client._headers()
 
 
+_CHILD_WORKSTREAM_DISABLED_TOOLS = [
+    "workflow_execution_expand",
+    "workflow_execution_reconcile",
+    "workflow_execution_retry",
+    "workflow_execution_cancel",
+    "workflow_execution_message",
+    "workflow_execution_complete",
+    "workflow_execution_record_integration",
+    "workflow_execution_wait_delivery",
+    "delivery_forge",
+    "delivery_evidence",
+]
+
+
 def test_child_workstream_coordinator_exposes_only_child_credential_operations(tmp_path) -> None:
+    """A child workflow graph, not a contract name, drops the parent-only tools.
+
+    No `executionContract` value is set here — the same coordinator persona
+    loses every tool the graph's own `disabledTools` names, and keeps only
+    `verify` on `delivery_workspace` because that is all `toolActions` grants.
+    """
     persona = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load(
         "developer-coordinator"
     )
     assert persona is not None
     settings = _coordinator_settings()
     settings.workflow.graph = {
-        "executionContract": "developer-workstream/v1",
+        "disabledTools": list(_CHILD_WORKSTREAM_DISABLED_TOOLS),
         "toolActions": {"delivery_workspace": ["verify"]},
     }
 
@@ -1142,6 +1162,58 @@ def test_child_workstream_coordinator_exposes_only_child_credential_operations(t
         "WorkspaceAllocation returned by delivery_workspace.allocate"
         in verify["properties"]["allocation"]["description"]
     )
+
+
+def test_graph_disabled_tools_removes_tool_regardless_of_persona_alias(tmp_path) -> None:
+    """`disabledTools` is keyed on tool name alone, so it survives an alias.
+
+    InlinePersonaAdapter.load only ever overwrites `name` when a workflow maps
+    a dependency to a persona under a local alias; a mechanism keyed on the
+    persona's original name would miss the aliased instance entirely.
+    """
+    persona = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load(
+        "developer-coordinator"
+    )
+    assert persona is not None
+    aliased = replace(persona, name="workstream-coordinator")
+    settings = _coordinator_settings()
+    settings.workflow.graph = {
+        "disabledTools": list(_CHILD_WORKSTREAM_DISABLED_TOOLS),
+        "toolActions": {"delivery_workspace": ["verify"]},
+    }
+
+    tools = _build_tools(
+        settings,
+        tmp_path,
+        Session(),
+        MagicMock(),
+        None,
+        None,
+        persona_config=aliased,
+    )
+
+    assert {tool.name for tool in tools} == {"delivery_workspace"}
+
+
+def test_graph_disabled_tools_rejects_malformed_value(tmp_path) -> None:
+    """Fail closed: a malformed `disabledTools` raises rather than being ignored."""
+    persona = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load(
+        "developer-coordinator"
+    )
+    assert persona is not None
+    settings = _coordinator_settings()
+    settings.workflow.graph = {"disabledTools": ["delivery_forge", ""]}
+
+    with pytest.raises(RuntimeError, match="disabledTools"):
+        _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            persona_config=persona,
+        )
 
 
 def test_graph_tool_actions_narrow_delivery_workspace_without_a_contract_name(tmp_path) -> None:
@@ -1513,7 +1585,7 @@ async def test_wait_delivery_tool_preserves_exact_candidate_and_rejects_policy_o
     service.wait_delivery.assert_awaited_once_with(payload)
     assert set(tool.input_schema["required"]) == set(payload)
     assert tool.input_schema["additionalProperties"] is False
-    assert "developer.delivery.observed" in tool.description
+    assert "the workflow's declared continuation event resumes" in tool.description
     merge_contract = tool.input_schema["oneOf"][1]
     assert set(merge_contract["required"]) == {"method", "providerOperationId"}
     rejected = await tool.execute({**payload, "policy": {"required_checks": []}})

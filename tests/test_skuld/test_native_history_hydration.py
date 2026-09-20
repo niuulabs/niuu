@@ -167,7 +167,7 @@ async def test_hydration_restores_authenticated_attested_review_ledger(tmp_path)
     review_id = str(
         uuid.uuid5(
             uuid.NAMESPACE_URL,
-            f"niuulabs:developer-review:{_SID}:code-peer:event:review-event-1",
+            f"niuulabs:attested-review:{_SID}:code-peer:event:review-event-1",
         )
     )
     assert broker._attested_review_outcomes == {

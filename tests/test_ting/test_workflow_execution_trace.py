@@ -59,6 +59,32 @@ def test_parent_node_lineage_does_not_override_delivery_observation_source() -> 
     assert children["nodeIds"] == ["delivery-workstreams"]
 
 
+def test_subworkflow_blocked_event_is_attributed_to_its_owning_node() -> None:
+    graph = {
+        "nodes": [
+            {
+                "id": "delivery-workstreams",
+                "kind": "subworkflow",
+                "blockedEvent": "children.blocked",
+            },
+            {"id": "delivery-coordinate"},
+        ],
+        "edges": [],
+    }
+    node_ids = {node["id"] for node in graph["nodes"]}
+    sources = workflow_event_sources(graph)
+
+    blocked = project_trace_event(
+        _entry("children.blocked"),
+        node_ids=node_ids,
+        event_sources=sources,
+        persona_definitions={},
+    )
+
+    assert blocked["nodeIds"] == ["delivery-workstreams"]
+    assert blocked["mapping"] == "workflow_graph_event"
+
+
 def test_actual_workflow_node_identity_remains_an_explicit_origin() -> None:
     entry = _entry("custom.event")
     entry.payload["fields"]["workflowNodeId"] = "actual-stage"

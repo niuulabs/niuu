@@ -1033,7 +1033,7 @@ class A2AConfig(BaseModel):
 
 
 class WorkflowExecutionConfig(BaseModel):
-    """Durable developer-delivery execution and Ravn A2A gateway settings."""
+    """Durable workflow execution and Ravn A2A gateway settings."""
 
     enabled: bool = Field(
         default=False,
@@ -1069,13 +1069,19 @@ class WorkflowExecutionConfig(BaseModel):
     review_authenticator_kwargs: dict[str, Any] = Field(default_factory=dict)
     review_authenticator_secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
     review_producers: dict[str, str] = Field(
-        default_factory=lambda: {
-            "code": "developer-code-reviewer",
-            "security": "developer-security-reviewer",
-            "adversarial": "developer-adversarial-reviewer",
-        }
+        default_factory=dict,
+        description=(
+            "Role name to signing-producer identity, required for every role a "
+            "workflow's reviewAttestation declares once workflow execution is enabled."
+        ),
     )
-    integration_review_producer: str = Field(default="developer-integration-verifier")
+    integration_review_producer: str = Field(
+        default="",
+        description=(
+            "Signing-producer identity for the trusted integration review projector, "
+            "required once workflow execution is enabled."
+        ),
+    )
     worker_id: str = Field(default="ting-workflow-execution")
     launch_claim_limit: int = Field(default=4, ge=1, le=100)
     reconcile_limit: int = Field(default=100, ge=1, le=1000)
@@ -1084,8 +1090,16 @@ class WorkflowExecutionConfig(BaseModel):
     default_budget_units: int = Field(default=100, ge=1)
     default_deadline_seconds: int = Field(default=86400, ge=60)
     list_page_size: int = Field(default=50, ge=1, le=200)
-    evidence_policy_id: str = Field(default="developer-workstream", min_length=1)
-    integration_policy_id: str = Field(default="developer-integration", min_length=1)
+    evidence_policy_id: str = Field(
+        default="",
+        min_length=1,
+        description="Forge evidence policy ID, required once workflow execution is enabled.",
+    )
+    integration_policy_id: str = Field(
+        default="",
+        min_length=1,
+        description=("Forge integration policy ID, required once workflow execution is enabled."),
+    )
     max_child_reconcile_failures: int = Field(
         default=5,
         ge=1,

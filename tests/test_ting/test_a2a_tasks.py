@@ -677,7 +677,7 @@ class TestSendMessage:
         attempt_id = uuid4()
         token = _build_token(
             ["ting:workflow:launch"],
-            workload_sub=f"developer-child:{attempt_id}",
+            workload_sub=f"workflow-child:{attempt_id}",
             workload_workflow_execution_id=str(uuid4()),
             workload_child_attempt_id=str(attempt_id),
             workload_child_intent_id=str(uuid4()),
@@ -747,7 +747,7 @@ class TestSendMessage:
         monkeypatch.setattr("ting.api.a2a.pinned_child_workflow", lambda *_args: workflow)
         token = _build_token(
             ["ting:workflow:launch"],
-            workload_sub=f"developer-child:{attempt_id}",
+            workload_sub=f"workflow-child:{attempt_id}",
             workload_workflow_execution_id=str(execution_id),
             workload_child_attempt_id=str(attempt_id),
             workload_child_intent_id=str(intent_id),
@@ -980,7 +980,7 @@ class TestGetTask:
         client.app.state.workflow_execution_repo = Ledger()
         token = _build_token(
             ["ting:workflow:launch"],
-            workload_sub=f"developer-child:{attempt_id}",
+            workload_sub=f"workflow-child:{attempt_id}",
             workload_workflow_execution_id=str(execution_id),
             workload_child_attempt_id=str(attempt_id),
             workload_child_intent_id=str(intent_id),

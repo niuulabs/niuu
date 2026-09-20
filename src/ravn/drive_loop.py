@@ -4420,7 +4420,7 @@ class DriveLoop:
         # mesh for existing workflows.  A reviewVerdictPolicy writes an explicit
         # per-task allowlist after its trusted join.  That stricter list must also
         # suppress a different canonical topic (for example, an approved plan
-        # must not republish the canonical ``developer.plan.revised`` event).
+        # must not republish the canonical revised-plan event).
         strict_task_topics = set(task.workflow_allowed_outcome_topics)
         if strict_task_topics and verdict != "help_needed":
             selected_topic = alias_event_type or canonical_event_type

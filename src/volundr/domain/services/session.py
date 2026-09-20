@@ -68,7 +68,7 @@ def _sanitize_log(value: object) -> str:
 
 
 def _is_workflow_child_local_mount(session: Session, workload_config: dict) -> bool:
-    """Identify isolated developer-child workspaces that need no Forge credential."""
+    """Identify isolated workflow-child workspaces that need no Forge credential."""
     if not isinstance(session.source, LocalMountSource):
         return False
     provenance = workload_config.get("provenance")

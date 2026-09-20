@@ -102,7 +102,7 @@ class KubernetesExecutionCredentialProjection(ExecutionCredentialProjectionPort)
         else:
             await api.patch_namespaced_secret(name=name, namespace=self._namespace, body=body)
 
-        volume_name = f"developer-credential-{session_id.hex[:12]}"
+        volume_name = f"execution-credential-{session_id.hex[:12]}"
         return ExecutionCredentialProjection(
             token_file=f"{self._mount_path}/token",
             pod_spec=PodSpecAdditions(

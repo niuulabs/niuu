@@ -21,6 +21,30 @@ from ravn.domain.models import Session, ToolCall, ToolResult
 logger = logging.getLogger(__name__)
 
 
+def _disabled_tool_names(workflow_graph: dict[str, Any] | None) -> frozenset[str]:
+    """Tool names a workflow graph strips entirely from every persona running it.
+
+    The workflow schema's `toolActions` narrows a tool's *actions* and
+    requires each entry to be a non-empty list, so it cannot express "grant
+    this persona none of this tool" for a tool with no actions of its own
+    (see `_validate_tool_actions` in `ting.domain.workflow_document`). A
+    workflow graph declares that under `disabledTools` instead — a flat list
+    of tool names — which Ravn owns and validates here rather than the
+    workflow schema. A malformed value fails closed rather than being
+    silently ignored.
+    """
+    if not isinstance(workflow_graph, dict) or "disabledTools" not in workflow_graph:
+        return frozenset()
+    disabled = workflow_graph["disabledTools"]
+    if not isinstance(disabled, list) or any(
+        not isinstance(name, str) or not name.strip() for name in disabled
+    ):
+        raise RuntimeError(
+            "Workflow graph disabledTools must be a list of non-empty tool name strings"
+        )
+    return frozenset(disabled)
+
+
 def _build_tools(
     settings: Settings,
     workspace: Path,
@@ -306,59 +330,48 @@ def _build_tools(
 
     # -- Apply enabled/disabled filters --
     tools = _filter_tools(tools, settings, persona_config)
-    execution_contract = str(
-        (getattr(getattr(settings, "workflow", None), "graph", {}) or {}).get(
-            "executionContract", ""
-        )
-    )
-    if execution_contract == "developer-workstream/v1":
-        tools = [
-            tool
-            for tool in tools
-            if not tool.name.startswith("workflow_execution_")
-            and tool.name not in {"delivery_forge", "delivery_evidence"}
-        ]
-    if getattr(persona_config, "name", "") == "developer-integration-verifier":
-        tools = [
-            tool
-            for tool in tools
-            if not tool.name.startswith("workflow_execution_") and tool.name != "delivery_forge"
-        ]
 
-    # Narrow delivery_workspace to exactly the operations this persona's own
-    # document declares (`delivery_workspace_actions`), further narrowed —
-    # never widened — by the workflow graph's own `toolActions[tool.name]`
-    # when it declares one. This is how the same coordinator persona gets
-    # every declared action in the parent workflow and only `verify` inside a
-    # child workstream graph, without keying off `name` or `executionContract`:
-    # InlinePersonaAdapter.load only overwrites `name` when a workflow maps a
-    # dependency to this persona under a local alias, so a name- or
-    # contract-keyed check silently widens (or narrows) with the alias while
-    # the declared fields survive it unchanged. Fail closed — a persona
-    # granted the tool with no declared actions gets none.
-    delivery_workspace_operations = {
-        "allocate": "allocate_workstream",
-        "verify": "run_verification",
-        "integrate": "integrate_candidate",
-        "inspect": "inspect_integration",
-    }
+    # A workflow graph may narrow or remove tools for every persona that runs
+    # it, declared entirely in the graph and in the persona's own document —
+    # never keyed off a tool name, a persona name, or `executionContract`.
+    # InlinePersonaAdapter.load only ever overwrites `name` when a workflow
+    # maps a dependency to a persona under a local alias, so a name- or
+    # contract-keyed check would silently widen or narrow with the alias
+    # while the persona's declared fields survive it unchanged.
+    #
+    # A tool whose persona document declares `<tool.name>_actions` (currently
+    # only `delivery_workspace_actions`) is narrowed to exactly that allowlist,
+    # further narrowed — never widened — by `toolActions[tool.name]` when the
+    # graph declares one. A tool the persona document says nothing about is
+    # left with its full built-in operations; the attribute's mere presence
+    # (even as an empty list) is what opts a tool into this scheme, so a
+    # persona granted the tool with an empty allowlist gets none of it.
+    # The workflow schema requires `toolActions` values to be a non-empty
+    # list, so it cannot express "grant none of this tool" for an atomic tool
+    # with no actions of its own; a workflow that needs that declares the
+    # tool name under `disabledTools` instead, and it is dropped regardless
+    # of what the persona's `allowed_tools` grants.
     workflow_graph = getattr(getattr(settings, "workflow", None), "graph", None) or {}
+    disabled_tool_names = _disabled_tool_names(workflow_graph)
     tool_actions = workflow_graph.get("toolActions") if isinstance(workflow_graph, dict) else None
-    declared_actions = set(getattr(persona_config, "delivery_workspace_actions", None) or [])
+
+    narrowed_tools: list[Any] = []
     for tool in tools:
-        if tool.name == "delivery_workspace" and hasattr(tool, "operations"):
-            allowed_actions = declared_actions
-            if isinstance(tool_actions, dict):
-                narrowed = tool_actions.get(tool.name)
-                if isinstance(narrowed, list):
-                    allowed_actions = allowed_actions & {
-                        action for action in narrowed if isinstance(action, str)
-                    }
+        if tool.name in disabled_tool_names:
+            continue
+        declared_actions = getattr(persona_config, f"{tool.name}_actions", None)
+        if declared_actions is not None and hasattr(tool, "operations"):
+            allowed_actions = set(declared_actions)
+            narrowed = tool_actions.get(tool.name) if isinstance(tool_actions, dict) else None
+            if isinstance(narrowed, list):
+                allowed_actions &= {action for action in narrowed if isinstance(action, str)}
             tool.operations = {
                 action: method
-                for action, method in delivery_workspace_operations.items()
+                for action, method in tool.operations.items()
                 if action in allowed_actions
             }
+        narrowed_tools.append(tool)
+    tools = narrowed_tools
 
     # Update state tool with final tool names after filtering
     # Keep the provider on the returned list itself. CLI transports expose it

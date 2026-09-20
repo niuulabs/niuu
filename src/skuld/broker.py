@@ -1934,7 +1934,7 @@ class Broker(
         stable_event_id = str(
             uuid.uuid5(
                 uuid.NAMESPACE_URL,
-                f"niuulabs:developer-review:{self.session_id}:{peer_id}:{source_identity}",
+                f"niuulabs:attested-review:{self.session_id}:{peer_id}:{source_identity}",
             )
         )
         return {
@@ -2772,7 +2772,11 @@ class Broker(
         files_changed = structured_outcome.get("files_changed") or fields.get("files_changed")
         if isinstance(files_changed, list) and files_changed:
             extra_metadata["files_changed"] = files_changed
-        if outcome_event_type == "developer.workstream.completed":
+        is_attested_terminal = self._review_attestation is not None and any(
+            node.completion_event_type == outcome_event_type
+            for node in self._workflow_terminal_nodes
+        )
+        if is_attested_terminal:
             result = structured_outcome.get("result")
             if isinstance(result, dict):
                 extra_metadata["delivery"] = {
