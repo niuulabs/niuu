@@ -85,7 +85,7 @@ class TestKnownWorkloadScopes:
         assert KNOWN_WORKLOAD_SCOPES == frozenset(
             {
                 "forge:session:create",
-                "ting:developer:coordinate",
+                "ting:workflow:coordinate",
                 "ting:workflow:launch",
                 "observatory:topology:push",
             }
@@ -127,8 +127,8 @@ class TestTokenHasScope:
         token = _build_token(["forge:session:create"])
         assert token_has_scope(token, "forge:session:create") is True
 
-    def test_developer_coordinator_can_call_delivery_surface(self) -> None:
-        token = _build_token(["ting:developer:coordinate"])
+    def test_execution_coordinator_can_call_delivery_surface(self) -> None:
+        token = _build_token(["ting:workflow:coordinate"])
         assert credential_allows_route(
             token,
             "POST",
@@ -161,26 +161,26 @@ class TestTokenHasScope:
             "delivery-waits",
         ],
     )
-    def test_developer_coordinator_can_call_execution_mutations(self, suffix: str) -> None:
-        token = _build_token(["ting:developer:coordinate"])
+    def test_execution_coordinator_can_call_execution_mutations(self, suffix: str) -> None:
+        token = _build_token(["ting:workflow:coordinate"])
 
         assert credential_allows_route(
             token,
             "POST",
-            f"/api/v1/ting/developer-executions/execution-1/{suffix}",
+            f"/api/v1/ting/workflow-executions/execution-1/{suffix}",
         )
 
-    def test_developer_coordinator_retry_is_post_only_and_gets_remain_denied(self) -> None:
-        token = _build_token(["ting:developer:coordinate"])
-        retry = "/api/v1/ting/developer-executions/execution-1/children/api/retry"
-        wait = "/api/v1/ting/developer-executions/execution-1/delivery-waits"
+    def test_execution_coordinator_retry_is_post_only_and_gets_remain_denied(self) -> None:
+        token = _build_token(["ting:workflow:coordinate"])
+        retry = "/api/v1/ting/workflow-executions/execution-1/children/api/retry"
+        wait = "/api/v1/ting/workflow-executions/execution-1/delivery-waits"
 
         assert credential_allows_route(token, "POST", retry)
         assert credential_allows_route(token, "POST", wait)
         assert not credential_allows_route(token, "GET", retry)
         assert not credential_allows_route(token, "GET", wait)
         assert not credential_allows_route(
-            token, "GET", "/api/v1/ting/developer-executions/execution-1/evidence"
+            token, "GET", "/api/v1/ting/workflow-executions/execution-1/evidence"
         )
 
     def test_build_token_missing_scope_denied(self) -> None:

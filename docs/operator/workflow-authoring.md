@@ -87,7 +87,7 @@ fields; developer delivery now uses that core with its Git-specific contract.
 
 The concrete durable database adapter and A2A launch/reconciliation gateway are
 still developer-specific. Building a noncoding child definition is not sufficient
-to launch dynamic noncoding runs through `/developer-executions`. That remaining
+to launch dynamic noncoding runs through `/workflow-executions`. That remaining
 adapter work is separate from authoring, static graph execution and evidence
 verification. The authoring tool validates portable definitions, not the presence
 of deployment credentials, model capacity or remote provider capabilities.

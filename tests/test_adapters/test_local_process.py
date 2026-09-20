@@ -3024,7 +3024,7 @@ class TestLocalFlockMeshMode:
                 "flock": {
                     "personas": [{"name": "reviewer"}],
                     "ravn_config": {
-                        "developer_execution": {
+                        "workflow_execution": {
                             "enabled": True,
                             "execution_id": "execution-test",
                             "base_url": "https://ting.example/api/v1/ting",
@@ -3069,7 +3069,7 @@ class TestLocalFlockMeshMode:
             "https://ting.example/.well-known/agent-card.json"
         ]
         assert node_config["gateway"]["platform"]["a2a_trusted_origins"] == ["https://ting.example"]
-        assert node_config["developer_execution"] == {
+        assert node_config["workflow_execution"] == {
             "enabled": True,
             "execution_id": "execution-test",
             "base_url": "https://ting.example/api/v1/ting",

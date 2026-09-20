@@ -259,7 +259,7 @@ class TestConstruction:
                     "command": "python3",
                     "args": ["-m", "ravn", "tool-mcp"],
                     "default_tools_approval_mode": "approve",
-                    "enabled_tools": ["delivery_evidence", "developer_execution_create"],
+                    "enabled_tools": ["delivery_evidence", "workflow_execution_create"],
                 }
             ],
         )
@@ -270,7 +270,7 @@ class TestConstruction:
         ) in t._mcp_overrides
         assert (
             "mcp_servers.ravn-tools.enabled_tools",
-            '["delivery_evidence", "developer_execution_create"]',
+            '["delivery_evidence", "workflow_execution_create"]',
         ) in t._mcp_overrides
 
     def test_mcp_startup_timeout_is_configurable(self, tmp_path):

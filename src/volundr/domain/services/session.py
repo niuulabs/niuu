@@ -67,12 +67,12 @@ def _sanitize_log(value: object) -> str:
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
 
-def _is_developer_child_local_mount(session: Session, workload_config: dict) -> bool:
+def _is_workflow_child_local_mount(session: Session, workload_config: dict) -> bool:
     """Identify isolated developer-child workspaces that need no Forge credential."""
     if not isinstance(session.source, LocalMountSource):
         return False
     provenance = workload_config.get("provenance")
-    return isinstance(provenance, dict) and isinstance(provenance.get("developer_execution"), dict)
+    return isinstance(provenance, dict) and isinstance(provenance.get("workflow_execution"), dict)
 
 
 class SessionNotFoundError(Exception):
@@ -1168,15 +1168,15 @@ class SessionService:
             )
             resolved_connections.extend(c for c in source_connections if c.enabled)
 
-        developer_child_local_mount = _is_developer_child_local_mount(session, workload_config)
-        if developer_child_local_mount:
+        workflow_child_local_mount = _is_workflow_child_local_mount(session, workload_config)
+        if workflow_child_local_mount:
             resolved_connections = [
                 connection
                 for connection in resolved_connections
                 if connection.integration_type != IntegrationType.SOURCE_CONTROL
             ]
 
-        if resolved_connections or developer_child_local_mount:
+        if resolved_connections or workflow_child_local_mount:
             workload_config = {
                 **(workload_config or {}),
                 "integration_ids": [c.id for c in resolved_connections],

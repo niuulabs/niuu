@@ -172,17 +172,17 @@ a2a:
     adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
     kwargs: {}
 
-developerExecution:
+workflowExecution:
   # Requires workload identity plus configured Ravn A2A and Forge delivery/evidence adapters.
   enabled: false
-  gatewayAdapter: ravn.adapters.developer_a2a.ConfiguredRavnDeveloperA2AGateway
+  gatewayAdapter: ravn.adapters.child_task_a2a.ConfiguredRavnChildTaskA2AGateway
   gatewayKwargs: {}
   # Gateway admission roles on Ting-issued exact-scope workload credentials.
   admissionRoles:
     - volundr:developer
-  deliveryWaitRepositoryAdapter: ting.adapters.postgres_developer_delivery_waits.PostgresDeveloperDeliveryWaitRepository
+  deliveryWaitRepositoryAdapter: ting.adapters.postgres_workflow_waits.PostgresWorkflowWaitRepository
   deliveryWaitRepositoryKwargs: {}
-  deliveryWaitObserverAdapter: ting.adapters.developer_delivery_observer.ForgeDeveloperDeliveryObserver
+  deliveryWaitObserverAdapter: ting.adapters.wait_condition_observer.ForgeWaitConditionObserver
   deliveryWaitObserverKwargs: {}
   # Dynamic `EvidenceAuthenticator` used to sign server-derived reviewer receipts.
   reviewAuthenticatorAdapter: ""
@@ -193,7 +193,7 @@ developerExecution:
     security: developer-security-reviewer
     adversarial: developer-adversarial-reviewer
   integrationReviewProducer: developer-integration-verifier
-  workerId: ting-developer-execution
+  workerId: ting-workflow-execution
   launchClaimLimit: 4
   reconcileLimit: 100
   leaseSeconds: 60

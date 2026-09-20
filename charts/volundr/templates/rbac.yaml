@@ -51,7 +51,7 @@ rules:
       - get
       - list
       - watch
-      {{- if .Values.developerExecutionCredentials.enabled }}
+      {{- if .Values.workflowExecutionCredentials.enabled }}
       - create
       - patch
       - delete
@@ -131,7 +131,7 @@ rules:
     resources: ["namespaces"]
     verbs: ["get", "list", "watch"]
   {{- /*
-  No secrets rule here, deliberately. developerExecutionCredentials writes
+  No secrets rule here, deliberately. workflowExecutionCredentials writes
   per-session bearer Secrets into the release namespace, which the namespaced
   Role above already covers. A ClusterRole rule would grant Secret
   create/patch/delete in every namespace of the cluster.

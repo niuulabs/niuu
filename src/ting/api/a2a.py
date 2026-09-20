@@ -76,8 +76,8 @@ from ting.api.workflows import (
     resolve_workflow_repo,
 )
 from ting.domain.a2a_launch import A2ALaunchReservation
-from ting.domain.developer_execution import DeveloperExecutionError
-from ting.domain.developer_snapshot import pinned_child_workflow
+from ting.domain.delivery_execution import WorkflowExecutionError
+from ting.domain.execution_snapshot import pinned_child_workflow
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.workflow_campaign_lifecycle import (
     stop_terminal_campaign_session,
@@ -157,18 +157,18 @@ def campaign_to_task(campaign: WorkflowCampaign) -> Task:
             ),
         }
     )
-    developer_delivery = campaign.metadata.get("developer_delivery")
-    if isinstance(developer_delivery, dict) and isinstance(developer_delivery.get("result"), dict):
+    delivery = campaign.metadata.get("delivery")
+    if isinstance(delivery, dict) and isinstance(delivery.get("result"), dict):
         task.metadata["deliveryResult"] = {
-            **developer_delivery["result"],
+            **delivery["result"],
             "_trustedReviewEnvelope": {
-                "schemaVersion": developer_delivery.get("schemaVersion"),
+                "schemaVersion": delivery.get("schemaVersion"),
                 "taskId": campaign.slug,
                 "sessionId": campaign.session_id,
                 "workflowId": str(campaign.workflow_id),
                 "workflowRevision": campaign.workflow_snapshot.get("workflow_revision"),
                 "workflowDigest": campaign.workflow_snapshot.get("workflow_digest"),
-                "reviews": developer_delivery.get("reviews") or [],
+                "reviews": delivery.get("reviews") or [],
             },
         }
     return task
@@ -218,8 +218,8 @@ class WorkflowTaskHandler(RequestHandler):
             )
 
         metadata = _merged_metadata(params)
-        gateway_claims = self._developer_gateway_claims()
-        if gateway_claims is not None and not isinstance(metadata.get("developerExecution"), dict):
+        gateway_claims = self._execution_gateway_claims()
+        if gateway_claims is not None and not isinstance(metadata.get("workflowExecution"), dict):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Developer child credential requires exact launch lineage",
@@ -332,8 +332,8 @@ class WorkflowTaskHandler(RequestHandler):
             attributes=attributes,
             carrier=trace_context,
         ) as span:
-            developer_context = await self._developer_execution_context(metadata, reservation)
-            inherited_result_schema = developer_context.pop("result_schema", {})
+            execution_context = await self._workflow_execution_context(metadata, reservation)
+            inherited_result_schema = execution_context.pop("result_schema", {})
             launch = WorkflowLaunchBody(
                 prompt=prompt,
                 sessionName=f"a2a-{reservation.id.hex}",
@@ -349,7 +349,7 @@ class WorkflowTaskHandler(RequestHandler):
                 provenance={
                     "surface": A2A_SURFACE,
                     "a2a_message_id": message.message_id,
-                    **({"developer_execution": developer_context} if developer_context else {}),
+                    **({"workflow_execution": execution_context} if execution_context else {}),
                     **(
                         {"trace_context": outbound_trace_context}
                         if (outbound_trace_context := telemetry.inject() or trace_context)
@@ -392,7 +392,7 @@ class WorkflowTaskHandler(RequestHandler):
                         principal=self._principal,
                         bearer_token=self._downstream_auth_token(),
                         pinned_workflow_snapshot=pending.workflow_snapshot,
-                        trusted_developer_execution=bool(developer_context),
+                        trusted_workflow_execution=bool(execution_context),
                     )
             except Exception as exc:
                 telemetry.mark_error(span, type(exc).__name__, str(exc))
@@ -473,7 +473,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: GetTaskRequest,
         context: ServerCallContext,
     ) -> Task | None:
-        await self._authorize_developer_task(params.id)
+        await self._authorize_execution_task(params.id)
         campaign = await self._owned_campaign(params.id)
         task = campaign_to_task(campaign)
         try:
@@ -492,7 +492,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: CancelTaskRequest,
         context: ServerCallContext,
     ) -> Task | None:
-        await self._authorize_developer_task(params.id)
+        await self._authorize_execution_task(params.id)
         campaign = await self._owned_campaign(params.id)
         if campaign.status in _TERMINAL_STATUSES or campaign.metadata.get(_CANCELED_KEY):
             raise TaskNotCancelableError(f"task {params.id} is already in a terminal state")
@@ -532,7 +532,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: ListTasksRequest,
         context: ServerCallContext,
     ) -> ListTasksResponse:
-        self._reject_developer_gateway_operation()
+        self._reject_execution_gateway_operation()
         campaigns = await self._campaign_repo.list_campaigns(
             owner_id=self._principal.user_id,
         )
@@ -589,7 +589,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: SendMessageRequest,
         context: ServerCallContext,
     ):
-        self._reject_developer_gateway_operation()
+        self._reject_execution_gateway_operation()
         raise UnsupportedOperationError("streaming is not supported; poll GetTask")
         yield  # pragma: no cover — makes this an async generator
 
@@ -598,7 +598,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: SubscribeToTaskRequest,
         context: ServerCallContext,
     ):
-        self._reject_developer_gateway_operation()
+        self._reject_execution_gateway_operation()
         raise UnsupportedOperationError("streaming is not supported; poll GetTask")
         yield  # pragma: no cover — makes this an async generator
 
@@ -607,7 +607,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: TaskPushNotificationConfig,
         context: ServerCallContext,
     ) -> TaskPushNotificationConfig:
-        self._reject_developer_gateway_operation()
+        self._reject_execution_gateway_operation()
         task_id = str(params.task_id or "").strip()
         if not task_id:
             raise InvalidParamsError("taskId is required")
@@ -627,7 +627,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: GetTaskPushNotificationConfigRequest,
         context: ServerCallContext,
     ) -> TaskPushNotificationConfig:
-        self._reject_developer_gateway_operation()
+        self._reject_execution_gateway_operation()
         task_id = str(params.task_id or "").strip()
         config_id = str(params.id or "").strip()
         if not task_id or not config_id:
@@ -647,7 +647,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: ListTaskPushNotificationConfigsRequest,
         context: ServerCallContext,
     ) -> ListTaskPushNotificationConfigsResponse:
-        self._reject_developer_gateway_operation()
+        self._reject_execution_gateway_operation()
         task_id = str(params.task_id or "").strip()
         if not task_id:
             raise InvalidParamsError("taskId is required")
@@ -679,7 +679,7 @@ class WorkflowTaskHandler(RequestHandler):
         params: DeleteTaskPushNotificationConfigRequest,
         context: ServerCallContext,
     ) -> None:
-        self._reject_developer_gateway_operation()
+        self._reject_execution_gateway_operation()
         task_id = str(params.task_id or "").strip()
         config_id = str(params.id or "").strip()
         if not task_id or not config_id:
@@ -703,7 +703,7 @@ class WorkflowTaskHandler(RequestHandler):
         The public well-known card only advertises system-scope workflows;
         this is how a principal discovers their own workflows as skills.
         """
-        self._reject_developer_gateway_operation()
+        self._reject_execution_gateway_operation()
         settings = self._request.app.state.settings
         workflows = await self._workflow_repo.list_workflows(
             owner_id=self._principal.user_id,
@@ -737,7 +737,7 @@ class WorkflowTaskHandler(RequestHandler):
         - absent: the message text answers a pending peer question
           (``help_needed``) and is delivered to the asking peer
         """
-        await self._authorize_developer_task(message.task_id)
+        await self._authorize_execution_task(message.task_id)
         campaign = await self._owned_campaign(message.task_id)
         task = campaign_to_task(campaign)
         if task.status.state != TaskState.TASK_STATE_INPUT_REQUIRED:
@@ -1022,13 +1022,13 @@ class WorkflowTaskHandler(RequestHandler):
             workflow_id = UUID(raw_id)
         except ValueError as exc:
             raise InvalidParamsError(f"skillId is not a valid UUID: {raw_id}") from exc
-        if metadata.get("developerExecution") is not None:
-            repository = getattr(self._request.app.state, "developer_execution_repo", None)
+        if metadata.get("workflowExecution") is not None:
+            repository = getattr(self._request.app.state, "workflow_execution_repo", None)
             if repository is None:
                 raise InvalidParamsError("Developer execution ledger is unavailable")
-            context = metadata["developerExecution"]
+            context = metadata["workflowExecution"]
             if not isinstance(context, dict):
-                raise InvalidParamsError("developerExecution metadata must be an object")
+                raise InvalidParamsError("workflowExecution metadata must be an object")
             try:
                 attempt_id = UUID(str(metadata.get("attemptId") or ""))
                 execution_id = UUID(str(context.get("executionId") or ""))
@@ -1049,10 +1049,10 @@ class WorkflowTaskHandler(RequestHandler):
                 or str(child.intent_id) != str(metadata.get("intentId") or "")
             ):
                 raise InvalidParamsError("Developer child does not match its reserved execution")
-            self._authorize_developer_launch(execution, child)
+            self._authorize_execution_launch(execution, child)
             try:
                 return pinned_child_workflow(execution, child)
-            except DeveloperExecutionError as exc:
+            except WorkflowExecutionError as exc:
                 raise InvalidParamsError(str(exc)) from exc
         workflow = await self._workflow_repo.get_workflow(workflow_id)
         if workflow is None or not _can_view_workflow(workflow, self._principal):
@@ -1067,16 +1067,16 @@ class WorkflowTaskHandler(RequestHandler):
             )
         return await self._volundr_factory.primary_for_owner(self._principal.user_id)
 
-    async def _developer_execution_context(
+    async def _workflow_execution_context(
         self,
         metadata: dict[str, Any],
         reservation: A2ALaunchReservation,
     ) -> dict[str, Any]:
-        raw = metadata.get("developerExecution")
+        raw = metadata.get("workflowExecution")
         if raw is None:
             return {}
         if not isinstance(raw, dict):
-            raise InvalidParamsError("developerExecution metadata must be an object")
+            raise InvalidParamsError("workflowExecution metadata must be an object")
         raw_attempt_id = str(metadata.get("attemptId") or raw.get("attemptId") or "").strip()
         raw_intent_id = str(metadata.get("intentId") or "").strip()
         try:
@@ -1084,9 +1084,9 @@ class WorkflowTaskHandler(RequestHandler):
             intent_id = UUID(raw_intent_id)
         except ValueError as exc:
             raise InvalidParamsError(
-                "developerExecution requires valid attemptId and intentId"
+                "workflowExecution requires valid attemptId and intentId"
             ) from exc
-        repository = getattr(self._request.app.state, "developer_execution_repo", None)
+        repository = getattr(self._request.app.state, "workflow_execution_repo", None)
         if repository is None:
             raise HTTPException(
                 status_code=503,
@@ -1101,8 +1101,8 @@ class WorkflowTaskHandler(RequestHandler):
             or child.intent_id != intent_id
             or child.message_id != str(metadata.get("messageId") or "")
         ):
-            raise InvalidParamsError("developerExecution lineage does not match the caller")
-        self._authorize_developer_launch(execution, child)
+            raise InvalidParamsError("workflowExecution lineage does not match the caller")
+        self._authorize_execution_launch(execution, child)
         if child.message_id != reservation.message_id:
             raise InvalidParamsError("Developer child does not match the launch reservation")
         if child.template_id != self._workflow_id_from_metadata(metadata):
@@ -1130,12 +1130,12 @@ class WorkflowTaskHandler(RequestHandler):
         except ValueError as exc:
             raise InvalidParamsError("skillId is not a valid UUID") from exc
 
-    def _developer_gateway_claims(self) -> dict[str, Any] | None:
+    def _execution_gateway_claims(self) -> dict[str, Any] | None:
         claims = scoped_credential_claims(self._bearer_token or "")
         if claims is None or claims.get("token_use") != VALKYRIE_BUILD_TOKEN_USE:
             return None
         lineage_keys = {
-            "workload_developer_execution_id",
+            "workload_workflow_execution_id",
             "workload_child_attempt_id",
             "workload_child_intent_id",
             "workload_child_task_id",
@@ -1161,18 +1161,18 @@ class WorkflowTaskHandler(RequestHandler):
             return None
         return self._bearer_token
 
-    def _authorize_developer_launch(self, execution: Any, child: Any) -> None:
+    def _authorize_execution_launch(self, execution: Any, child: Any) -> None:
         scoped_claims = scoped_credential_claims(self._bearer_token or "")
         if scoped_claims is None:
             return
-        claims = self._developer_gateway_claims()
+        claims = self._execution_gateway_claims()
         if claims is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Scoped credential does not grant this developer child launch",
             )
         expected = {
-            "workload_developer_execution_id": str(execution.id),
+            "workload_workflow_execution_id": str(execution.id),
             "workload_child_attempt_id": str(child.id),
             "workload_child_intent_id": str(child.intent_id),
             "workload_sub": f"developer-child:{child.id}",
@@ -1183,11 +1183,11 @@ class WorkflowTaskHandler(RequestHandler):
                 detail="Developer child credential does not grant this launch",
             )
 
-    async def _authorize_developer_task(self, task_id: str) -> None:
+    async def _authorize_execution_task(self, task_id: str) -> None:
         scoped_claims = scoped_credential_claims(self._bearer_token or "")
         if scoped_claims is None:
             return
-        claims = self._developer_gateway_claims()
+        claims = self._execution_gateway_claims()
         if claims is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1201,13 +1201,13 @@ class WorkflowTaskHandler(RequestHandler):
             )
         try:
             child_id = UUID(str(claims["workload_child_attempt_id"]))
-            execution_id = UUID(str(claims["workload_developer_execution_id"]))
+            execution_id = UUID(str(claims["workload_workflow_execution_id"]))
         except (KeyError, ValueError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Developer child credential has invalid lineage claims",
             ) from exc
-        repository = getattr(self._request.app.state, "developer_execution_repo", None)
+        repository = getattr(self._request.app.state, "workflow_execution_repo", None)
         if repository is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1248,7 +1248,7 @@ class WorkflowTaskHandler(RequestHandler):
                     detail="Developer child credential is not bound to the task Forge session",
                 )
 
-    def _reject_developer_gateway_operation(self) -> None:
+    def _reject_execution_gateway_operation(self) -> None:
         if scoped_credential_claims(self._bearer_token or "") is not None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1424,7 +1424,7 @@ def _launch_digest(prompt: str, metadata: dict[str, Any]) -> str:
             "branch",
             "model",
             "connectionId",
-            "developerExecution",
+            "workflowExecution",
         )
         if key in metadata
     }

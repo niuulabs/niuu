@@ -4471,7 +4471,7 @@ class APIAuthenticationConfig(BaseModel):
     kwargs: dict[str, Any] = Field(default_factory=dict)
 
 
-class DeveloperExecutionClientConfig(BaseModel):
+class WorkflowExecutionClientConfig(BaseModel):
     """Owner-bound coordinator context injected into one developer session."""
 
     enabled: bool = False
@@ -4489,8 +4489,8 @@ class Settings(BaseSettings):
     """
 
     api_auth: APIAuthenticationConfig = Field(default_factory=APIAuthenticationConfig)
-    developer_execution: DeveloperExecutionClientConfig = Field(
-        default_factory=DeveloperExecutionClientConfig
+    workflow_execution: WorkflowExecutionClientConfig = Field(
+        default_factory=WorkflowExecutionClientConfig
     )
 
     model_config = SettingsConfigDict(

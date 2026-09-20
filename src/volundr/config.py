@@ -957,7 +957,7 @@ class SessionContributorConfig(BaseModel):
     )
 
 
-class DeveloperExecutionCredentialsConfig(BaseModel):
+class WorkflowExecutionCredentialsConfig(BaseModel):
     """Rotation of scoped coordinator credentials for developer workflows."""
 
     enabled: bool = Field(
@@ -966,7 +966,7 @@ class DeveloperExecutionCredentialsConfig(BaseModel):
     )
     projection_adapter: str = Field(
         default="",
-        description="Fully-qualified DeveloperCredentialProjectionPort adapter class.",
+        description="Fully-qualified ExecutionCredentialProjectionPort adapter class.",
     )
     projection_kwargs: dict[str, Any] = Field(default_factory=dict)
     projection_secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
@@ -983,10 +983,10 @@ class DeveloperExecutionCredentialsConfig(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _configured_adapter(self) -> "DeveloperExecutionCredentialsConfig":
+    def _configured_adapter(self) -> "WorkflowExecutionCredentialsConfig":
         if self.enabled and not self.projection_adapter.strip():
             raise ValueError(
-                "developer_execution_credentials.projection_adapter is required when enabled"
+                "workflow_execution_credentials.projection_adapter is required when enabled"
             )
         return self
 
@@ -2170,8 +2170,8 @@ class Settings(BaseSettings):
     linear: LinearConfig = Field(default_factory=LinearConfig)
     pat: PATConfig = Field(default_factory=PATConfig)
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
-    developer_execution_credentials: DeveloperExecutionCredentialsConfig = Field(
-        default_factory=DeveloperExecutionCredentialsConfig
+    workflow_execution_credentials: WorkflowExecutionCredentialsConfig = Field(
+        default_factory=WorkflowExecutionCredentialsConfig
     )
     auth_discovery: AuthDiscoveryConfig = Field(default_factory=AuthDiscoveryConfig)
     session_room: SessionRoomConfig = Field(default_factory=SessionRoomConfig)

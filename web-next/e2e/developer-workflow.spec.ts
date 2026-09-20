@@ -100,7 +100,7 @@ test('launches a ticket, retries the exact attempt, shows evidence and cancellat
   let created = false;
   let canceled = false;
   let retried = false;
-  await page.route('**/api/v1/ting/developer-executions**', async (route) => {
+  await page.route('**/api/v1/ting/workflow-executions**', async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith('/evidence'))
       return route.fulfill({
@@ -165,7 +165,7 @@ test('launches a ticket, retries the exact attempt, shows evidence and cancellat
       expect(route.request().postDataJSON()).toEqual({ attempt_id: 'child-1' });
       retried = true;
     }
-    if (path.endsWith('/developer-executions') && route.request().method() === 'POST') {
+    if (path.endsWith('/workflow-executions') && route.request().method() === 'POST') {
       const body = route.request().postDataJSON();
       expect(route.request().headers()['idempotency-key']).toMatch(
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
@@ -177,7 +177,7 @@ test('launches a ticket, retries the exact attempt, shows evidence and cancellat
     }
     const run = { ...execution, state: canceled ? 'canceled' : execution.state };
     return route.fulfill({
-      json: path.endsWith('/developer-executions')
+      json: path.endsWith('/workflow-executions')
         ? { executions: created ? [run] : [], nextCursor: null }
         : run,
     });
@@ -225,7 +225,7 @@ test('shows loading then an actionable service error', async ({ page }) => {
   const ready = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await page.route('**/api/v1/ting/developer-executions', async (route) => {
+  await page.route('**/api/v1/ting/workflow-executions', async (route) => {
     await ready;
     return route.fulfill({
       status: 503,

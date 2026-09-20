@@ -338,7 +338,7 @@ class TestStart:
                 "flock": {
                     "personas": [{"name": "a"}],
                     "ravn_config": {
-                        "developer_execution": {
+                        "workflow_execution": {
                             "enabled": True,
                             "execution_id": "execution-test",
                             "base_url": "https://ting.example/api/v1/ting",
@@ -381,7 +381,7 @@ class TestStart:
         assert discovery["cluster_file"] == f"{runtime_workspace}/.flock/cluster.yaml"
         assert "/var/run/docker.sock" not in client.containers.run_kwargs[0]["volumes"]
         node_config = yaml.safe_load((flock_dir / "node-a.yaml").read_text(encoding="utf-8"))
-        assert node_config["developer_execution"] == {
+        assert node_config["workflow_execution"] == {
             "enabled": True,
             "execution_id": "execution-test",
             "base_url": "https://ting.example/api/v1/ting",

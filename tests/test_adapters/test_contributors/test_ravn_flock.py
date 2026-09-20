@@ -28,7 +28,7 @@ from volundr.domain.models import (
     WorkloadPersonaOverride,
 )
 from volundr.domain.ports import SessionContext
-from volundr.ports.developer_execution_credentials import DeveloperCredentialProjection
+from volundr.ports.workflow_execution_credentials import ExecutionCredentialProjection
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -165,18 +165,18 @@ class TestRavnFlockContributorName:
         assert c.name == "ravn_flock"
 
 
-class TestDeveloperExecutionCredentialProjection:
+class TestWorkflowExecutionCredentialProjection:
     async def test_generated_node_uses_only_projected_bearer_file(self, session) -> None:
         class CredentialService:
             def projection(self, session_id):
                 assert session_id == session.id
-                return DeveloperCredentialProjection(
-                    token_file="/var/run/secrets/niuu-developer-execution/token",
+                return ExecutionCredentialProjection(
+                    token_file="/var/run/secrets/niuu-workflow-execution/token",
                     pod_spec=PodSpecAdditions(
                         volume_mounts=(
                             {
-                                "name": "developer-execution-credential",
-                                "mountPath": "/var/run/secrets/niuu-developer-execution",
+                                "name": "workflow-execution-credential",
+                                "mountPath": "/var/run/secrets/niuu-workflow-execution",
                                 "readOnly": True,
                             },
                         )
@@ -188,12 +188,12 @@ class TestDeveloperExecutionCredentialProjection:
             workload_config={
                 "personas": [{"name": "developer-coordinator"}],
                 "provenance": {
-                    "developer_execution": {
+                    "workflow_execution": {
                         "execution_id": "7705d9d8-78db-4a78-b5e7-d8557eac114c",
                     }
                 },
                 "ravn_config": {
-                    "developer_execution": {
+                    "workflow_execution": {
                         "enabled": True,
                         "execution_id": "7705d9d8-78db-4a78-b5e7-d8557eac114c",
                         "auth_token": "must-never-be-rendered",
@@ -207,23 +207,23 @@ class TestDeveloperExecutionCredentialProjection:
                 },
             },
         )
-        contributor = RavnFlockContributor(developer_credential_service=CredentialService())
+        contributor = RavnFlockContributor(execution_credential_service=CredentialService())
 
         result = await contributor.contribute(session, context)
         config = yaml.safe_load(_extract_mounted_config(result.pod_spec, "developer-coordinator"))
 
-        assert config["developer_execution"]["auth_token_file"] == (
-            "/var/run/secrets/niuu-developer-execution/token"
+        assert config["workflow_execution"]["auth_token_file"] == (
+            "/var/run/secrets/niuu-workflow-execution/token"
         )
-        assert "auth_token" not in config["developer_execution"]
+        assert "auth_token" not in config["workflow_execution"]
         coordinator = next(
             container
             for container in result.pod_spec.extra_containers
             if container["name"] == "ravn-developer-coordinator"
         )
         assert {
-            "name": "developer-execution-credential",
-            "mountPath": "/var/run/secrets/niuu-developer-execution",
+            "name": "workflow-execution-credential",
+            "mountPath": "/var/run/secrets/niuu-workflow-execution",
             "readOnly": True,
         } in coordinator["volumeMounts"]
 
@@ -232,14 +232,14 @@ class TestDeveloperExecutionCredentialProjection:
             workload_type="ravn_flock",
             workload_config={
                 "personas": [{"name": "developer-coordinator"}],
-                "provenance": {"developer_execution": {"execution_id": "execution"}},
+                "provenance": {"workflow_execution": {"execution_id": "execution"}},
                 "ravn_config": {
-                    "developer_execution": {"enabled": True, "execution_id": "execution"},
+                    "workflow_execution": {"enabled": True, "execution_id": "execution"},
                     "gateway": {"platform": {"anonymous_dev_mode": False}},
                 },
             },
         )
-        with pytest.raises(RuntimeError, match="developer_execution_credentials.enabled"):
+        with pytest.raises(RuntimeError, match="workflow_execution_credentials.enabled"):
             await RavnFlockContributor().contribute(session, context)
 
 
@@ -829,7 +829,7 @@ class TestMountedConfig:
             workload_config={
                 "personas": ["reviewer"],
                 "ravn_config": {
-                    "developer_execution": {
+                    "workflow_execution": {
                         "enabled": True,
                         "execution_id": "execution-test",
                         "base_url": "https://ting.example/api/v1/ting",
@@ -859,7 +859,7 @@ class TestMountedConfig:
             "workload_token_file": "/var/run/secrets/niuu-workload/token",
             "workload_exchange_url": "https://platform.example/token/exchange",
         }
-        assert reviewer_cfg["developer_execution"] == {
+        assert reviewer_cfg["workflow_execution"] == {
             "enabled": True,
             "execution_id": "execution-test",
             "base_url": "https://ting.example/api/v1/ting",

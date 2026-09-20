@@ -523,7 +523,7 @@ class Broker(
         # Authenticated peer outcomes retained for deterministic developer
         # evidence projection. Persona identity comes from the registered room
         # participant, never from model-authored fields.
-        self._developer_review_outcomes: dict[str, dict[str, Any]] = {}
+        self._attested_review_outcomes: dict[str, dict[str, Any]] = {}
         self._review_attestation = _workflow_review_attestation(self._settings.workflow.graph)
         # Durable full-fidelity event log (session_event_log). Every CLI frame is
         # buffered here and flushed to Volundr by a background worker, independent
@@ -1828,7 +1828,7 @@ class Broker(
         persona = (
             participant.persona if participant is not None else str(data.get("persona") or "")
         ).strip()
-        is_developer_review = (
+        is_attested_review = (
             participant is not None
             and self._review_attestation is not None
             and persona in self._review_attestation.personas
@@ -1847,7 +1847,7 @@ class Broker(
             "canonical_event_type": str(data.get("canonical_event_type") or event_type),
             "fields": fields,
             "valid": (
-                data.get("valid") is True if is_developer_review else bool(data.get("valid", True))
+                data.get("valid") is True if is_attested_review else bool(data.get("valid", True))
             ),
         }
         verdict = data.get("verdict") or fields.get("verdict")
@@ -1862,8 +1862,8 @@ class Broker(
 
         if not data.get("routing_only") and data.get("bubble_up") is not False:
             await self._emit_pipeline_event("outcome", payload)
-        if is_developer_review:
-            review_outcome = self._developer_review_outcome(
+        if is_attested_review:
+            review_outcome = self._attested_review_outcome(
                 peer_id=peer_id,
                 persona=persona,
                 event_type=event_type,
@@ -1881,12 +1881,12 @@ class Broker(
                     event_type,
                 )
                 return
-            if not self._record_developer_review_outcome(review_outcome):
+            if not self._record_attested_review_outcome(review_outcome):
                 return
             await self._report_activity_state(
                 "active",
                 extra_metadata={
-                    "developer_review": {
+                    "attested_review": {
                         "schemaVersion": 1,
                         **review_outcome,
                     }
@@ -1895,7 +1895,7 @@ class Broker(
         await self._maybe_activate_workflow_gate(frame, payload)
         await self._maybe_emit_workflow_terminal_outcome(peer_id, frame, payload)
 
-    def _developer_review_outcome(
+    def _attested_review_outcome(
         self,
         *,
         peer_id: str,
@@ -1953,12 +1953,12 @@ class Broker(
             "valid": True,
         }
 
-    def _record_developer_review_outcome(self, outcome: dict[str, Any]) -> bool:
+    def _record_attested_review_outcome(self, outcome: dict[str, Any]) -> bool:
         """Record an event once; conflicting reuse cannot replace original proof."""
         event_id = str(outcome["eventId"])
-        existing = self._developer_review_outcomes.get(event_id)
+        existing = self._attested_review_outcomes.get(event_id)
         if existing is None:
-            self._developer_review_outcomes[event_id] = outcome
+            self._attested_review_outcomes[event_id] = outcome
             return True
         if existing == outcome:
             return True
@@ -2775,10 +2775,10 @@ class Broker(
         if outcome_event_type == "developer.workstream.completed":
             result = structured_outcome.get("result")
             if isinstance(result, dict):
-                extra_metadata["developer_delivery"] = {
+                extra_metadata["delivery"] = {
                     "schemaVersion": 1,
                     "result": dict(result),
-                    "reviews": self._developer_reviews_for_terminal_result(result),
+                    "reviews": self._attested_reviews_for_terminal_result(result),
                 }
 
         if await self._report_activity_state("idle", extra_metadata=extra_metadata):
@@ -2819,7 +2819,7 @@ class Broker(
             },
         }
 
-    def _developer_reviews_for_terminal_result(
+    def _attested_reviews_for_terminal_result(
         self,
         result: dict[str, Any],
     ) -> list[dict[str, Any]]:
@@ -2840,7 +2840,7 @@ class Broker(
             return []
         workstream_roles = set(binding.roles)
         selected: dict[str, dict[str, Any]] = {}
-        for outcome in self._developer_review_outcomes.values():
+        for outcome in self._attested_review_outcomes.values():
             role = str(outcome.get("role") or "")
             if (
                 role not in workstream_roles
@@ -5403,7 +5403,7 @@ class Broker(
     def _restore_durable_runtime_state(self, frames: list) -> None:
         """Restore broker-owned state from the frozen durable-log horizon."""
         self._restore_durable_controls(frames)
-        self._restore_durable_developer_reviews(frames)
+        self._restore_durable_attested_reviews(frames)
         self._restore_durable_workflow_terminal_completion(frames)
 
     def _restore_durable_workflow_terminal_completion(self, frames: list) -> None:
@@ -5439,7 +5439,7 @@ class Broker(
             if normalized is not None:
                 self._restored_workflow_terminal_completion = (peer_id, normalized)
 
-    def _restore_durable_developer_reviews(self, frames: list) -> None:
+    def _restore_durable_attested_reviews(self, frames: list) -> None:
         """Rebuild authenticated developer review evidence from room outcomes."""
         for frame in frames:
             if getattr(frame, "kind", "") != "room_outcome":
@@ -5457,7 +5457,7 @@ class Broker(
             fields = payload.get("fields")
             if not isinstance(fields, dict):
                 continue
-            outcome = self._developer_review_outcome(
+            outcome = self._attested_review_outcome(
                 peer_id=peer_id,
                 persona=persona,
                 event_type=str(payload.get("eventType") or "").strip(),
@@ -5468,7 +5468,7 @@ class Broker(
                 summary=payload.get("summary"),
             )
             if outcome is not None:
-                self._record_developer_review_outcome(outcome)
+                self._record_attested_review_outcome(outcome)
 
     def _load_control_state(self) -> None:
         try:

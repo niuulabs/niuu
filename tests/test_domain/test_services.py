@@ -890,7 +890,7 @@ class TestSessionServiceStart:
                 integration_type=IntegrationType.SOURCE_CONTROL,
             )
 
-    async def test_developer_child_local_mount_excludes_source_control_credentials(
+    async def test_workflow_child_local_mount_excludes_source_control_credentials(
         self,
         repository,
         pod_manager,
@@ -931,7 +931,7 @@ class TestSessionServiceStart:
             source=LocalMountSource(local_path="/tmp/developer-child"),
             principal=principal,
         )
-        workload_config = {"provenance": {"developer_execution": {"execution_id": "execution-1"}}}
+        workload_config = {"provenance": {"workflow_execution": {"execution_id": "execution-1"}}}
 
         await service._start_with_pipeline(
             session,

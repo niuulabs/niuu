@@ -83,13 +83,13 @@ def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_i
 
     coordinator = Path("src/ravn/personas/developer-coordinator.yaml").read_text(encoding="utf-8")
     for tool in (
-        "developer_execution_expand",
-        "developer_execution_reconcile",
-        "developer_execution_message",
-        "developer_execution_cancel",
-        "developer_execution_complete",
-        "developer_execution_record_integration",
-        "developer_execution_wait_delivery",
+        "workflow_execution_expand",
+        "workflow_execution_reconcile",
+        "workflow_execution_message",
+        "workflow_execution_cancel",
+        "workflow_execution_complete",
+        "workflow_execution_record_integration",
+        "workflow_execution_wait_delivery",
         "delivery_workspace",
         "delivery_forge",
         "delivery_evidence",
@@ -208,7 +208,7 @@ def test_developer_workflows_pin_current_coordinator_content(workflow_name: str)
     assert pin.digest == coordinator.digest
 
 
-def test_developer_delivery_pins_current_workstream_content() -> None:
+def test_delivery_pins_current_workstream_content() -> None:
     root = load_workflow_document(
         (BUNDLED_SYSTEM_WORKFLOWS_PATH / "developer-delivery.yaml").read_text(encoding="utf-8")
     )

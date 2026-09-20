@@ -32,7 +32,7 @@ KNOWN_WORKLOAD_SCOPES: frozenset[str] = frozenset(
     {
         "forge:session:create",
         "ting:workflow:launch",
-        "ting:developer:coordinate",
+        "ting:workflow:coordinate",
         "observatory:topology:push",
     }
 )
@@ -158,20 +158,20 @@ def credential_allows_route(token: str, method: str, path: str) -> bool:
         ("POST", r"/api/v1/ting/workflows/[^/?%]+/launch", "ting:workflow:launch"),
         (
             "POST",
-            r"/api/v1/ting/developer-executions/[^/?%]+/"
+            r"/api/v1/ting/workflow-executions/[^/?%]+/"
             r"(expansions|messages|reconcile|cancel|integration-candidate|complete|"
             r"delivery-authorizations|delivery-waits)",
-            "ting:developer:coordinate",
+            "ting:workflow:coordinate",
         ),
         (
             "POST",
-            r"/api/v1/ting/developer-executions/[^/?%]+/children/[^/?%]+/retry",
-            "ting:developer:coordinate",
+            r"/api/v1/ting/workflow-executions/[^/?%]+/children/[^/?%]+/retry",
+            "ting:workflow:coordinate",
         ),
         (
             "POST",
             r"/api/v1/forge/delivery/[^?#]+",
-            "ting:developer:coordinate",
+            "ting:workflow:coordinate",
         ),
         ("PUT", r"/api/v1/niuu/observatory/fragments/[^/?%]+", "observatory:topology:push"),
         ("DELETE", r"/api/v1/niuu/observatory/fragments/[^/?%]+", "observatory:topology:push"),

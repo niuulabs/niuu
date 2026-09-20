@@ -1,8 +1,0 @@
-DROP INDEX IF EXISTS idx_developer_executions_parent_session;
-
-ALTER TABLE developer_executions
-    DROP COLUMN IF EXISTS integration_review_event_id,
-    DROP COLUMN IF EXISTS integration_review_receipt,
-    DROP COLUMN IF EXISTS integration_candidate,
-    DROP COLUMN IF EXISTS integration_allocation,
-    DROP COLUMN IF EXISTS integration_receipts;

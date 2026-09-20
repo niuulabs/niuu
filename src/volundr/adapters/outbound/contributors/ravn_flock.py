@@ -810,7 +810,7 @@ class RavnFlockContributor(SessionContributor):
         workload_identity_volume_name: str = "niuu-workload-identity",
         workload_identity_mount_path: str = _DEFAULT_WORKLOAD_IDENTITY_MOUNT_PATH,
         workload_identity_token_file_env: str = "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE",
-        developer_credential_service: object | None = None,
+        execution_credential_service: object | None = None,
         **_extra: object,
     ) -> None:
         self._launch_spec_provider = launch_spec_provider
@@ -825,7 +825,7 @@ class RavnFlockContributor(SessionContributor):
         self._workload_identity_volume_name = workload_identity_volume_name
         self._workload_identity_mount_path = workload_identity_mount_path.rstrip("/")
         self._workload_identity_token_file_env = workload_identity_token_file_env
-        self._developer_credential_service = developer_credential_service
+        self._execution_credential_service = execution_credential_service
 
     @property
     def name(self) -> str:
@@ -876,29 +876,29 @@ class RavnFlockContributor(SessionContributor):
         provenance = provenance if isinstance(provenance, dict) else {}
         extra_ravn_config = wc.get("ravn_config")
         extra_ravn_config = extra_ravn_config if isinstance(extra_ravn_config, dict) else None
-        developer_provenance = (
-            provenance.get("developer_execution") if isinstance(provenance, dict) else None
+        execution_provenance = (
+            provenance.get("workflow_execution") if isinstance(provenance, dict) else None
         )
-        developer_credential_mounts: tuple[dict, ...] = ()
-        if isinstance(developer_provenance, dict):
+        execution_credential_mounts: tuple[dict, ...] = ()
+        if isinstance(execution_provenance, dict):
             anonymous = bool(
                 ((extra_ravn_config or {}).get("gateway") or {})
                 .get("platform", {})
                 .get("anonymous_dev_mode", False)
             )
-            if self._developer_credential_service is None and not anonymous:
+            if self._execution_credential_service is None and not anonymous:
                 raise RuntimeError(
                     "authenticated developer coordinator launch requires "
-                    "developer_execution_credentials.enabled=true"
+                    "workflow_execution_credentials.enabled=true"
                 )
             scrubbed_ravn_config = dict(extra_ravn_config or {})
-            developer_config = dict(scrubbed_ravn_config.get("developer_execution") or {})
-            developer_config.pop("auth_token", None)
-            if self._developer_credential_service is not None:
-                projection = self._developer_credential_service.projection(session.id)
-                developer_config["auth_token_file"] = projection.token_file
-                developer_credential_mounts = projection.pod_spec.volume_mounts
-            scrubbed_ravn_config["developer_execution"] = developer_config
+            execution_config = dict(scrubbed_ravn_config.get("workflow_execution") or {})
+            execution_config.pop("auth_token", None)
+            if self._execution_credential_service is not None:
+                projection = self._execution_credential_service.projection(session.id)
+                execution_config["auth_token_file"] = projection.token_file
+                execution_credential_mounts = projection.pod_spec.volume_mounts
+            scrubbed_ravn_config["workflow_execution"] = execution_config
             extra_ravn_config = scrubbed_ravn_config
         observability_config = wc.get("observability")
         observability_config = (
@@ -961,7 +961,7 @@ class RavnFlockContributor(SessionContributor):
             extra_ravn_config=extra_ravn_config,
             observability_config=observability_config,
             runtime_backend=context.runtime_backend,
-            developer_credential_mounts=developer_credential_mounts,
+            execution_credential_mounts=execution_credential_mounts,
         )
 
         return SessionContribution(values=values, pod_spec=pod_spec)
@@ -996,7 +996,7 @@ class RavnFlockContributor(SessionContributor):
         extra_ravn_config: dict[str, Any] | None = None,
         observability_config: dict[str, Any] | None = None,
         runtime_backend: str = "",
-        developer_credential_mounts: tuple[dict, ...] = (),
+        execution_credential_mounts: tuple[dict, ...] = (),
     ) -> tuple[dict[str, Any], PodSpecAdditions]:
         session_id = str(session.id)
         base_port = self._base_port
@@ -1301,7 +1301,7 @@ class RavnFlockContributor(SessionContributor):
                     {"name": _MIMIR_VOLUME_NAME, "mountPath": _MIMIR_MOUNT_PATH},
                 )
             volume_mounts.extend(persona_source_volume_mounts)
-            volume_mounts.extend(dict(mount) for mount in developer_credential_mounts)
+            volume_mounts.extend(dict(mount) for mount in execution_credential_mounts)
 
             container: dict[str, Any] = {
                 "name": f"ravn-{persona}",

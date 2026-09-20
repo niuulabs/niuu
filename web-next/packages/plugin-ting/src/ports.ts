@@ -13,29 +13,29 @@ import type { SessionInfo } from './domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from './domain/tracker';
 import type { Workflow } from './domain/workflow';
 import type {
-  DeveloperExecutionTrace,
-  DeveloperTraceOptions,
-} from './domain/developerExecutionTrace';
+  WorkflowExecutionTrace,
+  ExecutionTraceOptions,
+} from './domain/workflowExecutionTrace';
 import type {
-  DeveloperExecution,
-  DeveloperDeliveryWait,
-  DeveloperExecutionLaunch,
-  DeveloperExecutionState,
-} from './domain/developerExecution';
+  WorkflowExecution,
+  WorkflowWait,
+  WorkflowExecutionLaunch,
+  WorkflowExecutionState,
+} from './domain/workflowExecution';
 
-export interface IDeveloperExecutionService {
+export interface IDeliveryExecutionService {
   list(filter?: {
-    state?: DeveloperExecutionState;
+    state?: WorkflowExecutionState;
     cursor?: string;
-  }): Promise<{ executions: DeveloperExecution[]; nextCursor: string | null }>;
-  get(id: string): Promise<DeveloperExecution>;
-  launch(request: DeveloperExecutionLaunch, idempotencyKey: string): Promise<DeveloperExecution>;
-  cancel(id: string): Promise<DeveloperExecution>;
-  reconcile(id: string): Promise<DeveloperExecution>;
-  retry(id: string, childKey: string, attemptId: string): Promise<DeveloperExecution>;
+  }): Promise<{ executions: WorkflowExecution[]; nextCursor: string | null }>;
+  get(id: string): Promise<WorkflowExecution>;
+  launch(request: WorkflowExecutionLaunch, idempotencyKey: string): Promise<WorkflowExecution>;
+  cancel(id: string): Promise<WorkflowExecution>;
+  reconcile(id: string): Promise<WorkflowExecution>;
+  retry(id: string, childKey: string, attemptId: string): Promise<WorkflowExecution>;
   evidence(id: string): Promise<Record<string, unknown>>;
-  deliveryWaits(id: string): Promise<DeveloperDeliveryWait[]>;
-  trace(id: string, options?: DeveloperTraceOptions): Promise<DeveloperExecutionTrace>;
+  deliveryWaits(id: string): Promise<WorkflowWait[]>;
+  trace(id: string, options?: ExecutionTraceOptions): Promise<WorkflowExecutionTrace>;
 }
 import type {
   ResearchCampaign,

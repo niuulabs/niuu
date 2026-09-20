@@ -68,7 +68,7 @@ class HttpDeliveryAuthorizer(DeliveryAuthorizer):
         client = self._client or httpx.AsyncClient(timeout=self._timeout)
         try:
             response = await client.post(
-                f"{self._base_url}/api/v1/ting/developer-executions/"
+                f"{self._base_url}/api/v1/ting/workflow-executions/"
                 f"{quote(campaign_id, safe='')}/delivery-authorizations",
                 json={
                     "operation": operation,

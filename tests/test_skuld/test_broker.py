@@ -67,7 +67,7 @@ def _kickoff_ack_frame(
     }
 
 
-def _developer_review_id(session_id: str, peer_id: str, source_event_id: str) -> str:
+def _attested_review_id(session_id: str, peer_id: str, source_event_id: str) -> str:
     return str(
         uuid.uuid5(
             uuid.NAMESPACE_URL,
@@ -2242,7 +2242,7 @@ class TestBroker:
         broker_under_test._room_bridge.handle_collaboration_frame.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_developer_child_completion_retains_authenticated_review_envelope(self, tmp_path):
+    async def test_workflow_child_completion_retains_authenticated_review_envelope(self, tmp_path):
         settings = SkuldSettings(
             session={"id": "child-session", "workspace_dir": str(tmp_path)},
             room={"enabled": True},
@@ -2321,17 +2321,17 @@ class TestBroker:
 
         live_review = broker_under_test._report_activity_state.await_args_list[0]
         assert live_review.args[0] == "active"
-        assert live_review.kwargs["extra_metadata"]["developer_review"]["reviewerId"] == (
+        assert live_review.kwargs["extra_metadata"]["attested_review"]["reviewerId"] == (
             "review-peer"
         )
         assert broker_under_test._report_activity_state.await_count == 2
 
         metadata = broker_under_test._report_activity_state.await_args.kwargs["extra_metadata"]
-        envelope = metadata["developer_delivery"]
+        envelope = metadata["delivery"]
         assert envelope["result"]["attemptId"] == "attempt-1"
         assert envelope["reviews"] == [
             {
-                "eventId": _developer_review_id("child-session", "review-peer", "review-event-1"),
+                "eventId": _attested_review_id("child-session", "review-peer", "review-event-1"),
                 "sessionId": "child-session",
                 "role": "code",
                 "scope": "workstream",
@@ -2414,7 +2414,7 @@ class TestBroker:
                 scope="integration",
             ),
         ]
-        broker_under_test._developer_review_outcomes = {item["eventId"]: item for item in history}
+        broker_under_test._attested_review_outcomes = {item["eventId"]: item for item in history}
 
         await broker_under_test._maybe_report_flock_completion(
             "workflow-stop:workstream-complete",
@@ -2434,12 +2434,12 @@ class TestBroker:
         )
 
         metadata = broker_under_test._report_activity_state.await_args.kwargs["extra_metadata"]
-        assert [item["eventId"] for item in metadata["developer_delivery"]["reviews"]] == [
+        assert [item["eventId"] for item in metadata["delivery"]["reviews"]] == [
             "current-adversarial",
             "current-code-latest",
             "current-security",
         ]
-        assert len(broker_under_test._developer_review_outcomes) == len(history)
+        assert len(broker_under_test._attested_review_outcomes) == len(history)
 
     @pytest.mark.asyncio
     async def test_restarted_child_restores_authenticated_current_candidate_reviews(self, tmp_path):
@@ -2579,21 +2579,21 @@ class TestBroker:
         restarted._restore_durable_runtime_state(durable_frames)
         restarted._restore_durable_runtime_state(durable_frames)
 
-        old_code_id = _developer_review_id("child-session", "code-peer", "old-code")
+        old_code_id = _attested_review_id("child-session", "code-peer", "old-code")
         current_ids = {
-            role: _developer_review_id("child-session", f"{role}-peer", "shared-review-task")
+            role: _attested_review_id("child-session", f"{role}-peer", "shared-review-task")
             for role in ("adversarial", "code", "security")
         }
-        assert list(restarted._developer_review_outcomes) == [
+        assert list(restarted._attested_review_outcomes) == [
             old_code_id,
             current_ids["code"],
             current_ids["security"],
             current_ids["adversarial"],
         ]
-        assert restarted._developer_review_outcomes[current_ids["code"]]["personaId"] == (
+        assert restarted._attested_review_outcomes[current_ids["code"]]["personaId"] == (
             "developer-code-reviewer"
         )
-        assert len(restarted._developer_review_outcomes) == 4
+        assert len(restarted._attested_review_outcomes) == 4
 
         restarted._room_bridge = MagicMock()
         restarted._room_bridge.participants = {
@@ -2619,7 +2619,7 @@ class TestBroker:
         )
 
         metadata = restarted._report_activity_state.await_args.kwargs["extra_metadata"]
-        reviews = metadata["developer_delivery"]["reviews"]
+        reviews = metadata["delivery"]["reviews"]
         assert [review["eventId"] for review in reviews] == [
             current_ids["adversarial"],
             current_ids["code"],
@@ -2629,7 +2629,7 @@ class TestBroker:
         assert all(review["candidateTree"] == current_tree for review in reviews)
 
     @pytest.mark.asyncio
-    async def test_malformed_developer_review_is_not_projected_as_evidence(self, tmp_path):
+    async def test_malformed_attested_review_is_not_projected_as_evidence(self, tmp_path):
         settings = SkuldSettings(
             session={"id": "child-session", "workspace_dir": str(tmp_path)},
             room={"enabled": True},
@@ -2668,14 +2668,14 @@ class TestBroker:
         )
 
         broker_under_test._emit_pipeline_event.assert_awaited_once()
-        assert broker_under_test._developer_review_outcomes == {}
+        assert broker_under_test._attested_review_outcomes == {}
         broker_under_test._report_activity_state.assert_not_awaited()
         broker_under_test._maybe_activate_workflow_gate.assert_not_awaited()
         broker_under_test._maybe_emit_workflow_terminal_outcome.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("valid", ["true", "false", 1])
-    async def test_developer_review_requires_literal_true_validity(self, tmp_path, valid):
+    async def test_attested_review_requires_literal_true_validity(self, tmp_path, valid):
         settings = SkuldSettings(
             session={"id": "child-session", "workspace_dir": str(tmp_path)},
             room={"enabled": True},
@@ -2715,7 +2715,7 @@ class TestBroker:
 
         broker_under_test._emit_pipeline_event.assert_awaited_once()
         assert broker_under_test._emit_pipeline_event.await_args.args[1]["valid"] is False
-        assert broker_under_test._developer_review_outcomes == {}
+        assert broker_under_test._attested_review_outcomes == {}
         broker_under_test._report_activity_state.assert_not_awaited()
         broker_under_test._maybe_activate_workflow_gate.assert_not_awaited()
         broker_under_test._maybe_emit_workflow_terminal_outcome.assert_not_awaited()

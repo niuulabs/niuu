@@ -42,11 +42,11 @@ provider-neutral projected nodes, edges, outputs, history, and callbacks for
 evidence and child navigation. It does not fetch services or mutate workflows.
 Other workflow experiences can reuse it with their own projection.
 
-The developer run page uses `IDeveloperExecutionService.trace`, backed by:
+The developer run page uses `IDeliveryExecutionService.trace`, backed by:
 
 ```text
-GET /api/v1/ting/developer-executions/{executionId}/trace
-GET /api/v1/ting/developer-executions/{executionId}/trace?childId={attemptId}&after={sequence}&limit={pageSize}
+GET /api/v1/ting/workflow-executions/{executionId}/trace
+GET /api/v1/ting/workflow-executions/{executionId}/trace?childId={attemptId}&after={sequence}&limit={pageSize}
 ```
 
 The endpoint checks execution ownership and tenant boundaries, resolves persisted

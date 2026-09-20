@@ -1032,7 +1032,7 @@ class A2AConfig(BaseModel):
     )
 
 
-class DeveloperExecutionConfig(BaseModel):
+class WorkflowExecutionConfig(BaseModel):
     """Durable developer-delivery execution and Ravn A2A gateway settings."""
 
     enabled: bool = Field(
@@ -1043,7 +1043,7 @@ class DeveloperExecutionConfig(BaseModel):
         ),
     )
     gateway_adapter: str = Field(
-        default="ravn.adapters.developer_a2a.ConfiguredRavnDeveloperA2AGateway",
+        default="ravn.adapters.child_task_a2a.ConfiguredRavnChildTaskA2AGateway",
         description="Ravn-owned A2A child gateway adapter.",
     )
     gateway_kwargs: dict[str, Any] = Field(default_factory=dict)
@@ -1056,13 +1056,12 @@ class DeveloperExecutionConfig(BaseModel):
         ),
     )
     delivery_wait_repository_adapter: str = Field(
-        default="ting.adapters.postgres_developer_delivery_waits."
-        "PostgresDeveloperDeliveryWaitRepository",
+        default="ting.adapters.postgres_workflow_waits.PostgresWorkflowWaitRepository",
         description="Durable repository adapter for exact developer delivery waits.",
     )
     delivery_wait_repository_kwargs: dict[str, Any] = Field(default_factory=dict)
     delivery_wait_observer_adapter: str = Field(
-        default="ting.adapters.developer_delivery_observer.ForgeDeveloperDeliveryObserver",
+        default="ting.adapters.wait_condition_observer.ForgeWaitConditionObserver",
         description="Read-only remote delivery observation adapter.",
     )
     delivery_wait_observer_kwargs: dict[str, Any] = Field(default_factory=dict)
@@ -1077,7 +1076,7 @@ class DeveloperExecutionConfig(BaseModel):
         }
     )
     integration_review_producer: str = Field(default="developer-integration-verifier")
-    worker_id: str = Field(default="ting-developer-execution")
+    worker_id: str = Field(default="ting-workflow-execution")
     launch_claim_limit: int = Field(default=4, ge=1, le=100)
     reconcile_limit: int = Field(default=100, ge=1, le=1000)
     lease_seconds: float = Field(default=60.0, gt=0)
@@ -1186,7 +1185,7 @@ class Settings(BaseSettings):
     event_bus: EventBusConfig = Field(default_factory=EventBusConfig)
     events: EventsConfig = Field(default_factory=EventsConfig)
     a2a: A2AConfig = Field(default_factory=A2AConfig)
-    developer_execution: DeveloperExecutionConfig = Field(default_factory=DeveloperExecutionConfig)
+    workflow_execution: WorkflowExecutionConfig = Field(default_factory=WorkflowExecutionConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)

@@ -148,7 +148,7 @@ class TestActivityStateReporting:
             "completion_event_type": "developer.workstream.completed",
             "completion_peer_id": "workflow-stop:workstream-complete",
             "structured_outcome": {"result": {"candidateSha": "a" * 40}},
-            "developer_delivery": {
+            "delivery": {
                 "schemaVersion": 1,
                 "result": {"candidateSha": "a" * 40},
                 "reviews": [{"role": "security", "eventId": "review-1"}],
@@ -160,7 +160,7 @@ class TestActivityStateReporting:
         assert delivered is False
         assert test_broker._pending_terminal_activity is not None
         first_payload = mock_client.post.await_args_list[0].kwargs["json"]
-        assert first_payload["metadata"]["developer_delivery"] == terminal["developer_delivery"]
+        assert first_payload["metadata"]["delivery"] == terminal["delivery"]
         assert test_broker._flock_completion_reported is False
 
         assert await test_broker._retry_pending_terminal_activity() is True

@@ -129,7 +129,7 @@ async def test_empty_cache_hydrates_native_prefix_without_reemitting_events(tmp_
     assert seen == [0, 9]  # the filtered import marker at head is not visible
 
 
-async def test_hydration_restores_authenticated_developer_review_ledger(tmp_path):
+async def test_hydration_restores_authenticated_attested_review_ledger(tmp_path):
     broker = _broker(
         tmp_path,
         room={"enabled": True},
@@ -170,7 +170,7 @@ async def test_hydration_restores_authenticated_developer_review_ledger(tmp_path
             f"niuulabs:developer-review:{_SID}:code-peer:event:review-event-1",
         )
     )
-    assert broker._developer_review_outcomes == {
+    assert broker._attested_review_outcomes == {
         review_id: {
             "eventId": review_id,
             "sessionId": _SID,
@@ -305,8 +305,8 @@ async def test_hydration_republishes_runtime_terminal_with_restored_reviews(tmp_
     assert call.args == ("idle",)
     metadata = call.kwargs["extra_metadata"]
     assert metadata["completion_peer_id"] == "workflow-stop:workstream-complete"
-    assert metadata["developer_delivery"]["result"]["candidateSha"] == "a" * 40
-    assert [item["role"] for item in metadata["developer_delivery"]["reviews"]] == ["security"]
+    assert metadata["delivery"]["result"]["candidateSha"] == "a" * 40
+    assert [item["role"] for item in metadata["delivery"]["reviews"]] == ["security"]
     assert broker._restored_workflow_terminal_completion is not None
 
 

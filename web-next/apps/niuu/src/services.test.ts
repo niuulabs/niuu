@@ -32,7 +32,7 @@ const tingMocks = vi.hoisted(() => ({
   buildTingSessionHttpAdapter: vi.fn((client) => ({ kind: 'sessions', client })),
   buildTrackerHttpAdapter: vi.fn((client) => ({ kind: 'tracker', client })),
   buildWorkflowHttpAdapter: vi.fn((client) => ({ kind: 'workflows', client })),
-  buildDeveloperExecutionHttpAdapter: vi.fn((client) => ({ kind: 'developer-executions', client })),
+  buildWorkflowExecutionHttpAdapter: vi.fn((client) => ({ kind: 'workflow-executions', client })),
   buildResearchHttpAdapter: vi.fn((client) => ({ kind: 'research', client })),
   buildSpecsHttpAdapter: vi.fn((client) => ({ kind: 'specs', client })),
   buildDispatchBusHttpAdapter: vi.fn((client) => ({ kind: 'dispatch', client })),

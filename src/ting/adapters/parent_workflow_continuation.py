@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 from uuid import NAMESPACE_URL, uuid5
 
-from ting.domain.developer_delivery_wait import (
-    DeveloperDeliveryObservation,
-    DeveloperDeliveryWait,
+from ting.domain.delivery_execution import DeliveryExecution
+from ting.domain.workflow_wait import (
+    WaitObservation,
+    WorkflowWait,
 )
-from ting.domain.developer_execution import DeveloperExecution
-from ting.ports.developer_execution import ParentWorkflowContinuation
+from ting.ports.delivery_execution import ParentWorkflowContinuation
 from ting.ports.volundr import VolundrFactory
 
 
@@ -20,7 +20,7 @@ class VolundrParentWorkflowContinuation(ParentWorkflowContinuation):
 
     async def resume_parent(
         self,
-        execution: DeveloperExecution,
+        execution: DeliveryExecution,
         *,
         generation: int,
         results: list[dict],
@@ -29,7 +29,7 @@ class VolundrParentWorkflowContinuation(ParentWorkflowContinuation):
         continuation_id = str(
             uuid5(
                 NAMESPACE_URL,
-                f"niuulabs:developer-execution:{execution.id}:{generation}:verified",
+                f"niuulabs:workflow-execution:{execution.id}:{generation}:verified",
             )
         )
         payload = {
@@ -50,7 +50,7 @@ class VolundrParentWorkflowContinuation(ParentWorkflowContinuation):
 
     async def notify_parent(
         self,
-        execution: DeveloperExecution,
+        execution: DeliveryExecution,
         *,
         event_type: str,
         generation: int,
@@ -64,7 +64,7 @@ class VolundrParentWorkflowContinuation(ParentWorkflowContinuation):
             uuid5(
                 NAMESPACE_URL,
                 (
-                    f"niuulabs:developer-execution:{execution.id}:{generation}:"
+                    f"niuulabs:workflow-execution:{execution.id}:{generation}:"
                     f"blocked:{correlation_revision}"
                 ),
             )
@@ -88,15 +88,15 @@ class VolundrParentWorkflowContinuation(ParentWorkflowContinuation):
 
     async def notify_delivery_observation(
         self,
-        execution: DeveloperExecution,
-        wait: DeveloperDeliveryWait,
-        observation: DeveloperDeliveryObservation,
+        execution: DeliveryExecution,
+        wait: WorkflowWait,
+        observation: WaitObservation,
     ) -> None:
         adapter = await self._adapter(execution)
         continuation_id = str(
             uuid5(
                 NAMESPACE_URL,
-                f"niuulabs:developer-execution:{execution.id}:delivery-wait:{wait.id}",
+                f"niuulabs:workflow-execution:{execution.id}:delivery-wait:{wait.id}",
             )
         )
         payload = {
@@ -120,11 +120,11 @@ class VolundrParentWorkflowContinuation(ParentWorkflowContinuation):
             request_id=continuation_id,
         )
 
-    async def stop_parent(self, execution: DeveloperExecution) -> None:
+    async def stop_parent(self, execution: DeliveryExecution) -> None:
         adapter = await self._adapter(execution)
         await adapter.stop_session(execution.parent_session_id)
 
-    async def _adapter(self, execution: DeveloperExecution):
+    async def _adapter(self, execution: DeliveryExecution):
         if execution.connection_id:
             adapter = await self._volundr_factory.for_connection(
                 execution.owner_id,

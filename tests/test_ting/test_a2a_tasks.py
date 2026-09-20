@@ -668,7 +668,7 @@ class TestSendMessage:
         principals = [principal for _, _, principal in port.auth_calls]
         assert all(principal and principal.user_id == "user-1" for principal in principals)
 
-    def test_production_identity_rejects_developer_gateway_launch_without_lineage(self) -> None:
+    def test_production_identity_rejects_execution_gateway_launch_without_lineage(self) -> None:
         workflow = _make_workflow()
         client, _, port = _make_client(
             workflow_repo=InMemoryWorkflowRepository([workflow]),
@@ -678,7 +678,7 @@ class TestSendMessage:
         token = _build_token(
             ["ting:workflow:launch"],
             workload_sub=f"developer-child:{attempt_id}",
-            workload_developer_execution_id=str(uuid4()),
+            workload_workflow_execution_id=str(uuid4()),
             workload_child_attempt_id=str(attempt_id),
             workload_child_intent_id=str(uuid4()),
         )
@@ -693,7 +693,7 @@ class TestSendMessage:
         assert response.status_code == 403
         assert port.spawned == []
 
-    def test_developer_child_inherits_pinned_result_schema_into_runtime(self, monkeypatch) -> None:
+    def test_workflow_child_inherits_pinned_result_schema_into_runtime(self, monkeypatch) -> None:
         workflow = _make_workflow()
         client, _, port = _make_client(
             workflow_repo=InMemoryWorkflowRepository([workflow]),
@@ -743,19 +743,19 @@ class TestSendMessage:
                     return execution
                 return None
 
-        client.app.state.developer_execution_repo = Ledger()
+        client.app.state.workflow_execution_repo = Ledger()
         monkeypatch.setattr("ting.api.a2a.pinned_child_workflow", lambda *_args: workflow)
         token = _build_token(
             ["ting:workflow:launch"],
             workload_sub=f"developer-child:{attempt_id}",
-            workload_developer_execution_id=str(execution_id),
+            workload_workflow_execution_id=str(execution_id),
             workload_child_attempt_id=str(attempt_id),
             workload_child_intent_id=str(intent_id),
         )
         params = _send_params(str(workflow.id))
         params["message"]["metadata"].update(
             {
-                "developerExecution": {"executionId": str(execution_id)},
+                "workflowExecution": {"executionId": str(execution_id)},
                 "attemptId": str(attempt_id),
                 "intentId": str(intent_id),
                 "messageId": "msg-1",
@@ -766,7 +766,7 @@ class TestSendMessage:
 
         assert response.status_code == 200, response.text
         assert port.spawned[0].workload_config["workflow_result_schema"] == result_schema
-        developer_runtime = port.spawned[0].workload_config["ravn_config"]["developer_execution"]
+        developer_runtime = port.spawned[0].workload_config["ravn_config"]["workflow_execution"]
         assert "result_schema" not in developer_runtime
 
     def test_human_token_is_unaffected_by_scope_check(self) -> None:
@@ -942,7 +942,7 @@ class TestGetTask:
 
         assert response.status_code == 403
 
-    def test_developer_gateway_token_is_bound_to_exact_ledger_task(self) -> None:
+    def test_execution_gateway_token_is_bound_to_exact_ledger_task(self) -> None:
         execution_id = uuid4()
         attempt_id = uuid4()
         intent_id = uuid4()
@@ -977,11 +977,11 @@ class TestGetTask:
             campaign_repo=InMemoryCampaignRepository([campaign, other]),
         )
         client.app.state.identity = EnvoyHeaderAuthenticationAdapter()
-        client.app.state.developer_execution_repo = Ledger()
+        client.app.state.workflow_execution_repo = Ledger()
         token = _build_token(
             ["ting:workflow:launch"],
             workload_sub=f"developer-child:{attempt_id}",
-            workload_developer_execution_id=str(execution_id),
+            workload_workflow_execution_id=str(execution_id),
             workload_child_attempt_id=str(attempt_id),
             workload_child_intent_id=str(intent_id),
             workload_child_task_id=campaign.slug,
@@ -1052,7 +1052,7 @@ class TestGetTask:
                 "workflow_digest": "sha256:" + "a" * 64,
             },
             metadata={
-                "developer_delivery": {
+                "delivery": {
                     "schemaVersion": 1,
                     "result": {"attemptId": "attempt-1", "candidateSha": "b" * 40},
                     "reviews": [{"eventId": "review-1", "valid": True}],
@@ -1078,7 +1078,7 @@ class TestGetTask:
         campaign = _make_campaign(
             status=WorkflowCampaignStatus.COMPLETED,
             metadata={
-                "developer_delivery": {
+                "delivery": {
                     "schemaVersion": 1,
                     "result": {"attemptId": "attempt-1"},
                     "reviews": [{"eventId": "review-1", "valid": True}],
@@ -1106,7 +1106,7 @@ class TestGetTask:
         assert port.stop_attempts == [campaign.session_id, campaign.session_id]
         saved = next(iter(campaigns._campaigns.values()))
         assert saved.status == WorkflowCampaignStatus.COMPLETED
-        assert saved.metadata["developer_delivery"] == campaign.metadata["developer_delivery"]
+        assert saved.metadata["delivery"] == campaign.metadata["delivery"]
         assert saved.metadata["terminal_session_stopped"] is True
 
     def test_unknown_task_is_not_found(self) -> None:

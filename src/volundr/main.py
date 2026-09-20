@@ -113,7 +113,6 @@ from volundr.composition_builders import (  # noqa: F401
     _create_codex_credential_broker,
     _create_contributors,
     _create_credential_enrollment_runner,
-    _create_developer_execution_credential_service,
     _create_external_session_providers,
     _create_gateway_adapter,
     _create_http_auth_adapter,
@@ -122,6 +121,7 @@ from volundr.composition_builders import (  # noqa: F401
     _create_resident_session_controllers,
     _create_resource_provider,
     _create_secret_injection_adapter,
+    _create_workflow_execution_credential_service,
     _runtime_backend,
     create_oauth_client_registry,
     integration_database_pool,
@@ -547,7 +547,7 @@ def create_app(
             workload_identity_service = create_workload_identity_service(settings.workload_identity)
             pod_manager = _create_pod_manager(settings)
             runtime_backend = _runtime_backend(settings, pod_manager)
-            developer_credential_service = _create_developer_execution_credential_service(
+            execution_credential_service = _create_workflow_execution_credential_service(
                 settings,
                 repository=repository,
                 token_issuer=workload_identity_service,
@@ -932,7 +932,7 @@ def create_app(
                 resource_provider=resource_provider,
                 persona_provider=session_persona_provider,
                 pricing_provider=pricing_provider,
-                developer_credential_service=developer_credential_service,
+                execution_credential_service=execution_credential_service,
             )
 
             session_service = SessionService(
@@ -1553,8 +1553,8 @@ def create_app(
                     "Volundr Telegram ingress disabled via config (telegram_ingress.enabled=false)"
                 )
 
-            if developer_credential_service is not None:
-                await developer_credential_service.start()
+            if execution_credential_service is not None:
+                await execution_credential_service.start()
 
             # Reconcile sessions stuck in PROVISIONING after a restart
             await session_service.reconcile_provisioning_sessions()
@@ -1568,8 +1568,8 @@ def create_app(
             try:
                 yield
             finally:
-                if developer_credential_service is not None:
-                    await developer_credential_service.stop()
+                if execution_credential_service is not None:
+                    await execution_credential_service.stop()
                 if compute_pool_task is not None:
                     compute_pool_task.cancel()
                     await asyncio.gather(compute_pool_task, return_exceptions=True)

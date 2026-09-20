@@ -22,7 +22,7 @@ from ting.api.a2a_identity import local_agent_card_url
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.workflow_bindings import binding_errors
 from ting.api.workflow_personas import authoring_persona_source
-from ting.domain.developer_execution import validate_json_schema
+from ting.domain.delivery_execution import validate_json_schema
 from ting.domain.exceptions import WorkflowConflictError, WorkflowReadOnlyError
 from ting.domain.models import (
     PersonaDependency,
@@ -498,21 +498,21 @@ async def launch_workflow_execution(
     principal: Principal,
     bearer_token: str | None = None,
     pinned_workflow_snapshot: dict[str, Any] | None = None,
-    trusted_developer_execution: bool = False,
+    trusted_workflow_execution: bool = False,
 ) -> WorkflowLaunchExecution:
-    raw_developer_context = launch.provenance.get("developer_execution")
-    if raw_developer_context and not trusted_developer_execution:
+    raw_execution_context = launch.provenance.get("workflow_execution")
+    if raw_execution_context and not trusted_workflow_execution:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="developer_execution provenance is reserved for verified platform launches",
+            detail="workflow_execution provenance is reserved for verified platform launches",
         )
-    if isinstance(raw_developer_context, dict) and any(
-        str(raw_developer_context.get(key) or "").strip()
+    if isinstance(raw_execution_context, dict) and any(
+        str(raw_execution_context.get(key) or "").strip()
         for key in ("auth_token", "auth_token_file")
     ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="developer_execution provenance must not contain credentials",
+            detail="workflow_execution provenance must not contain credentials",
         )
     authorization = getattr(request.app.state, "authorization", None)
     if authorization is None:
@@ -593,40 +593,40 @@ async def launch_workflow_execution(
         auth_token=bearer_token,
         principal=principal,
     )
-    developer_execution_context = launch.provenance.get("developer_execution")
-    if not isinstance(developer_execution_context, dict):
-        developer_execution_context = {}
+    workflow_execution_context = launch.provenance.get("workflow_execution")
+    if not isinstance(workflow_execution_context, dict):
+        workflow_execution_context = {}
     ravn_runtime_config = dict(settings.dispatch.flock.ravn_config or {})
-    configured_developer_execution = ravn_runtime_config.get("developer_execution")
-    if isinstance(configured_developer_execution, dict):
-        configured_developer_execution = dict(configured_developer_execution)
-        static_token = str(configured_developer_execution.pop("auth_token", "") or "").strip()
+    configured_workflow_execution = ravn_runtime_config.get("workflow_execution")
+    if isinstance(configured_workflow_execution, dict):
+        configured_workflow_execution = dict(configured_workflow_execution)
+        static_token = str(configured_workflow_execution.pop("auth_token", "") or "").strip()
         configured_token_file = str(
-            configured_developer_execution.pop("auth_token_file", "") or ""
+            configured_workflow_execution.pop("auth_token_file", "") or ""
         ).strip()
-        if developer_execution_context and static_token:
+        if workflow_execution_context and static_token:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=(
-                    "Static developer_execution.auth_token configuration is unsupported; "
+                    "Static workflow_execution.auth_token configuration is unsupported; "
                     "enable Forge developer execution credential rotation"
                 ),
             )
-        if developer_execution_context and configured_token_file:
+        if workflow_execution_context and configured_token_file:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=(
-                    "Ting developer_execution.auth_token_file configuration is unsupported; "
+                    "Ting workflow_execution.auth_token_file configuration is unsupported; "
                     "Forge owns the per-session credential projection"
                 ),
             )
-        ravn_runtime_config["developer_execution"] = configured_developer_execution
-    if developer_execution_context:
-        ravn_runtime_config["developer_execution"] = {
-            **developer_execution_context,
+        ravn_runtime_config["workflow_execution"] = configured_workflow_execution
+    if workflow_execution_context:
+        ravn_runtime_config["workflow_execution"] = {
+            **workflow_execution_context,
             "enabled": True,
         }
-        ravn_runtime_config = _configure_developer_a2a_runtime(
+        ravn_runtime_config = _configure_child_task_a2a_runtime(
             ravn_runtime_config,
             card_url=local_agent_card_url(
                 public_base_url=settings.a2a.public_base_url,
@@ -695,7 +695,7 @@ async def launch_workflow_execution(
     )
 
 
-def _configure_developer_a2a_runtime(
+def _configure_child_task_a2a_runtime(
     ravn_config: dict[str, Any],
     *,
     card_url: str,

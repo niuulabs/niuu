@@ -61,7 +61,7 @@ def test_broker_projects_custom_authenticated_persona_to_configured_role(tmp_pat
         )
     )
 
-    outcome = broker._developer_review_outcome(
+    outcome = broker._attested_review_outcome(
         peer_id="peer-1",
         persona="data-steward",
         event_type="artifact.review.completed",

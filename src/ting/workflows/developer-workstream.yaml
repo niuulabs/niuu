@@ -6,13 +6,13 @@ version: 1.0.0
 persona_dependencies:
   developer-coordinator:
     id: developer-coordinator
-    revision: content-9ea8b8560305e935
-    digest: sha256:9ea8b8560305e935880f5d0e6a795154b3365814bc2abddc4cb70910b461a8c7
+    revision: content-9ed93b5b7e2a0fb8
+    digest: sha256:9ed93b5b7e2a0fb85d5ef3303bccf75ff3dc356119f9ee6c53c66d0ea7148459
     path: personas/developer-coordinator.yaml
   developer-coder:
     id: developer-coder
-    revision: content-aeabd732b49cd76c
-    digest: sha256:aeabd732b49cd76c5fc817827dae46ecacde5d17782946a3bf0a9f6514aa28f8
+    revision: content-81bc57dd11846cf0
+    digest: sha256:81bc57dd11846cf0214beabbf997f46022970eab3df51239067c218642bde047
     path: personas/developer-coder.yaml
   developer-code-reviewer:
     id: developer-code-reviewer

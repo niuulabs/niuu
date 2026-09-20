@@ -95,7 +95,7 @@ object-store path dependency. The default `worktree` mode requires the Git commo
 directory to remain accessible wherever the checkout is used. Integration fetches
 the exact accepted commit between isolated clones before validating and applying it.
 
-Ting's `developer_execution` configuration controls claim/reconcile batch sizes,
+Ting's `workflow_execution` configuration controls claim/reconcile batch sizes,
 lease duration, polling interval, launch budget, deadline, and evidence policy
 identifiers. `evidence_policy_id` selects child acceptance;
 `integration_policy_id` selects final integration acceptance. Configure the final
@@ -104,7 +104,7 @@ policy with the required remote check names and trusted forge producer identitie
 The parent coordinator can read those configured requirements through
 `delivery_evidence.describe` before allocating workspaces. This returns policy
 requirements and producer identifiers; callers cannot replace the deployed policy.
-The `developer_execution_retry` tool requires the exact current child attempt ID
+The `workflow_execution_retry` tool requires the exact current child attempt ID
 and uses the same bounded retry service as the operator API. Repairs inside an
 active child task retain that task's attempt ID.
 Scoped workload credentials bind delivery operations to their execution. Child
@@ -116,13 +116,13 @@ branch and cannot target the execution's base branch.
 
 Developer coordinators use rotating, short-lived workload bearers. Volundr derives
 the owner, tenant, and actual Forge session ID from the durable session record, then
-uses the existing workload identity issuer to mint the exact developer-execution
+uses the existing workload identity issuer to mint the exact workflow-execution
 scope and lineage. Parent credentials bind the execution, parent node, session key,
 coordinator, and Forge session. Child credentials additionally bind the persisted
 attempt, launch intent, A2A task, and the child campaign's Forge session. Descriptor
 metadata cannot supply the owner, tenant, admission roles, or actual session claim.
 
-`developer_execution_credentials` selects the projection adapter and rotation
+`workflow_execution_credentials` selects the projection adapter and rotation
 interval. The file adapter supports local, process, and Docker runtimes. It writes a
 mode-0600 bearer with atomic replacement inside a per-session mode-0700 directory;
 Docker mounts that directory read-only into every Ravn container, so replacing the
@@ -184,14 +184,14 @@ An explicitly supplied operation ID must match. Retrying the merge operation sti
 requires fresh preflight; it does not bypass a target that has already advanced.
 
 When checks or a queued merge are pending, the coordinator registers an exact
-candidate wait with `developer_execution_wait_delivery` and yields to the graph's
+candidate wait with `workflow_execution_wait_delivery` and yields to the graph's
 passive `wait` node. Ting persists the observation request and uses the existing
 developer execution worker to poll it. Terminal observations resume the parent
 through `developer.delivery.observed`; no model turn is needed while waiting.
 The request binds the repository, review, source commit, target commit and branch,
 and configured integration policy. A merge wait also binds the merge method.
 Owner-scoped wait history is available at
-`GET /api/v1/ting/developer-executions/{execution_id}/delivery-waits`.
+`GET /api/v1/ting/workflow-executions/{execution_id}/delivery-waits`.
 
 Integration-review or CI failures route to an executable coordinator repair
 stage. It reconciles the recorded plan revision and creates a complete replacement
@@ -218,7 +218,7 @@ pre-merge authorization checks this recorded candidate and review before any
 remote merge operation; choosing another policy cannot bypass the execution's
 configured integration policy.
 
-`POST /api/v1/ting/developer-executions/{execution_id}/complete` accepts a merge
+`POST /api/v1/ting/workflow-executions/{execution_id}/complete` accepts a merge
 request and integration evidence, not a caller's assertion that a merge happened.
 Ting validates the evidence through Forge and asks Forge to reconcile the actual
 remote publication. The result must match the execution, repository, target
@@ -251,7 +251,7 @@ Other workflow views can reuse the exported `WorkflowResults` component from
 `@niuulabs/plugin-ting`: supply Markdown, a title, status, and optional context
 items. The renderer uses the existing shared Markdown component and does not
 depend on a repository provider or developer-workflow schema. The separate pure
-`buildDeveloperExecutionResultsMarkdown` function projects developer execution
+`buildWorkflowExecutionResultsMarkdown` function projects developer execution
 responses into that generic presentation contract.
 
 Use the read-only proof verifier to export and check a completed execution from its
@@ -262,7 +262,7 @@ Passing neither is a usage error — the tool refuses to run rather than silentl
 report `status: "verified"` with zero signatures actually checked:
 
 ```bash
-python scripts/verify_developer_delivery_proof.py \
+python scripts/verify_delivery_proof.py \
   --base-url http://127.0.0.1:8180 \
   --execution-id 00000000-0000-0000-0000-000000000000 \
   --trust-server-attestation \
@@ -283,7 +283,7 @@ To verify receipt signatures independently (and reach `status: "verified"`), pas
 a public-only trust file instead:
 
 ```bash
-python scripts/verify_developer_delivery_proof.py \
+python scripts/verify_delivery_proof.py \
   --base-url http://127.0.0.1:8180 \
   --execution-id 00000000-0000-0000-0000-000000000000 \
   --evidence-trust-file evidence-trust.json \

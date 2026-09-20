@@ -393,7 +393,7 @@ def _authoritative_delivery_metadata(delivery: dict) -> dict:
         "completion_peer_id": "workflow-stop:workstream-result",
         "structured_outcome": {"result": delivery["result"]},
         "outcome_valid": True,
-        "developer_delivery": delivery,
+        "delivery": delivery,
     }
 
 
@@ -429,9 +429,9 @@ async def test_idle_delivery_event_completes_before_releasing_session() -> None:
     terminal = repo.save_campaign.await_args_list[0].args[0]
     cleanup_receipt = repo.save_campaign.await_args_list[1].args[0]
     assert terminal.status == WorkflowCampaignStatus.COMPLETED
-    assert terminal.metadata["developer_delivery"] == delivery
+    assert terminal.metadata["delivery"] == delivery
     assert terminal.completed_at is not None
-    assert cleanup_receipt.metadata["developer_delivery"] == delivery
+    assert cleanup_receipt.metadata["delivery"] == delivery
     assert cleanup_receipt.metadata[TERMINAL_SESSION_STOPPED_KEY] is True
     assert adapter.stopped == [campaign.session_id]
 
@@ -454,7 +454,7 @@ async def test_reconnect_projects_persisted_authoritative_idle_delivery() -> Non
 
     terminal = repo.save_campaign.await_args_list[0].args[0]
     assert terminal.status == WorkflowCampaignStatus.COMPLETED
-    assert terminal.metadata["developer_delivery"] == delivery
+    assert terminal.metadata["delivery"] == delivery
     assert adapter.stopped == [terminal.session_id]
 
 
@@ -463,7 +463,7 @@ async def test_reconnect_projects_persisted_authoritative_idle_delivery() -> Non
     "metadata",
     [
         {
-            "developer_delivery": {
+            "delivery": {
                 "schemaVersion": 1,
                 "result": {"attemptId": "attempt-1"},
                 "reviews": [],
@@ -476,7 +476,7 @@ async def test_reconnect_projects_persisted_authoritative_idle_delivery() -> Non
         _authoritative_delivery_metadata(
             {"schemaVersion": 1, "result": {"attemptId": "attempt-1"}, "reviews": []}
         )
-        | {"developer_delivery": {"schemaVersion": 1, "result": {}, "reviews": []}},
+        | {"delivery": {"schemaVersion": 1, "result": {}, "reviews": []}},
     ],
 )
 async def test_idle_delivery_fails_closed_without_authoritative_matching_envelope(
@@ -508,7 +508,7 @@ async def test_terminal_cohort_releases_more_than_runtime_concurrency_limit() ->
     }
     adapter = _Adapter(
         session_status="completed",
-        activity_metadata={"developer_delivery": delivery},
+        activity_metadata={"delivery": delivery},
     )
     projector, repo, _ = _projector(adapter)
     campaigns = [replace(_campaign(), session_id=f"session-{index}") for index in range(10)]
@@ -520,10 +520,10 @@ async def test_terminal_cohort_releases_more_than_runtime_concurrency_limit() ->
     terminal_records = [call.args[0] for call in repo.save_campaign.await_args_list[::2]]
     cleanup_receipts = [call.args[0] for call in repo.save_campaign.await_args_list[1::2]]
     assert all(record.status == WorkflowCampaignStatus.COMPLETED for record in terminal_records)
-    assert all(record.metadata["developer_delivery"] == delivery for record in terminal_records)
+    assert all(record.metadata["delivery"] == delivery for record in terminal_records)
     assert all(
         receipt.metadata[TERMINAL_SESSION_STOPPED_KEY] is True
-        and receipt.metadata["developer_delivery"] == delivery
+        and receipt.metadata["delivery"] == delivery
         for receipt in cleanup_receipts
     )
 
@@ -533,7 +533,7 @@ async def test_terminal_cleanup_failure_leaves_durable_result_retryable() -> Non
     delivery = {"result": {"attemptId": "attempt-1"}, "reviews": [{"valid": True}]}
     adapter = _Adapter(
         session_status="completed",
-        activity_metadata={"developer_delivery": delivery},
+        activity_metadata={"delivery": delivery},
         stop_failures=1,
     )
     projector, repo, _ = _projector(adapter)
@@ -542,14 +542,14 @@ async def test_terminal_cleanup_failure_leaves_durable_result_retryable() -> Non
 
     terminal = repo.save_campaign.await_args_list[0].args[0]
     assert terminal.status == WorkflowCampaignStatus.COMPLETED
-    assert terminal.metadata["developer_delivery"] == delivery
+    assert terminal.metadata["delivery"] == delivery
     assert TERMINAL_SESSION_STOPPED_KEY not in terminal.metadata
 
     cleaned = await projector.cleanup_terminal_session(terminal)
 
     assert cleaned is not None
     assert cleaned.status == WorkflowCampaignStatus.COMPLETED
-    assert cleaned.metadata["developer_delivery"] == delivery
+    assert cleaned.metadata["delivery"] == delivery
     assert cleaned.metadata[TERMINAL_SESSION_STOPPED_KEY] is True
     assert adapter.stop_attempts == [terminal.session_id, terminal.session_id]
 

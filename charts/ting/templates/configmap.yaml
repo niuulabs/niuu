@@ -166,33 +166,33 @@ data:
           {{- toYaml .Values.a2a.pushAuth.kwargs | nindent 10 }}
     {{- end }}
 
-    developer_execution:
-      enabled: {{ .Values.developerExecution.enabled }}
-      gateway_adapter: {{ .Values.developerExecution.gatewayAdapter | quote }}
-      gateway_kwargs: {{ .Values.developerExecution.gatewayKwargs | default dict | toJson }}
-      admission_roles: {{ .Values.developerExecution.admissionRoles | toJson }}
-      delivery_wait_repository_adapter: {{ .Values.developerExecution.deliveryWaitRepositoryAdapter | quote }}
-      delivery_wait_repository_kwargs: {{ .Values.developerExecution.deliveryWaitRepositoryKwargs | default dict | toJson }}
-      delivery_wait_observer_adapter: {{ .Values.developerExecution.deliveryWaitObserverAdapter | quote }}
-      delivery_wait_observer_kwargs: {{ .Values.developerExecution.deliveryWaitObserverKwargs | default dict | toJson }}
-      review_authenticator_adapter: {{ .Values.developerExecution.reviewAuthenticatorAdapter | default "" | quote }}
-      review_authenticator_kwargs: {{ .Values.developerExecution.reviewAuthenticatorKwargs | default dict | toJson }}
-      review_authenticator_secret_kwargs_env: {{ .Values.developerExecution.reviewAuthenticatorSecretKwargsEnv | default dict | toJson }}
-      review_producers: {{ .Values.developerExecution.reviewProducers | default dict | toJson }}
-      integration_review_producer: {{ .Values.developerExecution.integrationReviewProducer | quote }}
-      worker_id: {{ .Values.developerExecution.workerId | quote }}
-      launch_claim_limit: {{ .Values.developerExecution.launchClaimLimit }}
-      reconcile_limit: {{ .Values.developerExecution.reconcileLimit }}
-      lease_seconds: {{ .Values.developerExecution.leaseSeconds }}
-      reconcile_interval_seconds: {{ .Values.developerExecution.reconcileIntervalSeconds }}
-      default_budget_units: {{ .Values.developerExecution.defaultBudgetUnits }}
-      default_deadline_seconds: {{ .Values.developerExecution.defaultDeadlineSeconds }}
-      list_page_size: {{ .Values.developerExecution.listPageSize }}
-      evidence_policy_id: {{ .Values.developerExecution.evidencePolicyId | quote }}
-      integration_policy_id: {{ .Values.developerExecution.integrationPolicyId | quote }}
-      max_child_reconcile_failures: {{ .Values.developerExecution.maxChildReconcileFailures }}
-      max_delivery_wait_failures: {{ .Values.developerExecution.maxDeliveryWaitFailures }}
-      max_parent_stop_failures: {{ .Values.developerExecution.maxParentStopFailures }}
+    workflow_execution:
+      enabled: {{ .Values.workflowExecution.enabled }}
+      gateway_adapter: {{ .Values.workflowExecution.gatewayAdapter | quote }}
+      gateway_kwargs: {{ .Values.workflowExecution.gatewayKwargs | default dict | toJson }}
+      admission_roles: {{ .Values.workflowExecution.admissionRoles | toJson }}
+      delivery_wait_repository_adapter: {{ .Values.workflowExecution.deliveryWaitRepositoryAdapter | quote }}
+      delivery_wait_repository_kwargs: {{ .Values.workflowExecution.deliveryWaitRepositoryKwargs | default dict | toJson }}
+      delivery_wait_observer_adapter: {{ .Values.workflowExecution.deliveryWaitObserverAdapter | quote }}
+      delivery_wait_observer_kwargs: {{ .Values.workflowExecution.deliveryWaitObserverKwargs | default dict | toJson }}
+      review_authenticator_adapter: {{ .Values.workflowExecution.reviewAuthenticatorAdapter | default "" | quote }}
+      review_authenticator_kwargs: {{ .Values.workflowExecution.reviewAuthenticatorKwargs | default dict | toJson }}
+      review_authenticator_secret_kwargs_env: {{ .Values.workflowExecution.reviewAuthenticatorSecretKwargsEnv | default dict | toJson }}
+      review_producers: {{ .Values.workflowExecution.reviewProducers | default dict | toJson }}
+      integration_review_producer: {{ .Values.workflowExecution.integrationReviewProducer | quote }}
+      worker_id: {{ .Values.workflowExecution.workerId | quote }}
+      launch_claim_limit: {{ .Values.workflowExecution.launchClaimLimit }}
+      reconcile_limit: {{ .Values.workflowExecution.reconcileLimit }}
+      lease_seconds: {{ .Values.workflowExecution.leaseSeconds }}
+      reconcile_interval_seconds: {{ .Values.workflowExecution.reconcileIntervalSeconds }}
+      default_budget_units: {{ .Values.workflowExecution.defaultBudgetUnits }}
+      default_deadline_seconds: {{ .Values.workflowExecution.defaultDeadlineSeconds }}
+      list_page_size: {{ .Values.workflowExecution.listPageSize }}
+      evidence_policy_id: {{ .Values.workflowExecution.evidencePolicyId | quote }}
+      integration_policy_id: {{ .Values.workflowExecution.integrationPolicyId | quote }}
+      max_child_reconcile_failures: {{ .Values.workflowExecution.maxChildReconcileFailures }}
+      max_delivery_wait_failures: {{ .Values.workflowExecution.maxDeliveryWaitFailures }}
+      max_parent_stop_failures: {{ .Values.workflowExecution.maxParentStopFailures }}
 
     cerbos:
       url: {{ .Values.cerbos.url | default "http://localhost:3592" | quote }}

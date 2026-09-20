@@ -78,7 +78,7 @@ class WorkflowCampaignProjector:
         if campaign is None:
             return False
 
-        developer_delivery = _authoritative_developer_delivery(event.metadata)
+        delivery = _authoritative_delivery(event.metadata)
         if event.state == "error" or event.session_status in {"failed", "cancelled", "canceled"}:
             error = str(event.metadata.get("error") or event.metadata.get("message") or "").strip()
             if not error:
@@ -88,16 +88,16 @@ class WorkflowCampaignProjector:
                 WorkflowCampaignStatus.FAILED,
                 failure_error=error,
             )
-        elif developer_delivery is not None:
+        elif delivery is not None:
             await self._save_transition(
                 campaign,
                 WorkflowCampaignStatus.COMPLETED,
-                metadata={**campaign.metadata, "developer_delivery": developer_delivery},
+                metadata={**campaign.metadata, "delivery": delivery},
             )
         elif event.session_status == "stopped":
             await self._save_transition(campaign, WorkflowCampaignStatus.BLOCKED)
         elif event.session_status in {"completed", "complete", "succeeded"}:
-            metadata = _with_developer_delivery(campaign, event.metadata)
+            metadata = _with_delivery(campaign, event.metadata)
             await self._save_transition(
                 campaign,
                 WorkflowCampaignStatus.COMPLETED,
@@ -179,7 +179,7 @@ class WorkflowCampaignProjector:
         activity_metadata = getattr(session, "activity_metadata", {}) or {}
         if (
             next_status != WorkflowCampaignStatus.FAILED
-            and _authoritative_developer_delivery(activity_metadata) is not None
+            and _authoritative_delivery(activity_metadata) is not None
         ):
             next_status = WorkflowCampaignStatus.COMPLETED
         elif next_status == WorkflowCampaignStatus.RUNNING and await self._session_awaits_input(
@@ -197,7 +197,7 @@ class WorkflowCampaignProjector:
             next_status,
             session_name=session.name,
             failure_error=failure_error,
-            metadata=_with_developer_delivery(campaign, activity_metadata),
+            metadata=_with_delivery(campaign, activity_metadata),
         )
 
     async def _campaign_adapter(self, campaign: WorkflowCampaign):
@@ -331,15 +331,15 @@ class WorkflowCampaignProjector:
 _PENDING_BLOCKER_STATUSES = frozenset({"", "pending", "open", "waiting", "help_needed", "blocked"})
 
 
-def _with_developer_delivery(campaign: WorkflowCampaign, activity_metadata: dict) -> dict:
+def _with_delivery(campaign: WorkflowCampaign, activity_metadata: dict) -> dict:
     metadata = dict(campaign.metadata)
-    envelope = activity_metadata.get("developer_delivery")
+    envelope = activity_metadata.get("delivery")
     if isinstance(envelope, dict):
-        metadata["developer_delivery"] = envelope
+        metadata["delivery"] = envelope
     return metadata
 
 
-def _authoritative_developer_delivery(activity_metadata: dict) -> dict | None:
+def _authoritative_delivery(activity_metadata: dict) -> dict | None:
     """Extract Skuld's terminal developer result without trusting generic idle metadata."""
     if activity_metadata.get("completion_source") != "ravn_flock":
         return None
@@ -359,7 +359,7 @@ def _authoritative_developer_delivery(activity_metadata: dict) -> dict | None:
     if not bool(structured_payload.get("authoritative") or activity_metadata.get("outcome_valid")):
         return None
 
-    envelope = activity_metadata.get("developer_delivery")
+    envelope = activity_metadata.get("delivery")
     if not isinstance(envelope, dict) or envelope.get("schemaVersion") != 1:
         return None
     result = envelope.get("result")

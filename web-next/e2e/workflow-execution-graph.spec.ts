@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import {
   traceFixture,
   traceEvent,
-} from '../packages/plugin-ting/src/application/developerExecutionTrace.fixture';
+} from '../packages/plugin-ting/src/application/workflowExecutionTrace.fixture';
 
 const run = {
   executionId: 'run',
@@ -32,12 +32,12 @@ async function configure(page: Page) {
     route.fulfill({ json: { enabled: false, completed: true } }),
   );
   await page.route('**/api/v1/ting/workflows', (route) => route.fulfill({ json: [] }));
-  await page.route('**/api/v1/ting/developer-executions**', async (route) => {
+  await page.route('**/api/v1/ting/workflow-executions**', async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith('/evidence')) return route.fulfill({ json: {} });
     if (path.endsWith('/delivery-waits')) return route.fulfill({ json: [] });
     return route.fulfill({
-      json: path.endsWith('/developer-executions') ? { executions: [run], nextCursor: null } : run,
+      json: path.endsWith('/workflow-executions') ? { executions: [run], nextCursor: null } : run,
     });
   });
 }
@@ -53,7 +53,7 @@ test('inspects recorded stage outcomes, expands an exact child, and opens Markdo
 }) => {
   await configure(page);
   let childRequested = false;
-  await page.route('**/developer-executions/run/trace**', async (route) => {
+  await page.route('**/workflow-executions/run/trace**', async (route) => {
     const childId = new URL(route.request().url()).searchParams.get('childId');
     childRequested ||= childId === 'c1';
     return route.fulfill({
@@ -107,7 +107,7 @@ test('shows pending history and a recoverable load error', async ({ page }) => {
     release = resolve;
   });
   let failed = true;
-  await page.route('**/developer-executions/run/trace**', async (route) => {
+  await page.route('**/workflow-executions/run/trace**', async (route) => {
     await gate;
     if (failed) return route.fulfill({ status: 503, json: { detail: 'History unavailable' } });
     return route.fulfill({ json: traceFixture });

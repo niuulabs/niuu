@@ -19,22 +19,22 @@ import { ResearchCampaignPage } from './ui/ResearchCampaignPage';
 import { SpecsCenterPage } from './ui/SpecsCenterPage';
 import { SpecsNewPage } from './ui/SpecsNewPage';
 import { SpecsCampaignPage } from './ui/SpecsCampaignPage';
-import { DeveloperExecutionsPage } from './ui/DeveloperExecutionsPage';
+import { WorkflowExecutionsPage } from './ui/WorkflowExecutionsPage';
 
-export { buildDeveloperExecutionHttpAdapter } from './adapters/developerExecution';
-export type { IDeveloperExecutionService } from './ports';
+export { buildWorkflowExecutionHttpAdapter } from './adapters/workflowExecution';
+export type { IDeliveryExecutionService } from './ports';
 export { WorkflowExecutionGraph } from './ui/WorkflowExecutionGraph';
 export type { WorkflowExecutionGraphProps } from './ui/WorkflowExecutionGraph';
 export type * from './domain/workflowExecutionGraph';
-export type * from './domain/developerExecutionTrace';
+export type * from './domain/workflowExecutionTrace';
 export type {
-  DeveloperDeliveryObservation,
-  DeveloperDeliveryWait,
-  DeveloperExecution,
-  DeveloperExecutionLaunch,
-  DeveloperRemoteCheck,
-} from './domain/developerExecution';
-export { buildDeveloperExecutionResultsMarkdown } from './application/developerExecutionResults';
+  WaitObservation,
+  WorkflowWait,
+  WorkflowExecution,
+  WorkflowExecutionLaunch,
+  DeliveryRemoteCheck,
+} from './domain/workflowExecution';
+export { buildWorkflowExecutionResultsMarkdown } from './application/workflowExecutionResults';
 export { WorkflowResults } from './ui/WorkflowResults';
 export type { WorkflowResultsContextItem, WorkflowResultsProps } from './ui/WorkflowResults';
 
@@ -92,7 +92,7 @@ export const tingPlugin = definePlugin({
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/ting/workflows/runs',
-      component: DeveloperExecutionsPage,
+      component: WorkflowExecutionsPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,

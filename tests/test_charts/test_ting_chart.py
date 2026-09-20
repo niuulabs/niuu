@@ -67,19 +67,17 @@ class TestConfigMapTemplate:
         assert "guild_registry:" in template_yaml
         assert ".Values.guildRegistry.baseUrl" in template_yaml
 
-    def test_developer_delivery_wait_adapters_are_rendered_from_values(self, template_yaml):
+    def test_workflow_wait_adapters_are_rendered_from_values(self, template_yaml):
         values = yaml.safe_load((CHART_DIR / "values.yaml").read_text())
-        developer = values["developerExecution"]
-        assert developer["deliveryWaitRepositoryAdapter"].endswith(
-            "PostgresDeveloperDeliveryWaitRepository"
-        )
-        assert developer["deliveryWaitObserverAdapter"].endswith("ForgeDeveloperDeliveryObserver")
+        developer = values["workflowExecution"]
+        assert developer["deliveryWaitRepositoryAdapter"].endswith("PostgresWorkflowWaitRepository")
+        assert developer["deliveryWaitObserverAdapter"].endswith("ForgeWaitConditionObserver")
         assert developer["admissionRoles"] == ["volundr:developer"]
         assert "delivery_wait_repository_adapter:" in template_yaml
-        assert ".Values.developerExecution.deliveryWaitRepositoryAdapter" in template_yaml
+        assert ".Values.workflowExecution.deliveryWaitRepositoryAdapter" in template_yaml
         assert "delivery_wait_repository_kwargs:" in template_yaml
         assert "delivery_wait_observer_adapter:" in template_yaml
-        assert ".Values.developerExecution.deliveryWaitObserverAdapter" in template_yaml
+        assert ".Values.workflowExecution.deliveryWaitObserverAdapter" in template_yaml
         assert "delivery_wait_observer_kwargs:" in template_yaml
         assert "admission_roles:" in template_yaml
 

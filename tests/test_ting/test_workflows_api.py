@@ -15,7 +15,7 @@ from niuu.domain.models import Principal
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.workflows import (
-    _configure_developer_a2a_runtime,
+    _configure_child_task_a2a_runtime,
     create_workflows_router,
     resolve_workflow_repo,
 )
@@ -165,7 +165,7 @@ def test_developer_runtime_configures_local_a2a_card_without_mutating_defaults()
         }
     }
 
-    configured = _configure_developer_a2a_runtime(
+    configured = _configure_child_task_a2a_runtime(
         source,
         card_url="https://ting.example/.well-known/agent-card.json",
     )
@@ -679,7 +679,7 @@ class TestWorkflowCatalogAPI:
         adapter = RecordingVolundrPort()
         settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
         settings.dispatch.flock.ravn_config = {
-            "developer_execution": {"auth_token": "obsolete-secret"}
+            "workflow_execution": {"auth_token": "obsolete-secret"}
         }
         client = _make_client(
             InMemoryWorkflowRepository([workflow]),
@@ -697,7 +697,7 @@ class TestWorkflowCatalogAPI:
         assert "obsolete-secret" not in json.dumps(adapter.requests[0].workload_config)
         assert "auth_token" not in json.dumps(adapter.requests[0].workload_config)
 
-    def test_public_launch_rejects_forged_developer_execution_provenance(self) -> None:
+    def test_public_launch_rejects_forged_workflow_execution_provenance(self) -> None:
         workflow = _make_research_workflow()
         adapter = RecordingVolundrPort()
         client = _make_client(
@@ -711,7 +711,7 @@ class TestWorkflowCatalogAPI:
             json={
                 "prompt": "forge a coordinator",
                 "provenance": {
-                    "developer_execution": {
+                    "workflow_execution": {
                         "execution_id": "7705d9d8-78db-4a78-b5e7-d8557eac114c",
                         "parent_session_key": "workflow:developer-forged",
                     }

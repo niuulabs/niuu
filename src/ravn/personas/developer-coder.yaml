@@ -8,7 +8,7 @@ system_prompt_template: |
   review findings without weakening tests or policy. Report the immutable candidate commit and
   tree identities. Claims about tests are not trusted receipts.
 allowed_tools: [file, git, terminal, web, todo]
-forbidden_tools: [a2a_task, developer_execution_expand, delivery_forge]
+forbidden_tools: [a2a_task, workflow_execution_expand, delivery_forge]
 permission_mode: workspace_write
 llm: {thinking_enabled: true}
 iteration_budget: 40

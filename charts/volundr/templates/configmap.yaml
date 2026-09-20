@@ -426,16 +426,16 @@ data:
       mappings: []
       {{- end }}
 
-    developer_execution_credentials:
-      enabled: {{ .Values.developerExecutionCredentials.enabled | default false }}
-      projection_adapter: {{ .Values.developerExecutionCredentials.projectionAdapter | quote }}
+    workflow_execution_credentials:
+      enabled: {{ .Values.workflowExecutionCredentials.enabled | default false }}
+      projection_adapter: {{ .Values.workflowExecutionCredentials.projectionAdapter | quote }}
       projection_kwargs:
-        {{- toYaml (mergeOverwrite (dict "namespace" .Release.Namespace) (deepCopy (.Values.developerExecutionCredentials.projectionKwargs | default dict))) | nindent 8 }}
+        {{- toYaml (mergeOverwrite (dict "namespace" .Release.Namespace) (deepCopy (.Values.workflowExecutionCredentials.projectionKwargs | default dict))) | nindent 8 }}
       projection_secret_kwargs_env:
-        {{- toYaml (.Values.developerExecutionCredentials.projectionSecretKwargsEnv | default dict) | nindent 8 }}
-      refresh_interval_seconds: {{ .Values.developerExecutionCredentials.refreshIntervalSeconds | default 300 }}
+        {{- toYaml (.Values.workflowExecutionCredentials.projectionSecretKwargsEnv | default dict) | nindent 8 }}
+      refresh_interval_seconds: {{ .Values.workflowExecutionCredentials.refreshIntervalSeconds | default 300 }}
       admission_roles:
-        {{- toYaml (.Values.developerExecutionCredentials.admissionRoles | default (list "volundr:developer")) | nindent 8 }}
+        {{- toYaml (.Values.workflowExecutionCredentials.admissionRoles | default (list "volundr:developer")) | nindent 8 }}
 
     bifrost:
       url: {{ .Values.bifrost.url | quote }}

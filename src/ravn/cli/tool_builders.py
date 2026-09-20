@@ -129,7 +129,7 @@ def _build_tools(
         if workflow_sources:
             runtime_ctx["workflow_sources"] = workflow_sources
 
-    if settings.gateway.platform.enabled and include_groups & {"ravn", "a2a", "developer_delivery"}:
+    if settings.gateway.platform.enabled and include_groups & {"ravn", "a2a", "delivery"}:
         from ravn.adapters.agent_directory import (  # noqa: PLC0415
             GuildAgentDirectoryAdapter,
         )
@@ -139,11 +139,11 @@ def _build_tools(
         )
 
         platform = settings.gateway.platform
-        developer_execution_url = settings.developer_execution.base_url
+        workflow_execution_url = settings.workflow_execution.base_url
         allowed_origins = [
             platform.base_url,
             *platform.a2a_trusted_origins,
-            *([developer_execution_url] if developer_execution_url else []),
+            *([workflow_execution_url] if workflow_execution_url else []),
         ]
         peer_client = (
             HttpxJsonClient(
@@ -172,16 +172,16 @@ def _build_tools(
             platform.base_url,
             *platform.a2a_trusted_origins,
         ]
-        if "developer_delivery" in include_groups:
-            from ravn.adapters.developer_delivery_http import (  # noqa: PLC0415
+        if "delivery" in include_groups:
+            from ravn.adapters.delivery_http import (  # noqa: PLC0415
                 HttpDeliveryServiceClient,
-                HttpDeveloperExecutionClient,
+                HttpWorkflowExecutionClient,
             )
 
-            developer_execution = settings.developer_execution
+            workflow_execution = settings.workflow_execution
             delivery_client = peer_client
-            if developer_execution.execution_id:
-                execution_base_url = developer_execution.base_url or platform.base_url
+            if workflow_execution.execution_id:
+                execution_base_url = workflow_execution.base_url or platform.base_url
                 execution_origins = list(dict.fromkeys([execution_base_url, platform.base_url]))
                 if platform.anonymous_dev_mode:
                     execution_client = HttpxJsonClient(
@@ -189,27 +189,27 @@ def _build_tools(
                         timeout_seconds=platform.timeout,
                         allowed_origins=execution_origins,
                     )
-                elif developer_execution.auth_token_file:
+                elif workflow_execution.auth_token_file:
                     from niuu.adapters.outbound.http_auth import (  # noqa: PLC0415
                         FileBearerTokenAuthAdapter,
                     )
 
                     execution_client = HttpxJsonClient(
                         auth=FileBearerTokenAuthAdapter(
-                            token_file=developer_execution.auth_token_file
+                            token_file=workflow_execution.auth_token_file
                         ),
                         timeout_seconds=platform.timeout,
                         allowed_origins=execution_origins,
                     )
                 else:
                     raise RuntimeError(
-                        "developer_execution.auth_token_file is required for an owner-bound "
+                        "workflow_execution.auth_token_file is required for an owner-bound "
                         "coordinator session; static bearer tokens are not supported"
                     )
                 delivery_client = execution_client
-                runtime_ctx["developer_execution"] = HttpDeveloperExecutionClient(
+                runtime_ctx["workflow_execution"] = HttpWorkflowExecutionClient(
                     base_url=execution_base_url,
-                    execution_id=developer_execution.execution_id,
+                    execution_id=workflow_execution.execution_id,
                     client=execution_client,
                 )
             runtime_ctx["delivery_service"] = HttpDeliveryServiceClient(
@@ -224,18 +224,18 @@ def _build_tools(
         runtime_ctx["session_join_manager"] = session_join_manager
 
     persona_allowed = set(getattr(persona_config, "allowed_tools", None) or [])
-    needs_developer_execution = any(
-        name == "developer_execution" or name.startswith("developer_execution_")
+    needs_workflow_execution = any(
+        name == "workflow_execution" or name.startswith("workflow_execution_")
         for name in persona_allowed
     )
     needs_delivery_service = any(
         name in {"delivery_workspace", "delivery_forge", "delivery_evidence"}
         for name in persona_allowed
     )
-    if needs_developer_execution and runtime_ctx.get("developer_execution") is None:
+    if needs_workflow_execution and runtime_ctx.get("workflow_execution") is None:
         raise RuntimeError(
             "Persona requires durable developer execution tools, but an owner-bound "
-            "developer_execution runtime context is not configured"
+            "workflow_execution runtime context is not configured"
         )
     if needs_delivery_service and runtime_ctx.get("delivery_service") is None:
         raise RuntimeError(
@@ -315,14 +315,14 @@ def _build_tools(
         tools = [
             tool
             for tool in tools
-            if not tool.name.startswith("developer_execution_")
+            if not tool.name.startswith("workflow_execution_")
             and tool.name not in {"delivery_forge", "delivery_evidence"}
         ]
     if getattr(persona_config, "name", "") == "developer-integration-verifier":
         tools = [
             tool
             for tool in tools
-            if not tool.name.startswith("developer_execution_") and tool.name != "delivery_forge"
+            if not tool.name.startswith("workflow_execution_") and tool.name != "delivery_forge"
         ]
 
     # Narrow delivery_workspace to exactly the operations this persona's own

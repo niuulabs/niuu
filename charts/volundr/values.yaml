@@ -676,9 +676,9 @@ workloadIdentity:
   verifiers: []
   mappings: []
 
-developerExecutionCredentials:
+workflowExecutionCredentials:
   enabled: false
-  projectionAdapter: "volundr.adapters.outbound.developer_credential_k8s.KubernetesDeveloperCredentialProjection"
+  projectionAdapter: "volundr.adapters.outbound.execution_credential_k8s.KubernetesExecutionCredentialProjection"
   # Merged over the default `namespace: <release namespace>`. The chart's RBAC
   # only grants Secret create/patch/delete in the release namespace. If you set
   # `projectionKwargs.namespace` to another namespace you must create a Role
