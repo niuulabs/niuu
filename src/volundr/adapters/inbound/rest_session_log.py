@@ -1,8 +1,9 @@
 """REST adapter for the durable session event log (full-fidelity transcript).
 
-Two endpoints:
+Three endpoints:
   * ``POST /sessions/{id}/log``       — append frames (producer: skuld), idempotent
   * ``GET  /sessions/{id}/log``       — cursor replay (consumers: web, iOS)
+  * ``GET  /sessions/{id}/log/page``  — replay with raw cursor progress metadata
 
 The log is the transcript source of truth. Producers append every frame with a
 monotonic per-session ``seq``; consumers replay from ``?after=<seq>`` so a client
@@ -29,7 +30,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Path, Query, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from niuu.domain.transcript_reducer import is_read_path_excluded
 from skuld.channels import filter_internal_blocks
@@ -185,6 +186,16 @@ class SessionLogEntryResponse(BaseModel):
         )
 
 
+class SessionLogPageResponse(BaseModel):
+    """Public entries plus the cursor position of the raw batch that was scanned."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    entries: list[SessionLogEntryResponse]
+    scanned_through: int = Field(alias="scannedThrough")
+    has_more: bool = Field(alias="hasMore")
+
+
 def create_session_log_router(
     log_repository: SessionEventLogRepository,
     session_service: SessionService | None = None,
@@ -277,6 +288,35 @@ def create_session_log_router(
         await _check_access(request, session_id, "read")
         latest = await log_repository.latest_seq(session_id)
         return LogHeadResponse(latest_seq=latest)
+
+    @router.get(
+        "/sessions/{session_id}/log/page",
+        response_model=SessionLogPageResponse,
+        tags=["Events"],
+    )
+    async def replay_log_page(
+        request: Request,
+        session_id: UUID = Path(description="Session UUID to replay the log for"),
+        after: int = Query(default=0, ge=0),
+        limit: int = Query(default=DEFAULT_REPLAY_LIMIT, ge=1, le=MAX_REPLAY_LIMIT),
+        show_internal: bool = Query(default=default_show_internal),
+    ) -> SessionLogPageResponse:
+        """Return a public page while preserving progress through filtered raw rows."""
+        await _check_access(request, session_id, "read")
+        raw_entries = await log_repository.read_after(
+            session_id,
+            after_seq=after,
+            limit=limit,
+        )
+        streamable = [
+            entry for entry in raw_entries if not is_read_path_excluded(entry.kind, entry.payload)
+        ]
+        gated = _gate_entries(streamable, show_internal=show_internal)
+        return SessionLogPageResponse(
+            entries=[SessionLogEntryResponse.from_entry(entry) for entry in gated],
+            scanned_through=max((entry.seq for entry in raw_entries), default=after),
+            has_more=len(raw_entries) == limit,
+        )
 
     @router.get(
         "/sessions/{session_id}/log",

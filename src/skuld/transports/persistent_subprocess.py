@@ -43,7 +43,10 @@ from niuu.adapters.cli.runtime import (
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.slash_commands import build_slash_command_catalog, compose_slash_command_text
 from skuld.transports.claude_env import claude_spawn_env
-from skuld.transports.mcp_config import build_claude_mcp_config
+from skuld.transports.mcp_config import (
+    build_claude_mcp_config,
+    require_connected_mcp_servers,
+)
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
@@ -84,6 +87,8 @@ def _format_answer_message(questions: list[dict[str, Any]], answers: object) -> 
 class PersistentSubprocessTransport(CLITransport):
     """Long-lived Claude subprocess driven via stream-json stdin/stdout."""
 
+    supports_read_only_mcp_boundary = True
+
     def __init__(
         self,
         workspace_dir: str,
@@ -97,14 +102,18 @@ class PersistentSubprocessTransport(CLITransport):
         ask_user_question_enabled: bool = False,
         model_gateway_url: str = "",
         model_gateway_token: str = "",
+        read_only_mcp_only: bool = False,
+        allowed_mcp_tools: list[str] | None = None,
     ) -> None:
         super().__init__()
         self._model_gateway_url = model_gateway_url
         self._model_gateway_token = model_gateway_token
         self.workspace_dir = workspace_dir
         self._model = model
-        self._skip_permissions = skip_permissions
-        self._agent_teams = agent_teams
+        self._read_only_mcp_only = read_only_mcp_only
+        self._allowed_mcp_tools = list(allowed_mcp_tools or [])
+        self._skip_permissions = skip_permissions and not read_only_mcp_only
+        self._agent_teams = agent_teams and not read_only_mcp_only
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
         self._ask_user_question_enabled = ask_user_question_enabled
@@ -118,6 +127,8 @@ class PersistentSubprocessTransport(CLITransport):
         # Set when the current turn's ``result`` event arrives. ``None``
         # when no turn is awaiting completion.
         self._turn_done: asyncio.Event | None = None
+        self._reader_error: Exception | None = None
+        self._required_mcp_ready = not read_only_mcp_only
         # Seeding the session id makes the FIRST spawn pass ``--resume``,
         # which reattaches to an imported/external Claude session.
         self._session_id: str | None = resume_session_id or None
@@ -236,6 +247,8 @@ class PersistentSubprocessTransport(CLITransport):
             try:
                 await self._write_user_message(content)
                 await self._turn_done.wait()
+                if self._reader_error is not None:
+                    raise self._reader_error
             finally:
                 self._turn_done = None
 
@@ -292,7 +305,19 @@ class PersistentSubprocessTransport(CLITransport):
         ]
         if self._model:
             cmd.extend(["--model", self._model])
-        if self._ask_user_question_enabled:
+        if self._read_only_mcp_only:
+            cmd.extend(
+                [
+                    "--tools",
+                    "",
+                    "--strict-mcp-config",
+                    "--permission-mode",
+                    "dontAsk",
+                ]
+            )
+            if self._allowed_mcp_tools:
+                cmd.extend(["--allowedTools", ",".join(self._allowed_mcp_tools)])
+        elif self._ask_user_question_enabled:
             # Do NOT pass --permission-mode bypassPermissions in this mode —
             # bypass auto-allows every tool and gives us no way to intercept
             # AskUserQuestion. Instead route ALL permission requests over the
@@ -316,6 +341,8 @@ class PersistentSubprocessTransport(CLITransport):
         return cmd
 
     async def _spawn(self) -> None:
+        self._reader_error = None
+        self._required_mcp_ready = not self._read_only_mcp_only
         cmd = self._build_command()
         # Subscription auth by default (SKULD__CLAUDE_AUTH); the gateway when set.
         env = claude_spawn_env(
@@ -571,6 +598,16 @@ class PersistentSubprocessTransport(CLITransport):
                         self._session_id = sid
                     if data.get("subtype") == "init":
                         self._capture_init_commands(data)
+                        if self._read_only_mcp_only:
+                            require_connected_mcp_servers(
+                                data.get("mcp_servers"),
+                                {
+                                    str(server.get("name") or "")
+                                    for server in self._raw_mcp_servers
+                                    if server.get("name")
+                                },
+                            )
+                            self._required_mcp_ready = True
                 event = _filter_event(data)
                 if event is not None:
                     try:
@@ -587,12 +624,19 @@ class PersistentSubprocessTransport(CLITransport):
                         self._turn_done.set()
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
+            self._reader_error = exc
+            if self._read_only_mcp_only:
+                await _stop_process(proc)
             logger.warning(
                 "PersistentSubprocessTransport reader loop crashed",
                 exc_info=True,
             )
         finally:
+            if not self._required_mcp_ready and self._reader_error is None:
+                self._reader_error = RuntimeError(
+                    "Claude did not report required MCP server startup status"
+                )
             # Process exited unexpectedly — unblock any send_message
             # waiter so it returns instead of hanging forever.
             if self._turn_done is not None:

@@ -258,6 +258,16 @@ class TestSessionCanStop:
         )
         assert session.can_stop() is False
 
+    def test_can_stop_from_failed(self):
+        """A failed session may still own infrastructure that needs cleanup."""
+        session = Session(
+            name="test",
+            model="claude-3-opus",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.FAILED,
+        )
+        assert session.can_stop() is True
+
 
 class TestSessionCopyMethods:
     """Tests for Session copy/update methods."""

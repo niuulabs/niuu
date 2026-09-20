@@ -25,7 +25,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -39,6 +39,8 @@ if TYPE_CHECKING:
     from cli.services.docker_host import HostFacts
 
 DOCKER_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.docker_container.DockerContainerPodManager"
+VM_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.vm_pod_manager.VmPodManager"
+GIT_CONTRIBUTOR = "volundr.adapters.outbound.contributors.git.GitContributor"
 SECRET_INJECTION_CONTRIBUTOR = (
     "volundr.adapters.outbound.contributors.secrets.SecretInjectionContributor"
 )
@@ -185,10 +187,14 @@ def stack_settings_dict(settings: CLISettings) -> dict[str, Any]:
     docker_section = settings.docker.model_dump(mode="json")
     docker_section["compose_dir"] = str(compose_dir(settings))
     docker_section["data_dir"] = str(data_dir(settings))
-    return {
+    result = {
         "server": settings.server.model_dump(mode="json"),
         "docker": docker_section,
+        "pod_manager": settings.pod_manager.model_dump(mode="json"),
     }
+    if settings.compute is not None:
+        result["compute"] = settings.compute.model_dump(mode="json", exclude_none=True)
+    return result
 
 
 def sign_in_clients(settings: CLISettings) -> dict[str, dict[str, str]]:
@@ -283,6 +289,36 @@ def ensure_data_dirs(root: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
 
 
+def external_integration_mounts(
+    settings: CLISettings,
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Return mounts, catalog files, manifests, and Python roots for external packages."""
+    mounts: list[str] = []
+    definition_files: list[str] = []
+    manifest_files: list[str] = []
+    python_paths: list[str] = []
+
+    for index, integration in enumerate(settings.docker.external_integrations):
+        source = Path(integration.source_dir).expanduser().resolve()
+        target = PurePosixPath("/opt/niuu-external-integrations") / str(index)
+        for relative_name in integration.definition_files:
+            definition_files.append(str(target / PurePosixPath(relative_name)))
+        if integration.manifest_file:
+            manifest_files.append(str(target / PurePosixPath(integration.manifest_file)))
+        mounts.append(f"{source}:{target}:ro")
+        python_paths.append(str(target))
+
+    return mounts, definition_files, manifest_files, python_paths
+
+
+def read_only_file_mounts(settings: CLISettings) -> list[str]:
+    """Return explicit deployment-owned file mounts without opening their contents."""
+    return [
+        f"{Path(item.source_file).expanduser()}:{PurePosixPath(item.target_file)}:ro"
+        for item in settings.docker.read_only_files
+    ]
+
+
 def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, str]:
     """Environment for the ``niuu`` container (values reference the env file)."""
     sub = data_subdirs(data_root)
@@ -346,13 +382,15 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
                 },
             }
         ),
-        # The secret-injection contributor turns a session's integration
-        # connections into credential mappings for the adapter above. Workload
-        # identity needs a Kubernetes service-account token issuer; on a single
-        # host the session runtime has none, so it is switched off explicitly
-        # rather than left to emit a volume nothing can mount.
+        # Git resolves the attached source-control integration into authenticated
+        # clone metadata. Secret injection then turns the same integration into
+        # the credential file mounted into the session. Workload identity needs a
+        # Kubernetes service-account token issuer; on a single host the session
+        # runtime has none, so it is switched off explicitly rather than left to
+        # emit a volume nothing can mount.
         "SESSION_CONTRIBUTORS": json.dumps(
             [
+                {"adapter": GIT_CONTRIBUTOR, "kwargs": {}},
                 {"adapter": SECRET_INJECTION_CONTRIBUTOR, "kwargs": {}},
                 {"adapter": WORKLOAD_IDENTITY_CONTRIBUTOR, "kwargs": {"enabled": False}},
             ]
@@ -380,6 +418,37 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
     }
     if model_gateway_providers(settings):
         env["NIUU_BIFROST"] = json.dumps({"providers": bifrost_providers(settings)})
+    _, definition_files, manifest_files, python_paths = external_integration_mounts(settings)
+    if definition_files:
+        env["INTEGRATIONS__DEFINITION_FILES"] = json.dumps(definition_files)
+    if manifest_files:
+        env["INTEGRATIONS__MODULE_MANIFEST_FILES"] = json.dumps(manifest_files)
+    if python_paths:
+        env["PYTHONPATH"] = ":".join(python_paths)
+    if settings.compute is not None:
+        compute = settings.compute.model_dump(mode="json", exclude_none=True)
+        pod_manager_kwargs = settings.pod_manager.adapter_kwargs()
+        cli_pod_manager = settings.pod_manager.model_dump(mode="json")
+        service_pod_manager = {
+            "adapter": settings.pod_manager.adapter,
+            "runtime_backend": settings.pod_manager.runtime_backend or "vm",
+            "kwargs": pod_manager_kwargs,
+        }
+        env.update(
+            {
+                # CLISettings consumes the NIUU-prefixed value. Volundr's service
+                # settings consume the unprefixed value in the same process. Use
+                # complete JSON objects so Any-typed adapter kwargs retain numbers
+                # and booleans instead of becoming strings in nested env parsing.
+                "NIUU_COMPUTE": json.dumps(compute),
+                "COMPUTE": json.dumps(compute),
+                "NIUU_POD_MANAGER": json.dumps(cli_pod_manager),
+                # Override the Docker-manager default declared above. Nested
+                # settings have higher priority than the root JSON value.
+                "NIUU_POD_MANAGER__ADAPTER": settings.pod_manager.adapter,
+                "POD_MANAGER": json.dumps(service_pod_manager),
+            }
+        )
     return env
 
 
@@ -443,6 +512,8 @@ def render_compose(settings: CLISettings) -> dict[str, Any]:
         f"sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:{port}/health', timeout=5)"
         '.status == 200 else 1)"'
     )
+    external_mounts, _, _, _ = external_integration_mounts(settings)
+    secret_file_mounts = read_only_file_mounts(settings)
     services: dict[str, Any] = {
         "postgres": {
             "image": "${NIUU_POSTGRES_IMAGE}",
@@ -475,6 +546,8 @@ def render_compose(settings: CLISettings) -> dict[str, Any]:
                 f"{data_root}:{data_root}",
                 f"{bundle_dir}:{bundle_dir}",
                 f"{settings.docker.socket_path}:/var/run/docker.sock",
+                *external_mounts,
+                *secret_file_mounts,
             ],
             "ports": [f"${{NIUU_BIND_HOST}}:{port}:{port}"],
             "extra_hosts": ["host.docker.internal:host-gateway"],
@@ -588,7 +661,11 @@ def write_bundle(
 
     compose_doc = render_compose(settings)
     paths.compose_file.write_text(yaml.safe_dump(compose_doc, sort_keys=False))
-    socket_gid = docker_socket_gid(DockerPreflightConfig(data_dir=settings.docker.data_dir))
+    socket_gid = docker_socket_gid(
+        DockerPreflightConfig(data_dir=settings.docker.data_dir),
+        socket_path=settings.docker.socket_path,
+        probe_image=settings.docker.image,
+    )
     paths.env_file.write_text(
         render_env(settings, external_host=external_host, docker_gid=socket_gid)
     )

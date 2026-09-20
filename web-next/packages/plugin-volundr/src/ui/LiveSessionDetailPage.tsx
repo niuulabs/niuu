@@ -4071,6 +4071,14 @@ function LiveSessionDetailPageInner({
           >
             Session failed: <LinkedText text={liveSession.error} />
           </div>
+        ) : liveSession?.error && isSessionBooting(sessionStatus) ? (
+          <div
+            role="status"
+            className="niuu:border-b niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-2 niuu:text-xs niuu:text-secondary"
+            data-testid="session-provisioning-detail"
+          >
+            Provisioning: <LinkedText text={liveSession.error} />
+          </div>
         ) : null}
 
         <div className="niuu:min-h-0 niuu:flex-1 niuu:overflow-hidden">

@@ -67,6 +67,34 @@ class DatabaseConfig(BaseModel):
         return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
 
 
+class WorkflowRepositoryConfig(BaseModel):
+    """Dynamic workflow definition repository configuration."""
+
+    adapter: str = Field(
+        default="ting.adapters.filesystem_workflows.FilesystemWorkflowRepository",
+        description="Fully qualified WorkflowRepository adapter class.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Plain keyword arguments passed to the configured adapter.",
+    )
+    seed_bundled: bool = Field(
+        default=False,
+        description=(
+            "Seed packaged workflows into the selected repository. Disable for the "
+            "filesystem adapter, which reads packaged workflows directly."
+        ),
+    )
+
+
+class WorkflowImportConfig(BaseModel):
+    """Resource bounds for untrusted workflow bundle imports."""
+
+    max_upload_bytes: int = Field(default=4 * 1024 * 1024, ge=1)
+    max_expanded_bytes: int = Field(default=16 * 1024 * 1024, ge=1)
+    max_entries: int = Field(default=128, ge=1)
+
+
 class LoggingConfig(BaseModel):
     """Logging configuration."""
 
@@ -519,6 +547,10 @@ class AuthConfig(BaseModel):
         default="dev-user",
         description="User ID for anonymous dev mode fallback.",
     )
+    default_tenant_id: str = Field(
+        default="",
+        description="Tenant for anonymous dev mode; align with the connected Forge identity.",
+    )
 
 
 class WebhookConfig(BaseModel):
@@ -897,6 +929,11 @@ class A2AConfig(BaseModel):
         ge=0,
         description="Cache-Control max-age for the served agent card.",
     )
+    launch_lease_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        description="Lease duration for idempotent A2A workflow launch reservations.",
+    )
     push_encryption_key: SecretStr = Field(
         default=SecretStr(""),
         description="Fernet key used to encrypt callback credentials at rest.",
@@ -995,6 +1032,71 @@ class A2AConfig(BaseModel):
     )
 
 
+class DeveloperExecutionConfig(BaseModel):
+    """Durable developer-delivery execution and Ravn A2A gateway settings."""
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable durable developer delivery after workload identity, the Ravn A2A "
+            "gateway, Forge evidence policy, and delivery adapters are configured."
+        ),
+    )
+    gateway_adapter: str = Field(
+        default="ravn.adapters.developer_a2a.ConfiguredRavnDeveloperA2AGateway",
+        description="Ravn-owned A2A child gateway adapter.",
+    )
+    gateway_kwargs: dict[str, Any] = Field(default_factory=dict)
+    admission_roles: list[str] = Field(
+        default_factory=lambda: ["volundr:developer"],
+        min_length=1,
+        description=(
+            "Configured gateway admission roles for Ting-issued developer workload "
+            "credentials. These roles are never accepted from execution descriptors."
+        ),
+    )
+    delivery_wait_repository_adapter: str = Field(
+        default="ting.adapters.postgres_developer_delivery_waits."
+        "PostgresDeveloperDeliveryWaitRepository",
+        description="Durable repository adapter for exact developer delivery waits.",
+    )
+    delivery_wait_repository_kwargs: dict[str, Any] = Field(default_factory=dict)
+    delivery_wait_observer_adapter: str = Field(
+        default="ting.adapters.developer_delivery_observer.ForgeDeveloperDeliveryObserver",
+        description="Read-only remote delivery observation adapter.",
+    )
+    delivery_wait_observer_kwargs: dict[str, Any] = Field(default_factory=dict)
+    review_authenticator_adapter: str = Field(default="")
+    review_authenticator_kwargs: dict[str, Any] = Field(default_factory=dict)
+    review_authenticator_secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+    review_producers: dict[str, str] = Field(
+        default_factory=lambda: {
+            "code": "developer-code-reviewer",
+            "security": "developer-security-reviewer",
+            "adversarial": "developer-adversarial-reviewer",
+        }
+    )
+    integration_review_producer: str = Field(default="developer-integration-verifier")
+    worker_id: str = Field(default="ting-developer-execution")
+    launch_claim_limit: int = Field(default=4, ge=1, le=100)
+    reconcile_limit: int = Field(default=100, ge=1, le=1000)
+    lease_seconds: float = Field(default=60.0, gt=0)
+    reconcile_interval_seconds: float = Field(default=5.0, gt=0)
+    default_budget_units: int = Field(default=100, ge=1)
+    default_deadline_seconds: int = Field(default=86400, ge=60)
+    list_page_size: int = Field(default=50, ge=1, le=200)
+    evidence_policy_id: str = Field(default="developer-workstream", min_length=1)
+    integration_policy_id: str = Field(default="developer-integration", min_length=1)
+
+    @field_validator("admission_roles")
+    @classmethod
+    def _validate_admission_roles(cls, roles: list[str]) -> list[str]:
+        normalized = [role.strip() for role in roles]
+        if any(not role for role in normalized):
+            raise ValueError("developer execution admission roles must be non-empty")
+        return normalized
+
+
 class Settings(BaseSettings):
     """Application settings.
 
@@ -1019,6 +1121,15 @@ class Settings(BaseSettings):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     cors: CorsConfig = Field(default_factory=CorsConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    workflow_repository: WorkflowRepositoryConfig = Field(
+        default_factory=lambda: WorkflowRepositoryConfig(
+            kwargs={
+                "catalog_path": "~/.niuu/workflows",
+                "create_directory": True,
+            }
+        )
+    )
+    workflow_import: WorkflowImportConfig = Field(default_factory=WorkflowImportConfig)
     volundr: VolundrConfig = Field(default_factory=VolundrConfig)
     bifrost: BifrostConfig = Field(default_factory=BifrostConfig)
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
@@ -1047,6 +1158,7 @@ class Settings(BaseSettings):
     event_bus: EventBusConfig = Field(default_factory=EventBusConfig)
     events: EventsConfig = Field(default_factory=EventsConfig)
     a2a: A2AConfig = Field(default_factory=A2AConfig)
+    developer_execution: DeveloperExecutionConfig = Field(default_factory=DeveloperExecutionConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)

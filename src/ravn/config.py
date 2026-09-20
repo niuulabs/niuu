@@ -1172,6 +1172,13 @@ class PlatformToolsConfig(BaseModel):
             "projected workload identity."
         ),
     )
+    anonymous_dev_mode: bool = Field(
+        default=False,
+        description=(
+            "Explicitly use an unauthenticated platform HTTP client for local development. "
+            "Production callers should leave this disabled and use a PAT or workload identity."
+        ),
+    )
     workload_token_file: str = Field(
         default="/var/run/secrets/kubernetes.io/serviceaccount/token",
         description="Projected workload identity token file used when pat_token is not set.",
@@ -1573,6 +1580,15 @@ class InitiativeConfig(BaseModel):
     queue_journal_path: str = Field(
         default="~/.ravn/daemon/queue.json",
         description="Path to the queue persistence journal.",
+    )
+    workflow_event_dedupe_max_entries: int = Field(
+        default=100_000,
+        ge=1,
+        description=(
+            "Maximum exact workflow mesh event IDs retained in the durable queue journal. "
+            "Size this for the full session so completed stages remain idempotent across "
+            "transport retries and daemon restarts."
+        ),
     )
     default_output_mode: str = Field(
         default="silent",
@@ -3607,6 +3623,7 @@ class WorkflowRuntimeConfig(BaseModel):
     version: str = ""
     scope: str = ""
     initial_context: str = ""
+    result_schema: dict[str, Any] = Field(default_factory=dict)
     graph: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -4442,6 +4459,16 @@ class APIAuthenticationConfig(BaseModel):
     kwargs: dict[str, Any] = Field(default_factory=dict)
 
 
+class DeveloperExecutionClientConfig(BaseModel):
+    """Owner-bound coordinator context injected into one developer session."""
+
+    enabled: bool = False
+    execution_id: str = ""
+    base_url: str = ""
+    auth_token: str = Field(default="", repr=False)
+    auth_token_file: str = ""
+
+
 class Settings(BaseSettings):
     """Ravn application settings.
 
@@ -4450,6 +4477,9 @@ class Settings(BaseSettings):
     """
 
     api_auth: APIAuthenticationConfig = Field(default_factory=APIAuthenticationConfig)
+    developer_execution: DeveloperExecutionClientConfig = Field(
+        default_factory=DeveloperExecutionClientConfig
+    )
 
     model_config = SettingsConfigDict(
         yaml_file_encoding="utf-8",

@@ -12,7 +12,9 @@ export interface ParsedWorkflowEdgeLabel {
 export type WorkflowPersonaModelConflicts = Record<string, string[]>;
 
 const REENTRY_EVENT_PATTERN =
-  /(?:^|[._-])(changes[_-]?requested|retry|rework|requeue|rerun|reopen)(?:$|[._-])/i;
+  /(?:^|[._-])(changes[_-]?requested|repair|retry|rework|requeue|rerun|reopen)(?:$|[._-])/i;
+const PLAN_REVIEW_FEEDBACK_EVENT_PATTERN = /^plan[._-]review[._-]completed$/i;
+const DELIVERY_WAIT_RESUME_EVENT_PATTERN = /^developer[._-]delivery[._-]observed$/i;
 
 export function parseWorkflowEdgeLabel(label?: string | null): ParsedWorkflowEdgeLabel | null {
   if (!label) return null;
@@ -26,7 +28,12 @@ export function parseWorkflowEdgeLabel(label?: string | null): ParsedWorkflowEdg
 
 export function isReentryEventType(eventType?: string | null): boolean {
   if (!eventType) return false;
-  return REENTRY_EVENT_PATTERN.test(eventType.trim().toLowerCase());
+  const normalized = eventType.trim().toLowerCase();
+  return (
+    REENTRY_EVENT_PATTERN.test(normalized) ||
+    PLAN_REVIEW_FEEDBACK_EVENT_PATTERN.test(normalized) ||
+    DELIVERY_WAIT_RESUME_EVENT_PATTERN.test(normalized)
+  );
 }
 
 export function isReentryEdge(edge: Pick<WorkflowEdge, 'label'>): boolean {

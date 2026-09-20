@@ -170,6 +170,55 @@ def test_get_nonexistent_persona_returns_404(client: TestClient) -> None:
     assert resp.status_code == 404
 
 
+def test_get_current_portable_persona_returns_raw_source_revision(
+    client_no_builtin: TestClient,
+    tmp_persona_dir: Path,
+) -> None:
+    write_persona(tmp_persona_dir, "test-agent", _CUSTOM_PERSONA)
+
+    resp = client_no_builtin.get("/api/v1/ravn/personas/test-agent/portable")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == "test-agent"
+    assert data["revision"].startswith("content-")
+    assert data["definition"] == _CUSTOM_PERSONA
+
+
+def test_get_exact_portable_revision_returns_same_source(
+    client_no_builtin: TestClient,
+    tmp_persona_dir: Path,
+) -> None:
+    write_persona(tmp_persona_dir, "test-agent", _CUSTOM_PERSONA)
+    current = client_no_builtin.get("/api/v1/ravn/personas/test-agent/portable").json()
+
+    resp = client_no_builtin.get(
+        f"/api/v1/ravn/personas/test-agent/revisions/{current['revision']}"
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == current
+
+
+def test_get_portable_persona_reports_nonportable_executor(
+    client_no_builtin: TestClient,
+    tmp_persona_dir: Path,
+) -> None:
+    write_persona(
+        tmp_persona_dir,
+        "bound-agent",
+        {
+            "name": "bound-agent",
+            "executor": {"adapter": "local.Executor", "kwargs": {"token": "secret"}},
+        },
+    )
+
+    resp = client_no_builtin.get("/api/v1/ravn/personas/bound-agent/portable")
+
+    assert resp.status_code == 422
+    assert "local executor binding" in resp.json()["detail"]
+
+
 # ---------------------------------------------------------------------------
 # GET /api/v1/ravn/personas/{name}/yaml — raw YAML
 # ---------------------------------------------------------------------------

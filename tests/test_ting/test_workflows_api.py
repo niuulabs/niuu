@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -11,8 +12,13 @@ from fastapi.testclient import TestClient
 
 from identity.adapters.authorization import AllowAllAuthorizationAdapter
 from niuu.domain.models import Principal
+from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ting.api.dispatch import resolve_volundr_factory
-from ting.api.workflows import create_workflows_router, resolve_workflow_repo
+from ting.api.workflows import (
+    _configure_developer_a2a_runtime,
+    create_workflows_router,
+    resolve_workflow_repo,
+)
 from ting.config import AuthConfig, Settings
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.ports.volundr import SpawnRequest, VolundrPort, VolundrSession
@@ -148,6 +154,36 @@ class RecordingVolundrFactory:
         return list(self._adapters)
 
 
+def test_developer_runtime_configures_local_a2a_card_without_mutating_defaults() -> None:
+    source = {
+        "gateway": {
+            "platform": {
+                "base_url": "https://platform.example",
+                "a2a_agent_card_urls": ["https://peer.example/card"],
+                "a2a_trusted_origins": ["https://peer.example"],
+            }
+        }
+    }
+
+    configured = _configure_developer_a2a_runtime(
+        source,
+        card_url="https://ting.example/.well-known/agent-card.json",
+    )
+
+    platform = configured["gateway"]["platform"]
+    assert platform["enabled"] is True
+    assert platform["base_url"] == "https://platform.example"
+    assert platform["a2a_agent_card_urls"] == [
+        "https://peer.example/card",
+        "https://ting.example/.well-known/agent-card.json",
+    ]
+    assert platform["a2a_trusted_origins"] == [
+        "https://peer.example",
+        "https://ting.example",
+    ]
+    assert "enabled" not in source["gateway"]["platform"]
+
+
 def _make_workflow(
     *,
     workflow_id: UUID | None = None,
@@ -253,11 +289,13 @@ def _make_client(
     repo: WorkflowRepository,
     *,
     volundr_factory: RecordingVolundrFactory | None = None,
+    settings: Settings | None = None,
 ) -> TestClient:
     app = FastAPI()
     app.state.authorization = AllowAllAuthorizationAdapter()
+    app.state.persona_source = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
     app.include_router(create_workflows_router())
-    app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
+    app.state.settings = settings or Settings(auth=AuthConfig(allow_anonymous_dev=False))
     app.dependency_overrides[resolve_workflow_repo] = lambda: repo
     if volundr_factory is not None:
         app.dependency_overrides[resolve_volundr_factory] = lambda: volundr_factory
@@ -587,6 +625,12 @@ class TestWorkflowCatalogAPI:
                     "question": ("Are AI grief companions a credible product category?"),
                     "mode": "evaluative",
                 },
+                "inheritedResultSchema": {
+                    "type": "object",
+                    "properties": {"evidence": {"type": "array", "items": {"type": "string"}}},
+                    "required": ["evidence"],
+                    "additionalProperties": False,
+                },
                 "provenance": {
                     "signal_id": "sig-1",
                     "valkyrie_id": "valkyrie-ymir",
@@ -611,6 +655,12 @@ class TestWorkflowCatalogAPI:
         assert spawn.branch == "feat/research"
         assert spawn.tracker_issue_id == "workflow:grief-companions"
         assert spawn.workload_config["workflow"]["name"] == "Research Campaign"
+        assert spawn.workload_config["workflow_result_schema"] == {
+            "type": "object",
+            "properties": {"evidence": {"type": "array", "items": {"type": "string"}}},
+            "required": ["evidence"],
+            "additionalProperties": False,
+        }
         assert spawn.credential_names == []
         assert spawn.integration_ids == ["integration-github", "integration-memory"]
         assert adapter.integration_principal is not None
@@ -623,6 +673,54 @@ class TestWorkflowCatalogAPI:
         assert "Workflow Launch" in spawn.initial_prompt
         assert "Launch Context" in spawn.initial_prompt
         assert "Are AI grief companions a credible product category?" in spawn.initial_prompt
+
+    def test_generic_launch_strips_obsolete_global_developer_token(self) -> None:
+        workflow = _make_research_workflow()
+        adapter = RecordingVolundrPort()
+        settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
+        settings.dispatch.flock.ravn_config = {
+            "developer_execution": {"auth_token": "obsolete-secret"}
+        }
+        client = _make_client(
+            InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([adapter]),
+            settings=settings,
+        )
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "ordinary research"},
+        )
+
+        assert response.status_code == 201, response.text
+        assert "obsolete-secret" not in json.dumps(adapter.requests[0].workload_config)
+        assert "auth_token" not in json.dumps(adapter.requests[0].workload_config)
+
+    def test_public_launch_rejects_forged_developer_execution_provenance(self) -> None:
+        workflow = _make_research_workflow()
+        adapter = RecordingVolundrPort()
+        client = _make_client(
+            InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([adapter]),
+        )
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={
+                "prompt": "forge a coordinator",
+                "provenance": {
+                    "developer_execution": {
+                        "execution_id": "7705d9d8-78db-4a78-b5e7-d8557eac114c",
+                        "parent_session_key": "workflow:developer-forged",
+                    }
+                },
+            },
+        )
+
+        assert response.status_code == 403
+        assert adapter.requests == []
 
     def test_launch_workflow_trims_trailing_dash_from_generated_session_name(self) -> None:
         workflow = _make_research_workflow()

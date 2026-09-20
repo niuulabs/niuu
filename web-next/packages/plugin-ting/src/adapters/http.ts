@@ -8,7 +8,8 @@
  * @niuulabs/query (get / post / put / patch / delete methods).
  */
 
-import type { ApiClient } from '@niuulabs/query';
+import { ApiClientError, getAuthHeaders, type ApiClient } from '@niuulabs/query';
+import { WorkflowRevisionConflictError } from '../ports';
 import type {
   ITingService,
   IDispatcherService,
@@ -49,6 +50,10 @@ import type {
   AuditEntry,
   AuditFilter,
   ImportProjectOptions,
+  WorkflowExportFormat,
+  WorkflowExport,
+  WorkflowImportSource,
+  WorkflowImportPreview,
 } from '../ports';
 import type { Saga, Phase, Run } from '../domain/saga';
 import type { DispatcherState } from '../domain/dispatcher';
@@ -271,6 +276,8 @@ interface RawDispatchCluster {
 }
 
 interface RawWorkflow {
+  schema_version?: 1 | 2;
+  workflow_dependencies?: Workflow['workflowDependencies'];
   id: string;
   name: string;
   description: string;
@@ -282,6 +289,27 @@ interface RawWorkflow {
   edges: Workflow['edges'];
   resourceBindings?: Workflow['resourceBindings'];
   resource_bindings?: Workflow['resourceBindings'];
+  graph?: Record<string, unknown>;
+  personaDependencies?: Workflow['personaDependencies'];
+  persona_dependencies?: Workflow['personaDependencies'];
+  revision?: string | null;
+  readOnly?: boolean;
+  read_only?: boolean;
+  canonicalYaml?: string;
+  canonical_yaml?: string;
+  requirements?: Workflow['requirements'];
+}
+
+interface RawWorkflowImportPreview {
+  workflows?: WorkflowImportPreview['workflows'];
+  workflow: WorkflowImportPreview['workflow'];
+  personas: WorkflowImportPreview['personas'];
+  requirements?: WorkflowImportPreview['requirements'];
+  errors?: string[];
+  canApply?: boolean;
+  can_apply?: boolean;
+  previewDigest?: string;
+  preview_digest?: string;
 }
 
 interface RawWorkflowLaunchResult {
@@ -716,6 +744,8 @@ function toWorkflow(raw: RawWorkflow): Workflow {
   });
 
   return {
+    schemaVersion: raw.schema_version,
+    workflowDependencies: raw.workflow_dependencies ?? {},
     id: raw.id,
     name: raw.name,
     description: raw.description || undefined,
@@ -726,6 +756,12 @@ function toWorkflow(raw: RawWorkflow): Workflow {
     nodes,
     edges,
     resourceBindings: raw.resourceBindings ?? raw.resource_bindings ?? [],
+    graph: raw.graph,
+    personaDependencies: raw.personaDependencies ?? raw.persona_dependencies ?? {},
+    revision: raw.revision ?? null,
+    readOnly: raw.readOnly ?? raw.read_only ?? false,
+    canonicalYaml: raw.canonicalYaml ?? raw.canonical_yaml,
+    requirements: raw.requirements ?? [],
   };
 }
 
@@ -739,6 +775,79 @@ function toWorkflowBody(workflow: Workflow): Record<string, unknown> {
     nodes: workflow.nodes,
     edges: workflow.edges,
     resourceBindings: workflow.resourceBindings ?? [],
+    graph: {
+      ...(workflow.graph ?? {}),
+      tags: workflow.tags ?? [],
+      nodes: workflow.nodes,
+      edges: workflow.edges,
+      resourceBindings: workflow.resourceBindings ?? [],
+    },
+    persona_dependencies: workflow.personaDependencies ?? {},
+    schema_version: workflow.schemaVersion ?? 1,
+    workflow_dependencies: workflow.workflowDependencies ?? {},
+    expected_revision: workflow.revision ?? undefined,
+    refresh_personas: workflow.refreshPersonas ?? [],
+  };
+}
+
+function toWorkflowImportBody(request: WorkflowImportSource): Record<string, unknown> {
+  return {
+    content: request.content,
+    filename: request.filename,
+    mappings: request.mappings ?? {},
+    bindings: request.bindings ?? {},
+    mode: request.mode ?? 'copy',
+    workflow_id: request.workflowId,
+    expected_revision: request.expectedRevision,
+    preview_digest: request.previewDigest,
+  };
+}
+
+function toWorkflowImportPreview(raw: RawWorkflowImportPreview): WorkflowImportPreview {
+  return {
+    ...(raw.workflows ? { workflows: raw.workflows } : {}),
+    workflow: raw.workflow,
+    personas: raw.personas,
+    requirements: raw.requirements ?? [],
+    errors: raw.errors ?? [],
+    canApply: raw.canApply ?? raw.can_apply ?? false,
+    previewDigest: raw.previewDigest ?? raw.preview_digest ?? '',
+  };
+}
+
+function exportFilename(
+  disposition: string | null,
+  workflowId: string,
+  format: WorkflowExportFormat,
+) {
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition ?? '')?.[1];
+  if (encoded) return decodeURIComponent(encoded);
+  const plain = /filename="?([^";]+)"?/i.exec(disposition ?? '')?.[1];
+  if (plain) return plain;
+  return `${workflowId}.${format === 'bundle' ? 'zip' : 'yaml'}`;
+}
+
+async function exportWorkflowFile(
+  client: ApiClient,
+  id: string,
+  format: WorkflowExportFormat,
+): Promise<WorkflowExport> {
+  if (!client.basePath) {
+    throw new Error('Workflow export requires an HTTP client with a basePath.');
+  }
+  const response = await fetch(
+    `${client.basePath}/workflows/${encodeURIComponent(id)}/export?format=${format}`,
+    { headers: getAuthHeaders() },
+  );
+  if (!response.ok) {
+    const detail = (await response.text()).trim() || response.statusText;
+    throw new ApiClientError(`API request failed: ${response.status}`, response.status, detail);
+  }
+  const data = await response.blob();
+  return {
+    data,
+    filename: exportFilename(response.headers.get('Content-Disposition'), id, format),
+    mediaType: response.headers.get('Content-Type') ?? data.type,
   };
 }
 
@@ -1282,18 +1391,26 @@ export function buildWorkflowHttpAdapter(client: ApiClient): IWorkflowService {
       try {
         const raw = await client.get<RawWorkflow>(`/workflows/${encodeURIComponent(id)}`);
         return toWorkflow(raw);
-      } catch {
-        return null;
+      } catch (error) {
+        if (error instanceof ApiClientError && error.status === 404) return null;
+        throw error;
       }
     },
 
     async saveWorkflow(workflow: Workflow) {
+      if (workflow.readOnly) {
+        throw new Error('Bundled workflows are read-only. Create an editable copy first.');
+      }
       const body = toWorkflowBody(workflow);
       let existing: RawWorkflow | null;
       try {
         existing = await client.get<RawWorkflow>(`/workflows/${encodeURIComponent(workflow.id)}`);
-      } catch {
-        existing = null;
+      } catch (error) {
+        if (error instanceof ApiClientError && error.status === 404) {
+          existing = null;
+        } else {
+          throw error;
+        }
       }
 
       if (existing) {
@@ -1304,17 +1421,40 @@ export function buildWorkflowHttpAdapter(client: ApiClient): IWorkflowService {
           );
           return toWorkflow(raw);
         } catch (error) {
-          if (existing.scope !== 'system') throw error;
+          if (error instanceof ApiClientError && error.status === 409) {
+            throw new WorkflowRevisionConflictError(error.detail);
+          }
+          throw error;
         }
       }
 
-      const createBody = existing?.scope === 'system' ? { ...body, scope: 'user' } : body;
+      const createBody = workflow.copyFrom ? { ...body, copy_from: workflow.copyFrom } : body;
       const raw = await client.post<RawWorkflow>('/workflows', createBody);
       return toWorkflow(raw);
     },
 
     async deleteWorkflow(id: string) {
       await client.delete<void>(`/workflows/${encodeURIComponent(id)}`);
+    },
+
+    exportWorkflow(id: string, format: WorkflowExportFormat) {
+      return exportWorkflowFile(client, id, format);
+    },
+
+    async previewWorkflowImport(request: WorkflowImportSource) {
+      const raw = await client.post<RawWorkflowImportPreview>(
+        '/workflows/imports/preview',
+        toWorkflowImportBody(request),
+      );
+      return toWorkflowImportPreview(raw);
+    },
+
+    async applyWorkflowImport(request: WorkflowImportSource) {
+      const raw = await client.post<RawWorkflow>(
+        '/workflows/imports/apply',
+        toWorkflowImportBody(request),
+      );
+      return toWorkflow(raw);
     },
 
     async launchWorkflow(workflowId: string, request: WorkflowLaunchRequest) {

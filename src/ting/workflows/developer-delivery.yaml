@@ -1,0 +1,276 @@
+schema_version: 2
+id: ca01b422-7ab7-4614-901b-8784ef65c76e
+name: Developer Delivery
+description: Plan, delegate, verify, integrate, publish, and merge one repository change using durable child workflows and typed evidence.
+version: 1.0.0
+persona_dependencies:
+  developer-coordinator:
+    id: developer-coordinator
+    revision: content-ae0e3b0fdb145487
+    digest: sha256:ae0e3b0fdb145487ee9bc43b20eb28a883a1239d5ca35e4a7ef56bdf352d93ed
+    path: personas/developer-coordinator.yaml
+  developer-analyst:
+    id: developer-analyst
+    revision: content-00aa4026904f070d
+    digest: sha256:00aa4026904f070dda97baf44f3720076b3c47361e452417ffcbf25345070e0f
+    path: personas/developer-analyst.yaml
+  developer-architecture-reviewer:
+    id: developer-architecture-reviewer
+    revision: content-31b0fdd1c6b3226c
+    digest: sha256:31b0fdd1c6b3226c67f092403fcdb973452981de857959a45f283c1272996b7f
+    path: personas/developer-architecture-reviewer.yaml
+  developer-correctness-reviewer:
+    id: developer-correctness-reviewer
+    revision: content-8f360edd60787644
+    digest: sha256:8f360edd607876442b6a3f926723407faa01a9b40fe6c9729eade761a48263b3
+    path: personas/developer-correctness-reviewer.yaml
+  developer-security-plan-reviewer:
+    id: developer-security-plan-reviewer
+    revision: content-0b502c246b1819da
+    digest: sha256:0b502c246b1819da85facb13ecd18e44ea9b9996b85a1da277730c742407ff0d
+    path: personas/developer-security-plan-reviewer.yaml
+  developer-integration-verifier:
+    id: developer-integration-verifier
+    revision: content-1763a45bea430a1d
+    digest: sha256:1763a45bea430a1d5a2f0d9d9d136a68e44412576185ff59da03a669238d14e3
+    path: personas/developer-integration-verifier.yaml
+workflow_dependencies:
+  workstream:
+    id: 98133eab-cd89-44d1-b32d-26c82f99dddc
+    revision: sha256:4391d17b29a07985083e2ffe1cd7987801e03c996552c68e3d233470baa3eda2
+    digest: sha256:4391d17b29a07985083e2ffe1cd7987801e03c996552c68e3d233470baa3eda2
+    path: workflows/developer-workstream.yaml
+graph:
+  executionContract: developer-delivery/v1
+  reviewAttestation:
+    version: 1
+    scope: integration
+    eventType: developer.integration.reviewed
+    roles:
+      integration: developer-integration-verifier
+  nodes:
+    - id: delivery-request
+      kind: trigger
+      label: Begin developer delivery
+      source: user or tracker
+      dispatchEvent: delivery.requested
+    - id: delivery-plan-author
+      kind: stage
+      label: Investigate and maintain the canonical plan
+      executionMode: sequential
+      joinMode: any
+      reviewVerdictPolicy:
+        eventType: plan.review.completed
+        passOutcomes: [developer.plan.approved]
+        failOutcomes: [developer.plan.revised]
+        bindingFields: [plan_revision]
+      stageMembers:
+        - personaId: developer-analyst
+          model: gpt-5.5
+          budget: 32
+          consumesEventTypes: [delivery.requested, plan.review.completed]
+    - id: delivery-plan-reviews
+      kind: stage
+      label: Independently review the current plan revision
+      executionMode: parallel
+      joinMode: all
+      stageMembers:
+        - personaId: developer-architecture-reviewer
+          model: gpt-5.5
+          budget: 20
+          consumesEventTypes: [developer.plan.revised]
+        - personaId: developer-correctness-reviewer
+          model: gpt-5.5
+          budget: 20
+          consumesEventTypes: [developer.plan.revised]
+        - personaId: developer-security-plan-reviewer
+          model: gpt-5.5
+          budget: 20
+          consumesEventTypes: [developer.plan.revised]
+    - id: delivery-coordinate
+      kind: stage
+      label: Define and dispatch workstreams
+      executionMode: sequential
+      joinMode: any
+      stageMembers:
+        - personaId: developer-coordinator
+          model: gpt-5.5
+          budget: 36
+          consumesEventTypes: [developer.plan.approved, developer.children.blocked]
+    - id: delivery-workstreams
+      kind: subworkflow
+      expansionRole: workstream
+      label: Execute bounded workstream generation
+      workflowDependency: workstream
+      allowedCoordinator: developer-coordinator
+      maxChildren: 100
+      maxActiveChildren: 4
+      maxAttempts: 3
+      joinMode: all
+      inputSchema:
+        type: object
+        properties:
+          childKey: {type: string}
+          objective: {type: string}
+          requirementIds: {type: array, items: {type: string}}
+          repository: {type: string}
+          baseSha: {type: string}
+          allowedPaths: {type: array, items: {type: string}}
+          expectedOutputs: {type: array, items: {type: string, minLength: 1}, minItems: 1}
+          testContractIds: {type: array, items: {type: string}}
+          dependencies: {type: array, items: {type: string}}
+          workspace:
+            type: object
+            properties:
+              allocation_id: {type: string}
+              campaign_id: {type: string}
+              workstream_key: {type: string}
+              repository: {type: string}
+              workspace_path: {type: string}
+              repository_path: {type: string}
+              base_sha: {type: string}
+              branch_name: {type: string}
+              worker_id: {type: string}
+              allowed_paths: {type: array, items: {type: string}}
+              test_contract_ids: {type: array, items: {type: string}}
+            required: [allocation_id, campaign_id, workstream_key, repository, workspace_path, repository_path, base_sha, branch_name, worker_id, allowed_paths, test_contract_ids]
+            additionalProperties: false
+        required: [childKey, objective, requirementIds, repository, baseSha, allowedPaths, expectedOutputs, testContractIds, dependencies, workspace]
+        additionalProperties: false
+      resultSchema:
+        type: object
+        properties:
+          attemptId: {type: string}
+          candidateSha: {type: string}
+          candidateTree: {type: string}
+          verificationReceipts:
+            type: array
+            items:
+              type: object
+              properties:
+                receipt_id: {type: string, minLength: 1}
+                campaign_id: {type: string, minLength: 1}
+                workstream_key: {type: string, minLength: 1}
+                attempt_id: {type: string, minLength: 1}
+                repository: {type: string, minLength: 1}
+                candidate_sha: {type: string, minLength: 1}
+                candidate_tree: {type: string, minLength: 1}
+                base_sha: {type: string, minLength: 1}
+                contract_id: {type: string, minLength: 1}
+                command_digest: {type: string, minLength: 1}
+                exit_code: {type: integer}
+                stdout_digest: {type: string, minLength: 1}
+                stderr_digest: {type: string, minLength: 1}
+                started_at: {type: string, minLength: 1}
+                completed_at: {type: string, minLength: 1}
+                provenance:
+                  type: object
+                  properties:
+                    producer_id: {type: string, minLength: 1}
+                    key_id: {type: string, minLength: 1}
+                    signature: {type: string, minLength: 1}
+                  required: [producer_id, key_id, signature]
+                  additionalProperties: false
+              required: [receipt_id, campaign_id, workstream_key, attempt_id, repository, candidate_sha, candidate_tree, base_sha, contract_id, command_digest, exit_code, stdout_digest, stderr_digest, started_at, completed_at, provenance]
+              additionalProperties: false
+          reviewReceipts: {type: array, items: {type: object, properties: {}, additionalProperties: true}}
+          requirementEvidence:
+            type: array
+            items:
+              type: object
+              properties:
+                requirement_id: {type: string, minLength: 1}
+                implementation_paths:
+                  type: array
+                  minItems: 1
+                  items: {type: string, minLength: 1}
+                verification_contract_ids:
+                  type: array
+                  minItems: 1
+                  items: {type: string, minLength: 1}
+              required: [requirement_id, implementation_paths, verification_contract_ids]
+              additionalProperties: false
+        required: [attemptId, candidateSha, candidateTree, verificationReceipts, reviewReceipts, requirementEvidence]
+        additionalProperties: false
+    - id: delivery-integrate
+      kind: stage
+      label: Integrate verified workstreams in dependency order
+      executionMode: sequential
+      joinMode: all
+      stageMembers:
+        - personaId: developer-coordinator
+          model: gpt-5.5
+          budget: 24
+          consumesEventTypes: [developer.children.verified]
+    - id: delivery-integration-tests
+      kind: stage
+      label: Request trusted verification of the integration candidate
+      executionMode: sequential
+      joinMode: all
+      stageMembers:
+        - personaId: developer-coordinator
+          model: gpt-5.5
+          budget: 12
+          consumesEventTypes: [developer.integration.requested]
+    - id: delivery-integration-review
+      kind: stage
+      label: Review the complete verified change
+      executionMode: sequential
+      joinMode: all
+      stageMembers:
+        - personaId: developer-integration-verifier
+          model: gpt-5.5
+          budget: 28
+          consumesEventTypes: [developer.integration.verified]
+    - id: delivery-publish
+      kind: stage
+      label: Validate remote candidate and conditionally merge
+      executionMode: sequential
+      joinMode: any
+      stageMembers:
+        - personaId: developer-coordinator
+          model: gpt-5.5
+          budget: 28
+          consumesEventTypes: [developer.integration.approved, developer.delivery.observed]
+    - id: delivery-publication-wait
+      kind: wait
+      label: Await authoritative delivery observation
+    - id: delivery-repair
+      kind: stage
+      label: Replace a rejected integration generation
+      description: >-
+        Reconcile the durable execution, then expand a complete replacement generation for every
+        approved workstream and requirement from the frozen execution base. Use fresh
+        generation-qualified workstream and integration allocations; never retry completed
+        children or reuse integration evidence from the rejected generation.
+      executionMode: sequential
+      joinMode: any
+      stageMembers:
+        - personaId: developer-coordinator
+          model: gpt-5.5
+          budget: 28
+          consumesEventTypes: [delivery.repair.required, developer.workstream.repair_requested]
+    - id: delivery-complete
+      kind: end
+      label: Remote merge and evidence verified
+      joinMode: all
+      passingVerdicts: [publish]
+      completionEvent: developer.delivery.completed
+  edges:
+    - {id: delivery-request-plan, source: delivery-request, target: delivery-plan-author, label: delivery.requested -> delivery.requested}
+    - {id: delivery-plan-review, source: delivery-plan-author, target: delivery-plan-reviews, label: developer.plan.revised -> developer.plan.revised}
+    - {id: delivery-plan-revise, source: delivery-plan-reviews, target: delivery-plan-author, label: plan.review.completed -> plan.review.completed}
+    - {id: delivery-plan-coordinate, source: delivery-plan-author, target: delivery-coordinate, label: developer.plan.approved -> developer.plan.approved}
+    - {id: delivery-coordinate-workstreams, source: delivery-coordinate, target: delivery-workstreams, label: developer.children.waiting -> developer.children.waiting}
+    - {id: delivery-workstreams-integrate, source: delivery-workstreams, target: delivery-integrate, label: developer.children.verified -> developer.children.verified}
+    - {id: delivery-integrate-tests, source: delivery-integrate, target: delivery-integration-tests, label: developer.integration.requested -> developer.integration.requested}
+    - {id: delivery-integrate-repair, source: delivery-integrate, target: delivery-repair, label: developer.workstream.repair_requested -> developer.workstream.repair_requested}
+    - {id: delivery-tests-review, source: delivery-integration-tests, target: delivery-integration-review, label: developer.integration.verified -> developer.integration.verified}
+    - {id: delivery-tests-repair, source: delivery-integration-tests, target: delivery-repair, label: developer.workstream.repair_requested -> developer.workstream.repair_requested}
+    - {id: delivery-integration-publish, source: delivery-integration-review, target: delivery-publish, label: developer.integration.approved -> developer.integration.approved}
+    - {id: delivery-publish-wait, source: delivery-publish, target: delivery-publication-wait, label: developer.delivery.waiting -> developer.delivery.waiting}
+    - {id: delivery-wait-publish, source: delivery-publication-wait, target: delivery-publish, label: developer.delivery.observed -> developer.delivery.observed}
+    - {id: delivery-integration-repair, source: delivery-integration-review, target: delivery-repair, label: delivery.repair.required -> delivery.repair.required}
+    - {id: delivery-publish-repair, source: delivery-publish, target: delivery-repair, label: developer.workstream.repair_requested -> developer.workstream.repair_requested}
+    - {id: delivery-repair-workstreams, source: delivery-repair, target: delivery-workstreams, label: developer.children.waiting -> developer.children.waiting}
+    - {id: delivery-publish-complete, source: delivery-publish, target: delivery-complete, label: developer.delivery.completed -> developer.delivery.completed}

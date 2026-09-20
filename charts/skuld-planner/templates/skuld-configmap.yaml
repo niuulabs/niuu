@@ -26,6 +26,9 @@ data:
     cli_type: {{ .Values.broker.cliType | default "claude" | quote }}
     host: "0.0.0.0"
     port: 8081
+    workflow:
+      evidence_verifier: {{ .Values.workflow.evidenceVerifier | toJson }}
+      evidence_artifacts: {{ .Values.workflow.evidenceArtifacts | toJson }}
     persistence_mount_path: {{ .Values.persistence.mountPath | default "/volundr/sessions" | quote }}
 
     {{- if .Values.volundr.apiUrl }}

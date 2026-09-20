@@ -13,6 +13,7 @@ import respx
 
 from ravn.adapters.personas.http import HttpPersonaAdapter
 from ravn.adapters.personas.loader import PersonaConfig
+from ravn.domain.persona_document import portable_persona_from_config
 
 # ---------------------------------------------------------------------------
 # Sample API payloads
@@ -78,6 +79,9 @@ _SUMMARIES: list[dict] = [
 ]
 
 _BASE = "http://volundr.test"
+_PORTABLE_CODER = portable_persona_from_config(
+    PersonaConfig(name="coder", system_prompt_template="Pinned coder prompt")
+).to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +234,40 @@ class TestLoad:
         with caplog.at_level(logging.WARNING, logger="ravn.adapters.personas.http"):
             _adapter().load("coder")
         assert caplog.records
+
+
+class TestPortableSource:
+    @respx.mock
+    def test_load_current_portable_returns_raw_document(self) -> None:
+        respx.get(f"{_BASE}/api/v1/personas/coder/portable").mock(
+            return_value=httpx.Response(200, json=_PORTABLE_CODER)
+        )
+
+        document = _adapter().load_current_portable("coder")
+
+        assert document is not None
+        assert document.definition["system_prompt_template"] == "Pinned coder prompt"
+
+    @respx.mock
+    def test_load_exact_portable_revision_uses_revision_endpoint(self) -> None:
+        revision = _PORTABLE_CODER["revision"]
+        respx.get(f"{_BASE}/api/v1/personas/coder/revisions/{revision}").mock(
+            return_value=httpx.Response(200, json=_PORTABLE_CODER)
+        )
+
+        document = _adapter().load_portable("coder", str(revision))
+
+        assert document is not None
+        assert document.to_dict() == _PORTABLE_CODER
+
+    @respx.mock
+    def test_load_current_portable_does_not_use_stale_fallback_on_server_error(self) -> None:
+        respx.get(f"{_BASE}/api/v1/personas/coder/portable").mock(
+            return_value=httpx.Response(503)
+        )
+
+        with pytest.raises(RuntimeError, match="503"):
+            _adapter().load_current_portable("coder")
 
 
 # ---------------------------------------------------------------------------

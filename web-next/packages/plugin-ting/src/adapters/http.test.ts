@@ -2,6 +2,7 @@
  * HTTP adapter tests — adapted from web/src/modules/ting/adapters/api/ test files.
  */
 import { describe, it, expect, vi } from 'vitest';
+import { ApiClientError } from '@niuulabs/query';
 import {
   buildTingHttpAdapter,
   buildDispatcherHttpAdapter,
@@ -847,6 +848,38 @@ describe('buildTingHttpAdapter', () => {
 });
 
 describe('buildWorkflowHttpAdapter', () => {
+  it('maps portable workflow metadata without dropping the complete graph', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      {
+        ...rawWorkflow,
+        graph: { nodes: rawWorkflow.nodes, edges: rawWorkflow.edges, artifactPaths: ['out.md'] },
+        persona_dependencies: {
+          reviewer: { id: 'persona-reviewer', revision: '7', digest: 'sha256:abc' },
+        },
+        revision: 'rev-8',
+        read_only: true,
+        canonical_yaml: 'schema_version: 1',
+        requirements: [
+          { id: 'mimir-1', kind: 'mimir', message: 'Choose a mount', resolved: false },
+        ],
+      },
+    ]);
+
+    const [workflow] = await buildWorkflowHttpAdapter(client).listWorkflows();
+
+    expect(workflow).toMatchObject({
+      graph: { artifactPaths: ['out.md'] },
+      personaDependencies: {
+        reviewer: { id: 'persona-reviewer', revision: '7', digest: 'sha256:abc' },
+      },
+      revision: 'rev-8',
+      readOnly: true,
+      canonicalYaml: 'schema_version: 1',
+      requirements: [{ id: 'mimir-1', resolved: false }],
+    });
+  });
+
   it('maps resource bindings from the API payload', async () => {
     const client = makeClient();
     client.get.mockResolvedValue([rawWorkflow]);
@@ -858,7 +891,7 @@ describe('buildWorkflowHttpAdapter', () => {
 
   it('sends resource bindings when saving a workflow', async () => {
     const client = makeClient();
-    client.get.mockRejectedValue(new Error('not found'));
+    client.get.mockRejectedValue(new ApiClientError('not found', 404));
     client.post.mockResolvedValue(rawWorkflow);
 
     const workflow = {
@@ -965,12 +998,21 @@ describe('buildWorkflowHttpAdapter', () => {
 
   it('returns null when a workflow lookup fails', async () => {
     const client = makeClient();
-    client.get.mockRejectedValue(new Error('404'));
+    client.get.mockRejectedValue(new ApiClientError('not found', 404));
 
     const workflow = await buildWorkflowHttpAdapter(client).getWorkflow('missing workflow');
 
     expect(client.get).toHaveBeenCalledWith('/workflows/missing%20workflow');
     expect(workflow).toBeNull();
+  });
+
+  it('surfaces workflow lookup failures other than not found', async () => {
+    const client = makeClient();
+    client.get.mockRejectedValue(new ApiClientError('forbidden', 403));
+
+    await expect(
+      buildWorkflowHttpAdapter(client).getWorkflow(rawWorkflow.id),
+    ).rejects.toMatchObject({ status: 403 });
   });
 
   it('gets a workflow and preserves explicit edge control points', async () => {
@@ -1018,46 +1060,50 @@ describe('buildWorkflowHttpAdapter', () => {
       resourceBindings: undefined,
     } as Workflow);
 
-    expect(client.put).toHaveBeenCalledWith(`/workflows/${encodeURIComponent(rawWorkflow.id)}`, {
-      name: rawWorkflow.name,
-      description: '',
-      version: 'draft',
-      scope: 'user',
-      tags: [],
-      nodes: rawWorkflow.nodes,
-      edges: rawWorkflow.edges,
-      resourceBindings: [],
-    });
+    expect(client.put).toHaveBeenCalledWith(
+      `/workflows/${encodeURIComponent(rawWorkflow.id)}`,
+      expect.objectContaining({
+        name: rawWorkflow.name,
+        description: '',
+        version: 'draft',
+        scope: 'user',
+        tags: [],
+        nodes: rawWorkflow.nodes,
+        edges: rawWorkflow.edges,
+        resourceBindings: [],
+        graph: expect.objectContaining({ nodes: rawWorkflow.nodes, edges: rawWorkflow.edges }),
+        persona_dependencies: {},
+      }),
+    );
   });
 
-  it('creates a user copy when saving a system workflow is forbidden', async () => {
+  it('does not silently copy a system workflow when an update is forbidden', async () => {
     const client = makeClient();
     const systemWorkflow = { ...rawWorkflow, scope: 'system' as const, owner_id: null };
     client.get.mockResolvedValue(systemWorkflow);
     client.put.mockRejectedValue(new Error('403'));
     client.post.mockResolvedValue({ ...rawWorkflow, scope: 'user' as const });
 
-    await buildWorkflowHttpAdapter(client).saveWorkflow({
-      id: systemWorkflow.id,
-      name: systemWorkflow.name,
-      description: systemWorkflow.description,
-      version: systemWorkflow.version,
-      scope: systemWorkflow.scope,
-      ownerId: systemWorkflow.owner_id,
-      nodes: systemWorkflow.nodes,
-      edges: systemWorkflow.edges,
-      tags: [],
-      resourceBindings: systemWorkflow.resourceBindings,
-    } as Workflow);
+    await expect(
+      buildWorkflowHttpAdapter(client).saveWorkflow({
+        id: systemWorkflow.id,
+        name: systemWorkflow.name,
+        description: systemWorkflow.description,
+        version: systemWorkflow.version,
+        scope: systemWorkflow.scope,
+        ownerId: systemWorkflow.owner_id,
+        nodes: systemWorkflow.nodes,
+        edges: systemWorkflow.edges,
+        tags: [],
+        resourceBindings: systemWorkflow.resourceBindings,
+      } as Workflow),
+    ).rejects.toThrow('403');
 
     expect(client.put).toHaveBeenCalledWith(
       `/workflows/${encodeURIComponent(systemWorkflow.id)}`,
       expect.objectContaining({ scope: 'system' }),
     );
-    expect(client.post).toHaveBeenCalledWith(
-      '/workflows',
-      expect.objectContaining({ name: systemWorkflow.name, scope: 'user' }),
-    );
+    expect(client.post).not.toHaveBeenCalled();
   });
 
   it('surfaces update failures for owned user workflows', async () => {
@@ -1080,6 +1126,130 @@ describe('buildWorkflowHttpAdapter', () => {
     ).rejects.toThrow('500');
 
     expect(client.post).not.toHaveBeenCalled();
+  });
+
+  it('turns a conditional save conflict into a visible workflow conflict', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(rawWorkflow);
+    client.put.mockRejectedValue(new ApiClientError('conflict', 409, 'revision changed'));
+
+    await expect(
+      buildWorkflowHttpAdapter(client).saveWorkflow({
+        id: rawWorkflow.id,
+        name: rawWorkflow.name,
+        nodes: rawWorkflow.nodes,
+        edges: rawWorkflow.edges,
+        revision: 'rev-1',
+      } as Workflow),
+    ).rejects.toMatchObject({ name: 'WorkflowRevisionConflictError', message: 'revision changed' });
+    expect(client.put).toHaveBeenCalledWith(
+      `/workflows/${encodeURIComponent(rawWorkflow.id)}`,
+      expect.objectContaining({ expected_revision: 'rev-1' }),
+    );
+  });
+
+  it('creates an explicit bundled workflow copy with copy_from', async () => {
+    const client = makeClient();
+    client.get.mockRejectedValue(new ApiClientError('not found', 404));
+    client.post.mockResolvedValue(rawWorkflow);
+
+    await buildWorkflowHttpAdapter(client).saveWorkflow({
+      id: rawWorkflow.id,
+      name: `${rawWorkflow.name} copy`,
+      nodes: rawWorkflow.nodes,
+      edges: rawWorkflow.edges,
+      copyFrom: '00000000-0000-4000-8000-000000000055',
+    } as Workflow);
+
+    expect(client.post).toHaveBeenCalledWith(
+      '/workflows',
+      expect.objectContaining({ copy_from: '00000000-0000-4000-8000-000000000055' }),
+    );
+  });
+
+  it('does not create a duplicate when the existence check fails', async () => {
+    const client = makeClient();
+    client.get.mockRejectedValue(new ApiClientError('service unavailable', 503));
+
+    await expect(
+      buildWorkflowHttpAdapter(client).saveWorkflow({
+        id: rawWorkflow.id,
+        name: rawWorkflow.name,
+        nodes: rawWorkflow.nodes,
+        edges: rawWorkflow.edges,
+      } as Workflow),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(client.post).not.toHaveBeenCalled();
+    expect(client.put).not.toHaveBeenCalled();
+  });
+
+  it('previews and applies imports with mappings, bindings, and concurrency fields', async () => {
+    const client = makeClient();
+    client.post
+      .mockResolvedValueOnce({
+        workflow: { id: rawWorkflow.id, name: rawWorkflow.name, version: '1.0.0' },
+        personas: [],
+        requirements: [],
+        errors: [],
+        can_apply: true,
+        preview_digest: 'preview-1',
+      })
+      .mockResolvedValueOnce(rawWorkflow);
+    const service = buildWorkflowHttpAdapter(client);
+    const request = {
+      content: 'Ym9keQ==',
+      filename: 'workflow.yaml',
+      mappings: { reviewer: 'local-reviewer' },
+      bindings: { 'mimir-1': 'local-mimir' },
+      mode: 'update' as const,
+      workflowId: rawWorkflow.id,
+      expectedRevision: 'rev-2',
+    };
+
+    const preview = await service.previewWorkflowImport(request);
+    await service.applyWorkflowImport({ ...request, previewDigest: preview.previewDigest });
+
+    expect(preview).toMatchObject({ canApply: true, previewDigest: 'preview-1' });
+    expect(client.post).toHaveBeenNthCalledWith(
+      1,
+      '/workflows/imports/preview',
+      expect.objectContaining({
+        mappings: { reviewer: 'local-reviewer' },
+        bindings: { 'mimir-1': 'local-mimir' },
+        workflow_id: rawWorkflow.id,
+        expected_revision: 'rev-2',
+      }),
+    );
+    expect(client.post).toHaveBeenNthCalledWith(
+      2,
+      '/workflows/imports/apply',
+      expect.objectContaining({ preview_digest: 'preview-1' }),
+    );
+  });
+
+  it('downloads workflow YAML with the server filename', async () => {
+    const client = { ...makeClient(), basePath: '/api/v1/ting' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('schema_version: 1', {
+          headers: {
+            'Content-Type': 'application/yaml',
+            'Content-Disposition': 'attachment; filename="review.yaml"',
+          },
+        }),
+      ),
+    );
+
+    const exported = await buildWorkflowHttpAdapter(client).exportWorkflow(rawWorkflow.id, 'yaml');
+
+    expect(fetch).toHaveBeenCalledWith(
+      `/api/v1/ting/workflows/${encodeURIComponent(rawWorkflow.id)}/export?format=yaml`,
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    );
+    expect(exported.filename).toBe('review.yaml');
+    expect(exported.mediaType).toBe('application/yaml');
+    vi.unstubAllGlobals();
   });
 
   it('creates workflows when the existence probe returns null instead of throwing', async () => {

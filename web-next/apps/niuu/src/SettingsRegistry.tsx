@@ -68,10 +68,23 @@ export interface RemoteSettingsIntegrationsResource {
   enrollmentCodePath?: string;
 }
 
+export interface RemoteSettingsExternalIntegrationsResource {
+  id: string;
+  type: 'external_integrations';
+  label: string;
+  description?: string;
+  writable?: boolean;
+  listPath: string;
+  createPath: string;
+  deletePath: string;
+  validatePath: string;
+}
+
 export type RemoteSettingsResource =
   | RemoteSettingsTokensResource
   | RemoteSettingsCredentialsResource
-  | RemoteSettingsIntegrationsResource;
+  | RemoteSettingsIntegrationsResource
+  | RemoteSettingsExternalIntegrationsResource;
 
 export interface RemoteSettingsSectionSchema {
   id: string;

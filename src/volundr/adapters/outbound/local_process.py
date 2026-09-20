@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import signal
 import socket
@@ -34,10 +35,15 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from niuu.domain.llm_merge import merge_llm
 from niuu.mesh.ipc import cleanup_skuld_mesh_sockets, skuld_mesh_addresses
 from volundr.adapters.outbound.contributors.ravn_flock import (
     _MIMIR_MOUNT_PATH as _FLOCK_MIMIR_MOUNT_PATH,
+)
+from volundr.adapters.outbound.contributors.ravn_flock import (
+    _deep_merge_config as _merge_flock_runtime_config,
 )
 from volundr.adapters.outbound.contributors.ravn_flock import (
     _resolve_mimir_runtime as _resolve_flock_mimir_runtime,
@@ -70,6 +76,56 @@ DEFAULT_ALLOWED_MOUNT_PREFIXES: list[str] = []
 
 # Poll interval for wait_for_ready
 READY_POLL_INTERVAL = 0.5
+
+
+def _write_scoped_persona_source(workspace: Path, persona: str, yaml_text: str) -> Path:
+    """Write a persona below the runtime-owned directory without following symlinks."""
+    from ravn.domain.persona_document import validate_persona_identifier
+
+    validate_persona_identifier(persona, field="Workflow persona alias")
+    ravn_dir = workspace / ".ravn"
+    if ravn_dir.is_symlink():
+        raise ValueError(f"Refusing persona materialization through symlink: {ravn_dir}")
+    ravn_dir.mkdir(mode=0o700, exist_ok=True)
+    persona_dir = ravn_dir / "personas"
+    if persona_dir.is_symlink():
+        raise ValueError(f"Refusing persona materialization through symlink: {persona_dir}")
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+    ravn_directory_fd = os.open(ravn_dir, directory_flags)
+    try:
+        os.fchmod(ravn_directory_fd, 0o700)
+        with suppress(FileExistsError):
+            os.mkdir("personas", mode=0o700, dir_fd=ravn_directory_fd)
+        directory_fd = os.open("personas", directory_flags, dir_fd=ravn_directory_fd)
+    finally:
+        os.close(ravn_directory_fd)
+    os.fchmod(directory_fd, 0o700)
+    temp_name = f".{persona}.{secrets.token_hex(8)}.tmp"
+    try:
+        file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            file_flags |= os.O_NOFOLLOW
+        file_fd = os.open(temp_name, file_flags, 0o600, dir_fd=directory_fd)
+        with os.fdopen(file_fd, "w", encoding="utf-8") as destination:
+            destination.write(yaml_text)
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.replace(
+            temp_name,
+            f"{persona}.yaml",
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+    except BaseException:
+        with suppress(FileNotFoundError):
+            os.unlink(temp_name, dir_fd=directory_fd)
+        raise
+    finally:
+        os.close(directory_fd)
+    return persona_dir / f"{persona}.yaml"
 
 
 def _public_loopback_host(host: str) -> str:
@@ -358,26 +414,33 @@ def _localize_mimir_path(path: str, flock_dir: Path) -> str:
     return trimmed
 
 
-def _materialize_local_mimir_config(spec: SessionSpec, flock_dir: Path) -> dict[str, Any] | None:
+def _materialize_local_mimir_config(
+    spec: SessionSpec,
+    flock_dir: Path,
+    *,
+    runtime_flock_dir: Path | None = None,
+) -> dict[str, Any] | None:
     mimir_cfg = _normalize_local_mimir_spec(spec.values.get("mimir"))
     if not mimir_cfg:
         return None
 
     instances, write_routing = _resolve_flock_mimir_runtime(mimir_cfg)
+    runtime_dir = runtime_flock_dir or flock_dir
     localized_instances: list[dict[str, Any]] = []
     for raw_instance in instances:
         instance = dict(raw_instance)
         path = instance.get("path")
         if isinstance(path, str) and path.strip():
-            localized_path = _localize_mimir_path(path, flock_dir)
-            Path(localized_path).mkdir(parents=True, exist_ok=True)
-            instance["path"] = localized_path
+            host_path = _localize_mimir_path(path, flock_dir)
+            runtime_path = _localize_mimir_path(path, runtime_dir)
+            Path(host_path).mkdir(parents=True, exist_ok=True)
+            instance["path"] = runtime_path
         elif str(instance.get("url") or "").strip():
             localized_path = flock_dir / "mimir" / "local" / str(instance["name"])
             localized_path.mkdir(parents=True, exist_ok=True)
             instance.pop("url", None)
             instance.pop("auth", None)
-            instance["path"] = str(localized_path)
+            instance["path"] = str(runtime_dir / "mimir" / "local" / str(instance["name"]))
         localized_instances.append(instance)
 
     return {
@@ -463,6 +526,9 @@ class LocalProcessPodManager(PodManager):
         self._allocated_flock_base_ports: set[int] = set()
         self._processes: dict[str, ProcessInfo] = {}
         self._monitors: dict[str, asyncio.Task] = {}
+        if not hasattr(self, "_ready"):
+            self._ready: set[str] = set()
+        self._broker_startup_failures: dict[str, str] = {}
         self._skuld_registry: object | None = None  # Set via set_skuld_registry()
         self._persona_registry: object | None = None  # Set via set_persona_registry()
         # Notified (best-effort) when a managed broker process exits, so the
@@ -551,6 +617,8 @@ class LocalProcessPodManager(PodManager):
             state=ProcessState.STARTING,
             flock_base_port=flock_plan.session_base_port if flock_plan is not None else None,
         )
+        self._ready.discard(session_id)
+        self._broker_startup_failures.pop(session_id, None)
         self._processes[session_id] = info
         self._persist_state()
 
@@ -573,7 +641,7 @@ class LocalProcessPodManager(PodManager):
                     spec,
                     workspace,
                     flock_plan,
-                    skuld_port=port,
+                    skuld_port=self._flock_skuld_port(port),
                 )
                 info.flock_dir = str(flock_dir)
                 self._persist_state()
@@ -589,6 +657,8 @@ class LocalProcessPodManager(PodManager):
             self._monitors[session_id] = monitor
 
         except Exception:
+            if info.pid is not None:
+                await self._terminate_process(info.pid)
             info.state = ProcessState.FAILED
             self._port_allocator.release(port)
             if info.flock_base_port is not None:
@@ -626,7 +696,7 @@ class LocalProcessPodManager(PodManager):
 
         # Stop flock sidecars first (they depend on the mesh)
         if info.flock_dir:
-            self._stop_flock(info.flock_dir)
+            await self._stop_flock_runtime(session_id, info.flock_dir)
 
         if info.pid is not None:
             await self._terminate_process(info.pid)
@@ -640,6 +710,8 @@ class LocalProcessPodManager(PodManager):
             self._skuld_registry.unregister(session_id)
 
         info.state = ProcessState.STOPPED
+        self._ready.discard(session_id)
+        self._broker_startup_failures.pop(session_id, None)
         self._persist_state()
         return True
 
@@ -655,12 +727,19 @@ class LocalProcessPodManager(PodManager):
             case ProcessState.STARTING:
                 return SessionStatus.PROVISIONING
             case ProcessState.RUNNING:
-                return SessionStatus.RUNNING
+                if session_id in self._ready:
+                    return SessionStatus.RUNNING
+                return SessionStatus.PROVISIONING
             case ProcessState.STOPPED:
                 return SessionStatus.STOPPED
             case ProcessState.FAILED:
                 return SessionStatus.FAILED
         raise AssertionError("Unreachable status fallthrough")
+
+    async def status_detail(self, session: Session) -> str | None:
+        """Return the broker's durable startup failure, when one was reported."""
+        info = self._processes.get(str(session.id))
+        return info.error if info is not None else None
 
     async def wait_for_ready(self, session: Session, timeout: float) -> SessionStatus:
         """Wait until the Claude process is running or fails."""
@@ -674,7 +753,12 @@ class LocalProcessPodManager(PodManager):
                 return SessionStatus.FAILED
 
             if info.state == ProcessState.RUNNING:
-                return SessionStatus.RUNNING
+                if await self._broker_healthy(session_id):
+                    self._ready.add(session_id)
+                    return SessionStatus.RUNNING
+                if session_id in self._broker_startup_failures:
+                    await self._fail_starting_runtime(session_id, info)
+                    return SessionStatus.FAILED
 
             if info.state == ProcessState.FAILED:
                 return SessionStatus.FAILED
@@ -686,6 +770,59 @@ class LocalProcessPodManager(PodManager):
             elapsed += READY_POLL_INTERVAL
 
         return SessionStatus.FAILED
+
+    def _broker_ready_url(self, session_id: str) -> str | None:
+        info = self._processes.get(session_id)
+        if info is None or info.port is None:
+            return None
+        return f"http://127.0.0.1:{info.port}/ready"
+
+    async def _broker_healthy(self, session_id: str) -> bool:
+        """Probe broker readiness and remember a terminal startup failure."""
+        url = self._broker_ready_url(session_id)
+        if url is None:
+            return False
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                response = await client.get(url)
+        except httpx.HTTPError:
+            return False
+        try:
+            payload = response.json()
+        except (AttributeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        if response.status_code == 200 and payload.get("ready") is True:
+            self._broker_startup_failures.pop(session_id, None)
+            return True
+        if payload.get("startup_state") == "failed":
+            self._broker_startup_failures[session_id] = str(
+                payload.get("error") or "broker startup failed"
+            )
+        return False
+
+    async def _fail_starting_runtime(self, session_id: str, info: ProcessInfo) -> None:
+        """Tear down a broker that reported a terminal startup failure."""
+        monitor = self._monitors.pop(session_id, None)
+        if monitor is not None and monitor is not asyncio.current_task() and not monitor.done():
+            monitor.cancel()
+        if info.flock_dir:
+            await self._stop_flock_runtime(session_id, info.flock_dir)
+        if info.pid is not None:
+            await self._terminate_process(info.pid)
+        if info.port is not None:
+            self._port_allocator.release(info.port)
+        if info.flock_base_port is not None:
+            self._allocated_flock_base_ports.discard(info.flock_base_port)
+        if self._skuld_registry is not None:
+            unregister = getattr(self._skuld_registry, "unregister", None)
+            if callable(unregister):
+                unregister(session_id)
+        self._ready.discard(session_id)
+        info.error = self._broker_startup_failures.get(session_id)
+        info.state = ProcessState.FAILED
+        self._persist_state()
 
     # ------------------------------------------------------------------
     # Workspace provisioning
@@ -931,6 +1068,47 @@ class LocalProcessPodManager(PodManager):
             skuld_handshake_port=base_port + 100,
         )
 
+    def _flock_skuld_port(self, allocated_port: int) -> int:
+        """Port flock peers use to reach Skuld in this runtime."""
+        return allocated_port
+
+    def _flock_runtime_workspace(self, session: Session, workspace: Path) -> Path:
+        """Workspace path embedded in configs and passed to runtime commands."""
+        del session
+        return workspace
+
+    def _flock_platform_url(self) -> str:
+        return f"http://{_public_loopback_host(self._server_host)}:{self._server_port}"
+
+    def _flock_mesh_transport(self) -> str:
+        return "ipc"
+
+    def _flock_skuld_addresses(self, flock_dir: Path, flock_plan: FlockPortPlan) -> tuple[str, str]:
+        del flock_plan
+        return skuld_mesh_addresses(flock_dir)
+
+    async def _run_flock_cli(
+        self,
+        session: Session,
+        workspace: Path,
+        arguments: list[str],
+    ) -> None:
+        """Run a flock lifecycle command in the same runtime as its agents."""
+        del session
+        import subprocess as sp
+
+        await asyncio.to_thread(
+            sp.run,
+            [sys.executable, "-m", "ravn", *arguments],
+            check=True,
+            capture_output=True,
+            cwd=str(workspace),
+        )
+
+    async def _stop_flock_runtime(self, session_id: str, flock_dir: str) -> None:
+        del session_id
+        await asyncio.to_thread(self._stop_flock, flock_dir)
+
     async def _spawn_skuld(
         self,
         session: Session,
@@ -1059,11 +1237,11 @@ class LocalProcessPodManager(PodManager):
         discovery.  Skuld is added to the cluster.yaml so ravn peers
         discover it on the mesh.
         """
-        import subprocess as sp
-
         import yaml
 
         flock_dir = workspace / ".flock"
+        runtime_workspace = self._flock_runtime_workspace(session, workspace)
+        runtime_flock_dir = runtime_workspace / ".flock"
         personas = [
             c["name"].removeprefix("ravn-")
             for c in spec.pod_spec.extra_containers
@@ -1073,33 +1251,39 @@ class LocalProcessPodManager(PodManager):
         if not personas:
             return flock_dir
 
-        await self._materialize_flock_personas(session, workspace, personas)
+        flock_values = spec.values.get("flock")
+        persona_entries = (
+            list(flock_values.get("personas") or []) if isinstance(flock_values, dict) else []
+        )
+        await self._materialize_flock_personas(
+            session,
+            workspace,
+            personas,
+            persona_entries=persona_entries,
+        )
 
         # ravn flock init with static discovery (no mDNS). The ravn sidecars
         # start at index 1 because the primary Skuld broker occupies index 0.
         ravn_base_port = flock_plan.ravn_base_port
-        sp.run(
+        await self._run_flock_cli(
+            session,
+            workspace,
             [
-                sys.executable,
-                "-m",
-                "ravn",
                 "flock",
                 "init",
                 *personas,
                 "--flock-dir",
-                str(flock_dir),
+                str(runtime_flock_dir),
                 "--discovery",
                 "static",
                 "--mesh-transport",
-                "ipc",
+                self._flock_mesh_transport(),
                 "--no-http-gateway",
                 "--base-port",
                 str(ravn_base_port),
+                "--responsive",
                 "--force",
             ],
-            check=True,
-            capture_output=True,
-            cwd=str(workspace),
         )
         logger.info(
             "Flock init: personas=%s dir=%s session_base_port=%d ravn_base_port=%d",
@@ -1113,7 +1297,7 @@ class LocalProcessPodManager(PodManager):
         cluster_path = flock_dir / "cluster.yaml"
         if cluster_path.exists():
             cluster = yaml.safe_load(cluster_path.read_text())
-            skuld_pub, skuld_rep = skuld_mesh_addresses(flock_dir)
+            skuld_pub, skuld_rep = self._flock_skuld_addresses(runtime_flock_dir, flock_plan)
             skuld_peer_id = ""
             if spec.pod_spec and spec.pod_spec.env:
                 for entry in spec.pod_spec.env:
@@ -1149,7 +1333,11 @@ class LocalProcessPodManager(PodManager):
                 flock_dir,
             )
 
-        mimir_runtime_cfg = _materialize_local_mimir_config(spec, flock_dir)
+        mimir_runtime_cfg = _materialize_local_mimir_config(
+            spec,
+            flock_dir,
+            runtime_flock_dir=runtime_flock_dir,
+        )
         if mimir_runtime_cfg is not None:
             for persona in personas:
                 node_path = flock_dir / f"node-{persona}.yaml"
@@ -1171,23 +1359,20 @@ class LocalProcessPodManager(PodManager):
             flock_dir,
             personas,
             workspace=workspace,
+            runtime_workspace=runtime_workspace,
             skuld_port=skuld_port,
         )
 
         # ravn flock start
-        sp.run(
+        await self._run_flock_cli(
+            session,
+            workspace,
             [
-                sys.executable,
-                "-m",
-                "ravn",
                 "flock",
                 "start",
                 "--flock-dir",
-                str(flock_dir),
+                str(runtime_flock_dir),
             ],
-            check=True,
-            capture_output=True,
-            cwd=str(workspace),
         )
         logger.info("Flock started: %s", flock_dir)
 
@@ -1198,6 +1383,8 @@ class LocalProcessPodManager(PodManager):
         session: Session,
         workspace: Path,
         personas: list[str],
+        *,
+        persona_entries: list[object] | None = None,
     ) -> None:
         """Write owner-scoped persona YAML files into the workspace for flock startup.
 
@@ -1206,23 +1393,58 @@ class LocalProcessPodManager(PodManager):
         therefore need to be materialized into ``<workspace>/.ravn/personas`` so
         both init-time validation and runtime persona loading can find them.
         """
+        import yaml
+
+        from ravn.domain.persona_document import parse_portable_persona
+
         registry = self._persona_registry
         owner_id = session.owner_id
-        if registry is None or not owner_id or not personas:
+        if not personas:
+            return
+
+        entries_by_name = {
+            str(entry.get("name")): entry
+            for entry in persona_entries or []
+            if isinstance(entry, dict) and entry.get("name")
+        }
+        persona_dir = workspace / ".ravn" / "personas"
+        written_names: set[str] = set()
+        for persona in personas:
+            entry = entries_by_name.get(persona)
+            raw_document = entry.get("portable_definition") if entry is not None else None
+            if not isinstance(raw_document, dict):
+                continue
+            document = parse_portable_persona(raw_document)
+            definition = dict(document.definition)
+            definition["name"] = persona
+            _write_scoped_persona_source(
+                workspace,
+                persona,
+                yaml.safe_dump(definition, allow_unicode=True, sort_keys=False),
+            )
+            written_names.add(persona)
+
+        if registry is None or not owner_id:
+            if written_names:
+                logger.info(
+                    "Materialized %d pinned persona definition(s) for local flock in %s",
+                    len(written_names),
+                    persona_dir,
+                )
             return
 
         get_persona_yaml = getattr(registry, "get_persona_yaml", None)
         if not callable(get_persona_yaml):
             return
 
-        persona_dir = workspace / ".ravn" / "personas"
-        written = 0
+        written = len(written_names)
         for persona in personas:
+            if persona in written_names:
+                continue
             yaml_text = await get_persona_yaml(owner_id, persona)
             if not yaml_text:
                 continue
-            persona_dir.mkdir(parents=True, exist_ok=True)
-            (persona_dir / f"{persona}.yaml").write_text(yaml_text, encoding="utf-8")
+            _write_scoped_persona_source(workspace, persona, yaml_text)
             written += 1
 
         if written:
@@ -1239,6 +1461,7 @@ class LocalProcessPodManager(PodManager):
         personas: list[str],
         *,
         workspace: Path,
+        runtime_workspace: Path | None = None,
         skuld_port: int,
     ) -> None:
         """Apply workload-derived overrides to local flock node and cluster files."""
@@ -1257,6 +1480,9 @@ class LocalProcessPodManager(PodManager):
         global_llm = flock_cfg.get("llm_config")
         if not isinstance(global_llm, dict):
             global_llm = None
+        global_ravn_config = flock_cfg.get("ravn_config")
+        if not isinstance(global_ravn_config, dict):
+            global_ravn_config = {}
         raw_daily_budget_usd = flock_cfg.get("daily_budget_usd")
         try:
             daily_budget_usd = float(raw_daily_budget_usd)
@@ -1271,9 +1497,13 @@ class LocalProcessPodManager(PodManager):
         workflow_cfg = spec.values.get("workflow")
         if not isinstance(workflow_cfg, dict):
             workflow_cfg = None
-        mcp_servers = _localize_mcp_servers(spec.values.get("mcpServers"), workspace)
+        emitted_workspace = runtime_workspace or workspace
+        mcp_servers = _localize_mcp_servers(spec.values.get("mcpServers"), emitted_workspace)
         repo_workspace = workspace / "repo"
-        workspace_root = repo_workspace if (repo_workspace / ".git").exists() else workspace
+        runtime_repo_workspace = emitted_workspace / "repo"
+        workspace_root = (
+            runtime_repo_workspace if (repo_workspace / ".git").exists() else emitted_workspace
+        )
 
         try:
             from ravn.adapters.personas.loader import FilesystemPersonaAdapter
@@ -1289,6 +1519,7 @@ class LocalProcessPodManager(PodManager):
                 continue
 
             node_config = yaml.safe_load(node_path.read_text()) or {}
+            node_config = _merge_flock_runtime_config(node_config, global_ravn_config)
             persona_override = persona_overrides.get(persona, {})
 
             effective_llm = merge_llm(
@@ -1318,10 +1549,7 @@ class LocalProcessPodManager(PodManager):
             platform_cfg = gateway_cfg.setdefault("platform", {})
             platform_cfg["enabled"] = True
             platform_cfg.setdefault("timeout", 30.0)
-            platform_cfg.setdefault(
-                "base_url",
-                f"http://{_public_loopback_host(self._server_host)}:{self._server_port}",
-            )
+            platform_cfg["base_url"] = self._flock_platform_url()
 
             persona_runtime_overrides: dict[str, Any] = {}
             system_prompt_extra = persona_override.get("system_prompt_extra")

@@ -5,6 +5,18 @@ from __future__ import annotations
 from uuid import UUID
 
 
+class WorkflowDocumentError(ValueError):
+    """A portable workflow document is malformed or unsupported."""
+
+
+class WorkflowConflictError(RuntimeError):
+    """A workflow changed after the caller read it."""
+
+
+class WorkflowReadOnlyError(RuntimeError):
+    """A bundled read-only workflow cannot be changed in place."""
+
+
 class InvalidStateTransitionError(Exception):
     """Raised when an invalid state transition is attempted on a Run."""
 

@@ -12,9 +12,15 @@ import pytest
 import yaml
 
 from bifrost.config import ProviderConfig
-from cli.config import CLISettings, DockerModelServerConfig
+from cli.config import (
+    CLISettings,
+    DockerExternalIntegrationConfig,
+    DockerModelServerConfig,
+    DockerReadOnlyFileConfig,
+)
 from cli.services import compose_bundle as sc
 from cli.services.docker_host import GpuFacts, HostFacts
+from volundr.compute.config import ComputeConfig
 
 MOD = "cli.services.compose_bundle"
 
@@ -143,6 +149,7 @@ class TestRender:
         }
         contributors = json.loads(env["SESSION_CONTRIBUTORS"])
         assert contributors == [
+            {"adapter": sc.GIT_CONTRIBUTOR, "kwargs": {}},
             {"adapter": sc.SECRET_INJECTION_CONTRIBUTOR, "kwargs": {}},
             {"adapter": sc.WORKLOAD_IDENTITY_CONTRIBUTOR, "kwargs": {"enabled": False}},
         ]
@@ -164,6 +171,128 @@ class TestRender:
         settings.docker.sign_in_client_ids = {"github": "Iv1.abc", "gitlab": ""}
         env = sc.render_compose(settings)["services"]["niuu"]["environment"]
         assert json.loads(env["OAUTH__CLIENTS"]) == {"github": {"client_id": "Iv1.abc"}}
+
+    def test_external_integrations_are_mounted_and_loaded(
+        self, settings: CLISettings, tmp_path: Path
+    ) -> None:
+        package = tmp_path / "private-integration"
+        package.mkdir()
+        (package / "integration.yaml").write_text("slug: private\n")
+        definitions = package / "definitions"
+        definitions.mkdir()
+        (definitions / "second.json").write_text("{}")
+        settings.docker.external_integrations = [
+            DockerExternalIntegrationConfig(
+                source_dir=str(package),
+                definition_files=["integration.yaml", "definitions/second.json"],
+            )
+        ]
+
+        niuu = sc.render_compose(settings)["services"]["niuu"]
+
+        assert f"{package}:/opt/niuu-external-integrations/0:ro" in niuu["volumes"]
+        assert json.loads(niuu["environment"]["INTEGRATIONS__DEFINITION_FILES"]) == [
+            "/opt/niuu-external-integrations/0/integration.yaml",
+            "/opt/niuu-external-integrations/0/definitions/second.json",
+        ]
+        assert niuu["environment"]["PYTHONPATH"] == "/opt/niuu-external-integrations/0"
+
+    def test_external_integration_host_path_need_not_exist_inside_stack_controller(
+        self, settings: CLISettings, tmp_path: Path
+    ) -> None:
+        package = tmp_path / "host-only-private-integration"
+        settings.docker.external_integrations = [
+            DockerExternalIntegrationConfig(
+                source_dir=str(package), definition_files=["missing.yaml"]
+            )
+        ]
+
+        niuu = sc.render_compose(settings)["services"]["niuu"]
+
+        assert f"{package}:/opt/niuu-external-integrations/0:ro" in niuu["volumes"]
+        assert json.loads(niuu["environment"]["INTEGRATIONS__DEFINITION_FILES"]) == [
+            "/opt/niuu-external-integrations/0/missing.yaml"
+        ]
+
+    def test_compute_only_external_module_is_mounted_and_importable(
+        self, settings: CLISettings, tmp_path: Path
+    ) -> None:
+        package = tmp_path / "private-compute"
+        settings.docker.external_integrations = [
+            DockerExternalIntegrationConfig(
+                source_dir=str(package),
+                manifest_file="niuu-module.yaml",
+            )
+        ]
+
+        niuu = sc.render_compose(settings)["services"]["niuu"]
+
+        assert f"{package}:/opt/niuu-external-integrations/0:ro" in niuu["volumes"]
+        assert json.loads(niuu["environment"]["INTEGRATIONS__MODULE_MANIFEST_FILES"]) == [
+            "/opt/niuu-external-integrations/0/niuu-module.yaml"
+        ]
+        assert niuu["environment"]["PYTHONPATH"] == "/opt/niuu-external-integrations/0"
+        assert "INTEGRATIONS__DEFINITION_FILES" not in niuu["environment"]
+
+    def test_compute_and_secret_file_are_wired_without_reading_secret(
+        self, settings: CLISettings, tmp_path: Path
+    ) -> None:
+        secret = tmp_path / "provider.key"
+        settings.docker.read_only_files = [
+            DockerReadOnlyFileConfig(
+                source_file=str(secret), target_file="/run/secrets/niuu/provider-key"
+            )
+        ]
+        settings.pod_manager = settings.pod_manager.model_validate(
+            {
+                "adapter": sc.VM_POD_MANAGER_ADAPTER,
+                "runtime_backend": "openshell",
+                "profile": "cpu-session",
+                "pool_id": "acme-forge",
+                "max_machines": 1,
+            }
+        )
+        settings.compute = ComputeConfig.model_validate(
+            {
+                "pool_id": "acme-forge",
+                "max_machines": 1,
+                "provider": {"adapter": "private.Provider", "kwargs": {}},
+                "auth": {"adapter": "private.Auth", "kwargs": {}},
+                "runtime": {"adapter": "private.Runtime", "kwargs": {}},
+            }
+        )
+
+        niuu = sc.render_compose(settings)["services"]["niuu"]
+
+        assert f"{secret}:/run/secrets/niuu/provider-key:ro" in niuu["volumes"]
+        assert not secret.exists()
+        assert json.loads(niuu["environment"]["COMPUTE"])["pool_id"] == "acme-forge"
+        assert niuu["environment"]["NIUU_POD_MANAGER__ADAPTER"] == sc.VM_POD_MANAGER_ADAPTER
+        cli_pod_manager = json.loads(niuu["environment"]["NIUU_POD_MANAGER"])
+        assert cli_pod_manager["adapter"] == sc.VM_POD_MANAGER_ADAPTER
+        service_pod_manager = json.loads(niuu["environment"]["POD_MANAGER"])
+        assert service_pod_manager["runtime_backend"] == "openshell"
+        assert "runtime_backend" not in service_pod_manager["kwargs"]
+        assert service_pod_manager["kwargs"]["profile"] == "cpu-session"
+        assert service_pod_manager["kwargs"]["max_machines"] == 1
+
+    @pytest.mark.parametrize(
+        ("source", "target"),
+        [("relative.key", "/run/secrets/key"), ("/secure/key", "relative/key")],
+    )
+    def test_read_only_file_mounts_require_absolute_paths(self, source: str, target: str) -> None:
+        with pytest.raises(ValueError, match="absolute"):
+            DockerReadOnlyFileConfig(source_file=source, target_file=target)
+
+    @pytest.mark.parametrize("path", ["/absolute.yaml", "../outside.yaml", ""])
+    def test_external_integration_definition_paths_stay_within_mount(self, path: str) -> None:
+        with pytest.raises(ValueError, match="within source_dir"):
+            DockerExternalIntegrationConfig(source_dir="/private/package", definition_files=[path])
+
+    @pytest.mark.parametrize("path", ["/absolute.yaml", "../outside.yaml"])
+    def test_external_module_manifest_path_stays_within_mount(self, path: str) -> None:
+        with pytest.raises(ValueError, match="within source_dir"):
+            DockerExternalIntegrationConfig(source_dir="/private/package", manifest_file=path)
 
     def test_vllm_service_when_enabled(self, settings: CLISettings) -> None:
         settings.docker.vllm.enabled = True

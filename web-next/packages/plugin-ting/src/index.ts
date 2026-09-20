@@ -19,6 +19,24 @@ import { ResearchCampaignPage } from './ui/ResearchCampaignPage';
 import { SpecsCenterPage } from './ui/SpecsCenterPage';
 import { SpecsNewPage } from './ui/SpecsNewPage';
 import { SpecsCampaignPage } from './ui/SpecsCampaignPage';
+import { DeveloperExecutionsPage } from './ui/DeveloperExecutionsPage';
+
+export { buildDeveloperExecutionHttpAdapter } from './adapters/developerExecution';
+export type { IDeveloperExecutionService } from './ports';
+export { WorkflowExecutionGraph } from './ui/WorkflowExecutionGraph';
+export type { WorkflowExecutionGraphProps } from './ui/WorkflowExecutionGraph';
+export type * from './domain/workflowExecutionGraph';
+export type * from './domain/developerExecutionTrace';
+export type {
+  DeveloperDeliveryObservation,
+  DeveloperDeliveryWait,
+  DeveloperExecution,
+  DeveloperExecutionLaunch,
+  DeveloperRemoteCheck,
+} from './domain/developerExecution';
+export { buildDeveloperExecutionResultsMarkdown } from './application/developerExecutionResults';
+export { WorkflowResults } from './ui/WorkflowResults';
+export type { WorkflowResultsContextItem, WorkflowResultsProps } from './ui/WorkflowResults';
 
 const LEGACY_SETTINGS_SECTION_TARGETS: Record<string, string> = {
   general: '/settings/ting/general',
@@ -70,6 +88,11 @@ export const tingPlugin = definePlugin({
       getParentRoute: () => rootRoute,
       path: '/ting/workflows',
       component: WorkflowsRoute,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/workflows/runs',
+      component: DeveloperExecutionsPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -197,6 +220,14 @@ export type {
   ITrackerBrowserService,
   IWorkflowService,
   WorkflowLaunchRequest,
+  WorkflowLaunchResult,
+  WorkflowExport,
+  WorkflowExportFormat,
+  WorkflowPersonaImportStatus,
+  WorkflowPersonaImportPreview,
+  WorkflowImportRequirement,
+  WorkflowImportSource,
+  WorkflowImportPreview,
   IResearchService,
   ISpecsService,
   CreateResearchCampaignRequest,
@@ -243,6 +274,8 @@ export type {
   CampaignStageState,
 } from './ports';
 
+export { WorkflowRevisionConflictError } from './ports';
+
 // Application layer — feasibility engine
 export {
   checkFeasibility,
@@ -281,19 +314,32 @@ export {
   workflowStageNodeSchema,
   workflowGateNodeSchema,
   workflowCondNodeSchema,
+  workflowWaitNodeSchema,
   workflowNodeSchema,
   workflowEdgeSchema,
   workflowSchema,
+  workflowPersonaDependencySchema,
+  workflowRequirementSchema,
   validateWorkflow,
   WorkflowValidationError,
   type WorkflowNodeKind,
   type WorkflowStageNode,
   type WorkflowGateNode,
   type WorkflowCondNode,
+  type WorkflowWaitNode,
   type WorkflowNode,
   type WorkflowEdge,
   type Workflow,
+  type WorkflowPersonaDependency,
+  type WorkflowRequirement,
 } from './domain/workflow';
+
+export {
+  WORKFLOW_SCHEMA_VERSION,
+  toPortableWorkflowDocument,
+  serializePortableWorkflow,
+  type PortableWorkflowDocument,
+} from './domain/workflowPortable';
 
 export {
   researchCampaignStatusSchema,
@@ -326,6 +372,7 @@ export type { WorkflowIssue, WorkflowIssueKind } from './domain/workflowValidati
 
 // WorkflowBuilder UI
 export { WorkflowBuilder } from './ui/WorkflowBuilder';
+export { WorkflowImportDialog, type WorkflowImportDialogProps } from './ui/WorkflowImportDialog';
 export { WorkflowLaunchModal, type WorkflowLaunchModalProps } from './ui/WorkflowLaunchModal';
 export {
   WorkflowLaunchForm,
@@ -340,7 +387,14 @@ export { WorkflowCard } from './ui/WorkflowCard';
 export { StageProgressRail } from './ui/StageProgressRail';
 export { StepDots } from './ui/StepDots';
 export { useSagas } from './ui/useSagas';
-export { useWorkflows, useWorkflow, useLaunchWorkflow } from './ui/useWorkflows';
+export {
+  useWorkflows,
+  useWorkflow,
+  useLaunchWorkflow,
+  useExportWorkflow,
+  usePreviewWorkflowImport,
+  useApplyWorkflowImport,
+} from './ui/useWorkflows';
 
 export {
   PLAN_STEPS,

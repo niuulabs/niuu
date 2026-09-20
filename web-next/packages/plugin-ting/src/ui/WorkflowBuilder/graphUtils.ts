@@ -12,7 +12,7 @@ import type {
   WorkflowEdge,
   WorkflowStageNode,
 } from '../../domain/workflow';
-import { stagePersonaIds } from '../../domain/workflowSemantics';
+import { serializePortableWorkflow } from '../../domain/workflowPortable';
 
 // ---------------------------------------------------------------------------
 // Node geometry constants
@@ -24,6 +24,8 @@ export const GATE_SIZE = 76; // diamond bounding box
 export const COND_RADIUS = 34; // circle radius
 export const TRIGGER_WIDTH = 168;
 export const TRIGGER_HEIGHT = 58;
+export const WAIT_WIDTH = 168;
+export const WAIT_HEIGHT = 58;
 export const END_RADIUS = 26;
 export const RESOURCE_WIDTH = 168;
 export const RESOURCE_HEIGHT = 58;
@@ -120,7 +122,10 @@ export function nodeCentre(node: WorkflowNode): { x: number; y: number } {
     case 'cond':
       return { x: node.position.x + COND_RADIUS, y: node.position.y + COND_RADIUS };
     case 'trigger':
+    case 'subworkflow':
       return { x: node.position.x + TRIGGER_WIDTH / 2, y: node.position.y + TRIGGER_HEIGHT / 2 };
+    case 'wait':
+      return { x: node.position.x + WAIT_WIDTH / 2, y: node.position.y + WAIT_HEIGHT / 2 };
     case 'end':
       return { x: node.position.x + END_RADIUS, y: node.position.y + END_RADIUS };
     case 'resource':
@@ -166,152 +171,6 @@ export function edgeToPath(edge: WorkflowEdge, nodes: Map<string, WorkflowNode>)
  *
  * The output is deterministic — keys are in a fixed meaningful order.
  */
-export function workflowToYaml(
-  workflow: Pick<Workflow, 'id' | 'name' | 'tags' | 'nodes' | 'edges' | 'resourceBindings'>,
-): string {
-  const lines: string[] = [];
-
-  lines.push(`id: ${JSON.stringify(workflow.id)}`);
-  lines.push(`name: ${JSON.stringify(workflow.name)}`);
-  const tags = workflow.tags ?? [];
-  if (tags.length > 0) {
-    lines.push(`tags: [${tags.map((tag) => JSON.stringify(tag)).join(', ')}]`);
-  }
-
-  if (workflow.nodes.length === 0) {
-    lines.push('nodes: []');
-  } else {
-    lines.push('nodes:');
-    for (const node of workflow.nodes) {
-      lines.push(`  - id: ${JSON.stringify(node.id)}`);
-      lines.push(`    kind: ${node.kind}`);
-      lines.push(`    label: ${JSON.stringify(node.label)}`);
-      if (node.kind === 'stage') {
-        const stageMembers = normalizedStageMembers(node);
-        const personaIds = stagePersonaIds(node);
-        lines.push(`    runId: ${node.runId === null ? 'null' : JSON.stringify(node.runId)}`);
-        lines.push(
-          `    personaIds: ${personaIds.length === 0 ? '[]' : `[${personaIds.map((p) => JSON.stringify(p)).join(', ')}]`}`,
-        );
-        if (stageMembers.length > 0) {
-          lines.push('    stageMembers:');
-          for (const member of stageMembers) {
-            const parts = [
-              `personaId: ${JSON.stringify(member.personaId)}`,
-              `model: ${JSON.stringify(member.model ?? '')}`,
-              `budget: ${member.budget}`,
-            ];
-            if ((member.consumesEventTypes ?? []).length > 0) {
-              parts.push(
-                `consumesEventTypes: [${member.consumesEventTypes.map((event) => JSON.stringify(event)).join(', ')}]`,
-              );
-            }
-            if (member.eventFilters && Object.keys(member.eventFilters).length > 0) {
-              parts.push(
-                `eventFilters: {${Object.entries(member.eventFilters)
-                  .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
-                  .join(', ')}}`,
-              );
-            }
-            lines.push(`      - {${parts.join(', ')}}`);
-          }
-        }
-        lines.push(`    executionMode: ${node.executionMode ?? 'parallel'}`);
-        lines.push(`    maxConcurrent: ${node.maxConcurrent ?? 3}`);
-        lines.push(`    joinMode: ${node.joinMode ?? 'all'}`);
-      }
-      if (node.kind === 'gate') {
-        lines.push(`    condition: ${JSON.stringify(node.condition)}`);
-        lines.push(`    mode: ${JSON.stringify(node.mode ?? 'human_approval')}`);
-        lines.push(`    pendingBehavior: ${JSON.stringify(node.pendingBehavior ?? 'help_needed')}`);
-        if (node.approvalEvent?.trim()) {
-          lines.push(`    approvalEvent: ${JSON.stringify(node.approvalEvent)}`);
-        }
-        if (node.changesRequestedEvent?.trim()) {
-          lines.push(`    changesRequestedEvent: ${JSON.stringify(node.changesRequestedEvent)}`);
-        }
-        if (node.instructions?.trim()) {
-          lines.push(`    instructions: ${JSON.stringify(node.instructions)}`);
-        }
-        lines.push(`    autoForwardAfter: ${JSON.stringify(node.autoForwardAfter ?? '30m')}`);
-      }
-      if (node.kind === 'cond') {
-        lines.push(`    predicate: ${JSON.stringify(node.predicate)}`);
-      }
-      if (node.kind === 'trigger') {
-        lines.push(`    source: ${JSON.stringify(node.source ?? 'manual dispatch')}`);
-        lines.push(`    dispatchEvent: ${JSON.stringify(node.dispatchEvent ?? 'code.requested')}`);
-      }
-      if (node.kind === 'resource') {
-        lines.push(`    resourceType: ${JSON.stringify(node.resourceType ?? 'mimir')}`);
-        lines.push(`    bindingMode: ${JSON.stringify(node.bindingMode ?? 'registry')}`);
-        lines.push(
-          `    registryEntryId: ${node.registryEntryId === null ? 'null' : JSON.stringify(node.registryEntryId)}`,
-        );
-        lines.push(
-          `    seedFromRegistryId: ${node.seedFromRegistryId === null ? 'null' : JSON.stringify(node.seedFromRegistryId)}`,
-        );
-        lines.push(
-          `    categories: ${(node.categories ?? []).length === 0 ? '[]' : `[${(node.categories ?? []).map((cat) => JSON.stringify(cat)).join(', ')}]`}`,
-        );
-        if (node.path) {
-          lines.push(`    path: ${JSON.stringify(node.path)}`);
-        }
-        if (node.url) {
-          lines.push(`    url: ${JSON.stringify(node.url)}`);
-        }
-        if (node.role) {
-          lines.push(`    role: ${JSON.stringify(node.role)}`);
-        }
-        if (node.adapter) {
-          lines.push(`    adapter: ${JSON.stringify(node.adapter)}`);
-          lines.push(`    kwargs: ${JSON.stringify(node.kwargs ?? {})}`);
-          lines.push(`    secretKwargsEnv: ${JSON.stringify(node.secretKwargsEnv ?? {})}`);
-        }
-        if (node.authRef) {
-          lines.push(`    authRef: ${JSON.stringify(node.authRef)}`);
-        }
-        if (typeof node.defaultReadPriority === 'number') {
-          lines.push(`    defaultReadPriority: ${node.defaultReadPriority}`);
-        }
-      }
-      lines.push(`    position: {x: ${node.position.x}, y: ${node.position.y}}`);
-    }
-  }
-
-  if (workflow.edges.length === 0) {
-    lines.push('edges: []');
-  } else {
-    lines.push('edges:');
-    for (const edge of workflow.edges) {
-      lines.push(`  - id: ${JSON.stringify(edge.id)}`);
-      lines.push(`    source: ${JSON.stringify(edge.source)}`);
-      lines.push(`    target: ${JSON.stringify(edge.target)}`);
-      if (edge.label !== undefined) {
-        lines.push(`    label: ${JSON.stringify(edge.label)}`);
-      }
-      lines.push(`    cp1: {x: ${edge.cp1.x}, y: ${edge.cp1.y}}`);
-      lines.push(`    cp2: {x: ${edge.cp2.x}, y: ${edge.cp2.y}}`);
-    }
-  }
-
-  const resourceBindings = workflow.resourceBindings ?? [];
-  if (resourceBindings.length === 0) {
-    lines.push('resourceBindings: []');
-  } else {
-    lines.push('resourceBindings:');
-    for (const binding of resourceBindings) {
-      lines.push(`  - id: ${JSON.stringify(binding.id)}`);
-      lines.push(`    resourceNodeId: ${JSON.stringify(binding.resourceNodeId)}`);
-      lines.push(`    targetType: ${binding.targetType}`);
-      lines.push(`    targetId: ${JSON.stringify(binding.targetId)}`);
-      lines.push(`    access: ${binding.access}`);
-      lines.push(
-        `    writePrefixes: ${(binding.writePrefixes ?? []).length === 0 ? '[]' : `[${(binding.writePrefixes ?? []).map((prefix: string) => JSON.stringify(prefix)).join(', ')}]`}`,
-      );
-      lines.push(`    readPriority: ${binding.readPriority}`);
-    }
-  }
-
-  return lines.join('\n');
+export function workflowToYaml(workflow: Workflow): string {
+  return serializePortableWorkflow(workflow);
 }

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import httpx
 import pytest
 import respx
 
+from ravn.adapters.personas.loader import PersonaConfig
+from ravn.domain.persona_document import portable_persona_from_config
 from ting.adapters.volundr_http import VolundrHTTPAdapter
 from ting.ports.volundr import SpawnRequest
 
@@ -84,6 +87,87 @@ class TestAuthHeaders:
         )
 
         assert adapter._headers()["Authorization"] == "Bearer pat-abc"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_public_session_log_page_keeps_internal_visibility_hidden(
+    adapter: VolundrHTTPAdapter,
+) -> None:
+    route = respx.get(f"{SESSIONS_URL}/ses-1/log/page").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "entries": [
+                    {
+                        "session_id": "ses-1",
+                        "seq": 7,
+                        "kind": "room_outcome",
+                        "role": None,
+                        "request_id": "request-1",
+                        "payload": {"eventType": "review.completed", "fields": {}},
+                        "ts": "2026-09-19T22:00:00+00:00",
+                    }
+                ],
+                "scannedThrough": 9,
+                "hasMore": True,
+            },
+        )
+    )
+
+    page = await adapter.get_public_session_log_page(
+        "ses-1",
+        after=4,
+        limit=25,
+        auth_token="owner-token",
+    )
+
+    assert dict(route.calls[0].request.url.params) == {
+        "after": "4",
+        "limit": "25",
+        "show_internal": "false",
+    }
+    assert route.calls[0].request.headers["authorization"] == "Bearer owner-token"
+    assert page.scanned_through == 9
+    assert page.has_more is True
+    assert page.entries[0].seq == 7
+    assert page.entries[0].ts == datetime.fromisoformat("2026-09-19T22:00:00+00:00")
+    assert page.entries[0].payload["eventType"] == "review.completed"
+
+
+class TestPortablePersonas:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_get_current_source_uses_owner_authorization(
+        self,
+        adapter: VolundrHTTPAdapter,
+    ) -> None:
+        document = portable_persona_from_config(
+            PersonaConfig(name="custom-agent", system_prompt_template="Owner prompt")
+        )
+        route = respx.get(f"{BASE_URL}/api/v1/personas/custom-agent/portable").mock(
+            return_value=httpx.Response(200, json=document.to_dict())
+        )
+
+        loaded = await adapter.get_current_portable_persona(
+            "custom-agent",
+            auth_token="owner-token",
+        )
+
+        assert loaded == document
+        assert route.calls[0].request.headers["Authorization"] == "Bearer owner-token"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_get_current_source_returns_none_for_missing_persona(
+        self,
+        adapter: VolundrHTTPAdapter,
+    ) -> None:
+        respx.get(f"{BASE_URL}/api/v1/personas/missing/portable").mock(
+            return_value=httpx.Response(404)
+        )
+
+        assert await adapter.get_current_portable_persona("missing") is None
 
 
 # -------------------------------------------------------------------
@@ -649,33 +733,178 @@ class TestSendMessage:
         assert body["content"] == "Please prefer the staged rollout option."
         assert body["source"] == "ting"
 
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_publish_workflow_event(self, adapter: VolundrHTTPAdapter):
+        respx.get(f"{SESSIONS_URL}/ses-1").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": "ses-1",
+                    "name": "developer-delivery",
+                    "status": "running",
+                    "chat_endpoint": "http://volundr.test:8000/s/ses-1/chat",
+                },
+            )
+        )
+        route = respx.post("http://volundr.test:8000/s/ses-1/chat/api/room/workflow-events").mock(
+            return_value=httpx.Response(200, json={"status": "published"})
+        )
+
+        await adapter.publish_workflow_event(
+            "ses-1",
+            "developer.children.verified",
+            '{"generation":1}',
+            payload={"generation": 1},
+            request_id="continuation-1",
+        )
+
+        body = json.loads(route.calls[0].request.content)
+        assert body == {
+            "event_type": "developer.children.verified",
+            "content": '{"generation":1}',
+            "payload": {"generation": 1},
+            "request_id": "continuation-1",
+            "source": "ting",
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ["workflow", "direct"])
+    @respx.mock
+    async def test_room_control_uses_configured_gateway_origin(self, adapter, operation):
+        respx.get(f"{SESSIONS_URL}/ses-1").respond(
+            200,
+            json={
+                "id": "ses-1",
+                "name": "developer-delivery",
+                "status": "running",
+                "chat_endpoint": "wss://browser-only.example/s/ses-1/session",
+            },
+        )
+        suffix = "workflow-events" if operation == "workflow" else "direct"
+        route = respx.post(f"{BASE_URL}/s/ses-1/api/room/{suffix}").respond(200, json={})
+        if operation == "workflow":
+            await adapter.publish_workflow_event(
+                "ses-1", "test.observed", "observation", request_id="continuation-1"
+            )
+        else:
+            await adapter.send_directed_room_message("ses-1", "flock-coordinator", "reply")
+        assert route.call_count == 1
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_room_control_preserves_direct_skuld_origin(self, adapter):
+        respx.get(f"{SESSIONS_URL}/ses-1").respond(
+            200,
+            json={
+                "id": "ses-1",
+                "name": "direct-session",
+                "status": "running",
+                "chat_endpoint": "wss://session-ingress.example/session",
+            },
+        )
+        route = respx.post("https://session-ingress.example/api/room/workflow-events").respond(
+            200, json={}
+        )
+        await adapter.publish_workflow_event(
+            "ses-1", "test.observed", "observation", request_id="continuation-1"
+        )
+        assert route.call_count == 1
+
 
 class TestStopSession:
     @pytest.mark.asyncio
     @respx.mock
     async def test_success(self, adapter: VolundrHTTPAdapter):
-        route = respx.delete(f"{SESSIONS_URL}/ses-1").mock(return_value=httpx.Response(204))
+        route = respx.post(f"{SESSIONS_URL}/ses-1/stop").mock(
+            return_value=httpx.Response(200, json={"id": "ses-1", "status": "stopped"})
+        )
 
         await adapter.stop_session("ses-1")
 
         assert route.called
+        assert route.calls[0].request.method == "POST"
 
     @pytest.mark.asyncio
     @respx.mock
     async def test_ignores_not_found(self, adapter: VolundrHTTPAdapter):
-        respx.delete(f"{SESSIONS_URL}/missing").mock(return_value=httpx.Response(404))
+        respx.post(f"{SESSIONS_URL}/missing/stop").mock(return_value=httpx.Response(404))
 
         await adapter.stop_session("missing")
 
     @pytest.mark.asyncio
     @respx.mock
     async def test_sends_auth_token(self, adapter: VolundrHTTPAdapter):
-        route = respx.delete(f"{SESSIONS_URL}/ses-2").mock(return_value=httpx.Response(204))
+        route = respx.post(f"{SESSIONS_URL}/ses-2/stop").mock(
+            return_value=httpx.Response(200, json={"id": "ses-2", "status": "stopped"})
+        )
 
         await adapter.stop_session("ses-2", auth_token="runtime-token")
 
         sent = route.calls[0].request
         assert sent.headers["Authorization"] == "Bearer runtime-token"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_already_stopped_conflict_is_confirmed_by_get(self, adapter: VolundrHTTPAdapter):
+        stop = respx.post(f"{SESSIONS_URL}/ses-stopped/stop").mock(
+            return_value=httpx.Response(409, json={"detail": "cannot stop from stopped"})
+        )
+        current = respx.get(f"{SESSIONS_URL}/ses-stopped").mock(
+            return_value=httpx.Response(
+                200,
+                json={"id": "ses-stopped", "name": "done", "status": "stopped"},
+            )
+        )
+
+        await adapter.stop_session("ses-stopped", auth_token="runtime-token")
+
+        assert stop.called
+        assert current.called
+        assert current.calls[0].request.headers["Authorization"] == "Bearer runtime-token"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_conflict_is_not_success_when_session_is_not_stopped(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        respx.post(f"{SESSIONS_URL}/ses-running/stop").mock(
+            return_value=httpx.Response(409, json={"detail": "stop conflict"})
+        )
+        respx.get(f"{SESSIONS_URL}/ses-running").mock(
+            return_value=httpx.Response(
+                200,
+                json={"id": "ses-running", "name": "live", "status": "running"},
+            )
+        )
+
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await adapter.stop_session("ses-running")
+
+        assert exc_info.value.response.status_code == 409
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_conflict_confirmation_failure_is_propagated(self, adapter: VolundrHTTPAdapter):
+        respx.post(f"{SESSIONS_URL}/ses-unknown/stop").mock(
+            return_value=httpx.Response(409, json={"detail": "stop conflict"})
+        )
+        respx.get(f"{SESSIONS_URL}/ses-unknown").mock(return_value=httpx.Response(503))
+
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await adapter.stop_session("ses-unknown")
+
+        assert exc_info.value.response.status_code == 503
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_stop_failure_is_propagated(self, adapter: VolundrHTTPAdapter):
+        respx.post(f"{SESSIONS_URL}/ses-failed/stop").mock(return_value=httpx.Response(500))
+
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await adapter.stop_session("ses-failed")
+
+        assert exc_info.value.response.status_code == 500
 
 
 class TestIntegrationsAndRepos:

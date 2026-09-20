@@ -98,7 +98,19 @@ async def _resolve_import_workflow(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow not found: {workflow_id_value}",
         )
-    return workflow.id, workflow.version, build_workflow_snapshot(workflow)
+    persona_source = getattr(request.app.state, "persona_source", None)
+    try:
+        snapshot = build_workflow_snapshot(workflow, persona_source=persona_source)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    return (
+        workflow.id,
+        workflow.version,
+        snapshot,
+    )
 
 
 # ---------------------------------------------------------------------------

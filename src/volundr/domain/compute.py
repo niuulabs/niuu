@@ -10,7 +10,9 @@ from enum import StrEnum
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
+
+from volundr.domain.execution_catalog import ResolvedExecutionPlan
 
 
 class BootstrapFile(BaseModel):
@@ -54,6 +56,7 @@ class Machine(BaseModel):
     resource_id: str
     state: MachineState
     addresses: tuple[str, ...] = ()
+    status_detail: str | None = Field(default=None, max_length=512)
 
 
 class MachineProviderError(RuntimeError):
@@ -69,9 +72,16 @@ class MachineProfile(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    name: str
+    name: str = Field(min_length=1)
     revision: str = Field(min_length=1, repr=False)
     details: dict[str, str]
+
+    @field_validator("name", "revision")
+    @classmethod
+    def reject_blank_identity(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Machine profile name and revision must not be blank")
+        return value
 
 
 class MachineProvider(ABC):
@@ -126,6 +136,11 @@ class ComputeLease(BaseModel):
     profile: str
     profile_revision: str = ""
     request_fingerprint: str
+    provider_binding: str = ""
+    provider_fingerprint: str = ""
+    execution_plan: ResolvedExecutionPlan | None = None
+    host_preparation_started: bool = False
+    host_preparation_result: dict[str, JsonValue] | None = None
     bootstrap_ref: str | None = None
     bootstrap_owner: str | None = None
     session_bootstrap_ref: str | None = None

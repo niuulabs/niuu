@@ -142,6 +142,22 @@ data:
       secret_kwargs_env: {}
       {{- end }}
 
+    {{- if .Values.integrations }}
+    integrations:
+      {{- with .Values.integrations.repository }}
+      repository:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      database_name: {{ .Values.integrations.databaseName | default "" | quote }}
+      definition_files: {{ .Values.integrations.definitionFiles | default list | toJson }}
+      module_manifest_files: {{ .Values.integrations.moduleManifestFiles | default list | toJson }}
+      allow_definition_overrides: {{ .Values.integrations.allowDefinitionOverrides | default false }}
+      {{- if .Values.integrations.definitions }}
+      definitions:
+        {{- toYaml .Values.integrations.definitions | nindent 8 }}
+      {{- end }}
+    {{- end }}
+
     credential_enrollment_runner:
       adapter: {{ .Values.credentialEnrollmentRunner.adapter | quote }}
       kwargs: {{ .Values.credentialEnrollmentRunner.kwargs | default dict | toJson }}

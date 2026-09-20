@@ -415,7 +415,7 @@ class Session(BaseModel):
     )
     error: str | None = Field(
         default=None,
-        description="Error message if the session is in a failed state",
+        description="Failure reason or non-terminal runtime status detail",
     )
     tracker_issue_id: str | None = Field(
         default=None,
@@ -557,6 +557,7 @@ class Session(BaseModel):
             SessionStatus.STARTING,
             SessionStatus.RUNNING,
             SessionStatus.PROVISIONING,
+            SessionStatus.FAILED,
         )
 
     def with_status(self, status: SessionStatus) -> Session:

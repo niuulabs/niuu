@@ -11,6 +11,7 @@ from uuid import uuid4
 import pytest
 
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
+from ting.domain.services.workflow_campaign_lifecycle import TERMINAL_SESSION_STOPPED_KEY
 from ting.domain.services.workflow_campaign_projector import (
     WorkflowCampaignProjector,
     _status_from_session,
@@ -56,6 +57,7 @@ class _Adapter:
         blocker_error: Exception | None = None,
         activity_state: str | None = None,
         activity_metadata: dict | None = None,
+        stop_failures: int = 0,
     ) -> None:
         self._session_status = session_status
         self._help_requests = help_requests or []
@@ -63,6 +65,9 @@ class _Adapter:
         self._blocker_error = blocker_error
         self._activity_state = activity_state
         self._activity_metadata = activity_metadata or {}
+        self._stop_failures = stop_failures
+        self.stop_attempts: list[str] = []
+        self.stopped: list[str] = []
 
     async def get_session(self, session_id, *, auth_token=None, principal=None):
         return SimpleNamespace(
@@ -81,6 +86,13 @@ class _Adapter:
         if self._blocker_error is not None:
             raise self._blocker_error
         return list(self._gates)
+
+    async def stop_session(self, session_id, *, auth_token=None, principal=None):
+        self.stop_attempts.append(session_id)
+        if self._stop_failures:
+            self._stop_failures -= 1
+            raise ConnectionError("runtime control temporarily unavailable")
+        self.stopped.append(session_id)
 
 
 class _Factory:
@@ -341,6 +353,7 @@ async def test_sse_stopped_event_blocks_and_queues_push_without_session_read() -
 @pytest.mark.asyncio
 async def test_sse_error_event_fails_and_queues_error_push() -> None:
     campaign = _campaign()
+    adapter = _Adapter()
     repo = AsyncMock()
     repo.get_active_campaign_by_session.return_value = campaign
     repo.save_campaign = AsyncMock(side_effect=lambda value: value)
@@ -348,7 +361,7 @@ async def test_sse_error_event_fails_and_queues_error_push() -> None:
     push_dispatcher = AsyncMock()
     projector = WorkflowCampaignProjector(
         repo=repo,
-        volundr_factory=_Factory(_Adapter()),
+        volundr_factory=_Factory(adapter),
         event_bus=event_bus,
         push_dispatcher=push_dispatcher,
     )
@@ -363,11 +376,182 @@ async def test_sse_error_event_fails_and_queues_error_push() -> None:
         campaign.owner_id,
     )
 
-    saved = repo.save_campaign.await_args.args[0]
-    assert saved.status == WorkflowCampaignStatus.FAILED
-    assert saved.metadata["failure_error"] == "refresh token was already used"
+    terminal = repo.save_campaign.await_args_list[0].args[0]
+    cleanup_receipt = repo.save_campaign.await_args_list[1].args[0]
+    assert terminal.status == WorkflowCampaignStatus.FAILED
+    assert terminal.metadata["failure_error"] == "refresh token was already used"
+    assert cleanup_receipt.metadata[TERMINAL_SESSION_STOPPED_KEY] is True
+    assert adapter.stopped == [campaign.session_id]
     assert event_bus.emit.await_args.args[0].event == "workflow.campaign.failed"
-    push_dispatcher.queue_campaign.assert_awaited_once_with(saved)
+    push_dispatcher.queue_campaign.assert_awaited_once_with(terminal)
+
+
+def _authoritative_delivery_metadata(delivery: dict) -> dict:
+    return {
+        "completion_source": "ravn_flock",
+        "completion_event_type": "developer.workstream.completed",
+        "completion_peer_id": "workflow-stop:workstream-result",
+        "structured_outcome": {"result": delivery["result"]},
+        "outcome_valid": True,
+        "developer_delivery": delivery,
+    }
+
+
+@pytest.mark.asyncio
+async def test_idle_delivery_event_completes_before_releasing_session() -> None:
+    campaign = _campaign()
+    delivery = {
+        "schemaVersion": 1,
+        "result": {"attemptId": "attempt-1", "candidateSha": "b" * 40},
+        "reviews": [],
+    }
+    adapter = _Adapter()
+    repo = AsyncMock()
+    repo.get_active_campaign_by_session.return_value = campaign
+    repo.save_campaign = AsyncMock(side_effect=lambda value: value)
+    projector = WorkflowCampaignProjector(
+        repo=repo,
+        volundr_factory=_Factory(adapter),
+        event_bus=AsyncMock(),
+    )
+
+    handled = await projector.handle_activity(
+        ActivityEvent(
+            session_id=campaign.session_id,
+            state="idle",
+            metadata=_authoritative_delivery_metadata(delivery),
+            owner_id=campaign.owner_id,
+        ),
+        campaign.owner_id,
+    )
+
+    assert handled is True
+    terminal = repo.save_campaign.await_args_list[0].args[0]
+    cleanup_receipt = repo.save_campaign.await_args_list[1].args[0]
+    assert terminal.status == WorkflowCampaignStatus.COMPLETED
+    assert terminal.metadata["developer_delivery"] == delivery
+    assert terminal.completed_at is not None
+    assert cleanup_receipt.metadata["developer_delivery"] == delivery
+    assert cleanup_receipt.metadata[TERMINAL_SESSION_STOPPED_KEY] is True
+    assert adapter.stopped == [campaign.session_id]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_projects_persisted_authoritative_idle_delivery() -> None:
+    delivery = {
+        "schemaVersion": 1,
+        "result": {"attemptId": "attempt-1", "candidateSha": "b" * 40},
+        "reviews": [],
+    }
+    adapter = _Adapter(
+        session_status="running",
+        activity_state="idle",
+        activity_metadata=_authoritative_delivery_metadata(delivery),
+    )
+    projector, repo, _ = _projector(adapter)
+
+    await projector._refresh_campaign(_campaign())
+
+    terminal = repo.save_campaign.await_args_list[0].args[0]
+    assert terminal.status == WorkflowCampaignStatus.COMPLETED
+    assert terminal.metadata["developer_delivery"] == delivery
+    assert adapter.stopped == [terminal.session_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {
+            "developer_delivery": {
+                "schemaVersion": 1,
+                "result": {"attemptId": "attempt-1"},
+                "reviews": [],
+            }
+        },
+        _authoritative_delivery_metadata(
+            {"schemaVersion": 1, "result": {"attemptId": "attempt-1"}, "reviews": []}
+        )
+        | {"outcome_valid": False},
+        _authoritative_delivery_metadata(
+            {"schemaVersion": 1, "result": {"attemptId": "attempt-1"}, "reviews": []}
+        )
+        | {"developer_delivery": {"schemaVersion": 1, "result": {}, "reviews": []}},
+    ],
+)
+async def test_idle_delivery_fails_closed_without_authoritative_matching_envelope(
+    metadata: dict,
+) -> None:
+    campaign = _campaign()
+    adapter = _Adapter()
+    projector, repo, _ = _projector(adapter)
+    repo.get_active_campaign_by_session.return_value = campaign
+
+    assert (
+        await projector.handle_activity(
+            ActivityEvent(campaign.session_id, "idle", metadata, campaign.owner_id),
+            campaign.owner_id,
+        )
+        is True
+    )
+
+    repo.save_campaign.assert_not_awaited()
+    assert adapter.stop_attempts == []
+
+
+@pytest.mark.asyncio
+async def test_terminal_cohort_releases_more_than_runtime_concurrency_limit() -> None:
+    delivery = {
+        "schemaVersion": 1,
+        "result": {"attemptId": "attempt-1", "candidateSha": "b" * 40},
+        "reviews": [{"eventId": "review-1", "valid": True}],
+    }
+    adapter = _Adapter(
+        session_status="completed",
+        activity_metadata={"developer_delivery": delivery},
+    )
+    projector, repo, _ = _projector(adapter)
+    campaigns = [replace(_campaign(), session_id=f"session-{index}") for index in range(10)]
+
+    for campaign in campaigns:
+        await projector._refresh_campaign(campaign)
+
+    assert adapter.stopped == [campaign.session_id for campaign in campaigns]
+    terminal_records = [call.args[0] for call in repo.save_campaign.await_args_list[::2]]
+    cleanup_receipts = [call.args[0] for call in repo.save_campaign.await_args_list[1::2]]
+    assert all(record.status == WorkflowCampaignStatus.COMPLETED for record in terminal_records)
+    assert all(record.metadata["developer_delivery"] == delivery for record in terminal_records)
+    assert all(
+        receipt.metadata[TERMINAL_SESSION_STOPPED_KEY] is True
+        and receipt.metadata["developer_delivery"] == delivery
+        for receipt in cleanup_receipts
+    )
+
+
+@pytest.mark.asyncio
+async def test_terminal_cleanup_failure_leaves_durable_result_retryable() -> None:
+    delivery = {"result": {"attemptId": "attempt-1"}, "reviews": [{"valid": True}]}
+    adapter = _Adapter(
+        session_status="completed",
+        activity_metadata={"developer_delivery": delivery},
+        stop_failures=1,
+    )
+    projector, repo, _ = _projector(adapter)
+
+    await projector._refresh_campaign(_campaign())
+
+    terminal = repo.save_campaign.await_args_list[0].args[0]
+    assert terminal.status == WorkflowCampaignStatus.COMPLETED
+    assert terminal.metadata["developer_delivery"] == delivery
+    assert TERMINAL_SESSION_STOPPED_KEY not in terminal.metadata
+
+    cleaned = await projector.cleanup_terminal_session(terminal)
+
+    assert cleaned is not None
+    assert cleaned.status == WorkflowCampaignStatus.COMPLETED
+    assert cleaned.metadata["developer_delivery"] == delivery
+    assert cleaned.metadata[TERMINAL_SESSION_STOPPED_KEY] is True
+    assert adapter.stop_attempts == [terminal.session_id, terminal.session_id]
 
 
 class TestConnectionAffinity:

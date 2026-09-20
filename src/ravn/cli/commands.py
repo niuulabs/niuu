@@ -991,9 +991,6 @@ def _build_tool_mcp_tools(settings: Settings, *, persona_config: Any | None) -> 
         memory=memory,
         iteration_budget=_build_iteration_budget(settings, max_iterations),
         mimir=mimir,
-        inject_learnings=settings.reflection.inject_learnings,
-        max_learnings_injected=settings.reflection.max_learnings_injected,
-        learning_token_budget=settings.reflection.learning_token_budget,
         persona_config=persona_config,
         permission=_build_permission(
             settings,

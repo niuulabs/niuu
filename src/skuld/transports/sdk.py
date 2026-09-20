@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import uuid
 from dataclasses import asdict
@@ -40,7 +41,7 @@ from niuu.adapters.cli.runtime import filter_cli_event as _filter_event
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.slash_commands import build_slash_command_catalog, compose_slash_command_text
 from skuld.transports.claude_env import claude_spawn_env
-from skuld.transports.mcp_config import build_sdk_mcp_servers
+from skuld.transports.mcp_config import build_sdk_mcp_servers, require_connected_mcp_servers
 from skuld.transports.tool_shims import ensure_codex_tool_shims
 
 logger = logging.getLogger("skuld.transport")
@@ -282,6 +283,8 @@ def _format_answer_message(questions: list[dict[str, Any]], answers: object) -> 
 class SDKTransport(CLITransport):
     """Claude SDK-backed transport that preserves existing broker event shapes."""
 
+    supports_read_only_mcp_boundary = True
+
     def __init__(
         self,
         workspace_dir: str,
@@ -296,14 +299,27 @@ class SDKTransport(CLITransport):
         ask_user_question_enabled: bool = False,
         model_gateway_url: str = "",
         model_gateway_token: str = "",
+        read_only_mcp_only: bool = False,
+        allowed_mcp_tools: list[str] | None = None,
+        mcp_startup_timeout_seconds: float = 30.0,
+        mcp_status_poll_interval_seconds: float = 0.1,
     ) -> None:
         super().__init__()
+        for value in (mcp_startup_timeout_seconds, mcp_status_poll_interval_seconds):
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(
+                    "MCP startup timeout and polling interval must be finite and positive"
+                )
+        self._mcp_startup_timeout_seconds = mcp_startup_timeout_seconds
+        self._mcp_status_poll_interval_seconds = mcp_status_poll_interval_seconds
         self.workspace_dir = workspace_dir
         self._model = model
         self._model_gateway_url = model_gateway_url
         self._model_gateway_token = model_gateway_token
-        self._skip_permissions = skip_permissions
-        self._agent_teams = agent_teams
+        self._read_only_mcp_only = read_only_mcp_only
+        self._allowed_mcp_tools = list(allowed_mcp_tools or [])
+        self._skip_permissions = skip_permissions and not read_only_mcp_only
+        self._agent_teams = agent_teams and not read_only_mcp_only
         self._system_prompt = system_prompt
         self._initial_prompt = initial_prompt
         self._resume_session_id = (resume_session_id or "").strip() or None
@@ -689,7 +705,16 @@ class SDKTransport(CLITransport):
             "continue_conversation": False,
             "env": env,
         }
-        if self._ask_user_question_enabled:
+        if self._read_only_mcp_only:
+            option_kwargs.update(
+                {
+                    "tools": [],
+                    "strict_mcp_config": True,
+                    "allowed_tools": self._allowed_mcp_tools,
+                    "permission_mode": "dontAsk",
+                }
+            )
+        if self._ask_user_question_enabled and not self._read_only_mcp_only:
             # Route tool permissions through our handler so AskUserQuestion can
             # be answered by a human (blocks until a client responds); all other
             # tools are allowed. Requires streaming mode (we use it). NOTE: when
@@ -714,7 +739,42 @@ class SDKTransport(CLITransport):
         options = ClaudeAgentOptions(**option_kwargs)
         client = ClaudeSDKClient(options)
         self._client = await client.__aenter__()
+        if self._read_only_mcp_only:
+            try:
+                await self._wait_for_required_mcp_servers()
+            except Exception:
+                await client.__aexit__(None, None, None)
+                self._client = None
+                raise
         self._connected = True
+
+    async def _wait_for_required_mcp_servers(self) -> None:
+        client = self._client
+        if client is None:
+            raise RuntimeError("Claude SDK client not connected")
+        required_names = set(self._mcp_servers)
+        try:
+            async with asyncio.timeout(self._mcp_startup_timeout_seconds):
+                while True:
+                    response = await client.get_mcp_status()
+                    statuses = response.get("mcpServers") if isinstance(response, dict) else None
+                    try:
+                        require_connected_mcp_servers(statuses, required_names)
+                        return
+                    except RuntimeError:
+                        reported = {
+                            str(item.get("name") or ""): str(item.get("status") or "unknown")
+                            for item in statuses or []
+                            if isinstance(item, dict) and item.get("name")
+                        }
+                        if any(
+                            reported.get(name, "pending") not in {"pending", "connected"}
+                            for name in required_names
+                        ):
+                            raise
+                        await asyncio.sleep(self._mcp_status_poll_interval_seconds)
+        except TimeoutError as exc:
+            raise RuntimeError("Timed out waiting for required MCP servers to connect") from exc
 
     async def _translate_sdk_message(self, message: object) -> dict[str, Any] | None:
         self._capture_session_id(message)

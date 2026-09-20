@@ -10,6 +10,7 @@ from volundr.domain.compute import (
     LeaseState,
     Machine,
     MachineBootstrap,
+    MachineProfile,
     MachineState,
 )
 from volundr.domain.services.compute_leases import ComputeLeaseService
@@ -45,6 +46,27 @@ async def test_ambiguous_create_remains_reserved_and_retry_reuses_allocation(set
     recovered = await acquire(service, session_id)
     assert recovered.id == lease.id
     assert provider.created == [lease.id, lease.id]
+
+
+async def test_provider_wait_detail_is_preserved_on_provisioning_lease(setup):
+    service, _, provider = setup
+
+    async def waiting(request):
+        machine = Machine(
+            allocation_id=request.allocation_id,
+            resource_id="request-1",
+            state=MachineState.PROVISIONING,
+            status_detail="No CPU hosts available. Your request will be automatically retried.",
+        )
+        provider.machines[request.allocation_id] = machine
+        return machine
+
+    provider.create = waiting
+    lease = await acquire(service)
+
+    assert lease.state == LeaseState.PROVISIONING
+    assert lease.error == "No CPU hosts available. Your request will be automatically retried."
+    assert lease.machine.status_detail == lease.error
 
 
 async def test_release_recovers_after_failure_and_capacity_waits_for_confirmed_deletion(setup):
@@ -88,7 +110,12 @@ async def test_busy_requires_machine_ready_and_failed_machine_never_frees_capaci
     assert (await service.mark_busy(lease.id)).state == LeaseState.BUSY
     assert (await service.mark_busy(lease.id)).state == LeaseState.BUSY
     provider.machines[lease.id] = lease.machine.model_copy(update={"state": MachineState.FAILED})
-    assert (await service.reconcile(lease.id)).state == LeaseState.FAILED
+    provider.machines[lease.id] = provider.machines[lease.id].model_copy(
+        update={"status_detail": "Provider rejected the machine request"}
+    )
+    failed = await service.reconcile(lease.id)
+    assert failed.state == LeaseState.FAILED
+    assert failed.error == "Provider rejected the machine request"
     assert (await service.reconcile(lease.id)).state == LeaseState.FAILED
     with pytest.raises(ComputeCapacityError):
         await acquire(service)
@@ -140,3 +167,63 @@ async def test_unknown_profile_fails_before_reserving_capacity(setup):
         )
     assert not repository.leases
     assert not provider.created
+
+
+@pytest.mark.parametrize(
+    "profiles, message",
+    [
+        ((), "at least one"),
+        (
+            (
+                MachineProfile(name="small", revision="revision-1", details={}),
+                MachineProfile(name="small", revision="revision-2", details={}),
+            ),
+            "names must be unique",
+        ),
+        (
+            (
+                MachineProfile(name="small", revision="revision-1", details={}),
+                MachineProfile(name="large", revision="revision-1", details={}),
+            ),
+            "revisions must be unique",
+        ),
+    ],
+)
+async def test_provider_profiles_require_unique_identities(setup, profiles, message):
+    service, repository, provider = setup
+
+    async def configured_profiles():
+        return profiles
+
+    provider.profiles = configured_profiles
+    with pytest.raises(ValueError, match=message):
+        await service.validated_profiles()
+    assert not repository.leases
+
+
+@pytest.mark.parametrize("field", ["name", "revision"])
+def test_machine_profile_identity_rejects_blank_values(field):
+    values = {"name": "small", "revision": "revision-1", "details": {}}
+    values[field] = "  "
+    with pytest.raises(ValueError, match="must not be blank"):
+        MachineProfile(**values)
+
+
+async def test_reconcile_does_not_replay_create_after_profile_revision_changes(setup):
+    service, repository, provider = setup
+    provider.create_error = True
+    with pytest.raises(RuntimeError, match="provider-secret"):
+        await acquire(service)
+    lease = next(iter(repository.leases.values()))
+    assert provider.created == [lease.id]
+
+    provider.create_error = False
+    provider.profile_revision = "revision-2"
+    async with repository.operation(lease.id):
+        await repository.save(lease.model_copy(update={"retry_after": None}))
+    reconciled = await service.reconcile(lease.id)
+
+    assert reconciled.state == LeaseState.FAILED
+    assert reconciled.profile_revision == "revision-1"
+    assert reconciled.error == "Machine profile changed during provisioning; cleanup is required"
+    assert provider.created == [lease.id]

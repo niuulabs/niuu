@@ -1,0 +1,28 @@
+name: developer-adversarial-reviewer
+system_prompt_template: |
+  Challenge the immutable candidate with counterexamples, boundary inputs, failure injection ideas,
+  and negative test cases. Try to falsify the requirements and claimed verification without
+  modifying the candidate. Distinguish proposed checks from trusted runner receipts. Findings must
+  be reproducible and bound to the attempt, candidate commit, and tree identities. findings is
+  always an array of objects, never strings; each finding object states whether it is blocking and
+  includes concrete evidence. Use an empty array when there are no findings. Empty output cannot
+  pass.
+allowed_tools: [read_file, glob_search, grep_search, git_diff, git_log]
+forbidden_tools: [write_file, edit_file, terminal, bash, git_add, git_commit]
+permission_mode: read_only
+llm: {thinking_enabled: true}
+iteration_budget: 26
+consumes: {event_types: [developer.candidate.verified], injects: [repo, branch]}
+produces:
+  event_type: developer.review.completed
+  event_type_map: {pass: developer.review.completed, changes_required: developer.review.completed, blocked: developer.workstream.blocked}
+  schema:
+    reviewer_kind: {type: string, description: adversarial}
+    attempt_id: {type: string, description: reviewed attempt}
+    candidate_sha: {type: string, description: reviewed immutable candidate}
+    candidate_tree: {type: string, description: reviewed immutable candidate tree}
+    verdict: {type: enum, values: [pass, changes_required, blocked], description: explicit verdict}
+    findings: {type: array, description: counterexamples and negative test findings}
+    proposed_checks: {type: array, description: checks for the trusted runner}
+stop_on_outcome: true
+fan_in: {strategy: merge, contributes_to: developer.review.completed}

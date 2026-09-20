@@ -257,6 +257,17 @@ describe('createApiClient', () => {
     expect(opts.body).toBe(JSON.stringify({ name: 'x' }));
   });
 
+  it('POST merges caller headers with authentication headers', async () => {
+    setTokenProvider(() => 'bearer-xyz');
+    const client = createApiClient(BASE);
+    await client.post('/items', { name: 'x' }, { headers: { 'Idempotency-Key': 'launch-key' } });
+    const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = opts.headers as Headers;
+    expect(headers.get('Idempotency-Key')).toBe('launch-key');
+    expect(headers.get('Authorization')).toBe('Bearer bearer-xyz');
+    expect(headers.get('Content-Type')).toBe('application/json');
+  });
+
   it('POST without a payload omits the request body', async () => {
     const client = createApiClient(BASE);
     await client.post('/items');

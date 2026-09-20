@@ -129,23 +129,38 @@ def _build_tools(
         if workflow_sources:
             runtime_ctx["workflow_sources"] = workflow_sources
 
-    if settings.gateway.platform.enabled and include_groups & {"ravn", "a2a"}:
+    if settings.gateway.platform.enabled and include_groups & {"ravn", "a2a", "developer_delivery"}:
         from ravn.adapters.agent_directory import (  # noqa: PLC0415
             GuildAgentDirectoryAdapter,
         )
         from ravn.adapters.tool_build.http import (  # noqa: PLC0415
+            HttpxJsonClient,
             client_from_workload_identity,
         )
 
         platform = settings.gateway.platform
-        peer_client = client_from_workload_identity(
-            base_url=platform.base_url,
-            external_token=platform.pat_token,
-            workload_token_file=platform.workload_token_file,
-            workload_exchange_url=platform.workload_exchange_url,
-            workload_audiences=platform.workload_audiences,
-            timeout_seconds=platform.timeout,
-            allowed_origins=[platform.base_url, *platform.a2a_trusted_origins],
+        developer_execution_url = settings.developer_execution.base_url
+        allowed_origins = [
+            platform.base_url,
+            *platform.a2a_trusted_origins,
+            *([developer_execution_url] if developer_execution_url else []),
+        ]
+        peer_client = (
+            HttpxJsonClient(
+                auth=None,
+                timeout_seconds=platform.timeout,
+                allowed_origins=allowed_origins,
+            )
+            if platform.anonymous_dev_mode
+            else client_from_workload_identity(
+                base_url=platform.base_url,
+                external_token=platform.pat_token,
+                workload_token_file=platform.workload_token_file,
+                workload_exchange_url=platform.workload_exchange_url,
+                workload_audiences=platform.workload_audiences,
+                timeout_seconds=platform.timeout,
+                allowed_origins=allowed_origins,
+            )
         )
         runtime_ctx["agent_directory"] = GuildAgentDirectoryAdapter(
             base_url=platform.base_url,
@@ -157,12 +172,76 @@ def _build_tools(
             platform.base_url,
             *platform.a2a_trusted_origins,
         ]
+        if "developer_delivery" in include_groups:
+            from ravn.adapters.developer_delivery_http import (  # noqa: PLC0415
+                HttpDeliveryServiceClient,
+                HttpDeveloperExecutionClient,
+            )
+
+            developer_execution = settings.developer_execution
+            delivery_client = peer_client
+            if developer_execution.execution_id:
+                execution_base_url = developer_execution.base_url or platform.base_url
+                execution_origins = list(dict.fromkeys([execution_base_url, platform.base_url]))
+                if platform.anonymous_dev_mode:
+                    execution_client = HttpxJsonClient(
+                        auth=None,
+                        timeout_seconds=platform.timeout,
+                        allowed_origins=execution_origins,
+                    )
+                elif developer_execution.auth_token_file:
+                    from niuu.adapters.outbound.http_auth import (  # noqa: PLC0415
+                        FileBearerTokenAuthAdapter,
+                    )
+
+                    execution_client = HttpxJsonClient(
+                        auth=FileBearerTokenAuthAdapter(
+                            token_file=developer_execution.auth_token_file
+                        ),
+                        timeout_seconds=platform.timeout,
+                        allowed_origins=execution_origins,
+                    )
+                else:
+                    raise RuntimeError(
+                        "developer_execution.auth_token_file is required for an owner-bound "
+                        "coordinator session; static bearer tokens are not supported"
+                    )
+                delivery_client = execution_client
+                runtime_ctx["developer_execution"] = HttpDeveloperExecutionClient(
+                    base_url=execution_base_url,
+                    execution_id=developer_execution.execution_id,
+                    client=execution_client,
+                )
+            runtime_ctx["delivery_service"] = HttpDeliveryServiceClient(
+                base_url=platform.base_url,
+                client=delivery_client,
+            )
 
     # The session_join tool only makes sense for a resident daemon, which owns
     # the manager and injects it here; when absent (CLI single-shot) the tool
     # is filtered out via its required_context.
     if session_join_manager is not None:
         runtime_ctx["session_join_manager"] = session_join_manager
+
+    persona_allowed = set(getattr(persona_config, "allowed_tools", None) or [])
+    needs_developer_execution = any(
+        name == "developer_execution" or name.startswith("developer_execution_")
+        for name in persona_allowed
+    )
+    needs_delivery_service = any(
+        name in {"delivery_workspace", "delivery_forge", "delivery_evidence"}
+        for name in persona_allowed
+    )
+    if needs_developer_execution and runtime_ctx.get("developer_execution") is None:
+        raise RuntimeError(
+            "Persona requires durable developer execution tools, but an owner-bound "
+            "developer_execution runtime context is not configured"
+        )
+    if needs_delivery_service and runtime_ctx.get("delivery_service") is None:
+        raise RuntimeError(
+            "Persona requires typed delivery tools, but the authenticated platform "
+            "delivery service is not configured"
+        )
 
     tools: list[ToolPort] = []
     state_tool: Any = None
@@ -227,6 +306,30 @@ def _build_tools(
 
     # -- Apply enabled/disabled filters --
     tools = _filter_tools(tools, settings, persona_config)
+    execution_contract = str(
+        (getattr(getattr(settings, "workflow", None), "graph", {}) or {}).get(
+            "executionContract", ""
+        )
+    )
+    if execution_contract == "developer-workstream/v1":
+        tools = [
+            tool
+            for tool in tools
+            if not tool.name.startswith("developer_execution_")
+            and tool.name not in {"delivery_forge", "delivery_evidence"}
+        ]
+        for tool in tools:
+            if tool.name == "delivery_workspace" and hasattr(tool, "operations"):
+                tool.operations = {"verify": "run_verification"}
+    if getattr(persona_config, "name", "") == "developer-integration-verifier":
+        tools = [
+            tool
+            for tool in tools
+            if not tool.name.startswith("developer_execution_") and tool.name != "delivery_forge"
+        ]
+        for tool in tools:
+            if tool.name == "delivery_workspace" and hasattr(tool, "operations"):
+                tool.operations = {"inspect": "inspect_integration"}
 
     # Update state tool with final tool names after filtering
     # Keep the provider on the returned list itself. CLI transports expose it

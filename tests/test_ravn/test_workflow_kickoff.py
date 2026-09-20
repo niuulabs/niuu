@@ -154,9 +154,9 @@ class TestWorkflowKickoffAcknowledger:
 # ---------------------------------------------------------------------------
 
 
-def _wire_kickoff_handler(mesh: MagicMock, workspace: str = ""):
+def _wire_kickoff_handler(mesh: MagicMock, journal_path: str, workspace: str = ""):
     """Wire a coder persona through _wire_cascade and return (drive_loop, handler)."""
-    dl = _make_drive_loop()
+    dl = _make_drive_loop(journal_path=journal_path)
     settings = Settings()
     settings.permission.workspace_root = workspace
     settings.mesh.enabled = True
@@ -178,9 +178,9 @@ def _wire_kickoff_handler(mesh: MagicMock, workspace: str = ""):
 
 
 @pytest.mark.asyncio
-async def test_kickoff_consumption_acks_before_enqueue():
+async def test_kickoff_consumption_acks_before_enqueue(tmp_path):
     mesh = MagicMock(publish=AsyncMock())
-    dl, handler = _wire_kickoff_handler(mesh)
+    dl, handler = _wire_kickoff_handler(mesh, str(tmp_path / "queue.json"))
 
     await handler(_kickoff_event())
 
@@ -193,9 +193,9 @@ async def test_kickoff_consumption_acks_before_enqueue():
 
 
 @pytest.mark.asyncio
-async def test_redelivered_kickoff_is_reacked_without_second_enqueue():
+async def test_redelivered_kickoff_is_reacked_without_second_enqueue(tmp_path):
     mesh = MagicMock(publish=AsyncMock())
-    dl, handler = _wire_kickoff_handler(mesh)
+    dl, handler = _wire_kickoff_handler(mesh, str(tmp_path / "queue.json"))
 
     kickoff = _kickoff_event()
     await handler(kickoff)
@@ -207,9 +207,9 @@ async def test_redelivered_kickoff_is_reacked_without_second_enqueue():
 
 
 @pytest.mark.asyncio
-async def test_non_kickoff_outcome_is_not_acked():
+async def test_non_kickoff_outcome_is_not_acked(tmp_path):
     mesh = MagicMock(publish=AsyncMock())
-    dl, handler = _wire_kickoff_handler(mesh)
+    dl, handler = _wire_kickoff_handler(mesh, str(tmp_path / "queue.json"))
 
     await handler(
         RavnEvent(
@@ -230,9 +230,13 @@ async def test_non_kickoff_outcome_is_not_acked():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("workspace", ["/workspace", "/sandbox/workspace"])
-async def test_kickoff_uses_receiver_workspace_without_mutating_event(workspace):
+async def test_kickoff_uses_receiver_workspace_without_mutating_event(tmp_path, workspace):
     mesh = MagicMock(publish=AsyncMock())
-    dl, handler = _wire_kickoff_handler(mesh, workspace)
+    dl, handler = _wire_kickoff_handler(
+        mesh,
+        str(tmp_path / "queue.json"),
+        workspace,
+    )
     dl.enqueue = MagicMock(wraps=dl.enqueue)
     event = _kickoff_event()
     event.payload["workspace_path"] = "/volundr/sessions/session-123/workspace"

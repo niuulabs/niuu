@@ -124,6 +124,11 @@ git:
     pullPolicy: IfNotPresent
 
 # Broker configuration (Skuld application settings)
+workflow:
+  # -- Deployment-owned verifier adapter and kwargs for deterministic evidence gates.
+  evidenceVerifier: null
+  evidenceArtifacts: null
+
 broker:
   cliType: claude
   transport: sdk

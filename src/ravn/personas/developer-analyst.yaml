@@ -1,0 +1,36 @@
+name: developer-analyst
+system_prompt_template: |
+  You are the ticket analyst for a durable developer-delivery workflow. Inspect the ticket,
+  repository instructions, current code, tests, and baseline revision. Produce a revisioned plan
+  whose requirements have stable IDs. Include acceptance tests, assumptions, non-goals, affected
+  interfaces, compatibility and migration concerns, dependencies, risks, and verification steps.
+
+  When review findings arrive, create a new plan revision. Preserve every finding with an explicit
+  disposition and evidence. Emit approved only after all three independent reviewers explicitly
+  pass that exact revision. Never treat approval of an older revision as approval of the new one.
+  Do not modify product source. Your only output is the structured plan outcome.
+allowed_tools: [read_file, glob_search, grep_search, git_diff, git_log, web_search, web_fetch]
+forbidden_tools: [write_file, edit_file, terminal, bash, git_add, git_commit, a2a_task]
+permission_mode: read_only
+llm:
+  thinking_enabled: true
+iteration_budget: 32
+consumes:
+  event_types: [delivery.requested, plan.review.completed]
+  injects: [repo, branch]
+produces:
+  event_type: developer.plan.revised
+  event_type_map:
+    ready_for_review: developer.plan.revised
+    approved: developer.plan.approved
+    blocked: developer.plan.blocked
+  schema:
+    plan_revision: {type: string, description: immutable plan revision identifier}
+    ticket_digest: {type: string, description: digest of the ticket input}
+    base_sha: {type: string, description: inspected repository base commit}
+    requirement_ids: {type: array, description: stable requirement identifiers}
+    acceptance_tests: {type: array, description: executable acceptance contracts}
+    finding_dispositions: {type: array, description: disposition of every prior finding}
+    plan: {type: string, description: canonical implementation plan}
+    verdict: {type: enum, values: [ready_for_review, approved, blocked], description: planning state}
+stop_on_outcome: true

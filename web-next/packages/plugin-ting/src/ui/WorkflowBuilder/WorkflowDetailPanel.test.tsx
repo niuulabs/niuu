@@ -128,6 +128,21 @@ const GATE_NODE: WorkflowNode = {
   position: { x: 420, y: 120 },
 };
 
+const EVIDENCE_GATE_NODE: WorkflowNode = {
+  ...GATE_NODE,
+  mode: 'evidence',
+  artifact: { kind: 'document', id: 'report.md' },
+  evidencePolicy: {
+    required_result_contract_ids: ['unit-tests'],
+    result_producers: { 'unit-tests': ['ci-primary'] },
+    required_review_roles: ['privacy'],
+    review_producers: { privacy: ['privacy-reviewer'] },
+    required_check_names: [],
+    require_checks: false,
+    check_producers: [],
+  },
+};
+
 const COND_NODE: WorkflowNode = {
   id: 'cond-1',
   kind: 'cond',
@@ -450,6 +465,8 @@ describe('WorkflowDetailPanel', () => {
     });
     expect(props.onUpdateNode).toHaveBeenCalledWith('gate-1', {
       mode: 'automated_approval',
+      evidencePolicy: undefined,
+      artifact: undefined,
     });
 
     fireEvent.change(screen.getByLabelText('Pending behavior'), {
@@ -492,6 +509,63 @@ describe('WorkflowDetailPanel', () => {
     });
     expect(props.onUpdateNode).toHaveBeenCalledWith('gate-1', {
       autoForwardAfter: '45m',
+    });
+  });
+
+  it('uses structured evidence controls and removes the policy when mode changes', () => {
+    const { props } = renderPanel(EVIDENCE_GATE_NODE);
+
+    expect(screen.getByText('Evidence requirements')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('unit-tests')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('document')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('report.md')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Pending behavior')).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue('30m')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Artifact path or identifier'), {
+      target: { value: 'reports/final.md' },
+    });
+    expect(props.onUpdateNode).toHaveBeenCalledWith('gate-1', {
+      artifact: { kind: 'document', id: 'reports/final.md' },
+    });
+
+    fireEvent.change(screen.getByLabelText('Artifact kind'), {
+      target: { value: 'dataset' },
+    });
+    expect(props.onUpdateNode).toHaveBeenCalledWith('gate-1', {
+      artifact: { kind: 'dataset', id: 'report.md' },
+    });
+
+    fireEvent.change(screen.getByLabelText('Gate mode'), {
+      target: { value: 'human_review' },
+    });
+
+    expect(props.onUpdateNode).toHaveBeenCalledWith('gate-1', {
+      mode: 'human_review',
+      evidencePolicy: undefined,
+      artifact: undefined,
+    });
+  });
+
+  it('initializes a complete evidence policy shape when evidence mode is selected', () => {
+    const { props } = renderPanel(GATE_NODE);
+
+    fireEvent.change(screen.getByLabelText('Gate mode'), {
+      target: { value: 'evidence' },
+    });
+
+    expect(props.onUpdateNode).toHaveBeenCalledWith('gate-1', {
+      mode: 'evidence',
+      evidencePolicy: {
+        required_review_roles: [],
+        required_result_contract_ids: [],
+        review_producers: {},
+        result_producers: {},
+        required_check_names: [],
+        require_checks: false,
+        check_producers: [],
+      },
+      artifact: { kind: 'document', id: '' },
     });
   });
 

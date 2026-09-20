@@ -68,6 +68,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     file \
     iproute2 \
     jq \
+    libatomic1 \
     tmux \
     vim \
     python3 \
@@ -163,6 +164,8 @@ RUN claude --version && codex --version && opencode --version && grok --version 
 
 # Switch to non-root user
 USER skuld
+RUN --network=none --mount=type=bind,source=tests/container/mesh_runtime.py,target=/tmp/verify_mesh.py \
+    python /tmp/verify_mesh.py
 RUN --network=none --mount=type=bind,source=tests/container/observability_runtime.py,target=/tmp/verify_observability.py \
     python /tmp/verify_observability.py
 

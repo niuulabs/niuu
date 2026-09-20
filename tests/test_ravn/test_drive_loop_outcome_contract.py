@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -225,6 +225,514 @@ class TestDriveLoopOutcomeContract:
         assert recovered.fields["summary"] == "fallback"
         assert calls[0][1] is not None
         assert calls[1][1] is None
+
+    def test_parse_outcome_rejects_scalar_for_declared_array(self) -> None:
+        persona = SimpleNamespace(
+            produces=SimpleNamespace(
+                schema={"findings": OutcomeField(type="array", description="review findings")}
+            )
+        )
+
+        parsed = _parse_outcome_for_persona(
+            '---outcome---\nfindings: "[{severity: high}]"\n---end---',
+            persona,
+        )
+
+        assert parsed is not None
+        assert parsed.valid is False
+        assert parsed.fields["findings"] == "[{severity: high}]"
+        assert parsed.errors == ["field 'findings': expected array, got str"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_typed_workflow_outcome_is_repaired_before_publication(self) -> None:
+        dl = _make_drive_loop()
+        dl._mesh = AsyncMock()
+        dl._skuld_channel = AsyncMock()
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="developer-correctness-reviewer",
+            produces=SimpleNamespace(
+                event_type="plan.review.completed",
+                event_type_map={"pass": "plan.review.completed"},
+                schema={
+                    "verdict": OutcomeField(
+                        type="enum",
+                        description="review verdict",
+                        enum_values=["pass", "changes_required"],
+                    ),
+                    "findings": OutcomeField(type="array", description="review findings"),
+                    "summary": OutcomeField(type="string", description="review summary"),
+                },
+            ),
+        )
+        task = _make_agent_task(task_id="task-review-schema-repair")
+        task.session_id = "sess-review-schema-repair"
+        task.workflow_node_id = "plan-correctness-review"
+        malformed = """\
+---outcome---
+verdict: pass
+findings: "[{severity: high, evidence: missing boundary test}]"
+summary: review complete
+---end---
+"""
+        repaired = """\
+---outcome---
+verdict: pass
+findings:
+  - severity: high
+    evidence: missing boundary test
+summary: review complete
+---end---
+"""
+        agent = SimpleNamespace(
+            run_turn=AsyncMock(
+                return_value=TurnResult(
+                    response=repaired,
+                    tool_calls=[],
+                    tool_results=[],
+                    usage=TokenUsage(input_tokens=11, output_tokens=13),
+                )
+            )
+        )
+
+        accepted = await dl._emit_mesh_outcome_event(
+            task,
+            malformed,
+            success=True,
+            agent=agent,
+            channel=dl._skuld_channel,
+        )
+
+        assert accepted is True
+        agent.run_turn.assert_awaited_once()
+        prompt = agent.run_turn.await_args.args[0]
+        assert "field 'findings': expected array, got str" in prompt
+        assert '"type": "array"' in prompt
+        assert "Do not silently reinterpret or coerce" in prompt
+        assert "Do not call tools" in prompt
+        dl._mesh.publish.assert_awaited_once()
+        published = dl._mesh.publish.await_args.args[0]
+        assert published.payload["valid"] is True
+        assert published.payload["fields"]["findings"] == [
+            {"severity": "high", "evidence": "missing boundary test"}
+        ]
+        assert all(
+            call.args[0].type != RavnEventType.ERROR
+            for call in dl._skuld_channel.emit.await_args_list
+        )
+        assert any(
+            call.args[0].type == RavnEventType.USAGE
+            for call in dl._skuld_channel.emit.await_args_list
+        )
+        assert dl._budget.spent_today_usd > 0
+
+    @pytest.mark.asyncio
+    async def test_terminal_result_uses_inherited_nested_schema_before_publication(self) -> None:
+        dl = _make_drive_loop()
+        dl._mesh = AsyncMock()
+        dl._skuld_channel = AsyncMock()
+        dl._source_id = "drive_loop"
+        dl._settings.workflow = SimpleNamespace(
+            result_schema={
+                "type": "object",
+                "properties": {
+                    "requirementEvidence": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "requirement_id": {"type": "string", "minLength": 1},
+                                "implementation_paths": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {"type": "string", "minLength": 1},
+                                },
+                                "verification_contract_ids": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {"type": "string", "minLength": 1},
+                                },
+                            },
+                            "required": [
+                                "requirement_id",
+                                "implementation_paths",
+                                "verification_contract_ids",
+                            ],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+                "required": ["requirementEvidence"],
+                "additionalProperties": False,
+            },
+            graph={
+                "nodes": [
+                    {"id": "accept", "kind": "stage"},
+                    {
+                        "id": "complete",
+                        "kind": "end",
+                        "completionEvent": "workstream.completed",
+                    },
+                ],
+                "edges": [
+                    {
+                        "source": "accept",
+                        "target": "complete",
+                        "label": "workstream.completed -> workstream.completed",
+                    }
+                ],
+            },
+        )
+        dl._persona_config = SimpleNamespace(
+            name="coordinator",
+            produces=SimpleNamespace(
+                event_type="coordination.decision",
+                event_type_map={"accept": "workstream.completed"},
+                schema={},
+            ),
+        )
+        task = _make_agent_task(task_id="task-terminal-result-repair")
+        task.workflow_node_id = "accept"
+        malformed = """\
+---outcome---
+verdict: accept
+result:
+  requirementEvidence:
+    REQ-one:
+      implementation_paths: [src/one.py]
+      verification_contract_ids: [unit]
+---end---
+"""
+        repaired = """\
+---outcome---
+verdict: accept
+result:
+  requirementEvidence:
+    - requirement_id: REQ-one
+      implementation_paths: [src/one.py]
+      verification_contract_ids: [unit]
+---end---
+"""
+        agent = SimpleNamespace(
+            run_turn=AsyncMock(
+                return_value=TurnResult(
+                    response=repaired,
+                    tool_calls=[],
+                    tool_results=[],
+                    usage=TokenUsage(input_tokens=7, output_tokens=9),
+                )
+            )
+        )
+
+        accepted = await dl._emit_mesh_outcome_event(
+            task,
+            malformed,
+            success=True,
+            agent=agent,
+            channel=dl._skuld_channel,
+        )
+
+        assert accepted is True
+        agent.run_turn.assert_awaited_once()
+        prompt = agent.run_turn.await_args.args[0]
+        assert "result.requirementEvidence must be array" in prompt
+        assert "Inherited terminal result schema" in prompt
+        assert '"requirement_id"' in prompt
+        published = dl._mesh.publish.await_args_list[0].args[0]
+        assert published.payload["fields"]["result"]["requirementEvidence"] == [
+            {
+                "requirement_id": "REQ-one",
+                "implementation_paths": ["src/one.py"],
+                "verification_contract_ids": ["unit"],
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_terminal_result_repairs_shortened_verification_receipt(self) -> None:
+        dl = _make_drive_loop()
+        dl._mesh = AsyncMock()
+        dl._skuld_channel = AsyncMock()
+        dl._source_id = "drive_loop"
+        receipt_properties = {
+            name: {"type": "string", "minLength": 1}
+            for name in (
+                "receipt_id",
+                "campaign_id",
+                "workstream_key",
+                "attempt_id",
+                "repository",
+                "candidate_sha",
+                "candidate_tree",
+                "base_sha",
+                "contract_id",
+                "command_digest",
+                "stdout_digest",
+                "stderr_digest",
+                "started_at",
+                "completed_at",
+            )
+        }
+        receipt_properties["exit_code"] = {"type": "integer"}
+        receipt_properties["provenance"] = {
+            "type": "object",
+            "properties": {
+                "producer_id": {"type": "string", "minLength": 1},
+                "key_id": {"type": "string", "minLength": 1},
+                "signature": {"type": "string", "minLength": 1},
+            },
+            "required": ["producer_id", "key_id", "signature"],
+            "additionalProperties": False,
+        }
+        dl._settings.workflow = SimpleNamespace(
+            result_schema={
+                "type": "object",
+                "properties": {
+                    "verificationReceipts": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": receipt_properties,
+                            "required": list(receipt_properties),
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+                "required": ["verificationReceipts"],
+                "additionalProperties": False,
+            },
+            graph={
+                "nodes": [
+                    {"id": "accept", "kind": "stage"},
+                    {
+                        "id": "complete",
+                        "kind": "end",
+                        "completionEvent": "workstream.completed",
+                    },
+                ],
+                "edges": [
+                    {
+                        "source": "accept",
+                        "target": "complete",
+                        "label": "coordination.accepted -> workstream.completed",
+                    }
+                ],
+            },
+        )
+        dl._persona_config = SimpleNamespace(
+            name="coordinator",
+            produces=SimpleNamespace(
+                event_type="coordination.decision",
+                event_type_map={"accept": "coordination.accepted"},
+                schema={},
+            ),
+        )
+        task = _make_agent_task(task_id="task-shortened-receipt-repair")
+        task.workflow_node_id = "accept"
+        shortened = """\
+---outcome---
+verdict: accept
+result:
+  verificationReceipts:
+    - receipt_id: receipt-1
+      attempt_id: attempt-1
+      candidate_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      candidate_tree: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      contract_id: unit
+      exit_code: 0
+      provenance:
+        producer_id: verifier-1
+        key_id: key-1
+        signature: signed
+---end---
+"""
+        repaired = """\
+---outcome---
+verdict: accept
+result:
+  verificationReceipts:
+    - receipt_id: receipt-1
+      campaign_id: campaign-1
+      workstream_key: limits
+      attempt_id: attempt-1
+      repository: niuulabs/volundr
+      candidate_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      candidate_tree: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      base_sha: cccccccccccccccccccccccccccccccccccccccc
+      contract_id: unit
+      command_digest: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+      exit_code: 0
+      stdout_digest: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+      stderr_digest: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+      started_at: "2026-09-19T17:00:00Z"
+      completed_at: "2026-09-19T17:00:01Z"
+      provenance:
+        producer_id: verifier-1
+        key_id: key-1
+        signature: signed
+---end---
+"""
+        agent = SimpleNamespace(
+            run_turn=AsyncMock(
+                return_value=TurnResult(
+                    response=repaired,
+                    tool_calls=[],
+                    tool_results=[],
+                    usage=TokenUsage(input_tokens=7, output_tokens=9),
+                )
+            )
+        )
+
+        accepted = await dl._emit_mesh_outcome_event(
+            task,
+            shortened,
+            success=True,
+            agent=agent,
+            channel=dl._skuld_channel,
+        )
+
+        assert accepted is True
+        agent.run_turn.assert_awaited_once()
+        prompt = agent.run_turn.await_args.args[0]
+        assert "result.verificationReceipts[0] is missing" in prompt
+        for field_name in (
+            "campaign_id",
+            "workstream_key",
+            "repository",
+            "base_sha",
+            "command_digest",
+            "stdout_digest",
+            "stderr_digest",
+            "started_at",
+            "completed_at",
+        ):
+            assert field_name in prompt
+        published = dl._mesh.publish.await_args_list[0].args[0]
+        receipt = published.payload["fields"]["result"]["verificationReceipts"][0]
+        assert receipt["campaign_id"] == "campaign-1"
+        assert receipt["provenance"] == {
+            "producer_id": "verifier-1",
+            "key_id": "key-1",
+            "signature": "signed",
+        }
+
+    @pytest.mark.asyncio
+    async def test_inherited_result_schema_repair_is_bounded_to_one_turn(self) -> None:
+        dl = _make_drive_loop()
+        dl._mesh = AsyncMock()
+        dl._skuld_channel = AsyncMock()
+        dl._source_id = "drive_loop"
+        dl._settings.workflow = SimpleNamespace(
+            result_schema={
+                "type": "object",
+                "properties": {"items": {"type": "array", "items": {"type": "string"}}},
+                "required": ["items"],
+                "additionalProperties": False,
+            },
+            graph={
+                "nodes": [
+                    {"id": "accept", "kind": "stage"},
+                    {"id": "end", "kind": "end", "completionEvent": "work.completed"},
+                ],
+                "edges": [
+                    {
+                        "source": "accept",
+                        "target": "end",
+                        "label": "work.completed -> work.completed",
+                    }
+                ],
+            },
+        )
+        dl._persona_config = SimpleNamespace(
+            name="coordinator",
+            produces=SimpleNamespace(
+                event_type="coordination.decision",
+                event_type_map={"accept": "work.completed"},
+                schema={
+                    "verdict": OutcomeField(
+                        type="enum", description="action", enum_values=["accept"]
+                    ),
+                    "result": OutcomeField(type="object", description="terminal result"),
+                },
+            ),
+        )
+        task = _make_agent_task(task_id="task-terminal-result-rejected")
+        task.workflow_node_id = "accept"
+        malformed = """\
+---outcome---
+verdict: accept
+result:
+  items: {one: value}
+---end---
+"""
+        agent = SimpleNamespace(
+            run_turn=AsyncMock(return_value=SimpleNamespace(response=malformed))
+        )
+
+        accepted = await dl._emit_mesh_outcome_event(
+            task,
+            malformed,
+            success=True,
+            agent=agent,
+            channel=dl._skuld_channel,
+        )
+
+        assert accepted is False
+        agent.run_turn.assert_awaited_once()
+        dl._mesh.publish.assert_not_awaited()
+        emitted = [call.args[0] for call in dl._skuld_channel.emit.await_args_list]
+        assert len(emitted) == 1
+        assert "result.items must be array" in emitted[0].payload["message"]
+
+    @pytest.mark.asyncio
+    async def test_unrepaired_typed_workflow_outcome_emits_only_terminal_error(self) -> None:
+        dl = _make_drive_loop()
+        dl._mesh = AsyncMock()
+        dl._skuld_channel = AsyncMock()
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="developer-correctness-reviewer",
+            produces=SimpleNamespace(
+                event_type="plan.review.completed",
+                event_type_map={"pass": "plan.review.completed"},
+                schema={
+                    "verdict": OutcomeField(
+                        type="enum",
+                        description="review verdict",
+                        enum_values=["pass"],
+                    ),
+                    "findings": OutcomeField(type="array", description="review findings"),
+                },
+            ),
+        )
+        task = _make_agent_task(task_id="task-review-schema-rejected")
+        task.session_id = "sess-review-schema-rejected"
+        task.workflow_node_id = "plan-correctness-review"
+        malformed = """\
+---outcome---
+verdict: pass
+findings: "[{severity: high}]"
+---end---
+"""
+        agent = SimpleNamespace(
+            run_turn=AsyncMock(return_value=SimpleNamespace(response=malformed))
+        )
+
+        accepted = await dl._emit_mesh_outcome_event(
+            task,
+            malformed,
+            success=True,
+            agent=agent,
+            channel=dl._skuld_channel,
+        )
+
+        assert accepted is False
+        agent.run_turn.assert_awaited_once()
+        dl._mesh.publish.assert_not_awaited()
+        emitted = [call.args[0] for call in dl._skuld_channel.emit.await_args_list]
+        assert len(emitted) == 1
+        assert emitted[0].type == RavnEventType.ERROR
+        assert emitted[0].payload["failure_kind"] == "outcome_rejected"
+        assert "expected array, got str" in emitted[0].payload["message"]
 
     @pytest.mark.asyncio
     async def test_repair_resident_valkyrie_outcome_retries_with_strict_schema(self) -> None:
@@ -893,6 +1401,357 @@ correlation_ids:
         assert alias_event.payload["canonical_event_type"] == "code.completed"
 
     @pytest.mark.asyncio
+    async def test_explicit_join_outcome_topics_suppress_conflicting_canonical_event(
+        self,
+    ) -> None:
+        dl = _make_drive_loop()
+        mesh = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = None
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="developer-analyst",
+            produces=SimpleNamespace(
+                event_type="developer.plan.revised",
+                event_type_map={"approved": "developer.plan.approved"},
+            ),
+        )
+        dl.set_workflow_allowed_outcomes_resolver(
+            lambda task, _persona: set(task.workflow_allowed_outcome_topics)
+        )
+
+        task = _make_agent_task(task_id="task-approved-plan")
+        task.session_id = "sess-approved-plan"
+        task.workflow_node_id = "delivery-plan-author"
+        task.workflow_allowed_outcome_topics = ["developer.plan.approved"]
+
+        await dl._emit_mesh_outcome_event(
+            task,
+            """---outcome---
+verdict: approved
+plan_revision: plan-7
+---end---""",
+            success=True,
+        )
+
+        mesh.publish.assert_awaited_once()
+        assert mesh.publish.await_args.kwargs["topic"] == "developer.plan.approved"
+
+    @pytest.mark.asyncio
+    async def test_superseded_review_task_cannot_publish_approval(self, tmp_path) -> None:
+        dl = _make_drive_loop(journal_path=str(tmp_path / "superseded-queue.json"))
+        mesh = AsyncMock()
+        skuld = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = skuld
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="developer-analyst",
+            produces=SimpleNamespace(
+                event_type="developer.plan.revised",
+                event_type_map={"approved": "developer.plan.approved"},
+            ),
+        )
+        dl.set_workflow_allowed_outcomes_resolver(
+            lambda task, _persona: set(task.workflow_allowed_outcome_topics)
+        )
+        dl.set_workflow_review_cycle_sources({("delivery-plan-author", "developer.plan.revised")})
+        now = datetime.now(UTC)
+        dl.observe_workflow_cycle(
+            scope_id="delivery-session",
+            node_id="delivery-plan-author",
+            event_type="developer.plan.revised",
+            event_id="plan-old-event",
+            outcome={"plan_revision": "plan-old"},
+            timestamp=now,
+        )
+
+        task = _make_agent_task(task_id="task-old-review-resolution")
+        task.session_id = "delivery-session"
+        task.workflow_node_id = "delivery-plan-author"
+        task.workflow_review_cycle_id = "plan-old-event"
+        task.workflow_review_source_node_id = "delivery-plan-author"
+        task.workflow_review_source_event_type = "developer.plan.revised"
+        task.workflow_allowed_outcome_topics = ["developer.plan.approved"]
+
+        dl.observe_workflow_cycle(
+            scope_id="delivery-session",
+            node_id="delivery-plan-author",
+            event_type="developer.plan.revised",
+            event_id="plan-new-event",
+            outcome={"plan_revision": "plan-new"},
+            timestamp=now + timedelta(seconds=1),
+        )
+
+        accepted = await dl._emit_mesh_outcome_event(
+            task,
+            """---outcome---
+verdict: approved
+plan_revision: plan-old
+---end---""",
+            success=True,
+        )
+
+        assert accepted is False
+        mesh.publish.assert_not_awaited()
+        skuld.emit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_self_authored_cycle_is_recorded_before_identical_mesh_echo(
+        self, tmp_path
+    ) -> None:
+        dl = _make_drive_loop(journal_path=str(tmp_path / "self-authored-queue.json"))
+        mesh = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = None
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="developer-analyst",
+            produces=SimpleNamespace(
+                event_type="developer.plan.revised",
+                event_type_map={"ready_for_review": "developer.plan.revised"},
+            ),
+        )
+        dl.set_workflow_review_cycle_sources({("delivery-plan-author", "developer.plan.revised")})
+        task = _make_agent_task(task_id="task-author-plan")
+        task.session_id = "delivery-session"
+        task.root_correlation_id = "delivery-root"
+        task.workflow_node_id = "delivery-plan-author"
+
+        accepted = await dl._emit_mesh_outcome_event(
+            task,
+            """---outcome---
+verdict: ready_for_review
+plan_revision: plan-current
+---end---""",
+            success=True,
+        )
+
+        assert accepted is True
+        published = mesh.publish.await_args.args[0]
+        current, reason = dl.validate_workflow_review_cycle(
+            scope_id="delivery-session",
+            node_id="delivery-plan-author",
+            event_type="developer.plan.revised",
+            event_id=published.event_id,
+            outcome={"plan_revision": "plan-current"},
+            binding_fields=["plan_revision"],
+        )
+        assert (current, reason) == (True, "current")
+        assert (
+            dl.observe_workflow_cycle(
+                scope_id="delivery-session",
+                node_id="delivery-plan-author",
+                event_type="developer.plan.revised",
+                event_id=published.event_id,
+                outcome={"plan_revision": "plan-current"},
+                timestamp=published.timestamp,
+            )
+            is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_authoritative_alias_is_reserved_before_candidate_publish(self, tmp_path) -> None:
+        dl = _make_drive_loop(journal_path=str(tmp_path / "candidate-alias-queue.json"))
+        mesh = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = None
+        dl._persona_config = SimpleNamespace(
+            name="developer-coordinator",
+            produces=SimpleNamespace(
+                event_type="developer.coordination.decision",
+                event_type_map={"verify": "developer.candidate.verified"},
+            ),
+        )
+        dl.set_workflow_review_cycle_sources(
+            {("workstream-verify", "developer.candidate.verified")}
+        )
+        task = _make_agent_task(task_id="task-verify-candidate")
+        task.session_id = "child-session"
+        task.root_correlation_id = "child-root"
+        task.workflow_node_id = "workstream-verify"
+
+        accepted = await dl._emit_mesh_outcome_event(
+            task,
+            """---outcome---
+verdict: verify
+attempt_id: attempt-1
+candidate_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+candidate_tree: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+---end---""",
+            success=True,
+        )
+
+        assert accepted is True
+        alias_call = next(
+            call
+            for call in mesh.publish.await_args_list
+            if call.kwargs["topic"] == "developer.candidate.verified"
+        )
+        alias_event = alias_call.args[0]
+        current, reason = dl.validate_workflow_review_cycle(
+            scope_id="child-session",
+            node_id="workstream-verify",
+            event_type="developer.candidate.verified",
+            event_id=alias_event.event_id,
+            outcome={
+                "attempt_id": "attempt-1",
+                "candidate_sha": "a" * 40,
+                "candidate_tree": "b" * 40,
+            },
+            binding_fields=["attempt_id", "candidate_sha", "candidate_tree"],
+        )
+        assert (current, reason) == (True, "current")
+
+    @pytest.mark.asyncio
+    async def test_failed_authoritative_alias_is_not_exposed_to_skuld(self, tmp_path) -> None:
+        dl = _make_drive_loop(journal_path=str(tmp_path / "failed-alias-queue.json"))
+        mesh = AsyncMock()
+
+        async def _publish(_event, *, topic):
+            if topic == "developer.candidate.verified":
+                raise RuntimeError("mesh unavailable")
+
+        mesh.publish.side_effect = _publish
+        skuld = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = skuld
+        dl._persona_config = SimpleNamespace(
+            name="developer-coordinator",
+            produces=SimpleNamespace(
+                event_type="developer.coordination.decision",
+                event_type_map={"verify": "developer.candidate.verified"},
+            ),
+        )
+        dl.set_workflow_review_cycle_sources(
+            {("workstream-verify", "developer.candidate.verified")}
+        )
+        task = _make_agent_task(task_id="task-failed-candidate-alias")
+        task.session_id = "child-session"
+        task.workflow_node_id = "workstream-verify"
+
+        accepted = await dl._emit_mesh_outcome_event(
+            task,
+            """---outcome---
+verdict: verify
+attempt_id: attempt-1
+candidate_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+candidate_tree: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+---end---""",
+            success=True,
+        )
+
+        assert accepted is False
+        emitted_topics = [call.args[0].payload["event_type"] for call in skuld.emit.await_args_list]
+        assert "developer.candidate.verified" not in emitted_topics
+        current, reason = dl.validate_workflow_review_cycle(
+            scope_id="child-session",
+            node_id="workstream-verify",
+            event_type="developer.candidate.verified",
+            event_id="unknown",
+            outcome={"attempt_id": "attempt-1"},
+            binding_fields=["attempt_id"],
+        )
+        assert (current, reason) == (False, "authoritative cycle has not been observed")
+
+    @pytest.mark.asyncio
+    async def test_authoritative_cycle_persistence_fails_before_mesh_exposure(self) -> None:
+        dl = _make_drive_loop()  # test helper uses an intentionally unwritable journal
+        mesh = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = None
+        dl._persona_config = SimpleNamespace(
+            name="developer-analyst",
+            produces=SimpleNamespace(event_type="plan.revised", event_type_map={}),
+        )
+        dl.set_workflow_review_cycle_sources({("author", "plan.revised")})
+        task = _make_agent_task(task_id="task-unpersisted-plan")
+        task.session_id = "delivery-session"
+        task.workflow_node_id = "author"
+
+        with pytest.raises(RuntimeError, match="authoritative workflow cycle"):
+            await dl._emit_mesh_outcome_event(
+                task,
+                """---outcome---
+verdict: ready_for_review
+plan_revision: plan-unpersisted
+---end---""",
+                success=True,
+            )
+
+        mesh.publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_cycle_publish_rolls_back_reserved_authority(self, tmp_path) -> None:
+        dl = _make_drive_loop(journal_path=str(tmp_path / "publish-failure-queue.json"))
+        mesh = AsyncMock()
+        mesh.publish.side_effect = RuntimeError("mesh unavailable")
+        dl._mesh = mesh
+        dl._skuld_channel = None
+        dl._persona_config = SimpleNamespace(
+            name="developer-analyst",
+            produces=SimpleNamespace(event_type="plan.revised", event_type_map={}),
+        )
+        dl.set_workflow_review_cycle_sources({("author", "plan.revised")})
+        task = _make_agent_task(task_id="task-failed-plan-publish")
+        task.session_id = "delivery-session"
+        task.workflow_node_id = "author"
+
+        accepted = await dl._emit_mesh_outcome_event(
+            task,
+            """---outcome---
+verdict: ready_for_review
+plan_revision: plan-never-exposed
+---end---""",
+            success=True,
+        )
+        assert accepted is False
+
+        current, reason = dl.validate_workflow_review_cycle(
+            scope_id="delivery-session",
+            node_id="author",
+            event_type="plan.revised",
+            event_id="unknown",
+            outcome={"plan_revision": "plan-never-exposed"},
+            binding_fields=["plan_revision"],
+        )
+        assert (current, reason) == (False, "authoritative cycle has not been observed")
+
+    @pytest.mark.asyncio
+    async def test_failed_review_join_cannot_publish_model_selected_approval(self) -> None:
+        dl = _make_drive_loop()
+        mesh = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = None
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="developer-analyst",
+            produces=SimpleNamespace(
+                event_type="developer.plan.revised",
+                event_type_map={"approved": "developer.plan.approved"},
+            ),
+        )
+        dl.set_workflow_allowed_outcomes_resolver(
+            lambda task, _persona: set(task.workflow_allowed_outcome_topics)
+        )
+
+        task = _make_agent_task(task_id="task-failed-review-resolution")
+        task.workflow_node_id = "delivery-plan-author"
+        task.workflow_allowed_outcome_topics = ["developer.plan.revised"]
+
+        accepted = await dl._emit_mesh_outcome_event(
+            task,
+            """---outcome---
+verdict: approved
+plan_revision: plan-7
+---end---""",
+            success=True,
+        )
+
+        assert accepted is False
+        mesh.publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_success_without_verdict_uses_successful_schema_verdict(self) -> None:
         dl = _make_drive_loop()
         mesh = AsyncMock()
@@ -1420,33 +2279,53 @@ end---
         assert alias_topic == "council.b.opinion.submitted"
 
     @pytest.mark.asyncio
-    async def test_suppresses_outcome_when_workflow_node_disallows_it(self) -> None:
+    async def test_disallowed_blocked_outcome_fails_visibly_without_advancing(self) -> None:
         dl = _make_drive_loop()
         mesh = AsyncMock()
         dl._mesh = mesh
         dl._skuld_channel = AsyncMock()
         dl._source_id = "drive_loop"
         dl._persona_config = SimpleNamespace(
-            name="coordinator",
-            produces=SimpleNamespace(event_type="ravn.task.completed", event_type_map={}),
+            name="developer-coordinator",
+            produces=SimpleNamespace(
+                event_type="developer.coordination.decision",
+                event_type_map={
+                    "children_waiting": "developer.children.waiting",
+                    "blocked": "developer.coordination.blocked",
+                },
+            ),
         )
-        dl.set_workflow_allowed_outcomes_resolver(lambda _task, _persona: {"code.requested"})
+        dl.set_workflow_allowed_outcomes_resolver(
+            lambda _task, _persona: {"developer.children.waiting"}
+        )
 
         task = _make_agent_task(task_id="task-789")
         task.session_id = "sess-789"
         task.root_correlation_id = "root-789"
-        task.workflow_node_id = "run-coordinator-start"
+        task.workflow_node_id = "delivery-coordinate"
         response_text = """\
 ---outcome---
-verdict: approve
-summary: task completed
+verdict: blocked
+summary: required delivery evidence could not be collected
+rationale: delivery_evidence approval was denied
 ---end---
 """
 
-        await dl._emit_mesh_outcome_event(task, response_text, success=True)
+        accepted = await dl._emit_mesh_outcome_event(
+            task,
+            response_text,
+            success=True,
+            channel=dl._skuld_channel,
+        )
 
+        assert accepted is False
         mesh.publish.assert_not_awaited()
-        dl._skuld_channel.emit.assert_not_awaited()
+        dl._skuld_channel.emit.assert_awaited_once()
+        error = dl._skuld_channel.emit.await_args.args[0]
+        assert error.type == RavnEventType.ERROR
+        assert error.payload["failure_kind"] == "outcome_rejected"
+        assert "verdict 'blocked'" in error.payload["message"]
+        assert "delivery_evidence approval was denied" in error.payload["message"]
 
     @pytest.mark.asyncio
     async def test_merges_tool_metadata_into_canonical_outcome(self) -> None:

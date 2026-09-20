@@ -370,3 +370,10 @@ async def test_profile_revision_changes_with_bootstrap_and_resources(provider):
     provider._profiles["small"] = provider._profiles["small"].model_copy(update={"cpu": 4})
     assert (await provider.profiles())[0].revision != bootstrap_changed
     await provider.close()
+
+
+async def test_profile_revision_includes_profile_name(provider):
+    provider._profiles["alias"] = provider._profiles["small"]
+    profiles = {profile.name: profile for profile in await provider.profiles()}
+    assert profiles["small"].revision != profiles["alias"].revision
+    await provider.close()

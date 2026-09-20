@@ -329,6 +329,16 @@ describe('useWorkflowBuilder — addNode', () => {
     expect(result.current.workflow.nodes[2]!.kind).toBe('end');
   });
 
+  it('adds a passive wait node', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.addNode('wait'));
+    expect(result.current.workflow.nodes[2]).toMatchObject({
+      kind: 'wait',
+      label: 'Wait for observation',
+    });
+    expect(result.current.workflow.schemaVersion).toBe(2);
+  });
+
   it('adds a resource node with registry defaults', () => {
     const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
     act(() => result.current.addNode('resource'));
@@ -586,6 +596,20 @@ describe('useWorkflowBuilder — startConnect / cancelConnect / completeConnect'
     );
     expect(newEdge).toBeDefined();
     expect(newEdge?.label).toBe('qa.report -> complete');
+  });
+
+  it('completeConnect uses an explicitly configured wait input event', () => {
+    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
+    act(() => result.current.addNode('wait', { x: 500, y: 100 }));
+    const waitNodeId = result.current.workflow.nodes[2]!.id;
+    act(() => result.current.startConnect('stage-1', 'custom.build.queued'));
+    act(() => result.current.completeConnect(waitNodeId, 'custom.build.waiting'));
+
+    expect(
+      result.current.workflow.edges.find(
+        (edge) => edge.source === 'stage-1' && edge.target === waitNodeId,
+      )?.label,
+    ).toBe('custom.build.queued -> custom.build.waiting');
   });
 
   it('completeConnect can target a gate without an explicit input label', () => {

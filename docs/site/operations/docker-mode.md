@@ -110,6 +110,9 @@ docker:
       recommended: true
       trust_remote_code: true
       serve_args: ["--max-num-seqs", "8", "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder", "--reasoning-parser", "nemotron_v3"]
+  read_only_files:          # deployment credentials consumed through file adapters
+    - source_file: /absolute/host/path/provider.key
+      target_file: /run/secrets/niuu/provider-key
 ```
 
 The installer writes `config.yaml` once, with the vLLM image and the model
@@ -117,6 +120,11 @@ list above (three models), and leaves an existing file alone. The vLLM image
 tag, the models the wizard offers and their `serve_args` are configuration,
 not code: edit the file and run `niuu up` again. The platform image never has
 to be rebuilt for them.
+
+`docker.read_only_files` creates explicit read-only file bind mounts without
+opening or copying their contents. Both paths must be absolute, target paths
+must be unique, and the host file should be mode `0600` and excluded from
+version control.
 
 `server.port` stays the single published port (8080). `server.external_host`
 sets the host in the printed setup URL; when empty the LAN address is detected.

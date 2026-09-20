@@ -52,7 +52,12 @@ describe('workflowSemantics', () => {
   it('detects re-entry event types and edges', () => {
     expect(isReentryEventType('review.changes_requested')).toBe(true);
     expect(isReentryEventType('security-retry')).toBe(true);
+    expect(isReentryEventType('developer.workstream.repair_requested')).toBe(true);
+    expect(isReentryEventType('delivery.repair.required')).toBe(true);
+    expect(isReentryEventType('plan.review.completed')).toBe(true);
+    expect(isReentryEventType('developer.delivery.observed')).toBe(true);
     expect(isReentryEventType('review.completed')).toBe(false);
+    expect(isReentryEventType('developer.delivery.waiting')).toBe(false);
     expect(isReentryEventType(undefined)).toBe(false);
 
     expect(isReentryEdge(makeEdge('retry', 'review.changes_requested -> code.requested'))).toBe(

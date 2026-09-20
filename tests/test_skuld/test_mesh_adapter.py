@@ -1026,8 +1026,8 @@ class TestBrokerMeshIntegration:
         await b._mesh_adapter.stop()
 
     @pytest.mark.asyncio
-    async def test_start_mesh_adapter_nng_import_error_falls_back(self, tmp_path):
-        """_start_mesh_adapter falls back to in-process when nng raises ImportError."""
+    async def test_start_mesh_adapter_nng_import_error_fails_closed(self, tmp_path):
+        """A configured native transport must not degrade to in-process delivery."""
         from skuld.broker import Broker
 
         settings = SkuldSettings(
@@ -1045,8 +1045,7 @@ class TestBrokerMeshIntegration:
             ),
             patch("skuld.broker.build_discovery_adapters", return_value=None),
         ):
-            await b._start_mesh_adapter()
+            with pytest.raises(ImportError, match="nng not available"):
+                await b._start_mesh_adapter()
 
-        assert b._mesh_adapter is not None
-        assert b._mesh_adapter.is_running is True
-        await b._mesh_adapter.stop()
+        assert b._mesh_adapter is None

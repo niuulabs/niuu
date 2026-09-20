@@ -3824,6 +3824,24 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
             ),
             "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_SOURCE_CONTROL,
         }
+    if env_name == "GITLAB_TOKEN":
+        return {
+            # GitLab accepts personal, project, group, and OAuth access tokens
+            # through the OAuth-compatible Bearer header.  Mediation therefore
+            # works for both PAT and device-flow credentials without exposing the
+            # token to glab, git, curl, or the sandbox environment.
+            "auth_style": "bearer",
+            "header_name": "Authorization",
+            "hosts": ("gitlab.com",),
+            "binaries": (
+                "/usr/bin/glab",
+                "/usr/bin/git",
+                "/usr/lib/git-core/git-remote-http",
+                "/usr/lib/git-core/git-remote-https",
+                "/usr/bin/curl",
+            ),
+            "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_SOURCE_CONTROL,
+        }
     raise RuntimeError(
         f"OpenShell has no dynamic provider route for credential environment {env_name!r}"
     )

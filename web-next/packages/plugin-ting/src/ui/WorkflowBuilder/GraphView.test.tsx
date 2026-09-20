@@ -8,6 +8,7 @@ import {
   renderedStageHeight,
   splitEdgePorts,
   stagePortLists,
+  waitPortLists,
 } from './GraphView';
 import type { WorkflowNode, WorkflowEdge } from '../../domain/workflow';
 import { MIMIR_MOUNT_MIME, serializeWorkflowRegistryMount } from './mimirRegistry';
@@ -72,6 +73,13 @@ const resourceNode: WorkflowNode = {
   authRef: 'mimir-secret',
   defaultReadPriority: 5,
   position: { x: 220, y: 220 },
+};
+
+const waitNode: WorkflowNode = {
+  id: 'wait-1',
+  kind: 'wait',
+  label: 'Wait for CI',
+  position: { x: 600, y: 220 },
 };
 
 const edge: WorkflowEdge = {
@@ -149,6 +157,97 @@ describe('GraphView', () => {
     expect(screen.getByTestId('workflow-node-cond-1')).toHaveAttribute('data-kind', 'cond');
   });
 
+  it('derives passive wait ports from custom connected edge events', () => {
+    const customEdges: WorkflowEdge[] = [
+      {
+        id: 'wait-in',
+        source: 'stage-1',
+        target: 'wait-1',
+        label: 'custom.build.queued->custom.build.waiting',
+        cp1: { x: 80, y: 0 },
+        cp2: { x: -80, y: 0 },
+      },
+      {
+        id: 'wait-in-review',
+        source: 'stage-1',
+        target: 'wait-1',
+        label: 'custom.review.queued  ->  custom.review.waiting',
+        cp1: { x: 80, y: 0 },
+        cp2: { x: -80, y: 0 },
+      },
+      {
+        id: 'wait-out',
+        source: 'wait-1',
+        target: 'end-1',
+        label: 'custom.build.finished->custom.build.observed',
+        cp1: { x: 80, y: 0 },
+        cp2: { x: -80, y: 0 },
+      },
+      {
+        id: 'wait-out-merge',
+        source: 'wait-1',
+        target: 'end-1',
+        label: 'custom.merge.finished -> custom.merge.observed',
+        cp1: { x: 80, y: 0 },
+        cp2: { x: -80, y: 0 },
+      },
+    ];
+    const props = {
+      ...defaultProps(),
+      nodes: [stageNode, waitNode, endNode],
+      edges: customEdges,
+    };
+    const { rerender } = render(<GraphView {...props} />);
+
+    expect(screen.getByTestId('workflow-node-wait-1')).toHaveAttribute('data-kind', 'wait');
+    expect(screen.getByText('PASSIVE · 2 IN · 2 OUT')).toBeInTheDocument();
+    expect(screen.getByTestId('wait-output-wait-1')).toHaveAttribute(
+      'data-event-type',
+      'custom.build.finished',
+    );
+    expect(screen.getByTestId('wait-output-wait-1-1')).toHaveAttribute(
+      'data-event-type',
+      'custom.merge.finished',
+    );
+    fireEvent.click(screen.getByTestId('wait-output-wait-1'));
+    expect(props.onStartConnect).toHaveBeenCalledWith('wait-1', 'custom.build.finished');
+    fireEvent.click(screen.getByTestId('wait-output-wait-1-1'));
+    expect(props.onStartConnect).toHaveBeenCalledWith('wait-1', 'custom.merge.finished');
+
+    rerender(
+      <GraphView {...props} connectingFromId="stage-1" connectingFromLabel="custom.build.queued" />,
+    );
+    fireEvent.click(screen.getByTestId('wait-input-wait-1'));
+    expect(props.onCompleteConnect).toHaveBeenCalledWith('wait-1', 'custom.build.waiting');
+    fireEvent.click(screen.getByTestId('wait-input-wait-1-1'));
+    expect(props.onCompleteConnect).toHaveBeenCalledWith('wait-1', 'custom.review.waiting');
+  });
+
+  it('prompts for event types when connecting an unconfigured wait', () => {
+    const prompt = vi
+      .spyOn(window, 'prompt')
+      .mockReturnValueOnce('custom.build.finished')
+      .mockReturnValueOnce('custom.build.waiting');
+    const props = { ...defaultProps(), nodes: [waitNode], edges: [] };
+    const { rerender } = render(<GraphView {...props} />);
+
+    expect(screen.getByText('PASSIVE · CONFIGURE EVENTS')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('wait-output-wait-1'));
+    expect(props.onStartConnect).toHaveBeenCalledWith('wait-1', 'custom.build.finished');
+
+    rerender(
+      <GraphView {...props} connectingFromId="stage-1" connectingFromLabel="custom.build.queued" />,
+    );
+    fireEvent.click(screen.getByTestId('wait-input-wait-1'));
+    expect(props.onCompleteConnect).toHaveBeenCalledWith('wait-1', 'custom.build.waiting');
+    expect(prompt).toHaveBeenNthCalledWith(
+      2,
+      'Incoming event type for this wait',
+      'custom.build.queued',
+    );
+    prompt.mockRestore();
+  });
+
   it('shows data-selected on selected node', () => {
     const props = { ...defaultProps(), selectedNodeId: 'stage-1' };
     render(<GraphView {...props} />);
@@ -185,6 +284,7 @@ describe('GraphView', () => {
     render(<GraphView {...defaultProps()} />);
     expect(screen.getByTestId('add-trigger')).toBeInTheDocument();
     expect(screen.getByTestId('add-end')).toBeInTheDocument();
+    expect(screen.getByTestId('add-wait')).toBeInTheDocument();
   });
 
   it('calls onAddNode("stage") when add-stage clicked', () => {
@@ -220,8 +320,10 @@ describe('GraphView', () => {
     render(<GraphView {...props} />);
     fireEvent.click(screen.getByTestId('add-trigger'));
     fireEvent.click(screen.getByTestId('add-end'));
+    fireEvent.click(screen.getByTestId('add-wait'));
     expect(props.onAddNode).toHaveBeenCalledWith('trigger');
     expect(props.onAddNode).toHaveBeenCalledWith('end');
+    expect(props.onAddNode).toHaveBeenCalledWith('wait');
   });
 
   it('routes dropped Mimir mount payloads to onAddMimirResource', () => {
@@ -677,8 +779,29 @@ describe('GraphView', () => {
   it('splits edge labels into source and target ports', () => {
     expect(splitEdgePorts()).toEqual({ sourcePort: null, targetPort: null });
     expect(splitEdgePorts('notes -> brief')).toEqual({ sourcePort: 'notes', targetPort: 'brief' });
+    expect(splitEdgePorts('notes->brief')).toEqual({ sourcePort: 'notes', targetPort: 'brief' });
+    expect(splitEdgePorts(' notes  ->  brief ')).toEqual({
+      sourcePort: 'notes',
+      targetPort: 'brief',
+    });
     expect(splitEdgePorts('summary')).toEqual({ sourcePort: 'summary', targetPort: 'summary' });
     expect(splitEdgePorts('notes -> ')).toEqual({ sourcePort: 'notes', targetPort: '' });
+  });
+
+  it('derives unique wait ports with the canonical whitespace-tolerant parser', () => {
+    const edges: WorkflowEdge[] = [
+      { ...edge, id: 'in-1', target: 'wait-1', label: 'queued->waiting' },
+      { ...edge, id: 'in-duplicate', target: 'wait-1', label: 'retry -> waiting' },
+      { ...edge, id: 'in-2', target: 'wait-1', label: 'review  ->  review.waiting' },
+      { ...edge, id: 'out-1', source: 'wait-1', label: 'observed->publish' },
+      { ...edge, id: 'out-duplicate', source: 'wait-1', label: 'observed -> archive' },
+      { ...edge, id: 'invalid', source: 'wait-1', label: 'missing target' },
+    ];
+
+    expect(waitPortLists('wait-1', edges)).toEqual({
+      incomingEvents: ['waiting', 'review.waiting'],
+      outgoingEvents: ['observed'],
+    });
   });
 
   it('builds issue levels with error precedence and guards supported node kinds', () => {
@@ -697,6 +820,7 @@ describe('GraphView', () => {
     expect(isGraphNodeKind('resource')).toBe(true);
     expect(isGraphNodeKind('gate')).toBe(true);
     expect(isGraphNodeKind('cond')).toBe(true);
+    expect(isGraphNodeKind('wait')).toBe(true);
     expect(isGraphNodeKind('end')).toBe(true);
     expect(isGraphNodeKind('unknown')).toBe(false);
   });
@@ -726,6 +850,24 @@ describe('GraphView', () => {
     expect(edgeAnchor(gateNode as never, 'target', 'brief', personaFixtures as never)).toEqual({
       x: 338,
       y: 138,
+    });
+  });
+
+  it('anchors wait edges to their configured topic rows', () => {
+    const edges: WorkflowEdge[] = [
+      { ...edge, id: 'in-1', target: 'wait-1', label: 'queued->waiting' },
+      { ...edge, id: 'in-2', target: 'wait-1', label: 'review->review.waiting' },
+      { ...edge, id: 'out-1', source: 'wait-1', label: 'observed->publish' },
+      { ...edge, id: 'out-2', source: 'wait-1', label: 'merged->done' },
+    ];
+
+    expect(edgeAnchor(waitNode, 'target', 'review.waiting', [], edges)).toEqual({
+      x: waitNode.position.x + 8,
+      y: waitNode.position.y + 58 + 8 + 14,
+    });
+    expect(edgeAnchor(waitNode, 'source', 'merged', [], edges)).toEqual({
+      x: waitNode.position.x + 168 - 8,
+      y: waitNode.position.y + 58 + 8 + 14,
     });
   });
 

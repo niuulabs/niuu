@@ -5,7 +5,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from niuu.domain.stack import ApplyStatus, ModelTestResult, StackView
+from niuu.domain.stack import (
+    ApplyStatus,
+    ExternalIntegrationValidation,
+    ModelTestResult,
+    StackView,
+)
 
 
 class StackControlPort(ABC):
@@ -34,3 +39,16 @@ class StackControlPort(ABC):
     @abstractmethod
     async def test_model(self) -> ModelTestResult:
         """Send one short completion to the local model; ValueError when it is not serving."""
+
+    @abstractmethod
+    async def validate_external_integration(
+        self,
+        source_dir: str,
+        definition_files: list[str],
+        manifest_file: str = "",
+    ) -> ExternalIntegrationValidation:
+        """Validate metadata and component classes in one machine-local package."""
+
+    @abstractmethod
+    async def external_integrations_root(self) -> str:
+        """Directory in which Settings-managed external packages must live."""

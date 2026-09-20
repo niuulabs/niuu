@@ -49,6 +49,8 @@ class DummyTool(ToolPort):
 
 
 class FakeResumableTransport(CLITransport):
+    supports_read_only_mcp_boundary = True
+
     def __init__(
         self,
         workspace_dir: str,
@@ -58,6 +60,8 @@ class FakeResumableTransport(CLITransport):
         system_prompt: str = "",
         skip_permissions: bool = True,
         initial_prompt: str = "",
+        read_only_mcp_only: bool = False,
+        allowed_mcp_tools: list[str] | None = None,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
@@ -65,6 +69,8 @@ class FakeResumableTransport(CLITransport):
         self._session_id = session_id
         self.system_prompt = system_prompt
         self.skip_permissions = skip_permissions
+        self.read_only_mcp_only = read_only_mcp_only
+        self.allowed_mcp_tools = list(allowed_mcp_tools or [])
         self.initial_prompt = initial_prompt
         self.sent_messages: list[str] = []
         self._last_result: dict | None = None
@@ -716,7 +722,7 @@ async def test_cli_transport_agent_joins_codex_ws_wrapped_mcp_tool_result() -> N
     assert manager.calls == [("sess-3", "wss://sessions.example/s/sess-3/session")]
 
 
-def test_cli_executor_passes_mcp_servers_to_transport() -> None:
+def test_cli_executor_read_only_keeps_only_bounded_ravn_tool_server() -> None:
     channel = _CollectingChannel()
     manager = object()
     executor = CliTransportExecutor(
@@ -733,15 +739,16 @@ def test_cli_executor_passes_mcp_servers_to_transport() -> None:
         persona="reviewer",
         workspace_dir="/tmp/workspace",
         permission_mode="read_only",
-        tools=[],
+        tools=[DummyTool()],
         mcp_servers=[{"name": "mimir-local", "command": "python3", "args": ["-m", "mimir"]}],
         session_join_manager=manager,
     )
 
     assert agent._session_join_manager is manager
-    assert agent._transport_kwargs["mcp_servers"] == [
-        {"name": "mimir-local", "command": "python3", "args": ["-m", "mimir"]}
-    ]
+    assert [server["name"] for server in agent._transport_kwargs["mcp_servers"]] == ["ravn-tools"]
+    assert agent._transport_kwargs["skip_permissions"] is False
+    assert agent._transport_kwargs["read_only_mcp_only"] is True
+    assert agent._transport_kwargs["allowed_mcp_tools"] == ["mcp__ravn-tools__*"]
 
 
 def test_cli_executor_passes_mcp_servers_to_codex_transport() -> None:
@@ -759,7 +766,7 @@ def test_cli_executor_passes_mcp_servers_to_codex_transport() -> None:
         task_id="task-codex-mcp",
         persona="researcher",
         workspace_dir="/tmp/workspace",
-        permission_mode="read_only",
+        permission_mode="workspace_write",
         tools=[],
         mcp_servers=[{"name": "mimir-local", "command": "python3", "args": ["-m", "mimir"]}],
     )
@@ -786,7 +793,7 @@ def test_cli_executor_adds_ravn_tools_mcp_server_when_tools_are_preloaded() -> N
         task_id="task-ravn-tool-mcp",
         persona="product-steward",
         workspace_dir="/tmp/workspace",
-        permission_mode="read_only",
+        permission_mode="workspace_write",
         tools=[DummyTool()],
         mcp_servers=[],
     )
@@ -800,6 +807,7 @@ def test_cli_executor_adds_ravn_tools_mcp_server_when_tools_are_preloaded() -> N
         "mcp_servers.ravn-tools.tool_timeout_sec",
         "3600.0",
     ) in transport._mcp_overrides
+    assert ("mcp_servers.ravn-tools.required", "true") in transport._mcp_overrides
 
 
 def test_cli_executor_propagates_active_trace_to_ravn_tool_mcp(monkeypatch) -> None:
@@ -824,7 +832,7 @@ def test_cli_executor_propagates_active_trace_to_ravn_tool_mcp(monkeypatch) -> N
         task_id="task-traced-mcp",
         persona="ivaldi",
         workspace_dir="/tmp/workspace",
-        permission_mode="read_only",
+        permission_mode="workspace_write",
         tools=[DummyTool()],
         mcp_servers=[],
     )
@@ -850,7 +858,7 @@ def test_cli_executor_allows_ravn_tool_mcp_timeout_override() -> None:
         task_id="task-ravn-tool-mcp-timeout",
         persona="product-steward",
         workspace_dir="/tmp/workspace",
-        permission_mode="read_only",
+        permission_mode="workspace_write",
         tools=[DummyTool()],
         mcp_servers=[],
     )
@@ -885,7 +893,7 @@ def test_cli_executor_resolves_ravn_tool_mcp_config_before_changing_workspace(
         task_id="task-ravn-tool-mcp-config",
         persona="ivaldi",
         workspace_dir="/different/resident/workspace",
-        permission_mode="read_only",
+        permission_mode="workspace_write",
         tools=[DummyTool()],
         mcp_servers=[],
     )
@@ -949,3 +957,145 @@ def test_cli_executor_allows_explicit_codex_ws_permission_override() -> None:
     )
 
     assert agent._transport_kwargs["skip_permissions"] is True
+
+
+def test_cli_executor_read_only_persona_overrides_unsafe_codex_runtime_defaults() -> None:
+    executor = CliTransportExecutor(
+        transport_adapter="skuld.transports.codex_ws.CodexWebSocketTransport",
+        transport_kwargs={
+            "skip_permissions": True,
+            "approval_policy": "on-request",
+            "sandbox": "danger-full-access",
+            "shell_tool_enabled": True,
+            "multi_agent_enabled": True,
+        },
+    )
+
+    agent = executor.build(
+        channel=_CollectingChannel(),
+        system_prompt="Coordinate without source mutation.",
+        session=Session(),
+        model="gpt-5.5",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-read-only",
+        persona="developer-coordinator",
+        workspace_dir="/tmp/workspace",
+        permission_mode="read-only",
+        tools=[DummyTool()],
+        mcp_servers=[],
+    )
+
+    assert agent._transport_kwargs["skip_permissions"] is False
+    assert agent._transport_kwargs["approval_policy"] == "never"
+    assert agent._transport_kwargs["sandbox"] == "read-only"
+    assert agent._transport_kwargs["shell_tool_enabled"] is False
+    assert agent._transport_kwargs["multi_agent_enabled"] is False
+    assert agent._transport_kwargs["read_only_mcp_only"] is True
+    assert agent._transport_kwargs["mcp_servers"][0]["default_tools_approval_mode"] == "approve"
+    assert agent._transport_kwargs["mcp_servers"][0]["enabled_tools"] == ["dummy_tool"]
+
+
+def test_cli_executor_leaves_codex_native_tools_unchanged_for_coder_persona() -> None:
+    executor = CliTransportExecutor(
+        transport_adapter="skuld.transports.codex_ws.CodexWebSocketTransport"
+    )
+
+    agent = executor.build(
+        channel=_CollectingChannel(),
+        system_prompt="Implement the requested change.",
+        session=Session(),
+        model="gpt-5.5",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-coder",
+        persona="developer-workstream",
+        workspace_dir="/tmp/workspace",
+        permission_mode="workspace_write",
+        tools=[DummyTool()],
+        mcp_servers=[],
+    )
+
+    assert "approval_policy" not in agent._transport_kwargs
+    assert "sandbox" not in agent._transport_kwargs
+    assert "shell_tool_enabled" not in agent._transport_kwargs
+    assert "multi_agent_enabled" not in agent._transport_kwargs
+
+
+def test_cli_executor_read_only_claude_uses_explicit_mcp_only_boundary() -> None:
+    executor = CliTransportExecutor(
+        transport_adapter="skuld.transports.sdk.SDKTransport",
+        transport_kwargs={
+            "skip_permissions": True,
+            "read_only_mcp_only": False,
+            "allowed_mcp_tools": ["mcp__untrusted"],
+            "mcp_servers": [
+                {"name": "also-unbounded", "command": "untrusted-mcp", "args": []},
+            ],
+        },
+    )
+
+    agent = executor.build(
+        channel=_CollectingChannel(),
+        system_prompt="Coordinate without source mutation.",
+        session=Session(),
+        model="claude-opus-4-8",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-read-only-claude",
+        persona="developer-coordinator",
+        workspace_dir="/tmp/workspace",
+        permission_mode="read_only",
+        tools=[DummyTool()],
+        mcp_servers=[
+            {"name": "unbounded", "command": "untrusted-mcp", "args": []},
+        ],
+    )
+
+    assert agent._transport_kwargs["skip_permissions"] is False
+    assert agent._transport_kwargs["read_only_mcp_only"] is True
+    assert agent._transport_kwargs["allowed_mcp_tools"] == ["mcp__ravn-tools__*"]
+    assert [server["name"] for server in agent._transport_kwargs["mcp_servers"]] == ["ravn-tools"]
+
+
+def test_cli_executor_rejects_read_only_opencode_before_model_turn() -> None:
+    executor = CliTransportExecutor(
+        transport_adapter="skuld.transports.opencode.OpenCodeHttpTransport"
+    )
+
+    with pytest.raises(ValueError, match="cannot enforce the read-only MCP-only boundary"):
+        executor.build(
+            channel=_CollectingChannel(),
+            system_prompt="Coordinate without source mutation.",
+            session=Session(),
+            model="provider/model",
+            max_iterations=3,
+            checkpoint_port=None,
+            task_id="task-read-only-opencode",
+            persona="developer-coordinator",
+            workspace_dir="/tmp/workspace",
+            permission_mode="read-only",
+            tools=[DummyTool()],
+            mcp_servers=[],
+        )
+
+
+def test_cli_executor_leaves_claude_native_tools_enabled_for_coder_persona() -> None:
+    agent = CliTransportExecutor(transport_adapter="skuld.transports.sdk.SDKTransport").build(
+        channel=_CollectingChannel(),
+        system_prompt="Implement the requested change.",
+        session=Session(),
+        model="claude-opus-4-8",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-coder-claude",
+        persona="developer-coder",
+        workspace_dir="/tmp/workspace",
+        permission_mode="workspace_write",
+        tools=[DummyTool()],
+        mcp_servers=[],
+    )
+
+    assert agent._transport_kwargs["skip_permissions"] is True
+    assert "read_only_mcp_only" not in agent._transport_kwargs
+    assert "allowed_mcp_tools" not in agent._transport_kwargs

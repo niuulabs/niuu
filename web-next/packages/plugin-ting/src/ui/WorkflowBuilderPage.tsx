@@ -13,15 +13,16 @@ import { useSearch } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import type { IBifrostService } from '@niuulabs/plugin-bifrost';
 import { useService } from '@niuulabs/plugin-sdk';
-import { StateDot, cn, type RepoRecord } from '@niuulabs/ui';
+import { StateDot, cn, randomId, type RepoRecord } from '@niuulabs/ui';
 import type { Workflow } from '../domain/workflow';
-import type { WorkflowLaunchRequest } from '../ports';
+import type { WorkflowExportFormat, WorkflowLaunchRequest } from '../ports';
 import {
   useWorkflows,
   useCreateWorkflow,
   useDeleteWorkflow,
   useSaveWorkflow,
   useLaunchWorkflow,
+  useExportWorkflow,
 } from './useWorkflows';
 import { usePersonasBrowser } from './settings/usePersonasBrowser';
 import { WorkflowBuilder } from './WorkflowBuilder';
@@ -29,6 +30,8 @@ import type { PersonaEntry } from './WorkflowBuilder/LibraryPanel';
 import type { WorkflowStageModelOption } from './WorkflowBuilder/useWorkflowBuilder';
 import { useWorkflowRegistryMounts } from './useWorkflowRegistryMounts';
 import { WorkflowLaunchModal } from './WorkflowLaunchModal';
+import { WorkflowImportDialog } from './WorkflowImportDialog';
+import { downloadWorkflowFile } from './workflowFiles';
 
 type RepoCatalogService = {
   getRepos(): Promise<RepoRecord[]>;
@@ -70,7 +73,9 @@ export function WorkflowBuilderPage() {
   const saveMutation = useSaveWorkflow();
   const deleteMutation = useDeleteWorkflow();
   const launchMutation = useLaunchWorkflow();
+  const exportMutation = useExportWorkflow();
   const [showLaunchModal, setShowLaunchModal] = useState(false);
+  const [showImportDialog, setShowImportDialog] = useState(false);
 
   const requested = search.id ? (workflows?.find((wf) => wf.id === search.id) ?? null) : null;
   const displayed = activeWorkflow ?? requested ?? workflows?.[0] ?? null;
@@ -116,6 +121,30 @@ export function WorkflowBuilderPage() {
     }
   }
 
+  function handleExport(format: WorkflowExportFormat) {
+    if (!displayed) return;
+    exportMutation.mutate({ id: displayed.id, format }, { onSuccess: downloadWorkflowFile });
+  }
+
+  function handleEditAsCopy(workflow: Workflow) {
+    const copyId = randomId();
+    const copy: Workflow = {
+      ...workflow,
+      id: copyId,
+      name: `${workflow.name} copy`,
+      scope: 'user',
+      ownerId: null,
+      revision: null,
+      readOnly: false,
+      canonicalYaml: undefined,
+      copyFrom: workflow.id,
+      resourceBindings: (workflow.resourceBindings ?? []).map((binding) =>
+        binding.targetType === 'workflow' ? { ...binding, targetId: copyId } : binding,
+      ),
+    };
+    saveMutation.mutate(copy, { onSuccess: setActiveWorkflow });
+  }
+
   return (
     <div
       data-testid="workflow-builder-page"
@@ -140,6 +169,13 @@ export function WorkflowBuilderPage() {
             className="niuu:rounded-md niuu:px-2.5 niuu:py-1 niuu:text-[10px] niuu:border niuu:border-border niuu:bg-bg-elevated niuu:text-text-secondary niuu:cursor-pointer niuu:hover:text-text-primary niuu:transition-colors niuu:font-sans niuu:disabled:opacity-50"
           >
             + new
+          </button>
+          <button
+            data-testid="import-workflow"
+            onClick={() => setShowImportDialog(true)}
+            className="niuu:rounded-md niuu:px-2.5 niuu:py-1 niuu:text-[10px] niuu:border niuu:border-border niuu:bg-bg-elevated niuu:text-text-secondary niuu:cursor-pointer niuu:hover:text-text-primary niuu:transition-colors niuu:font-sans"
+          >
+            Import
           </button>
         </div>
         <div className="niuu:px-4 niuu:pb-2 niuu:flex niuu:items-end niuu:justify-between niuu:gap-3">
@@ -216,7 +252,7 @@ export function WorkflowBuilderPage() {
         </div>
 
         {/* Delete active */}
-        {displayed && (
+        {displayed && !displayed.readOnly && (
           <div className="niuu:border-t niuu:border-border niuu:px-4 niuu:py-2">
             <button
               data-testid={`delete-workflow-${displayed.id}`}
@@ -240,12 +276,32 @@ export function WorkflowBuilderPage() {
             registryMounts={registryMounts}
             onLaunch={() => setShowLaunchModal(true)}
             launchPending={launchMutation.isPending}
-            onSave={(updated) =>
-              saveMutation.mutate(updated, {
-                onSuccess: (saved) => setActiveWorkflow(saved),
-              })
+            onSave={
+              displayed.readOnly
+                ? undefined
+                : (updated) =>
+                    saveMutation.mutate(updated, {
+                      onSuccess: (saved) => setActiveWorkflow(saved),
+                    })
             }
+            onEditAsCopy={displayed.readOnly ? handleEditAsCopy : undefined}
+            onRefreshPersona={(workflow, alias) =>
+              saveMutation.mutate(
+                { ...workflow, refreshPersonas: [alias] },
+                { onSuccess: setActiveWorkflow },
+              )
+            }
+            onExport={handleExport}
+            exportPending={exportMutation.isPending}
           />
+          {saveMutation.error || exportMutation.error ? (
+            <div
+              role="alert"
+              className="niuu:border-t niuu:border-critical niuu:bg-bg-secondary niuu:px-4 niuu:py-2 niuu:text-xs niuu:text-critical"
+            >
+              {(saveMutation.error ?? exportMutation.error)?.message}
+            </div>
+          ) : null}
           <WorkflowLaunchModal
             loadBranches={repoCatalog.getBranches}
             open={showLaunchModal}
@@ -263,6 +319,17 @@ export function WorkflowBuilderPage() {
           No workflows found.
         </div>
       )}
+
+      {showImportDialog ? (
+        <WorkflowImportDialog
+          open
+          workflows={workflows ?? []}
+          personas={personas ?? []}
+          registryMounts={registryMounts}
+          onClose={() => setShowImportDialog(false)}
+          onImported={setActiveWorkflow}
+        />
+      ) : null}
     </div>
   );
 }

@@ -10,9 +10,10 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 import respx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from httpx import ConnectError, ConnectTimeout, Response
+from starlette.responses import Response as StarletteResponse
 
 from identity.adapters.identity import AllowAllIdentityAdapter
 from niuu.adapters.inbound.rest_volundr import create_volundr_router
@@ -110,6 +111,146 @@ def _headers() -> dict[str, str]:
         "x-auth-user-id": "user-a",
         "x-auth-tenant": "tenant-a",
     }
+
+
+DELIVERY_OPERATIONS = (
+    "refs/resolve",
+    "forge/reviews",
+    "forge/branches",
+    "workspaces/allocate",
+    "workspaces/verify",
+    "workspaces/integration/inspect",
+    "workspaces/integration/inspect-chain",
+    "evidence/policy",
+    "evidence/validate",
+    "workspaces/integrate",
+    "forge/inspect",
+    "forge/merge",
+    "forge/reconcile",
+)
+
+
+def test_delivery_operation_dispatches_to_embedded_target_without_mutating_evidence() -> None:
+    embedded = FastAPI()
+    observed: dict[str, Any] = {}
+    response_body = b'{"valid":true,"evidence":{"signature":"signed"}}'
+
+    @embedded.post("/api/v1/forge/delivery/evidence/validate")
+    async def validate_evidence(request: Request) -> StarletteResponse:
+        observed["body"] = await request.body()
+        observed["query"] = str(request.url.query)
+        observed["authorization"] = request.headers.get("authorization")
+        observed["user_id"] = request.headers.get("x-auth-user-id")
+        return StarletteResponse(content=response_body, media_type="application/json")
+
+    client = _client(
+        [
+            _instance(
+                "local",
+                base_url="embedded://local-forge",
+                tags=["delivery"],
+                config={"transport": "embedded"},
+            )
+        ],
+        embedded_forge_app=embedded,
+    )
+    request_body = (
+        b'{"evidence":{"payload":{"candidate_sha":"aaaaaaaa"},'
+        b'"signature":"signed"},"policy_id":"strict"}'
+    )
+
+    response = client.post(
+        "/api/v1/forge/delivery/evidence/validate?target_tags=delivery&target_match=all",
+        headers={**_headers(), "content-type": "application/json"},
+        content=request_body,
+    )
+
+    assert response.status_code == 200
+    assert response.content == response_body
+    assert observed == {
+        "body": request_body,
+        "query": "",
+        "authorization": "Bearer test-token",
+        "user_id": "user-a",
+    }
+
+
+@pytest.mark.parametrize("operation", DELIVERY_OPERATIONS)
+@respx.mock
+def test_delivery_typed_operations_proxy_to_selected_remote_instance(operation: str) -> None:
+    client = _client(
+        [
+            _instance("default", base_url="http://default", is_default=True),
+            _instance("target", base_url="http://target"),
+        ]
+    )
+    status_code = 201 if operation == "workspaces/allocate" else 200
+    upstream_body = b'{"evidence":{"signature":"upstream-signed"}}'
+    route = respx.post(f"http://target/api/v1/forge/delivery/{operation}").mock(
+        return_value=Response(
+            status_code,
+            content=upstream_body,
+            headers={"content-type": "application/json"},
+        )
+    )
+
+    response = client.post(
+        f"/api/v1/forge/delivery/{operation}?instance_id=target",
+        headers=_headers(),
+        json={"operation": operation},
+    )
+
+    assert response.status_code == status_code
+    assert response.content == upstream_body
+    assert route.called
+    request = route.calls.last.request
+    assert request.url.query == b""
+    assert request.headers["authorization"] == "Bearer test-token"
+    assert request.headers["x-auth-user-id"] == "user-a"
+
+
+@respx.mock
+def test_delivery_proxy_preserves_upstream_authorization_failure() -> None:
+    client = _client([_instance("target", base_url="http://target")])
+    route = respx.post("http://target/api/v1/forge/delivery/refs/resolve").mock(
+        return_value=Response(
+            403,
+            content=b'{"detail":"Delivery operation denied"}',
+            headers={"content-type": "application/json"},
+        )
+    )
+
+    response = client.post(
+        "/api/v1/forge/delivery/refs/resolve?instance_id=target",
+        headers=_headers(),
+        json={"repository": "org/repo", "ref": "main"},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Delivery operation denied"}
+    assert route.called
+
+
+@respx.mock
+def test_delivery_proxy_rejects_inaccessible_instance_and_unknown_operation() -> None:
+    client = _client([_instance("hidden", base_url="http://hidden", tenant_id="other")])
+
+    inaccessible = client.post(
+        "/api/v1/forge/delivery/refs/resolve?instance_id=hidden",
+        headers=_headers(),
+        json={"repository": "org/repo", "ref": "main"},
+    )
+    unknown = client.post(
+        "/api/v1/forge/delivery/admin/reload?instance_id=hidden",
+        headers=_headers(),
+        json={},
+    )
+
+    assert inaccessible.status_code == 404
+    assert inaccessible.json()["detail"] == "Target not found: hidden"
+    assert unknown.status_code == 404
+    assert unknown.json()["detail"] == "Unknown delivery operation"
+    assert len(respx.calls) == 0
 
 
 def test_list_sessions_can_dispatch_to_embedded_local_target() -> None:
@@ -1542,6 +1683,54 @@ def test_event_log_replay_passes_list_through_verbatim() -> None:
 
     assert isinstance(payload, list)
     assert [entry["seq"] for entry in payload] == [1, 2]
+
+
+@respx.mock
+def test_event_log_page_forwards_cursor_visibility_and_authorization() -> None:
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2"})
+    )
+    page = respx.get(
+        "http://beta/api/v1/forge/sessions/s2/log/page",
+        params={"after": "3", "limit": "25", "show_internal": "false"},
+    ).mock(
+        return_value=Response(
+            200,
+            json={"entries": [], "scannedThrough": 28, "hasMore": True},
+        )
+    )
+
+    response = client.get(
+        "/api/v1/forge/sessions/s2/log/page",
+        headers=_headers(),
+        params={"after": 3, "limit": 25, "show_internal": "false"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"entries": [], "scannedThrough": 28, "hasMore": True}
+    assert page.called
+    assert page.calls[0].request.headers["authorization"] == "Bearer test-token"
+
+
+@respx.mock
+def test_event_log_page_preserves_upstream_authorization_failure() -> None:
+    client = _client([_instance("beta", base_url="http://beta")])
+    respx.get("http://beta/api/v1/forge/sessions/s2").mock(
+        return_value=Response(200, json={"id": "s2"})
+    )
+    respx.get("http://beta/api/v1/forge/sessions/s2/log/page").mock(
+        return_value=Response(403, json={"detail": "Session log access denied"})
+    )
+
+    response = client.get(
+        "/api/v1/forge/sessions/s2/log/page",
+        headers=_headers(),
+        params={"after": 0, "limit": 25, "show_internal": "false"},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Session log access denied"}
 
 
 @pytest.mark.parametrize("method", ["GET", "DELETE"])

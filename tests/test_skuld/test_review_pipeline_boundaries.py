@@ -475,7 +475,7 @@ async def test_human_review_gate_resolves_once_and_publishes_correlated_outcome(
 async def test_invalid_review_gate_resolution_never_publishes(tmp_path, fault, error):
     b = _broker(tmp_path, api_url="")
     if fault != "missing":
-        b._workflow_gate_states["gate"] = SimpleNamespace(status="pending")
+        b._workflow_gate_states["gate"] = SimpleNamespace(status="pending", mode="human_approval")
     with pytest.raises(error):
         await b.resolve_workflow_gate("gate", "garbage" if fault == "decision" else "APPROVE")
     assert not b._event_log_buffer
@@ -501,6 +501,20 @@ def test_workflow_terminal_gating_never_turns_failed_check_into_approval(outcome
     assert _workflow_join_satisfied("merge", [outcome, {"verdict": "approved"}]) is passed
     assert _workflow_join_satisfied("any", [outcome, {"verdict": "approved"}])
     assert not _workflow_join_satisfied("all", [])
+
+
+def test_developer_terminal_requires_its_explicit_verdict() -> None:
+    from skuld.workflow_runtime import _workflow_join_satisfied, _workflow_outcome_passed
+
+    required = frozenset({"publish"})
+    assert _workflow_outcome_passed(
+        {"valid": True, "verdict": "publish"}, passing_verdicts=required
+    )
+    assert not _workflow_outcome_passed({}, passing_verdicts=required)
+    assert not _workflow_outcome_passed(
+        {"valid": True, "verdict": "approved"}, passing_verdicts=required
+    )
+    assert not _workflow_join_satisfied("all", [{"valid": True}], passing_verdicts=required)
 
 
 def test_workflow_merged_outcome_keeps_all_evidence_and_strictest_scope():
@@ -534,6 +548,31 @@ def test_workflow_merged_outcome_keeps_all_evidence_and_strictest_scope():
     )
     assert len(result["checks"]) == 4
     assert _merge_workflow_terminal_outcomes([])["summary"] == "Workflow checks passed"
+
+
+def test_workflow_terminal_preserves_only_explicit_child_result_object():
+    from skuld.broker import _merge_workflow_terminal_outcomes
+
+    result = _merge_workflow_terminal_outcomes(
+        [
+            {
+                "persona": "developer-coordinator",
+                "fields": {
+                    "result": {
+                        "attemptId": "attempt-1",
+                        "candidateSha": "a" * 40,
+                    },
+                    "untrustedExtra": "discarded",
+                },
+            }
+        ]
+    )
+
+    assert result["result"] == {
+        "attemptId": "attempt-1",
+        "candidateSha": "a" * 40,
+    }
+    assert "untrustedExtra" not in result
 
 
 @pytest.mark.parametrize("terminal", ["response", "error", "task_complete"])

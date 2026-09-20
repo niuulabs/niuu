@@ -33,6 +33,8 @@ import {
   buildTingSessionHttpAdapter,
   buildTrackerHttpAdapter,
   buildWorkflowHttpAdapter,
+  buildDeveloperExecutionHttpAdapter,
+  type IDeveloperExecutionService,
   buildResearchHttpAdapter,
   buildSpecsHttpAdapter,
   buildDispatchBusHttpAdapter,
@@ -1600,6 +1602,9 @@ export function buildServices(config: NiuuConfig): ServicesMap {
 
   return {
     ting: tingService,
+    'ting.developerExecutions': tingClient
+      ? buildDeveloperExecutionHttpAdapter(tingClient)
+      : unavailableService<IDeveloperExecutionService>('ting.developerExecutions'),
     'ting.dispatcher': dispatcherService,
     'ting.sessions': tingSessionService,
     'ting.tracker': trackerService,

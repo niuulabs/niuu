@@ -88,6 +88,23 @@ def _system_line(session_id: str) -> bytes:
     )
 
 
+def _mcp_system_line(session_id: str, status: str, error: str = "") -> bytes:
+    server = {"name": "ravn-tools", "status": status}
+    if error:
+        server["error"] = error
+    return (
+        json.dumps(
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": session_id,
+                "mcp_servers": [server],
+            }
+        ).encode()
+        + b"\n"
+    )
+
+
 @pytest.mark.asyncio
 async def test_send_message_returns_when_result_event_arrives(tmp_path) -> None:
     """send_message blocks until the corresponding result event."""
@@ -347,6 +364,50 @@ def test_flag_on_routes_permissions_over_stdio() -> None:
     assert "--permission-prompt-tool" in cmd
     assert "stdio" in cmd
     assert "--permission-mode" not in cmd
+
+
+def test_read_only_mcp_boundary_disables_native_tools_and_delegation() -> None:
+    transport = PersistentSubprocessTransport(
+        "/tmp",
+        skip_permissions=True,
+        agent_teams=True,
+        mcp_servers=[{"name": "ravn-tools", "command": "ravn-tool-mcp"}],
+        read_only_mcp_only=True,
+        allowed_mcp_tools=["mcp__ravn-tools__*"],
+    )
+
+    cmd = transport._build_command()
+
+    assert cmd[cmd.index("--tools") + 1] == ""
+    assert "--strict-mcp-config" in cmd
+    assert cmd[cmd.index("--permission-mode") + 1] == "dontAsk"
+    assert cmd[cmd.index("--allowedTools") + 1] == "mcp__ravn-tools__*"
+    assert "bypassPermissions" not in cmd
+    assert transport._agent_teams is False
+
+
+@pytest.mark.asyncio
+async def test_read_only_mcp_boundary_fails_when_required_server_did_not_start(
+    tmp_path,
+) -> None:
+    proc = _make_proc(
+        [
+            _mcp_system_line("sess-mcp-failed", "failed", "process exited"),
+            _result_line("must not be accepted"),
+        ]
+    )
+    transport = PersistentSubprocessTransport(
+        str(tmp_path),
+        mcp_servers=[{"name": "ravn-tools", "command": "ravn-tool-mcp"}],
+        read_only_mcp_only=True,
+        allowed_mcp_tools=["mcp__ravn-tools__*"],
+    )
+
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+        with pytest.raises(RuntimeError, match=r"ravn-tools: failed \(process exited\)"):
+            await transport.send_message("coordinate")
+
+    proc.terminate.assert_called_once()
 
 
 class TestPermissionControlProtocol:

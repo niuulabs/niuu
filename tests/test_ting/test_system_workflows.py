@@ -48,6 +48,10 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         "Tracker Delivery Flow",
         "Code & Review Flow",
         "Tool & Skill Builder",
+        "Developer Delivery",
+        "Developer Planning",
+        "Developer Workstream",
+        "Developer Integration",
     }
 
     run_flow = next(
@@ -57,6 +61,11 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     )
     assert run_flow.scope == WorkflowScope.SYSTEM
     assert run_flow.owner_id is None
+    assert set(run_flow.persona_definitions) == set(run_flow.persona_dependencies)
+    assert all(
+        run_flow.persona_definitions[alias]["revision"] == dependency.revision
+        for alias, dependency in run_flow.persona_dependencies.items()
+    )
     stage_personas = {
         node["label"]: [member["personaId"] for member in node.get("stageMembers", [])]
         for node in run_flow.graph["nodes"]
@@ -380,9 +389,13 @@ async def test_seed_system_workflows_prunes_obsolete_and_duplicate_entries() -> 
         "Tracker Delivery Flow",
         "Code & Review Flow",
         "Tool & Skill Builder",
+        "Developer Delivery",
+        "Developer Planning",
+        "Developer Workstream",
+        "Developer Integration",
     }
 
     current_catalog = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
     assert {workflow.name for workflow in current_catalog} == names
-    assert len(current_catalog) == 7
+    assert len(current_catalog) == 11
     assert all(workflow.id in {seed.id for seed in seeds} for workflow in current_catalog)

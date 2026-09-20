@@ -3,7 +3,7 @@
  *
  * Sits on the left side of the canvas (between the templates sidebar and
  * the graph). Contains structural block types (Stage, Condition, Human gate,
- * End) and categorised persona entries grouped by role.
+ * passive waits, End) and categorised persona entries grouped by role.
  *
  * Owner: plugin-ting (WorkflowBuilder).
  */
@@ -79,6 +79,7 @@ const FLOW_CONTROL_BLOCKS = [
   { id: 'stage', label: 'Stage', glyph: '◆' },
   { id: 'cond', label: 'Condition', glyph: '?' },
   { id: 'gate', label: 'Human gate', glyph: '⌘' },
+  { id: 'wait', label: 'External wait', glyph: '◌' },
   { id: 'end', label: 'End', glyph: '●' },
 ];
 

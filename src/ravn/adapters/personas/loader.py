@@ -50,6 +50,11 @@ import yaml as _yaml
 
 from niuu.domain.outcome import OutcomeField, OutcomeSchema, generate_outcome_instruction
 from ravn.config import ProjectConfig, _safe_int
+from ravn.domain.persona_document import (
+    PortablePersonaDefinition,
+    portable_persona_from_config,
+    validate_persona_identifier,
+)
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_RUNTIME_OWNED_FIELDS,
     is_valkyrie_outcome_event,
@@ -974,6 +979,38 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
                 if persona is not None:
                     return _apply_outcome_instruction(persona)
 
+        return None
+
+    def load_portable(
+        self,
+        persona_id: str,
+        revision: str,
+    ) -> PortablePersonaDefinition | None:
+        """Load exact source-authored content without outcome prompt injection."""
+        validate_persona_identifier(persona_id)
+        validate_persona_identifier(revision, field="Persona revision")
+        document = self.load_current_portable(persona_id)
+        if document is None or document.revision != revision:
+            return None
+        return document
+
+    def load_current_portable(
+        self,
+        persona_id: str,
+    ) -> PortablePersonaDefinition | None:
+        """Load current source-authored content with a content-derived revision."""
+        validate_persona_identifier(persona_id)
+        for directory in self._resolve_lookup_dirs():
+            file_path = directory / f"{persona_id}.yaml"
+            if not file_path.is_file():
+                continue
+            config = self.load_from_file(file_path)
+            if config is None:
+                return None
+            return portable_persona_from_config(
+                config,
+                persona_id=persona_id,
+            )
         return None
 
     def load_path(self, path: Path) -> PersonaConfig | None:

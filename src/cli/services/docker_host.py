@@ -202,6 +202,7 @@ def docker_info(config: DockerPreflightConfig) -> dict[str, object] | PreflightR
 def docker_socket_gid(
     config: DockerPreflightConfig,
     socket_path: str = "/var/run/docker.sock",
+    probe_image: str = "",
 ) -> int | None:
     """Group id of the Docker socket as containers will see it.
 
@@ -219,6 +220,37 @@ def docker_socket_gid(
     try:
         return os.stat(socket_path).st_gid
     except OSError:
+        pass
+    # macOS clients such as Colima expose a Unix socket to the CLI at a host
+    # path that is unrelated to the bind source resolved inside the Linux VM.
+    # Ask the daemon to stat the mounted source instead of guessing its group.
+    docker = shutil.which("docker")
+    if not docker or not probe_image:
+        return None
+    try:
+        result = _run(
+            [
+                docker,
+                "run",
+                "--rm",
+                "--user",
+                "0:0",
+                "--volume",
+                f"{socket_path}:/var/run/docker.sock",
+                "--entrypoint",
+                "stat",
+                probe_image,
+                "-c",
+                "%g",
+                "/var/run/docker.sock",
+            ],
+            config.command_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    try:
+        return int(result.stdout.strip()) if result.returncode == 0 else None
+    except ValueError:
         return None
 
 

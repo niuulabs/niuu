@@ -58,7 +58,8 @@ export interface WorkflowIssue {
  *    nodes without `runId` are treated as unplanned work.
  * 5. **missing_persona** — `stage` node has no stage members or persona IDs.
  * 6. **no_producer** — `gate`/`cond` node has no incoming edges.
- * 7. **no_consumer** — `stage` node has no outgoing edges (non-singleton workflow).
+ * 7. **no_consumer** — `stage`/`wait` node has no outgoing edges
+ *    (non-singleton workflow).
  *
  * Returns an empty array when the workflow is valid.
  */
@@ -70,6 +71,8 @@ export function validateWorkflowFull(
   const { nodes, edges } = workflow;
   const kindLabel = (kind: Workflow['nodes'][number]['kind']) => {
     switch (kind) {
+      case 'subworkflow':
+        return 'Child workflows';
       case 'stage':
         return 'Stage';
       case 'gate':
@@ -82,6 +85,8 @@ export function validateWorkflowFull(
         return 'End';
       case 'resource':
         return 'Resource';
+      case 'wait':
+        return 'Wait';
     }
   };
 
@@ -195,17 +200,17 @@ export function validateWorkflowFull(
   }
 
   // ── 7. No-consumer ────────────────────────────────────────────────────────
-  // A stage node with no outgoing edges in a multi-node workflow is a dead end.
+  // Stage and passive wait nodes with no outgoing edges are dead ends.
   if (nodes.length > 1) {
     for (const node of nodes) {
-      if (node.kind !== 'stage') continue;
+      if (node.kind !== 'stage' && node.kind !== 'wait') continue;
       const hasOut = edges.some((e) => e.source === node.id);
       if (!hasOut) {
         issues.push({
           kind: 'no_consumer',
           nodeId: node.id,
-          message: 'Stage has no outgoing connection',
-          severity: 'warning',
+          message: `${kindLabel(node.kind)} has no outgoing connection`,
+          severity: node.kind === 'wait' ? 'error' : 'warning',
         });
       }
     }

@@ -1,0 +1,25 @@
+name: developer-security-plan-reviewer
+system_prompt_template: |
+  Independently review one immutable developer plan revision for threats, privileges, credential
+  handling, recovery, concurrency, rollout, observability, and abuse cases. Cite requirement IDs
+  and evidence. Do not infer safety from another reviewer and never approve an empty result.
+allowed_tools: [read_file, glob_search, grep_search, git_diff, git_log, web_search, web_fetch]
+forbidden_tools: [write_file, edit_file, terminal, bash, git_add, git_commit]
+permission_mode: read_only
+llm: {thinking_enabled: true}
+iteration_budget: 22
+consumes: {event_types: [developer.plan.revised], injects: [repo, branch]}
+produces:
+  event_type: plan.review.completed
+  event_type_map:
+    pass: plan.review.completed
+    changes_required: plan.review.completed
+    blocked: developer.plan.blocked
+  schema:
+    reviewer_kind: {type: string, description: security_reliability}
+    plan_revision: {type: string, description: reviewed plan revision}
+    verdict: {type: enum, values: [pass, changes_required, blocked], description: explicit verdict}
+    findings: {type: array, description: severity evidence requirement IDs and amendments}
+    summary: {type: string, description: review summary}
+stop_on_outcome: true
+fan_in: {strategy: merge, contributes_to: plan.review.completed}

@@ -153,6 +153,68 @@ describe('WorkflowBuilder', () => {
     expect(screen.getByTestId('launch-workflow')).toBeInTheDocument();
   });
 
+  it('offers explicit edit-as-copy and export actions for read-only bundled workflows', () => {
+    const onEditAsCopy = vi.fn();
+    const onExport = vi.fn();
+    render(
+      <WorkflowBuilder
+        initialWorkflow={{ ...makeWorkflow(), readOnly: true }}
+        onEditAsCopy={onEditAsCopy}
+        onExport={onExport}
+      />,
+    );
+
+    expect(screen.getByText(/bundled workflow · read-only/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('edit-workflow-as-copy'));
+    fireEvent.click(screen.getByTestId('export-workflow-yaml'));
+    fireEvent.click(screen.getByTestId('export-workflow-bundle'));
+
+    expect(onEditAsCopy).toHaveBeenCalledWith(expect.objectContaining({ readOnly: true }));
+    expect(onExport).toHaveBeenNthCalledWith(1, 'yaml');
+    expect(onExport).toHaveBeenNthCalledWith(2, 'bundle');
+  });
+
+  it('shows pinned persona revisions and blocks launch while dependencies are unresolved', () => {
+    const onLaunch = vi.fn();
+    render(
+      <WorkflowBuilder
+        initialWorkflow={{
+          ...makeWorkflow(),
+          personaDependencies: {
+            reviewer: {
+              id: 'persona-reviewer',
+              revision: '9',
+              digest: 'sha256:abc',
+              resolved: true,
+            },
+            coder: {
+              id: 'persona-coder',
+              revision: '3',
+              digest: 'sha256:def',
+              resolved: false,
+              message: 'Install or map this revision',
+            },
+          },
+          requirements: [
+            { id: 'mimir-1', kind: 'mimir', message: 'Choose a local Mimir.', resolved: false },
+          ],
+        }}
+        onLaunch={onLaunch}
+      />,
+    );
+
+    expect(screen.getByTestId('persona-dependency-reviewer')).toHaveTextContent(
+      'persona-reviewer@9',
+    );
+    expect(screen.getByTestId('unresolved-persona-coder')).toHaveTextContent(
+      'Install or map this revision',
+    );
+    expect(screen.getByTestId('unresolved-requirement-mimir-1')).toHaveTextContent(
+      'Choose a local Mimir.',
+    );
+    expect(screen.getByTestId('launch-workflow')).toBeDisabled();
+  });
+
   it('calls onSave with current workflow when save button clicked', () => {
     const onSave = vi.fn();
     render(<WorkflowBuilder initialWorkflow={makeWorkflow()} onSave={onSave} />);

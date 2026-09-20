@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -16,6 +17,33 @@ from skuld import mcp_credentials
 # opens connections concurrently, so the module form times out and the server is
 # dropped. Executing the file skips the package import and runs in ~0.1s.
 _CREDENTIALS_SCRIPT = str(Path(mcp_credentials.__file__).resolve())
+_CODEX_MCP_SERVER_NAME = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def require_connected_mcp_servers(statuses: object, required_names: set[str]) -> None:
+    """Fail unless every required MCP server completed its startup handshake."""
+    if not required_names:
+        return
+    if not isinstance(statuses, list):
+        raise RuntimeError("Claude did not report required MCP server startup status")
+
+    reported = {
+        str(item.get("name") or ""): item
+        for item in statuses
+        if isinstance(item, dict) and item.get("name")
+    }
+    failures: list[str] = []
+    for name in sorted(required_names):
+        status = reported.get(name)
+        if status is None:
+            failures.append(f"{name}: missing")
+            continue
+        state = str(status.get("status") or "unknown")
+        if state != "connected":
+            detail = str(status.get("error") or "").strip()
+            failures.append(f"{name}: {state}" + (f" ({detail})" if detail else ""))
+    if failures:
+        raise RuntimeError("Required MCP server startup failed: " + ", ".join(failures))
 
 
 def normalize_mcp_servers(raw_servers: object) -> list[dict[str, Any]]:
@@ -58,6 +86,19 @@ def normalize_mcp_servers(raw_servers: object) -> list[dict[str, Any]]:
             entry["description"] = str(raw["description"])
         if raw.get("cwd"):
             entry["cwd"] = str(raw["cwd"])
+        if isinstance(raw.get("required"), bool):
+            entry["required"] = raw["required"]
+        approval_mode = raw.get("default_tools_approval_mode")
+        if approval_mode is not None:
+            approval_mode = str(approval_mode)
+            if approval_mode not in {"auto", "prompt", "writes", "approve"}:
+                raise ValueError(
+                    f"invalid MCP default_tools_approval_mode for {name}: {approval_mode}"
+                )
+            entry["default_tools_approval_mode"] = approval_mode
+        for tool_filter in ("enabled_tools", "disabled_tools"):
+            if isinstance(raw.get(tool_filter), list):
+                entry[tool_filter] = [str(tool) for tool in raw[tool_filter]]
         for timeout_key in ("startup_timeout_sec", "tool_timeout_sec"):
             timeout = raw.get(timeout_key)
             if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0:
@@ -144,7 +185,50 @@ def build_codex_mcp_overrides(raw_servers: object) -> list[tuple[str, str]]:
         for timeout_key in ("startup_timeout_sec", "tool_timeout_sec"):
             if timeout_key in server:
                 overrides.append((f"{base}.{timeout_key}", json.dumps(server[timeout_key])))
+        if "required" in server:
+            overrides.append((f"{base}.required", json.dumps(server["required"])))
+        if "default_tools_approval_mode" in server:
+            overrides.append(
+                (
+                    f"{base}.default_tools_approval_mode",
+                    json.dumps(server["default_tools_approval_mode"]),
+                )
+            )
+        for tool_filter in ("enabled_tools", "disabled_tools"):
+            if tool_filter in server:
+                overrides.append((f"{base}.{tool_filter}", json.dumps(server[tool_filter])))
     return overrides
+
+
+def build_codex_mcp_isolation_overrides(
+    catalog: object, *, allowed_names: set[str]
+) -> list[tuple[str, str]]:
+    """Disable every resolved Codex MCP server outside an explicit allow-list.
+
+    ``codex mcp list --json`` resolves user, project, cloud, and system config
+    layers.  Read-only runtimes use that authoritative catalog because a
+    top-level ``mcp_servers={}`` CLI override is merged with lower layers and
+    does not clear them.
+    """
+    if not isinstance(catalog, list):
+        raise RuntimeError("Codex did not return an MCP server catalog")
+    configured: set[str] = set()
+    for item in catalog:
+        if not isinstance(item, dict):
+            raise RuntimeError("Codex returned a malformed MCP server catalog")
+        name = str(item.get("name") or "").strip()
+        if not name or not _CODEX_MCP_SERVER_NAME.fullmatch(name):
+            raise RuntimeError(f"Codex MCP server name cannot be isolated safely: {name!r}")
+        configured.add(name)
+    missing = allowed_names - configured
+    if missing:
+        raise RuntimeError(
+            "Required Codex MCP server missing from resolved config: " + ", ".join(sorted(missing))
+        )
+    return [
+        (f"mcp_servers.{name}.enabled", "true" if name in allowed_names else "false")
+        for name in sorted(configured)
+    ]
 
 
 def _header_helper(server: dict[str, Any]) -> str:

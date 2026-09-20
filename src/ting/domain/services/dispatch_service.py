@@ -36,6 +36,7 @@ from niuu.domain.model_runtime import (
 )
 from niuu.domain.models import Principal
 from niuu.domain.tags import matches_tags
+from ravn.domain.persona_document import PortablePersonaSource
 from ting.domain.flock_merge import build_flock_workload_config
 from ting.domain.models import (
     DispatcherState,
@@ -56,6 +57,7 @@ from ting.domain.workflow_snapshot import (
     workflow_mimir_from_snapshot,
     workflow_name_from_snapshot,
     workflow_personas_from_snapshot,
+    workflow_runtime_personas_from_snapshot,
     workflow_stage_models_from_snapshot,
 )
 from ting.ports.dispatcher_repository import DispatcherRepository
@@ -168,7 +170,7 @@ def _resolve_workflow_execution(
         if requested_definition
         else None
     )
-    for persona in workflow_personas_from_snapshot(workflow_snapshot):
+    for persona in workflow_runtime_personas_from_snapshot(workflow_snapshot):
         if not isinstance(persona, dict):
             continue
         runtime_persona = dict(persona)
@@ -530,6 +532,7 @@ class DispatchService:
         event_bus: EventBusPort | None = None,
         flow_provider: FlockFlowProvider | None = None,
         workflow_repo: WorkflowRepository | None = None,
+        persona_source: PortablePersonaSource | None = None,
     ) -> None:
         self._tracker_factory = tracker_factory
         self._volundr_factory = volundr_factory
@@ -541,6 +544,7 @@ class DispatchService:
         self._event_bus = event_bus
         self._flow_provider = flow_provider
         self._workflow_repo = workflow_repo
+        self._persona_source = persona_source
 
     async def _dispatch_capacity_snapshot(
         self,
@@ -1637,7 +1641,11 @@ class DispatchService:
             return None, f"workflow {item.workflow_id!r} is not visible to this saga owner"
         from ting.domain.workflow_snapshot import build_workflow_snapshot  # noqa: PLC0415
 
-        return build_workflow_snapshot(workflow), None
+        try:
+            snapshot = build_workflow_snapshot(workflow, persona_source=self._persona_source)
+        except ValueError as exc:
+            return None, str(exc)
+        return snapshot, None
 
     async def _resolve_default_workflow_snapshot(
         self,
@@ -1660,7 +1668,10 @@ class DispatchService:
 
         from ting.domain.workflow_snapshot import build_workflow_snapshot  # noqa: PLC0415
 
-        snapshot = build_workflow_snapshot(workflow)
+        try:
+            snapshot = build_workflow_snapshot(workflow, persona_source=self._persona_source)
+        except ValueError as exc:
+            return None, str(exc)
         await self._saga_repo.update_saga_workflow(
             saga.id,
             workflow_id=workflow.id,

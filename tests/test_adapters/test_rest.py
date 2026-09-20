@@ -31,6 +31,13 @@ from volundr.adapters.inbound.rest import (
 )
 from volundr.adapters.outbound.k8s_storage import InMemoryStorageAdapter
 from volundr.config import LocalMountsConfig
+from volundr.domain.execution_catalog import (
+    ExecutionCatalogError,
+    ExecutionCatalogIntegrityError,
+    ExecutionCatalogNotFoundError,
+    ExecutionPlanMismatchError,
+    ExecutionSelectionError,
+)
 from volundr.domain.models import GitProviderType, GitSource, RepoInfo, Session, SessionStatus
 from volundr.domain.ports import SessionCapacity
 from volundr.domain.services import RepoService, SessionService, StatsService
@@ -321,6 +328,53 @@ class TestCreateSession:
         )
         assert response.status_code == 422
 
+    @pytest.mark.parametrize(
+        ("error", "expected_status", "expected_detail"),
+        [
+            (
+                ExecutionSelectionError("conflicting selectors"),
+                422,
+                "Invalid compute execution selection",
+            ),
+            (
+                ExecutionCatalogNotFoundError("unknown execution"),
+                422,
+                "Invalid compute execution selection",
+            ),
+            (
+                ExecutionPlanMismatchError("digest changed"),
+                409,
+                "Compute execution selection conflicts with its durable allocation",
+            ),
+            (
+                ExecutionCatalogIntegrityError("artifact changed"),
+                503,
+                "Compute execution catalog is unavailable",
+            ),
+            (
+                ExecutionCatalogError("cannot read catalog"),
+                503,
+                "Compute execution catalog is unavailable",
+            ),
+        ],
+    )
+    def test_create_session_maps_execution_catalog_errors(
+        self,
+        client: TestClient,
+        service: SessionService,
+        error: Exception,
+        expected_status: int,
+        expected_detail: str,
+    ):
+        with patch.object(service, "start_session", AsyncMock(side_effect=error)):
+            response = client.post(
+                "/api/v1/forge/sessions",
+                json={"name": "catalog-error", "model": "test", "source": {"type": "git"}},
+            )
+
+        assert response.status_code == expected_status
+        assert response.json()["detail"] == expected_detail
+
     def test_create_session_scoped_build_token_missing_scope_is_403(self, client: TestClient):
         """A Valkyrie build token lacking forge:session:create is 403'd."""
         token = _build_token(["ting:workflow:launch"])
@@ -577,6 +631,65 @@ class TestStartSession:
         assert data["chat_endpoint"] is not None
         # code_endpoint set in background task
         # pod_name set in background task
+
+    @pytest.mark.parametrize(
+        ("error", "expected_status", "expected_detail"),
+        [
+            (
+                ExecutionSelectionError("conflicting selectors"),
+                422,
+                "Invalid compute execution selection",
+            ),
+            (
+                ExecutionCatalogNotFoundError("unknown execution"),
+                422,
+                "Invalid compute execution selection",
+            ),
+            (
+                ExecutionPlanMismatchError("digest changed"),
+                409,
+                "Compute execution selection conflicts with its durable allocation",
+            ),
+            (
+                ExecutionCatalogIntegrityError("artifact changed"),
+                503,
+                "Compute execution catalog is unavailable",
+            ),
+            (
+                ExecutionCatalogError("cannot read catalog"),
+                503,
+                "Compute execution catalog is unavailable",
+            ),
+        ],
+    )
+    async def test_start_session_maps_execution_catalog_errors(
+        self,
+        client: TestClient,
+        service: SessionService,
+        error: Exception,
+        expected_status: int,
+        expected_detail: str,
+    ):
+        session = await service.create_session("Catalog error", "test")
+        with patch.object(service, "start_session", AsyncMock(side_effect=error)):
+            response = client.post(f"/api/v1/forge/sessions/{session.id}/start")
+
+        assert response.status_code == expected_status
+        assert response.json()["detail"] == expected_detail
+
+    @pytest.mark.parametrize("error", [ValueError("unrelated"), RuntimeError("unrelated")])
+    async def test_start_session_does_not_swallow_unrelated_errors(
+        self,
+        client: TestClient,
+        service: SessionService,
+        error: Exception,
+    ):
+        session = await service.create_session("Unrelated error", "test")
+        with (
+            patch.object(service, "start_session", AsyncMock(side_effect=error)),
+            pytest.raises(type(error), match="unrelated"),
+        ):
+            client.post(f"/api/v1/forge/sessions/{session.id}/start")
 
     async def test_restart_forwards_selected_integrations(self, client, service):
         session = await service.create_session(

@@ -31,6 +31,7 @@ from ting.ports.tracker import TrackerFactory, TrackerPort  # noqa: F401 — re-
 from ting.ports.volundr import ActivityEvent, VolundrFactory, VolundrPort
 
 if TYPE_CHECKING:
+    from ting.adapters.developer_integration_reviews import TrustedIntegrationReviewProjector
     from ting.domain.services.review_engine import ReviewEngine
     from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 
@@ -66,6 +67,7 @@ class SessionActivitySubscriber:
         review_engine: ReviewEngine | None = None,
         sleipnir_publisher: object | None = None,
         workflow_campaign_projector: WorkflowCampaignProjector | None = None,
+        developer_review_projector: TrustedIntegrationReviewProjector | None = None,
     ) -> None:
         self._factory = volundr_factory
         self._tracker_factory = tracker_factory
@@ -75,6 +77,7 @@ class SessionActivitySubscriber:
         self._review_engine = review_engine
         self._sleipnir_publisher = sleipnir_publisher
         self._workflow_campaign_projector = workflow_campaign_projector
+        self._developer_review_projector = developer_review_projector
         self._running = False
         self._task: asyncio.Task[None] | None = None
         self._owner_tasks: dict[str, list[asyncio.Task[None]]] = {}
@@ -276,6 +279,8 @@ class SessionActivitySubscriber:
             event.metadata,
         )
         terminal_event = event.state == "error" or bool(event.session_status)
+        if self._developer_review_projector is not None:
+            await self._developer_review_projector.handle_activity(event, owner_id)
         if (
             terminal_event
             and self._workflow_campaign_projector is not None

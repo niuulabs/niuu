@@ -58,6 +58,36 @@ def test_client_credentials_adapter_reads_secret_from_env(monkeypatch: pytest.Mo
     assert adapter.headers() == {"Authorization": "Bearer jwt-456"}
 
 
+def test_client_credentials_adapter_reads_secret_from_file(tmp_path) -> None:
+    secret_file = tmp_path / "oidc-client-secret"
+    secret_file.write_text("file-secret\n", encoding="utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = parse_qs(request.content.decode())
+        assert body["client_secret"] == ["file-secret"]
+        return httpx.Response(200, json={"access_token": "jwt-file"})
+
+    adapter = ClientCredentialsBearerTokenAuthAdapter(
+        token_url="https://keycloak.test/token",
+        client_id="volundr",
+        client_secret_file=str(secret_file),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert adapter.headers() == {"Authorization": "Bearer jwt-file"}
+
+
+def test_client_credentials_adapter_names_missing_secret_file(tmp_path) -> None:
+    adapter = ClientCredentialsBearerTokenAuthAdapter(
+        token_url="https://keycloak.test/token",
+        client_id="volundr",
+        client_secret_file=str(tmp_path / "missing"),
+    )
+
+    with pytest.raises(RuntimeError, match="secret file could not be read"):
+        adapter.headers()
+
+
 def test_client_credentials_adapter_requires_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MISSING_SECRET", raising=False)
     adapter = ClientCredentialsBearerTokenAuthAdapter(

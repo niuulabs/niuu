@@ -20,6 +20,7 @@ def _make_bridge(publish_presence_event=None):
     bridge = SkuldCollaborationAdapter(
         config=RoomConfig(enabled=True, participant_colors=["p1", "p2", "p3"]),
         channels=channels,
+        emit_frame=channels.broadcast,
         publish_presence_event=publish_presence_event or publish,
         environment_id="cluster-a",
     )

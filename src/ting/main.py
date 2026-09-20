@@ -17,31 +17,44 @@ from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
+from niuu.ports.delivery import EvidenceAuthenticator
 from niuu.ports.integrations import IntegrationRepository
+from niuu.ports.workload_identity import WorkloadTokenIssuer
 from niuu.service_runtime import create_authorization_adapter, create_workload_identity_service
 from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ravn.ports.persona import PersonaPort
 from ting.adapters.a2a_push_dispatcher import A2APushDispatcher
+from ting.adapters.developer_evidence import ForgeChildEvidenceVerifier
+from ting.adapters.developer_execution_worker import DeveloperExecutionWorker
+from ting.adapters.developer_integration_reviews import TrustedIntegrationReviewProjector
+from ting.adapters.developer_reviews import TrustedChildReviewAttestor
 from ting.adapters.github_git import GitHubGitAdapter
 from ting.adapters.guild_instances import GuildInstanceRegistryClient
 from ting.adapters.inbound.rest_integrations import create_telegram_setup_router
 from ting.adapters.inbound.rest_pats import create_pats_router
 from ting.adapters.inbound.rest_telegram_webhook import create_telegram_webhook_router
 from ting.adapters.notification_channel_factory import NotificationChannelFactory
+from ting.adapters.parent_workflow_continuation import VolundrParentWorkflowContinuation
+from ting.adapters.postgres_a2a_launches import PostgresA2ALaunchReservationRepository
 from ting.adapters.postgres_a2a_push import PostgresA2APushConfigRepository
+from ting.adapters.postgres_developer_executions import PostgresDeveloperExecutionRepository
 from ting.adapters.postgres_dispatcher import PostgresDispatcherRepository
 from ting.adapters.postgres_notification_subscriptions import (
     PostgresNotificationSubscriptionRepository,
 )
 from ting.adapters.postgres_sagas import PostgresSagaRepository
 from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRepository
-from ting.adapters.postgres_workflows import PostgresWorkflowRepository
 from ting.adapters.tracker_factory import TrackerAdapterFactory
 from ting.adapters.volundr_factory import VolundrAdapterFactory
-from ting.api.a2a import create_a2a_router
+from ting.api.a2a import create_a2a_router, resolve_a2a_launch_repo
 from ting.api.a2a_card import create_agent_card_router
 from ting.api.audit import create_audit_router
+from ting.api.developer_executions import (
+    create_developer_executions_router,
+    resolve_developer_execution_repo,
+    resolve_developer_execution_service,
+)
 from ting.api.dispatch import (
     create_dispatch_router,
     resolve_dispatch_service,
@@ -82,6 +95,8 @@ from ting.api.tracker import (
 from ting.api.workflows import create_workflows_router, resolve_workflow_repo
 from ting.config import Settings
 from ting.domain.services.activity_subscriber import SessionActivitySubscriber
+from ting.domain.services.developer_delivery_wait import DeveloperDeliveryWaitService
+from ting.domain.services.developer_execution import DeveloperExecutionService
 from ting.domain.services.dispatch_service import (
     DispatchConfig as DispatchServiceConfig,
 )
@@ -97,6 +112,11 @@ from ting.domain.services.resource_authorization import (
 from ting.domain.services.review_engine import ReviewEngine
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.infrastructure.database import database_pool
+from ting.ports.developer_delivery_wait import (
+    DeveloperDeliveryObserver,
+    DeveloperDeliveryWaitRepository,
+)
+from ting.ports.developer_execution import DeveloperExecutionRepository
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.event_bus import EventBusPort
 from ting.ports.flock_flow import FlockFlowProvider
@@ -121,6 +141,80 @@ def _create_http_auth_adapter(config):
 def _use_local_volundr_factory(settings: Settings) -> bool:
     """Return True when Ting should force the single local Volundr adapter."""
     return settings.auth.allow_anonymous_dev and not settings.volundr.use_connection_factory_in_dev
+
+
+def _developer_execution_token_issuer(
+    settings: Settings,
+    workload_identity_service: WorkloadTokenIssuer,
+) -> WorkloadTokenIssuer | None:
+    """Select execution credentials without weakening authenticated deployments."""
+    if workload_identity_service.enabled:
+        return workload_identity_service
+    if settings.auth.allow_anonymous_dev:
+        return None
+    raise RuntimeError("Developer execution requires workload identity outside anonymous dev mode")
+
+
+def _create_runtime_bound_adapter(
+    adapter_path: str,
+    configured_kwargs: dict,
+    runtime_kwargs: dict,
+    *,
+    label: str,
+):
+    conflicts = sorted(configured_kwargs.keys() & runtime_kwargs.keys())
+    if conflicts:
+        raise ValueError(
+            f"{label} kwargs cannot override runtime dependencies: {', '.join(conflicts)}"
+        )
+    cls = import_class(adapter_path)
+    return cls(**configured_kwargs, **runtime_kwargs)
+
+
+async def _assert_workflow_catalog_migrated(
+    workflow_repo: WorkflowRepository,
+    pool: object,
+    *,
+    catalog_path: str,
+) -> None:
+    """Refuse file cutover when PostgreSQL definitions were not verified."""
+    if not getattr(workflow_repo, "requires_legacy_catalog_migration_guard", False):
+        return
+    legacy_state = await pool.fetchrow(  # type: ignore[attr-defined]
+        "SELECT COUNT(*) AS row_count, MAX(updated_at) AS max_updated_at FROM workflows"
+    )
+    legacy_count = int(legacy_state["row_count"])
+    if not legacy_count:
+        return
+    marker = workflow_repo.read_migration_marker()  # type: ignore[attr-defined]
+    legacy_max_updated_at = legacy_state["max_updated_at"]
+    marker_max_updated_at = marker.get("source_max_updated_at") if marker else None
+    marker_matches = bool(
+        marker
+        and marker.get("source_count") == legacy_count
+        and marker_max_updated_at
+        == (legacy_max_updated_at.isoformat() if legacy_max_updated_at is not None else None)
+    )
+    if marker_matches:
+        deleted_ids = set(marker.get("deleted_ids", []))
+        expected_ids = set(marker.get("inventory_ids", [])) - deleted_ids
+        for workflow_id in expected_ids:
+            try:
+                parsed_workflow_id = uuid.UUID(workflow_id)
+            except (TypeError, ValueError):
+                marker_matches = False
+                break
+            if await workflow_repo.get_workflow(parsed_workflow_id) is None:
+                marker_matches = False
+                break
+    if marker_matches:
+        return
+    raise RuntimeError(
+        "File-backed workflow storage cannot start while PostgreSQL contains "
+        "an unverified or changed workflow catalog. Run "
+        f"`python -m ting.migrate_workflows --catalog-path {catalog_path}` for a "
+        "dry run, then repeat with --apply before cutover."
+    )
 
 
 def _configure_logging(settings: Settings) -> None:
@@ -423,6 +517,7 @@ def create_app(
     app.include_router(create_agent_card_router(settings.a2a))
     app.include_router(create_a2a_router())
     app.include_router(create_research_router())
+    app.include_router(create_developer_executions_router())
     app.include_router(create_specs_router())
     app.include_router(create_flock_flows_router())
     app.include_router(create_flock_config_router())
@@ -599,14 +694,24 @@ def create_app(
                 persona_source
             )
 
-            workflow_repo = PostgresWorkflowRepository(pool)
+            workflow_repo_cls = import_class(settings.workflow_repository.adapter)
+            workflow_repo_kwargs = dict(settings.workflow_repository.kwargs)
+            if getattr(workflow_repo_cls, "requires_database_pool", False):
+                workflow_repo_kwargs["pool"] = pool
+            workflow_repo = workflow_repo_cls(**workflow_repo_kwargs)
+            await _assert_workflow_catalog_migrated(
+                workflow_repo,
+                pool,
+                catalog_path=str(workflow_repo_kwargs.get("catalog_path", "<catalog-path>")),
+            )
             app.state.workflow_repo = workflow_repo
-            seeded_system_workflows = await seed_system_workflows(workflow_repo)
-            if seeded_system_workflows:
-                logger.info(
-                    "Seeded %d bundled system workflow(s)",
-                    len(seeded_system_workflows),
-                )
+            if settings.workflow_repository.seed_bundled:
+                seeded_system_workflows = await seed_system_workflows(workflow_repo)
+                if seeded_system_workflows:
+                    logger.info(
+                        "Seeded %d bundled system workflow(s)",
+                        len(seeded_system_workflows),
+                    )
 
             async def _resolve_workflow_repo(
                 principal: Principal = Depends(extract_principal),
@@ -619,6 +724,138 @@ def create_app(
 
             workflow_campaign_repo = PostgresWorkflowCampaignRepository(pool)
             app.state.workflow_campaign_repo = workflow_campaign_repo
+            a2a_launch_repo = PostgresA2ALaunchReservationRepository(pool)
+            app.state.a2a_launch_repo = a2a_launch_repo
+
+            async def _resolve_a2a_launch_repo():
+                return a2a_launch_repo
+
+            app.dependency_overrides[resolve_a2a_launch_repo] = _resolve_a2a_launch_repo
+
+            developer_execution_worker = None
+            developer_review_projector = None
+            if settings.developer_execution.enabled:
+                developer_token_issuer = _developer_execution_token_issuer(
+                    settings,
+                    app.state.workload_identity_service,
+                )
+                developer_execution_repo = PostgresDeveloperExecutionRepository(pool)
+                gateway_cls = import_class(settings.developer_execution.gateway_adapter)
+                gateway_kwargs = dict(settings.developer_execution.gateway_kwargs)
+                gateway_kwargs.setdefault(
+                    "base_url",
+                    (f"http://{settings.local_platform_host}:{settings.local_platform_port}"),
+                )
+                developer_gateway = gateway_cls(**gateway_kwargs)
+                review_authenticator_path = (
+                    settings.developer_execution.review_authenticator_adapter
+                )
+                if not review_authenticator_path:
+                    raise RuntimeError(
+                        "Developer execution requires a configured review evidence authenticator"
+                    )
+                review_authenticator_cls = import_class(review_authenticator_path)
+                review_authenticator = review_authenticator_cls(
+                    **resolve_secret_kwargs(
+                        settings.developer_execution.review_authenticator_kwargs,
+                        settings.developer_execution.review_authenticator_secret_kwargs_env,
+                    )
+                )
+                if not isinstance(review_authenticator, EvidenceAuthenticator):
+                    raise TypeError(
+                        "Developer review authenticator must implement EvidenceAuthenticator"
+                    )
+                parent_continuation = VolundrParentWorkflowContinuation(
+                    volundr_factory=app.state.volundr_factory
+                )
+                developer_execution_service = DeveloperExecutionService(
+                    repository=developer_execution_repo,
+                    gateway=developer_gateway,
+                    continuation=parent_continuation,
+                    evidence_verifier=ForgeChildEvidenceVerifier(
+                        volundr_factory=app.state.volundr_factory,
+                        policy_id=settings.developer_execution.evidence_policy_id,
+                        token_issuer=developer_token_issuer,
+                        admission_roles=tuple(settings.developer_execution.admission_roles),
+                    ),
+                    review_attestor=TrustedChildReviewAttestor(
+                        authenticator=review_authenticator,
+                        role_producers=settings.developer_execution.review_producers,
+                    ),
+                    token_issuer=developer_token_issuer,
+                    admission_roles=tuple(settings.developer_execution.admission_roles),
+                    worker_id=settings.developer_execution.worker_id,
+                    launch_claim_limit=settings.developer_execution.launch_claim_limit,
+                    reconcile_limit=settings.developer_execution.reconcile_limit,
+                    lease_seconds=settings.developer_execution.lease_seconds,
+                )
+                delivery_wait_repository = _create_runtime_bound_adapter(
+                    settings.developer_execution.delivery_wait_repository_adapter,
+                    dict(settings.developer_execution.delivery_wait_repository_kwargs),
+                    {"pool": pool},
+                    label="Developer delivery wait repository",
+                )
+                if not isinstance(delivery_wait_repository, DeveloperDeliveryWaitRepository):
+                    raise TypeError(
+                        "Developer delivery wait repository must implement "
+                        "DeveloperDeliveryWaitRepository"
+                    )
+                delivery_wait_observer = _create_runtime_bound_adapter(
+                    settings.developer_execution.delivery_wait_observer_adapter,
+                    dict(settings.developer_execution.delivery_wait_observer_kwargs),
+                    {
+                        "volundr_factory": app.state.volundr_factory,
+                        "policy_id": settings.developer_execution.integration_policy_id,
+                        "token_issuer": developer_token_issuer,
+                        "admission_roles": tuple(settings.developer_execution.admission_roles),
+                    },
+                    label="Developer delivery observer",
+                )
+                if not isinstance(delivery_wait_observer, DeveloperDeliveryObserver):
+                    raise TypeError(
+                        "Developer delivery observer must implement DeveloperDeliveryObserver"
+                    )
+                developer_delivery_wait_service = DeveloperDeliveryWaitService(
+                    repository=delivery_wait_repository,
+                    execution_repository=developer_execution_repo,
+                    observer=delivery_wait_observer,
+                    continuation=parent_continuation,
+                    policy_id=settings.developer_execution.integration_policy_id,
+                    worker_id=settings.developer_execution.worker_id,
+                    claim_limit=settings.developer_execution.reconcile_limit,
+                    lease_seconds=settings.developer_execution.lease_seconds,
+                    poll_interval_seconds=(settings.developer_execution.reconcile_interval_seconds),
+                )
+                developer_review_projector = TrustedIntegrationReviewProjector(
+                    repository=developer_execution_repo,
+                    authenticator=review_authenticator,
+                    producer_id=settings.developer_execution.integration_review_producer,
+                )
+                developer_execution_worker = DeveloperExecutionWorker(
+                    service=developer_execution_service,
+                    interval_seconds=(settings.developer_execution.reconcile_interval_seconds),
+                    delivery_wait_service=developer_delivery_wait_service,
+                )
+                await developer_execution_worker.start()
+                app.state.developer_execution_repo = developer_execution_repo
+                app.state.developer_execution_service = developer_execution_service
+                app.state.developer_delivery_wait_service = developer_delivery_wait_service
+
+                async def _resolve_developer_execution_repo(
+                    principal: Principal = Depends(extract_principal),
+                ) -> DeveloperExecutionRepository:
+                    del principal
+                    return developer_execution_repo
+
+                async def _resolve_developer_execution_service() -> DeveloperExecutionService:
+                    return developer_execution_service
+
+                app.dependency_overrides[resolve_developer_execution_repo] = (
+                    _resolve_developer_execution_repo
+                )
+                app.dependency_overrides[resolve_developer_execution_service] = (
+                    _resolve_developer_execution_service
+                )
 
             a2a_push_dispatcher = None
             if settings.a2a.push_notifications_enabled:
@@ -677,6 +914,7 @@ def create_app(
                 sleipnir_publisher=sleipnir_bus,
                 flow_provider=flow_provider,
                 workflow_repo=workflow_repo,
+                persona_source=persona_source,
             )
             app.state.dispatch_service = dispatch_svc
 
@@ -974,6 +1212,7 @@ def create_app(
                 review_engine=review_engine,
                 sleipnir_publisher=sleipnir_bus,
                 workflow_campaign_projector=workflow_campaign_projector,
+                developer_review_projector=developer_review_projector,
             )
             app.state.subscriber = subscriber
             await subscriber.start()
@@ -1054,6 +1293,8 @@ def create_app(
             await workflow_campaign_projector.stop()
             if a2a_push_dispatcher is not None:
                 await a2a_push_dispatcher.stop()
+            if developer_execution_worker is not None:
+                await developer_execution_worker.stop()
             await review_engine.stop()
             await notification_service.stop()
             if telegram_polling is not None:

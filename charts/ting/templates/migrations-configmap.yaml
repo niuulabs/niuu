@@ -1560,4 +1560,342 @@ data:
     DROP INDEX IF EXISTS idx_sagas_tracker_connection;
     ALTER TABLE sagas DROP COLUMN IF EXISTS tracker_connection_id;
 
+
+  000036_workflow_portable_contract.up.sql: |
+    ALTER TABLE workflows
+        ADD COLUMN IF NOT EXISTS persona_dependencies_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE workflows
+        ADD COLUMN IF NOT EXISTS persona_definitions_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE workflows
+        ADD COLUMN IF NOT EXISTS requirements_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+
+  000036_workflow_portable_contract.down.sql: |
+    ALTER TABLE workflows DROP COLUMN IF EXISTS requirements_json;
+    ALTER TABLE workflows DROP COLUMN IF EXISTS persona_definitions_json;
+    ALTER TABLE workflows DROP COLUMN IF EXISTS persona_dependencies_json;
+
+
+  000037_developer_executions.up.sql: |
+    -- Durable parent/child ledger for developer-delivery workflow expansion.
+
+    CREATE TABLE IF NOT EXISTS developer_executions (
+        id UUID PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL DEFAULT '',
+        name TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        workflow_id UUID NOT NULL,
+        workflow_revision TEXT NOT NULL,
+        workflow_digest TEXT NOT NULL,
+        repository TEXT NOT NULL,
+        base_ref TEXT NOT NULL,
+        base_sha TEXT NOT NULL,
+        parent_session_id TEXT NOT NULL,
+        parent_node_id TEXT NOT NULL,
+        connection_id TEXT NOT NULL DEFAULT '',
+        state TEXT NOT NULL,
+        current_generation INTEGER NOT NULL DEFAULT 0 CHECK (current_generation >= 0),
+        total_budget BIGINT NOT NULL CHECK (total_budget > 0),
+        reserved_budget BIGINT NOT NULL DEFAULT 0 CHECK (reserved_budget >= 0),
+        spent_budget BIGINT NOT NULL DEFAULT 0 CHECK (spent_budget >= 0),
+        deadline TIMESTAMPTZ NOT NULL,
+        suspension_reason TEXT NOT NULL DEFAULT '',
+        cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
+        policy JSONB NOT NULL,
+        revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
+        launch_key TEXT NOT NULL DEFAULT '',
+        launch_digest TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT developer_executions_state_check CHECK (
+            state IN ('pending', 'running', 'waiting', 'blocked', 'canceling',
+                      'canceled', 'completed', 'failed')
+        ),
+        CONSTRAINT developer_executions_budget_check CHECK (
+            reserved_budget + spent_budget <= total_budget
+        )
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_developer_executions_owner_updated
+        ON developer_executions (owner_id, updated_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_developer_executions_active
+        ON developer_executions (state, deadline)
+        WHERE state IN ('pending', 'running', 'waiting', 'blocked', 'canceling');
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_developer_executions_launch_key
+        ON developer_executions (owner_id, tenant_id, launch_key)
+        WHERE launch_key <> '';
+
+    CREATE TABLE IF NOT EXISTS developer_execution_generations (
+        execution_id UUID NOT NULL REFERENCES developer_executions(id) ON DELETE CASCADE,
+        generation INTEGER NOT NULL CHECK (generation > 0),
+        sealed BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        sealed_at TIMESTAMPTZ,
+        PRIMARY KEY (execution_id, generation)
+    );
+
+    CREATE TABLE IF NOT EXISTS developer_execution_children (
+        id UUID PRIMARY KEY,
+        execution_id UUID NOT NULL REFERENCES developer_executions(id) ON DELETE CASCADE,
+        generation INTEGER NOT NULL CHECK (generation > 0),
+        child_key TEXT NOT NULL,
+        attempt INTEGER NOT NULL CHECK (attempt > 0),
+        state TEXT NOT NULL,
+        dependencies TEXT[] NOT NULL DEFAULT '{}',
+        requirement_ids TEXT[] NOT NULL,
+        objective TEXT NOT NULL,
+        template_id UUID NOT NULL,
+        template_revision TEXT NOT NULL,
+        template_digest TEXT NOT NULL,
+        plan_digest TEXT NOT NULL,
+        input_digest TEXT NOT NULL,
+        input JSONB NOT NULL,
+        repository TEXT NOT NULL,
+        base_sha TEXT NOT NULL,
+        budget_units BIGINT NOT NULL CHECK (budget_units > 0),
+        deadline TIMESTAMPTZ NOT NULL,
+        agent_id TEXT NOT NULL,
+        skill_id TEXT NOT NULL,
+        intent_id UUID NOT NULL UNIQUE,
+        message_id TEXT NOT NULL UNIQUE,
+        task_id TEXT NOT NULL DEFAULT '',
+        context_id TEXT NOT NULL DEFAULT '',
+        result JSONB,
+        artifacts JSONB NOT NULL DEFAULT '[]'::jsonb,
+        workspace JSONB,
+        evidence_report JSONB,
+        evidence_validated_at TIMESTAMPTZ,
+        failure_kind TEXT,
+        error TEXT NOT NULL DEFAULT '',
+        lease_owner TEXT NOT NULL DEFAULT '',
+        lease_token UUID,
+        fencing_generation BIGINT NOT NULL DEFAULT 0 CHECK (fencing_generation >= 0),
+        lease_expires_at TIMESTAMPTZ,
+        remote_observed_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (execution_id, generation, child_key, attempt),
+        FOREIGN KEY (execution_id, generation)
+            REFERENCES developer_execution_generations(execution_id, generation) ON DELETE CASCADE,
+        CONSTRAINT developer_children_state_check CHECK (
+            state IN ('reserved', 'launching', 'submitted', 'running', 'waiting',
+                      'blocked', 'canceling', 'canceled', 'completed', 'failed', 'superseded')
+        )
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_developer_children_execution
+        ON developer_execution_children (execution_id, generation, child_key, attempt);
+    CREATE INDEX IF NOT EXISTS idx_developer_children_launch
+        ON developer_execution_children (state, lease_expires_at, deadline)
+        WHERE state IN ('reserved', 'launching');
+    CREATE INDEX IF NOT EXISTS idx_developer_children_task
+        ON developer_execution_children (agent_id, task_id)
+        WHERE task_id <> '';
+
+    CREATE TABLE IF NOT EXISTS developer_child_events (
+        child_id UUID NOT NULL REFERENCES developer_execution_children(id) ON DELETE CASCADE,
+        event_id TEXT NOT NULL,
+        observed_at TIMESTAMPTZ NOT NULL,
+        state TEXT NOT NULL,
+        payload JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (child_id, event_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS developer_child_messages (
+        id UUID PRIMARY KEY,
+        child_id UUID NOT NULL REFERENCES developer_execution_children(id) ON DELETE CASCADE,
+        message_id TEXT NOT NULL UNIQUE,
+        answer TEXT NOT NULL,
+        metadata JSONB NOT NULL,
+        state TEXT NOT NULL DEFAULT 'reserved',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        delivered_at TIMESTAMPTZ,
+        CONSTRAINT developer_child_messages_state_check CHECK (
+            state IN ('reserved', 'delivered')
+        )
+    );
+
+    -- Receiver-side launch reservation.  It exists before a runtime session and
+    -- therefore closes the old launch-before-campaign crash/duplicate window.
+    CREATE TABLE IF NOT EXISTS a2a_launch_reservations (
+        id UUID PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL DEFAULT '',
+        message_id TEXT NOT NULL,
+        request_digest TEXT NOT NULL,
+        workflow_id UUID NOT NULL,
+        task_id TEXT NOT NULL UNIQUE,
+        campaign_id UUID NOT NULL,
+        session_id TEXT,
+        state TEXT NOT NULL DEFAULT 'reserved',
+        error TEXT NOT NULL DEFAULT '',
+        lease_owner TEXT NOT NULL DEFAULT '',
+        lease_token UUID,
+        fencing_generation BIGINT NOT NULL DEFAULT 0,
+        lease_expires_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (owner_id, tenant_id, message_id),
+        CONSTRAINT a2a_launch_reservations_state_check CHECK (
+            state IN ('reserved', 'launching', 'launched', 'failed')
+        )
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_a2a_launch_reservations_reconcile
+        ON a2a_launch_reservations (state, lease_expires_at)
+        WHERE state IN ('reserved', 'launching');
+
+  000037_developer_executions.down.sql: |
+    DROP TABLE IF EXISTS a2a_launch_reservations;
+    DROP TABLE IF EXISTS developer_child_messages;
+    DROP TABLE IF EXISTS developer_child_events;
+    DROP TABLE IF EXISTS developer_execution_children;
+    DROP TABLE IF EXISTS developer_execution_generations;
+    DROP TABLE IF EXISTS developer_executions;
+
+  000038_workflow_dependencies.up.sql: |
+    ALTER TABLE workflows
+        ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE workflows
+        ADD COLUMN IF NOT EXISTS workflow_dependencies_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE workflows
+        ADD COLUMN IF NOT EXISTS workflow_definitions_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+  000038_workflow_dependencies.down.sql: |
+    ALTER TABLE workflows DROP COLUMN IF EXISTS workflow_definitions_json;
+    ALTER TABLE workflows DROP COLUMN IF EXISTS workflow_dependencies_json;
+    ALTER TABLE workflows DROP COLUMN IF EXISTS schema_version;
+
+  000039_developer_completion.up.sql: |
+    ALTER TABLE developer_executions ADD COLUMN IF NOT EXISTS merge_receipt JSONB;
+    ALTER TABLE developer_executions ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+    ALTER TABLE developer_executions ADD COLUMN IF NOT EXISTS workflow_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+  000039_developer_completion.down.sql: |
+    ALTER TABLE developer_executions DROP COLUMN IF EXISTS workflow_snapshot;
+    ALTER TABLE developer_executions DROP COLUMN IF EXISTS completed_at;
+    ALTER TABLE developer_executions DROP COLUMN IF EXISTS merge_receipt;
+
+  000040_developer_integration_reviews.up.sql: |
+    ALTER TABLE developer_executions
+        ADD COLUMN IF NOT EXISTS integration_receipts JSONB NOT NULL DEFAULT '[]'::jsonb,
+        ADD COLUMN IF NOT EXISTS integration_allocation JSONB,
+        ADD COLUMN IF NOT EXISTS integration_candidate JSONB,
+        ADD COLUMN IF NOT EXISTS integration_review_receipt JSONB,
+        ADD COLUMN IF NOT EXISTS integration_review_event_id TEXT NOT NULL DEFAULT '';
+
+    CREATE INDEX IF NOT EXISTS idx_developer_executions_parent_session
+        ON developer_executions (owner_id, parent_session_id)
+        WHERE state NOT IN ('canceled', 'completed', 'failed');
+
+  000040_developer_integration_reviews.down.sql: |
+    DROP INDEX IF EXISTS idx_developer_executions_parent_session;
+
+    ALTER TABLE developer_executions
+        DROP COLUMN IF EXISTS integration_review_event_id,
+        DROP COLUMN IF EXISTS integration_review_receipt,
+        DROP COLUMN IF EXISTS integration_candidate,
+        DROP COLUMN IF EXISTS integration_allocation,
+        DROP COLUMN IF EXISTS integration_receipts;
+
+  000041_developer_blocker_notifications.up.sql: |
+    ALTER TABLE developer_executions
+        ADD COLUMN IF NOT EXISTS blocker_revision BIGINT NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS blocker_notified_revision BIGINT NOT NULL DEFAULT 0;
+
+    ALTER TABLE developer_execution_children
+        ADD COLUMN IF NOT EXISTS last_polled_at TIMESTAMPTZ;
+
+    UPDATE developer_executions execution
+    SET blocker_revision = 1
+    WHERE blocker_revision = 0
+      AND execution.state NOT IN ('canceled', 'completed', 'failed')
+      AND EXISTS (
+          SELECT 1
+          FROM developer_execution_children child
+          WHERE child.execution_id = execution.id
+            AND child.state IN ('blocked', 'failed')
+      );
+
+  000041_developer_blocker_notifications.down.sql: |
+    ALTER TABLE developer_execution_children
+        DROP COLUMN IF EXISTS last_polled_at;
+
+    ALTER TABLE developer_executions
+        DROP COLUMN IF EXISTS blocker_notified_revision,
+        DROP COLUMN IF EXISTS blocker_revision;
+
+  000042_developer_child_pending_input.up.sql: |
+    ALTER TABLE developer_execution_children
+        ADD COLUMN IF NOT EXISTS pending_questions JSONB NOT NULL DEFAULT '[]'::jsonb,
+        ADD COLUMN IF NOT EXISTS pending_gates JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+  000042_developer_child_pending_input.down.sql: |
+    ALTER TABLE developer_execution_children
+        DROP COLUMN IF EXISTS pending_gates,
+        DROP COLUMN IF EXISTS pending_questions;
+
+  000043_developer_delivery_waits.up.sql: |
+    CREATE TABLE IF NOT EXISTS developer_delivery_waits (
+        id UUID PRIMARY KEY,
+        execution_id UUID NOT NULL REFERENCES developer_executions(id) ON DELETE CASCADE,
+        execution_generation INTEGER NOT NULL CHECK (execution_generation >= 0),
+        execution_revision INTEGER NOT NULL CHECK (execution_revision > 0),
+        candidate_digest TEXT NOT NULL CHECK (candidate_digest ~ '^[a-f0-9]{64}$'),
+        mode TEXT NOT NULL CHECK (mode IN ('checks', 'merge')),
+        request_digest TEXT NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+        request JSONB NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending'
+            CHECK (state IN ('pending', 'ready', 'failed', 'notified')),
+        observation JSONB,
+        next_poll_at TIMESTAMPTZ NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+        last_error TEXT NOT NULL DEFAULT '',
+        lease_owner TEXT NOT NULL DEFAULT '',
+        lease_token UUID,
+        fencing_generation BIGINT NOT NULL DEFAULT 0 CHECK (fencing_generation >= 0),
+        lease_expires_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        notified_at TIMESTAMPTZ,
+        UNIQUE (execution_id, request_digest)
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_developer_delivery_waits_active_generation
+        ON developer_delivery_waits (execution_id, execution_generation)
+        WHERE state <> 'notified';
+
+    CREATE INDEX IF NOT EXISTS idx_developer_delivery_waits_due
+        ON developer_delivery_waits (state, next_poll_at, lease_expires_at)
+        WHERE state IN ('pending', 'ready', 'failed');
+
+  000043_developer_delivery_waits.down.sql: |
+    DROP TABLE IF EXISTS developer_delivery_waits;
+
+  000044_developer_plan_revision.up.sql: |
+    ALTER TABLE developer_executions
+        ADD COLUMN IF NOT EXISTS plan_revision TEXT NOT NULL DEFAULT '';
+
+  000044_developer_plan_revision.down.sql: |
+    ALTER TABLE developer_executions
+        DROP COLUMN IF EXISTS plan_revision;
+
+  000045_developer_parent_stop_cleanup.up.sql: |
+    ALTER TABLE developer_executions
+        ADD COLUMN IF NOT EXISTS parent_stop_requested_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS parent_stopped_at TIMESTAMPTZ;
+
+    CREATE INDEX IF NOT EXISTS idx_developer_executions_parent_stop_pending
+        ON developer_executions (parent_stop_requested_at, id)
+        WHERE parent_stop_requested_at IS NOT NULL AND parent_stopped_at IS NULL;
+
+  000045_developer_parent_stop_cleanup.down.sql: |
+    DROP INDEX IF EXISTS idx_developer_executions_parent_stop_pending;
+
+    ALTER TABLE developer_executions
+        DROP COLUMN IF EXISTS parent_stopped_at,
+        DROP COLUMN IF EXISTS parent_stop_requested_at;
+
 {{- end }}

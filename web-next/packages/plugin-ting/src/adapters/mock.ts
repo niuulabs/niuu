@@ -44,6 +44,7 @@ import type { DispatcherState } from '../domain/dispatcher';
 import type { SessionInfo } from '../domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from '../domain/tracker';
 import type { Workflow } from '../domain/workflow';
+import { serializePortableWorkflow } from '../domain/workflowPortable';
 
 // ---------------------------------------------------------------------------
 // Seed helpers
@@ -1631,6 +1632,27 @@ export function createMockWorkflowService(): IWorkflowService {
 
     async deleteWorkflow(id: string) {
       workflows.delete(id);
+    },
+
+    async exportWorkflow(id, format) {
+      const workflow = workflows.get(id);
+      if (!workflow) throw new Error(`Workflow ${id} not found`);
+      if (format === 'bundle') {
+        throw new Error('Workflow bundle export is unavailable in the in-memory adapter.');
+      }
+      return {
+        data: new Blob([serializePortableWorkflow(workflow)], { type: 'application/yaml' }),
+        filename: `${id}.yaml`,
+        mediaType: 'application/yaml',
+      };
+    },
+
+    async previewWorkflowImport() {
+      throw new Error('Workflow import is unavailable in the in-memory adapter.');
+    },
+
+    async applyWorkflowImport() {
+      throw new Error('Workflow import is unavailable in the in-memory adapter.');
     },
 
     async launchWorkflow(workflowId: string, request: WorkflowLaunchRequest) {

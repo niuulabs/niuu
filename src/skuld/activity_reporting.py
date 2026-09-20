@@ -76,7 +76,7 @@ class ActivityReportingMixin:
 
     async def _report_activity_state(
         self, state: str, *, extra_metadata: dict[str, Any] | None = None
-    ) -> None:
+    ) -> bool:
         """Report activity state change to Volundr.
 
         States: provisioning, active, idle, tool_executing, awaiting_input,
@@ -87,7 +87,7 @@ class ActivityReportingMixin:
         ``idle``) is never reported without its entered-at timestamp.
         """
         if state == self._activity_state and not extra_metadata:
-            return
+            return True
 
         # Remember the rich context of a "real" (non-heartbeat) report so the
         # heartbeat can re-send it unchanged. A plain report (no extra) clears it.
@@ -100,9 +100,6 @@ class ActivityReportingMixin:
         self._set_activity_state(state, extra_metadata)
         now = time.monotonic()
         self._last_activity_report = now
-
-        if not self.volundr_api_url:
-            return
 
         metadata = {
             "turn_count": self._artifacts.turn_count,
@@ -118,33 +115,87 @@ class ActivityReportingMixin:
         if extra_metadata:
             metadata.update(extra_metadata)
 
+        payload = {
+            "state": state,
+            "state_since": self._state_since_iso(self._activity_state_since),
+            "turn_started_at": (
+                self._state_since_iso(self._turn_started_at)
+                if self._turn_started_at is not None
+                else None
+            ),
+            "metadata": metadata,
+        }
+        terminal_kind = self._terminal_activity_kind(metadata)
+        pending = None
+        if terminal_kind:
+            pending = {"kind": terminal_kind, "payload": payload}
+            self._pending_terminal_activity = pending
+
+        if not self.volundr_api_url:
+            return False
+
+        delivered = await self._post_activity_payload(payload)
+        if delivered and pending is not None:
+            self._acknowledge_terminal_activity(pending)
+        return delivered
+
+    @staticmethod
+    def _terminal_activity_kind(metadata: dict[str, Any]) -> str:
+        if metadata.get("completion_source") == "ravn_flock":
+            return "completion"
+        if metadata.get("failure_source") == "ravn_flock":
+            return "failure"
+        return ""
+
+    async def _post_activity_payload(self, payload: dict[str, Any]) -> bool:
+        """Post one exact activity payload and report whether Forge acknowledged it."""
+
         try:
             client = await self._get_http_client()
             resp = await client.post(
                 f"{FORGE_SESSIONS_PATH}/{self.session_id}/activity",
-                json={
-                    "state": state,
-                    "state_since": self._state_since_iso(self._activity_state_since),
-                    "turn_started_at": (
-                        self._state_since_iso(self._turn_started_at)
-                        if self._turn_started_at is not None
-                        else None
-                    ),
-                    "metadata": metadata,
-                },
+                json=payload,
             )
             logger.info(
                 "Activity report: state=%s status=%d url=%s",
-                state,
+                payload["state"],
                 resp.status_code,
                 resp.url,
             )
+            if resp.status_code >= 300:
+                logger.warning(
+                    "Forge rejected activity state %s with HTTP %d",
+                    payload["state"],
+                    resp.status_code,
+                )
+                return False
+            return True
         except Exception:
             logger.warning(
                 "Failed to report activity state %s",
-                state,
+                payload["state"],
                 exc_info=True,
             )
+            return False
+
+    def _acknowledge_terminal_activity(self, pending: dict[str, Any]) -> None:
+        """Clear only the exact terminal report acknowledged by Forge."""
+        if self._pending_terminal_activity is not pending:
+            return
+        self._pending_terminal_activity = None
+        if pending["kind"] == "completion":
+            self._flock_completion_reported = True
+        elif pending["kind"] == "failure":
+            self._flock_failure_reported = True
+
+    async def _retry_pending_terminal_activity(self) -> bool:
+        pending = self._pending_terminal_activity
+        if pending is None or not self.volundr_api_url:
+            return False
+        delivered = await self._post_activity_payload(pending["payload"])
+        if delivered:
+            self._acknowledge_terminal_activity(pending)
+        return delivered
 
     async def _enter_attention(
         self,
@@ -213,6 +264,9 @@ class ActivityReportingMixin:
         interval = self._settings.activity_heartbeat.interval_seconds
         while True:
             await asyncio.sleep(interval)
+            if self._pending_terminal_activity is not None:
+                await self._retry_pending_terminal_activity()
+                continue
             state = self._activity_state
             if state not in ("active", "tool_executing", "awaiting_input"):
                 continue

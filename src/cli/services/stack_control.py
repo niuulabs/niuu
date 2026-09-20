@@ -18,6 +18,9 @@ import json
 import logging
 import os
 import re
+import subprocess
+import sys
+import tempfile
 import time
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
@@ -47,6 +50,10 @@ from cli.services.docker_host import MIB_PER_GIB, GpuFacts, HostFacts
 from cli.services.model_catalog import expected_weight_bytes, model_options
 from niuu.domain.stack import (
     ApplyStatus,
+    ExternalIntegrationDefinition,
+    ExternalIntegrationSettings,
+    ExternalIntegrationValidation,
+    ExternalModuleComponent,
     ModelServerSettings,
     ModelTestResult,
     Progress,
@@ -58,6 +65,9 @@ from niuu.domain.stack import (
     validate_stack_changes,
 )
 from niuu.ports.stack_control import StackControlPort
+from volundr.config import IntegrationsConfig
+from volundr.external_modules import read_external_module_manifest
+from volundr.integration_definitions import load_integration_definition_configs
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +83,7 @@ MODEL_TEST_PROMPT = "Reply with the single word OK."
 MODEL_TEST_MAX_TOKENS = 32
 MODEL_TEST_TIMEOUT_SECONDS = 90.0
 GB = 1000**3
+EXTERNAL_INTEGRATION_MOUNT_ROOT = Path("/opt/niuu-external-integrations")
 
 # `docker compose up` in plain progress mode prints one line per layer event:
 #   " 9b37ee547aa6 Downloading [==>   ]  207.6MB/4.311GB"
@@ -257,6 +268,14 @@ def stack_settings_view(settings: CLISettings, external_host: str) -> StackSetti
             base_url=server.base_url,
             models=tuple(server.models),
             has_api_key=bool(server.api_key),
+        ),
+        external_integrations=tuple(
+            ExternalIntegrationSettings(
+                source_dir=item.source_dir,
+                definition_files=tuple(item.definition_files),
+                manifest_file=item.manifest_file,
+            )
+            for item in settings.docker.external_integrations
         ),
     )
 
@@ -616,6 +635,202 @@ class DockerStackController(StackControlPort):
                 detail=f"Unexpected response shape: {exc}",
             )
         return ModelTestResult(ok=bool(reply), model=model, reply=reply, latency_ms=latency)
+
+    async def validate_external_integration(
+        self,
+        source_dir: str,
+        definition_files: list[str],
+        manifest_file: str = "",
+    ) -> ExternalIntegrationValidation:
+        return await asyncio.to_thread(
+            self._validate_external_integration,
+            source_dir,
+            definition_files,
+            manifest_file,
+        )
+
+    async def external_integrations_root(self) -> str:
+        return str((self._dir / "private-integrations").resolve())
+
+    def _validate_external_integration(
+        self,
+        source_dir: str,
+        definition_files: list[str],
+        manifest_file: str = "",
+    ) -> ExternalIntegrationValidation:
+        """Validate a UI-managed package without copying it into the image."""
+        source = Path(source_dir).expanduser().resolve()
+        managed_root = (self._dir / "private-integrations").resolve()
+        validation_source = source
+        try:
+            source.relative_to(managed_root)
+        except ValueError:
+            validation_source = self._registered_external_integration_mount(
+                source,
+                definition_files,
+                manifest_file,
+            )
+            if validation_source is None:
+                return ExternalIntegrationValidation(
+                    ok=False,
+                    source_dir=str(source),
+                    definition_files=tuple(definition_files),
+                    manifest_file=manifest_file,
+                    errors=(f"source_dir must be inside {managed_root}",),
+                )
+        if not validation_source.is_dir():
+            return ExternalIntegrationValidation(
+                ok=False,
+                source_dir=str(source),
+                definition_files=tuple(definition_files),
+                manifest_file=manifest_file,
+                errors=(f"Package directory does not exist: {validation_source}",),
+            )
+
+        try:
+            normalized = validate_stack_changes(
+                {
+                    "external_integrations": [
+                        {
+                            "source_dir": str(validation_source),
+                            "definition_files": definition_files,
+                            "manifest_file": manifest_file,
+                        }
+                    ]
+                }
+            )["docker"]["external_integrations"][0]
+            definition_paths = [validation_source / name for name in normalized["definition_files"]]
+            metadata_paths = list(definition_paths)
+            manifest_path = None
+            if normalized.get("manifest_file"):
+                manifest_path = validation_source / normalized["manifest_file"]
+                metadata_paths.append(manifest_path)
+            for path in metadata_paths:
+                resolved = path.resolve()
+                try:
+                    resolved.relative_to(validation_source)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Definition file resolves outside source_dir: {path}"
+                    ) from exc
+                if not resolved.is_file():
+                    raise ValueError(f"External package file does not exist: {path}")
+            discovered: list[ExternalIntegrationDefinition] = []
+            components: list[ExternalModuleComponent] = []
+            module_id = ""
+            if manifest_path is not None:
+                loaded_module = read_external_module_manifest(manifest_path)
+                module_id = loaded_module.manifest.id
+                definition_paths.extend(loaded_module.integration_definition_files)
+                components.extend(
+                    ExternalModuleComponent(
+                        kind=component.kind,
+                        name=component.name,
+                        adapter=component.adapter,
+                    )
+                    for component in loaded_module.manifest.components
+                )
+            definitions = load_integration_definition_configs(
+                IntegrationsConfig(
+                    definitions=[],
+                    definition_files=[str(path) for path in definition_paths],
+                )
+            )
+            # The same no-overrides rule used at service startup also catches
+            # collisions with the built-in catalog before a restart is attempted.
+            load_integration_definition_configs(
+                IntegrationsConfig(definition_files=[str(path) for path in definition_paths])
+            )
+            _validate_external_imports(
+                validation_source,
+                manifest_path=manifest_path,
+                adapters=[definition.adapter for definition in definitions if definition.adapter],
+            )
+            for definition in definitions:
+                discovered.append(
+                    ExternalIntegrationDefinition(
+                        slug=definition.slug,
+                        name=definition.name,
+                        integration_type=definition.integration_type,
+                        adapter=definition.adapter,
+                    )
+                )
+            if not discovered and not components:
+                raise ValueError("No integration definitions or module components were found")
+        except (AttributeError, ImportError, OSError, TypeError, ValueError) as exc:
+            return ExternalIntegrationValidation(
+                ok=False,
+                source_dir=str(source),
+                definition_files=tuple(definition_files),
+                manifest_file=manifest_file,
+                errors=(str(exc),),
+            )
+        return ExternalIntegrationValidation(
+            ok=True,
+            source_dir=str(source),
+            definition_files=tuple(normalized["definition_files"]),
+            manifest_file=normalized.get("manifest_file", ""),
+            module_id=module_id,
+            definitions=tuple(discovered),
+            components=tuple(components),
+        )
+
+    def _registered_external_integration_mount(
+        self,
+        source: Path,
+        definition_files: list[str],
+        manifest_file: str,
+    ) -> Path | None:
+        """Resolve an exact deployment-owned package to its container mount."""
+        configured = self._current_settings().docker.external_integrations
+        requested_definitions = tuple(definition_files)
+        for index, integration in enumerate(configured):
+            registered_source = Path(integration.source_dir).expanduser().resolve()
+            if source != registered_source:
+                continue
+            if requested_definitions != tuple(integration.definition_files):
+                continue
+            if manifest_file != integration.manifest_file:
+                continue
+            return EXTERNAL_INTEGRATION_MOUNT_ROOT / str(index)
+        return None
+
+
+def _validate_external_imports(
+    source: Path,
+    *,
+    manifest_path: Path | None,
+    adapters: list[str],
+) -> None:
+    """Validate external imports in a fresh interpreter with fresh bytecode."""
+    if manifest_path is None and not adapters:
+        return
+
+    command = [sys.executable, "-m", "volundr.external_modules"]
+    if manifest_path is not None:
+        command.extend(("--manifest", str(manifest_path)))
+    for adapter in adapters:
+        command.extend(("--adapter", adapter))
+
+    environment = os.environ.copy()
+    existing_python_path = environment.get("PYTHONPATH", "")
+    environment["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(source), existing_python_path) if part
+    )
+    with tempfile.TemporaryDirectory(prefix="niuu-module-pycache-") as pycache:
+        environment["PYTHONPYCACHEPREFIX"] = pycache
+        result = subprocess.run(
+            command,
+            cwd=source,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    if result.returncode == 0:
+        return
+    detail = result.stderr.strip() or result.stdout.strip()
+    raise ValueError(detail or f"External package validation exited {result.returncode}")
 
 
 def stack_view_dict(view: StackView) -> dict[str, Any]:

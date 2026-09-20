@@ -24,6 +24,7 @@ describe('LibraryPanel', () => {
   it('renders the library-panel container', () => {
     render(<LibraryPanel personas={DEFAULT_PERSONAS} />);
     expect(screen.getByTestId('library-panel')).toBeInTheDocument();
+    expect(screen.getByText('External wait')).toBeInTheDocument();
   });
 
   it('renders a chip for each persona', () => {

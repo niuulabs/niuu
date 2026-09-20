@@ -11,7 +11,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID
 
 from credentials.ports import (  # noqa: F401
@@ -453,6 +453,14 @@ class PodManager(ABC):
         """
         return None
 
+    async def capacity_for(self, session: Session) -> SessionCapacity | None:
+        """Capacity available when starting ``session``.
+
+        Runtimes that retain a capacity reservation for stopped or failed
+        sessions may exclude that reservation here so a restart can reuse it.
+        """
+        return await self.capacity()
+
     def initial_chat_endpoint(self, session: Session) -> str | None:
         """Return the deterministic chat endpoint before pods are ready, if known."""
         return None
@@ -488,6 +496,10 @@ class PodManager(ABC):
     @abstractmethod
     async def status(self, session: Session) -> SessionStatus:
         """Get the current status of session pods."""
+
+    async def status_detail(self, session: Session) -> str | None:
+        """Return a safe, non-terminal detail for the current runtime status."""
+        return None
 
     @abstractmethod
     async def wait_for_ready(self, session: Session, timeout: float) -> SessionStatus:
@@ -1566,6 +1578,22 @@ class GitWorkspacePort(ABC):
         """
 
 
+if TYPE_CHECKING:
+    from volundr.domain.execution_catalog import ResolvedExecutionPlan
+
+
+class SessionExecutionResolver(Protocol):
+    """Resolve and verify an operator-approved execution choice before contribution."""
+
+    async def has_legacy_allocation(self, session: Session) -> bool: ...
+
+    async def resolve_execution(self, session: Session) -> ResolvedExecutionPlan | None: ...
+
+    async def execution_for(self, session: Session) -> ResolvedExecutionPlan: ...
+
+    def execution_reference(self, plan: ResolvedExecutionPlan) -> dict[str, str]: ...
+
+
 # PATRepository — re-exported from shared niuu module
 from niuu.ports.pat_repository import PATRepository  # noqa: F401, E402
 
@@ -1578,6 +1606,8 @@ class SessionContext:
     definition: str | None = None
     launch_spec: str | None = None
     runtime_backend: str = "kubernetes"
+    storage_backend: str = ""
+    runtime_capabilities: tuple[str, ...] = ()
     terminal_restricted: bool = False
     credential_names: tuple[str, ...] = ()
     integration_ids: tuple[str, ...] = ()

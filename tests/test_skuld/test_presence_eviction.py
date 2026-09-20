@@ -30,6 +30,7 @@ def _make_bridge(
     bridge = SkuldCollaborationAdapter(
         config=RoomConfig(enabled=True, participant_colors=["p1", "p2", "p3"]),
         channels=registry,
+        emit_frame=registry.broadcast,
         publish_presence_event=AsyncMock(),
         clock=clock,
     )

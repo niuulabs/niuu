@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import subprocess
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+import yaml
 
 import volundr.adapters.outbound.docker_container as dc
 from niuu.ports.session_proxy import SessionProxyTarget
@@ -29,6 +33,8 @@ class _Container:
         self.stopped = False
         self.removed = False
         self.reloads = 0
+        self.exec_calls: list[tuple[list[str], dict[str, Any]]] = []
+        self.exec_result: tuple[int, bytes] = (0, b"")
 
     def reload(self) -> None:
         self.reloads += 1
@@ -45,6 +51,10 @@ class _Container:
     def logs(self, tail: int = 100) -> bytes:
         del tail
         return b"boom\n"
+
+    def exec_run(self, command: list[str], **kwargs: Any) -> tuple[int, bytes]:
+        self.exec_calls.append((command, kwargs))
+        return self.exec_result
 
 
 class _Containers:
@@ -142,6 +152,24 @@ def _workspace(workspaces: Path, session: Session) -> Path:
     return ws
 
 
+def test_entrypoint_explicit_command_does_not_prepare_broker_filesystem(tmp_path: Path) -> None:
+    inaccessible_workspace = tmp_path / "read-only-root" / "workspace"
+    entrypoint = Path(__file__).parents[2] / "containers" / "skuld" / "entrypoint.sh"
+    result = subprocess.run(
+        ["/bin/bash", str(entrypoint), "/usr/bin/true"],
+        env={
+            "PATH": "/usr/bin:/bin",
+            "HOME": str(tmp_path / "read-only-home"),
+            "SESSION_ID": "credential-login",
+            "WORKSPACE_DIR": str(inaccessible_workspace),
+        },
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert not inaccessible_workspace.exists()
+
+
 class TestStart:
     @pytest.mark.asyncio
     async def test_runs_sibling_container_on_network(
@@ -190,6 +218,8 @@ class TestStart:
         assert env["SKULD__SESSION__SYSTEM_PROMPT"] == "be helpful"
         assert env["SKULD__SESSION__INITIAL_PROMPT"] == "start"
         assert env["HOME"] == "/home/skuld"
+        assert env["SKULD__PERSISTENCE_MOUNT_PATH"] == "/home/skuld"
+        assert env["SKULD__PERSISTENT_HOME_PATH"] == "/home/skuld"
         assert "SKULD__CLI_BINARY" not in env
 
         assert result.pod_name == f"local-{sid[:8]}"
@@ -296,19 +326,72 @@ class TestStart:
         await manager.stop(session)
 
     @pytest.mark.asyncio
-    async def test_flock_is_rejected(
-        self, manager: DockerContainerPodManager, workspaces: Path, session: Session
+    async def test_flock_runs_in_session_container(
+        self,
+        manager: DockerContainerPodManager,
+        client: _Client,
+        workspaces: Path,
+        session: Session,
     ) -> None:
         spec = SessionSpec(
-            values={},
-            pod_spec=PodSpecAdditions(extra_containers=[{"name": "ravn-a", "image": "x"}]),
+            values={
+                "flock": {
+                    "personas": [{"name": "a"}],
+                    "ravn_config": {
+                        "developer_execution": {
+                            "enabled": True,
+                            "execution_id": "execution-test",
+                            "base_url": "https://ting.example/api/v1/ting",
+                            "auth_token": "runtime-only-token",
+                        },
+                        "gateway": {
+                            "platform": {
+                                "a2a_trusted_origins": ["https://ting.example"],
+                            }
+                        },
+                    },
+                }
+            },
+            pod_spec=PodSpecAdditions(
+                env=[{"name": "SKULD__MESH__PEER_ID", "value": "skuld-proof"}],
+                volumes=[{"name": "ravn-config-a", "emptyDir": {}}],
+                extra_containers=[{"name": "ravn-a", "image": "x"}],
+            ),
         )
         ws = _workspace(workspaces, session)
-        with (
-            patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)),
-            pytest.raises(RuntimeError, match="Flock sidecars are not supported"),
-        ):
+        flock_dir = ws / ".flock"
+        flock_dir.mkdir()
+        (flock_dir / "node-a.yaml").write_text("persona: a\n", encoding="utf-8")
+        with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
             await manager.start(session, spec)
+
+        sid = str(session.id)
+        container = client.containers.by_name[manager.container_name(sid)]
+        commands = [call[0] for call in container.exec_calls]
+        assert any("init" in command for command in commands)
+        assert any("start" in command for command in commands)
+        assert all(command[0] == dc._SESSION_SECRET_RUNNER for command in commands)
+        runtime_workspace = f"/volundr/sessions/{sid}/workspace"
+        assert all(call[1].get("workdir") == runtime_workspace for call in container.exec_calls)
+
+        env = client.containers.run_kwargs[0]["environment"]
+        assert env["SKULD__ROOM__ENABLED"] == "true"
+        assert env["SKULD__MESH__NNG__PUB_SUB_ADDRESS"].startswith("ipc:///tmp/niuu-mesh/")
+        discovery = json.loads(env["SKULD__MESH__ADAPTERS"])[0]
+        assert discovery["cluster_file"] == f"{runtime_workspace}/.flock/cluster.yaml"
+        assert "/var/run/docker.sock" not in client.containers.run_kwargs[0]["volumes"]
+        node_config = yaml.safe_load((flock_dir / "node-a.yaml").read_text(encoding="utf-8"))
+        assert node_config["developer_execution"] == {
+            "enabled": True,
+            "execution_id": "execution-test",
+            "base_url": "https://ting.example/api/v1/ting",
+            "auth_token": "runtime-only-token",
+        }
+        assert node_config["gateway"]["platform"]["base_url"] == "http://niuu:8080"
+        assert node_config["gateway"]["platform"]["a2a_trusted_origins"] == ["https://ting.example"]
+
+        await manager.stop(session)
+        assert any("stop" in command for command, _ in container.exec_calls)
 
 
 class TestBrokeredCodexAuth:
@@ -389,6 +472,19 @@ class TestHostPathBinds:
 
     def test_no_pod_spec_means_no_binds(self) -> None:
         spec = SessionSpec(values={}, pod_spec=None)
+        assert DockerContainerPodManager._host_path_binds(spec) == {}
+
+    def test_ignores_unmounted_generated_flock_volumes(self) -> None:
+        spec = SessionSpec(
+            values={},
+            pod_spec=PodSpecAdditions(
+                volumes=(
+                    {"name": "ravn-config-a", "emptyDir": {}},
+                    {"name": "ravn-personas", "configMap": {"name": "personas"}},
+                ),
+                extra_containers=({"name": "ravn-a", "image": "ravn"},),
+            ),
+        )
         assert DockerContainerPodManager._host_path_binds(spec) == {}
 
     def test_rejects_non_host_path_volume(self) -> None:
@@ -556,7 +652,8 @@ class TestLifecycle:
         if monitor is not None:
             monitor.cancel()
 
-    def test_recovers_running_container_from_state_file(
+    @pytest.mark.asyncio
+    async def test_recovers_running_container_as_provisioning_until_ready(
         self, client: _Client, workspaces: Path, tmp_path: Path
     ) -> None:
         sid = str(uuid4())
@@ -577,7 +674,23 @@ class TestLifecycle:
         )
         assert manager._processes[sid].state == ProcessState.RUNNING
         assert manager._processes[sid].managed_by == MANAGED_BY
-        assert sid in manager._ready
+        assert sid not in manager._ready
+        recovered = Session(id=UUID(sid), name="recovered")
+        assert await manager.status(recovered) == SessionStatus.PROVISIONING
+        monitor = manager._monitors.pop(sid)
+        monitor.cancel()
+        with suppress(asyncio.CancelledError):
+            await monitor
+
+        async def _failed(_session_id: str) -> bool:
+            manager._broker_startup_failures[sid] = "recovered kickoff failed"
+            return False
+
+        container = client.containers.by_name[name]
+        with patch.object(manager, "_broker_healthy", _failed):
+            assert await manager.wait_for_ready(recovered, timeout=1) == SessionStatus.FAILED
+        assert manager._processes[sid].state == ProcessState.FAILED
+        assert container.stopped and container.removed
 
     def test_marks_stopped_when_container_gone(
         self, client: _Client, workspaces: Path, tmp_path: Path
@@ -624,7 +737,10 @@ class TestReadiness:
         with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
             await manager.start(session, spec)
         # The monitor task also probes health; stop it so the probe count is ours.
-        manager._monitors.pop(str(session.id)).cancel()
+        monitor = manager._monitors.pop(str(session.id))
+        monitor.cancel()
+        with suppress(asyncio.CancelledError):
+            await monitor
         manager._ready_poll = 0.01
         healthy = AsyncMock(side_effect=[False, True])
         with patch.object(manager, "_broker_healthy", healthy):
@@ -699,6 +815,36 @@ class TestReadiness:
         await manager.stop(session)
 
     @pytest.mark.asyncio
+    async def test_terminal_broker_startup_failure_stops_container(
+        self,
+        manager: DockerContainerPodManager,
+        client: _Client,
+        workspaces: Path,
+        session: Session,
+        spec: SessionSpec,
+    ) -> None:
+        ws = _workspace(workspaces, session)
+        with patch.object(manager, "_provision_workspace", AsyncMock(return_value=ws)):
+            await manager.start(session, spec)
+        sid = str(session.id)
+        monitor = manager._monitors.pop(sid)
+        monitor.cancel()
+        with suppress(asyncio.CancelledError):
+            await monitor
+        container = client.containers.by_name[manager.container_name(sid)]
+
+        async def _failed(_session_id: str) -> bool:
+            manager._broker_startup_failures[sid] = "workflow kickoff failed"
+            return False
+
+        with patch.object(manager, "_broker_healthy", _failed):
+            assert await manager.wait_for_ready(session, timeout=1) == SessionStatus.FAILED
+
+        assert manager._processes[sid].state == ProcessState.FAILED
+        assert manager._processes[sid].error == "workflow kickoff failed"
+        assert container.stopped and container.removed
+
+    @pytest.mark.asyncio
     async def test_reports_failed_and_stopped_states(
         self, manager: DockerContainerPodManager, session: Session
     ) -> None:
@@ -713,16 +859,21 @@ class TestReadiness:
     ) -> None:
         sid = "abc"
         assert manager._broker_health_url(sid) == "http://niuu-session-abc:8081/health"
+        assert manager._broker_ready_url(sid) == "http://niuu-session-abc:8081/ready"
         loopback = DockerContainerPodManager(
             workspaces_dir=str(workspaces), state_file=str(tmp_path / "s.json")
         )
         assert loopback._broker_health_url(sid) is None
         loopback._processes[sid] = ProcessInfo(session_id=sid, port=9105)
         assert loopback._broker_health_url(sid) == "http://127.0.0.1:9105/health"
+        assert loopback._broker_ready_url(sid) == "http://127.0.0.1:9105/ready"
         assert await loopback._broker_healthy("missing") is False
 
         class _Resp:
             status_code = 200
+
+            def json(self) -> dict[str, Any]:
+                return {"ready": True, "startup_state": "ready"}
 
         class _Client2:
             def __init__(self, **kwargs: Any) -> None:
@@ -741,12 +892,63 @@ class TestReadiness:
         with patch.object(dc.httpx, "AsyncClient", _Client2):
             assert await manager._broker_healthy(sid) is True
 
+        class _Malformed(_Resp):
+            def json(self) -> dict[str, Any]:
+                return {}
+
+        class _MalformedClient(_Client2):
+            async def get(self, url: str) -> _Resp:
+                del url
+                return _Malformed()
+
+        with patch.object(dc.httpx, "AsyncClient", _MalformedClient):
+            assert await manager._broker_healthy(sid) is False
+
+        class _InvalidJson(_Resp):
+            def json(self) -> dict[str, Any]:
+                raise ValueError("invalid json")
+
+        class _InvalidJsonClient(_Client2):
+            async def get(self, url: str) -> _Resp:
+                del url
+                return _InvalidJson()
+
+        with patch.object(dc.httpx, "AsyncClient", _InvalidJsonClient):
+            assert await manager._broker_healthy(sid) is False
+
+        class _NonBoolean(_Resp):
+            def json(self) -> dict[str, Any]:
+                return {"ready": "true", "startup_state": "ready"}
+
+        class _NonBooleanClient(_Client2):
+            async def get(self, url: str) -> _Resp:
+                del url
+                return _NonBoolean()
+
+        with patch.object(dc.httpx, "AsyncClient", _NonBooleanClient):
+            assert await manager._broker_healthy(sid) is False
+
         class _Broken(_Client2):
             async def get(self, url: str) -> _Resp:
                 raise dc.httpx.ConnectError("refused")
 
         with patch.object(dc.httpx, "AsyncClient", _Broken):
             assert await manager._broker_healthy(sid) is False
+
+        class _Failed(_Resp):
+            status_code = 503
+
+            def json(self) -> dict[str, Any]:
+                return {"ready": False, "startup_state": "failed", "error": "kickoff failed"}
+
+        class _FailureClient(_Client2):
+            async def get(self, url: str) -> _Resp:
+                del url
+                return _Failed()
+
+        with patch.object(dc.httpx, "AsyncClient", _FailureClient):
+            assert await manager._broker_healthy(sid) is False
+        assert manager._broker_startup_failures[sid] == "kickoff failed"
 
 
 class TestProxyRouting:

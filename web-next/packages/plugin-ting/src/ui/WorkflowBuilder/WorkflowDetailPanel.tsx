@@ -2,16 +2,19 @@ import { useState } from 'react';
 import { cn, SegmentedFilter } from '@niuulabs/ui';
 import type {
   Workflow,
+  WorkflowGateMode,
   WorkflowNode,
   WorkflowResourceBinding,
   WorkflowResourceNode,
   WorkflowStageNode,
 } from '../../domain/workflow';
 import type { WorkflowIssue } from '../../domain/workflowValidation';
+import { parseWorkflowEdgeLabel } from '../../domain/workflowSemantics';
 import type { WorkflowBuilderActions, WorkflowStageModelOption } from './useWorkflowBuilder';
 import type { PersonaEntry } from './LibraryPanel';
 import { normalizedStageMembers } from './graphUtils';
 import { EPHEMERAL_LOCAL_MOUNT_ID, type WorkflowRegistryMount } from './mimirRegistry';
+import { EvidencePolicyEditor, emptyEvidencePolicy } from './EvidencePolicyEditor';
 
 export interface WorkflowDetailPanelProps {
   workflow: Workflow;
@@ -130,6 +133,7 @@ function WorkflowSummary({
   const triggerCount = workflow.nodes.filter((n) => n.kind === 'trigger').length;
   const gateCount = workflow.nodes.filter((n) => n.kind === 'gate').length;
   const condCount = workflow.nodes.filter((n) => n.kind === 'cond').length;
+  const waitCount = workflow.nodes.filter((n) => n.kind === 'wait').length;
   const endCount = workflow.nodes.filter((n) => n.kind === 'end').length;
 
   return (
@@ -165,7 +169,7 @@ function WorkflowSummary({
           <div className={SECTION_LABEL}>Summary</div>
           <div className="niuu:mt-2 niuu:text-xs niuu:text-text-secondary niuu:leading-relaxed">
             {triggerCount} triggers · {stageCount} stages · {gateCount} gates · {condCount}{' '}
-            conditions · {endCount} end nodes · {workflow.edges.length} edges
+            conditions · {waitCount} waits · {endCount} end nodes · {workflow.edges.length} edges
           </div>
         </div>
       </div>
@@ -1018,34 +1022,87 @@ export function WorkflowDetailPanel({
               className={cn(INPUT, 'niuu:mt-0.5')}
               aria-label="Gate mode"
               value={selectedNode.mode ?? 'human_approval'}
-              onChange={(e) =>
-                onUpdateNode(selectedNode.id, {
-                  mode: e.target.value as 'human_approval' | 'human_review' | 'automated_approval',
-                })
-              }
+              onChange={(e) => {
+                const mode = e.target.value as WorkflowGateMode;
+                onUpdateNode(
+                  selectedNode.id,
+                  mode === 'evidence'
+                    ? {
+                        mode,
+                        evidencePolicy: selectedNode.evidencePolicy ?? emptyEvidencePolicy(),
+                        artifact: selectedNode.artifact ?? { kind: 'document', id: '' },
+                      }
+                    : { mode, evidencePolicy: undefined, artifact: undefined },
+                );
+              }}
             >
               <option value="human_approval">human approval</option>
               <option value="human_review">human review</option>
               <option value="automated_approval">automated approval</option>
+              <option value="evidence">verified evidence</option>
             </select>
           </div>
-          <div>
-            <label className={SECTION_LABEL}>Pending behavior</label>
-            <select
-              className={cn(INPUT, 'niuu:mt-0.5')}
-              aria-label="Pending behavior"
-              value={selectedNode.pendingBehavior ?? 'help_needed'}
-              onChange={(e) =>
-                onUpdateNode(selectedNode.id, {
-                  pendingBehavior: e.target.value as 'silent' | 'notify_only' | 'help_needed',
-                })
-              }
-            >
-              <option value="help_needed">help_needed</option>
-              <option value="notify_only">notify_only</option>
-              <option value="silent">silent</option>
-            </select>
-          </div>
+          {selectedNode.mode === 'evidence' ? (
+            <>
+              <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
+                <div>
+                  <label className={SECTION_LABEL}>Artifact kind</label>
+                  <input
+                    className={INPUT}
+                    aria-label="Artifact kind"
+                    value={selectedNode.artifact?.kind ?? 'document'}
+                    onChange={(e) =>
+                      onUpdateNode(selectedNode.id, {
+                        artifact: {
+                          kind: e.target.value.trimStart(),
+                          id: selectedNode.artifact?.id ?? '',
+                        },
+                      })
+                    }
+                  />
+                </div>
+                <div>
+                  <label className={SECTION_LABEL}>Artifact path or identifier</label>
+                  <input
+                    className={INPUT}
+                    aria-label="Artifact path or identifier"
+                    value={selectedNode.artifact?.id ?? ''}
+                    placeholder="report.md"
+                    onChange={(e) =>
+                      onUpdateNode(selectedNode.id, {
+                        artifact: {
+                          kind: selectedNode.artifact?.kind ?? 'document',
+                          id: e.target.value.trimStart(),
+                        },
+                      })
+                    }
+                  />
+                </div>
+              </div>
+              <EvidencePolicyEditor
+                policy={selectedNode.evidencePolicy}
+                onChange={(evidencePolicy) => onUpdateNode(selectedNode.id, { evidencePolicy })}
+              />
+            </>
+          ) : (
+            <div>
+              <label className={SECTION_LABEL}>Pending behavior</label>
+              <select
+                className={cn(INPUT, 'niuu:mt-0.5')}
+                aria-label="Pending behavior"
+                value={selectedNode.pendingBehavior ?? 'help_needed'}
+                onChange={(e) =>
+                  onUpdateNode(selectedNode.id, {
+                    pendingBehavior: e.target.value as 'silent' | 'notify_only' | 'help_needed',
+                  })
+                }
+              >
+                <option value="help_needed">help_needed</option>
+                <option value="notify_only">notify_only</option>
+                <option value="silent">silent</option>
+              </select>
+            </div>
+          )}
           <div>
             <label className={SECTION_LABEL}>Approve event</label>
             <input
@@ -1076,14 +1133,18 @@ export function WorkflowDetailPanel({
               onChange={(e) => onUpdateNode(selectedNode.id, { instructions: e.target.value })}
             />
           </div>
-          <div>
-            <label className={SECTION_LABEL}>Auto-forward after</label>
-            <input
-              className={INPUT}
-              value={selectedNode.autoForwardAfter ?? '30m'}
-              onChange={(e) => onUpdateNode(selectedNode.id, { autoForwardAfter: e.target.value })}
-            />
-          </div>
+          {selectedNode.mode !== 'evidence' ? (
+            <div>
+              <label className={SECTION_LABEL}>Auto-forward after</label>
+              <input
+                className={INPUT}
+                value={selectedNode.autoForwardAfter ?? '30m'}
+                onChange={(e) =>
+                  onUpdateNode(selectedNode.id, { autoForwardAfter: e.target.value })
+                }
+              />
+            </div>
+          ) : null}
         </div>
       ) : selectedNode?.kind === 'cond' ? (
         <div className="niuu:px-4 niuu:py-3 niuu:flex niuu:flex-col niuu:gap-4">
@@ -1154,6 +1215,66 @@ export function WorkflowDetailPanel({
             views.
           </div>
         </div>
+      ) : selectedNode?.kind === 'wait' ? (
+        <div className="niuu:px-4 niuu:py-3 niuu:flex niuu:flex-col niuu:gap-4">
+          <div>
+            <label className={SECTION_LABEL}>Wait label</label>
+            <input
+              className={INPUT}
+              value={selectedNode.label}
+              onChange={(e) => onUpdateLabel(selectedNode.id, e.target.value)}
+            />
+          </div>
+          <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3 niuu:text-xs niuu:text-text-secondary">
+            Passive external wait. Its incoming and continuation event types are carried by the
+            connected edges.
+            <div className="niuu:mt-3 niuu:grid niuu:grid-cols-2 niuu:gap-2 niuu:text-[10px] niuu:font-mono">
+              <div>
+                <div className={SECTION_LABEL}>Incoming</div>
+                {workflow.edges
+                  .filter((edge) => edge.target === selectedNode.id)
+                  .map((edge) => parseWorkflowEdgeLabel(edge.label)?.targetEventType)
+                  .filter(Boolean)
+                  .join(', ') || 'Connect and configure'}
+              </div>
+              <div>
+                <div className={SECTION_LABEL}>Continuation</div>
+                {workflow.edges
+                  .filter((edge) => edge.source === selectedNode.id)
+                  .map((edge) => parseWorkflowEdgeLabel(edge.label)?.sourceEventType)
+                  .filter(Boolean)
+                  .join(', ') || 'Connect and configure'}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : selectedNode?.kind === 'subworkflow' ? (
+        <section
+          aria-label="Child workflow contract"
+          className="niuu:space-y-3 niuu:px-4 niuu:py-3 niuu:text-xs niuu:text-text-secondary"
+        >
+          <h3 className={SECTION_LABEL}>{selectedNode.label}</h3>
+          <p>Dependency: {selectedNode.workflowDependency}</p>
+          <p>Coordinator: {selectedNode.allowedCoordinator}</p>
+          <p>
+            Up to {selectedNode.maxChildren} workstreams,{' '}
+            {selectedNode.maxActiveChildren ?? selectedNode.maxChildren} active,{' '}
+            {selectedNode.maxAttempts} attempts each.
+          </p>
+          <p>All required workstreams must complete before this node continues.</p>
+          <details>
+            <summary>Input contract</summary>
+            <pre className="niuu:overflow-auto">
+              {JSON.stringify(selectedNode.inputSchema, null, 2)}
+            </pre>
+          </details>
+          <details>
+            <summary>Result contract</summary>
+            <pre className="niuu:overflow-auto">
+              {JSON.stringify(selectedNode.resultSchema, null, 2)}
+            </pre>
+          </details>
+        </section>
       ) : selectedNode?.kind === 'resource' ? (
         <ResourceInspector
           node={selectedNode}

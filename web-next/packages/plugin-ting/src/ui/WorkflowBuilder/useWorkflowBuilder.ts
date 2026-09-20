@@ -90,6 +90,21 @@ function nextPosition(workflow: Workflow): { x: number; y: number } {
 function makeNewNode(kind: WorkflowNodeKind, position: { x: number; y: number }): WorkflowNode {
   const id = makeNodeId();
   switch (kind) {
+    case 'subworkflow':
+      return {
+        id,
+        kind,
+        label: 'Child workflows',
+        position,
+        workflowDependency: '',
+        allowedCoordinator: '',
+        inputSchema: { type: 'object' },
+        resultSchema: { type: 'object' },
+        maxChildren: 10,
+        maxAttempts: 3,
+        maxActiveChildren: 4,
+        joinMode: 'all',
+      };
     case 'stage':
       return {
         id,
@@ -130,6 +145,8 @@ function makeNewNode(kind: WorkflowNodeKind, position: { x: number; y: number })
       };
     case 'end':
       return { id, kind: 'end', label: 'Complete', position };
+    case 'wait':
+      return { id, kind: 'wait', label: 'Wait for observation', position };
     case 'resource':
       return {
         id,
@@ -252,6 +269,8 @@ function defaultStageModelIdForWorkflow(models: WorkflowStageModelOption[]): str
 
 function defaultInputLabelForNode(node: WorkflowNode): string | null {
   switch (node.kind) {
+    case 'subworkflow':
+      return 'children.requested';
     case 'end':
       return 'complete';
     case 'gate':
@@ -261,6 +280,7 @@ function defaultInputLabelForNode(node: WorkflowNode): string | null {
     case 'trigger':
     case 'stage':
     case 'resource':
+    case 'wait':
       return null;
   }
 }
@@ -438,7 +458,11 @@ export function useWorkflowBuilder(
         const pos = position ?? nextPosition(prev);
         const node = makeNewNode(kind, pos);
         return normalizeWorkflowWithStageDefaults(
-          { ...prev, nodes: [...prev.nodes, node] },
+          {
+            ...prev,
+            ...(kind === 'wait' ? { schemaVersion: 2 as const } : {}),
+            nodes: [...prev.nodes, node],
+          },
           defaultStageModelId,
         );
       });

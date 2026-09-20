@@ -27,6 +27,7 @@ from pydantic_settings import (
 )
 
 from identity.authz_config import AuthorizationAdapterConfig
+from niuu.config import DynamicAdapterConfig
 from niuu.domain.observability import ObservabilityConfig
 from niuu.mesh.config import MeshNatsConfig
 
@@ -150,6 +151,17 @@ class WorkflowRuntimeConfig(BaseModel):
     initial_context: str = Field(default="")
     graph: dict[str, Any] = Field(default_factory=dict)
     trace_context: dict[str, str] = Field(default_factory=dict)
+    evidence_verifier: DynamicAdapterConfig | None = Field(
+        default=None,
+        description=(
+            "Deployment-owned evidence verifier adapter and trust configuration. Required "
+            "for evidence gate nodes; never populated from imported workflow graph content."
+        ),
+    )
+    evidence_artifacts: DynamicAdapterConfig | None = Field(
+        default=None,
+        description="Deployment-owned resolver for the current digest of evidence gate artifacts.",
+    )
 
     @model_validator(mode="before")
     @classmethod

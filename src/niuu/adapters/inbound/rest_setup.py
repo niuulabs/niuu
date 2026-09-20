@@ -15,6 +15,7 @@ from niuu.domain.setup import KNOWN_SETUP_STEPS, SetupState, SystemReport
 from niuu.domain.stack import ApplyStatus, ModelTestResult, Progress, StackView
 from niuu.ports.stack_control import StackControlPort
 from niuu.settings_schema import (
+    SettingsExternalIntegrationsResourceSchema,
     SettingsFieldSchema,
     SettingsProviderSchema,
     SettingsSectionSchema,
@@ -195,6 +196,63 @@ class ModelTestResponse(BaseModel):
     detail: str
 
 
+class ExternalIntegrationPackageRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    source_dir: str = Field(validation_alias=AliasChoices("source_dir", "sourceDir"))
+    definition_files: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("definition_files", "definitionFiles"),
+    )
+    manifest_file: str = Field(
+        default="",
+        validation_alias=AliasChoices("manifest_file", "manifestFile"),
+    )
+
+
+class ExternalIntegrationDefinitionResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    slug: str
+    name: str
+    integration_type: str = Field(serialization_alias="integrationType")
+    adapter: str
+
+
+class ExternalModuleComponentResponse(BaseModel):
+    kind: str
+    name: str
+    adapter: str
+
+
+class ExternalIntegrationValidationResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    ok: bool
+    source_dir: str = Field(serialization_alias="sourceDir")
+    definition_files: list[str] = Field(serialization_alias="definitionFiles")
+    manifest_file: str = Field(serialization_alias="manifestFile")
+    module_id: str = Field(serialization_alias="moduleId")
+    definitions: list[ExternalIntegrationDefinitionResponse]
+    components: list[ExternalModuleComponentResponse]
+    errors: list[str]
+
+
+class ExternalIntegrationPackageResponse(ExternalIntegrationValidationResponse):
+    id: str
+
+
+class ExternalIntegrationPackagesResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    managed_root: str = Field(serialization_alias="managedRoot")
+    items: list[ExternalIntegrationPackageResponse]
+
+
+class ExternalIntegrationMutationResponse(ExternalIntegrationPackageResponse):
+    apply_state: str = Field(serialization_alias="applyState")
+
+
 def _stack_settings_response(settings: Any) -> StackSettingsResponse:
     return StackSettingsResponse(
         bind_host=settings.bind_host,
@@ -281,6 +339,41 @@ def _model_test_response(result: ModelTestResult) -> ModelTestResponse:
         latency_ms=result.latency_ms,
         detail=result.detail,
     )
+
+
+def _external_validation_response(
+    result: Any,
+    *,
+    package_id: str | None = None,
+) -> ExternalIntegrationValidationResponse | ExternalIntegrationPackageResponse:
+    values = {
+        "ok": result.ok,
+        "source_dir": result.source_dir,
+        "definition_files": list(result.definition_files),
+        "manifest_file": result.manifest_file,
+        "module_id": result.module_id,
+        "definitions": [
+            ExternalIntegrationDefinitionResponse(
+                slug=definition.slug,
+                name=definition.name,
+                integration_type=definition.integration_type,
+                adapter=definition.adapter,
+            )
+            for definition in result.definitions
+        ],
+        "components": [
+            ExternalModuleComponentResponse(
+                kind=component.kind,
+                name=component.name,
+                adapter=component.adapter,
+            )
+            for component in result.components
+        ],
+        "errors": list(result.errors),
+    }
+    if package_id is None:
+        return ExternalIntegrationValidationResponse(**values)
+    return ExternalIntegrationPackageResponse(id=package_id, **values)
 
 
 def _state_response(service: SetupService, state: SetupState) -> SetupStateResponse:
@@ -465,6 +558,37 @@ def create_setup_router(
                     fields=[field],
                 ),
                 _model_server_section(view),
+                SettingsSectionSchema(
+                    id="external-integrations",
+                    label="External integrations",
+                    description=(
+                        "Load deployment-owned integration definitions and adapter code without "
+                        "putting private packages in the Niuu image or repository."
+                        if view is not None
+                        else "External packages are deployment-managed on this install."
+                    ),
+                    fields=[],
+                    resources=[
+                        SettingsExternalIntegrationsResourceSchema(
+                            id="external-integration-packages",
+                            label="Integration packages",
+                            description=(
+                                "Package files stay on this machine. Adding or removing a "
+                                "package updates the persisted stack configuration and restarts "
+                                "the platform."
+                            ),
+                            writable=view is not None,
+                            list_path=f"{prefix.rstrip('/')}/settings/external-integrations",
+                            create_path=f"{prefix.rstrip('/')}/settings/external-integrations",
+                            delete_path=(
+                                f"{prefix.rstrip('/')}/settings/external-integrations/{{id}}"
+                            ),
+                            validate_path=(
+                                f"{prefix.rstrip('/')}/settings/external-integrations/validate"
+                            ),
+                        )
+                    ],
+                ),
             ],
         )
 
@@ -532,6 +656,177 @@ def create_setup_router(
             has_api_key=server.has_api_key,
             apply_state=applied.state,
         )
+
+    @router.get(
+        "/settings/external-integrations",
+        response_model=ExternalIntegrationPackagesResponse,
+        response_model_by_alias=True,
+    )
+    async def list_external_integrations(
+        principal: Principal = Depends(extract_principal),
+    ) -> ExternalIntegrationPackagesResponse:
+        _require_admin(principal)
+        control = _require_stack()
+        try:
+            view = await control.view()
+            root = await control.external_integrations_root()
+            items = []
+            for index, package in enumerate(view.effective.external_integrations):
+                validation = await control.validate_external_integration(
+                    package.source_dir,
+                    list(package.definition_files),
+                    package.manifest_file,
+                )
+                items.append(_external_validation_response(validation, package_id=str(index)))
+            return ExternalIntegrationPackagesResponse(managed_root=root, items=items)
+        except (ValueError, FileNotFoundError) as exc:
+            raise _stack_error(exc) from exc
+
+    @router.post(
+        "/settings/external-integrations/validate",
+        response_model=ExternalIntegrationValidationResponse,
+        response_model_by_alias=True,
+    )
+    async def validate_external_integration(
+        body: ExternalIntegrationPackageRequest,
+        principal: Principal = Depends(extract_principal),
+    ) -> ExternalIntegrationValidationResponse:
+        _require_admin(principal)
+        control = _require_stack()
+        try:
+            result = await control.validate_external_integration(
+                body.source_dir,
+                body.definition_files,
+                body.manifest_file,
+            )
+            return _external_validation_response(result)
+        except (ValueError, FileNotFoundError) as exc:
+            raise _stack_error(exc) from exc
+
+    @router.post(
+        "/settings/external-integrations",
+        response_model=ExternalIntegrationMutationResponse,
+        response_model_by_alias=True,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def add_external_integration(
+        body: ExternalIntegrationPackageRequest,
+        principal: Principal = Depends(extract_principal),
+    ) -> ExternalIntegrationMutationResponse:
+        _require_admin(principal)
+        control = _require_stack()
+        try:
+            validation = await control.validate_external_integration(
+                body.source_dir,
+                body.definition_files,
+                body.manifest_file,
+            )
+            if not validation.ok:
+                raise ValueError("; ".join(validation.errors))
+            view = await control.view()
+            packages = [
+                {
+                    "source_dir": package.source_dir,
+                    "definition_files": list(package.definition_files),
+                    "manifest_file": package.manifest_file,
+                }
+                for package in view.effective.external_integrations
+            ]
+            if any(package["source_dir"] == validation.source_dir for package in packages):
+                raise ValueError(
+                    f"External integration package already exists: {validation.source_dir}"
+                )
+
+            existing_slugs: set[str] = set()
+            existing_module_ids: set[str] = set()
+            existing_components: set[str] = set()
+            for package in view.effective.external_integrations:
+                current = await control.validate_external_integration(
+                    package.source_dir,
+                    list(package.definition_files),
+                    package.manifest_file,
+                )
+                existing_slugs.update(definition.slug for definition in current.definitions)
+                if current.module_id:
+                    existing_module_ids.add(current.module_id)
+                existing_components.update(component.name for component in current.components)
+            duplicate_slugs = sorted(
+                definition.slug
+                for definition in validation.definitions
+                if definition.slug in existing_slugs
+            )
+            if duplicate_slugs:
+                raise ValueError(
+                    "Integration slugs already supplied by another external package: "
+                    + ", ".join(duplicate_slugs)
+                )
+            if validation.module_id and validation.module_id in existing_module_ids:
+                raise ValueError(
+                    f"External module id already supplied by another package: "
+                    f"{validation.module_id}"
+                )
+            duplicate_components = sorted(
+                f"{component.kind}:{component.name}"
+                for component in validation.components
+                if component.name in existing_components
+            )
+            if duplicate_components:
+                raise ValueError(
+                    "External component names already supplied by another package: "
+                    + ", ".join(duplicate_components)
+                )
+
+            packages.append(
+                {
+                    "source_dir": validation.source_dir,
+                    "definition_files": list(validation.definition_files),
+                    "manifest_file": validation.manifest_file,
+                }
+            )
+            await control.stage({"external_integrations": packages})
+            applied = await control.apply()
+            package = _external_validation_response(validation, package_id=str(len(packages) - 1))
+            return ExternalIntegrationMutationResponse(
+                **package.model_dump(),
+                apply_state=applied.state,
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            raise _stack_error(exc) from exc
+
+    @router.delete(
+        "/settings/external-integrations/{package_id}",
+        response_model=ApplyStatusResponse,
+        response_model_by_alias=True,
+    )
+    async def remove_external_integration(
+        package_id: int,
+        principal: Principal = Depends(extract_principal),
+    ) -> ApplyStatusResponse:
+        """Unregister a package without deleting its machine-local files."""
+        _require_admin(principal)
+        control = _require_stack()
+        try:
+            view = await control.view()
+            packages = [
+                {
+                    "source_dir": package.source_dir,
+                    "definition_files": list(package.definition_files),
+                    "manifest_file": package.manifest_file,
+                }
+                for package in view.effective.external_integrations
+            ]
+            if package_id < 0 or package_id >= len(packages):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="External integration package was not found.",
+                )
+            packages.pop(package_id)
+            await control.stage({"external_integrations": packages})
+            return _apply_status_response(await control.apply())
+        except HTTPException:
+            raise
+        except (ValueError, FileNotFoundError) as exc:
+            raise _stack_error(exc) from exc
 
     @router.put("/stack", response_model=StackViewResponse, response_model_by_alias=True)
     async def stage_stack(

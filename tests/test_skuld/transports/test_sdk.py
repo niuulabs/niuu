@@ -68,6 +68,11 @@ class _FakeClient:
         self.set_model = AsyncMock()
         self.set_permission_mode = AsyncMock()
         self.rewind_files = AsyncMock()
+        self.get_mcp_status = AsyncMock(
+            return_value={
+                "mcpServers": [{"name": "ravn-tools", "status": "connected"}],
+            }
+        )
 
     async def __aenter__(self) -> _FakeClient:
         self.entered = True
@@ -84,14 +89,22 @@ class _FakeClient:
 
 
 class _ClientFactory:
-    def __init__(self, responses: list[list[object]]) -> None:
+    def __init__(
+        self,
+        responses: list[list[object]],
+        *,
+        mcp_status: dict | None = None,
+    ) -> None:
         self._responses = responses
+        self._mcp_status = mcp_status
         self.client: _FakeClient | None = None
         self.options = None
 
     def __call__(self, options) -> _FakeClient:
         self.options = options
         self.client = _FakeClient(self._responses)
+        if self._mcp_status is not None:
+            self.client.get_mcp_status.return_value = self._mcp_status
         return self.client
 
 
@@ -202,6 +215,126 @@ async def test_start_and_stop_manage_sdk_context(monkeypatch, tmp_path) -> None:
 
     assert factory.client.exited is True
     assert transport.is_alive is False
+
+
+@pytest.mark.asyncio
+async def test_read_only_mcp_boundary_disables_native_tools_and_project_mcp(
+    monkeypatch, tmp_path
+) -> None:
+    factory = _ClientFactory([[]])
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+
+    transport = SDKTransport(
+        workspace_dir=str(tmp_path),
+        skip_permissions=True,
+        agent_teams=True,
+        mcp_servers=[{"name": "ravn-tools", "command": "ravn-tool-mcp"}],
+        read_only_mcp_only=True,
+        allowed_mcp_tools=["mcp__ravn-tools__*"],
+    )
+
+    await transport.start()
+
+    assert factory.options.tools == []
+    assert factory.options.strict_mcp_config is True
+    assert factory.options.allowed_tools == ["mcp__ravn-tools__*"]
+    assert factory.options.permission_mode == "dontAsk"
+    assert "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS" not in factory.options.env
+    assert factory.options.mcp_servers == {
+        "ravn-tools": {"command": "ravn-tool-mcp"},
+    }
+
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_read_only_mcp_boundary_fails_when_required_server_did_not_start(
+    monkeypatch, tmp_path
+) -> None:
+    factory = _ClientFactory(
+        [[]],
+        mcp_status={
+            "mcpServers": [{"name": "ravn-tools", "status": "failed", "error": "process exited"}]
+        },
+    )
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+    transport = SDKTransport(
+        workspace_dir=str(tmp_path),
+        mcp_servers=[{"name": "ravn-tools", "command": "ravn-tool-mcp"}],
+        read_only_mcp_only=True,
+        allowed_mcp_tools=["mcp__ravn-tools__*"],
+    )
+    with pytest.raises(RuntimeError, match=r"ravn-tools: failed \(process exited\)"):
+        await transport.start()
+
+    assert transport.is_alive is False
+    assert factory.client is not None
+    assert factory.client.exited is True
+
+
+@pytest.mark.asyncio
+async def test_read_only_mcp_boundary_waits_for_pending_required_server(
+    monkeypatch, tmp_path
+) -> None:
+    factory = _ClientFactory([[]])
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+    transport = SDKTransport(
+        workspace_dir=str(tmp_path),
+        mcp_servers=[{"name": "ravn-tools", "command": "ravn-tool-mcp"}],
+        read_only_mcp_only=True,
+        allowed_mcp_tools=["mcp__ravn-tools__*"],
+    )
+    original_call = factory.__call__
+
+    def create_client(options):
+        client = original_call(options)
+        client.get_mcp_status.side_effect = [
+            {"mcpServers": [{"name": "ravn-tools", "status": "pending"}]},
+            {"mcpServers": [{"name": "ravn-tools", "status": "connected"}]},
+        ]
+        return client
+
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", create_client)
+
+    await transport.start()
+
+    assert transport.is_alive is True
+    assert factory.client is not None
+    assert factory.client.get_mcp_status.await_count == 2
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hung_status_call", [False, True])
+async def test_read_only_mcp_startup_deadline_stops_pending_or_hung_server(
+    monkeypatch, tmp_path, hung_status_call
+) -> None:
+    factory = _ClientFactory([[]])
+
+    async def status():
+        if hung_status_call:
+            await asyncio.Future()
+        return {"mcpServers": [{"name": "ravn-tools", "status": "pending"}]}
+
+    def create_client(options):
+        client = factory(options)
+        client.get_mcp_status.side_effect = status
+        return client
+
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", create_client)
+    transport = SDKTransport(
+        workspace_dir=str(tmp_path),
+        mcp_servers=[{"name": "ravn-tools", "command": "ravn-tool-mcp"}],
+        read_only_mcp_only=True,
+        allowed_mcp_tools=["mcp__ravn-tools__*"],
+        mcp_startup_timeout_seconds=0.01,
+        mcp_status_poll_interval_seconds=0.001,
+    )
+    with pytest.raises(RuntimeError, match="Timed out waiting for required MCP"):
+        await transport.start()
+    assert factory.client is not None
+    assert factory.client.exited is True
+    factory.client.query.assert_not_called()
 
 
 @pytest.mark.asyncio

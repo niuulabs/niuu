@@ -1,5 +1,7 @@
 """Tests for WorkloadIdentityContributor."""
 
+import pytest
+
 from volundr.adapters.outbound.contributors.workload_identity import WorkloadIdentityContributor
 from volundr.domain.models import GitSource, Session
 from volundr.domain.ports import SessionContext
@@ -50,12 +52,15 @@ async def test_workload_identity_contributor_projects_audience_scoped_token():
     } in contribution.pod_spec.env
 
 
-async def test_workload_identity_contributor_skips_openshell_backend():
+@pytest.mark.parametrize("runtime_backend", ["openshell", "vm"])
+async def test_workload_identity_contributor_skips_non_kubernetes_identity_backend(
+    runtime_backend,
+):
     contributor = WorkloadIdentityContributor()
 
     contribution = await contributor.contribute(
         Session(name="session", model="gpt-5.5", source=GitSource()),
-        SessionContext(runtime_backend="openshell"),
+        SessionContext(runtime_backend=runtime_backend),
     )
 
     assert contribution.values == {}

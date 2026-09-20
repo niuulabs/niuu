@@ -1,0 +1,198 @@
+schema_version: 1
+id: 1bfc01b1-4d01-5d20-86e1-2956dff11464
+name: Research Campaign
+description: Flexible deep-research workflow that frames a question, explores the evidence deeply, challenges
+  the thesis, and distills durable memory into Mimir.
+version: 1.0.0
+persona_dependencies:
+  research-curator:
+    id: research-curator
+    revision: content-5a0a1f4c3921ad43
+    digest: sha256:5a0a1f4c3921ad439ffbd56df012d59cca97c300e89424eadea256771a163d59
+    path: personas/research-curator.yaml
+  research-explorer:
+    id: research-explorer
+    revision: content-3473f94adab9ff8a
+    digest: sha256:3473f94adab9ff8a9cbac94f3f89e6c8b1801efd19cd04b88b081f1a150d32cb
+    path: personas/research-explorer.yaml
+  research-framer:
+    id: research-framer
+    revision: content-c0e2d1858e4f92fa
+    digest: sha256:c0e2d1858e4f92fa8abdbbe60c9d9f923a64b63e2a8c64dafa4d381481ae739d
+    path: personas/research-framer.yaml
+  research-publisher:
+    id: research-publisher
+    revision: content-e03c110ea6be6a1e
+    digest: sha256:e03c110ea6be6a1e36db8b0964ad517e993f5e11c0b464ef333fcd93068d3244
+    path: personas/research-publisher.yaml
+  research-skeptic:
+    id: research-skeptic
+    revision: content-f6b9ff45d63175ca
+    digest: sha256:f6b9ff45d63175cac24b05fc5f20499bf601a14b84cb450652de2b08681c7cce
+    path: personas/research-skeptic.yaml
+  research-synthesist:
+    id: research-synthesist
+    revision: content-528cb48375d9e90d
+    digest: sha256:528cb48375d9e90d963fd5ed1b13b118ef6ecb081b77bc2c1c57e185d15ffa9a
+    path: personas/research-synthesist.yaml
+graph:
+  tags:
+  - research
+  - campaign
+  nodes:
+  - id: research-request
+    kind: trigger
+    label: Start research campaign
+    source: user research
+    dispatchEvent: research.requested
+    position:
+      x: 96
+      y: 280
+  - id: research-memory
+    kind: resource
+    label: Research Memory
+    resourceType: mimir
+    bindingMode: registry
+    registryEntryId: mimir-yggdrasil
+    url: https://mimir.yggdrasil.niuu.world/api/v1
+    authRef: integration:volundr
+    role: shared
+    categories:
+    - research
+    - memory
+    - sources
+    position:
+      x: 320
+      y: 520
+  - id: research-frame
+    kind: stage
+    label: Frame the inquiry
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: research-framer
+      budget: 16
+      model: gpt-5.5
+      consumesEventTypes:
+      - research.requested
+    position:
+      x: 320
+      y: 280
+  - id: research-explore
+    kind: stage
+    label: Explore the evidence
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: research-explorer
+      budget: 16
+      model: gpt-5.5
+      consumesEventTypes:
+      - research.framed
+    position:
+      x: 608
+      y: 280
+  - id: research-challenge
+    kind: stage
+    label: Challenge the thesis
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: research-skeptic
+      budget: 14
+      model: gpt-5.5
+      consumesEventTypes:
+      - research.explored
+    position:
+      x: 928
+      y: 280
+  - id: research-synthesis
+    kind: stage
+    label: Synthesize the research
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: research-synthesist
+      budget: 16
+      model: gpt-5.5
+      consumesEventTypes:
+      - research.challenged
+    position:
+      x: 1216
+      y: 280
+  - id: research-curation
+    kind: stage
+    label: Curate learnings and follow-ups
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: research-curator
+      budget: 12
+      model: gpt-5.5
+      consumesEventTypes:
+      - research.synthesized
+    position:
+      x: 1504
+      y: 280
+  - id: research-publish
+    kind: stage
+    label: Publish to Mimir
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: research-publisher
+      budget: 10
+      model: gpt-5.5
+      consumesEventTypes:
+      - research.curated
+    position:
+      x: 1792
+      y: 280
+  - id: research-complete
+    kind: end
+    label: Research complete
+    joinMode: all
+    completionEvent: research.completed
+    position:
+      x: 2080
+      y: 280
+  edges:
+  - id: edge-research-request-to-frame
+    source: research-request
+    target: research-frame
+    label: research.requested -> research.requested
+  - id: edge-frame-to-explore
+    source: research-frame
+    target: research-explore
+    label: research.framed -> research.framed
+  - id: edge-explore-to-challenge
+    source: research-explore
+    target: research-challenge
+    label: research.explored -> research.explored
+  - id: edge-challenge-to-synthesis
+    source: research-challenge
+    target: research-synthesis
+    label: research.challenged -> research.challenged
+  - id: edge-synthesis-to-curation
+    source: research-synthesis
+    target: research-curation
+    label: research.synthesized -> research.synthesized
+  - id: edge-curation-to-publish
+    source: research-curation
+    target: research-publish
+    label: research.curated -> research.curated
+  - id: edge-publish-to-end
+    source: research-publish
+    target: research-complete
+    label: research.completed -> research.completed
+  resourceBindings:
+  - id: binding-research-memory
+    resourceNodeId: research-memory
+    targetType: workflow
+    targetId: research-campaign
+    access: read_write
+    writePrefixes:
+    - research/
+    - learnings/
+    - followups/
+    readPriority: 1

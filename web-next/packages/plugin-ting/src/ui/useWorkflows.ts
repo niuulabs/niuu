@@ -7,7 +7,15 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import { randomId } from '@niuulabs/ui';
-import type { IWorkflowService, WorkflowLaunchRequest, WorkflowLaunchResult } from '../ports';
+import type {
+  IWorkflowService,
+  WorkflowExport,
+  WorkflowExportFormat,
+  WorkflowImportPreview,
+  WorkflowImportSource,
+  WorkflowLaunchRequest,
+  WorkflowLaunchResult,
+} from '../ports';
 import type { Workflow } from '../domain/workflow';
 
 export function useWorkflows() {
@@ -65,6 +73,32 @@ export function useDeleteWorkflow() {
   return useMutation<void, Error, string>({
     mutationFn: (id: string) => svc.deleteWorkflow(id),
     onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['ting', 'workflows'] });
+    },
+  });
+}
+
+export function useExportWorkflow() {
+  const svc = useService<IWorkflowService>('ting.workflows');
+  return useMutation<WorkflowExport, Error, { id: string; format: WorkflowExportFormat }>({
+    mutationFn: ({ id, format }) => svc.exportWorkflow(id, format),
+  });
+}
+
+export function usePreviewWorkflowImport() {
+  const svc = useService<IWorkflowService>('ting.workflows');
+  return useMutation<WorkflowImportPreview, Error, WorkflowImportSource>({
+    mutationFn: (request) => svc.previewWorkflowImport(request),
+  });
+}
+
+export function useApplyWorkflowImport() {
+  const svc = useService<IWorkflowService>('ting.workflows');
+  const queryClient = useQueryClient();
+  return useMutation<Workflow, Error, WorkflowImportSource>({
+    mutationFn: (request) => svc.applyWorkflowImport(request),
+    onSuccess: (workflow) => {
+      queryClient.setQueryData(['ting', 'workflows', workflow.id], workflow);
       void queryClient.invalidateQueries({ queryKey: ['ting', 'workflows'] });
     },
   });

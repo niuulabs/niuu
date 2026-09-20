@@ -478,12 +478,12 @@ def flock_init(
         help="Join every node to this room (see 'ravn room ls').",
     ),
     rooms_dir: str = typer.Option("", "--rooms-dir", help="Override the rooms state directory."),
-    autonomous: bool = typer.Option(
-        False,
+    autonomous: bool | None = typer.Option(
+        None,
         "--autonomous/--responsive",
         help=(
-            "With --room, keep the self-driving triggers on. Responsive (the "
-            "default) makes room nodes answer what is addressed to them."
+            "Keep or disable self-driving triggers. By default, standalone flocks "
+            "are autonomous and room flocks are responsive."
         ),
     ),
 ) -> None:
@@ -576,7 +576,7 @@ def flock_init(
             mesh_transport=mesh_transport,
             http_gateway_enabled=http_gateway,
             room_broker_url=room_broker_url,
-            autonomous=autonomous or not room_broker_url,
+            autonomous=(not room_broker_url if autonomous is None else autonomous),
         )
 
     if discovery == "static":

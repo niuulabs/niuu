@@ -138,6 +138,41 @@ class TestSubscribePort:
         handler.assert_not_called()
         await sub.unsubscribe()
 
+    async def test_unsubscribe_kills_and_drains_running_cli_command(self):
+        processes: list[asyncio.subprocess.Process] = []
+        communication_started = asyncio.Event()
+        create_subprocess_exec = asyncio.create_subprocess_exec
+
+        async def capture_process(*args, **kwargs):
+            process = await create_subprocess_exec(*args, **kwargs)
+            processes.append(process)
+            communicate = process.communicate
+
+            async def tracked_communicate(input=None):
+                communication_started.set()
+                return await communicate(input)
+
+            process.communicate = tracked_communicate  # type: ignore[method-assign]
+            return process
+
+        t = _make_transport(
+            command=sys.executable,
+            args=["-c", "import time; time.sleep(10)"],
+        )
+        with patch("asyncio.create_subprocess_exec", side_effect=capture_process):
+            sub = await t.subscribe(["ravn.*"], _NOOP)
+            try:
+                await t.handle(make_event())
+                await asyncio.wait_for(communication_started.wait(), timeout=1)
+                assert processes
+            finally:
+                await sub.unsubscribe()
+
+        process = processes[0]
+        assert process.returncode is not None
+        assert process.stdout is not None and process.stdout.at_eof()
+        assert process.stderr is not None and process.stderr.at_eof()
+
     async def test_unsubscribe_removes_subscription(self):
         t = _make_transport()
         sub = await t.subscribe(["ravn.*"], _NOOP)

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -119,9 +119,9 @@ class TestDriveLoopRpcHandler:
 
 
 @pytest.mark.asyncio
-async def test_mesh_outcome_subscription_enqueues_work():
+async def test_mesh_outcome_subscription_enqueues_work(tmp_path):
     """The production mesh callback accepts an outcome and queues its task."""
-    dl = _make_drive_loop()
+    dl = _make_drive_loop(journal_path=str(tmp_path / "mesh-outcome-queue.json"))
     settings = Settings()
     settings.mesh.enabled = True
     settings.discovery.enabled = False
@@ -151,13 +151,524 @@ async def test_mesh_outcome_subscription_enqueues_work():
     )
     await handler(source_event)
 
-    assert dl.queued_task_ids() == ["event_coder_session-"]
+    assert len(dl.queued_task_ids()) == 1
+    assert dl.queued_task_ids()[0].startswith("event_coder_")
     queued = list(dl._queue._queue)  # type: ignore[attr-defined]
     assert queued[0][2].workflow_parent_event_id == source_event.event_id
 
 
+def _review_cycle_settings() -> Settings:
+    return Settings.model_validate(
+        {
+            "mesh": {"enabled": True},
+            "discovery": {"enabled": False},
+            "workflow": {
+                "graph": {
+                    "nodes": [
+                        {
+                            "id": "author",
+                            "kind": "stage",
+                            "joinMode": "any",
+                            "reviewVerdictPolicy": {
+                                "eventType": "review.completed",
+                                "passOutcomes": ["plan.approved"],
+                                "failOutcomes": ["plan.revised"],
+                                "bindingFields": ["plan_revision"],
+                            },
+                            "stageMembers": [
+                                {
+                                    "personaId": "analyst",
+                                    "consumesEventTypes": [
+                                        "delivery.requested",
+                                        "review.completed",
+                                    ],
+                                }
+                            ],
+                        },
+                        {
+                            "id": "reviews",
+                            "kind": "stage",
+                            "joinMode": "all",
+                            "stageMembers": [
+                                {"personaId": "reviewer-a"},
+                                {"personaId": "reviewer-b"},
+                            ],
+                        },
+                    ],
+                    "edges": [
+                        {
+                            "source": "author",
+                            "target": "reviews",
+                            "label": "plan.revised -> plan.revised",
+                        },
+                        {
+                            "source": "reviews",
+                            "target": "author",
+                            "label": "review.completed -> review.completed",
+                        },
+                    ],
+                }
+            },
+        }
+    )
+
+
+def _workflow_outcome(
+    *,
+    event_id: str,
+    event_type: str,
+    persona: str,
+    session_id: str,
+    root_id: str,
+    timestamp: datetime,
+    node_id: str = "",
+    parent_event_id: str = "",
+    outcome: dict | None = None,
+    success: object = True,
+    valid: object = True,
+) -> RavnEvent:
+    payload = {
+        "event_type": event_type,
+        "persona": persona,
+        "outcome": outcome or {},
+        "success": success,
+        "valid": valid,
+    }
+    if node_id:
+        payload["workflow_node_id"] = node_id
+    if parent_event_id:
+        payload["workflow_parent_event_id"] = parent_event_id
+    return RavnEvent(
+        type=RavnEventType.OUTCOME,
+        source=f"flock-{persona}",
+        payload=payload,
+        timestamp=timestamp,
+        urgency=0.5,
+        correlation_id=f"task-{event_id}",
+        session_id=session_id,
+        root_correlation_id=root_id,
+        event_id=event_id,
+    )
+
+
 @pytest.mark.asyncio
-async def test_mesh_outcome_work_is_ambient_so_the_room_can_see_it():
+async def test_review_cycle_tracking_preserves_fresh_graph_kickoff(tmp_path) -> None:
+    settings = _review_cycle_settings()
+    dl = _make_drive_loop(journal_path=str(tmp_path / "kickoff-queue.json"))
+    mesh = MagicMock()
+    persona = PersonaConfig(
+        name="analyst",
+        consumes=PersonaConsumes(event_types=["delivery.requested", "review.completed"]),
+    )
+
+    from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
+
+    with patch("ravn.cli.commands._build_mesh", return_value=mesh):
+        _wire_cascade(dl, settings, persona)
+    handlers = dict(mesh._pending_outcome_subscriptions)
+    kickoff = _workflow_outcome(
+        event_id="fresh-delivery-request",
+        event_type="delivery.requested",
+        persona="skuld",
+        session_id="fresh-session",
+        root_id="fresh-root",
+        timestamp=datetime.now(UTC),
+    )
+
+    await handlers["delivery.requested"](kickoff)
+
+    queued = list(dl._queue._queue)  # type: ignore[attr-defined]
+    assert len(queued) == 1
+    task = queued[0][2]
+    assert task.workflow_node_id == "author"
+    assert task.workflow_parent_event_id == kickoff.event_id
+    assert task.workflow_review_cycle_id == ""
+
+
+@pytest.mark.asyncio
+async def test_review_cycle_survives_restart_and_rejects_superseded_reviews(tmp_path):
+    """A delayed old review set cannot claim or suppress the fresh cycle."""
+    journal = str(tmp_path / "analyst-queue.json")
+    settings = _review_cycle_settings()
+    persona = PersonaConfig(
+        name="analyst",
+        consumes=PersonaConsumes(event_types=["delivery.requested", "review.completed"]),
+    )
+    mesh = MagicMock()
+    first = _make_drive_loop(journal_path=journal)
+
+    from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
+
+    with patch("ravn.cli.commands._build_mesh", return_value=mesh):
+        _wire_cascade(first, settings, persona)
+    handlers = dict(mesh._pending_outcome_subscriptions)
+    started = datetime.now(UTC)
+    old_source = _workflow_outcome(
+        event_id="plan-old-event",
+        event_type="plan.revised",
+        persona="analyst",
+        session_id="stable-session",
+        root_id="old-root",
+        timestamp=started,
+        node_id="author",
+        outcome={"plan_revision": "plan-old", "plan": "obsolete implementation plan"},
+    )
+    await handlers["plan.revised"](old_source)
+    await handlers["review.completed"](
+        _workflow_outcome(
+            event_id="old-review-a",
+            event_type="review.completed",
+            persona="reviewer-a",
+            session_id="stable-session",
+            root_id="old-root",
+            timestamp=started + timedelta(seconds=1),
+            parent_event_id=old_source.event_id,
+            outcome={"verdict": "approved", "plan_revision": "plan-old"},
+        )
+    )
+    assert first.fan_in.pending_count == 1
+    first._persist_queue()
+
+    # Restart restores both the authoritative old cycle and its incomplete
+    # fan-in.  A fresh parent pass can use a different root correlation while
+    # the stable session namespace still supersedes the old artifact.
+    restarted_mesh = MagicMock()
+    restarted = _make_drive_loop(journal_path=journal)
+    with patch("ravn.cli.commands._build_mesh", return_value=restarted_mesh):
+        _wire_cascade(restarted, settings, persona)
+    restarted._load_journal()
+    restarted_handlers = dict(restarted_mesh._pending_outcome_subscriptions)
+    new_source = _workflow_outcome(
+        event_id="plan-new-event",
+        event_type="plan.revised",
+        persona="analyst",
+        session_id="stable-session",
+        root_id="fresh-root",
+        timestamp=started + timedelta(seconds=10),
+        node_id="author",
+        outcome={
+            "plan_revision": "plan-new",
+            "plan": "exact current implementation plan",
+            "acceptance_tests": ["pytest tests/current"],
+        },
+    )
+
+    # The producer records its own event before publish completion; receiving
+    # the identical mesh echo must be idempotent.
+    assert restarted.observe_workflow_cycle(
+        scope_id="stable-session",
+        node_id="author",
+        event_type="plan.revised",
+        event_id=new_source.event_id,
+        outcome={
+            "plan_revision": "plan-new",
+            "plan": "exact current implementation plan",
+            "acceptance_tests": ["pytest tests/current"],
+        },
+        timestamp=new_source.timestamp,
+    )
+    await restarted_handlers["plan.revised"](new_source)
+
+    # Topic and claimed node are not sufficient authority.  A different graph
+    # persona cannot supersede the analyst's current artifact.
+    await restarted_handlers["plan.revised"](
+        _workflow_outcome(
+            event_id="spoofed-newer-plan-event",
+            event_type="plan.revised",
+            persona="reviewer-a",
+            session_id="stable-session",
+            root_id="fresh-root",
+            timestamp=started + timedelta(seconds=20),
+            node_id="author",
+            outcome={"plan_revision": "spoofed-plan"},
+        )
+    )
+    await restarted_handlers["plan.revised"](
+        _workflow_outcome(
+            event_id="invalid-newer-plan-event",
+            event_type="plan.revised",
+            persona="analyst",
+            session_id="stable-session",
+            root_id="fresh-root",
+            timestamp=started + timedelta(seconds=21),
+            node_id="author",
+            outcome={"plan_revision": "invalid-plan"},
+            valid=False,
+        )
+    )
+
+    # The missing old reviewer arrives after supersession and cannot complete
+    # the restored old join.
+    await restarted_handlers["review.completed"](
+        _workflow_outcome(
+            event_id="old-review-b",
+            event_type="review.completed",
+            persona="reviewer-b",
+            session_id="stable-session",
+            root_id="old-root",
+            timestamp=started + timedelta(seconds=11),
+            parent_event_id=old_source.event_id,
+            outcome={"verdict": "approved", "plan_revision": "plan-old"},
+        )
+    )
+    assert restarted.queued_task_ids() == []
+
+    # Matching the new causal event is insufficient if a reviewer reports
+    # bindings for a different artifact revision.
+    await restarted_handlers["review.completed"](
+        _workflow_outcome(
+            event_id="new-review-wrong-binding",
+            event_type="review.completed",
+            persona="reviewer-a",
+            session_id="stable-session",
+            root_id="fresh-root",
+            timestamp=started + timedelta(seconds=11, milliseconds=500),
+            parent_event_id=new_source.event_id,
+            outcome={"verdict": "approved", "plan_revision": "plan-old"},
+        )
+    )
+    assert restarted.fan_in.pending_count == 1  # restored old slot only
+
+    await restarted_handlers["review.completed"](
+        _workflow_outcome(
+            event_id="new-review-invalid",
+            event_type="review.completed",
+            persona="reviewer-a",
+            session_id="stable-session",
+            root_id="fresh-root",
+            timestamp=started + timedelta(seconds=11, milliseconds=750),
+            parent_event_id=new_source.event_id,
+            outcome={"verdict": "approved", "plan_revision": "plan-new"},
+            success=False,
+        )
+    )
+    assert restarted.fan_in.pending_count == 1  # invalid review was not accumulated
+
+    for index, reviewer in enumerate(("reviewer-a", "reviewer-b"), start=12):
+        review_outcome = {"verdict": "approved", "plan_revision": "plan-new"}
+        if reviewer == "reviewer-a":
+            review_outcome["plan"] = "reviewer-substituted plan"
+        await restarted_handlers["review.completed"](
+            _workflow_outcome(
+                event_id=f"new-review-{reviewer}",
+                event_type="review.completed",
+                persona=reviewer,
+                session_id="stable-session",
+                root_id="fresh-root",
+                timestamp=started + timedelta(seconds=index),
+                parent_event_id=new_source.event_id,
+                outcome=review_outcome,
+            )
+        )
+
+    assert len(restarted.queued_task_ids()) == 1
+    queued = list(restarted._queue._queue)  # type: ignore[attr-defined]
+    task = queued[0][2]
+    assert task.workflow_parent_event_id == new_source.event_id
+    assert task.workflow_review_cycle_id == new_source.event_id
+    assert task.workflow_review_source_node_id == "author"
+    assert task.workflow_allowed_outcome_topics == ["plan.approved"]
+    assert "plan-old" not in task.initiative_context
+    authoritative_plan = task.initiative_context.split("Authoritative reviewed artifact", 1)[1]
+    assert "exact current implementation plan" in authoritative_plan
+    assert "pytest tests/current" in authoritative_plan
+    assert "reviewer-substituted plan" not in authoritative_plan
+
+    # A complete replay of the same valid cycle resolves to the same stable
+    # task identity and is deduplicated while its durable task remains queued.
+    for index, reviewer in enumerate(("reviewer-a", "reviewer-b"), start=20):
+        await restarted_handlers["review.completed"](
+            _workflow_outcome(
+                event_id=f"replay-review-{reviewer}",
+                event_type="review.completed",
+                persona=reviewer,
+                session_id="stable-session",
+                root_id="fresh-root",
+                timestamp=started + timedelta(seconds=index),
+                parent_event_id=new_source.event_id,
+                outcome={"verdict": "approved", "plan_revision": "plan-new"},
+            )
+        )
+    assert restarted.queued_task_ids() == [task.task_id]
+
+    # Both the current artifact and the joined task's causal identity survive
+    # another restart, so replay remains valid without becoming optimistic.
+    restarted._persist_queue()
+    replay_mesh = MagicMock()
+    replayed = _make_drive_loop(journal_path=journal)
+    with patch("ravn.cli.commands._build_mesh", return_value=replay_mesh):
+        _wire_cascade(replayed, settings, persona)
+    replayed._load_journal()
+    replayed_task = list(replayed._queue._queue)[0][2]  # type: ignore[attr-defined]
+    assert replayed_task.task_id == task.task_id
+    assert replayed_task.workflow_review_cycle_id == new_source.event_id
+    assert replayed.task_review_cycle_is_current(replayed_task) is True
+
+    # Simulate successful completion removing the durable task, then restart.
+    # Exact transport replays remain consumed and cannot rerun the model.
+    replayed._queue.get_nowait()  # type: ignore[attr-defined]
+    replayed._persist_queue()
+    completed_mesh = MagicMock()
+    completed = _make_drive_loop(journal_path=journal)
+    with patch("ravn.cli.commands._build_mesh", return_value=completed_mesh):
+        _wire_cascade(completed, settings, persona)
+    completed._load_journal()
+    completed_handlers = dict(completed_mesh._pending_outcome_subscriptions)
+    for index, reviewer in enumerate(("reviewer-a", "reviewer-b"), start=12):
+        await completed_handlers["review.completed"](
+            _workflow_outcome(
+                event_id=f"new-review-{reviewer}",
+                event_type="review.completed",
+                persona=reviewer,
+                session_id="stable-session",
+                root_id="fresh-root",
+                timestamp=started + timedelta(seconds=index),
+                parent_event_id=new_source.event_id,
+                outcome={"verdict": "approved", "plan_revision": "plan-new"},
+            )
+        )
+    assert completed.queued_task_ids() == []
+    assert completed.fan_in.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_child_candidate_review_cycle_binds_predecessor_stage(tmp_path) -> None:
+    """A review policy may resolve an artifact emitted by a different stage."""
+    settings = Settings.model_validate(
+        {
+            "mesh": {"enabled": True},
+            "discovery": {"enabled": False},
+            "workflow": {
+                "graph": {
+                    "nodes": [
+                        {
+                            "id": "workstream-verify",
+                            "kind": "stage",
+                            "joinMode": "any",
+                            "stageMembers": [
+                                {
+                                    "personaId": "coordinator",
+                                    "consumesEventTypes": ["candidate.produced"],
+                                }
+                            ],
+                        },
+                        {
+                            "id": "workstream-reviews",
+                            "kind": "stage",
+                            "joinMode": "all",
+                            "stageMembers": [
+                                {"personaId": "code-reviewer"},
+                                {"personaId": "security-reviewer"},
+                            ],
+                        },
+                        {
+                            "id": "workstream-acceptance",
+                            "kind": "stage",
+                            "joinMode": "all",
+                            "reviewVerdictPolicy": {
+                                "eventType": "review.completed",
+                                "passOutcomes": ["workstream.completed"],
+                                "failOutcomes": ["workstream.repair_requested"],
+                                "bindingFields": [
+                                    "attempt_id",
+                                    "candidate_sha",
+                                    "candidate_tree",
+                                ],
+                            },
+                            "stageMembers": [
+                                {
+                                    "personaId": "coordinator",
+                                    "consumesEventTypes": ["review.completed"],
+                                }
+                            ],
+                        },
+                    ],
+                    "edges": [
+                        {
+                            "source": "workstream-verify",
+                            "target": "workstream-reviews",
+                            "label": "candidate.verified -> candidate.verified",
+                        },
+                        {
+                            "source": "workstream-reviews",
+                            "target": "workstream-acceptance",
+                            "label": "review.completed -> review.completed",
+                        },
+                    ],
+                }
+            },
+        }
+    )
+    dl = _make_drive_loop(journal_path=str(tmp_path / "child-queue.json"))
+    mesh = MagicMock()
+    persona = PersonaConfig(
+        name="coordinator",
+        consumes=PersonaConsumes(event_types=["candidate.produced", "review.completed"]),
+    )
+
+    from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
+
+    with patch("ravn.cli.commands._build_mesh", return_value=mesh):
+        _wire_cascade(dl, settings, persona)
+    handlers = dict(mesh._pending_outcome_subscriptions)
+    now = datetime.now(UTC)
+    bindings = {
+        "attempt_id": "attempt-1",
+        "candidate_sha": "a" * 40,
+        "candidate_tree": "b" * 40,
+    }
+    verified_candidate = {
+        **bindings,
+        "verification_receipts": [
+            {"receipt_id": "signed-verification-1", "signature": "trusted-signature"}
+        ],
+        "candidate_inspection": {"changed_paths": ["src/example.py"]},
+    }
+    source = _workflow_outcome(
+        event_id="verified-candidate-event",
+        event_type="candidate.verified",
+        persona="coordinator",
+        session_id="",
+        root_id="child-root",
+        timestamp=now,
+        node_id="workstream-verify",
+        outcome=verified_candidate,
+    )
+    await handlers["candidate.verified"](source)
+    for index, reviewer in enumerate(("code-reviewer", "security-reviewer"), start=1):
+        review_outcome = {"verdict": "approved", **bindings}
+        if reviewer == "code-reviewer":
+            review_outcome["verification_receipts"] = [{"receipt_id": "forged"}]
+        await handlers["review.completed"](
+            _workflow_outcome(
+                event_id=f"child-review-{index}",
+                event_type="review.completed",
+                persona=reviewer,
+                session_id="",
+                root_id="child-root",
+                timestamp=now + timedelta(seconds=index),
+                parent_event_id=source.event_id,
+                outcome=review_outcome,
+            )
+        )
+
+    queued = list(dl._queue._queue)  # type: ignore[attr-defined]
+    assert len(queued) == 1
+    task = queued[0][2]
+    assert task.workflow_node_id == "workstream-acceptance"
+    assert task.workflow_review_cycle_id == source.event_id
+    assert task.workflow_review_source_node_id == "workstream-verify"
+    assert task.workflow_allowed_outcome_topics == ["workstream.completed"]
+    assert task.session_id == "child-root"
+    authoritative_candidate = task.initiative_context.split("Authoritative reviewed artifact", 1)[1]
+    assert "signed-verification-1" in authoritative_candidate
+    assert "trusted-signature" in authoritative_candidate
+    assert "src/example.py" in authoritative_candidate
+    assert '"receipt_id": "forged"' not in authoritative_candidate
+
+
+@pytest.mark.asyncio
+async def test_mesh_outcome_work_is_ambient_so_the_room_can_see_it(tmp_path):
     """A flock stage must publish its activity, or the session renders empty.
 
     Work triggered by a peer's outcome is the VISIBLE work of a flock session.
@@ -175,7 +686,7 @@ async def test_mesh_outcome_work_is_ambient_so_the_room_can_see_it():
     event-publisher path, not on this one, which is exactly why the failure was
     invisible until someone opened the session.
     """
-    dl = _make_drive_loop()
+    dl = _make_drive_loop(journal_path=str(tmp_path / "ambient-queue.json"))
     settings = Settings()
     settings.mesh.enabled = True
     settings.discovery.enabled = False
@@ -206,6 +717,118 @@ async def test_mesh_outcome_work_is_ambient_so_the_room_can_see_it():
 
     queued = list(dl._queue._queue)  # type: ignore[attr-defined]
     assert queued[0][2].output_mode == OutputMode.AMBIENT
+
+
+@pytest.mark.asyncio
+async def test_review_fan_in_preserves_consumer_persona(tmp_path):
+    """A workflow aggregation key must never become the execution persona."""
+    dl = _make_drive_loop(journal_path=str(tmp_path / "legacy-review-queue.json"))
+    settings = Settings.model_validate(
+        {
+            "mesh": {"enabled": True},
+            "discovery": {"enabled": False},
+            "workflow": {
+                "graph": {
+                    "nodes": [
+                        {
+                            "id": "plan-reviews",
+                            "kind": "stage",
+                            "joinMode": "all",
+                            "stageMembers": [
+                                {"personaId": "architecture"},
+                                {"personaId": "correctness"},
+                                {"personaId": "security"},
+                            ],
+                        },
+                        {
+                            "id": "plan-author",
+                            "kind": "stage",
+                            "joinMode": "any",
+                            "stageMembers": [
+                                {
+                                    "personaId": "analyst",
+                                    "consumesEventTypes": ["plan.review.completed"],
+                                }
+                            ],
+                            "reviewVerdictPolicy": {
+                                "eventType": "plan.review.completed",
+                                "passOutcomes": ["developer.plan.approved"],
+                                "failOutcomes": ["developer.plan.revised"],
+                                "bindingFields": ["plan_revision"],
+                            },
+                        },
+                    ],
+                    "edges": [
+                        {
+                            "source": "plan-reviews",
+                            "target": "plan-author",
+                            "label": "plan.review.completed -> plan.review.completed",
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    mesh = MagicMock()
+    persona = PersonaConfig(
+        name="analyst",
+        consumes=PersonaConsumes(event_types=["plan.review.completed"]),
+    )
+
+    from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
+
+    with patch("ravn.cli.commands._build_mesh", return_value=mesh):
+        _wire_cascade(dl, settings, persona)
+    _, handler = mesh._pending_outcome_subscriptions[0]
+
+    await handler(
+        RavnEvent(
+            type=RavnEventType.OUTCOME,
+            source="flock-architecture",
+            payload={
+                "event_type": "plan.review.completed",
+                "persona": "architecture",
+                "success": False,
+                "valid": False,
+                "workflow_parent_event_id": "plan-revision-1",
+                "outcome": {"verdict": "approved", "plan_revision": "revision-1"},
+            },
+            timestamp=datetime.now(UTC),
+            urgency=0.5,
+            correlation_id="invalid-review-architecture",
+            session_id="delivery-session",
+            root_correlation_id="delivery-root",
+        )
+    )
+    assert dl.fan_in.pending_count == 0
+
+    for reviewer in ("architecture", "correctness", "security"):
+        await handler(
+            RavnEvent(
+                type=RavnEventType.OUTCOME,
+                source=f"flock-{reviewer}",
+                payload={
+                    "event_type": "plan.review.completed",
+                    "persona": reviewer,
+                    "success": True,
+                    "valid": True,
+                    "workflow_parent_event_id": "plan-revision-1",
+                    "outcome": {"verdict": "approved", "plan_revision": "revision-1"},
+                },
+                timestamp=datetime.now(UTC),
+                urgency=0.5,
+                correlation_id=f"review-{reviewer}",
+                session_id="delivery-session",
+                root_correlation_id="delivery-root",
+            )
+        )
+
+    queued = list(dl._queue._queue)  # type: ignore[attr-defined]
+    assert len(queued) == 1
+    task = queued[0][2]
+    assert task.workflow_node_id == "plan-author"
+    assert task.persona is None
+    assert "workflow:plan-author:plan.review.completed" in task.initiative_context
 
 
 @pytest.mark.asyncio

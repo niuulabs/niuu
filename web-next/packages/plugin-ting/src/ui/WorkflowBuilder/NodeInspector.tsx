@@ -26,7 +26,14 @@ export function NodeInspector({
   onRemovePersona,
 }: NodeInspectorProps) {
   const stagePersonas = node.kind === 'stage' ? stagePersonaIds(node) : [];
-  const kindLabel = node.kind === 'stage' ? 'Stage' : node.kind === 'gate' ? 'Gate' : 'Condition';
+  const kindLabel =
+    node.kind === 'stage'
+      ? 'Stage'
+      : node.kind === 'gate'
+        ? 'Gate'
+        : node.kind === 'wait'
+          ? 'Wait'
+          : 'Condition';
 
   return (
     <Dialog

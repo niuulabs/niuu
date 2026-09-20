@@ -22,11 +22,13 @@ from volundr.adapters.outbound.contributors.ravn_flock import (
 from volundr.domain.models import (
     GitSource,
     LaunchSpec,
+    PodSpecAdditions,
     Session,
     SessionSpec,
     WorkloadPersonaOverride,
 )
 from volundr.domain.ports import SessionContext
+from volundr.ports.developer_execution_credentials import DeveloperCredentialProjection
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -161,6 +163,84 @@ class TestRavnFlockContributorName:
     def test_name(self):
         c = RavnFlockContributor()
         assert c.name == "ravn_flock"
+
+
+class TestDeveloperExecutionCredentialProjection:
+    async def test_generated_node_uses_only_projected_bearer_file(self, session) -> None:
+        class CredentialService:
+            def projection(self, session_id):
+                assert session_id == session.id
+                return DeveloperCredentialProjection(
+                    token_file="/var/run/secrets/niuu-developer-execution/token",
+                    pod_spec=PodSpecAdditions(
+                        volume_mounts=(
+                            {
+                                "name": "developer-execution-credential",
+                                "mountPath": "/var/run/secrets/niuu-developer-execution",
+                                "readOnly": True,
+                            },
+                        )
+                    ),
+                )
+
+        context = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": [{"name": "developer-coordinator"}],
+                "provenance": {
+                    "developer_execution": {
+                        "execution_id": "7705d9d8-78db-4a78-b5e7-d8557eac114c",
+                    }
+                },
+                "ravn_config": {
+                    "developer_execution": {
+                        "enabled": True,
+                        "execution_id": "7705d9d8-78db-4a78-b5e7-d8557eac114c",
+                        "auth_token": "must-never-be-rendered",
+                    },
+                    "gateway": {
+                        "platform": {
+                            "enabled": True,
+                            "base_url": "https://platform.example",
+                        }
+                    },
+                },
+            },
+        )
+        contributor = RavnFlockContributor(developer_credential_service=CredentialService())
+
+        result = await contributor.contribute(session, context)
+        config = yaml.safe_load(_extract_mounted_config(result.pod_spec, "developer-coordinator"))
+
+        assert config["developer_execution"]["auth_token_file"] == (
+            "/var/run/secrets/niuu-developer-execution/token"
+        )
+        assert "auth_token" not in config["developer_execution"]
+        coordinator = next(
+            container
+            for container in result.pod_spec.extra_containers
+            if container["name"] == "ravn-developer-coordinator"
+        )
+        assert {
+            "name": "developer-execution-credential",
+            "mountPath": "/var/run/secrets/niuu-developer-execution",
+            "readOnly": True,
+        } in coordinator["volumeMounts"]
+
+    async def test_authenticated_launch_fails_without_projection(self, session) -> None:
+        context = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": [{"name": "developer-coordinator"}],
+                "provenance": {"developer_execution": {"execution_id": "execution"}},
+                "ravn_config": {
+                    "developer_execution": {"enabled": True, "execution_id": "execution"},
+                    "gateway": {"platform": {"anonymous_dev_mode": False}},
+                },
+            },
+        )
+        with pytest.raises(RuntimeError, match="developer_execution_credentials.enabled"):
+            await RavnFlockContributor().contribute(session, context)
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +496,15 @@ class TestContributorOutput:
             workload_type="ravn_flock",
             workload_config={
                 "personas": ["coder"],
+                "workflow_result_schema": {
+                    "type": "object",
+                    "properties": {"evidence": {"type": "array", "items": {"type": "string"}}},
+                    "required": ["evidence"],
+                    "additionalProperties": False,
+                },
+                "ravn_config": {
+                    "workflow": {"result_schema": {"type": "object", "properties": {}}}
+                },
                 "provenance": {
                     "trace_context": {
                         "traceparent": ("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"),
@@ -460,6 +549,13 @@ class TestContributorOutput:
         assert '"trigger-1"' in env_names["SKULD__WORKFLOW__GRAPH"]
         assert json.loads(env_names["SKULD__WORKFLOW__TRACE_CONTEXT"]) == {
             "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+        }
+        ravn_config = yaml.safe_load(_extract_mounted_config(result.pod_spec, "coder"))
+        assert ravn_config["workflow"]["result_schema"] == {
+            "type": "object",
+            "properties": {"evidence": {"type": "array", "items": {"type": "string"}}},
+            "required": ["evidence"],
+            "additionalProperties": False,
         }
 
     async def test_multiline_initial_context_survives_as_a_single_env_line(self, session):
@@ -733,13 +829,21 @@ class TestMountedConfig:
             workload_config={
                 "personas": ["reviewer"],
                 "ravn_config": {
+                    "developer_execution": {
+                        "enabled": True,
+                        "execution_id": "execution-test",
+                        "base_url": "https://ting.example/api/v1/ting",
+                        "auth_token": "runtime-only-token",
+                    },
                     "gateway": {
                         "platform": {
                             "enabled": True,
+                            "base_url": "http://niuu:8180",
+                            "anonymous_dev_mode": True,
                             "workload_token_file": "/var/run/secrets/niuu-workload/token",
                             "workload_exchange_url": "https://platform.example/token/exchange",
                         }
-                    }
+                    },
                 },
             },
         )
@@ -750,9 +854,18 @@ class TestMountedConfig:
         assert reviewer_cfg["gateway"]["enabled"] is True
         assert reviewer_cfg["gateway"]["platform"] == {
             "enabled": True,
+            "base_url": "http://niuu:8180",
+            "anonymous_dev_mode": True,
             "workload_token_file": "/var/run/secrets/niuu-workload/token",
             "workload_exchange_url": "https://platform.example/token/exchange",
         }
+        assert reviewer_cfg["developer_execution"] == {
+            "enabled": True,
+            "execution_id": "execution-test",
+            "base_url": "https://ting.example/api/v1/ting",
+            "auth_token": "runtime-only-token",
+        }
+        assert result.values["flock"]["ravn_config"] == context.workload_config["ravn_config"]
 
     async def test_observability_config_reaches_ravn_and_skuld_with_stable_names(self, session):
         contributor = RavnFlockContributor()

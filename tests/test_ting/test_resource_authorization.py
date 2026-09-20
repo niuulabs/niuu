@@ -111,7 +111,7 @@ async def test_cannot_reparent_phase_or_run(principal):
 async def test_launch_checks_policy_before_any_runtime_call(principal, roles, tenant):
     from fastapi import HTTPException
 
-    from ting.api.workflows import launch_workflow_execution
+    from ting.api.workflows import WorkflowLaunchBody, launch_workflow_execution
 
     workflow = SimpleNamespace(
         id=uuid4(), owner_id="alice", tenant_id="acme", scope=WorkflowScope.USER
@@ -124,7 +124,7 @@ async def test_launch_checks_policy_before_any_runtime_call(principal, roles, te
         await launch_workflow_execution(
             request=request,
             workflow=workflow,
-            launch=None,
+            launch=WorkflowLaunchBody(prompt="Attempt unauthorized workflow launch"),
             volundr_factory=factory,
             principal=replace(principal, roles=roles, tenant_id=tenant),
         )

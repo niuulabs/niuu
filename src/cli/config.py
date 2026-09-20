@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -14,6 +14,7 @@ from pydantic_settings import (
 )
 
 from bifrost.config import BifrostConfig
+from volundr.compute.config import ComputeConfig
 
 DEFAULT_CONFIG_DIR = Path.home() / ".niuu"
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.yaml"
@@ -86,6 +87,13 @@ class PodManagerConfig(BaseModel):
         default="volundr.adapters.outbound.local_process.LocalProcessPodManager",
         description="Fully-qualified class path for the pod manager adapter.",
     )
+    runtime_backend: str | None = Field(
+        default=None,
+        description=(
+            "Contributor backend identity for adapters that wrap another runtime, "
+            "such as an OpenShell-backed VM pool."
+        ),
+    )
     # Mini-mode defaults (ignored by DirectK8sPodManager via **_extra)
     workspaces_dir: str = Field(
         default="~/.niuu/workspaces",
@@ -112,6 +120,7 @@ class PodManagerConfig(BaseModel):
         """
         data = self.model_dump()
         data.pop("adapter", None)
+        data.pop("runtime_backend", None)
         return data
 
 
@@ -232,6 +241,84 @@ class DockerModelServerConfig(BaseModel):
         return self
 
 
+class DockerExternalIntegrationConfig(BaseModel):
+    """A machine-local external package mounted into the Niuu container."""
+
+    source_dir: str = Field(
+        description=(
+            "Host directory containing a module manifest, integration definitions, "
+            "and importable adapter code."
+        ),
+    )
+    definition_files: list[str] = Field(
+        default_factory=list,
+        description="Definition files relative to source_dir.",
+    )
+    manifest_file: str = Field(
+        default="",
+        description="Optional versioned external-module manifest relative to source_dir.",
+    )
+
+    @field_validator("source_dir")
+    @classmethod
+    def _source_dir_is_not_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("source_dir must not be empty")
+        return value
+
+    @field_validator("definition_files")
+    @classmethod
+    def _definition_files_are_relative(cls, values: list[str]) -> list[str]:
+        for value in values:
+            path = Path(value)
+            if not value.strip() or path.is_absolute() or ".." in path.parts:
+                raise ValueError(
+                    "definition_files entries must be non-empty paths within source_dir"
+                )
+        return values
+
+    @field_validator("manifest_file")
+    @classmethod
+    def _manifest_file_is_relative(cls, value: str) -> str:
+        if not value:
+            return value
+        path = Path(value)
+        if not value.strip() or path.is_absolute() or ".." in path.parts:
+            raise ValueError("manifest_file must be a path within source_dir")
+        return value
+
+    @model_validator(mode="after")
+    def _has_package_metadata(self) -> DockerExternalIntegrationConfig:
+        if not self.definition_files and not self.manifest_file:
+            raise ValueError("an external package requires manifest_file or definition_files")
+        return self
+
+
+class DockerReadOnlyFileConfig(BaseModel):
+    """One deployment-owned host file mounted read-only into the platform."""
+
+    source_file: str = Field(description="Absolute file path on the Docker host.")
+    target_file: str = Field(description="Absolute file path inside the platform container.")
+
+    @field_validator("source_file")
+    @classmethod
+    def _source_is_absolute(cls, value: str) -> str:
+        path = Path(value.strip()).expanduser()
+        if not value.strip() or not path.is_absolute():
+            raise ValueError("source_file must be an absolute host path")
+        return str(path)
+
+    @field_validator("target_file")
+    @classmethod
+    def _target_is_safe_absolute_path(cls, value: str) -> str:
+        path = PurePosixPath(value.strip())
+        if not value.strip() or not path.is_absolute() or path == PurePosixPath("/"):
+            raise ValueError("target_file must be an absolute container file path")
+        if ".." in path.parts:
+            raise ValueError("target_file must not contain '..'")
+        return str(path)
+
+
 class DockerConfig(BaseModel):
     """Docker mode: the whole platform as containers on one Docker host."""
 
@@ -313,6 +400,19 @@ class DockerConfig(BaseModel):
             "refresh expiring user tokens; GitLab refreshes with the public client id alone."
         ),
     )
+    external_integrations: list[DockerExternalIntegrationConfig] = Field(
+        default_factory=list,
+        description=(
+            "Machine-local integration packages mounted read-only into the platform container."
+        ),
+    )
+    read_only_files: list[DockerReadOnlyFileConfig] = Field(
+        default_factory=list,
+        description=(
+            "Deployment-owned files mounted read-only into the platform container, "
+            "for example provider credentials that are consumed through a file adapter."
+        ),
+    )
     applier_image: str = Field(
         default="docker:28-cli",
         description=(
@@ -320,6 +420,13 @@ class DockerConfig(BaseModel):
             "(a sibling container, so the platform can be recreated underneath it)."
         ),
     )
+
+    @model_validator(mode="after")
+    def _mount_targets_are_unique(self) -> DockerConfig:
+        targets = [mount.target_file for mount in self.read_only_files]
+        if len(targets) != len(set(targets)):
+            raise ValueError("docker.read_only_files target_file values must be unique")
+        return self
 
 
 class ServerConfig(BaseModel):
@@ -402,6 +509,7 @@ class CLISettings(BaseSettings):
     plugins: PluginConfig = Field(default_factory=PluginConfig)
     services: ServiceConfig = Field(default_factory=ServiceConfig)
     bifrost: BifrostConfig = Field(default_factory=BifrostConfig)
+    compute: ComputeConfig | None = None
     service_overrides: dict[str, PerServiceConfig] = Field(
         default_factory=dict,
         description="Per-service enabled/port overrides keyed by service name.",
@@ -412,3 +520,21 @@ class CLISettings(BaseSettings):
         description="Active context (local, remote, etc.).",
     )
     version: str = Field(default="0.1.0")
+
+    @model_validator(mode="after")
+    def _docker_compute_uses_vm_pod_manager(self) -> CLISettings:
+        if self.mode != "docker" or self.compute is None:
+            return self
+        expected = "volundr.adapters.outbound.vm_pod_manager.VmPodManager"
+        if self.pod_manager.adapter != expected:
+            raise ValueError(f"Docker compute requires pod_manager.adapter={expected}")
+        kwargs = self.pod_manager.adapter_kwargs()
+        if not str(kwargs.get("profile") or "").strip():
+            raise ValueError("Docker compute requires pod_manager.profile")
+        if kwargs.get("pool_id") != self.compute.pool_id:
+            raise ValueError("Docker compute pool_id must match pod_manager.pool_id")
+        if kwargs.get("max_machines") != self.compute.max_machines:
+            raise ValueError("Docker compute max_machines must match pod_manager.max_machines")
+        if self.compute.runtime is None:
+            raise ValueError("Docker compute requires a runtime adapter")
+        return self

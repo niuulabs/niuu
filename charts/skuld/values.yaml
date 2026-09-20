@@ -233,6 +233,13 @@ git:
     pullPolicy: IfNotPresent
 
 # Broker configuration (Skuld application settings)
+workflow:
+  # -- Deployment-owned verifier adapter and kwargs for deterministic evidence gates.
+  # Imported workflows specify policies, never signing keys or trust configuration.
+  evidenceVerifier: null
+  # -- Artifact digest resolver adapter and kwargs (such as a mounted workspace root).
+  evidenceArtifacts: null
+
 broker:
   conversationRecentMaxTurns: 15
   conversationRecentMaxBytes: 262144

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ravn.adapters.personas.loader import PersonaConfig
+    from ravn.domain.persona_document import PortablePersonaDefinition
 
 
 class PersonaPort(ABC):
@@ -56,6 +57,30 @@ class PersonaPort(ABC):
     def list_names(self) -> list[str]:
         """Return a sorted list of all resolvable persona names."""
         raise NotImplementedError
+
+    def load_portable(
+        self,
+        persona_id: str,
+        revision: str,
+    ) -> PortablePersonaDefinition | None:
+        """Return an exact raw portable source revision.
+
+        Adapters that cannot expose source-authored content must raise rather
+        than deriving a portable definition from :meth:`load`, because that
+        method may include runtime prompt injection.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support exact portable persona revisions"
+        )
+
+    def load_current_portable(
+        self,
+        persona_id: str,
+    ) -> PortablePersonaDefinition | None:
+        """Return the current raw source as a content-revisioned document."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support portable persona source export"
+        )
 
 
 class PersonaRegistryPort(PersonaPort):

@@ -195,14 +195,19 @@ class HttpxJsonClient:
         attributes = _http_attributes("GET", url)
         started = monotonic()
         with telemetry.span("GET " + attributes["url.template"], attributes=attributes) as span:
-            merged = await self._resolve_headers()
+            auth_overridden = _has_authorization_header(headers)
+            merged = (
+                {"Content-Type": "application/json"}
+                if auth_overridden
+                else await self._resolve_headers()
+            )
             if headers:
                 merged.update(headers)
             merged.update(telemetry.inject())
             try:
                 async with httpx.AsyncClient(timeout=self._timeout) as client:
                     resp = await client.get(url, headers=merged)
-                    if resp.status_code == 401:
+                    if resp.status_code == 401 and not auth_overridden:
                         refreshed = await self._refresh_rejected_auth()
                         if refreshed is not None:
                             if headers:
@@ -242,14 +247,19 @@ class HttpxJsonClient:
         started = monotonic()
         with telemetry.span("POST " + attributes["url.template"], attributes=attributes) as span:
             telemetry.event("http.request", attributes=attributes, content=json_body)
-            merged = await self._resolve_headers()
+            auth_overridden = _has_authorization_header(headers)
+            merged = (
+                {"Content-Type": "application/json"}
+                if auth_overridden
+                else await self._resolve_headers()
+            )
             if headers:
                 merged.update(headers)
             merged.update(telemetry.inject())
             try:
                 async with httpx.AsyncClient(timeout=self._timeout) as client:
                     resp = await client.post(url, headers=merged, json=json_body)
-                    if resp.status_code == 401:
+                    if resp.status_code == 401 and not auth_overridden:
                         refreshed = await self._refresh_rejected_auth()
                         if refreshed is not None:
                             if headers:
@@ -303,6 +313,10 @@ def normalize_http_origin(url: str) -> str:
         host = f"[{host}]"
     netloc = host if port in {None, default_port} else f"{host}:{port}"
     return urlunsplit((scheme, netloc, "", "", ""))
+
+
+def _has_authorization_header(headers: dict[str, str] | None) -> bool:
+    return any(key.casefold() == "authorization" for key in (headers or {}))
 
 
 def _safe_json(resp: Any) -> Any:

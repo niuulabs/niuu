@@ -473,8 +473,18 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
             }
         ),
     }
-    for key, value in kwargs.items():
-        env[f"POD_MANAGER__KWARGS__{key.upper()}"] = str(value)
+    if settings.compute is not None:
+        env.pop("POD_MANAGER__ADAPTER")
+        env["POD_MANAGER"] = json.dumps(
+            {
+                "adapter": settings.pod_manager.adapter,
+                "runtime_backend": settings.pod_manager.runtime_backend or "vm",
+                "kwargs": kwargs,
+            }
+        )
+    else:
+        for key, value in kwargs.items():
+            env[f"POD_MANAGER__KWARGS__{key.upper()}"] = str(value)
     seeds = model_server_seed_connections(settings)
     if seeds:
         env["INTEGRATIONS__SEED_CONNECTIONS"] = json.dumps(seeds)

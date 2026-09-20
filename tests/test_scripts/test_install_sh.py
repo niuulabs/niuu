@@ -30,6 +30,11 @@ def _fake_docker(
     if not uname.exists():
         uname.write_text('#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo x86_64;; esac\n')
         uname.chmod(0o755)
+    # The simulated daemon's socket must not depend on the host running Docker
+    # at the same Linux path (macOS commonly uses a context-specific socket).
+    fake_stat = bin_dir / "stat"
+    fake_stat.write_text('#!/bin/sh\ncase "$1 $2" in "-c %g"|"-f %g") echo 0;; *) exit 1;; esac\n')
+    fake_stat.chmod(0o755)
     log = bin_dir / "docker.log"
     info = json.dumps(runtimes if runtimes is not None else {})
     script = f"""#!/bin/sh

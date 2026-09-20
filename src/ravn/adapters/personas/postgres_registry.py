@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
+import yaml
 
 from niuu.domain.outcome import OutcomeField
 from ravn.adapters.personas.loader import (
@@ -19,6 +20,10 @@ from ravn.adapters.personas.loader import (
     PersonaLLMConfig,
     PersonaProduces,
     _sanitize_executor_kwargs,
+)
+from ravn.domain.persona_document import (
+    PortablePersonaDefinition,
+    portable_persona_from_config,
 )
 
 _ROLE_DEFAULT = "build"
@@ -319,6 +324,41 @@ class PostgresPersonaRegistry:
         if view is None:
             return None
         return FilesystemPersonaAdapter.to_yaml(view.config)
+
+    async def get_current_portable_persona(
+        self,
+        owner_id: str,
+        persona_id: str,
+    ) -> PortablePersonaDefinition | None:
+        """Return owner-scoped raw source content with a content revision."""
+        overrides = await self._load_overrides(owner_id, name=persona_id)
+        override_payload = overrides.get(persona_id)
+        builtin_document = self._builtin_loader.load_current_portable(persona_id)
+        if override_payload is None:
+            return builtin_document
+
+        builtin_config: PersonaConfig | None = None
+        if builtin_document is not None:
+            builtin_config = FilesystemPersonaAdapter.parse(
+                yaml.safe_dump(builtin_document.definition, allow_unicode=True, sort_keys=False)
+            )
+        payload = _normalize_payload(override_payload, fallback=builtin_config)
+        return portable_persona_from_config(
+            _payload_to_config(payload),
+            persona_id=persona_id,
+        )
+
+    async def get_portable_persona_revision(
+        self,
+        owner_id: str,
+        persona_id: str,
+        revision: str,
+    ) -> PortablePersonaDefinition | None:
+        """Return the current owner-scoped source only when its revision matches."""
+        document = await self.get_current_portable_persona(owner_id, persona_id)
+        if document is None or document.revision != revision:
+            return None
+        return document
 
     def is_builtin(self, name: str) -> bool:
         return self._builtin_loader.is_builtin(name)

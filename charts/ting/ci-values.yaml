@@ -41,6 +41,14 @@ database:
     host: pg-postgresql.default.svc.cluster.local
     port: 5432
 
+workflowRepository:
+  adapter: "ting.adapters.postgres_workflows.PostgresWorkflowRepository"
+  seedBundled: true
+  kwargs: {}
+
+workflowPersistence:
+  enabled: false
+
 envoy:
   enabled: false
 

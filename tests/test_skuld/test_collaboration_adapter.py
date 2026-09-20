@@ -15,6 +15,7 @@ from sleipnir.domain import registry
 def _adapter(**kwargs) -> tuple[SkuldCollaborationAdapter, MagicMock]:
     channels = MagicMock()
     channels.broadcast = AsyncMock()
+    emit_frame = kwargs.pop("emit_frame", channels.broadcast)
     adapter = SkuldCollaborationAdapter(
         RoomConfig(
             enabled=True,
@@ -23,6 +24,7 @@ def _adapter(**kwargs) -> tuple[SkuldCollaborationAdapter, MagicMock]:
             presence_sweep_interval_s=0,
         ),
         channels,
+        emit_frame=emit_frame,
         **kwargs,
     )
     return adapter, channels
@@ -269,6 +271,66 @@ async def test_outcome_is_visible_and_delivered_to_declared_subscribers() -> Non
     assert (peer_id, event_type) == ("producer", "outcome")
     assert observation["data"]["workflow_parent_event_id"] == "activation-1"
     assert observation["data"]["fields"] == {"artifact": "result.md"}
+
+
+@pytest.mark.asyncio
+async def test_mesh_outcome_uses_room_delivery_only_for_non_mesh_subscribers() -> None:
+    adapter, channels = _adapter()
+    producer = _websocket()
+    mesh_subscriber = _websocket()
+    websocket_subscriber = _websocket()
+    await adapter.register_mesh_peer(
+        "mesh-producer",
+        "Mesh Producer",
+        participant_kind="mesh",
+    )
+    await adapter.register("mesh-producer", "Mesh Producer", producer)
+    await adapter.register_mesh_peer(
+        "mesh-subscriber",
+        "Mesh Subscriber",
+        participant_kind="mesh",
+        subscribes_to=["research.*"],
+    )
+    await adapter.register("mesh-subscriber", "Mesh Subscriber", mesh_subscriber)
+    await adapter.register(
+        "websocket-subscriber",
+        "WebSocket Subscriber",
+        websocket_subscriber,
+        subscribes_to=["research.*"],
+    )
+    channels.broadcast.reset_mock()
+
+    await adapter.handle_collaboration_frame(
+        "mesh-producer",
+        {
+            "kind": "outcome",
+            "eventType": "research.completed",
+            "fields": {"artifact": "result.md"},
+        },
+    )
+
+    mesh_subscriber.send_text.assert_not_awaited()
+    delivered = json.loads(websocket_subscriber.send_text.await_args.args[0])
+    assert delivered["type"] == "collaboration.outcome"
+    assert delivered["eventType"] == "research.completed"
+
+    await adapter.handle_collaboration_frame(
+        "websocket-subscriber",
+        {
+            "kind": "outcome",
+            "eventType": "research.completed",
+            "fields": {"artifact": "channel-result.md"},
+        },
+    )
+    channel_only_delivery = json.loads(mesh_subscriber.send_text.await_args.args[0])
+    assert channel_only_delivery["type"] == "collaboration.outcome"
+    assert channel_only_delivery["fields"] == {"artifact": "channel-result.md"}
+
+    mesh_subscriber.send_text.reset_mock()
+    assert await adapter.route_directed_message("mesh-subscriber", "Please retry") is True
+    directed = json.loads(mesh_subscriber.send_text.await_args.args[0])
+    assert directed["type"] == "directed_message"
+    assert directed["content"] == "Please retry"
 
 
 @pytest.mark.asyncio

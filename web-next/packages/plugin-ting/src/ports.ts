@@ -13,6 +13,31 @@ import type { SessionInfo } from './domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from './domain/tracker';
 import type { Workflow } from './domain/workflow';
 import type {
+  DeveloperExecutionTrace,
+  DeveloperTraceOptions,
+} from './domain/developerExecutionTrace';
+import type {
+  DeveloperExecution,
+  DeveloperDeliveryWait,
+  DeveloperExecutionLaunch,
+  DeveloperExecutionState,
+} from './domain/developerExecution';
+
+export interface IDeveloperExecutionService {
+  list(filter?: {
+    state?: DeveloperExecutionState;
+    cursor?: string;
+  }): Promise<{ executions: DeveloperExecution[]; nextCursor: string | null }>;
+  get(id: string): Promise<DeveloperExecution>;
+  launch(request: DeveloperExecutionLaunch, idempotencyKey: string): Promise<DeveloperExecution>;
+  cancel(id: string): Promise<DeveloperExecution>;
+  reconcile(id: string): Promise<DeveloperExecution>;
+  retry(id: string, childKey: string, attemptId: string): Promise<DeveloperExecution>;
+  evidence(id: string): Promise<Record<string, unknown>>;
+  deliveryWaits(id: string): Promise<DeveloperDeliveryWait[]>;
+  trace(id: string, options?: DeveloperTraceOptions): Promise<DeveloperExecutionTrace>;
+}
+import type {
   ResearchCampaign,
   ResearchCampaignDetail,
   CampaignArtifactDetail,
@@ -294,12 +319,77 @@ export interface WorkflowLaunchResult {
   clusterName: string;
 }
 
+export type WorkflowExportFormat = 'yaml' | 'bundle';
+
+export interface WorkflowExport {
+  data: Blob;
+  filename: string;
+  mediaType: string;
+}
+
+export type WorkflowPersonaImportStatus = 'reuse' | 'bundled' | 'missing' | 'conflict' | 'mapped';
+
+export interface WorkflowPersonaImportPreview {
+  alias: string;
+  id: string;
+  revision: string;
+  digest: string;
+  status: WorkflowPersonaImportStatus;
+  message: string;
+  definition?: Record<string, unknown>;
+  available?: Array<{
+    id: string;
+    name?: string;
+    revision?: string;
+    digest?: string;
+  }>;
+}
+
+export interface WorkflowImportRequirement {
+  id: string;
+  kind: string;
+  message: string;
+  resolved?: boolean;
+  binding?: string | null;
+}
+
+export interface WorkflowImportSource {
+  content: string;
+  filename: string;
+  mappings?: Record<string, string>;
+  bindings?: Record<string, string>;
+  mode?: 'copy' | 'update';
+  workflowId?: string;
+  expectedRevision?: string;
+  previewDigest?: string;
+}
+
+export interface WorkflowImportPreview {
+  workflows?: Array<{ alias: string; id: string; revision?: string; status: string }>;
+  workflow: Pick<Workflow, 'id' | 'name' | 'description' | 'version'>;
+  personas: WorkflowPersonaImportPreview[];
+  requirements: WorkflowImportRequirement[];
+  errors: string[];
+  canApply: boolean;
+  previewDigest: string;
+}
+
 export interface IWorkflowService {
   listWorkflows(): Promise<Workflow[]>;
   getWorkflow(id: string): Promise<Workflow | null>;
   saveWorkflow(workflow: Workflow): Promise<Workflow>;
   deleteWorkflow(id: string): Promise<void>;
+  exportWorkflow(id: string, format: WorkflowExportFormat): Promise<WorkflowExport>;
+  previewWorkflowImport(request: WorkflowImportSource): Promise<WorkflowImportPreview>;
+  applyWorkflowImport(request: WorkflowImportSource): Promise<Workflow>;
   launchWorkflow(workflowId: string, request: WorkflowLaunchRequest): Promise<WorkflowLaunchResult>;
+}
+
+export class WorkflowRevisionConflictError extends Error {
+  constructor(message = 'This workflow changed after you opened it. Reload before saving again.') {
+    super(message);
+    this.name = 'WorkflowRevisionConflictError';
+  }
 }
 
 export interface CreateResearchCampaignRequest {

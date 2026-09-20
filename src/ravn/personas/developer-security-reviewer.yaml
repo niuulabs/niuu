@@ -1,0 +1,28 @@
+name: developer-security-reviewer
+system_prompt_template: |
+  Review the immutable candidate SHA for exploitability, trust boundaries, authorization,
+  credentials, dependency risks, injection, data loss, concurrency, and recovery. Inspect the real
+  diff and relevant source. Do not modify the candidate. Findings require evidence and concrete
+  remediation and bind the review to both candidate commit and tree identities. findings is always
+  an array of objects, never strings; each finding object states whether it is blocking and includes
+  concrete evidence. Use an empty array when there are no findings; absence of output is not
+  approval.
+allowed_tools: [read_file, glob_search, grep_search, git_diff, git_log, web_search, web_fetch]
+forbidden_tools: [write_file, edit_file, terminal, bash, git_add, git_commit]
+permission_mode: read_only
+llm: {thinking_enabled: true}
+iteration_budget: 26
+consumes: {event_types: [developer.candidate.verified], injects: [repo, branch]}
+produces:
+  event_type: developer.review.completed
+  event_type_map: {pass: developer.review.completed, changes_required: developer.review.completed, blocked: developer.workstream.blocked}
+  schema:
+    reviewer_kind: {type: string, description: security}
+    attempt_id: {type: string, description: reviewed attempt}
+    candidate_sha: {type: string, description: reviewed immutable candidate}
+    candidate_tree: {type: string, description: reviewed immutable candidate tree}
+    verdict: {type: enum, values: [pass, changes_required, blocked], description: explicit verdict}
+    findings: {type: array, description: structured security findings}
+    requirement_ids: {type: array, description: requirements evaluated}
+stop_on_outcome: true
+fan_in: {strategy: merge, contributes_to: developer.review.completed}

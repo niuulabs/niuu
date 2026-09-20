@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from niuu.domain.models import Principal
 from ravn.adapters.personas.postgres_registry import PersonaView, PostgresPersonaRegistry
+from ravn.domain.persona_document import PersonaDocumentError
 from volundr.adapters.inbound.auth import extract_principal, get_current_user
 from volundr.domain.models import User
 
@@ -214,6 +215,71 @@ def create_ravn_personas_router(registry: PostgresPersonaRegistry | None = None)
                 f"Must be one of: {', '.join(sorted(_VALID_FAN_IN_STRATEGIES))}"
             )
         return PersonaValidateResponse(valid=not errors, errors=errors)
+
+    @router.get(
+        "/personas/{name}/portable",
+        response_model=None,
+        responses={404: {"model": ErrorResponse}},
+    )
+    @router.get(
+        "/ravn/personas/{name}/portable",
+        response_model=None,
+        responses={404: {"model": ErrorResponse}},
+        include_in_schema=False,
+    )
+    async def get_current_portable_persona(
+        name: str = Path(description="Stable persona identifier"),
+        principal: Principal = Depends(extract_principal),
+        persona_registry: PostgresPersonaRegistry = Depends(_get_registry),
+    ) -> dict:
+        try:
+            document = await persona_registry.get_current_portable_persona(
+                principal.user_id,
+                name,
+            )
+        except PersonaDocumentError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        if document is None:
+            raise HTTPException(status_code=404, detail=f"Persona not found: {name}")
+        return document.to_dict()
+
+    @router.get(
+        "/personas/{name}/revisions/{revision}",
+        response_model=None,
+        responses={404: {"model": ErrorResponse}},
+    )
+    @router.get(
+        "/ravn/personas/{name}/revisions/{revision}",
+        response_model=None,
+        responses={404: {"model": ErrorResponse}},
+        include_in_schema=False,
+    )
+    async def get_portable_persona_revision(
+        name: str = Path(description="Stable persona identifier"),
+        revision: str = Path(description="Exact persona revision"),
+        principal: Principal = Depends(extract_principal),
+        persona_registry: PostgresPersonaRegistry = Depends(_get_registry),
+    ) -> dict:
+        try:
+            document = await persona_registry.get_portable_persona_revision(
+                principal.user_id,
+                name,
+                revision,
+            )
+        except PersonaDocumentError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        if document is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Persona revision not found: {name}@{revision}",
+            )
+        return document.to_dict()
 
     @router.get(
         "/personas/{name}",

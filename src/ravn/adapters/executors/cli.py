@@ -39,6 +39,8 @@ from ravn.tool_observability import tool_argument_attributes
 
 logger = logging.getLogger(__name__)
 
+_RAVN_TOOLS_MCP_ALLOW_RULE = "mcp__ravn-tools__*"
+
 
 @dataclass(frozen=True)
 class _TransportBinding:
@@ -53,6 +55,14 @@ def _delegates_permission_config_to_cli(cls: type[CLITransport]) -> bool:
     return (
         cls.__module__ == "skuld.transports.codex_ws" and cls.__name__ == "CodexWebSocketTransport"
     )
+
+
+def _supports_read_only_mcp_boundary(cls: type[CLITransport]) -> bool:
+    """Return whether *cls* implements the explicit MCP-only native boundary."""
+    if not bool(getattr(cls, "supports_read_only_mcp_boundary", False)):
+        return False
+    parameters = inspect.signature(cls).parameters
+    return {"read_only_mcp_only", "allowed_mcp_tools"}.issubset(parameters)
 
 
 def _sum_model_usage(raw: dict | None) -> TokenUsage:
@@ -745,6 +755,7 @@ class CliTransportExecutor(ExecutorPort):
         session: Session = kwargs["session"]
         task_id = str(kwargs.get("task_id") or session.id)
         permission_mode = str(kwargs.get("permission_mode", "workspace_write"))
+        read_only = permission_mode.replace("-", "_") == "read_only"
         tools = list(kwargs.get("tools", []))
         transport_kwargs = {
             "workspace_dir": workspace_dir,
@@ -755,7 +766,7 @@ class CliTransportExecutor(ExecutorPort):
         }
         if not _delegates_permission_config_to_cli(self._binding.cls):
             transport_kwargs["skip_permissions"] = permission_mode != "prompt"
-        if "mcp_servers" in kwargs:
+        if "mcp_servers" in kwargs and not read_only:
             transport_kwargs["mcp_servers"] = _with_ravn_tool_mcp_server(
                 list(kwargs["mcp_servers"]),
                 persona=str(kwargs.get("persona", "")),
@@ -766,6 +777,50 @@ class CliTransportExecutor(ExecutorPort):
                 trace_carrier=get_observability().inject(),
             )
         transport_kwargs.update(self._transport_kwargs)
+        if read_only:
+            # The generated server is the complete filtered ToolPort registry
+            # for this persona.  Rebuild it after transport overrides so an
+            # adapter default cannot reintroduce an unbounded MCP server.
+            transport_kwargs["mcp_servers"] = _with_ravn_tool_mcp_server(
+                [],
+                persona=str(kwargs.get("persona", "")),
+                tools=tools,
+                tool_timeout_seconds=self._ravn_tool_mcp_timeout_seconds,
+                conversation_id=str(session.id),
+                task_id=task_id,
+                trace_carrier=get_observability().inject(),
+            )
+        if read_only and _delegates_permission_config_to_cli(self._binding.cls):
+            # An explicit persona boundary must win over workload-level Codex
+            # defaults such as skip_permissions=true.  Coordinators use their
+            # bounded MCP read/git and A2A tools instead of Codex's native
+            # shell or native child agents, and denied operations cannot turn
+            # into an invisible approval wait.
+            transport_kwargs["skip_permissions"] = False
+            transport_kwargs["approval_policy"] = "never"
+            transport_kwargs["sandbox"] = "read-only"
+            transport_kwargs["shell_tool_enabled"] = False
+            transport_kwargs["multi_agent_enabled"] = False
+            transport_kwargs["read_only_mcp_only"] = True
+            for server in transport_kwargs["mcp_servers"]:
+                if server.get("name") != "ravn-tools":
+                    continue
+                server["default_tools_approval_mode"] = "approve"
+                server["enabled_tools"] = sorted(self._tool_name(tool) for tool in tools)
+        elif read_only:
+            if not _supports_read_only_mcp_boundary(self._binding.cls):
+                name = f"{self._binding.cls.__module__}.{self._binding.cls.__name__}"
+                raise ValueError(
+                    f"CLI transport {name} cannot enforce the read-only MCP-only boundary; "
+                    "select a transport with explicit read-only support"
+                )
+            # Claude-native tools are a separate surface from the filtered
+            # ToolPort registry.  Preserve only the exact registry exposed by
+            # the generated ravn-tools MCP server and force the transport's
+            # native tool set closed, regardless of workload-level defaults.
+            transport_kwargs["skip_permissions"] = False
+            transport_kwargs["read_only_mcp_only"] = True
+            transport_kwargs["allowed_mcp_tools"] = [_RAVN_TOOLS_MCP_ALLOW_RULE] if tools else []
 
         return CliTransportAgent(
             transport_binding=self._binding,
@@ -781,6 +836,13 @@ class CliTransportExecutor(ExecutorPort):
             preloaded_tools=tools,
             session_join_manager=kwargs.get("session_join_manager"),
         )
+
+    @staticmethod
+    def _tool_name(tool: object) -> str:
+        name = str(getattr(tool, "name", "")).strip()
+        if not name:
+            raise ValueError("read-only MCP tools must have a stable name")
+        return name
 
 
 def _with_ravn_tool_mcp_server(
@@ -830,6 +892,10 @@ def _with_ravn_tool_mcp_server(
             "command": sys.executable,
             "args": args,
             "env": env,
+            # This server exposes the exact ToolPort registry supplied by the
+            # persona.  Continuing without it would run a different, less
+            # capable agent than the configured workflow requested.
+            "required": True,
             # Commissioned builds can remain in a real A2A workflow for
             # minutes. Codex's short MCP default would cancel the local waiter
             # while leaving that remote task running.

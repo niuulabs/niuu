@@ -190,6 +190,13 @@ function makeServices(overrides: Record<string, unknown> = {}) {
       listCampaigns: vi.fn().mockResolvedValue([otherCampaign]),
     },
     'niuu.repos': { getRepos: vi.fn().mockResolvedValue(repos) },
+    'ravn.personas': {
+      listPersonas: vi.fn().mockResolvedValue([]),
+      getPersonaYaml: vi.fn().mockResolvedValue(''),
+    },
+    mimir: {
+      mounts: { listRegistryMounts: vi.fn().mockResolvedValue([]) },
+    },
     'ting.tracker': {
       listProjects: vi.fn().mockResolvedValue([board]),
       listIssues: vi.fn().mockResolvedValue([issue]),
@@ -235,6 +242,12 @@ describe('SimpleWorkflowsPage', () => {
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Build and ship');
     expect(screen.getByText('yours')).toBeInTheDocument();
     expect(screen.getByText('Stops for you at 1 gate')).toBeInTheDocument();
+  });
+
+  it('opens workflow import from the simple catalog', () => {
+    renderPage();
+    fireEvent.click(screen.getByTestId('simple-workflow-import'));
+    expect(screen.getByRole('dialog', { name: 'Import workflow' })).toBeInTheDocument();
   });
 
   it('falls back to the stage names and counts every human gate', async () => {

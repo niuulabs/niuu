@@ -346,7 +346,7 @@ async def _resolve_selected_workflow(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Workflow not found: {workflow_id_value}",
             )
-        return workflow.id, workflow.version, build_workflow_snapshot(workflow)
+        return workflow.id, workflow.version, _build_resolved_workflow_snapshot(request, workflow)
 
     if not use_default_when_missing:
         return None, None, None
@@ -368,7 +368,23 @@ async def _resolve_selected_workflow(
     )
     if workflow is None:
         return None, None, None
-    return workflow.id, workflow.version, build_workflow_snapshot(workflow)
+    return workflow.id, workflow.version, _build_resolved_workflow_snapshot(request, workflow)
+
+
+def _build_resolved_workflow_snapshot(
+    request: Request,
+    workflow: WorkflowDefinition,
+) -> dict:
+    try:
+        return build_workflow_snapshot(
+            workflow,
+            persona_source=getattr(request.app.state, "persona_source", None),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
 
 
 async def _resolve_planning_workflow(

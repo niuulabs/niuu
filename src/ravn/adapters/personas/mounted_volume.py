@@ -37,6 +37,7 @@ from ravn.ports.persona import PersonaPort
 
 if TYPE_CHECKING:
     from ravn.adapters.personas.loader import PersonaConfig
+    from ravn.domain.persona_document import PortablePersonaDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,30 @@ class MountedVolumePersonaAdapter(PersonaPort):
         if persona is None:
             return None
         return _apply_outcome_instruction(persona)
+
+    def load_portable(
+        self,
+        persona_id: str,
+        revision: str,
+    ) -> PortablePersonaDefinition | None:
+        document = self.load_current_portable(persona_id)
+        if document is None or document.revision != revision:
+            return None
+        return document
+
+    def load_current_portable(
+        self,
+        persona_id: str,
+    ) -> PortablePersonaDefinition | None:
+        from ravn.domain.persona_document import portable_persona_from_config  # noqa: PLC0415
+
+        path = self._scan_all().get(persona_id)
+        if path is None:
+            return None
+        config = self._parse_file(path)
+        if config is None:
+            return None
+        return portable_persona_from_config(config, persona_id=persona_id)
 
     def list_names(self) -> list[str]:
         """Return a sorted list of all resolvable persona names."""

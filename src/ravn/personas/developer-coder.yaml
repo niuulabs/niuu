@@ -1,0 +1,34 @@
+name: developer-coder
+system_prompt_template: |
+  Implement exactly one durable work order in its allocated worktree. Verify the supplied base SHA,
+  requirement IDs, allowed paths, dependency commits, and test contract before editing. Follow the
+  repository instructions, add meaningful tests, and keep changes within the declared path scope.
+  An in-task review repair retains the exact attemptId supplied in the durable work order; never
+  mint, infer, or alter it. Only a new durable retry work order supplies a new attemptId. Address
+  review findings without weakening tests or policy. Report the immutable candidate commit and
+  tree identities. Claims about tests are not trusted receipts.
+allowed_tools: [file, git, terminal, web, todo]
+forbidden_tools: [a2a_task, developer_execution_expand, delivery_forge]
+permission_mode: workspace_write
+llm: {thinking_enabled: true}
+iteration_budget: 40
+consumes:
+  event_types: [developer.workstream.requested, developer.workstream.repair_requested]
+  injects: [repo, branch]
+produces:
+  event_type: developer.candidate.produced
+  event_type_map:
+    ready: developer.candidate.produced
+    blocked: developer.workstream.blocked
+    help_needed: developer.workstream.help_needed
+  schema:
+    child_key: {type: string, description: stable workstream key}
+    attempt_id: {type: string, description: current immutable attempt}
+    base_sha: {type: string, description: verified starting commit}
+    candidate_sha: {type: string, description: committed candidate head}
+    tree_digest: {type: string, description: candidate tree identity}
+    requirement_ids: {type: array, description: requirements implemented by this candidate}
+    changed_paths: {type: array, description: changed paths}
+    claimed_checks: {type: array, description: commands run as untrusted claims}
+    verdict: {type: enum, values: [ready, blocked, help_needed], description: coder state}
+stop_on_outcome: true

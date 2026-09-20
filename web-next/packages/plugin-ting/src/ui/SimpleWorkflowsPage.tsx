@@ -27,6 +27,9 @@ import {
 import { WorkflowStrip, gateWaitsForPerson } from './WorkflowStrip';
 import { WorkflowRunsCard } from './WorkflowRunsCard';
 import { WorkflowIssuePicker, issueLaunchPrompt } from './WorkflowIssuePicker';
+import { WorkflowImportDialog } from './WorkflowImportDialog';
+import { usePersonasBrowser } from './settings/usePersonasBrowser';
+import { useWorkflowRegistryMounts } from './useWorkflowRegistryMounts';
 
 interface SimpleWorkflowsSearch {
   workflow?: string;
@@ -63,6 +66,13 @@ function gatesSentence(workflow: Workflow): string {
   if (gates === 0) return 'It runs start to finish without stopping for you.';
   if (gates === 1) return 'Stops for you at 1 gate';
   return `Stops for you at ${gates} gates`;
+}
+
+function workflowHasUnresolvedRequirements(workflow: Workflow): boolean {
+  if ((workflow.requirements ?? []).some((requirement) => !requirement.resolved)) return true;
+  return Object.values(workflow.personaDependencies ?? {}).some(
+    (dependency) => dependency.resolved === false,
+  );
 }
 
 function WorkflowOptionCard({
@@ -131,6 +141,9 @@ export function SimpleWorkflowsPage() {
   const createWorkflow = useCreateWorkflow();
   const launchWorkflow = useLaunchWorkflow();
   const [issuePickerOpen, setIssuePickerOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const { data: personas = [] } = usePersonasBrowser();
+  const { data: registryMounts = [] } = useWorkflowRegistryMounts();
 
   const reposQuery = useQuery({
     queryKey: ['niuu', 'repos'],
@@ -183,7 +196,10 @@ export function SimpleWorkflowsPage() {
   }
 
   const canLaunch =
-    selected !== null && draft.values.prompt.trim().length > 0 && !launchWorkflow.isPending;
+    selected !== null &&
+    !workflowHasUnresolvedRequirements(selected) &&
+    draft.values.prompt.trim().length > 0 &&
+    !launchWorkflow.isPending;
 
   return (
     <div
@@ -195,15 +211,25 @@ export function SimpleWorkflowsPage() {
           <h2 className="niuu:m-0 niuu:text-[15px] niuu:font-semibold niuu:text-text-primary">
             Your workflows
           </h2>
-          <button
-            type="button"
-            data-testid="simple-workflow-new"
-            onClick={handleNew}
-            disabled={createWorkflow.isPending}
-            className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-2.5 niuu:py-1 niuu:text-[11px] niuu:text-text-secondary niuu:cursor-pointer niuu:hover:text-text-primary niuu:disabled:opacity-50"
-          >
-            New
-          </button>
+          <div className="niuu:flex niuu:items-center niuu:gap-2">
+            <button
+              type="button"
+              data-testid="simple-workflow-import"
+              onClick={() => setImportOpen(true)}
+              className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-2.5 niuu:py-1 niuu:text-[11px] niuu:text-text-secondary niuu:cursor-pointer niuu:hover:text-text-primary"
+            >
+              Import
+            </button>
+            <button
+              type="button"
+              data-testid="simple-workflow-new"
+              onClick={handleNew}
+              disabled={createWorkflow.isPending}
+              className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-2.5 niuu:py-1 niuu:text-[11px] niuu:text-text-secondary niuu:cursor-pointer niuu:hover:text-text-primary niuu:disabled:opacity-50"
+            >
+              New
+            </button>
+          </div>
         </div>
 
         <div className="niuu:flex niuu:flex-1 niuu:flex-col niuu:gap-1 niuu:overflow-y-auto niuu:px-3 niuu:pb-3">
@@ -248,6 +274,17 @@ export function SimpleWorkflowsPage() {
           </div>
         ) : null}
       </aside>
+
+      {importOpen ? (
+        <WorkflowImportDialog
+          open
+          workflows={workflows ?? []}
+          personas={personas}
+          registryMounts={registryMounts}
+          onClose={() => setImportOpen(false)}
+          onImported={(workflow) => selectWorkflow(workflow.id)}
+        />
+      ) : null}
 
       <main className="niuu:min-w-0 niuu:flex-1 niuu:min-h-0 niuu:overflow-y-auto niuu:px-9 niuu:py-7">
         {!isLoading && !selected ? (
@@ -300,6 +337,15 @@ export function SimpleWorkflowsPage() {
                 >
                   Launch it
                 </div>
+                {workflowHasUnresolvedRequirements(selected) ? (
+                  <p
+                    data-testid="simple-workflow-unresolved"
+                    className="niuu:mt-0 niuu:mb-3 niuu:rounded-md niuu:border niuu:border-warning/40 niuu:bg-warning/10 niuu:p-2.5 niuu:text-xs niuu:text-warning"
+                  >
+                    Resolve imported persona dependencies and local bindings in Edit stages before
+                    launch.
+                  </p>
+                ) : null}
                 {reposQuery.isFetching ? <LoadingState label="Loading repositories…" /> : null}
                 {reposQuery.error ? (
                   <p role="alert">Could not load repositories: {reposQuery.error.message}</p>

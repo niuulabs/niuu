@@ -8,9 +8,34 @@ import pytest
 from skuld.mcp_credentials import main, read_headers
 from skuld.transports.mcp_config import (
     build_claude_mcp_config,
+    build_codex_mcp_isolation_overrides,
     build_codex_mcp_overrides,
     build_sdk_mcp_servers,
 )
+
+
+def test_codex_mcp_isolation_disables_every_resolved_unlisted_server():
+    assert build_codex_mcp_isolation_overrides(
+        [
+            {"name": "ravn-tools", "enabled": True},
+            {"name": "user-configured", "enabled": True},
+            {"name": "project-configured", "enabled": True},
+        ],
+        allowed_names={"ravn-tools"},
+    ) == [
+        ("mcp_servers.project-configured.enabled", "false"),
+        ("mcp_servers.ravn-tools.enabled", "true"),
+        ("mcp_servers.user-configured.enabled", "false"),
+    ]
+
+
+def test_codex_mcp_isolation_fails_closed_for_missing_or_unsafe_names():
+    with pytest.raises(RuntimeError, match="Required Codex MCP server missing"):
+        build_codex_mcp_isolation_overrides([], allowed_names={"ravn-tools"})
+    with pytest.raises(RuntimeError, match="cannot be isolated safely"):
+        build_codex_mcp_isolation_overrides(
+            [{"name": "nested.server", "enabled": True}], allowed_names=set()
+        )
 
 
 def test_reads_current_atomic_token_document(tmp_path):

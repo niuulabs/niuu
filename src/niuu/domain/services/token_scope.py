@@ -32,6 +32,7 @@ KNOWN_WORKLOAD_SCOPES: frozenset[str] = frozenset(
     {
         "forge:session:create",
         "ting:workflow:launch",
+        "ting:developer:coordinate",
         "observatory:topology:push",
     }
 )
@@ -99,6 +100,19 @@ def token_has_scope(token: str, scope: str) -> bool:
     return scope in granted
 
 
+def scoped_credential_claims(token: str) -> dict | None:
+    """Return claims only for credentials governed by workload scope checks.
+
+    Callers use this after authentication when a scope grants entry to a
+    multiplexed endpoint and the endpoint must further bind an operation to
+    signed workload lineage claims.
+    """
+    claims = _decode_claims(token)
+    if claims is None or not token_requires_scope_check(claims):
+        return None
+    return claims
+
+
 def bound_workload_scopes(requested: list[str] | None) -> list[str]:
     """Intersect requested scopes with :data:`KNOWN_WORKLOAD_SCOPES`.
 
@@ -140,7 +154,25 @@ def credential_allows_route(token: str, method: str, path: str) -> bool:
         return True
     routes = [
         ("POST", r"/api/v1/forge/sessions", "forge:session:create"),
+        ("POST", r"/api/v1/ting/a2a", "ting:workflow:launch"),
         ("POST", r"/api/v1/ting/workflows/[^/?%]+/launch", "ting:workflow:launch"),
+        (
+            "POST",
+            r"/api/v1/ting/developer-executions/[^/?%]+/"
+            r"(expansions|messages|reconcile|cancel|integration-candidate|complete|"
+            r"delivery-authorizations|delivery-waits)",
+            "ting:developer:coordinate",
+        ),
+        (
+            "POST",
+            r"/api/v1/ting/developer-executions/[^/?%]+/children/[^/?%]+/retry",
+            "ting:developer:coordinate",
+        ),
+        (
+            "POST",
+            r"/api/v1/forge/delivery/[^?#]+",
+            "ting:developer:coordinate",
+        ),
         ("PUT", r"/api/v1/niuu/observatory/fragments/[^/?%]+", "observatory:topology:push"),
         ("DELETE", r"/api/v1/niuu/observatory/fragments/[^/?%]+", "observatory:topology:push"),
     ]

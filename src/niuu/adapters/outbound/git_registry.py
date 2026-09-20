@@ -3,7 +3,20 @@
 import logging
 
 from niuu.config import GitConfig
+from niuu.domain.delivery import (
+    BranchPublicationReceipt,
+    BranchPublicationRequest,
+    CheckReceipt,
+    MergeReceipt,
+    MergeRequest,
+    PublicationSource,
+    ResolvedRef,
+    ReviewCandidate,
+    ReviewPublication,
+    ReviewRequest,
+)
 from niuu.domain.models import CIStatus, GitProviderType, PullRequest, RepoInfo
+from niuu.ports.delivery import DeliveryForgeProvider
 from niuu.ports.git import GitProvider, GitWorkflowProvider
 
 from .github import GitHubProvider
@@ -237,6 +250,47 @@ class GitProviderRegistry:
         if not isinstance(provider, GitWorkflowProvider):
             raise ValueError(f"Provider {provider.name} does not support workflow operations")
         return provider
+
+    def _get_delivery_provider(self, repo_url: str) -> DeliveryForgeProvider:
+        provider = self.get_provider(repo_url)
+        if provider is None:
+            raise ValueError(f"No git provider found for: {repo_url}")
+        if not isinstance(provider, DeliveryForgeProvider):
+            raise ValueError(f"Provider {provider.name} lacks strict delivery operations")
+        return provider
+
+    async def resolve_ref(self, repository: str, ref: str) -> ResolvedRef:
+        provider = self._get_delivery_provider(repository)
+        return await provider.resolve_ref(repository, ref)
+
+    async def ensure_review(self, request: ReviewRequest) -> ReviewPublication:
+        provider = self._get_delivery_provider(request.repository)
+        return await provider.ensure_review(request)
+
+    async def publish_branch(
+        self,
+        source: PublicationSource,
+        request: BranchPublicationRequest,
+    ) -> BranchPublicationReceipt:
+        provider = self._get_delivery_provider(request.repository)
+        return await provider.publish_branch(source, request)
+
+    async def inspect_delivery_candidate(
+        self,
+        repo_url: str,
+        review_number: int,
+        required_checks: tuple[str, ...],
+    ) -> tuple[ReviewCandidate, CheckReceipt]:
+        provider = self._get_delivery_provider(repo_url)
+        return await provider.inspect_delivery_candidate(repo_url, review_number, required_checks)
+
+    async def conditional_merge(self, request: MergeRequest) -> MergeReceipt:
+        provider = self._get_delivery_provider(request.repository)
+        return await provider.conditional_merge(request)
+
+    async def reconcile_merge(self, request: MergeRequest) -> MergeReceipt:
+        provider = self._get_delivery_provider(request.repository)
+        return await provider.reconcile_merge(request)
 
     async def create_branch(
         self,

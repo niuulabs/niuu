@@ -5,14 +5,21 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from ting.config import AuthConfig, Settings
+from ting.config import AuthConfig, Settings, WorkflowRepositoryConfig
 from ting.main import create_app
 
 
 @pytest.fixture
 def client() -> TestClient:
     """Create a test client with mocked database pool."""
-    settings = Settings(auth=AuthConfig(allow_anonymous_dev=True))
+    settings = Settings(
+        auth=AuthConfig(allow_anonymous_dev=True),
+        workflow_repository=WorkflowRepositoryConfig(
+            adapter="ting.adapters.postgres_workflows.PostgresWorkflowRepository",
+            kwargs={},
+            seed_bundled=True,
+        ),
+    )
     app = create_app(settings)
 
     mock_pool = AsyncMock()

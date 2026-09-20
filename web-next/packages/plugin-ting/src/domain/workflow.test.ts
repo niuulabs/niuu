@@ -41,6 +41,13 @@ const nodeC = {
   position: { x: 400, y: 0 },
 };
 
+const nodeD = {
+  id: 'node-d',
+  kind: 'wait' as const,
+  label: 'Wait for CI',
+  position: { x: 600, y: 0 },
+};
+
 const edgeAB = {
   id: 'edge-ab',
   source: 'node-a',
@@ -102,12 +109,34 @@ describe('workflowNodeSchema', () => {
     }
   });
 
+  it('parses a passive wait node without persona or gate fields', () => {
+    const result = workflowNodeSchema.parse(nodeD);
+    expect(result).toEqual(nodeD);
+    expect(result.kind).toBe('wait');
+  });
+
+  it('rejects persona execution fields on a passive wait node', () => {
+    expect(() => workflowNodeSchema.parse({ ...nodeD, personaIds: ['reviewer'] })).toThrow();
+    expect(() => workflowNodeSchema.parse({ ...nodeD, stageMembers: [] })).toThrow();
+  });
+
   it('rejects unknown node kind', () => {
     expect(() => workflowNodeSchema.parse({ ...nodeA, kind: 'action' })).toThrow();
   });
 
   it('rejects empty node id', () => {
     expect(() => workflowNodeSchema.parse({ ...nodeA, id: '' })).toThrow();
+  });
+});
+
+describe('workflowSchema wait compatibility', () => {
+  it('requires schema version 2 for passive wait nodes', () => {
+    expect(() => workflowSchema.parse(makeWorkflow({ nodes: [nodeD] }))).toThrow(
+      'Passive wait nodes require workflow schema version 2',
+    );
+    expect(workflowSchema.parse(makeWorkflow({ schemaVersion: 2, nodes: [nodeD] })).nodes).toEqual([
+      nodeD,
+    ]);
   });
 });
 

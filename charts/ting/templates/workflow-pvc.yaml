@@ -1,0 +1,21 @@
+{{- if and .Values.workflowPersistence.enabled (not .Values.workflowPersistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "ting.fullname" . }}-workflows
+  labels:
+    {{- include "ting.labels" . | nindent 4 }}
+  {{- with .Values.workflowPersistence.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.workflowPersistence.accessModes | nindent 4 }}
+  {{- if .Values.workflowPersistence.storageClass }}
+  storageClassName: {{ .Values.workflowPersistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.workflowPersistence.size | quote }}
+{{- end }}

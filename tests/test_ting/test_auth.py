@@ -74,6 +74,21 @@ class TestExtractPrincipalWithHeaders:
         assert data["tenant_id"] == "tenant-1"
         assert data["roles"] == ["volundr:admin", "volundr:developer"]
 
+    def test_explicit_dev_tenant_aligns_cross_service_identity(self, dev_app):
+        dev_app.state.settings.auth.default_tenant_id = "local-tenant"
+        with TestClient(dev_app) as client:
+            assert client.get("/whoami").json()["tenant_id"] == "local-tenant"
+            # Real supplied identity retains its own tenant; the default applies
+            # only to the explicitly anonymous development identity.
+            response = client.get(
+                "/whoami",
+                headers={
+                    "x-auth-user-id": "other-user",
+                    "x-auth-tenant": "other-tenant",
+                },
+            )
+            assert response.json()["tenant_id"] == "other-tenant"
+
     def test_single_role(self, client: TestClient):
         resp = client.get(
             "/whoami",

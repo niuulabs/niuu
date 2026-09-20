@@ -24,10 +24,13 @@ import type {
   WorkflowGateNode,
   WorkflowCondNode,
   WorkflowTriggerNode,
+  WorkflowSubworkflowNode,
   WorkflowEndNode,
   WorkflowResourceNode,
+  WorkflowWaitNode,
 } from '../../domain/workflow';
 import type { WorkflowIssue } from '../../domain/workflowValidation';
+import { parseWorkflowEdgeLabel } from '../../domain/workflowSemantics';
 import type { WorkflowBuilderActions } from './useWorkflowBuilder';
 import type { PersonaEntry } from './LibraryPanel';
 import { MIMIR_MOUNT_MIME, parseWorkflowRegistryMount } from './mimirRegistry';
@@ -37,6 +40,8 @@ import {
   COND_RADIUS,
   TRIGGER_WIDTH,
   TRIGGER_HEIGHT,
+  WAIT_WIDTH,
+  WAIT_HEIGHT,
   END_RADIUS,
   RESOURCE_WIDTH,
   RESOURCE_HEIGHT,
@@ -596,7 +601,9 @@ function TriggerNode({
   onDelete,
   onDragEnd,
   isConnectingMode,
-}: BaseNodeProps<WorkflowTriggerNode>) {
+}: BaseNodeProps<WorkflowTriggerNode | WorkflowSubworkflowNode>) {
+  const outputEvent =
+    node.kind === 'subworkflow' ? 'children.completed' : (node.dispatchEvent ?? 'code.requested');
   const { x, y } = node.position;
   const { handleMouseDown, handleMouseMove, handleMouseUp } = useDragNode({
     x,
@@ -625,7 +632,7 @@ function TriggerNode({
   return (
     <g
       data-testid={`workflow-node-${node.id}`}
-      data-kind="trigger"
+      data-kind={node.kind}
       data-selected={selected ? 'true' : undefined}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
@@ -657,7 +664,9 @@ function TriggerNode({
         {node.label.length > 20 ? node.label.slice(0, 18) + '…' : node.label}
       </text>
       <text x={x + 14} y={y + 38} fill={C.textMuted} fontSize={8.5} fontFamily="var(--font-mono)">
-        {node.dispatchEvent ?? 'code.requested'}
+        {node.kind === 'subworkflow'
+          ? `1–${node.maxChildren} · ${node.workflowDependency}`
+          : outputEvent}
       </text>
       <circle
         data-testid={`trigger-output-${node.id}`}
@@ -669,12 +678,254 @@ function TriggerNode({
         strokeWidth={1}
         onClick={(e) => {
           e.stopPropagation();
-          onStartConnect(node.dispatchEvent ?? 'code.requested');
+          onStartConnect(outputEvent);
         }}
         className="niuu:cursor-pointer"
       />
       {selected && !isConnectingMode && (
         <DeleteButton nodeId={node.id} cx={x + TRIGGER_WIDTH / 2} cy={y - 10} onClick={onDelete} />
+      )}
+    </g>
+  );
+}
+
+export function waitPortLists(nodeId: string, edges: WorkflowEdge[]) {
+  const inputs = edges
+    .filter((edge) => edge.target === nodeId)
+    .map((edge) => parseWorkflowEdgeLabel(edge.label)?.targetEventType)
+    .filter((eventType): eventType is string => Boolean(eventType));
+  const outputs = edges
+    .filter((edge) => edge.source === nodeId)
+    .map((edge) => parseWorkflowEdgeLabel(edge.label)?.sourceEventType)
+    .filter((eventType): eventType is string => Boolean(eventType));
+  return {
+    incomingEvents: [...new Set(inputs)],
+    outgoingEvents: [...new Set(outputs)],
+  };
+}
+
+function requestWaitEventType(direction: 'incoming' | 'continuation', suggested = '') {
+  return window
+    .prompt(
+      direction === 'incoming'
+        ? 'Incoming event type for this wait'
+        : 'Continuation event type emitted after this wait',
+      suggested,
+    )
+    ?.trim();
+}
+
+function WaitNode({
+  node,
+  selected,
+  issueLevel,
+  onSelect,
+  onInspect,
+  onStartConnect,
+  onCompleteConnect,
+  onDelete,
+  onDragEnd,
+  isConnectingMode,
+  incomingEvents,
+  outgoingEvents,
+  connectingFromLabel,
+}: BaseNodeProps<WorkflowWaitNode> & {
+  incomingEvents: string[];
+  outgoingEvents: string[];
+  connectingFromLabel?: string | null;
+}) {
+  const { x, y } = node.position;
+  const portRows = Math.max(incomingEvents.length, outgoingEvents.length);
+  const waitHeight = WAIT_HEIGHT + (portRows > 0 ? 16 + portRows * 14 : 0);
+  const portStartY = y + WAIT_HEIGHT + 8;
+  const completeUnconfiguredConnection = () => {
+    if (incomingEvents.length > 0) return;
+    const selectedEvent = requestWaitEventType('incoming', connectingFromLabel ?? undefined);
+    if (selectedEvent) onCompleteConnect(selectedEvent);
+  };
+  const { handleMouseDown, handleMouseMove, handleMouseUp } = useDragNode({
+    x,
+    y,
+    isConnectingMode,
+    onSelect,
+    onCompleteConnect: completeUnconfiguredConnection,
+    onDragEnd,
+  });
+  const fill = selected
+    ? 'var(--color-bg-elevated)'
+    : issueLevel === 'error'
+      ? C.errorFill
+      : issueLevel === 'warning'
+        ? C.warnFill
+        : 'color-mix(in srgb, var(--status-cyan) 12%, var(--color-bg-secondary))';
+  const stroke = selected
+    ? C.nodeStrokeSelected
+    : issueLevel === 'error'
+      ? C.errorStroke
+      : issueLevel === 'warning'
+        ? C.warnStroke
+        : 'var(--status-cyan)';
+
+  return (
+    <g
+      data-testid={`workflow-node-${node.id}`}
+      data-kind="wait"
+      data-selected={selected ? 'true' : undefined}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onInspect();
+      }}
+      style={{ cursor: isConnectingMode ? 'crosshair' : 'grab' }}
+    >
+      <rect
+        x={x}
+        y={y}
+        width={WAIT_WIDTH}
+        height={waitHeight}
+        rx={8}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={selected || issueLevel ? 2 : 1}
+        strokeDasharray="5 3"
+      />
+      <text
+        x={x + 14}
+        y={y + 22}
+        fill={C.text}
+        fontSize={11}
+        fontWeight="600"
+        fontFamily="var(--font-sans)"
+      >
+        {node.label.length > 20 ? node.label.slice(0, 18) + '…' : node.label}
+      </text>
+      <text x={x + 14} y={y + 38} fill={C.textMuted} fontSize={8.5} fontFamily="var(--font-mono)">
+        {portRows > 0
+          ? `PASSIVE · ${incomingEvents.length} IN · ${outgoingEvents.length} OUT`
+          : 'PASSIVE · CONFIGURE EVENTS'}
+      </text>
+      {incomingEvents.map((eventType, index) => (
+        <g key={`in-${eventType}`}>
+          {isConnectingMode && (
+            <circle
+              data-testid={`wait-input-${node.id}${index === 0 ? '' : `-${index}`}`}
+              data-event-type={eventType}
+              cx={x + 8}
+              cy={portStartY + index * 14}
+              r={4}
+              fill="var(--color-bg-primary)"
+              stroke="var(--color-brand)"
+              strokeWidth={1}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onCompleteConnect(eventType);
+              }}
+              className="niuu:cursor-pointer"
+            />
+          )}
+          <rect
+            x={x + 16}
+            y={portStartY + index * 14 - 5}
+            width={64}
+            height={10}
+            rx={3}
+            fill="var(--color-bg-primary)"
+            stroke="var(--color-border-subtle)"
+          />
+          <text
+            x={x + 21}
+            y={portStartY + index * 14 + 3}
+            fill={C.textMuted}
+            fontSize={6.5}
+            fontFamily="var(--font-mono)"
+            className="niuu:pointer-events-none niuu:select-none"
+          >
+            {eventType.length > 14 ? `${eventType.slice(0, 13)}…` : eventType}
+          </text>
+        </g>
+      ))}
+      {outgoingEvents.map((eventType, index) => (
+        <g key={`out-${eventType}`}>
+          <rect
+            x={x + WAIT_WIDTH - 80}
+            y={portStartY + index * 14 - 5}
+            width={64}
+            height={10}
+            rx={3}
+            fill="var(--color-bg-primary)"
+            stroke="var(--color-border-subtle)"
+          />
+          <text
+            x={x + WAIT_WIDTH - 16}
+            y={portStartY + index * 14 + 3}
+            textAnchor="end"
+            fill={C.text}
+            fontSize={6.5}
+            fontFamily="var(--font-mono)"
+            className="niuu:pointer-events-none niuu:select-none"
+          >
+            {eventType.length > 14 ? `${eventType.slice(0, 13)}…` : eventType}
+          </text>
+          <circle
+            data-testid={`wait-output-${node.id}${index === 0 ? '' : `-${index}`}`}
+            data-event-type={eventType}
+            cx={x + WAIT_WIDTH - 8}
+            cy={portStartY + index * 14}
+            r={4}
+            fill={
+              connectingFromLabel === eventType ? 'var(--color-brand)' : 'var(--color-bg-primary)'
+            }
+            stroke="var(--color-brand)"
+            strokeWidth={1}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onStartConnect(eventType);
+            }}
+            className="niuu:cursor-pointer"
+          />
+        </g>
+      ))}
+      {isConnectingMode && incomingEvents.length === 0 && (
+        <circle
+          data-testid={`wait-input-${node.id}`}
+          cx={x + 6}
+          cy={y + WAIT_HEIGHT / 2}
+          r={4}
+          fill="var(--color-bg-primary)"
+          stroke="var(--color-brand)"
+          strokeWidth={1}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            completeUnconfiguredConnection();
+          }}
+          className="niuu:cursor-pointer"
+        />
+      )}
+      {outgoingEvents.length === 0 && (
+        <circle
+          data-testid={`wait-output-${node.id}`}
+          cx={x + WAIT_WIDTH - 10}
+          cy={y + WAIT_HEIGHT / 2}
+          r={4}
+          fill="var(--color-bg-primary)"
+          stroke="var(--color-brand)"
+          strokeWidth={1}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            const selectedEvent = requestWaitEventType('continuation');
+            if (selectedEvent) onStartConnect(selectedEvent);
+          }}
+          className="niuu:cursor-pointer"
+        />
+      )}
+      {selected && !isConnectingMode && (
+        <DeleteButton nodeId={node.id} cx={x + WAIT_WIDTH / 2} cy={y - 10} onClick={onDelete} />
       )}
     </g>
   );
@@ -927,11 +1178,19 @@ export function renderedStageHeight(node: WorkflowStageNode, personas: PersonaEn
 
 export function splitEdgePorts(label?: string) {
   if (!label) return { sourcePort: null, targetPort: null };
+  const parsed = parseWorkflowEdgeLabel(label);
+  if (parsed) {
+    return {
+      sourcePort: parsed.sourceEventType,
+      targetPort: parsed.targetEventType,
+    };
+  }
   const [rawSourcePort, rawTargetPort] = label.split(' -> ', 2);
-  const sourcePort = rawSourcePort ?? null;
-  const targetPort = rawTargetPort ?? null;
   if (rawTargetPort !== undefined) {
-    return { sourcePort, targetPort };
+    return {
+      sourcePort: rawSourcePort ?? null,
+      targetPort: rawTargetPort,
+    };
   }
   return { sourcePort: label, targetPort: label };
 }
@@ -955,6 +1214,7 @@ export function isGraphNodeKind(nodeKind: string): nodeKind is WorkflowNode['kin
     nodeKind === 'resource' ||
     nodeKind === 'gate' ||
     nodeKind === 'cond' ||
+    nodeKind === 'wait' ||
     nodeKind === 'end'
   );
 }
@@ -964,10 +1224,22 @@ export function edgeAnchor(
   direction: 'source' | 'target',
   portLabel: string | null,
   personas: PersonaEntry[],
+  edges: WorkflowEdge[] = [],
 ) {
-  if (node.kind !== 'stage' || !portLabel) {
+  if (!portLabel) {
     return nodeCentre(node);
   }
+  if (node.kind === 'wait') {
+    const { incomingEvents, outgoingEvents } = waitPortLists(node.id, edges);
+    const portList = direction === 'source' ? outgoingEvents : incomingEvents;
+    const index = portList.indexOf(portLabel);
+    if (index === -1) return nodeCentre(node);
+    return {
+      x: direction === 'source' ? node.position.x + WAIT_WIDTH - 8 : node.position.x + 8,
+      y: node.position.y + WAIT_HEIGHT + 8 + index * 14,
+    };
+  }
+  if (node.kind !== 'stage') return nodeCentre(node);
   const { knownInputs, knownOutputs } = stagePortLists(node, personas);
   const portList = direction === 'source' ? knownOutputs : knownInputs;
   const index = portList.indexOf(portLabel);
@@ -984,12 +1256,14 @@ export function edgeAnchor(
 
 function WorkflowEdgePath({
   edge,
+  edges,
   nodes,
   personas,
   selected,
   onSelect,
 }: {
   edge: WorkflowEdge;
+  edges: WorkflowEdge[];
   nodes: Map<string, WorkflowNode>;
   personas: PersonaEntry[];
   selected: boolean;
@@ -999,8 +1273,8 @@ function WorkflowEdgePath({
   const tgt = nodes.get(edge.target);
   if (!src || !tgt) return null;
   const { sourcePort, targetPort } = splitEdgePorts(edge.label);
-  const srcC = edgeAnchor(src, 'source', sourcePort, personas);
-  const tgtC = edgeAnchor(tgt, 'target', targetPort, personas);
+  const srcC = edgeAnchor(src, 'source', sourcePort, personas, edges);
+  const tgtC = edgeAnchor(tgt, 'target', targetPort, personas, edges);
   const c1x = srcC.x + edge.cp1.x;
   const c1y = srcC.y + edge.cp1.y;
   const c2x = tgtC.x + edge.cp2.x;
@@ -1289,6 +1563,14 @@ export function GraphView({
           Condition
         </button>
         <button
+          data-testid="add-wait"
+          onClick={() => onAddNode('wait')}
+          className={toolbarBtnClass}
+          title="Add passive wait node"
+        >
+          Wait
+        </button>
+        <button
           data-testid="add-end"
           onClick={() => onAddNode('end')}
           className={toolbarBtnClass}
@@ -1350,6 +1632,7 @@ export function GraphView({
             <WorkflowEdgePath
               key={edge.id}
               edge={edge}
+              edges={edges}
               nodes={nodeMap}
               personas={personas}
               selected={edge.id === selectedEdgeId}
@@ -1364,6 +1647,7 @@ export function GraphView({
             const props = nodeProps(node);
             switch (node.kind) {
               case 'trigger':
+              case 'subworkflow':
                 return <TriggerNode key={node.id} node={node} {...props} />;
               case 'stage':
                 return (
@@ -1379,6 +1663,16 @@ export function GraphView({
                 return <GateNode key={node.id} node={node} {...props} />;
               case 'cond':
                 return <CondNode key={node.id} node={node} {...props} />;
+              case 'wait':
+                return (
+                  <WaitNode
+                    key={node.id}
+                    node={node}
+                    {...waitPortLists(node.id, edges)}
+                    connectingFromLabel={connectingFromLabel}
+                    {...props}
+                  />
+                );
               case 'end':
                 return <EndNode key={node.id} node={node} {...props} />;
               case 'resource':

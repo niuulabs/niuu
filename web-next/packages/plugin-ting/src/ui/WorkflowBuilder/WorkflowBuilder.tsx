@@ -17,6 +17,7 @@
 import { useMemo } from 'react';
 import { SegmentedFilter } from '@niuulabs/ui';
 import type { Workflow } from '../../domain/workflow';
+import type { WorkflowExportFormat } from '../../ports';
 import { validateWorkflowFull } from '../../domain/workflowValidation';
 import {
   useWorkflowBuilder,
@@ -46,6 +47,13 @@ export interface WorkflowBuilderProps {
   onLaunch?: (workflow: Workflow) => void;
   /** Optional loading flag for workflow launch actions. */
   launchPending?: boolean;
+  /** Export the persisted portable document or self-contained bundle. */
+  onExport?: (format: WorkflowExportFormat) => void;
+  exportPending?: boolean;
+  /** Explicitly create an editable local workflow from a read-only bundled definition. */
+  onEditAsCopy?: (workflow: Workflow) => void;
+  /** Explicitly repin one dependency to the current local persona revision. */
+  onRefreshPersona?: (workflow: Workflow, alias: string) => void;
 }
 
 const VIEWS: WorkflowView[] = ['graph', 'pipeline', 'yaml'];
@@ -68,6 +76,10 @@ export function WorkflowBuilder({
   registryMounts = [],
   onLaunch,
   launchPending = false,
+  onExport,
+  exportPending = false,
+  onEditAsCopy,
+  onRefreshPersona,
 }: WorkflowBuilderProps) {
   const builder = useWorkflowBuilder(initialWorkflow, personas ?? DEFAULT_PERSONAS, models);
   const {
@@ -116,6 +128,13 @@ export function WorkflowBuilder({
   );
   const errorCount = issues.filter((i) => i.severity === 'error').length;
   const warnCount = issues.filter((i) => i.severity === 'warning').length;
+  const unresolvedPersonas = Object.entries(workflow.personaDependencies ?? {}).filter(
+    ([, dependency]) => dependency.resolved === false,
+  );
+  const unresolvedRequirements = (workflow.requirements ?? []).filter(
+    (requirement) => !requirement.resolved,
+  );
+  const launchBlocked = unresolvedPersonas.length > 0 || unresolvedRequirements.length > 0;
 
   const selectedNode = selectedNodeId
     ? (workflow.nodes.find((n) => n.id === selectedNodeId) ?? null)
@@ -213,20 +232,55 @@ export function WorkflowBuilder({
               data-testid="save-workflow"
               onClick={handleSave}
             >
-              Save as…
+              Save
             </button>
           )}
+          {workflow.readOnly && onEditAsCopy ? (
+            <button
+              type="button"
+              className={ACTION_BTN}
+              data-testid="edit-workflow-as-copy"
+              onClick={() => onEditAsCopy(workflow)}
+            >
+              Edit as copy
+            </button>
+          ) : null}
           {onLaunch && (
             <button
               type="button"
               className={ACTION_BTN}
               data-testid="launch-workflow"
               onClick={handleLaunch}
-              disabled={launchPending}
+              disabled={launchPending || launchBlocked}
+              title={
+                launchBlocked ? 'Resolve persona dependencies and local bindings first.' : undefined
+              }
             >
               {launchPending ? 'Launching…' : 'Launch…'}
             </button>
           )}
+          {onExport ? (
+            <>
+              <button
+                type="button"
+                className={ACTION_BTN}
+                data-testid="export-workflow-yaml"
+                disabled={exportPending}
+                onClick={() => onExport('yaml')}
+              >
+                Export YAML
+              </button>
+              <button
+                type="button"
+                className={ACTION_BTN}
+                data-testid="export-workflow-bundle"
+                disabled={exportPending}
+                onClick={() => onExport('bundle')}
+              >
+                Export bundle
+              </button>
+            </>
+          ) : null}
           <button
             type="button"
             className="niuu:bg-transparent niuu:border niuu:border-solid niuu:border-brand niuu:rounded-md niuu:text-brand niuu:font-sans niuu:text-xs niuu:py-1.5 niuu:px-3 niuu:cursor-pointer niuu:whitespace-nowrap niuu:hover:bg-brand/10 niuu:transition-colors"
@@ -238,6 +292,46 @@ export function WorkflowBuilder({
             Dispatch
           </button>
         </div>
+
+        {workflow.readOnly || unresolvedPersonas.length > 0 || unresolvedRequirements.length > 0 ? (
+          <div
+            data-testid="workflow-catalog-status"
+            className="niuu:border-b niuu:border-border niuu:bg-bg-tertiary niuu:px-6 niuu:py-2 niuu:text-xs niuu:text-text-secondary"
+          >
+            {workflow.readOnly ? (
+              <div>Bundled workflow · read-only. Create a local copy to save changes.</div>
+            ) : null}
+            {unresolvedPersonas.map(([alias, dependency]) => (
+              <div key={alias} data-testid={`unresolved-persona-${alias}`}>
+                Persona {alias}: {dependency.id}@{dependency.revision} is unresolved
+                {dependency.message ? ` — ${dependency.message}` : ''}.
+              </div>
+            ))}
+            {unresolvedRequirements.map((requirement) => (
+              <div key={requirement.id} data-testid={`unresolved-requirement-${requirement.id}`}>
+                {requirement.message ||
+                  `${requirement.kind} binding ${requirement.id} is unresolved.`}
+              </div>
+            ))}
+            {Object.entries(workflow.personaDependencies ?? {})
+              .filter(([, dependency]) => dependency.resolved !== false)
+              .map(([alias, dependency]) => (
+                <div key={alias} data-testid={`persona-dependency-${alias}`}>
+                  Persona {alias}: {dependency.id}@{dependency.revision}{' '}
+                  {onRefreshPersona && !workflow.readOnly ? (
+                    <button
+                      type="button"
+                      className="niuu:border-0 niuu:bg-transparent niuu:p-0 niuu:text-xs niuu:text-brand niuu:cursor-pointer niuu:hover:underline"
+                      title="Updates this dependency for future runs; existing run snapshots do not change."
+                      onClick={() => onRefreshPersona(workflow, alias)}
+                    >
+                      Use current local persona
+                    </button>
+                  ) : null}
+                </div>
+              ))}
+          </div>
+        ) : null}
 
         {/* Canvas content */}
         <div className="niuu:flex-1 niuu:flex niuu:flex-col niuu:relative niuu:min-h-0">

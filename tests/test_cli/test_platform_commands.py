@@ -972,6 +972,36 @@ def test_only_mini_selects_no_auth(mode, monkeypatch):
     assert TingSettings().authorization.adapter.endswith("AllowAllAuthorizationAdapter")
 
 
+def test_compute_pod_manager_environment_preserves_typed_kwargs() -> None:
+    settings = CLISettings(
+        mode="mini",
+        pod_manager={
+            "adapter": "volundr.adapters.outbound.vm_pod_manager.VmPodManager",
+            "runtime_backend": "openshell",
+            "profile": "cpu",
+            "pool_id": "acme-forge",
+            "max_machines": 1,
+            "poll_interval_seconds": 5,
+        },
+        compute={
+            "pool_id": "acme-forge",
+            "max_machines": 1,
+            "provider": {"adapter": "private.Provider", "kwargs": {}},
+            "auth": {"adapter": "private.Auth", "kwargs": {}},
+            "runtime": {"adapter": "private.Runtime", "kwargs": {}},
+        },
+    )
+
+    env = _resolve_local_pod_manager_env(settings)
+    pod_manager = json.loads(env["POD_MANAGER"])
+
+    assert pod_manager["runtime_backend"] == "openshell"
+    assert "runtime_backend" not in pod_manager["kwargs"]
+    assert pod_manager["kwargs"]["max_machines"] == 1
+    assert pod_manager["kwargs"]["poll_interval_seconds"] == 5
+    assert "POD_MANAGER__KWARGS__MAX_MACHINES" not in env
+
+
 class TestModelServerSeeds:
     """Every model server the bundle routes is seeded as a "Model server" AI provider."""
 

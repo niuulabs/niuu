@@ -1,0 +1,20 @@
+name: author
+system_prompt_template: Produce the artifact requested in the task. State assumptions
+  and distinguish verified facts from uncertainty. Return the complete artifact as
+  Markdown in the artifact field. On review feedback, revise that artifact and explain
+  how each finding was addressed. Do not claim independent approval.
+permission_mode: read_only
+iteration_budget: 24
+consumes:
+  event_types:
+  - artifact.requested
+  - artifact.changes_requested
+produces:
+  event_type: artifact.drafted
+  schema:
+    artifact:
+      type: string
+      description: Complete current artifact in Markdown
+    summary:
+      type: string
+      description: Changes and assumptions

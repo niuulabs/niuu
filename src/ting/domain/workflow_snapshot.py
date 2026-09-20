@@ -2,30 +2,254 @@
 
 from __future__ import annotations
 
+import copy
 import re
+from dataclasses import replace
 from typing import Any
 
+import yaml
+
+from ravn.domain.persona_document import (
+    PersonaDependency,
+    PersonaDependencyResolutionError,
+    PortablePersonaSource,
+    resolve_persona_dependencies,
+    validate_persona_identifier,
+)
+from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition
+from ting.domain.workflow_document import load_workflow_document, workflow_document_revision
 
 
-def build_workflow_snapshot(workflow: WorkflowDefinition) -> dict[str, Any]:
+def pin_workflow_personas(
+    workflow: WorkflowDefinition,
+    persona_source: PortablePersonaSource | None,
+) -> WorkflowDefinition:
+    """Return a workflow with every referenced alias pinned to exact source.
+
+    Existing scoped definitions are reused exactly. New aliases resolve their
+    current content revision by stable persona id (the alias). Definitions for
+    aliases removed from the graph are removed from the aggregate.
+    """
+    referenced = workflow_personas_from_snapshot({"graph": workflow.graph})
+    aliases = [str(persona.get("name") or "").strip() for persona in referenced]
+    aliases = [alias for alias in aliases if alias]
+    existing_dependencies = getattr(workflow, "persona_dependencies", {}) or {}
+    scoped_definitions = getattr(workflow, "persona_definitions", {}) or {}
+
+    dependencies: dict[str, PersonaDependency] = {}
+    definitions: dict[str, dict[str, Any]] = {}
+    for alias in aliases:
+        validate_persona_identifier(alias, field="Workflow persona alias")
+        existing = existing_dependencies.get(alias)
+        if existing is not None:
+            resolved = resolve_persona_dependencies(
+                {alias: existing},
+                scoped_definitions,
+                persona_source,
+            )[alias]
+            path = getattr(existing, "path", None)
+            dependencies[alias] = PersonaDependency(
+                id=resolved.id,
+                revision=resolved.revision,
+                digest=resolved.digest,
+                path=path,
+            )
+            definitions[alias] = resolved.to_dict()
+            continue
+
+        if persona_source is None:
+            raise PersonaDependencyResolutionError(
+                f"Workflow persona alias '{alias}' is unpinned and no authoritative persona "
+                "source is configured"
+            )
+        document = persona_source.load_current_portable(alias)
+        if document is None:
+            raise PersonaDependencyResolutionError(
+                f"Workflow persona alias '{alias}' cannot be pinned because its current "
+                "portable source is unavailable"
+            )
+        dependencies[alias] = document.dependency
+        definitions[alias] = document.to_dict()
+
+    return replace(
+        workflow,
+        persona_dependencies=dependencies,
+        persona_definitions=definitions,
+    )
+
+
+def build_workflow_snapshot(
+    workflow: WorkflowDefinition,
+    *,
+    persona_source: PortablePersonaSource | None = None,
+) -> dict[str, Any]:
     """Build a serializable workflow snapshot for saga assignment and dispatch."""
-    graph_snapshot = {"graph": workflow.graph}
+    unresolved_requirements = [
+        requirement
+        for requirement in getattr(workflow, "requirements", [])
+        if not requirement.get("resolved")
+    ]
+    if unresolved_requirements:
+        raise ValueError("Resolve imported workflow bindings before creating an execution snapshot")
+
+    graph = copy.deepcopy(workflow.graph)
+    graph_snapshot = {"graph": graph}
     personas = workflow_personas_from_snapshot(graph_snapshot)
     resource_nodes = workflow_resource_nodes_from_snapshot(graph_snapshot)
     resource_bindings = workflow_resource_bindings_from_snapshot(graph_snapshot)
     mimir = workflow_mimir_from_snapshot(graph_snapshot)
-    return {
+    raw_dependencies = getattr(workflow, "persona_dependencies", {}) or {}
+    scoped_definitions = getattr(workflow, "persona_definitions", {}) or {}
+    resolved_definitions = resolve_persona_dependencies(
+        raw_dependencies,
+        scoped_definitions,
+        persona_source,
+    )
+    resolved_workflows = validate_workflow_dependency_closure(workflow)
+    snapshot = {
+        "schema_version": workflow.schema_version,
         "workflow_id": str(workflow.id),
         "name": workflow.name,
         "version": workflow.version,
         "scope": workflow.scope.value,
-        "graph": workflow.graph,
-        "personas": personas,
-        "resource_nodes": resource_nodes,
-        "resource_bindings": resource_bindings,
-        "mimir": mimir,
+        "graph": graph,
+        "personas": copy.deepcopy(personas),
+        "resource_nodes": copy.deepcopy(resource_nodes),
+        "resource_bindings": copy.deepcopy(resource_bindings),
+        "mimir": copy.deepcopy(mimir),
+        "workflow_dependencies": {
+            alias: dependency.to_dict()
+            for alias, dependency in workflow.workflow_dependencies.items()
+        },
+        "workflow_definitions": resolved_workflows,
     }
+    if raw_dependencies:
+        snapshot["persona_dependencies"] = {
+            alias: (
+                dependency.to_dict()
+                if hasattr(dependency, "to_dict")
+                else {
+                    "id": dependency.id,
+                    "revision": dependency.revision,
+                    "digest": dependency.digest,
+                    **({"path": dependency.path} if dependency.path is not None else {}),
+                }
+            )
+            for alias, dependency in raw_dependencies.items()
+        }
+        snapshot["persona_definitions"] = {
+            alias: document.to_dict() for alias, document in resolved_definitions.items()
+        }
+    return snapshot
+
+
+def validate_workflow_dependency_closure(
+    workflow: WorkflowDefinition,
+) -> dict[str, dict[str, Any]]:
+    """Validate and copy an immutable workflow-scoped dependency closure."""
+    return _validate_workflow_dependency_scope(
+        workflow.workflow_dependencies,
+        workflow.workflow_definitions,
+        lineage=(workflow.id,),
+        location=f"workflow {workflow.id}",
+    )
+
+
+def _validate_workflow_dependency_scope(
+    dependencies: dict[str, Any],
+    definitions: dict[str, dict[str, Any]],
+    *,
+    lineage: tuple[Any, ...],
+    location: str,
+) -> dict[str, dict[str, Any]]:
+    missing = set(dependencies) - set(definitions)
+    undeclared = set(definitions) - set(dependencies)
+    if missing:
+        raise WorkflowDocumentError(
+            f"{location} is missing scoped workflow definition(s): " + ", ".join(sorted(missing))
+        )
+    if undeclared:
+        raise WorkflowDocumentError(
+            f"{location} has undeclared scoped workflow definition(s): "
+            + ", ".join(sorted(undeclared))
+        )
+
+    resolved: dict[str, dict[str, Any]] = {}
+    for alias, dependency in dependencies.items():
+        aggregate = definitions[alias]
+        if not isinstance(aggregate, dict):
+            raise WorkflowDocumentError(
+                f"{location} dependency {alias!r} scoped definition must be a mapping"
+            )
+        expected_fields = {"document", "persona_definitions", "workflow_definitions"}
+        if set(aggregate) != expected_fields:
+            raise WorkflowDocumentError(
+                f"{location} dependency {alias!r} scoped definition must contain exactly "
+                "document, persona_definitions, and workflow_definitions"
+            )
+        raw_document = aggregate["document"]
+        child_personas = aggregate["persona_definitions"]
+        child_workflows = aggregate["workflow_definitions"]
+        if not isinstance(raw_document, dict):
+            raise WorkflowDocumentError(
+                f"{location} dependency {alias!r} document must be a mapping"
+            )
+        if not isinstance(child_personas, dict) or not isinstance(child_workflows, dict):
+            raise WorkflowDocumentError(
+                f"{location} dependency {alias!r} scoped definitions must be mappings"
+            )
+        try:
+            child = load_workflow_document(
+                yaml.safe_dump(raw_document, sort_keys=False, allow_unicode=True)
+            )
+        except (TypeError, ValueError, yaml.YAMLError) as exc:
+            raise WorkflowDocumentError(
+                f"{location} dependency {alias!r} has an invalid scoped document: {exc}"
+            ) from exc
+        revision = workflow_document_revision(child)
+        if (
+            child.id != dependency.id
+            or dependency.revision != revision
+            or dependency.digest != revision
+        ):
+            raise WorkflowDocumentError(
+                f"{location} dependency {alias!r} does not match exact pin "
+                f"{dependency.id}@{dependency.revision} ({dependency.digest})"
+            )
+        if child.id in lineage:
+            cycle = " -> ".join(str(item) for item in (*lineage, child.id))
+            raise WorkflowDocumentError(f"Workflow dependency cycle: {cycle}")
+        extra_personas = set(child_personas) - set(child.persona_dependencies)
+        if extra_personas:
+            raise WorkflowDocumentError(
+                f"{location} dependency {alias!r} has undeclared persona definition(s): "
+                + ", ".join(sorted(extra_personas))
+            )
+        try:
+            resolved_personas = resolve_persona_dependencies(
+                child.persona_dependencies,
+                child_personas,
+                None,
+            )
+        except PersonaDependencyResolutionError as exc:
+            raise WorkflowDocumentError(
+                f"{location} dependency {alias!r} persona closure is invalid: {exc}"
+            ) from exc
+        nested = _validate_workflow_dependency_scope(
+            child.workflow_dependencies,
+            child_workflows,
+            lineage=(*lineage, child.id),
+            location=f"{location} dependency {alias!r}",
+        )
+        resolved[alias] = {
+            "document": copy.deepcopy(raw_document),
+            "persona_definitions": {
+                name: definition.to_dict() for name, definition in resolved_personas.items()
+            },
+            "workflow_definitions": nested,
+        }
+    return resolved
 
 
 def workflow_name_from_snapshot(snapshot: dict[str, Any] | None) -> str | None:
@@ -127,6 +351,35 @@ def workflow_personas_from_snapshot(snapshot: dict[str, Any] | None) -> list[dic
             personas.append({"name": persona_id})
 
     return personas
+
+
+def workflow_runtime_personas_from_snapshot(
+    snapshot: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Return personas with their exact portable source documents attached."""
+    personas = workflow_personas_from_snapshot(snapshot)
+    if not snapshot:
+        return personas
+    dependencies = snapshot.get("persona_dependencies")
+    definitions = snapshot.get("persona_definitions")
+    if not isinstance(dependencies, dict) or not dependencies:
+        return personas
+    if not isinstance(definitions, dict):
+        raise ValueError("Workflow snapshot is missing resolved persona definitions")
+
+    runtime_personas: list[dict[str, Any]] = []
+    for persona in personas:
+        runtime_persona = dict(persona)
+        alias = str(runtime_persona.get("name") or "").strip()
+        validate_persona_identifier(alias, field="Workflow persona alias")
+        if alias not in dependencies:
+            raise ValueError(f"Workflow persona alias {alias!r} is not declared as a dependency")
+        definition = definitions.get(alias)
+        if not isinstance(definition, dict):
+            raise ValueError(f"Workflow persona dependency {alias!r} has no resolved definition")
+        runtime_persona["portable_definition"] = dict(definition)
+        runtime_personas.append(runtime_persona)
+    return runtime_personas
 
 
 def workflow_resource_nodes_from_snapshot(snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:

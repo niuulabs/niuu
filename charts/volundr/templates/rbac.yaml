@@ -47,7 +47,15 @@ rules:
   # Access to secrets for API keys
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "watch"]
+    verbs:
+      - get
+      - list
+      - watch
+      {{- if .Values.developerExecutionCredentials.enabled }}
+      - create
+      - patch
+      - delete
+      {{- end }}
   # Access to configmaps
   - apiGroups: [""]
     resources: ["configmaps"]
@@ -122,6 +130,12 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch"]
+  {{- if .Values.developerExecutionCredentials.enabled }}
+  # Rotating per-session coordinator bearer Secrets in the session namespace.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "patch", "delete"]
+  {{- end }}
   {{- with .Values.rbac.extraClusterRules }}
   {{- toYaml . | nindent 2 }}
   {{- end }}

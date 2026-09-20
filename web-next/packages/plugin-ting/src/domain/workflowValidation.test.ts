@@ -48,6 +48,15 @@ function makeCond(id: string): WorkflowNode {
   };
 }
 
+function makeWait(id: string): WorkflowNode {
+  return {
+    id,
+    kind: 'wait',
+    label: `Wait ${id}`,
+    position: { x: 0, y: 0 },
+  };
+}
+
 function makeEdge(id: string, source: string, target: string, label?: string): WorkflowEdge {
   return {
     id,
@@ -135,6 +144,34 @@ describe('validateWorkflowFull — cycle', () => {
     ];
     const issues = validateWorkflowFull(makeWorkflow(nodes, edges));
     expect(issues.filter((i) => i.kind === 'cycle')).toHaveLength(0);
+  });
+
+  it.each([
+    ['plan review feedback', 'plan.review.completed -> plan.review.completed'],
+    ['child repair', 'developer.workstream.repair_requested -> developer.children.waiting'],
+    ['provider wait resume', 'developer.delivery.observed -> developer.delivery.observed'],
+  ])('does not report cycle for %s', (_name, feedbackLabel) => {
+    const nodes = [makeStage('forward'), makeStage('feedback')];
+    const edges = [
+      makeEdge('forward', 'forward', 'feedback', 'workflow.progressed -> workflow.progressed'),
+      makeEdge('feedback', 'feedback', 'forward', feedbackLabel),
+    ];
+
+    const issues = validateWorkflowFull(makeWorkflow(nodes, edges));
+
+    expect(issues.filter((issue) => issue.kind === 'cycle')).toHaveLength(0);
+  });
+
+  it('still reports a cycle whose outcome is not a recognized feedback or resume event', () => {
+    const nodes = [makeStage('forward'), makeStage('backward')];
+    const edges = [
+      makeEdge('forward', 'forward', 'backward', 'workflow.progressed -> workflow.progressed'),
+      makeEdge('backward', 'backward', 'forward', 'review.completed -> review.completed'),
+    ];
+
+    const issues = validateWorkflowFull(makeWorkflow(nodes, edges));
+
+    expect(issues.filter((issue) => issue.kind === 'cycle')).toHaveLength(2);
   });
 });
 
@@ -290,6 +327,14 @@ describe('validateWorkflowFull — missing_persona', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateWorkflowFull — no_producer', () => {
+  it('reports no_producer for a passive wait with no incoming edge', () => {
+    const nodes = [makeStage('s1'), makeWait('w1')];
+    const issues = validateWorkflowFull(makeWorkflow(nodes, []));
+    expect(issues).toContainEqual(
+      expect.objectContaining({ kind: 'no_producer', nodeId: 'w1', severity: 'error' }),
+    );
+  });
+
   it('reports no_producer for gate node with no incoming edges', () => {
     const nodes = [makeStage('s1'), makeGate('g1')];
     const edges: WorkflowEdge[] = []; // gate has no input
@@ -331,6 +376,25 @@ describe('validateWorkflowFull — no_producer', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateWorkflowFull — no_consumer', () => {
+  it('reports an error for a passive wait with no outgoing edge', () => {
+    const nodes = [makeStage('s1'), makeWait('w1')];
+    const edges = [makeEdge('e1', 's1', 'w1', 'custom.build.waiting -> custom.build.waiting')];
+    const issues = validateWorkflowFull(makeWorkflow(nodes, edges));
+    expect(issues).toContainEqual(
+      expect.objectContaining({ kind: 'no_consumer', nodeId: 'w1', severity: 'error' }),
+    );
+  });
+
+  it('accepts a passive wait with incoming and outgoing event edges', () => {
+    const nodes = [makeStage('s1'), makeWait('w1'), makeGate('g1')];
+    const edges = [
+      makeEdge('e1', 's1', 'w1', 'custom.build.waiting -> custom.build.waiting'),
+      makeEdge('e2', 'w1', 'g1', 'custom.build.finished -> custom.build.finished'),
+    ];
+    const issues = validateWorkflowFull(makeWorkflow(nodes, edges));
+    expect(issues.filter((issue) => issue.nodeId === 'w1')).toHaveLength(0);
+  });
+
   it('reports no_consumer for stage with no outgoing edges in multi-node workflow', () => {
     const nodes = [makeStage('s1'), makeStage('s2')];
     const edges: WorkflowEdge[] = []; // no edges at all

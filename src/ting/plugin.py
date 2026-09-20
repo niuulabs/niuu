@@ -123,6 +123,9 @@ class TingPlugin(ServicePlugin):
 
     def register_commands(self, app: typer.Typer) -> None:
         """Mount workflow commands directly on the main app."""
+        from ting.workflow_authoring import create_workflow_commands
+
+        app.add_typer(create_workflow_commands(), name="workflows")
         plugin = self
 
         # ── Sagas ──────────────────────────────────────────────────── #

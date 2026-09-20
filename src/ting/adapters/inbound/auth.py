@@ -70,7 +70,7 @@ async def extract_principal(request: Request) -> Principal:
         return Principal(
             user_id=default_uid,
             email="",
-            tenant_id="",
+            tenant_id=settings.auth.default_tenant_id if settings else "",
             roles=["volundr:developer"],
         )
     return Principal(

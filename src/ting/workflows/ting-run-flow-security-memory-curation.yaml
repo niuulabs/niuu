@@ -1,0 +1,174 @@
+schema_version: 1
+id: 29393e53-5a29-5f37-aa87-1171aaf20726
+name: Ting Run Flow + Security + Memory Curation
+description: Ting to Volundr ravn_flock workflow with parallel review, security, post-mortem ingest, and
+  visible Mimir curation.
+version: 1.0.0
+persona_dependencies:
+  coder:
+    id: coder
+    revision: content-d0370185bc60dd12
+    digest: sha256:d0370185bc60dd12c1994bb84bb8864bafcb698576813a06591473489a25a6dd
+    path: personas/coder.yaml
+  mimir-memory-curator:
+    id: mimir-memory-curator
+    revision: content-b3dc0ccc29efb5d7
+    digest: sha256:b3dc0ccc29efb5d728617606db37ab86946948734d3b5b1a17f14acf01f67eb4
+    path: personas/mimir-memory-curator.yaml
+  postmortem-analyst:
+    id: postmortem-analyst
+    revision: content-e584025c06b7e8f0
+    digest: sha256:e584025c06b7e8f0163c0edd8051af5b0accfbca1a327c83887967da5733dd23
+    path: personas/postmortem-analyst.yaml
+  reviewer:
+    id: reviewer
+    revision: content-ad16133b08a3cdbd
+    digest: sha256:ad16133b08a3cdbd178971e0faceaabbc2196ffa4c08b0f038e1ed50db8c2f03
+    path: personas/reviewer.yaml
+  security-auditor:
+    id: security-auditor
+    revision: content-ce41b76f3a14e0ff
+    digest: sha256:ce41b76f3a14e0ff9134b689c15d80ebf0aa2c8bc6d3809a88f22b3a302ba70a
+    path: personas/security-auditor.yaml
+graph:
+  nodes:
+  - id: dispatch-root
+    kind: trigger
+    label: Dispatch run
+    source: ting dispatch
+    dispatchEvent: code.requested
+    position:
+      x: 96
+      y: 264
+  - id: run-coder
+    kind: stage
+    label: Implement code
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: coder
+      budget: 40
+      model: gpt-5.5
+    position:
+      x: 320
+      y: 264
+  - id: run-reviewer
+    kind: stage
+    label: Review changes
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: reviewer
+      budget: 25
+      model: gpt-5.5
+    position:
+      x: 560
+      y: 160
+  - id: run-security
+    kind: stage
+    label: Security review
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: security-auditor
+      budget: 25
+      model: gpt-5.5
+    position:
+      x: 560
+      y: 352
+  - id: run-memory
+    kind: resource
+    label: Shared Mimir Memory
+    resourceType: mimir
+    bindingMode: registry
+    registryEntryId: tmp-mimir-test
+    path: /tmp/mimir-test
+    role: shared
+    categories:
+    - memory
+    - postmortem
+    position:
+      x: 560
+      y: 488
+  - id: run-postmortem
+    kind: stage
+    label: Capture post-mortem
+    executionMode: sequential
+    joinMode: all
+    stageMembers:
+    - personaId: postmortem-analyst
+      budget: 18
+      model: gpt-5.5
+    position:
+      x: 816
+      y: 232
+  - id: run-memory-curator
+    kind: stage
+    label: Curate shared memory
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: mimir-memory-curator
+      budget: 20
+      model: gpt-5.5
+      consumesEventTypes:
+      - mimir.source.ingested
+      eventFilters:
+        mount_names: tmp-mimir-test
+    position:
+      x: 1064
+      y: 232
+  - id: run-complete
+    kind: end
+    label: Run complete
+    joinMode: all
+    completionEvent: ravn.task.completed
+    position:
+      x: 1320
+      y: 232
+  edges:
+  - id: edge-dispatch-to-coder
+    source: dispatch-root
+    target: run-coder
+    label: code.requested -> code.requested
+  - id: edge-coder-to-reviewer
+    source: run-coder
+    target: run-reviewer
+    label: code.changed -> code.changed
+  - id: edge-coder-to-security
+    source: run-coder
+    target: run-security
+    label: code.changed -> code.changed
+  - id: edge-reviewer-to-coder
+    source: run-reviewer
+    target: run-coder
+    label: review.changes_requested -> review.changes_requested
+  - id: edge-security-to-coder
+    source: run-security
+    target: run-coder
+    label: security.changes_requested -> security.changes_requested
+  - id: edge-reviewer-to-postmortem
+    source: run-reviewer
+    target: run-postmortem
+    label: review.completed -> review.completed
+  - id: edge-security-to-postmortem
+    source: run-security
+    target: run-postmortem
+    label: security.completed -> security.completed
+  - id: edge-postmortem-to-memory-curator
+    source: run-postmortem
+    target: run-memory-curator
+    label: mimir.source.ingested -> mimir.source.ingested
+  - id: edge-memory-curator-to-end
+    source: run-memory-curator
+    target: run-complete
+    label: mimir.curated -> mimir.curated
+  resourceBindings:
+  - id: binding-memory-workflow
+    resourceNodeId: run-memory
+    targetType: workflow
+    targetId: ting-run-flow-security-memory-curation
+    access: read_write
+    writePrefixes:
+    - postmortems/
+    readPriority: 1

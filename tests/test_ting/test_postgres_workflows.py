@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -10,7 +11,7 @@ from uuid import uuid4
 import pytest
 
 from ting.adapters.postgres_workflows import PostgresWorkflowRepository
-from ting.domain.models import WorkflowDefinition, WorkflowScope
+from ting.domain.models import WorkflowDefinition, WorkflowDependency, WorkflowScope
 
 
 @pytest.fixture
@@ -44,6 +45,41 @@ def workflow() -> WorkflowDefinition:
 
 
 class TestSaveWorkflow:
+    async def test_preserves_schema_two_dependency_closure(self, repo, workflow, mock_pool):
+        pin = WorkflowDependency(uuid4(), "sha256:" + "a" * 64, "sha256:" + "a" * 64)
+        scoped = {"worker": {"document": {"name": "Child"}, "persona_definitions": {}}}
+        extended = replace(
+            workflow,
+            schema_version=2,
+            workflow_dependencies={"worker": pin},
+            workflow_definitions=scoped,
+        )
+        await repo.save_workflow(extended)
+        args = mock_pool.execute.call_args.args
+        assert args[15] == 2
+        assert json.loads(args[16]) == {"worker": pin.to_dict()}
+        assert json.loads(args[17]) == scoped
+        row = {
+            "tenant_id": workflow.tenant_id,
+            "id": workflow.id,
+            "name": workflow.name,
+            "description": workflow.description,
+            "version": workflow.version,
+            "scope": "user",
+            "owner_id": workflow.owner_id,
+            "graph_json": workflow.graph,
+            "created_at": workflow.created_at,
+            "updated_at": workflow.updated_at,
+            "schema_version": 2,
+            "workflow_dependencies_json": args[16],
+            "workflow_definitions_json": args[17],
+        }
+        mock_pool.fetchrow.return_value = row
+        loaded = await repo.get_workflow(workflow.id)
+        assert loaded.schema_version == 2
+        assert loaded.workflow_dependencies == {"worker": pin}
+        assert loaded.workflow_definitions == scoped
+
     @pytest.mark.asyncio
     async def test_upserts_workflow(
         self,

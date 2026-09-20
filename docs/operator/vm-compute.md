@@ -1,9 +1,11 @@
 # VM compute allocations
 
-The generic VM backend supports Forge/Skuld sessions and an infrastructure-only
-operator CLI, with a provider-neutral warm pool. Infrastructure release deletes
-the VM, disk and cloud-init Secret. Forge stop preserves workspace/home to the
-configured controller-local archive before replacing or recycling its guest.
+The generic VM backend supports Forge/Skuld sessions, provider-neutral warm
+pools, and an infrastructure-only operator CLI. Warm capacity is bounded by the
+configured pool policy and retired when its provider profile revision changes.
+Root disks are disposable: infrastructure release deletes the VM, disk and
+provider bootstrap data. Forge stop preserves session workspace/home to the
+configured controller-local archive before release.
 
 ## Provider and authentication configuration
 
@@ -139,8 +141,9 @@ uv run python -m volundr.compute.main --config "$COMPUTE_CONFIG" release --lease
 `release` requests deletion; repeat `reconcile` until state is `released`.
 A failed record still consumes capacity. A busy-operation error means another
 controller owns that allocation; retry after it finishes. Never change a pool's
-provider, endpoint, namespace, installation identity or profile mapping while
-it has live claims. Create a new pool for a new infrastructure mapping.
+provider, endpoint, namespace or installation identity while it has live claims.
+Legacy allocations without a resolved execution plan also require their original
+profile mapping. Create a new pool for a new infrastructure mapping.
 
 Admission uses a short PostgreSQL transaction. Provider operations hold one
 connection-level advisory lock, without holding a database transaction. Process
@@ -149,6 +152,107 @@ API request after connection loss. A continuously running inventory reconciler
 and stronger crash-window handling remain required before unattended rollout.
 This CLI performs explicit reconciliation only; it does not run a background
 controller or automatically delete unknown inventory.
+
+## Versioned execution catalog
+
+Forge can resolve machine selection, host preparation, guest access and session
+runtime from an operator-owned file catalog. The catalog is read-only application
+configuration: there is no database catalog, CRUD API or web editor. Configure one
+provider binding per pool. Every execution in that catalog must name the configured
+pool and provider binding; runtime provider switching and failover are not supported.
+
+Add these fields to the root `compute` settings:
+
+| Field | Meaning |
+| --- | --- |
+| `provider_binding` | Stable, provider-neutral identity for the one `MachineProvider` installation serving this pool. |
+| `execution_catalog.adapter` | `volundr.adapters.outbound.file_execution_catalog.FileExecutionCatalog`. |
+| `execution_catalog.kwargs.root` | Absolute path to the catalog directory. |
+| `execution_catalog.secret_kwargs_env` | Optional constructor-argument to environment-variable references. The file adapter itself needs none. |
+| `runtime` | Legacy runtime binding. Keep it while any live lease predates resolved execution plans; it may be removed after those leases drain. |
+
+The root is a versioned package with this layout:
+
+| Path | Required fields and purpose |
+| --- | --- |
+| `catalog.yaml` | Exact `default_execution` reference (`id`, `revision`) and optional `legacy_compute_profiles` mapping from old `compute_profile` names to exact execution references. |
+| `machines/*.yaml` | `id`, `revision`, provider-owned `provider_profile` name, and declared `host_requirements`. Provider-specific image, network, placement and sizing remain in `compute.provider.kwargs.profiles`. |
+| `host-recipes/*.yaml` | `id`, `revision`, `preparation` adapter binding, pinned `artifacts`, and ordered `stages`. |
+| `access/*.yaml` | `id`, `revision`, `transport` adapter binding, guest `principal`, and `trust` contract. |
+| `runtimes/*.yaml` | `id`, `revision`, `runtime` adapter binding, `contributor_backend`, independent `storage_mode`, `capabilities`, and `host_requirements`. |
+| `executions/*.yaml` | `id`, `revision`, `pool_id`, `provider_binding`, and exact machine, host-recipe, access and runtime references. |
+| Any contained artifact path | Executable recipe content referenced by a host recipe with its lowercase SHA-256 digest. Paths must be relative to the catalog root and cannot traverse or resolve outside it. |
+
+Each adapter binding has a stable `binding_id`, a fully qualified `adapter`, plain
+`kwargs`, and optional `secret_kwargs_env`. The latter maps constructor argument
+names to environment-variable names; secret values do not belong in catalog YAML.
+Supported built-in bindings are
+`volundr.adapters.outbound.ssh_guest_access.SshGuestAccess`,
+`volundr.adapters.outbound.ssh_host_preparation.SshHostPreparation`, and the VM
+runtime classes already documented below. Runtime image kwargs must use an immutable
+image digest, such as `registry/repository@sha256:<digest>`, rather than a mutable tag.
+
+The loader rejects duplicate YAML keys, duplicate `id`/`revision` pairs, missing
+references, path escapes, missing or non-regular artifacts, and digest mismatches.
+An execution request uses exact `id@revision` syntax in
+`workload_config.execution_profile`. Omission uses the exact default in
+`catalog.yaml`. The legacy `workload_config.compute_profile` field works only when
+`legacy_compute_profiles` explicitly maps it; specifying old and new fields with
+different results is an error.
+
+Revisions are immutable. Changing any entry or repinning an artifact under the same
+`id`/`revision` changes the resolved plan digest and blocks recovery of a lease pinned
+to the old content. Add a new revision instead, and retain every referenced YAML file
+and artifact until its last lease has been released. Restart Forge after catalog
+updates so the composition root imports and injects the new adapter set before new
+sessions select it. A restart revalidates existing pinned revisions and artifacts;
+it never substitutes the current default.
+
+Host recipe stages have stable IDs and one timeout shared by check, optional apply,
+and verify. A check exit code of 0 means the requirement is already satisfied; 1
+requests apply; every other code fails. Apply and verify must return 0. Verify stdout
+is either empty or a JSON object mapping safe fact names to string values within the
+configured output limit. Facts from all stages are merged; conflicting values fail
+preparation. The executor discards stage stderr and reports only safe stage/detail
+codes. Timeout kills the stage process group.
+
+This repository does not ship a production host recipe or artifact package. Before a
+recipe can run, the controller needs an OpenSSH client and network access to the guest
+SSH port. The guest needs a reachable SSH server, the configured login principal and
+controller public key, Python 3.12 or newer, and passwordless noninteractive `sudo -n`;
+the provider profile also needs a running QEMU guest agent for address discovery. A
+recipe stage may run as `root` or as the configured access principal and must verify
+the combined machine and runtime `host_requirements` as string facts.
+
+For `SshContainerVmRuntime`, the recipe must prepare and verify a working Docker CLI
+and daemon, `tar`, and Git when Git session sources are allowed. The guest must be able
+to pull the digest-pinned Skuld image and have enough local disk for that image,
+workspace, home and archive staging. For `SshOpenShellVmRuntime`, the recipe must also
+prepare OpenShell and its gateway, Podman 5 or newer with a live rootless user socket,
+a systemd user manager with lingering and delegated CPU cgroup control, and SSH
+`GatewayPorts clientspecified`. The catalog path marks the host as recipe-prepared, so
+the container runtime does not bootstrap host dependencies and the OpenShell runtime
+verifies its prepared software instead of running its legacy installer. Build and
+validate a pinned recipe against the exact guest image before admitting sessions.
+
+OpenShell shutdown requests sandbox deletion once, then polls the complete sandbox
+inventory until absence is confirmed. Runtime adapter kwargs control this wait:
+`sandbox_delete_timeout_seconds` (120), `sandbox_delete_poll_interval_seconds` (2),
+and `sandbox_delete_command_timeout_seconds` (30). Each delete/list command is capped
+by both its command timeout and the remaining deletion deadline. Keep the deletion
+budget below the controller's overall cleanup and SSH command timeouts. Transient
+transport failures are retried within that budget; permission errors and malformed
+inventory fail immediately. An unconfirmed deletion prevents archive replacement
+and VM release. Diagnostics retain the delete exit status, safe failure categories,
+last observed presence, inventory check count, and deadline status; raw CLI stderr
+is not exposed. Configure these kwargs in a new runtime/catalog revision when
+changing a pinned execution plan.
+
+SSH access supports `provider_identity` for a provider-delivered pinned host key and
+explicit `tofu` for one `accept-new` enrollment followed by strict allocation-scoped
+pinning. `ssh_ca` is represented in the schema but the built-in SSH adapter rejects it
+as unsupported. Do not select it until a configured access adapter implements and
+proves CA validation.
 
 ## Forge sessions on local disk
 
@@ -215,11 +319,30 @@ existing session secret injector into guest Docker binds at the same paths.
 Skuld consumes `/run/secrets/env.sh` and credential files normally. Credential
 files live outside the archived workspace/home and are deleted with the VM.
 Directories, writable mounts, Kubernetes volumes, projected service-account
-identity, sidecars and workspace host-path sources are rejected. Configure compatible session
-contributors explicitly; the development proof disables projected workload
-identity and uses the existing development identity adapter. Production sessions
-must use the deployment's existing identity and OpenBao configuration; the local
-development proof does not establish production authentication.
+identity, sidecars and workspace host-path sources are rejected. The built-in
+workload-identity and storage contributors recognize the VM backend and do not
+emit projected tokens or PVC settings; explicitly configured contributors still
+need to produce VM-compatible file mounts. The development proof uses the
+existing development identity adapter. Production sessions must use a
+VM-compatible credential-injection adapter; the local development proof does not
+establish production authentication.
+
+Providers that cannot deliver cloud-init or user-data may set
+`runtime.kwargs.bootstrap_delivery: ssh`. The provider must arrange for the
+configured controller public key to be accepted by the guest before the first
+connection. That first connection uses OpenSSH `accept-new` under a dedicated
+allocation alias and delivers only the machine bootstrap. The accepted guest
+host key is then reused with strict checking before any session launch data or
+credential file is sent. This is explicit trust on first use and is weaker than
+provider-delivered host identity. The built-in access adapter does not yet implement
+SSH CA validation. After strict identity is verified, the controller persists an
+allocation-specific marker and will never fall back to first-contact trust for
+that allocation. Keep `data_dir` durable and protected.
+
+Portable bootstrap commands must be safe to retry. The guest checkpoints each
+completed command and resumes at the next command after an ordinary failure, but
+a guest or controller crash can still occur between a command's side effect and
+its progress checkpoint.
 
 While running, workspace/home live on guest local disk. Forge stop archives both
 to `data_dir/<session-id>/session.tar` on the controller, then deletes the VM.

@@ -137,8 +137,8 @@ class TestLifespan:
         ]
         mock_conn.close.assert_awaited_once()
 
-    def test_lifespan_bootstraps_schema_before_opening_pool(self) -> None:
-        """Startup bootstrap should run before the app opens its Postgres pool."""
+    def test_lifespan_validates_modules_before_bootstrap_and_opening_pool(self) -> None:
+        """External code must be validated before provider composition can begin."""
         from fastapi.testclient import TestClient
 
         events: list[str] = []
@@ -153,7 +153,15 @@ class TestLifespan:
         async def _bootstrap(_settings: Settings) -> None:
             events.append("bootstrap")
 
+        def _load_external_modules(_paths: list[str]) -> list:
+            events.append("external_modules")
+            return []
+
         with (
+            patch(
+                "volundr.main.load_external_module_manifests",
+                side_effect=_load_external_modules,
+            ),
             patch("volundr.main._bootstrap_startup_schema", side_effect=_bootstrap),
             patch("volundr.main.database_pool", _mock_db_pool),
             patch(
@@ -178,7 +186,72 @@ class TestLifespan:
                 response = client.get("/health")
                 assert response.status_code == 200
 
-        assert events[:2] == ["bootstrap", "database_pool"]
+        assert events[:3] == ["external_modules", "bootstrap", "database_pool"]
+
+    def test_lifespan_rejects_durable_compute_policy_before_health(self) -> None:
+        """A persisted policy cannot make the app healthy with an invalid profile."""
+        from fastapi.testclient import TestClient
+
+        from tests.compute_fakes import LeaseRepository, Provider
+        from volundr.domain.compute import ComputePoolPolicy
+        from volundr.domain.vm_runtime import VmRuntime
+
+        mock_pool = AsyncMock()
+        repository = LeaseRepository()
+        provider = Provider()
+        repository.policies["test-pool"] = ComputePoolPolicy(profile="removed", max_machines=1)
+        runtime = AsyncMock(spec=VmRuntime)
+
+        @asynccontextmanager
+        async def _mock_db_pool(_config):
+            yield mock_pool
+
+        settings = Settings(
+            pod_manager={
+                "adapter": "volundr.adapters.outbound.vm_pod_manager.VmPodManager",
+                "runtime_backend": "vm",
+                "kwargs": {
+                    "profile": "small",
+                    "pool_id": "test-pool",
+                    "max_machines": 1,
+                },
+            },
+            compute={
+                "pool_id": "test-pool",
+                "max_machines": 1,
+                "provider": {"adapter": "tests.Provider"},
+                "runtime": {"adapter": "tests.Runtime"},
+            },
+        )
+
+        with (
+            patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
+            patch("volundr.main.database_pool", _mock_db_pool),
+            patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.compute.main.build_provider",
+                return_value=provider,
+            ),
+            patch(
+                "volundr.adapters.outbound.postgres_compute_leases.PostgresComputeLeaseRepository",
+                return_value=repository,
+            ),
+            patch("volundr.main.import_class", return_value=lambda **_kwargs: runtime),
+        ):
+            app = create_app(settings)
+            with pytest.raises(ValueError, match="configured by the provider"):
+                with TestClient(app) as client:
+                    client.get("/health")
+
+        assert provider.closed
+        runtime.close.assert_awaited_once()
 
     def test_lifespan_initializes_audit_subscriber(self):
         """Lifespan must run startup/shutdown without error when sleipnir is disabled.

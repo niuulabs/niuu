@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Path, Query, Response, status
 from pydantic import BaseModel, Field
 
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter, PersonaConfig
+from ravn.domain.persona_document import PersonaDocumentError, PortablePersonaDefinition
 from ravn.ports.persona import PersonaRegistryPort
 
 logger = logging.getLogger(__name__)
@@ -301,6 +302,65 @@ def create_personas_router(loader: PersonaRegistryPort) -> APIRouter:
             )
 
         return PersonaValidateResponse(valid=not errors, errors=errors)
+
+    @router.get(
+        "/personas/{name}/portable",
+        response_model=None,
+        responses={404: {"model": ErrorResponse}},
+        tags=["Personas"],
+    )
+    def get_current_portable_persona(
+        name: str = Path(description="Stable persona identifier"),
+    ) -> dict:
+        """Return current raw source content with its immutable revision label."""
+        try:
+            document = loader.load_current_portable(name)
+        except NotImplementedError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail=str(exc),
+            ) from exc
+        except PersonaDocumentError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        if document is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Persona not found: {name}",
+            )
+        return document.to_dict()
+
+    @router.get(
+        "/personas/{name}/revisions/{revision}",
+        response_model=None,
+        responses={404: {"model": ErrorResponse}},
+        tags=["Personas"],
+    )
+    def get_persona_revision(
+        name: str = Path(description="Stable persona identifier"),
+        revision: str = Path(description="Exact persona revision"),
+    ) -> dict:
+        """Return an exact raw portable persona source revision."""
+        try:
+            document: PortablePersonaDefinition | None = loader.load_portable(name, revision)
+        except NotImplementedError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail=str(exc),
+            ) from exc
+        except PersonaDocumentError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        if document is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Persona revision not found: {name}@{revision}",
+            )
+        return document.to_dict()
 
     @router.get(
         "/personas/{name}",
