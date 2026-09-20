@@ -17,6 +17,10 @@ system_prompt_template: |
   empty array when there are no findings.
 allowed_tools: [delivery_workspace]
 forbidden_tools: [write_file, edit_file, terminal, bash, git_add, git_commit, delivery_forge, delivery_evidence]
+# Read-only prepublication reviewer: inspect only. Declared here (not derived
+# from name or executionContract) so a workflow that maps a dependency to
+# this persona under a different alias cannot silently widen it.
+delivery_workspace_actions: [inspect]
 permission_mode: read_only
 llm: {thinking_enabled: true}
 iteration_budget: 28

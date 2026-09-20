@@ -274,6 +274,66 @@ async def test_outcome_is_visible_and_delivered_to_declared_subscribers() -> Non
 
 
 @pytest.mark.asyncio
+async def test_configured_review_event_type_never_coerces_missing_valid_to_true() -> None:
+    """A workflow's own reviewAttestation.eventType must be as strict as the built-ins.
+
+    Without threading it into `attestable_review_event_types`, an event of this
+    (non-built-in) type with no `valid` field would default to `valid: True` and
+    read downstream as attested review evidence that never asserted validity.
+    """
+    observe = AsyncMock()
+    adapter, channels = _adapter(
+        observe_peer_event=observe,
+        attestable_review_event_types=frozenset({"artifact.review.completed"}),
+    )
+    producer = _websocket()
+    await adapter.register("producer", "Producer", producer)
+    channels.broadcast.reset_mock()
+
+    await adapter.handle_collaboration_frame(
+        "producer",
+        {
+            "events": [
+                {
+                    "kind": "outcome",
+                    "sourceEventType": "outcome",
+                    "eventType": "artifact.review.completed",
+                    "fields": {"verdict": "pass"},
+                    # No "valid" field at all — the attestable-event path must
+                    # never coerce this to True.
+                }
+            ]
+        },
+    )
+
+    outcome = channels.broadcast.await_args.args[0]
+    assert outcome["valid"] is None
+
+    peer_id, event_type, observation = observe.await_args.args
+    assert (peer_id, event_type) == ("producer", "outcome")
+    assert observation["data"]["valid"] is None
+
+    # An ordinary, non-attestable outcome still defaults a missing `valid` to True.
+    channels.broadcast.reset_mock()
+    observe.reset_mock()
+    await adapter.handle_collaboration_frame(
+        "producer",
+        {
+            "events": [
+                {
+                    "kind": "outcome",
+                    "sourceEventType": "outcome",
+                    "eventType": "research.completed",
+                    "fields": {"artifact": "result.md"},
+                }
+            ]
+        },
+    )
+    assert channels.broadcast.await_args.args[0]["valid"] is True
+    assert observe.await_args.args[2]["data"]["valid"] is True
+
+
+@pytest.mark.asyncio
 async def test_mesh_outcome_uses_room_delivery_only_for_non_mesh_subscribers() -> None:
     adapter, channels = _adapter()
     producer = _websocket()

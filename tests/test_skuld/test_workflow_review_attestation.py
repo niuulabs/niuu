@@ -82,6 +82,40 @@ def test_broker_projects_custom_authenticated_persona_to_configured_role(tmp_pat
     assert outcome["scope"] == "artifact"
 
 
+def test_broker_threads_configured_review_event_type_into_room_bridge(tmp_path) -> None:
+    """The room bridge must treat the workflow's own reviewAttestation.eventType
+
+    as strictly as the built-in developer.* event types, or a custom (v2) review
+    event with no `valid` field would be coerced to `valid: True` downstream.
+    """
+    graph = {
+        "reviewAttestation": {
+            "version": 1,
+            "scope": "artifact",
+            "eventType": "artifact.review.completed",
+            "roles": {"privacy": "data-steward"},
+        },
+        "nodes": [
+            {
+                "kind": "stage",
+                "joinMode": "all",
+                "stageMembers": [{"personaId": "data-steward"}],
+            }
+        ],
+    }
+    broker = Broker(
+        settings=SkuldSettings(
+            session={"id": "audit-room", "workspace_dir": str(tmp_path)},
+            workflow={"graph": graph},
+            room={"enabled": True},
+        )
+    )
+
+    assert broker._room_bridge is not None
+    assert "artifact.review.completed" in broker._room_bridge._strict_review_event_types
+    assert "developer.review.completed" in broker._room_bridge._strict_review_event_types
+
+
 def test_skuld_supports_frozen_v1_workstream_contract_explicitly() -> None:
     binding = _workflow_review_attestation({"executionContract": "developer-workstream/v1"})
 

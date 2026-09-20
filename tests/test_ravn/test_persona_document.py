@@ -65,6 +65,7 @@ def _complete_persona(prompt: str = "First line.\nSecond line.\n") -> PersonaCon
         ),
         fan_in=PersonaFanIn(strategy="all_must_pass", contributes_to="review.verdict"),
         stop_on_outcome=True,
+        delivery_workspace_actions=["inspect"],
     )
 
 
@@ -136,6 +137,18 @@ definition: &definition
   consumes: *definition
 """,
             "unconstructable recursive node",
+        ),
+        (
+            """schema_version: 1
+id: reviewer
+revision: initial
+definition:
+  name: reviewer
+  produces:
+    schema:
+      verdict: null
+""",
+            r"produces\.schema\.verdict must be a mapping",
         ),
     ],
 )

@@ -50,8 +50,7 @@ class HttpDeveloperExecutionClient:
             f"/children/{quote(child_key, safe='')}/retry", {"attempt_id": attempt_id}
         )
 
-    async def cancel(self, payload: dict[str, Any]) -> dict[str, Any]:
-        del payload
+    async def cancel(self) -> dict[str, Any]:
         return await self._post("/cancel", {})
 
     async def message(self, payload: dict[str, Any]) -> dict[str, Any]:

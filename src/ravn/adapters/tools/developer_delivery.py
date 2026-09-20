@@ -46,7 +46,13 @@ class _DeveloperExecutionTool(ToolPort):
                 "gateDecision for a gate, from the blocker notification. Reuse message_id "
                 "unchanged when retrying the same delivery."
             ),
-            "cancel": "Cancel a durable developer expansion or child attempt.",
+            "cancel": (
+                "Irreversibly cancel the ENTIRE durable developer execution: every child "
+                "attempt, the whole campaign, and this coordinator's own session. There is no "
+                "per-child cancel; a single stuck child cannot be cancelled on its own. Use "
+                "developer_execution_retry to recover one child instead, or "
+                "developer_execution_reconcile plus a fresh generation for a broader repair."
+            ),
             "complete": (
                 "Finalize only after deterministic merge evidence is verified. Copy the exact "
                 "reconciled MergeRequest and provide direct snake_case CandidateEvidence for the "
@@ -196,11 +202,8 @@ class _DeveloperExecutionTool(ToolPort):
                 }
             )
             required.extend(["child_key", "attempt_id", "answer", "metadata", "message_id"])
-        else:
-            properties["child_keys"] = {
-                "type": "array",
-                "items": {"type": "string"},
-            }
+        # reconcile and cancel act on the whole durable execution named by campaign_id and
+        # parent_node_id; there is no per-child targeting field to accept here.
         return {
             "type": "object",
             "properties": properties,
@@ -219,12 +222,31 @@ class _DeveloperExecutionTool(ToolPort):
     async def execute(self, input: dict) -> ToolResult:
         if error := _payload_error(input):
             return _error(error)
+        if error := self._unknown_field_error(input):
+            return _error(error)
         method = getattr(self._service, self.operation)
         try:
-            result = await method(dict(input))
+            if self.operation == "cancel":
+                result = await method()
+            else:
+                result = await method(dict(input))
         except Exception as exc:
             return _error(str(exc))
         return _result(result)
+
+    def _unknown_field_error(self, input: dict) -> str:
+        allowed = set(self.input_schema["properties"])
+        unknown = set(input) - allowed
+        if not unknown:
+            return ""
+        if self.operation in ("cancel", "reconcile") and "child_keys" in unknown:
+            return (
+                f"{self.name} has no per-child targeting; child_keys is not accepted. "
+                "developer_execution_cancel stops the entire execution, every child, and this "
+                "coordinator's own session, irreversibly. There is no per-child cancel — use "
+                "developer_execution_retry to recover one child instead."
+            )
+        return f"unexpected field(s) for {self.name}: {', '.join(sorted(unknown))}"
 
 
 class DeveloperExecutionExpandTool(_DeveloperExecutionTool):

@@ -18,6 +18,7 @@ import inspect
 import json
 import logging
 import re
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -1389,6 +1390,7 @@ class DriveLoop:
         self._semaphore = asyncio.Semaphore(config.max_concurrent_tasks)
         self._journal_path = Path(config.queue_journal_path).expanduser()
         self._workflow_event_dedupe_limit = config.workflow_event_dedupe_max_entries
+        self._workflow_cycle_limit = config.workflow_cycle_max_entries
         self._source_id = "drive_loop"
         self._counter = 0
         self._rpc_handler: MeshRpcHandler | None = None
@@ -1403,8 +1405,8 @@ class DriveLoop:
             Callable[[AgentTask, PersonaConfig], set[str] | None] | None
         ) = None
         self._workflow_review_cycle_sources: set[tuple[str, str]] = set()
-        self._workflow_cycles: dict[tuple[str, str, str], dict[str, object]] = {}
-        self._consumed_workflow_event_ids: dict[str, str] = {}
+        self._workflow_cycles: OrderedDict[tuple[str, str, str], dict[str, object]] = OrderedDict()
+        self._consumed_workflow_event_ids: OrderedDict[str, str] = OrderedDict()
         self._fan_in = FanInBuffer()
         self._reflex_injector: ReflexInjector | None = None
         # Gauges that describe steady state rather than an event. Published
@@ -1902,24 +1904,40 @@ class DriveLoop:
         """Return whether an exact mesh workflow delivery was durably consumed."""
         return bool(event_id and event_id in self._consumed_workflow_event_ids)
 
-    def record_workflow_event_consumed(self, event_id: str) -> None:
+    async def record_workflow_event_consumed(self, event_id: str) -> None:
         """Durably mark one immutable mesh event as consumed.
 
         The bounded insertion-ordered ledger closes the restart window after a
         workflow task completes while retaining enough history for transport
-        retries.  Failure to persist raises so the transport can redeliver.
+        retries. It is a true FIFO window: once at capacity, the oldest entry
+        is evicted to make room for the newest one rather than refusing the
+        write — retention is a rolling budget, not a hard cap the process can
+        get permanently wedged against. Failure to persist raises so the
+        transport can redeliver, and any eviction is rolled back alongside the
+        new entry so a failed persist leaves the ledger exactly as it was.
+
+        This is called once per successfully processed workflow outcome event,
+        which can be the busiest write path in the daemon, and the journal
+        write serializes and rewrites the *entire* queue journal (queue,
+        inflight, cycles, and this ledger) on every call. The mutation itself
+        (updating the in-memory ledger) stays on the event loop since it is
+        pure and fast; only the blocking file write moves to a worker thread
+        via `asyncio.to_thread` so a large journal never stalls the loop that
+        also runs task dispatch and heartbeats.
         """
         if not event_id or event_id in self._consumed_workflow_event_ids:
             return
+        evicted: tuple[str, str] | None = None
         if len(self._consumed_workflow_event_ids) >= self._workflow_event_dedupe_limit:
-            raise RuntimeError(
-                "consumed workflow event retention is exhausted; increase "
-                "initiative.workflow_event_dedupe_max_entries"
-            )
+            evicted = self._consumed_workflow_event_ids.popitem(last=False)
         self._consumed_workflow_event_ids[event_id] = datetime.now(UTC).isoformat()
-        if self._persist_queue():
+        if await self._persist_queue_off_loop():
             return
         self._consumed_workflow_event_ids.pop(event_id, None)
+        if evicted is not None:
+            oldest_id, oldest_consumed_at = evicted
+            self._consumed_workflow_event_ids[oldest_id] = oldest_consumed_at
+            self._consumed_workflow_event_ids.move_to_end(oldest_id, last=False)
         raise RuntimeError("failed to persist consumed workflow event")
 
     def observe_workflow_cycle(
@@ -1956,6 +1974,13 @@ class DriveLoop:
             if ordering <= current_ordering:
                 return False
         previous = dict(current) if current is not None else None
+        evicted: tuple[tuple[str, str, str], dict[str, object]] | None = None
+        if previous is None and len(self._workflow_cycles) >= self._workflow_cycle_limit:
+            # No single point marks a workflow scope "finished", so this ledger
+            # is a rolling FIFO window like the consumed-event ledger: evict
+            # the oldest cycle record to admit a new scope/node/event_type
+            # triple rather than growing without bound for the daemon's life.
+            evicted = self._workflow_cycles.popitem(last=False)
         self._workflow_cycles[key] = {
             "scope_id": scope_id,
             "node_id": node_id,
@@ -1969,6 +1994,10 @@ class DriveLoop:
                 self._workflow_cycles.pop(key, None)
             else:
                 self._workflow_cycles[key] = previous
+            if evicted is not None:
+                evicted_key, evicted_value = evicted
+                self._workflow_cycles[evicted_key] = evicted_value
+                self._workflow_cycles.move_to_end(evicted_key, last=False)
             raise RuntimeError("failed to persist authoritative workflow cycle")
         return True
 
@@ -4949,27 +4978,65 @@ class DriveLoop:
     def _persist_queue(self) -> bool:
         """Snapshot pending and in-flight tasks to the journal file."""
         try:
+            serialized = self._serialize_journal_snapshot()
+        except Exception as exc:
+            logger.warning("drive_loop: failed to persist queue journal: %s", exc)
+            return False
+        return self._write_journal_snapshot(serialized)
+
+    def _serialize_journal_snapshot(self) -> str:
+        """Render current queue/ledger state to journal JSON text.
+
+        Pure and synchronous by design, with no `await` in the middle: a
+        caller that offloads the (slow, blocking) `_write_journal_snapshot`
+        call to a worker thread via `asyncio.to_thread` must first take this
+        snapshot on the event loop so it reflects one consistent point in time
+        instead of racing a concurrent mutation of the same queue or ledger
+        while a worker thread serializes it.
+        """
+        items = list(self._queue._queue)  # type: ignore[attr-defined]
+        records = [self._task_journal_record(task) for _prio, _counter, task in items]
+        inflight = [self._task_journal_record(task) for task in self._inflight_tasks.values()]
+        journal: dict[str, object] = {"queue": records, "inflight": inflight}
+        if self._fan_in.pending_count > 0:
+            journal["fan_in_pending"] = self._fan_in.to_dict()
+        if self._workflow_cycles:
+            journal["workflow_cycles"] = list(self._workflow_cycles.values())
+        if self._consumed_workflow_event_ids:
+            journal["consumed_workflow_events"] = [
+                {"event_id": event_id, "consumed_at": consumed_at}
+                for event_id, consumed_at in self._consumed_workflow_event_ids.items()
+            ]
+        return json.dumps(journal, indent=2)
+
+    def _write_journal_snapshot(self, serialized: str) -> bool:
+        """Write an already-serialized journal snapshot to disk atomically."""
+        try:
             self._journal_path.parent.mkdir(parents=True, exist_ok=True)
-            items = list(self._queue._queue)  # type: ignore[attr-defined]
-            records = [self._task_journal_record(task) for _prio, _counter, task in items]
-            inflight = [self._task_journal_record(task) for task in self._inflight_tasks.values()]
-            journal = {"queue": records, "inflight": inflight}
-            if self._fan_in.pending_count > 0:
-                journal["fan_in_pending"] = self._fan_in.to_dict()
-            if self._workflow_cycles:
-                journal["workflow_cycles"] = list(self._workflow_cycles.values())
-            if self._consumed_workflow_event_ids:
-                journal["consumed_workflow_events"] = [
-                    {"event_id": event_id, "consumed_at": consumed_at}
-                    for event_id, consumed_at in self._consumed_workflow_event_ids.items()
-                ]
             temporary_path = self._journal_path.with_suffix(f"{self._journal_path.suffix}.tmp")
-            temporary_path.write_text(json.dumps(journal, indent=2))
+            temporary_path.write_text(serialized)
             temporary_path.replace(self._journal_path)
             return True
         except Exception as exc:
             logger.warning("drive_loop: failed to persist queue journal: %s", exc)
             return False
+
+    async def _persist_queue_off_loop(self) -> bool:
+        """Persist the journal without blocking the event loop.
+
+        Used only by the highest-frequency write path
+        (`record_workflow_event_consumed`, called once per processed workflow
+        outcome event) where a growing journal's synchronous rewrite would
+        otherwise stall task dispatch and heartbeats. The snapshot is taken
+        synchronously on the loop (see `_serialize_journal_snapshot`) and only
+        the blocking disk write moves to a worker thread.
+        """
+        try:
+            serialized = self._serialize_journal_snapshot()
+        except Exception as exc:
+            logger.warning("drive_loop: failed to persist queue journal: %s", exc)
+            return False
+        return await asyncio.to_thread(self._write_journal_snapshot, serialized)
 
     @staticmethod
     def _task_journal_record(task: AgentTask) -> dict[str, object]:
@@ -5039,6 +5106,16 @@ class DriveLoop:
             consumed_workflow_event_data = raw.get("consumed_workflow_events", [])
 
         if isinstance(workflow_cycle_data, list):
+            # Same rationale as the consumed-event trim below: a journal from
+            # a since-lowered limit must not wedge a restart.
+            if len(workflow_cycle_data) > self._workflow_cycle_limit:
+                logger.warning(
+                    "drive_loop: workflow cycle journal has %d entries, above the configured "
+                    "retention of %d; trimming to the newest entries",
+                    len(workflow_cycle_data),
+                    self._workflow_cycle_limit,
+                )
+                workflow_cycle_data = workflow_cycle_data[-self._workflow_cycle_limit :]
             for item in workflow_cycle_data:
                 if not isinstance(item, dict):
                     continue
@@ -5050,8 +5127,20 @@ class DriveLoop:
                     self._workflow_cycles[(scope_id, node_id, event_type)] = dict(item)
 
         if isinstance(consumed_workflow_event_data, list):
+            # A journal written under a since-lowered retention limit (or one
+            # produced before eviction existed) can carry more rows than the
+            # current window allows. Trim to the newest `max_entries` instead
+            # of refusing to start — a restart must never come back wedged.
             if len(consumed_workflow_event_data) > self._workflow_event_dedupe_limit:
-                raise RuntimeError("consumed workflow event journal exceeds configured retention")
+                logger.warning(
+                    "drive_loop: consumed workflow event journal has %d entries, above the "
+                    "configured retention of %d; trimming to the newest entries",
+                    len(consumed_workflow_event_data),
+                    self._workflow_event_dedupe_limit,
+                )
+                consumed_workflow_event_data = consumed_workflow_event_data[
+                    -self._workflow_event_dedupe_limit :
+                ]
             for item in consumed_workflow_event_data:
                 if not isinstance(item, dict):
                     continue

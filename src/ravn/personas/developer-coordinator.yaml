@@ -113,6 +113,10 @@ forbidden_tools:
   - git_commit
   - git_checkout
   - a2a_task
+# Coordinator allocates and integrates on behalf of children and inspects
+# integration candidates before requesting review. Declared here (not derived
+# from name or executionContract) so this survives workflow aliasing.
+delivery_workspace_actions: [allocate, verify, integrate, inspect]
 permission_mode: read_only
 llm: {thinking_enabled: true}
 iteration_budget: 36

@@ -23,10 +23,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_STRICT_REVIEW_EVENT_TYPES = {
-    "developer.review.completed",
-    "developer.integration.reviewed",
-}
+# Built-in event types that are attestable review outcomes even when no
+# workflow graph configures `reviewAttestation` explicitly (the frozen v1
+# contracts below). A workflow's own configured `reviewAttestation.eventType`
+# is ALSO attestable and must be added by the caller — see
+# `SkuldCollaborationAdapter.__init__`'s `attestable_review_event_types` — so a
+# custom (v2) event type gets the same strict, no-coercion `valid` handling.
+_STRICT_REVIEW_EVENT_TYPES = frozenset(
+    {
+        "developer.review.completed",
+        "developer.integration.reviewed",
+    }
+)
 
 TurnAppender = Callable[[Any], None]
 TimelineReporter = Callable[[dict[str, Any]], Awaitable[None]]
@@ -53,7 +61,11 @@ def _source_wire_fields(event: dict[str, Any]) -> dict[str, Any]:
     return fields
 
 
-def _peer_observation(event: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+def _peer_observation(
+    event: dict[str, Any],
+    *,
+    strict_review_event_types: frozenset[str] = _STRICT_REVIEW_EVENT_TYPES,
+) -> tuple[str, dict[str, Any]] | None:
     """Translate a collaboration event into Skuld's peer-observation contract."""
     kind = str(event.get("kind") or "")
     base = {
@@ -89,7 +101,7 @@ def _peer_observation(event: dict[str, Any]) -> tuple[str, dict[str, Any]] | Non
         event_type = str(event.get("eventType") or "")
         validity = (
             event.get("valid")
-            if event_type in _STRICT_REVIEW_EVENT_TYPES
+            if event_type in strict_review_event_types
             else event.get("valid", True)
         )
         data = {
@@ -161,6 +173,7 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         report_usage: UsageReporter | None = None,
         environment_id: str | None = None,
         clock: Callable[[], float] | None = None,
+        attestable_review_event_types: frozenset[str] | set[str] = frozenset(),
     ) -> None:
         self._config = config
         self._channels = channels
@@ -170,6 +183,14 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         self._observe_peer_event = observe_peer_event
         self._publish_presence_event = publish_presence_event
         self._report_usage = report_usage
+        # Event types requiring an explicit boolean `valid` before being trusted
+        # as attested review evidence: the built-in frozen-v1 contracts plus
+        # whatever event type this workflow's own `reviewAttestation` names, so
+        # a configured (v2) review event never falls through to the default
+        # "no `valid` field means valid" coercion applied to ordinary outcomes.
+        self._strict_review_event_types = _STRICT_REVIEW_EVENT_TYPES | frozenset(
+            attestable_review_event_types
+        )
         self._websockets: dict[str, WebSocket] = {}
         self._reported_usage_ids: set[str] = set()
         self._delivered_source_events: OrderedDict[str, None] = OrderedDict()
@@ -276,7 +297,9 @@ class SkuldCollaborationAdapter(CollaborationRoom):
                     )
                     return
 
-                observation = _peer_observation(event)
+                observation = _peer_observation(
+                    event, strict_review_event_types=self._strict_review_event_types
+                )
                 if self._observe_peer_event is not None and observation is not None:
                     event_type, payload = observation
                     await self._observe_peer_event(participant.peer_id, event_type, payload)
@@ -434,7 +457,7 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         event_type = str(event.get("eventType") or "")
         validity = (
             event.get("valid")
-            if event_type in _STRICT_REVIEW_EVENT_TYPES
+            if event_type in self._strict_review_event_types
             else event.get("valid", True)
         )
         outcome: dict[str, Any] = {

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -709,8 +709,8 @@ async def test_developer_execution_tools_dispatch_and_expose_strict_schemas() ->
         async def reconcile(self, payload):
             return {"operation": "reconcile", **payload}
 
-        async def cancel(self, payload):
-            return {"operation": "cancel", **payload}
+        async def cancel(self):
+            return {"operation": "cancel"}
 
         async def message(self, payload):
             return {"operation": "message", **payload}
@@ -782,6 +782,74 @@ async def test_developer_execution_tools_dispatch_and_expose_strict_schemas() ->
     assert "expectedOutputs" in workstream_input["required"]
     assert workstream_input["properties"]["expectedOutputs"]["minItems"] == 1
     assert "repository" in proposal["properties"]["workspace"]["required"]
+
+
+@pytest.mark.asyncio
+async def test_developer_execution_cancel_is_truthful_and_rejects_child_targeting() -> None:
+    class Service:
+        async def cancel(self):
+            return {"operation": "cancel"}
+
+    tool = DeveloperExecutionCancelTool(service=Service())
+
+    assert "ENTIRE" in tool.description
+    assert "every child attempt" in tool.description
+    assert "coordinator's own session" in tool.description
+    assert "child_keys" not in tool.input_schema["properties"]
+
+    result = await tool.execute(
+        {
+            "campaign_id": "campaign-1",
+            "parent_node_id": "node",
+            "child_keys": ["api"],
+        }
+    )
+
+    assert result.is_error
+    assert "no per-child" in result.content
+    assert "developer_execution_retry" in result.content
+
+    ok = await tool.execute({"campaign_id": "campaign-1", "parent_node_id": "node"})
+    assert not ok.is_error
+
+
+@pytest.mark.asyncio
+async def test_developer_execution_reconcile_rejects_child_targeting() -> None:
+    class Service:
+        async def reconcile(self, payload):
+            return {"operation": "reconcile", **payload}
+
+    tool = DeveloperExecutionReconcileTool(service=Service())
+
+    assert "child_keys" not in tool.input_schema["properties"]
+
+    result = await tool.execute(
+        {
+            "campaign_id": "campaign-1",
+            "parent_node_id": "node",
+            "child_keys": ["api"],
+        }
+    )
+
+    assert result.is_error
+    assert "no per-child" in result.content
+
+
+@pytest.mark.asyncio
+async def test_http_execution_client_cancel_takes_no_payload() -> None:
+    http = _HttpClient()
+    client = HttpDeveloperExecutionClient(
+        base_url="https://ting.example",
+        execution_id="execution-1",
+        client=http,  # type: ignore[arg-type]
+    )
+
+    result = await client.cancel()
+
+    assert result == {"ok": True}
+    assert http.posts == [
+        ("https://ting.example/api/v1/ting/developer-executions/execution-1/cancel", {})
+    ]
 
 
 def _codex_supported_schema_size(schema: object) -> int:
@@ -1104,6 +1172,60 @@ def test_integration_reviewer_exposes_only_read_only_candidate_inspection(tmp_pa
     )
 
 
+def test_aliased_integration_reviewer_still_gets_inspect_only(tmp_path) -> None:
+    """Narrowing must survive a workflow-local alias, not just the raw name.
+
+    InlinePersonaAdapter.load only overwrites `name` when a workflow maps a
+    dependency to this persona under a local alias; every other field
+    (including `delivery_workspace_actions`) comes through unchanged from the
+    real developer-integration-verifier document. Keying the narrowing on
+    `name` would miss this and leave the aliased persona with every
+    delivery_workspace operation.
+    """
+    persona = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load(
+        "developer-integration-verifier"
+    )
+    assert persona is not None
+    aliased = replace(persona, name="workstream-verifier")
+    assert aliased.delivery_workspace_actions == ["inspect"]
+
+    tools = _build_tools(
+        _coordinator_settings(),
+        tmp_path,
+        Session(),
+        MagicMock(),
+        None,
+        None,
+        persona_config=aliased,
+    )
+
+    workspace = next(tool for tool in tools if tool.name == "delivery_workspace")
+    assert workspace.input_schema["properties"]["operation"]["enum"] == ["inspect"]
+
+
+def test_delivery_workspace_with_no_declared_actions_gets_none(tmp_path) -> None:
+    """Fail closed: granting the tool without a declared allowlist grants nothing."""
+    persona = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load(
+        "developer-integration-verifier"
+    )
+    assert persona is not None
+    undeclared = replace(persona, delivery_workspace_actions=[])
+
+    tools = _build_tools(
+        _coordinator_settings(),
+        tmp_path,
+        Session(),
+        MagicMock(),
+        None,
+        None,
+        persona_config=undeclared,
+    )
+
+    workspace = next(tool for tool in tools if tool.name == "delivery_workspace")
+    assert workspace.operations == {}
+    assert workspace.input_schema["properties"]["operation"]["enum"] == []
+
+
 class _HttpClient:
     def __init__(self, body: object | None = None, status_code: int = 200) -> None:
         self.body = body if body is not None else {"ok": True}
@@ -1127,7 +1249,7 @@ async def test_http_execution_client_uses_owner_bound_routes() -> None:
     await client.expand({"generation": 1})
     await client.reconcile({"ignored": True})
     await client.message({"child_key": "api", "message_id": "message-1"})
-    await client.cancel({"ignored": True})
+    await client.cancel()
     await client.complete({"merge": {}, "evidence": {}})
     await client.record_integration({"integration_receipts": [{}], "integration_allocation": {}})
     await client.wait_delivery({"mode": "checks"})

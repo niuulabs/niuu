@@ -668,6 +668,11 @@ class Broker(
                 observe_peer_event=self._observe_room_peer_event,
                 publish_presence_event=self._publish_room_presence_event,
                 report_usage=self._report_usage,
+                attestable_review_event_types=(
+                    frozenset({self._review_attestation.event_type})
+                    if self._review_attestation is not None
+                    else frozenset()
+                ),
             )
 
         # Retrieval reflex (NIU-1059) — lazily built from settings.reflex on

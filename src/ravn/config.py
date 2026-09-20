@@ -1587,7 +1587,19 @@ class InitiativeConfig(BaseModel):
         description=(
             "Maximum exact workflow mesh event IDs retained in the durable queue journal. "
             "Size this for the full session so completed stages remain idempotent across "
-            "transport retries and daemon restarts."
+            "transport retries and daemon restarts. Once full, the oldest entry is evicted "
+            "to admit the newest one (a rolling FIFO window) rather than refusing new events."
+        ),
+    )
+    workflow_cycle_max_entries: int = Field(
+        default=100_000,
+        ge=1,
+        description=(
+            "Maximum authoritative workflow-cycle records (one per scope/node/event_type "
+            "triple) retained in the durable queue journal. There is no single point at "
+            "which a workflow scope is known finished, so this is a rolling FIFO window "
+            "like workflow_event_dedupe_max_entries: once full, the oldest cycle record is "
+            "evicted to admit the newest one."
         ),
     )
     default_output_mode: str = Field(

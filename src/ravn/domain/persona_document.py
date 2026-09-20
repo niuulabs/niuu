@@ -34,6 +34,7 @@ _PORTABLE_DEFINITION_FIELDS = frozenset(
         "consumes",
         "fan_in",
         "stop_on_outcome",
+        "delivery_workspace_actions",
     }
 )
 
@@ -402,6 +403,7 @@ def _validate_definition(persona_id: str, definition: Mapping[str, Any]) -> None
     _validate_optional_string(definition, "permission_mode")
     _validate_non_negative_int(definition, "iteration_budget")
     _validate_optional_bool(definition, "stop_on_outcome")
+    _validate_string_list(definition, "delivery_workspace_actions")
     _validate_llm(definition.get("llm"))
     _validate_event_contract(definition.get("produces"), produces=True)
     _validate_event_contract(definition.get("consumes"), produces=False)
@@ -591,7 +593,10 @@ def _validate_event_contract(value: Any, *, produces: bool) -> None:
             field=f"{field}.schema.{schema_name}",
             allowed={"type", "description", "values", "required"},
         )
-        assert schema_field is not None
+        if schema_field is None:
+            raise PersonaDocumentError(
+                f"Portable persona definition.{field}.schema.{schema_name} must be a mapping"
+            )
         _validate_optional_string(schema_field, "type")
         _validate_optional_string(schema_field, "description")
         _validate_string_list(schema_field, "values")

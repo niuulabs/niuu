@@ -870,8 +870,14 @@ def _wire_cascade(
                     event_type,
                     persona_config.name if persona_config else "unknown",
                 )
-            if not processing_failed:
-                drive_loop.record_workflow_event_consumed(source_event_id)
+            # Only durably record an event this handler actually acted on for a
+            # consumer group (including one still waiting on the rest of a
+            # fan-in). An unmatched event had no side effect here, so a later
+            # redelivery of it is already a safe no-op — recording it would
+            # only spend ledger retention on events nothing here needs to
+            # dedupe.
+            if matched and not processing_failed:
+                await drive_loop.record_workflow_event_consumed(source_event_id)
 
         # Store pending subscriptions - will be activated after mesh.start()
         mesh._pending_outcome_subscriptions = [
