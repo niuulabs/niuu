@@ -20,6 +20,7 @@ from ting.domain.developer_execution import (
     ChildTaskObservation,
     ExecutionConflictError,
     ExecutionState,
+    FailureKind,
     make_children,
 )
 
@@ -1100,6 +1101,55 @@ async def test_reconcilable_children_rotate_by_durable_poll_cursor() -> None:
     assert "child.state = 'canceling'" in pool.query
 
 
+@pytest.mark.asyncio
+async def test_list_deadline_expired_children_filters_by_deadline_and_terminal_states() -> None:
+    class CapturePool:
+        query = ""
+        args: tuple = ()
+
+        async def fetch(self, query, *args):
+            self.query = query
+            self.args = args
+            return []
+
+    pool = CapturePool()
+    now = datetime.now(UTC)
+
+    result = await PostgresDeveloperExecutionRepository(pool).list_deadline_expired_children(
+        now=now, limit=25
+    )
+
+    assert result == []
+    assert pool.args == (now, 25)
+    assert "child.deadline < $1" in pool.query
+    assert "child.state NOT IN ('canceled', 'completed', 'failed', 'superseded')" in pool.query
+    assert "execution.state NOT IN ('canceled', 'completed', 'failed')" in pool.query
+
+
+@pytest.mark.asyncio
+async def test_list_deadline_expired_executions_filters_by_deadline_and_terminal_states() -> None:
+    class CapturePool:
+        query = ""
+        args: tuple = ()
+
+        async def fetch(self, query, *args):
+            self.query = query
+            self.args = args
+            return []
+
+    pool = CapturePool()
+    now = datetime.now(UTC)
+
+    result = await PostgresDeveloperExecutionRepository(pool).list_deadline_expired_executions(
+        now=now, limit=10
+    )
+
+    assert result == []
+    assert pool.args == (now, 10)
+    assert "deadline < $1" in pool.query
+    assert "state NOT IN ('canceled', 'completed', 'failed')" in pool.query
+
+
 class _FailureTransitionConnection:
     def __init__(self, execution, children):
         self.execution = _execution_row(execution)
@@ -1124,6 +1174,8 @@ class _FailureTransitionConnection:
 
     async def fetchrow(self, query, *args):
         assert self.in_transaction
+        if "SELECT state, suspension_reason, revision" in query:
+            return dict(self.execution)
         self.failure_update_query = query
         if (
             self.execution["state"]
@@ -1192,6 +1244,7 @@ async def test_failure_projection_atomically_preserves_reason_and_cancels_childr
         execution.id,
         state=ExecutionState.FAILED.value,
         suspension_reason="invalid planning review",
+        expected_revision=execution.revision,
     )
 
     assert connection.execution["state"] == ExecutionState.FAILED.value
@@ -1223,11 +1276,13 @@ async def test_failure_projection_does_not_overwrite_terminal_parent(
     )
     connection = _FailureTransitionConnection(execution, [child])
 
-    await PostgresDeveloperExecutionRepository(_Pool(connection)).update_execution_state(
-        execution.id,
-        state=ExecutionState.FAILED.value,
-        suspension_reason="later failure",
-    )
+    with pytest.raises(ExecutionConflictError, match="changed since this projection"):
+        await PostgresDeveloperExecutionRepository(_Pool(connection)).update_execution_state(
+            execution.id,
+            state=ExecutionState.FAILED.value,
+            suspension_reason="later failure",
+            expected_revision=execution.revision,
+        )
 
     assert connection.execution["state"] == terminal.value
     assert connection.execution["suspension_reason"] == "terminal reason"
@@ -1250,11 +1305,13 @@ async def test_failure_projection_does_not_overwrite_concurrent_cancellation() -
     )
     connection = _FailureTransitionConnection(execution, [child])
 
-    await PostgresDeveloperExecutionRepository(_Pool(connection)).update_execution_state(
-        execution.id,
-        state=ExecutionState.FAILED.value,
-        suspension_reason="later failure",
-    )
+    with pytest.raises(ExecutionConflictError, match="changed since this projection"):
+        await PostgresDeveloperExecutionRepository(_Pool(connection)).update_execution_state(
+            execution.id,
+            state=ExecutionState.FAILED.value,
+            suspension_reason="later failure",
+            expected_revision=execution.revision,
+        )
 
     assert connection.execution["state"] == ExecutionState.CANCELING.value
     assert connection.execution["suspension_reason"] == "canceling_children"
@@ -1262,6 +1319,207 @@ async def test_failure_projection_does_not_overwrite_concurrent_cancellation() -
     assert connection.children[0]["state"] == ChildExecutionState.CANCELING.value
     assert connection.child_update_query == ""
     assert "cancel_requested = FALSE" in connection.failure_update_query
+
+
+class _StateProjectionPool:
+    """Backs the non-FAILED `update_execution_state` path: execute, then a
+    follow-up fetchrow only when the update matched zero rows."""
+
+    def __init__(self, *, execute_result: str, current_row: dict | None) -> None:
+        self.execute_result = execute_result
+        self.current_row = current_row
+        self.fetchrow_called = False
+
+    async def execute(self, query, *args):
+        return self.execute_result
+
+    async def fetchrow(self, query, *args):
+        self.fetchrow_called = True
+        return self.current_row
+
+
+@pytest.mark.asyncio
+async def test_update_execution_state_noop_when_already_applied_at_expected_revision() -> None:
+    """A repeated call with the target values already current is not a conflict."""
+    pool = _StateProjectionPool(
+        execute_result="UPDATE 0",
+        current_row={
+            "state": ExecutionState.WAITING.value,
+            "suspension_reason": "awaiting_children",
+            "revision": 3,
+        },
+    )
+    repository = PostgresDeveloperExecutionRepository(pool)
+
+    await repository.update_execution_state(
+        uuid4(),
+        state=ExecutionState.WAITING.value,
+        suspension_reason="awaiting_children",
+        expected_revision=3,
+    )
+
+    assert pool.fetchrow_called is True
+
+
+@pytest.mark.asyncio
+async def test_update_execution_state_raises_conflict_on_stale_revision() -> None:
+    """A genuinely stale caller (execution moved on) must raise, not silently no-op."""
+    pool = _StateProjectionPool(
+        execute_result="UPDATE 0",
+        current_row={
+            "state": ExecutionState.BLOCKED.value,
+            "suspension_reason": "child_blocked",
+            "revision": 4,
+        },
+    )
+    repository = PostgresDeveloperExecutionRepository(pool)
+
+    with pytest.raises(ExecutionConflictError, match="changed since this projection"):
+        await repository.update_execution_state(
+            uuid4(),
+            state=ExecutionState.WAITING.value,
+            suspension_reason="awaiting_children",
+            expected_revision=3,
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_execution_state_applies_change_on_match() -> None:
+    pool = _StateProjectionPool(execute_result="UPDATE 1", current_row=None)
+    repository = PostgresDeveloperExecutionRepository(pool)
+
+    await repository.update_execution_state(
+        uuid4(),
+        state=ExecutionState.WAITING.value,
+        suspension_reason="awaiting_children",
+        expected_revision=3,
+    )
+
+    assert pool.fetchrow_called is False
+
+
+class _ReconcileErrorConnection:
+    def __init__(self, child: dict, execution: dict) -> None:
+        self.child = child
+        self.execution = execution
+        self.in_transaction = False
+        self.blocker_bumped = False
+
+    def transaction(self):
+        connection = self
+
+        class _Transaction(_ContextManager):
+            async def __aenter__(self):
+                connection.in_transaction = True
+                return connection
+
+            async def __aexit__(self, *_args):
+                connection.in_transaction = False
+                return False
+
+        return _Transaction(self)
+
+    async def fetchrow(self, query, *args):
+        assert self.in_transaction
+        query = query.lstrip()
+        if "SET reconcile_failure_count = reconcile_failure_count + 1" in query:
+            terminal = {"canceled", "completed", "failed", "superseded"}
+            if self.child["state"] in terminal:
+                return None
+            self.child.update(
+                reconcile_failure_count=self.child["reconcile_failure_count"] + 1,
+                error=args[1],
+            )
+            return dict(self.child)
+        if "SET state = 'failed'" in query:
+            terminal = {"canceled", "completed", "failed", "superseded"}
+            if self.child["state"] in terminal:
+                return None
+            self.child.update(state="failed", failure_kind=args[1])
+            return dict(self.child)
+        raise AssertionError(f"unexpected fetchrow: {query}")
+
+    async def execute(self, query, *_args):
+        assert self.in_transaction
+        assert "blocker_revision = blocker_revision + 1" in query
+        self.blocker_bumped = True
+        return "UPDATE 1"
+
+
+@pytest.mark.asyncio
+async def test_record_reconcile_error_below_threshold_records_error_without_failing() -> None:
+    execution = _execution()
+    child = _child_row(
+        make_children(execution, 1, (_proposal(execution, "api"),))[0],
+    ) | {"reconcile_failure_count": 0}
+    connection = _ReconcileErrorConnection(child, _execution_row(execution))
+    repository = PostgresDeveloperExecutionRepository(_Pool(connection))
+
+    updated = await repository.record_reconcile_error(
+        child["id"],
+        error="boom",
+        failure_kind="transient",
+        max_consecutive_failures=3,
+    )
+
+    assert updated is not None
+    assert updated.state != ChildExecutionState.FAILED
+    assert updated.error == "boom"
+    assert connection.child["reconcile_failure_count"] == 1
+    assert connection.blocker_bumped is False
+
+
+@pytest.mark.asyncio
+async def test_record_reconcile_error_at_threshold_fails_child_and_bumps_blocker() -> None:
+    execution = _execution()
+    child = _child_row(
+        make_children(execution, 1, (_proposal(execution, "api"),))[0],
+    ) | {"reconcile_failure_count": 1}
+    connection = _ReconcileErrorConnection(child, _execution_row(execution))
+    repository = PostgresDeveloperExecutionRepository(_Pool(connection))
+
+    updated = await repository.record_reconcile_error(
+        child["id"],
+        error="boom again",
+        failure_kind="transient",
+        max_consecutive_failures=2,
+    )
+
+    assert updated is not None
+    assert updated.state == ChildExecutionState.FAILED
+    assert updated.failure_kind == FailureKind.TRANSIENT
+    assert connection.blocker_bumped is True
+
+
+@pytest.mark.asyncio
+async def test_record_reconcile_error_returns_none_for_missing_or_terminal_child() -> None:
+    execution = _execution()
+    child = _child_row(
+        make_children(execution, 1, (_proposal(execution, "api"),))[0],
+    ) | {"reconcile_failure_count": 0, "state": ChildExecutionState.COMPLETED.value}
+    connection = _ReconcileErrorConnection(child, _execution_row(execution))
+    repository = PostgresDeveloperExecutionRepository(_Pool(connection))
+
+    result = await repository.record_reconcile_error(
+        child["id"],
+        error="too late",
+        failure_kind="transient",
+        max_consecutive_failures=3,
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_record_reconcile_error_rejects_non_positive_threshold() -> None:
+    repository = PostgresDeveloperExecutionRepository(_ResultPool())
+    with pytest.raises(ValueError, match="must be positive"):
+        await repository.record_reconcile_error(
+            uuid4(),
+            error="boom",
+            failure_kind="transient",
+            max_consecutive_failures=0,
+        )
 
 
 @pytest.mark.asyncio
@@ -1380,6 +1638,39 @@ async def test_parent_stop_cleanup_lists_and_marks_durable_intent() -> None:
     assert pending[0].parent_stop_requested_at == requested_at
     assert connection.limit == 7
     assert connection.marked == execution.id
+
+
+@pytest.mark.asyncio
+async def test_list_parent_stop_pending_orders_fresh_rows_before_failing_ones() -> None:
+    class CapturePool:
+        query = ""
+
+        async def fetch(self, query, *_args):
+            self.query = query
+            return []
+
+    pool = CapturePool()
+
+    result = await PostgresDeveloperExecutionRepository(pool).list_parent_stop_pending(limit=3)
+
+    assert result == []
+    assert "ORDER BY parent_stop_attempts, parent_stop_requested_at, id" in pool.query
+
+
+@pytest.mark.asyncio
+async def test_record_parent_stop_error_increments_and_records_reason() -> None:
+    pool = _ResultPool(result="UPDATE 1")
+
+    await PostgresDeveloperExecutionRepository(pool).record_parent_stop_error(
+        uuid4(), error="transport unavailable", max_attempts=3
+    )
+
+
+@pytest.mark.asyncio
+async def test_record_parent_stop_error_rejects_non_positive_max_attempts() -> None:
+    repository = PostgresDeveloperExecutionRepository(_ResultPool())
+    with pytest.raises(ValueError, match="must be positive"):
+        await repository.record_parent_stop_error(uuid4(), error="boom", max_attempts=0)
 
 
 @pytest.mark.asyncio

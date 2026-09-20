@@ -1087,6 +1087,34 @@ class DeveloperExecutionConfig(BaseModel):
     list_page_size: int = Field(default=50, ge=1, le=200)
     evidence_policy_id: str = Field(default="developer-workstream", min_length=1)
     integration_policy_id: str = Field(default="developer-integration", min_length=1)
+    max_child_reconcile_failures: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description=(
+            "Consecutive reconcile failures (gateway/verification exceptions) tolerated for "
+            "one child attempt before it is durably transitioned to a terminal failed state, "
+            "so a single poisoned child cannot starve the reconcile queue forever."
+        ),
+    )
+    max_delivery_wait_failures: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description=(
+            "Consecutive reconcile failures tolerated for one delivery wait before it is "
+            "durably transitioned to its terminal failed state."
+        ),
+    )
+    max_parent_stop_failures: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description=(
+            "Consecutive failures tolerated when stopping a canceled parent session before "
+            "the stop intent is recorded as durably failed instead of retried forever."
+        ),
+    )
 
     @field_validator("admission_roles")
     @classmethod

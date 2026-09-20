@@ -11,6 +11,9 @@ from uuid import UUID, uuid4
 from niuu.domain.models import Principal
 from niuu.ports.workload_identity import WorkloadTokenIssuer
 from ting.domain.developer_execution import (
+    CHILDREN_JOINED_SUSPENSION_REASON,
+    DELIVERY_WAIT_FAILURE_PREFIX,
+    DELIVERY_WAIT_SUSPENSION_REASONS,
     TERMINAL_CHILD_STATES,
     ChildExecution,
     ChildExecutionState,
@@ -19,6 +22,7 @@ from ting.domain.developer_execution import (
     ChildPendingGate,
     ChildPendingQuestion,
     ChildTaskHandle,
+    ChildTaskObservation,
     DeveloperExecution,
     DeveloperExecutionError,
     ExecutionState,
@@ -58,11 +62,17 @@ class DeveloperExecutionService:
         launch_claim_limit: int,
         reconcile_limit: int,
         lease_seconds: float,
+        max_child_reconcile_failures: int = 5,
+        max_parent_stop_failures: int = 5,
     ) -> None:
         if not worker_id.strip():
             raise ValueError("developer execution worker_id is required")
         if launch_claim_limit <= 0 or reconcile_limit <= 0 or lease_seconds <= 0:
             raise ValueError("developer execution worker limits must be positive")
+        if max_child_reconcile_failures <= 0:
+            raise ValueError("developer execution max_child_reconcile_failures must be positive")
+        if max_parent_stop_failures <= 0:
+            raise ValueError("developer execution max_parent_stop_failures must be positive")
         if not admission_roles or any(not role.strip() for role in admission_roles):
             raise ValueError("developer execution admission roles must be non-empty")
         self._repository = repository
@@ -76,6 +86,8 @@ class DeveloperExecutionService:
         self._launch_claim_limit = launch_claim_limit
         self._reconcile_limit = reconcile_limit
         self._lease_seconds = lease_seconds
+        self._max_child_reconcile_failures = max_child_reconcile_failures
+        self._max_parent_stop_failures = max_parent_stop_failures
         self._lifecycle = WorkflowExecutionLifecycle(
             repository=repository,
             validator=_validate_developer_expansion,
@@ -137,93 +149,134 @@ class DeveloperExecutionService:
         return launched
 
     async def reconcile(self, execution_id: UUID | None = None) -> dict[str, int]:
-        """Project remote tasks, validate results, and advance durable joins."""
+        """Project remote tasks, validate results, and advance durable joins.
+
+        Each child and each execution's join projection is isolated: one
+        item's exception is recorded durably and does not prevent the rest
+        of the batch from being processed.
+        """
         # Stop an owner-canceled parent before any child transport call. Child
         # cancellation can fail independently; that must not leave the parent
         # runtime able to continue issuing work after its durable stop intent.
         await self._stop_canceled_parents(execution_id=execution_id)
+        deadline_execution_ids = await self._fail_expired_deadlines(execution_id=execution_id)
         children = await self._repository.list_reconcilable(limit=self._reconcile_limit)
-        selected = [child for child in children if execution_id in {None, child.execution_id}]
+        # A child past its deadline belongs to the deadline step alone. Polling it
+        # here as well would reset its failure count on every successful poll, so
+        # a remote task that cannot be canceled would never be failed.
+        now = datetime.now(UTC)
+        selected = [
+            child
+            for child in children
+            if execution_id in {None, child.execution_id}
+            and (child.deadline is None or child.deadline > now)
+        ]
         projected = 0
-        execution_ids: set[UUID] = {execution_id} if execution_id is not None else set()
+        execution_ids: set[UUID] = (
+            {execution_id} if execution_id is not None else set()
+        ) | deadline_execution_ids
         for child in selected:
-            execution = await self._execution_for_child(child)
-            handle = ChildTaskHandle(
-                agent_id=child.agent_id,
-                task_id=child.task_id,
-                context_id=child.context_id,
+            try:
+                await self._reconcile_child(child)
+            except Exception as exc:
+                logger.exception(
+                    "Developer child reconciliation failed; recording durable failure",
+                    extra={
+                        "developer_child_id": str(child.id),
+                        "developer_execution_id": str(child.execution_id),
+                    },
+                )
+                await self._repository.record_reconcile_error(
+                    child.id,
+                    error=f"{type(exc).__name__}: {exc}",
+                    failure_kind=FailureKind.TRANSIENT.value,
+                    max_consecutive_failures=self._max_child_reconcile_failures,
+                )
+            execution_ids.add(child.execution_id)
+            projected += 1
+        for selected_execution_id in execution_ids:
+            try:
+                await self._project_join(selected_execution_id)
+            except Exception:
+                logger.exception(
+                    "Developer execution join projection failed; will retry next cycle",
+                    extra={"developer_execution_id": str(selected_execution_id)},
+                )
+        return {"projected": projected, "executions": len(execution_ids)}
+
+    async def _reconcile_child(self, child: ChildExecution) -> None:
+        execution = await self._execution_for_child(child)
+        handle = ChildTaskHandle(
+            agent_id=child.agent_id,
+            task_id=child.task_id,
+            context_id=child.context_id,
+        )
+        canceling = child.state == ChildExecutionState.CANCELING
+        if canceling:
+            observation = _normalize_observation(
+                await self._gateway.cancel_child(
+                    handle,
+                    auth_token=self._gateway_token(execution, child),
+                )
             )
-            canceling = child.state == ChildExecutionState.CANCELING
-            if canceling:
-                observation = _normalize_observation(
-                    await self._gateway.cancel_child(
-                        handle,
-                        auth_token=self._gateway_token(execution, child),
-                    )
+        else:
+            observation = _normalize_observation(
+                await self._gateway.get_child(
+                    handle,
+                    auth_token=self._gateway_token(execution, child),
                 )
-            else:
-                observation = _normalize_observation(
-                    await self._gateway.get_child(
-                        handle,
-                        auth_token=self._gateway_token(execution, child),
-                    )
-                )
-            if canceling and observation.state not in TERMINAL_CHILD_STATES:
+            )
+        if canceling and observation.state not in TERMINAL_CHILD_STATES:
+            observation = replace(
+                observation,
+                state=ChildExecutionState.CANCELING,
+            )
+        if not canceling and observation.state == ChildExecutionState.COMPLETED:
+            if observation.result is None:
                 observation = replace(
                     observation,
-                    state=ChildExecutionState.CANCELING,
+                    state=ChildExecutionState.BLOCKED,
+                    failure_kind=FailureKind.CONTRACT_INVALID,
+                    error="completed child returned no typed result",
                 )
-            if not canceling and observation.state == ChildExecutionState.COMPLETED:
-                if observation.result is None:
+            else:
+                try:
+                    attested_result = await self._review_attestor.attest(
+                        execution,
+                        child,
+                        observation.result,
+                    )
+                    validate_child_result(
+                        child,
+                        attested_result,
+                        execution.policy.result_schema,
+                    )
+                except DeveloperExecutionError as exc:
                     observation = replace(
                         observation,
                         state=ChildExecutionState.BLOCKED,
                         failure_kind=FailureKind.CONTRACT_INVALID,
-                        error="completed child returned no typed result",
+                        error=str(exc),
                     )
                 else:
-                    try:
-                        attested_result = await self._review_attestor.attest(
-                            execution,
-                            child,
-                            observation.result,
-                        )
-                        validate_child_result(
-                            child,
-                            attested_result,
-                            execution.policy.result_schema,
-                        )
-                    except DeveloperExecutionError as exc:
+                    observation = replace(observation, result=attested_result)
+                    report = await self._evidence_verifier.validate(
+                        execution,
+                        child,
+                        attested_result,
+                    )
+                    await self._repository.record_evidence_report(
+                        child.id,
+                        report.model_dump(mode="json"),
+                    )
+                    if not report.accepted:
                         observation = replace(
                             observation,
                             state=ChildExecutionState.BLOCKED,
-                            failure_kind=FailureKind.CONTRACT_INVALID,
-                            error=str(exc),
+                            failure_kind=FailureKind.POLICY_REJECTED,
+                            error="; ".join(report.blocking_reasons),
                         )
-                    else:
-                        observation = replace(observation, result=attested_result)
-                        report = await self._evidence_verifier.validate(
-                            execution,
-                            child,
-                            attested_result,
-                        )
-                        await self._repository.record_evidence_report(
-                            child.id,
-                            report.model_dump(mode="json"),
-                        )
-                        if not report.accepted:
-                            observation = replace(
-                                observation,
-                                state=ChildExecutionState.BLOCKED,
-                                failure_kind=FailureKind.POLICY_REJECTED,
-                                error="; ".join(report.blocking_reasons),
-                            )
-            await self._repository.record_observation(child, observation)
-            execution_ids.add(child.execution_id)
-            projected += 1
-        for selected_execution_id in execution_ids:
-            await self._project_join(selected_execution_id)
-        return {"projected": projected, "executions": len(execution_ids)}
+        await self._repository.record_observation(child, observation)
 
     async def cancel(
         self,
@@ -245,6 +298,14 @@ class DeveloperExecutionService:
         )
 
     async def _stop_canceled_parents(self, *, execution_id: UUID | None = None) -> None:
+        """Stop each owner-canceled parent, isolating one row's failure.
+
+        A durable attempt/error trail (`record_parent_stop_error`) advances
+        the row's position in `list_parent_stop_pending`'s ordering so a
+        permanently failing stop cannot starve fresher rows, and gives up
+        with a visible terminal outcome past the configured maximum instead
+        of retrying forever.
+        """
         pending = await self._repository.list_parent_stop_pending(limit=self._reconcile_limit)
         for execution in pending:
             if execution_id is not None and execution.id != execution_id:
@@ -252,11 +313,105 @@ class DeveloperExecutionService:
             try:
                 await self._continuation.stop_parent(execution)
                 await self._repository.mark_parent_stopped(execution.id)
-            except Exception:
+            except Exception as exc:
                 logger.exception(
-                    "Failed to stop canceled developer parent session; durable cleanup will retry",
+                    "Failed to stop canceled developer parent session; recording durable failure",
                     extra={"developer_execution_id": str(execution.id)},
                 )
+                try:
+                    await self._repository.record_parent_stop_error(
+                        execution.id,
+                        error=f"{type(exc).__name__}: {exc}",
+                        max_attempts=self._max_parent_stop_failures,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to durably record parent-stop failure; will retry next cycle",
+                        extra={"developer_execution_id": str(execution.id)},
+                    )
+
+    async def _fail_expired_deadlines(self, *, execution_id: UUID | None = None) -> set[UUID]:
+        """Fail children and executions whose own deadline has already elapsed.
+
+        Deadlines were previously only a filter on launch eligibility: a
+        `reserved` child past its deadline became unclaimable but never
+        changed state, and a `launched`/`running` child was polled forever.
+        Both left the parent join pending indefinitely. Each item is
+        isolated so one failure does not block the others.
+        """
+        now = datetime.now(UTC)
+        affected: set[UUID] = set()
+        expired_children = await self._repository.list_deadline_expired_children(
+            now=now, limit=self._reconcile_limit
+        )
+        for child in expired_children:
+            if execution_id not in {None, child.execution_id}:
+                continue
+            try:
+                await self._fail_expired_child(child, now=now)
+            except Exception as exc:
+                logger.exception(
+                    "Failing deadline-expired child did not complete; recording durable failure",
+                    extra={
+                        "developer_child_id": str(child.id),
+                        "developer_execution_id": str(child.execution_id),
+                    },
+                )
+                await self._repository.record_reconcile_error(
+                    child.id,
+                    error=f"{type(exc).__name__}: {exc}",
+                    failure_kind=FailureKind.DEADLINE_EXCEEDED.value,
+                    max_consecutive_failures=self._max_child_reconcile_failures,
+                )
+            affected.add(child.execution_id)
+        expired_executions = await self._repository.list_deadline_expired_executions(
+            now=now, limit=self._reconcile_limit
+        )
+        for execution in expired_executions:
+            if execution_id not in {None, execution.id}:
+                continue
+            try:
+                await self._repository.update_execution_state(
+                    execution.id,
+                    state=ExecutionState.FAILED.value,
+                    suspension_reason="deadline_exceeded",
+                    expected_revision=execution.revision,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to fail deadline-expired execution; will retry next cycle",
+                    extra={"developer_execution_id": str(execution.id)},
+                )
+            affected.add(execution.id)
+        return affected
+
+    async def _fail_expired_child(self, child: ChildExecution, *, now: datetime) -> None:
+        execution = await self._execution_for_child(child)
+        handle = ChildTaskHandle(
+            agent_id=child.agent_id,
+            task_id=child.task_id,
+            context_id=child.context_id,
+        )
+        if child.task_id:
+            # The remote task must be stopped before the child is recorded as
+            # failed. A failed cancellation raises: the caller records it and
+            # retries, so Ting never reports dead an agent that is still running.
+            await self._gateway.cancel_child(
+                handle,
+                auth_token=self._gateway_token(execution, child),
+            )
+        observation = _normalize_observation(
+            ChildTaskObservation(
+                handle=handle,
+                state=ChildExecutionState.FAILED,
+                result=None,
+                observed_at=now,
+                event_id=f"deadline-exceeded:{child.id}",
+                failure_kind=FailureKind.DEADLINE_EXCEEDED,
+                error="Child execution deadline elapsed before completion",
+            )
+        )
+        await self._repository.record_observation(child, observation)
 
     async def retry(
         self,
@@ -408,6 +563,7 @@ class DeveloperExecutionService:
                 execution_id,
                 state=ExecutionState.CANCELED.value,
                 suspension_reason="canceled",
+                expected_revision=execution.revision,
             )
             return
         if not children:
@@ -420,10 +576,11 @@ class DeveloperExecutionService:
                     execution_id,
                     state=ExecutionState.CANCELED.value,
                     suspension_reason="canceled",
+                    expected_revision=execution.revision,
                 )
             return
         if join.ready:
-            if execution.suspension_reason == "children_contract_valid":
+            if _past_children_join(execution):
                 return
             current_attempts: dict[str, ChildExecution] = {}
             for child in children:
@@ -449,7 +606,8 @@ class DeveloperExecutionService:
             await self._repository.update_execution_state(
                 execution_id,
                 state=ExecutionState.RUNNING.value,
-                suspension_reason="children_contract_valid",
+                suspension_reason=CHILDREN_JOINED_SUSPENSION_REASON,
+                expected_revision=execution.revision,
             )
             return
         if join.failed:
@@ -458,6 +616,7 @@ class DeveloperExecutionService:
                 execution_id,
                 state=ExecutionState.BLOCKED.value,
                 suspension_reason="child_failed",
+                expected_revision=execution.revision,
             )
             execution = await self._repository.get_internal(execution_id)
             if execution is None:
@@ -475,6 +634,7 @@ class DeveloperExecutionService:
                 execution_id,
                 state=ExecutionState.BLOCKED.value,
                 suspension_reason="child_blocked",
+                expected_revision=execution.revision,
             )
             execution = await self._repository.get_internal(execution_id)
             if execution is None:
@@ -490,6 +650,7 @@ class DeveloperExecutionService:
             execution_id,
             state=ExecutionState.WAITING.value,
             suspension_reason="awaiting_children",
+            expected_revision=execution.revision,
         )
 
     async def _notify_changed_blockers(
@@ -673,6 +834,24 @@ class DeveloperExecutionCoordinator:
             "attempt": child.attempt,
             "state": child.state.value,
         }
+
+
+def _past_children_join(execution: DeveloperExecution) -> bool:
+    """True once the parent has already been resumed past the children join.
+
+    A manual ``POST /{id}/reconcile`` can race a durably persisted delivery
+    wait: the children join was satisfied earlier (join.ready stays true
+    forever once the winning generation's children are all terminal), but the
+    execution has since moved on to awaiting/observing remote delivery, or to
+    a recorded delivery failure. Re-running the join projection from that
+    state would re-publish ``resume_parent`` and clobber delivery-wait state,
+    so this must be checked before doing either.
+    """
+    if execution.suspension_reason == CHILDREN_JOINED_SUSPENSION_REASON:
+        return True
+    if execution.suspension_reason in DELIVERY_WAIT_SUSPENSION_REASONS:
+        return True
+    return execution.suspension_reason.startswith(DELIVERY_WAIT_FAILURE_PREFIX)
 
 
 def _launch_request(child: ChildExecution) -> ChildLaunchRequest:

@@ -17,6 +17,7 @@ from ting.domain.developer_delivery_wait import (
     developer_delivery_candidate_digest,
 )
 from ting.domain.developer_execution import (
+    DELIVERY_WAIT_FAILURE_PREFIX,
     TERMINAL_EXECUTION_STATES,
     DeveloperExecution,
     DeveloperExecutionError,
@@ -234,8 +235,10 @@ class PostgresDeveloperDeliveryWaitRepository(DeveloperDeliveryWaitRepository):
                 wait.lease_token,
                 wait.fencing_generation,
             )
-            if row is not None and project_execution:
-                await conn.execute(
+            if row is None:
+                raise DeveloperExecutionError("delivery wait lease is no longer current")
+            if project_execution:
+                result = await conn.execute(
                     """
                     UPDATE developer_executions
                     SET suspension_reason = $2, revision = revision + 1,
@@ -249,13 +252,16 @@ class PostgresDeveloperDeliveryWaitRepository(DeveloperDeliveryWaitRepository):
                     (
                         "delivery_observed"
                         if state is DeveloperDeliveryWaitState.READY
-                        else f"delivery_wait_failed: {observation.reason}"
+                        else f"{DELIVERY_WAIT_FAILURE_PREFIX}{observation.reason}"
                     ),
                     wait.execution_generation,
                     expected_execution_revision,
                 )
-        if row is None:
-            raise DeveloperExecutionError("delivery wait lease is no longer current")
+                _require_updated(
+                    result,
+                    "Developer execution changed while recording its terminal delivery "
+                    "observation; the wait stays pending and is observed again",
+                )
         return _wait_from_row(row)
 
     async def mark_notified(self, wait: DeveloperDeliveryWait) -> None:

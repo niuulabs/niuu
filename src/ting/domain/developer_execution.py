@@ -41,6 +41,20 @@ validate_json_instance = lifecycle.validate_json_instance
 validate_json_schema = lifecycle.validate_json_schema
 
 
+CHILDREN_JOINED_SUSPENSION_REASON = "children_contract_valid"
+"""Suspension reason set once the children join has been resumed onto the parent."""
+
+DELIVERY_WAIT_SUSPENSION_REASONS = frozenset(
+    {"awaiting_checks", "awaiting_merge", "delivery_observed"}
+)
+"""Suspension reasons that mean the execution has moved past the children join
+into remote delivery observation. A manual reconcile must not re-run the join
+projection once one of these (or DELIVERY_WAIT_FAILURE_PREFIX) is current."""
+
+DELIVERY_WAIT_FAILURE_PREFIX = "delivery_wait_failed: "
+"""Prefix for the suspension reason recorded when a delivery wait terminally fails."""
+
+
 class FailureKind(StrEnum):
     TRANSIENT = "transient"
     INVALID_INPUT = "invalid_input"

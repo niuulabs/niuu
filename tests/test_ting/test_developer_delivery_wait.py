@@ -210,6 +210,19 @@ class MemoryExecutionRepository:
         return self.execution if execution_id == self.execution.id else None
 
 
+class MultiExecutionRepository:
+    """Serves several executions and can be told to poison lookups for one."""
+
+    def __init__(self, executions: dict) -> None:
+        self.executions = executions
+        self.poison_execution_id = None
+
+    async def get_internal(self, execution_id):
+        if execution_id == self.poison_execution_id:
+            raise RuntimeError("execution lookup unavailable")
+        return self.executions.get(execution_id)
+
+
 class SequenceObserver:
     def __init__(self, observations):
         self.observations = list(observations)
@@ -233,10 +246,18 @@ class RecordingContinuation:
             raise RuntimeError("temporary continuation failure")
 
 
-def _service(execution, repository, observer, continuation):
+def _service(
+    execution,
+    repository,
+    observer,
+    continuation,
+    *,
+    execution_repository=None,
+    max_consecutive_failures=5,
+):
     return DeveloperDeliveryWaitService(
         repository=repository,
-        execution_repository=MemoryExecutionRepository(execution),
+        execution_repository=execution_repository or MemoryExecutionRepository(execution),
         observer=observer,
         continuation=continuation,
         policy_id="developer-integration",
@@ -244,6 +265,7 @@ def _service(execution, repository, observer, continuation):
         claim_limit=10,
         lease_seconds=30,
         poll_interval_seconds=5,
+        max_consecutive_failures=max_consecutive_failures,
     )
 
 
@@ -361,8 +383,10 @@ async def test_terminal_notification_retries_without_repolling_after_restart() -
     service = _service(execution, repository, observer, continuation)
     wait = await service.request_wait(execution, request)
 
-    with pytest.raises(RuntimeError, match="temporary continuation"):
-        await service.reconcile()
+    # The notify failure on an already-terminal wait is isolated and
+    # does not raise out of reconcile(); the natural lease-expiry retry
+    # (below) replays the notification.
+    assert await service.reconcile() == 1
     assert repository.waits[wait.id].state is DeveloperDeliveryWaitState.READY
     assert observer.calls == 1
 
@@ -375,6 +399,78 @@ async def test_terminal_notification_retries_without_repolling_after_restart() -
     assert observer.calls == 1
     assert len(continuation.calls) == 2
     assert repository.waits[wait.id].state is DeveloperDeliveryWaitState.NOTIFIED
+
+
+class SelectiveObserver:
+    """Raises for one execution's waits, returns a fixed observation for others."""
+
+    def __init__(self, *, poison_execution_id, observation) -> None:
+        self.poison_execution_id = poison_execution_id
+        self.observation = observation
+        self.calls = 0
+
+    async def observe(self, execution, request):
+        del request
+        self.calls += 1
+        if execution.id == self.poison_execution_id:
+            raise RuntimeError("observer unavailable")
+        return self.observation
+
+
+@pytest.mark.asyncio
+async def test_one_poisoned_wait_does_not_stall_reconciliation_of_others() -> None:
+    """A wait whose observer call always raises must not stop
+    other due waits in the same batch, and must eventually become durably,
+    visibly failed rather than pending forever."""
+    poisoned_execution = _bound_execution()
+    healthy_execution = _bound_execution()
+    repository = MemoryWaitRepository()
+    execution_repository = MultiExecutionRepository(
+        {
+            poisoned_execution.id: poisoned_execution,
+            healthy_execution.id: healthy_execution,
+        }
+    )
+    observer = SelectiveObserver(
+        poison_execution_id=poisoned_execution.id,
+        observation=_observation(_request(), DeveloperDeliveryObservationStatus.CHECKS_PASSED),
+    )
+    continuation = RecordingContinuation()
+    service = _service(
+        poisoned_execution,
+        repository,
+        observer,
+        continuation,
+        execution_repository=execution_repository,
+        max_consecutive_failures=2,
+    )
+    poisoned_wait = await service.request_wait(poisoned_execution, _request())
+    healthy_wait = await service.request_wait(healthy_execution, _request())
+
+    assert await service.reconcile() == 2
+
+    # The healthy wait completed in the same pass despite the poisoned one.
+    assert repository.waits[healthy_wait.id].state is DeveloperDeliveryWaitState.NOTIFIED
+    assert repository.waits[poisoned_wait.id].state is DeveloperDeliveryWaitState.PENDING
+    assert repository.waits[poisoned_wait.id].attempt_count == 1
+    assert "observer unavailable" in repository.waits[poisoned_wait.id].last_error
+
+    # Force the poisoned wait due again; the second consecutive failure
+    # reaches the configured maximum and terminally fails it.
+    repository.waits[poisoned_wait.id] = replace(
+        repository.waits[poisoned_wait.id],
+        next_poll_at=datetime.now(UTC),
+    )
+
+    assert await service.reconcile() == 1
+
+    terminal = repository.waits[poisoned_wait.id]
+    assert terminal.state in {
+        DeveloperDeliveryWaitState.FAILED,
+        DeveloperDeliveryWaitState.NOTIFIED,
+    }
+    assert terminal.observation is not None
+    assert terminal.observation.terminal
 
 
 @pytest.mark.asyncio

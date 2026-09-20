@@ -101,6 +101,7 @@ class TrustedIntegrationReviewProjector:
             execution.id,
             state=ExecutionState.FAILED.value,
             suspension_reason=reason,
+            expected_revision=execution.revision,
         )
         return True
 

@@ -788,6 +788,12 @@ def create_app(
                     launch_claim_limit=settings.developer_execution.launch_claim_limit,
                     reconcile_limit=settings.developer_execution.reconcile_limit,
                     lease_seconds=settings.developer_execution.lease_seconds,
+                    max_child_reconcile_failures=(
+                        settings.developer_execution.max_child_reconcile_failures
+                    ),
+                    max_parent_stop_failures=(
+                        settings.developer_execution.max_parent_stop_failures
+                    ),
                 )
                 delivery_wait_repository = _create_runtime_bound_adapter(
                     settings.developer_execution.delivery_wait_repository_adapter,
@@ -825,6 +831,9 @@ def create_app(
                     claim_limit=settings.developer_execution.reconcile_limit,
                     lease_seconds=settings.developer_execution.lease_seconds,
                     poll_interval_seconds=(settings.developer_execution.reconcile_interval_seconds),
+                    max_consecutive_failures=(
+                        settings.developer_execution.max_delivery_wait_failures
+                    ),
                 )
                 developer_review_projector = TrustedIntegrationReviewProjector(
                     repository=developer_execution_repo,

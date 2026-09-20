@@ -190,6 +190,9 @@ data:
       list_page_size: {{ .Values.developerExecution.listPageSize }}
       evidence_policy_id: {{ .Values.developerExecution.evidencePolicyId | quote }}
       integration_policy_id: {{ .Values.developerExecution.integrationPolicyId | quote }}
+      max_child_reconcile_failures: {{ .Values.developerExecution.maxChildReconcileFailures }}
+      max_delivery_wait_failures: {{ .Values.developerExecution.maxDeliveryWaitFailures }}
+      max_parent_stop_failures: {{ .Values.developerExecution.maxParentStopFailures }}
 
     cerbos:
       url: {{ .Values.cerbos.url | default "http://localhost:3592" | quote }}

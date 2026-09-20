@@ -1898,4 +1898,27 @@ data:
         DROP COLUMN IF EXISTS parent_stopped_at,
         DROP COLUMN IF EXISTS parent_stop_requested_at;
 
+  000046_developer_reconcile_failure_tracking.up.sql: |
+    -- Durable, visible failure tracking so one poisoned reconcile item cannot
+    -- starve the queue: a consecutive-failure counter per child (reset on a
+    -- successful poll, terminal-failed once it exceeds the configured maximum),
+    -- and an attempt/error trail for the durable parent-stop cleanup loop.
+
+    ALTER TABLE developer_execution_children
+        ADD COLUMN IF NOT EXISTS reconcile_failure_count INTEGER NOT NULL DEFAULT 0
+            CHECK (reconcile_failure_count >= 0);
+
+    ALTER TABLE developer_executions
+        ADD COLUMN IF NOT EXISTS parent_stop_attempts INTEGER NOT NULL DEFAULT 0
+            CHECK (parent_stop_attempts >= 0),
+        ADD COLUMN IF NOT EXISTS parent_stop_error TEXT NOT NULL DEFAULT '';
+
+  000046_developer_reconcile_failure_tracking.down.sql: |
+    ALTER TABLE developer_executions
+        DROP COLUMN IF EXISTS parent_stop_error,
+        DROP COLUMN IF EXISTS parent_stop_attempts;
+
+    ALTER TABLE developer_execution_children
+        DROP COLUMN IF EXISTS reconcile_failure_count;
+
 {{- end }}

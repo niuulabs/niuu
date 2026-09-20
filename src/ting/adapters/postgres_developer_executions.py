@@ -365,9 +365,44 @@ class PostgresDeveloperExecutionRepository(DeveloperExecutionRepository):
             SELECT * FROM developer_executions
             WHERE parent_stop_requested_at IS NOT NULL
               AND parent_stopped_at IS NULL
-            ORDER BY parent_stop_requested_at, id
+            ORDER BY parent_stop_attempts, parent_stop_requested_at, id
             LIMIT $1
             """,
+            limit,
+        )
+        return [_execution_from_row(row) for row in rows]
+
+    async def list_deadline_expired_children(
+        self, *, now: datetime, limit: int
+    ) -> list[ChildExecution]:
+        rows = await self._pool.fetch(
+            """
+            SELECT child.*
+            FROM developer_execution_children child
+            JOIN developer_executions execution ON execution.id = child.execution_id
+            WHERE child.deadline < $1
+              AND child.state NOT IN ('canceled', 'completed', 'failed', 'superseded')
+              AND execution.state NOT IN ('canceled', 'completed', 'failed')
+            ORDER BY child.deadline, child.id
+            LIMIT $2
+            """,
+            now,
+            limit,
+        )
+        return [_child_from_row(row) for row in rows]
+
+    async def list_deadline_expired_executions(
+        self, *, now: datetime, limit: int
+    ) -> list[DeveloperExecution]:
+        rows = await self._pool.fetch(
+            """
+            SELECT * FROM developer_executions
+            WHERE deadline < $1
+              AND state NOT IN ('canceled', 'completed', 'failed')
+            ORDER BY deadline, id
+            LIMIT $2
+            """,
+            now,
             limit,
         )
         return [_execution_from_row(row) for row in rows]
@@ -377,10 +412,37 @@ class PostgresDeveloperExecutionRepository(DeveloperExecutionRepository):
             """
             UPDATE developer_executions
             SET parent_stopped_at = COALESCE(parent_stopped_at, NOW()),
+                parent_stop_error = '',
                 updated_at = NOW()
             WHERE id = $1 AND parent_stop_requested_at IS NOT NULL
             """,
             execution_id,
+        )
+
+    async def record_parent_stop_error(
+        self,
+        execution_id: UUID,
+        *,
+        error: str,
+        max_attempts: int,
+    ) -> None:
+        if max_attempts <= 0:
+            raise ValueError("max_attempts must be positive")
+        await self._pool.execute(
+            """
+            UPDATE developer_executions
+            SET parent_stop_attempts = parent_stop_attempts + 1,
+                parent_stop_error = $2,
+                parent_stopped_at = CASE
+                    WHEN parent_stop_attempts + 1 >= $3 THEN NOW()
+                    ELSE parent_stopped_at
+                END,
+                updated_at = NOW()
+            WHERE id = $1 AND parent_stop_requested_at IS NOT NULL AND parent_stopped_at IS NULL
+            """,
+            execution_id,
+            error,
+            max_attempts,
         )
 
     async def claim_launches(
@@ -594,7 +656,7 @@ class PostgresDeveloperExecutionRepository(DeveloperExecutionRepository):
                 row = await connection.fetchrow(
                     """
                     UPDATE developer_execution_children
-                    SET last_polled_at = NOW()
+                    SET last_polled_at = NOW(), reconcile_failure_count = 0
                     WHERE id = $1
                     RETURNING *
                     """,
@@ -617,7 +679,7 @@ class PostgresDeveloperExecutionRepository(DeveloperExecutionRepository):
                 row = await connection.fetchrow(
                     """
                     UPDATE developer_execution_children
-                    SET last_polled_at = NOW()
+                    SET last_polled_at = NOW(), reconcile_failure_count = 0
                     WHERE id = $1
                     RETURNING *
                     """,
@@ -655,7 +717,7 @@ class PostgresDeveloperExecutionRepository(DeveloperExecutionRepository):
                 SET state = $2, result = $3::jsonb, artifacts = $4::jsonb,
                     failure_kind = $5, error = $6, remote_observed_at = $7,
                     pending_questions = $8::jsonb, pending_gates = $9::jsonb,
-                    last_polled_at = NOW(), updated_at = NOW()
+                    last_polled_at = NOW(), updated_at = NOW(), reconcile_failure_count = 0
                 WHERE id = $1
                 RETURNING *
                 """,
@@ -693,6 +755,56 @@ class PostgresDeveloperExecutionRepository(DeveloperExecutionRepository):
         )
         if result == "UPDATE 0":
             raise ExecutionConflictError("evidence child no longer exists")
+
+    async def record_reconcile_error(
+        self,
+        child_id: UUID,
+        *,
+        error: str,
+        failure_kind: str,
+        max_consecutive_failures: int,
+    ) -> ChildExecution | None:
+        if max_consecutive_failures <= 0:
+            raise ValueError("max_consecutive_failures must be positive")
+        async with self._pool.acquire() as connection, connection.transaction():
+            row = await connection.fetchrow(
+                """
+                UPDATE developer_execution_children
+                SET reconcile_failure_count = reconcile_failure_count + 1,
+                    error = $2, last_polled_at = NOW(), updated_at = NOW()
+                WHERE id = $1
+                  AND state NOT IN ('canceled', 'completed', 'failed', 'superseded')
+                RETURNING *
+                """,
+                child_id,
+                error,
+            )
+            if row is None:
+                return None
+            if row["reconcile_failure_count"] < max_consecutive_failures:
+                return _child_from_row(row)
+            failed_row = await connection.fetchrow(
+                """
+                UPDATE developer_execution_children
+                SET state = 'failed', failure_kind = $2, updated_at = NOW()
+                WHERE id = $1
+                  AND state NOT IN ('canceled', 'completed', 'failed', 'superseded')
+                RETURNING *
+                """,
+                child_id,
+                failure_kind,
+            )
+            if failed_row is None:
+                return _child_from_row(row)
+            await connection.execute(
+                """
+                UPDATE developer_executions
+                SET blocker_revision = blocker_revision + 1, updated_at = NOW()
+                WHERE id = $1
+                """,
+                failed_row["execution_id"],
+            )
+            return _child_from_row(failed_row)
 
     async def seal_generation(self, execution_id: UUID, generation: int) -> None:
         result = await self._pool.execute(
@@ -853,20 +965,30 @@ class PostgresDeveloperExecutionRepository(DeveloperExecutionRepository):
         *,
         state: str,
         suspension_reason: str,
+        expected_revision: int,
     ) -> None:
         if state != ExecutionState.FAILED.value:
-            await self._pool.execute(
+            result = await self._pool.execute(
                 """
                 UPDATE developer_executions
                 SET state = $2, suspension_reason = $3, revision = revision + 1,
                     updated_at = NOW()
-                WHERE id = $1 AND state NOT IN ('canceled', 'completed', 'failed')
+                WHERE id = $1 AND revision = $4
+                  AND state NOT IN ('canceled', 'completed', 'failed')
                   AND (state IS DISTINCT FROM $2 OR suspension_reason IS DISTINCT FROM $3)
                 """,
                 execution_id,
                 state,
                 suspension_reason,
+                expected_revision,
             )
+            if result == "UPDATE 0":
+                await self._require_state_projection_noop(
+                    execution_id,
+                    state=state,
+                    suspension_reason=suspension_reason,
+                    expected_revision=expected_revision,
+                )
             return
 
         async with self._pool.acquire() as connection, connection.transaction():
@@ -876,14 +998,22 @@ class PostgresDeveloperExecutionRepository(DeveloperExecutionRepository):
                 SET state = 'failed', suspension_reason = $2,
                     cancel_requested = TRUE, revision = revision + 1,
                     updated_at = NOW()
-                WHERE id = $1 AND cancel_requested = FALSE
+                WHERE id = $1 AND revision = $3 AND cancel_requested = FALSE
                   AND state NOT IN ('canceled', 'completed', 'failed')
                 RETURNING id
                 """,
                 execution_id,
                 suspension_reason,
+                expected_revision,
             )
             if row is None:
+                await self._require_state_projection_noop(
+                    execution_id,
+                    state=state,
+                    suspension_reason=suspension_reason,
+                    expected_revision=expected_revision,
+                    connection=connection,
+                )
                 return
             await connection.execute(
                 """
@@ -899,6 +1029,42 @@ class PostgresDeveloperExecutionRepository(DeveloperExecutionRepository):
                 """,
                 execution_id,
             )
+
+    async def _require_state_projection_noop(
+        self,
+        execution_id: UUID,
+        *,
+        state: str,
+        suspension_reason: str,
+        expected_revision: int,
+        connection: asyncpg.Connection | None = None,
+    ) -> None:
+        """Distinguish an idempotent replay from a real conflict after 0 rows matched.
+
+        The write above intentionally skips rows that already hold the target
+        state/reason (to avoid bumping revision on a no-op retry), so 0 rows
+        updated is ambiguous: it could mean the projection already landed, or
+        it could mean the execution moved to a different revision or a
+        terminal state underneath this caller. Only the second case is a
+        conflict worth raising.
+        """
+        querier = connection if connection is not None else self._pool
+        current = await querier.fetchrow(
+            "SELECT state, suspension_reason, revision FROM developer_executions WHERE id = $1",
+            execution_id,
+        )
+        already_applied = (
+            current is not None
+            and current["revision"] == expected_revision
+            and current["state"] == state
+            and current["suspension_reason"] == suspension_reason
+        )
+        if already_applied:
+            return
+        raise ExecutionConflictError(
+            "developer execution changed since this projection observed it; "
+            "the caller must re-read the execution before writing again"
+        )
 
     async def mark_blocker_notification(
         self,

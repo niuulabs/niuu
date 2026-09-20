@@ -203,6 +203,9 @@ developerExecution:
   listPageSize: 50
   evidencePolicyId: developer-workstream
   integrationPolicyId: developer-integration
+  maxChildReconcileFailures: 5
+  maxDeliveryWaitFailures: 5
+  maxParentStopFailures: 5
 
 database:
   name: ting

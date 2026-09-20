@@ -112,8 +112,37 @@ class DeveloperExecutionRepository(
         """List owner-requested parent runtime stops that still need delivery."""
 
     @abstractmethod
+    async def list_deadline_expired_children(
+        self, *, now: datetime, limit: int
+    ) -> list[ChildExecution]:
+        """List non-terminal children whose own deadline has already elapsed."""
+
+    @abstractmethod
+    async def list_deadline_expired_executions(
+        self, *, now: datetime, limit: int
+    ) -> list[DeveloperExecution]:
+        """List non-terminal executions whose own deadline has already elapsed."""
+
+    @abstractmethod
     async def mark_parent_stopped(self, execution_id: UUID) -> None:
         """Record successful idempotent termination of the parent runtime."""
+
+    @abstractmethod
+    async def record_parent_stop_error(
+        self,
+        execution_id: UUID,
+        *,
+        error: str,
+        max_attempts: int,
+    ) -> None:
+        """Durably record one failed parent-stop attempt.
+
+        Advances the attempt count so a permanently failing stop no longer
+        sorts first in `list_parent_stop_pending` and starves fresher rows.
+        Past ``max_attempts`` the row is marked visibly, terminally given up
+        on (``parent_stopped_at`` set, ``parent_stop_error`` holding the
+        reason) instead of retrying forever.
+        """
 
     @abstractmethod
     async def claim_launches(
@@ -148,6 +177,26 @@ class DeveloperExecutionRepository(
     @abstractmethod
     async def record_evidence_report(self, child_id: UUID, report: dict) -> None:
         """Persist the trusted verifier decision and manifest for audit."""
+
+    @abstractmethod
+    async def record_reconcile_error(
+        self,
+        child_id: UUID,
+        *,
+        error: str,
+        failure_kind: str,
+        max_consecutive_failures: int,
+    ) -> ChildExecution | None:
+        """Durably record a reconcile-loop exception for one child attempt.
+
+        Advances the child's poll ordering (so a poisoned item cannot sort
+        first forever) and increments its consecutive-failure counter. Once
+        the counter reaches ``max_consecutive_failures`` the child is moved
+        to its terminal ``failed`` state with ``failure_kind`` and ``error``
+        so join logic treats it as failed instead of pending forever.
+        Returns ``None`` if the child no longer exists or is already
+        terminal — this is not itself an error.
+        """
 
     @abstractmethod
     async def seal_generation(self, execution_id: UUID, generation: int) -> None:
@@ -185,8 +234,14 @@ class DeveloperExecutionRepository(
         *,
         state: str,
         suspension_reason: str,
+        expected_revision: int,
     ) -> None:
-        """Persist an orchestration state projection."""
+        """Persist an orchestration state projection from a known revision.
+
+        Raises ``ExecutionConflictError`` when the execution has moved past
+        ``expected_revision`` (or out of a state this projection may write
+        into) instead of silently overwriting whatever is current.
+        """
 
     @abstractmethod
     async def mark_blocker_notification(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from uuid import NAMESPACE_URL, uuid5
 
@@ -29,6 +30,8 @@ from ting.ports.developer_execution import (
     ParentWorkflowContinuation,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class DeveloperDeliveryWaitService:
     """Persist exact waits and poll them without model participation."""
@@ -45,11 +48,14 @@ class DeveloperDeliveryWaitService:
         claim_limit: int,
         lease_seconds: float,
         poll_interval_seconds: float,
+        max_consecutive_failures: int = 5,
     ) -> None:
         if not policy_id.strip() or not worker_id.strip():
             raise ValueError("Delivery wait policy and worker identities are required")
         if claim_limit <= 0 or lease_seconds <= 0 or poll_interval_seconds <= 0:
             raise ValueError("Delivery wait reconciliation bounds must be positive")
+        if max_consecutive_failures <= 0:
+            raise ValueError("Delivery wait max_consecutive_failures must be positive")
         self._repository = repository
         self._execution_repository = execution_repository
         self._observer = observer
@@ -59,6 +65,7 @@ class DeveloperDeliveryWaitService:
         self._claim_limit = claim_limit
         self._lease_seconds = lease_seconds
         self._poll_interval_seconds = poll_interval_seconds
+        self._max_consecutive_failures = max_consecutive_failures
 
     async def request_wait(
         self,
@@ -126,6 +133,12 @@ class DeveloperDeliveryWaitService:
         return await self._repository.list_for_execution(execution.id)
 
     async def reconcile(self) -> int:
+        """Poll every due wait, isolating one item's failure from the rest.
+
+        A wait that keeps raising is durably recorded (attempt/error) and,
+        past the configured maximum, terminally failed instead of retrying
+        forever at the head of the claim ordering.
+        """
         now = datetime.now(UTC)
         waits = await self._repository.claim_due(
             worker_id=self._worker_id,
@@ -135,9 +148,89 @@ class DeveloperDeliveryWaitService:
         )
         processed = 0
         for wait in waits:
-            await self._reconcile_wait(wait, now=now)
+            try:
+                await self._reconcile_wait(wait, now=now)
+            except Exception as exc:
+                logger.exception(
+                    "Delivery wait reconciliation failed; recording durable failure",
+                    extra={"developer_delivery_wait_id": str(wait.id)},
+                )
+                await self._handle_wait_failure(
+                    wait, now=now, error_text=f"{type(exc).__name__}: {exc}"
+                )
             processed += 1
         return processed
+
+    async def _handle_wait_failure(
+        self,
+        wait: DeveloperDeliveryWait,
+        *,
+        now: datetime,
+        error_text: str,
+    ) -> None:
+        """Durably record one polling failure, escalating past the maximum.
+
+        Called both for exceptions that escape `_reconcile_wait` entirely
+        (e.g. the execution lookup itself failing) and for an `observer`
+        exception caught inline while still polling.
+        """
+        if wait.state is not DeveloperDeliveryWaitState.PENDING:
+            # Notify failures on an already-terminal wait are swallowed by
+            # `_notify_safely` and never reach here; this is defense in depth
+            # for any other exception raised once the wait is terminal. The
+            # existing lease-expiry retry already replays a terminal wait
+            # without re-polling the observer, so nothing further to record.
+            return
+        if wait.attempt_count + 1 < self._max_consecutive_failures:
+            await self._repository.record_pending(
+                wait,
+                None,
+                next_poll_at=now + timedelta(seconds=self._poll_interval_seconds),
+                error=error_text,
+            )
+            return
+        status = (
+            DeveloperDeliveryObservationStatus.CHECKS_FAILED
+            if wait.request.mode is DeveloperDeliveryWaitMode.CHECKS
+            else DeveloperDeliveryObservationStatus.MERGE_FAILED
+        )
+        observation = _failure_observation(
+            wait.request,
+            status,
+            now,
+            f"Delivery wait reconciliation failed repeatedly: {error_text}",
+        )
+        try:
+            execution = await self._execution_repository.get_internal(wait.execution_id)
+            project_execution = execution is not None and _wait_binding_is_current(execution, wait)
+            terminal = await self._repository.record_terminal(
+                wait,
+                observation,
+                expected_execution_revision=(execution.revision if execution else 0),
+                project_execution=project_execution,
+            )
+            current = await self._execution_repository.get_internal(wait.execution_id)
+            if (
+                current is None
+                or current.state in TERMINAL_EXECUTION_STATES
+                or current.cancel_requested
+                or not _wait_binding_is_current(current, wait)
+            ):
+                await self._repository.mark_notified(terminal)
+                return
+            await self._notify_safely(current, terminal, observation)
+        except Exception:
+            logger.exception(
+                "Delivery wait terminal failure transition also failed; the wait stays "
+                "pending and will retry next cycle",
+                extra={"developer_delivery_wait_id": str(wait.id)},
+            )
+            await self._repository.record_pending(
+                wait,
+                None,
+                next_poll_at=now + timedelta(seconds=self._poll_interval_seconds),
+                error=error_text,
+            )
 
     async def _reconcile_wait(self, wait: DeveloperDeliveryWait, *, now: datetime) -> None:
         execution = await self._execution_repository.get_internal(wait.execution_id)
@@ -154,7 +247,7 @@ class DeveloperDeliveryWaitService:
             ):
                 await self._repository.mark_notified(wait)
                 return
-            await self._notify(execution, wait, wait.observation)
+            await self._notify_safely(execution, wait, wait.observation)
             return
         if not binding_current:
             observation = _failure_observation(
@@ -191,11 +284,12 @@ class DeveloperDeliveryWaitService:
             try:
                 observation = await self._observer.observe(execution, wait.request)
             except Exception as exc:
-                await self._repository.record_pending(
-                    wait,
-                    None,
-                    next_poll_at=now + timedelta(seconds=self._poll_interval_seconds),
-                    error=f"{type(exc).__name__}: {exc}",
+                logger.exception(
+                    "Delivery wait observer failed; recording durable failure",
+                    extra={"developer_delivery_wait_id": str(wait.id)},
+                )
+                await self._handle_wait_failure(
+                    wait, now=now, error_text=f"{type(exc).__name__}: {exc}"
                 )
                 return
         if not observation.terminal:
@@ -221,7 +315,7 @@ class DeveloperDeliveryWaitService:
         ):
             await self._repository.mark_notified(terminal)
             return
-        await self._notify(current, terminal, observation)
+        await self._notify_safely(current, terminal, observation)
 
     async def _notify(
         self,
@@ -231,6 +325,29 @@ class DeveloperDeliveryWaitService:
     ) -> None:
         await self._continuation.notify_delivery_observation(execution, wait, observation)
         await self._repository.mark_notified(wait)
+
+    async def _notify_safely(
+        self,
+        execution: DeveloperExecution,
+        wait: DeveloperDeliveryWait,
+        observation: DeveloperDeliveryObservation,
+    ) -> None:
+        """Notify the parent, leaving the lease held for a natural retry on failure.
+
+        The wait is already terminal at this point (`record_terminal` already
+        committed). A failure here must not be treated as a fresh polling
+        failure — it is isolated so the batch continues, and the wait's
+        held lease naturally expires and is reclaimed to retry the notify
+        alone, without re-polling the observer.
+        """
+        try:
+            await self._notify(execution, wait, observation)
+        except Exception:
+            logger.exception(
+                "Delivery wait parent notification failed; the held lease will expire "
+                "and retry the notification without re-polling",
+                extra={"developer_delivery_wait_id": str(wait.id)},
+            )
 
 
 def _wait_binding_is_current(
