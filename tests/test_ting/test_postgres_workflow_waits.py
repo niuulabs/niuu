@@ -13,8 +13,7 @@ from tests.test_ting.test_delivery_execution import _execution
 from ting.adapters.postgres_workflow_waits import (
     PostgresWorkflowWaitRepository,
 )
-from ting.domain.delivery_execution import WorkflowExecutionError
-from ting.domain.workflow_execution import ExecutionState
+from ting.domain.workflow_execution import ExecutionState, WorkflowExecutionError
 from ting.domain.workflow_wait import (
     WaitObservation,
     WaitObservationStatus,

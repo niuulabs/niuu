@@ -8,7 +8,7 @@ from niuu.domain.delivery import CheckConclusion, MergeRequest, PublicationState
 from niuu.domain.models import Principal
 from niuu.domain.services.token_scope import VALKYRIE_BUILD_TOKEN_USE
 from niuu.ports.workload_identity import WorkloadTokenIssuer
-from ting.domain.delivery_execution import DeliveryExecution
+from ting.delivery.domain import DeliveryExecution
 from ting.domain.workflow_wait import (
     WaitObservation,
     WaitObservationStatus,

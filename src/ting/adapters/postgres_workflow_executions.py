@@ -8,16 +8,16 @@ from uuid import UUID, uuid4
 
 import asyncpg
 
-from ting.domain.delivery_execution import (
+from ting.delivery.domain import ChildExecution, DeliveryExecution
+from ting.delivery.ports import DeliveryExecutionRepository
+from ting.domain.workflow_execution import (
     TERMINAL_CHILD_STATES,
-    ChildExecution,
     ChildExecutionState,
     ChildMessage,
     ChildPendingGate,
     ChildPendingQuestion,
     ChildTaskHandle,
     ChildTaskObservation,
-    DeliveryExecution,
     ExecutionBudget,
     ExecutionConflictError,
     ExecutionState,
@@ -25,7 +25,6 @@ from ting.domain.delivery_execution import (
     FailureKind,
     calculate_join,
 )
-from ting.ports.delivery_execution import DeliveryExecutionRepository
 
 
 class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):

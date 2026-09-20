@@ -12,7 +12,7 @@ from skuld.broker import Broker
 from skuld.config import SkuldSettings
 from tests.test_ting.test_delivery_execution import MemoryRepository, _execution
 from ting.adapters.delivery_integration_reviews import TrustedIntegrationReviewProjector
-from ting.domain.delivery_execution import ExecutionState, WorkflowExecutionError
+from ting.domain.workflow_execution import ExecutionState, WorkflowExecutionError
 from ting.ports.volundr import ActivityEvent
 
 

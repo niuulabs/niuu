@@ -10,7 +10,8 @@ from niuu.domain.delivery import CandidateEvidence, EvidenceValidationReport, ev
 from niuu.domain.models import Principal
 from niuu.domain.services.token_scope import VALKYRIE_BUILD_TOKEN_USE
 from niuu.ports.workload_identity import WorkloadTokenIssuer
-from ting.domain.delivery_execution import ChildExecution, ChildExecutionState, DeliveryExecution
+from ting.delivery.domain import ChildExecution, DeliveryExecution
+from ting.domain.workflow_execution import ChildExecutionState
 from ting.ports.child_evidence import ChildEvidenceVerifier
 from ting.ports.volundr import VolundrFactory
 

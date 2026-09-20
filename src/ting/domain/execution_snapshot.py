@@ -2,13 +2,10 @@
 
 import json
 
-from ting.domain.delivery_execution import (
-    ChildExecution,
-    DeliveryExecution,
-    WorkflowExecutionError,
-)
+from ting.delivery.domain import ChildExecution, DeliveryExecution
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_document import load_workflow_document, workflow_document_revision
+from ting.domain.workflow_execution import WorkflowExecutionError
 from ting.domain.workflow_snapshot import build_workflow_snapshot
 
 

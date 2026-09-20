@@ -16,15 +16,15 @@ from niuu.domain.delivery import (
     evidence_payload,
 )
 from niuu.ports.delivery import EvidenceAuthenticator
-from ting.domain.delivery_execution import (
+from ting.delivery.domain import DeliveryExecution
+from ting.delivery.ports import DeliveryExecutionRepository
+from ting.domain.exceptions import WorkflowDocumentError
+from ting.domain.workflow_document import ReviewAttestationBinding, workflow_review_attestation
+from ting.domain.workflow_execution import (
     TERMINAL_EXECUTION_STATES,
-    DeliveryExecution,
     ExecutionState,
     WorkflowExecutionError,
 )
-from ting.domain.exceptions import WorkflowDocumentError
-from ting.domain.workflow_document import ReviewAttestationBinding, workflow_review_attestation
-from ting.ports.delivery_execution import DeliveryExecutionRepository
 from ting.ports.volundr import ActivityEvent
 
 

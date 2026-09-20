@@ -104,10 +104,87 @@ def _assignment(
 class EditorialExecutionRepository(
     WorkflowExecutionRepository[WorkflowExecution, WorkflowChildExecution],
 ):
+    """Minimal fake exercising only the expansion path of the generic repository."""
+
     def __init__(self) -> None:
         self.execution: WorkflowExecution | None = None
         self.children: list[WorkflowChildExecution] = []
         self.sealed = False
+
+    async def create(self, execution):
+        self.execution = execution
+        return execution
+
+    async def reserve_parent_launch(self, execution):
+        return execution, True
+
+    async def attach_parent_session(self, execution_id, *, session_id, connection_id):
+        raise NotImplementedError
+
+    async def get(self, execution_id, *, owner_id, tenant_id):
+        del owner_id, tenant_id
+        return self.execution if self.execution and self.execution.id == execution_id else None
+
+    async def get_internal(self, execution_id):
+        return self.execution if self.execution and self.execution.id == execution_id else None
+
+    async def get_by_parent_session(self, *, owner_id, session_id):
+        raise NotImplementedError
+
+    async def list(self, *, owner_id, tenant_id, state="", limit, cursor=""):
+        raise NotImplementedError
+
+    async def list_reconcilable(self, *, limit):
+        return []
+
+    async def list_parent_stop_pending(self, *, limit):
+        return []
+
+    async def list_deadline_expired_children(self, *, now, limit):
+        return []
+
+    async def list_deadline_expired_executions(self, *, now, limit):
+        return []
+
+    async def mark_parent_stopped(self, execution_id):
+        raise NotImplementedError
+
+    async def record_parent_stop_error(self, execution_id, *, error, max_attempts):
+        raise NotImplementedError
+
+    async def claim_launches(self, *, worker_id, limit, lease_until):
+        return []
+
+    async def record_handle(self, child, handle, *, worker_id, lease_token, fencing_generation):
+        raise NotImplementedError
+
+    async def record_observation(self, child, observation):
+        raise NotImplementedError
+
+    async def record_evidence_report(self, child_id, report):
+        raise NotImplementedError
+
+    async def record_reconcile_error(
+        self, child_id, *, error, failure_kind, max_consecutive_failures
+    ):
+        raise NotImplementedError
+
+    async def request_cancel(self, execution_id, *, owner_id, tenant_id):
+        raise NotImplementedError
+
+    async def update_execution_state(
+        self, execution_id, *, state, suspension_reason, expected_revision
+    ):
+        raise NotImplementedError
+
+    async def mark_blocker_notification(self, execution_id, *, blocker_revision):
+        raise NotImplementedError
+
+    async def reserve_message(self, message):
+        raise NotImplementedError
+
+    async def mark_message_delivered(self, message_id):
+        raise NotImplementedError
 
     async def reserve_generation(self, execution, children, *, plan_revision):
         self.children.extend(children)

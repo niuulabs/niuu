@@ -2,7 +2,7 @@
 
 This module owns the mechanics shared by any workflow that fans out into a
 bounded child DAG: generations, budget reservation, attempt limits, stable
-ordering, and fan-in readiness.  Domain contracts (for example Git workspaces
+ordering, and fan-in readiness.  Domain contracts (for example code delivery
 or editorial assignments) specialize these models and add their own checks.
 """
 
@@ -56,6 +56,19 @@ class ChildExecutionState(StrEnum):
     SUPERSEDED = "superseded"
 
 
+class FailureKind(StrEnum):
+    """Domain-neutral reasons a child attempt can end up blocked or failed."""
+
+    TRANSIENT = "transient"
+    INVALID_INPUT = "invalid_input"
+    MISSING_CREDENTIALS = "missing_credentials"
+    POLICY_REJECTED = "policy_rejected"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    CONTRACT_INVALID = "contract_invalid"
+    DEADLINE_EXCEEDED = "deadline_exceeded"
+    REMOTE_FAILED = "remote_failed"
+
+
 TERMINAL_EXECUTION_STATES = frozenset(
     {ExecutionState.CANCELED, ExecutionState.COMPLETED, ExecutionState.FAILED}
 )
@@ -75,6 +88,9 @@ RETRYABLE_CHILD_STATES = frozenset(
         ChildExecutionState.CANCELED,
     }
 )
+
+CHILDREN_JOINED_SUSPENSION_REASON = "children_contract_valid"
+"""Suspension reason set once a satisfied children join has been resumed onto the parent."""
 
 
 @dataclass(frozen=True)
@@ -249,6 +265,8 @@ class WorkflowChildExecution:
     result: dict[str, Any] | None = None
     artifacts: tuple[dict[str, Any], ...] = ()
     failure_kind: str | None = None
+    pending_questions: tuple[ChildPendingQuestion, ...] = ()
+    pending_gates: tuple[ChildPendingGate, ...] = ()
     error: str = ""
     lease_owner: str = ""
     lease_token: UUID | None = None
@@ -267,6 +285,101 @@ class JoinStatus:
     pending: tuple[str, ...]
     blocked: tuple[str, ...]
     failed: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ChildLaunchRequest:
+    """One idempotent outbound launch for a reserved child attempt."""
+
+    intent_id: UUID
+    message_id: str
+    agent_id: str
+    skill_id: str
+    work_order: dict[str, Any]
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ChildTaskHandle:
+    """A remote child task's addressable identity."""
+
+    agent_id: str
+    task_id: str
+    context_id: str = ""
+
+
+@dataclass(frozen=True)
+class ChildPendingQuestion:
+    """A child's outstanding request for a coordinator answer."""
+
+    request_id: str
+    persona: str = ""
+    question: str = ""
+    reason: str = ""
+    recommendation: str = ""
+    attempted: tuple[str, ...] = ()
+
+    def to_a2a_metadata(self) -> dict[str, Any]:
+        return {
+            "requestId": self.request_id,
+            "persona": self.persona,
+            "question": self.question,
+            "reason": self.reason,
+            "recommendation": self.recommendation,
+            "attempted": list(self.attempted),
+        }
+
+
+@dataclass(frozen=True)
+class ChildPendingGate:
+    """A child's outstanding request for a coordinator gate decision."""
+
+    gate_id: str
+    node_id: str = ""
+    label: str = ""
+    condition: str = ""
+    instructions: str = ""
+    summary: str = ""
+
+    def to_a2a_metadata(self) -> dict[str, Any]:
+        return {
+            "gateId": self.gate_id,
+            "nodeId": self.node_id,
+            "label": self.label,
+            "condition": self.condition,
+            "instructions": self.instructions,
+            "summary": self.summary,
+        }
+
+
+@dataclass(frozen=True)
+class ChildTaskObservation:
+    """One remote observation of a child task, normalized to durable states."""
+
+    handle: ChildTaskHandle
+    state: ChildExecutionState
+    observed_at: datetime
+    event_id: str
+    result: dict[str, Any] | None = None
+    artifacts: tuple[dict[str, Any], ...] = ()
+    failure_kind: FailureKind | None = None
+    error: str = ""
+    pending_questions: tuple[ChildPendingQuestion, ...] = ()
+    pending_gates: tuple[ChildPendingGate, ...] = ()
+
+
+@dataclass(frozen=True)
+class ChildMessage:
+    """An idempotent coordinator follow-up reply addressed to one child attempt."""
+
+    id: UUID
+    child_id: UUID
+    message_id: str
+    answer: str
+    metadata: dict[str, Any]
+    state: str = "reserved"
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    delivered_at: datetime | None = None
 
 
 def validate_expansion(
@@ -421,6 +534,8 @@ def make_retry(
         result=None,
         artifacts=(),
         failure_kind=None,
+        pending_questions=(),
+        pending_gates=(),
         error="",
         lease_owner="",
         lease_token=None,

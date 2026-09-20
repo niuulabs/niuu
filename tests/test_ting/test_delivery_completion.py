@@ -19,14 +19,14 @@ from niuu.domain.delivery import (
 )
 from niuu.domain.models import Principal
 from tests.test_ting.test_delivery_execution import _execution, _proposal
-from ting.domain.delivery_execution import (
+from ting.delivery.completion import DeliveryCompletionService
+from ting.delivery.domain import make_children
+from ting.domain.workflow_execution import (
     ChildExecutionState,
     ExecutionState,
     JoinStatus,
     WorkflowExecutionError,
-    make_children,
 )
-from ting.domain.services.delivery_completion import DeliveryCompletionService
 
 
 def context():

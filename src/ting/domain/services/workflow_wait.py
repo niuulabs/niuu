@@ -6,11 +6,9 @@ import logging
 from datetime import UTC, datetime, timedelta
 from uuid import NAMESPACE_URL, uuid5
 
-from ting.domain.delivery_execution import (
-    TERMINAL_EXECUTION_STATES,
-    DeliveryExecution,
-    WorkflowExecutionError,
-)
+from ting.delivery.domain import DeliveryExecution
+from ting.delivery.ports import DeliveryExecutionRepository, ParentWorkflowContinuation
+from ting.domain.workflow_execution import TERMINAL_EXECUTION_STATES, WorkflowExecutionError
 from ting.domain.workflow_wait import (
     WaitObservation,
     WaitObservationStatus,
@@ -20,10 +18,6 @@ from ting.domain.workflow_wait import (
     WorkflowWaitState,
     delivery_candidate_digest,
     workflow_wait_digest,
-)
-from ting.ports.delivery_execution import (
-    DeliveryExecutionRepository,
-    ParentWorkflowContinuation,
 )
 from ting.ports.workflow_wait import (
     WaitConditionObserver,

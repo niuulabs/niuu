@@ -14,34 +14,36 @@ from starlette.requests import Request
 from niuu.domain.delivery import EvidenceValidationReport
 from niuu.ports.workload_identity import IssuedWorkloadToken
 from ting.api.workflow_executions import _assert_delivery_claims
-from ting.domain.delivery_execution import (
+from ting.delivery.domain import (
     ChildExecution,
+    DeliveryExecution,
+    WorkstreamProposal,
+    make_children,
+    validate_expansion,
+)
+from ting.delivery.ports import DeliveryExecutionRepository
+from ting.delivery.service import (
+    DeliveryExecutionCoordinator,
+    DeliveryExecutionService,
+)
+from ting.domain.workflow_execution import (
     ChildExecutionState,
     ChildMessage,
     ChildPendingGate,
     ChildPendingQuestion,
     ChildTaskHandle,
     ChildTaskObservation,
-    DeliveryExecution,
     ExecutionBudget,
     ExecutionConflictError,
     ExecutionState,
     ExpansionPolicy,
     FailureKind,
     WorkflowExecutionError,
-    WorkstreamProposal,
     calculate_join,
     digest_json,
-    make_children,
-    validate_expansion,
     validate_json_instance,
     validate_json_schema,
 )
-from ting.domain.services.delivery_execution import (
-    DeliveryExecutionCoordinator,
-    DeliveryExecutionService,
-)
-from ting.ports.delivery_execution import DeliveryExecutionRepository
 
 
 def _digest(seed: str) -> str:

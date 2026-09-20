@@ -22,7 +22,6 @@ from ting.api.a2a_identity import local_agent_card_url
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.workflow_bindings import binding_errors
 from ting.api.workflow_personas import authoring_persona_source
-from ting.domain.delivery_execution import validate_json_schema
 from ting.domain.exceptions import WorkflowConflictError, WorkflowReadOnlyError
 from ting.domain.models import (
     PersonaDependency,
@@ -42,6 +41,7 @@ from ting.domain.workflow_document import (
     workflow_document_payload,
     workflow_document_revision,
 )
+from ting.domain.workflow_execution import validate_json_schema
 from ting.domain.workflow_snapshot import (
     build_workflow_snapshot,
     pin_workflow_personas,

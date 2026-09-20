@@ -7,7 +7,7 @@ import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
-from ting.domain.services.delivery_execution import DeliveryExecutionService
+from ting.delivery.service import DeliveryExecutionService
 
 if TYPE_CHECKING:
     from ting.domain.services.workflow_wait import WorkflowWaitService

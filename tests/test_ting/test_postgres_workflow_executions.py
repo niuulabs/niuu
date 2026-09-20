@@ -13,7 +13,8 @@ from ting.adapters.postgres_workflow_executions import (
     PostgresDeliveryExecutionRepository,
     _policy_to_json,
 )
-from ting.domain.delivery_execution import (
+from ting.delivery.domain import make_children
+from ting.domain.workflow_execution import (
     ChildExecutionState,
     ChildPendingQuestion,
     ChildTaskHandle,
@@ -21,7 +22,6 @@ from ting.domain.delivery_execution import (
     ExecutionConflictError,
     ExecutionState,
     FailureKind,
-    make_children,
 )
 
 

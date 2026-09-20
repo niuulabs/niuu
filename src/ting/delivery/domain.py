@@ -1,4 +1,4 @@
-"""Durable parent/child execution contracts for developer delivery workflows.
+"""Durable parent/child execution contracts for the code delivery workflow.
 
 Ting owns structural expansion and the execution ledger.  The coordinator owns
 the semantic decision about which workstreams to propose; this module only
@@ -9,40 +9,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import StrEnum
 from typing import Any, cast
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from pydantic import ValidationError
 
 from niuu.domain.delivery import WorkspaceAllocation
-from ting.domain import workflow_execution as lifecycle
 from ting.domain.workflow_execution import (
+    ChildExecutionState,
     WorkflowChildExecution,
     WorkflowChildProposal,
     WorkflowExecution,
+    WorkflowExecutionError,
 )
-from ting.domain.workflow_execution import validate_expansion as validate_workflow_expansion
-
-WorkflowExecutionError = lifecycle.WorkflowExecutionError
-ExecutionConflictError = lifecycle.ExecutionConflictError
-ExecutionState = lifecycle.ExecutionState
-ChildExecutionState = lifecycle.ChildExecutionState
-ExecutionBudget = lifecycle.ExecutionBudget
-ExpansionPolicy = lifecycle.ExpansionPolicy
-JoinStatus = lifecycle.JoinStatus
-TERMINAL_EXECUTION_STATES = lifecycle.TERMINAL_EXECUTION_STATES
-TERMINAL_CHILD_STATES = lifecycle.TERMINAL_CHILD_STATES
-SUCCESSFUL_CHILD_STATES = lifecycle.SUCCESSFUL_CHILD_STATES
-calculate_join = lifecycle.calculate_join
-digest_json = lifecycle.digest_json
-validate_child_result = lifecycle.validate_child_result
-validate_json_instance = lifecycle.validate_json_instance
-validate_json_schema = lifecycle.validate_json_schema
-
-
-CHILDREN_JOINED_SUSPENSION_REASON = "children_contract_valid"
-"""Suspension reason set once the children join has been resumed onto the parent."""
+from ting.domain.workflow_execution import (
+    validate_expansion as validate_workflow_expansion,
+)
 
 DELIVERY_WAIT_SUSPENSION_REASONS = frozenset(
     {"awaiting_checks", "awaiting_merge", "delivery_observed"}
@@ -54,22 +36,13 @@ projection once one of these (or DELIVERY_WAIT_FAILURE_PREFIX) is current."""
 DELIVERY_WAIT_FAILURE_PREFIX = "delivery_wait_failed: "
 """Prefix for the suspension reason recorded when a delivery wait terminally fails."""
 
-
-class FailureKind(StrEnum):
-    TRANSIENT = "transient"
-    INVALID_INPUT = "invalid_input"
-    MISSING_CREDENTIALS = "missing_credentials"
-    MISSING_COMMITS = "missing_commits"
-    POLICY_REJECTED = "policy_rejected"
-    BUDGET_EXHAUSTED = "budget_exhausted"
-    CONTRACT_INVALID = "contract_invalid"
-    DEADLINE_EXCEEDED = "deadline_exceeded"
-    REMOTE_FAILED = "remote_failed"
+MISSING_COMMITS_FAILURE_KIND = "missing_commits"
+"""Delivery-specific failure kind: a workstream produced no commits to review."""
 
 
 @dataclass(frozen=True, kw_only=True)
 class DeliveryExecution(WorkflowExecution):
-    """Developer specialization of the reusable workflow lifecycle."""
+    """Code delivery specialization of the reusable workflow lifecycle."""
 
     repository: str
     base_ref: str
@@ -111,7 +84,7 @@ class WorkstreamProposal(WorkflowChildProposal):
 
 @dataclass(frozen=True, kw_only=True)
 class ChildExecution(WorkflowChildExecution):
-    """Developer child attempt with workspace and evidence state."""
+    """Code delivery child attempt with workspace and evidence state."""
 
     requirement_ids: tuple[str, ...]
     repository: str
@@ -119,92 +92,6 @@ class ChildExecution(WorkflowChildExecution):
     workspace: dict[str, Any] | None = None
     evidence_report: dict[str, Any] | None = None
     evidence_validated_at: datetime | None = None
-    failure_kind: FailureKind | None = None
-    pending_questions: tuple[ChildPendingQuestion, ...] = ()
-    pending_gates: tuple[ChildPendingGate, ...] = ()
-
-
-@dataclass(frozen=True)
-class ChildLaunchRequest:
-    intent_id: UUID
-    message_id: str
-    agent_id: str
-    skill_id: str
-    work_order: dict[str, Any]
-    metadata: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class ChildTaskHandle:
-    agent_id: str
-    task_id: str
-    context_id: str = ""
-
-
-@dataclass(frozen=True)
-class ChildPendingQuestion:
-    request_id: str
-    persona: str = ""
-    question: str = ""
-    reason: str = ""
-    recommendation: str = ""
-    attempted: tuple[str, ...] = ()
-
-    def to_a2a_metadata(self) -> dict[str, Any]:
-        return {
-            "requestId": self.request_id,
-            "persona": self.persona,
-            "question": self.question,
-            "reason": self.reason,
-            "recommendation": self.recommendation,
-            "attempted": list(self.attempted),
-        }
-
-
-@dataclass(frozen=True)
-class ChildPendingGate:
-    gate_id: str
-    node_id: str = ""
-    label: str = ""
-    condition: str = ""
-    instructions: str = ""
-    summary: str = ""
-
-    def to_a2a_metadata(self) -> dict[str, Any]:
-        return {
-            "gateId": self.gate_id,
-            "nodeId": self.node_id,
-            "label": self.label,
-            "condition": self.condition,
-            "instructions": self.instructions,
-            "summary": self.summary,
-        }
-
-
-@dataclass(frozen=True)
-class ChildTaskObservation:
-    handle: ChildTaskHandle
-    state: ChildExecutionState
-    observed_at: datetime
-    event_id: str
-    result: dict[str, Any] | None = None
-    artifacts: tuple[dict[str, Any], ...] = ()
-    failure_kind: FailureKind | None = None
-    error: str = ""
-    pending_questions: tuple[ChildPendingQuestion, ...] = ()
-    pending_gates: tuple[ChildPendingGate, ...] = ()
-
-
-@dataclass(frozen=True)
-class ChildMessage:
-    id: UUID
-    child_id: UUID
-    message_id: str
-    answer: str
-    metadata: dict[str, Any]
-    state: str = "reserved"
-    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    delivered_at: datetime | None = None
 
 
 def validate_expansion(
@@ -214,7 +101,7 @@ def validate_expansion(
     generation: int,
     workstreams: list[WorkstreamProposal],
 ) -> tuple[WorkstreamProposal, ...]:
-    """Apply generic lifecycle checks, then the developer delivery contract."""
+    """Apply generic lifecycle checks, then the code delivery contract."""
     ordered = validate_workflow_expansion(
         execution,
         coordinator_id=coordinator_id,

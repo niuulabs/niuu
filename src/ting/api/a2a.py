@@ -76,7 +76,6 @@ from ting.api.workflows import (
     resolve_workflow_repo,
 )
 from ting.domain.a2a_launch import A2ALaunchReservation
-from ting.domain.delivery_execution import WorkflowExecutionError
 from ting.domain.execution_snapshot import pinned_child_workflow
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.workflow_campaign_lifecycle import (
@@ -84,6 +83,7 @@ from ting.domain.services.workflow_campaign_lifecycle import (
     terminal_session_cleanup_needed,
 )
 from ting.domain.workflow_document import workflow_document_revision
+from ting.domain.workflow_execution import WorkflowExecutionError
 from ting.domain.workflow_snapshot import (
     build_workflow_snapshot,
     workflow_artifact_paths_from_snapshot,

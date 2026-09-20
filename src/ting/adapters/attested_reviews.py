@@ -17,11 +17,7 @@ from niuu.domain.delivery import (
     evidence_payload,
 )
 from niuu.ports.delivery import EvidenceAuthenticator
-from ting.domain.delivery_execution import (
-    ChildExecution,
-    DeliveryExecution,
-    WorkflowExecutionError,
-)
+from ting.delivery.domain import ChildExecution, DeliveryExecution
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.execution_snapshot import pinned_child_workflow
 from ting.domain.models import WorkflowDefinition
@@ -29,6 +25,7 @@ from ting.domain.workflow_document import (
     ReviewAttestationBinding,
     workflow_review_attestation,
 )
+from ting.domain.workflow_execution import WorkflowExecutionError
 from ting.ports.child_evidence import ChildReviewAttestor
 
 

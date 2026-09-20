@@ -8,7 +8,7 @@ from uuid import UUID
 import asyncpg
 
 from ting.domain.a2a_launch import A2ALaunchReservation
-from ting.domain.delivery_execution import ExecutionConflictError
+from ting.domain.workflow_execution import ExecutionConflictError
 from ting.ports.a2a_launch import A2ALaunchReservationRepository
 
 

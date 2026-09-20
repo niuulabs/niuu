@@ -6,7 +6,8 @@ import json
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
-from ting.domain.delivery_execution import DeliveryExecution
+from ting.delivery.domain import DeliveryExecution
+from ting.delivery.ports import ParentWorkflowContinuation
 from ting.domain.workflow_continuation_events import (
     subworkflow_blocked_event,
     subworkflow_joined_event,
@@ -16,7 +17,6 @@ from ting.domain.workflow_wait import (
     WaitObservation,
     WorkflowWait,
 )
-from ting.ports.delivery_execution import ParentWorkflowContinuation
 from ting.ports.volundr import VolundrFactory
 
 

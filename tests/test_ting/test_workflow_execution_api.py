@@ -31,12 +31,12 @@ from ting.api.workflow_executions import (
     resolve_workflow_execution_service,
 )
 from ting.api.workflows import _build_workflow_initiative_context, resolve_workflow_repo
-from ting.domain.delivery_execution import (
+from ting.delivery.domain import make_children
+from ting.domain.workflow_execution import (
     ChildExecutionState,
     ChildPendingGate,
     ChildPendingQuestion,
     ExecutionState,
-    make_children,
 )
 from ting.ports.volundr import PublicSessionLogEntry, PublicSessionLogPage
 from ting.system_workflows import load_system_workflows

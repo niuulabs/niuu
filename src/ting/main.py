@@ -94,8 +94,9 @@ from ting.api.workflow_executions import (
 )
 from ting.api.workflows import create_workflows_router, resolve_workflow_repo
 from ting.config import Settings
+from ting.delivery.ports import DeliveryExecutionRepository
+from ting.delivery.service import DeliveryExecutionService
 from ting.domain.services.activity_subscriber import SessionActivitySubscriber
-from ting.domain.services.delivery_execution import DeliveryExecutionService
 from ting.domain.services.dispatch_service import (
     DispatchConfig as DispatchServiceConfig,
 )
@@ -112,7 +113,6 @@ from ting.domain.services.review_engine import ReviewEngine
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.domain.services.workflow_wait import WorkflowWaitService
 from ting.infrastructure.database import database_pool
-from ting.ports.delivery_execution import DeliveryExecutionRepository
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.event_bus import EventBusPort
 from ting.ports.flock_flow import FlockFlowProvider

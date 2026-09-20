@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from uuid import UUID
 
-from ting.domain.delivery_execution import DeliveryExecution
+from ting.delivery.domain import DeliveryExecution
 from ting.domain.workflow_wait import (
     WaitObservation,
     WorkflowWait,

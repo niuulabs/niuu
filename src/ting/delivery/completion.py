@@ -1,4 +1,4 @@
-"""Complete a developer execution only from verified remote publication."""
+"""Complete a delivery execution only from verified remote publication."""
 
 from niuu.domain.delivery import (
     CandidateEvidence,
@@ -7,13 +7,13 @@ from niuu.domain.delivery import (
     evidence_digest,
 )
 from niuu.domain.models import Principal
-from ting.domain.delivery_execution import (
+from ting.delivery.domain import ChildExecution, DeliveryExecution
+from ting.delivery.ports import DeliveryExecutionRepository
+from ting.domain.workflow_execution import (
     ChildExecutionState,
-    DeliveryExecution,
     ExecutionState,
     WorkflowExecutionError,
 )
-from ting.ports.delivery_execution import DeliveryExecutionRepository
 from ting.ports.volundr import VolundrFactory
 
 
@@ -26,7 +26,7 @@ class DeliveryCompletionService:
         policy_id: str,
     ) -> None:
         if not policy_id.strip():
-            raise ValueError("Developer completion requires an integration evidence policy")
+            raise ValueError("Delivery completion requires an integration evidence policy")
         self._repository = repository
         self._factory = volundr_factory
         self._policy_id = policy_id
@@ -106,7 +106,7 @@ class DeliveryCompletionService:
             raise WorkflowExecutionError(
                 "Current child generation has not passed its evidence barrier"
             )
-        children = await self._repository.list_children(execution.id)
+        children: list[ChildExecution] = await self._repository.list_children(execution.id)
         requirements = {
             requirement
             for child in children

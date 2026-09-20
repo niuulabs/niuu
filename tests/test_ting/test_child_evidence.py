@@ -13,7 +13,8 @@ from niuu.domain.delivery import CandidateEvidence, EvidenceValidationReport, ev
 from tests.test_ting.test_delivery_execution import _execution, _proposal
 from ting.adapters.child_evidence import ForgeChildEvidenceVerifier
 from ting.adapters.volundr_http import VolundrHTTPAdapter
-from ting.domain.delivery_execution import ChildExecutionState, make_children
+from ting.delivery.domain import make_children
+from ting.domain.workflow_execution import ChildExecutionState
 
 
 def child_result():

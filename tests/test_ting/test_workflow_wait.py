@@ -9,8 +9,8 @@ import pytest
 from tests.test_ting.test_delivery_execution import _execution
 from ting.adapters.parent_workflow_continuation import VolundrParentWorkflowContinuation
 from ting.config import WorkflowExecutionConfig
-from ting.domain.delivery_execution import ExecutionState, WorkflowExecutionError
 from ting.domain.services.workflow_wait import WorkflowWaitService
+from ting.domain.workflow_execution import ExecutionState, WorkflowExecutionError
 from ting.domain.workflow_wait import (
     WaitObservation,
     WaitObservationStatus,

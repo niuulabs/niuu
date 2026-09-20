@@ -8,12 +8,8 @@ from uuid import UUID
 
 import asyncpg
 
-from ting.domain.delivery_execution import (
-    DELIVERY_WAIT_FAILURE_PREFIX,
-    TERMINAL_EXECUTION_STATES,
-    DeliveryExecution,
-    WorkflowExecutionError,
-)
+from ting.delivery.domain import DELIVERY_WAIT_FAILURE_PREFIX, DeliveryExecution
+from ting.domain.workflow_execution import TERMINAL_EXECUTION_STATES, WorkflowExecutionError
 from ting.domain.workflow_wait import (
     WaitObservation,
     WaitObservationStatus,
