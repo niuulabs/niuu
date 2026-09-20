@@ -32,9 +32,7 @@ class _Repository:
 
 @pytest.mark.asyncio
 async def test_startup_guard_allows_new_empty_database() -> None:
-    await _assert_workflow_catalog_migrated(
-        _Repository(), _Pool(0, None), catalog_path="/catalog"
-    )
+    await _assert_workflow_catalog_migrated(_Repository(), _Pool(0, None), catalog_path="/catalog")
 
 
 @pytest.mark.asyncio

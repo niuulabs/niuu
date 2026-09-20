@@ -33,9 +33,7 @@ async def _registry_source_for_workflow(
         dependency = workflow.persona_dependencies.get(alias)
         persona_id = dependency.id if dependency is not None else alias
         if workflow.owner_id:
-            document = await registry.get_current_portable_persona(
-                workflow.owner_id, persona_id
-            )
+            document = await registry.get_current_portable_persona(workflow.owner_id, persona_id)
         else:
             document = builtins.load_current_portable(persona_id)
         if document is not None:
@@ -84,9 +82,7 @@ async def _run(
                 async def source_for_workflow(
                     workflow: WorkflowDefinition,
                 ) -> PortablePersonaSource:
-                    return await _registry_source_for_workflow(
-                        workflow, registry, builtins
-                    )
+                    return await _registry_source_for_workflow(workflow, registry, builtins)
 
                 report = await migrate_workflow_catalog(
                     source=PostgresWorkflowRepository(pool),

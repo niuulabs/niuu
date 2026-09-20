@@ -103,9 +103,7 @@ async def test_bundled_workflows_are_read_only(tmp_path) -> None:
     bundled_path.mkdir()
     catalog_path.mkdir()
     bundled = load_system_workflows()[0]
-    (bundled_path / "workflow.yaml").write_text(
-        dump_workflow_document(bundled), encoding="utf-8"
-    )
+    (bundled_path / "workflow.yaml").write_text(dump_workflow_document(bundled), encoding="utf-8")
     repo = FilesystemWorkflowRepository(str(catalog_path), str(bundled_path))
 
     loaded = await repo.get_workflow(bundled.id)
@@ -179,12 +177,8 @@ async def test_filesystem_repository_recovers_partial_write_after_restart(
 async def test_filesystem_repository_recovers_partial_delete_after_restart(tmp_path) -> None:
     repo = FilesystemWorkflowRepository(str(tmp_path), include_bundled=False)
     saved = await repo.save_workflow(_workflow())
-    await repo.mark_migration_complete(
-        {"inventory_ids": [str(saved.id)], "deleted_ids": []}
-    )
-    document_path = next(
-        path for path in tmp_path.glob("*.yaml") if not path.name.startswith(".")
-    )
+    await repo.mark_migration_complete({"inventory_ids": [str(saved.id)], "deleted_ids": []})
+    document_path = next(path for path in tmp_path.glob("*.yaml") if not path.name.startswith("."))
     metadata_path = tmp_path / ".metadata" / f"{saved.id}.yaml"
     journal_path = tmp_path / ".transactions" / f"{saved.id}.yaml"
     journal_path.write_text(
@@ -230,9 +224,7 @@ async def test_filesystem_repository_rejects_duplicate_id_and_malformed_metadata
 async def test_filesystem_repository_rejects_cross_workflow_delete_journal(tmp_path) -> None:
     repo = FilesystemWorkflowRepository(str(tmp_path), include_bundled=False)
     saved = await repo.save_workflow(_workflow())
-    document_path = next(
-        path for path in tmp_path.glob("*.yaml") if not path.name.startswith(".")
-    )
+    document_path = next(path for path in tmp_path.glob("*.yaml") if not path.name.startswith("."))
     other_id = uuid4()
     journal_path = tmp_path / ".transactions" / f"{other_id}.yaml"
     journal_path.write_text(

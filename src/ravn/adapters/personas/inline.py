@@ -29,8 +29,7 @@ class InlinePersonaAdapter(PersonaPort):
 
     def __init__(self, *, definitions: dict[str, dict[str, Any]]) -> None:
         self._definitions = {
-            str(alias): parse_portable_persona(document)
-            for alias, document in definitions.items()
+            str(alias): parse_portable_persona(document) for alias, document in definitions.items()
         }
 
     def load(self, name: str) -> PersonaConfig | None:

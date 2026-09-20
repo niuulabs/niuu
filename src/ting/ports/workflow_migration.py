@@ -9,9 +9,7 @@ from uuid import UUID
 from ravn.domain.persona_document import PortablePersonaSource
 from ting.domain.models import WorkflowDefinition
 
-WorkflowPersonaSourceResolver = Callable[
-    [WorkflowDefinition], Awaitable[PortablePersonaSource]
-]
+WorkflowPersonaSourceResolver = Callable[[WorkflowDefinition], Awaitable[PortablePersonaSource]]
 
 
 class WorkflowMigrationSource(Protocol):

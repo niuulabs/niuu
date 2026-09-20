@@ -66,12 +66,14 @@ def test_workflow_snapshot_and_runtime_remain_pinned_after_catalog_change() -> N
     snapshot = build_workflow_snapshot(pinned_workflow, persona_source=source)
     runtime_personas = workflow_runtime_personas_from_snapshot(snapshot)
 
-    assert snapshot["persona_definitions"]["reviewer"]["definition"][
-        "system_prompt_template"
-    ] == "Original behavior"
-    assert runtime_personas[0]["portable_definition"]["definition"][
-        "system_prompt_template"
-    ] == "Original behavior"
+    assert (
+        snapshot["persona_definitions"]["reviewer"]["definition"]["system_prompt_template"]
+        == "Original behavior"
+    )
+    assert (
+        runtime_personas[0]["portable_definition"]["definition"]["system_prompt_template"]
+        == "Original behavior"
+    )
     assert runtime_personas[0]["model"] == "model-a"
 
 
@@ -102,9 +104,10 @@ def test_snapshot_is_deeply_immutable_from_workflow_edits() -> None:
     pinned.persona_definitions["reviewer"]["definition"]["system_prompt_template"] = "Mutated"
 
     assert snapshot["graph"]["nodes"][0]["stageMembers"][0]["label"] == "Reviewer"
-    assert snapshot["persona_definitions"]["reviewer"]["definition"][
-        "system_prompt_template"
-    ] == "Review"
+    assert (
+        snapshot["persona_definitions"]["reviewer"]["definition"]["system_prompt_template"]
+        == "Review"
+    )
 
 
 def test_snapshot_rejects_unresolved_environment_requirements() -> None:

@@ -501,9 +501,7 @@ def _validate_string_list(definition: Mapping[str, Any], key: str) -> None:
         return
     value = definition[key]
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-        raise PersonaDocumentError(
-            f"Portable persona definition.{key} must be a list of strings"
-        )
+        raise PersonaDocumentError(f"Portable persona definition.{key} must be a list of strings")
 
 
 def _validate_non_negative_int(definition: Mapping[str, Any], key: str) -> None:
@@ -612,6 +610,4 @@ def _validate_fan_in(value: Any) -> None:
     _validate_optional_string(fan_in, "contributes_to")
     strategy = fan_in.get("strategy")
     if strategy is not None and strategy not in {"all_must_pass", "any_pass", "majority", "merge"}:
-        raise PersonaDocumentError(
-            "Portable persona definition.fan_in.strategy is unsupported"
-        )
+        raise PersonaDocumentError("Portable persona definition.fan_in.strategy is unsupported")

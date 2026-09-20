@@ -729,6 +729,12 @@ class LocalProcessPodManager(PodManager):
             case ProcessState.RUNNING:
                 if session_id in self._ready:
                     return SessionStatus.RUNNING
+                # Readiness lives in memory only. A process adopted from the state
+                # file after an API restart must be re-observed, or a healthy
+                # session is demoted to provisioning and never promoted again.
+                if await self._broker_healthy(session_id):
+                    self._ready.add(session_id)
+                    return SessionStatus.RUNNING
                 return SessionStatus.PROVISIONING
             case ProcessState.STOPPED:
                 return SessionStatus.STOPPED

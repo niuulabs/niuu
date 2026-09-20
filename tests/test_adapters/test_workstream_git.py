@@ -49,7 +49,7 @@ def _git(binary: str, root: Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
-def _commit(binary: str, root: Path, message: str) -> str:
+def _commit(binary: str, root: Path, message: str, *flags: str) -> str:
     return _git(
         binary,
         root,
@@ -59,6 +59,7 @@ def _commit(binary: str, root: Path, message: str) -> str:
         "user.email=worker@example.invalid",
         "commit",
         "-q",
+        *flags,
         "-m",
         message,
     )
@@ -886,7 +887,7 @@ async def test_integration_preserves_initially_empty_and_redundant_commits(
     (child_path / "src" / "value.txt").write_text("shared\n")
     _git(binary, child_path, "add", "src/value.txt")
     _commit(binary, child_path, "candidate content")
-    _git(binary, child_path, "commit", "--allow-empty", "-m", "attempt marker")
+    _commit(binary, child_path, "attempt marker", "--allow-empty")
     candidate = _git(binary, child_path, "rev-parse", "HEAD")
     candidate_tree = _git(binary, child_path, "rev-parse", "HEAD^{tree}")
 

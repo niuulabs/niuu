@@ -2323,10 +2323,31 @@ class TestStatus:
         ):
             await manager.start(git_session, default_spec)
 
-        assert await manager.status(git_session) == SessionStatus.PROVISIONING
+        with patch.object(manager, "_broker_healthy", AsyncMock(return_value=False)):
+            assert await manager.status(git_session) == SessionStatus.PROVISIONING
         with patch.object(manager, "_broker_healthy", AsyncMock(return_value=True)):
             assert await manager.wait_for_ready(git_session, timeout=1.0) == SessionStatus.RUNNING
         assert await manager.status(git_session) == SessionStatus.RUNNING
+
+    async def test_status_reobserves_readiness_of_adopted_process(
+        self,
+        manager: LocalProcessPodManager,
+        git_session: Session,
+        default_spec: SessionSpec,
+    ) -> None:
+        """A process adopted after an API restart has no in-memory readiness."""
+        with (
+            _mock_provision(manager),
+            _mock_spawn(manager),
+        ):
+            await manager.start(git_session, default_spec)
+        manager._ready.clear()
+
+        healthy = AsyncMock(return_value=True)
+        with patch.object(manager, "_broker_healthy", healthy):
+            assert await manager.status(git_session) == SessionStatus.RUNNING
+            assert await manager.status(git_session) == SessionStatus.RUNNING
+        healthy.assert_awaited_once()
 
     async def test_status_after_stop(
         self,

@@ -262,9 +262,7 @@ class TestPortableSource:
 
     @respx.mock
     def test_load_current_portable_does_not_use_stale_fallback_on_server_error(self) -> None:
-        respx.get(f"{_BASE}/api/v1/personas/coder/portable").mock(
-            return_value=httpx.Response(503)
-        )
+        respx.get(f"{_BASE}/api/v1/personas/coder/portable").mock(return_value=httpx.Response(503))
 
         with pytest.raises(RuntimeError, match="503"):
             _adapter().load_current_portable("coder")

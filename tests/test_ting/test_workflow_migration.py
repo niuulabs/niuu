@@ -57,9 +57,7 @@ def _workflow(persona_alias: str = "coder") -> WorkflowDefinition:
         owner_id="owner",
         tenant_id="tenant",
         graph={
-            "nodes": [
-                {"id": "stage", "stageMembers": [{"personaId": persona_alias}]}
-            ],
+            "nodes": [{"id": "stage", "stageMembers": [{"personaId": persona_alias}]}],
             "edges": [],
         },
         created_at=created_at,
@@ -227,9 +225,9 @@ async def test_bundled_uuid_with_user_ownership_is_not_silently_skipped(tmp_path
 async def test_workflow_migration_resolves_personas_in_each_owner_scope(tmp_path) -> None:
     alice_workflow = replace(_workflow("reviewer"), owner_id="alice")
     bob_workflow = replace(_workflow("reviewer"), owner_id="bob")
-    base = FilesystemPersonaAdapter(
-        persona_dirs=[], include_builtin=True
-    ).load_current_portable("reviewer")
+    base = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load_current_portable(
+        "reviewer"
+    )
     assert base is not None
 
     def owner_document(owner: str) -> PortablePersonaDefinition:
@@ -242,8 +240,7 @@ async def test_workflow_migration_resolves_personas_in_each_owner_scope(tmp_path
         )
 
     owner_sources = {
-        owner: PortablePersonaCollection([owner_document(owner)])
-        for owner in ("alice", "bob")
+        owner: PortablePersonaCollection([owner_document(owner)]) for owner in ("alice", "bob")
     }
 
     async def source_for_workflow(workflow: WorkflowDefinition):
@@ -325,9 +322,7 @@ async def test_registry_source_hydrates_workflow_owner_only() -> None:
         persona_dirs=[], include_builtin=True
     ).load_current_portable("reviewer")
     assert portable is not None
-    registry = SimpleNamespace(
-        get_current_portable_persona=AsyncMock(return_value=portable)
-    )
+    registry = SimpleNamespace(get_current_portable_persona=AsyncMock(return_value=portable))
     workflow = replace(_workflow("reviewer"), owner_id="alice")
 
     source = await _registry_source_for_workflow(
