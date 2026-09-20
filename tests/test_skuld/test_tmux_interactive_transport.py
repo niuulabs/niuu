@@ -201,6 +201,33 @@ def test_prepare_claude_config_keeps_existing_state(tmp_path: Path) -> None:
     assert config_path.stat().st_mtime_ns == stamp
 
 
+def test_prepare_claude_config_never_exposes_a_partial_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another session may read the config while this one rewrites it."""
+    config_path = tmp_path / ".claude.json"
+    config_path.write_text(json.dumps({"theme": "light"}), encoding="utf-8")
+    config_path.chmod(0o600)
+    seen_at_replace: list[dict] = []
+    real_replace = os.replace
+
+    def observing_replace(source, destination):
+        seen_at_replace.append(json.loads(Path(destination).read_text(encoding="utf-8")))
+        real_replace(source, destination)
+
+    monkeypatch.setattr("skuld.transports.tmux_interactive.os.replace", observing_replace)
+    transport = FakeTmuxInteractiveTransport(str(tmp_path / "ws"), skip_permissions=True)
+
+    transport._prepare_claude_config({"HOME": str(tmp_path)})
+
+    assert seen_at_replace == [{"theme": "light"}]
+    written = json.loads(config_path.read_text(encoding="utf-8"))
+    assert written["hasCompletedOnboarding"] is True
+    assert written["theme"] == "light"
+    assert config_path.stat().st_mode & 0o777 == 0o600
+    assert [entry.name for entry in tmp_path.iterdir() if entry.name.endswith(".tmp")] == []
+
+
 @pytest.mark.parametrize("hook_events_enabled,sdk_port", [(False, 0), (True, 8081)])
 def test_prepare_claude_config_keeps_other_user_settings(
     tmp_path: Path, hook_events_enabled: bool, sdk_port: int
