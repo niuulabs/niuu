@@ -203,9 +203,10 @@ workflowExecution:
   # Code delivery specialization: its own repository, router, and Forge/review
   # wiring, layered over the generic execution ledger above. Requires enabled.
   delivery:
-    # Also requires workload identity plus configured Ravn A2A and Forge
-    # delivery/evidence adapters.
-    enabled: true
+    # Code delivery on top of the generic blocks. Requires
+    # workflowExecution.enabled, workload identity, and configured Ravn A2A and
+    # Forge delivery/evidence adapters, including reviewAuthenticatorAdapter.
+    enabled: false
     # forge.* wait condition observers, registered only when delivery is enabled.
     waitObservers:
       - condition_type: forge.checks

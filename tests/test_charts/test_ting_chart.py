@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from ting.config import Settings
+
 CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "ting"
 TING_MIGRATIONS_DIR = Path(__file__).parent.parent.parent / "migrations" / "ting"
 
@@ -114,7 +116,7 @@ class TestConfigMapTemplate:
         assert delivery_observer_adapters["forge.checks"].endswith("ForgeChecksWaitObserver")
         assert delivery_observer_adapters["forge.merge"].endswith("ForgeMergeWaitObserver")
         assert developer["admissionRoles"] == ["volundr:developer"]
-        assert developer["delivery"]["enabled"] is True
+        assert developer["delivery"]["enabled"] is False
         assert "wait_repository_adapter:" in template_yaml
         assert ".Values.workflowExecution.waitRepositoryAdapter" in template_yaml
         assert "wait_repository_kwargs:" in template_yaml
@@ -123,14 +125,25 @@ class TestConfigMapTemplate:
         assert ".Values.workflowExecution.delivery.waitObservers" in template_yaml
         assert "admission_roles:" in template_yaml
 
-    def test_delivery_enabled_by_default_preserves_prior_combined_behavior(self, tmp_path):
-        """A deployment that only ever flipped workflowExecution.enabled keeps
+    def test_default_values_render_a_config_ting_accepts(self, tmp_path):
+        """A default install must start: both packs are off and the config loads."""
+        config = _config_from_rendered(_render_ting_chart(tmp_path, {}))
 
-        running the code delivery specialization unchanged: workflowExecution.
-        delivery.enabled defaults to true, so the rendered config still carries
-        every forge.* observer and Forge/review setting it always has.
-        """
-        rendered = _render_ting_chart(tmp_path, {"workflowExecution": {"enabled": True}})
+        settings = Settings(**config)
+
+        assert settings.workflow_execution.enabled is False
+        assert settings.workflow_execution.delivery.enabled is False
+
+    def test_ci_values_render_a_config_ting_accepts(self, tmp_path):
+        """The values the Helm smoke test installs with must load too."""
+        ci_values = yaml.safe_load((CHART_DIR / "ci-values.yaml").read_text(encoding="utf-8"))
+
+        Settings(**_config_from_rendered(_render_ting_chart(tmp_path, ci_values)))
+
+    def test_delivery_is_enabled_explicitly_on_top_of_the_generic_blocks(self, tmp_path):
+        rendered = _render_ting_chart(
+            tmp_path, {"workflowExecution": {"enabled": True, "delivery": {"enabled": True}}}
+        )
         workflow_execution = _config_from_rendered(rendered)["workflow_execution"]
 
         assert workflow_execution["enabled"] is True
