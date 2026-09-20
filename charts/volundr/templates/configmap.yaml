@@ -430,10 +430,7 @@ data:
       enabled: {{ .Values.developerExecutionCredentials.enabled | default false }}
       projection_adapter: {{ .Values.developerExecutionCredentials.projectionAdapter | quote }}
       projection_kwargs:
-        namespace: {{ .Release.Namespace | quote }}
-        {{- with .Values.developerExecutionCredentials.projectionKwargs }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
+        {{- toYaml (mergeOverwrite (dict "namespace" .Release.Namespace) (deepCopy (.Values.developerExecutionCredentials.projectionKwargs | default dict))) | nindent 8 }}
       projection_secret_kwargs_env:
         {{- toYaml (.Values.developerExecutionCredentials.projectionSecretKwargsEnv | default dict) | nindent 8 }}
       refresh_interval_seconds: {{ .Values.developerExecutionCredentials.refreshIntervalSeconds | default 300 }}

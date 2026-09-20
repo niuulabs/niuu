@@ -16,7 +16,6 @@ import yaml
 
 from niuu.ports.credentials import CredentialStorePort
 from volundr.adapters.outbound.ssh_vm_runtime import (
-    _CODEX_TMP_ARCHIVE_PATH,
     _LAUNCH,
     _PREPARE,
     _REMOTE_DATA,
@@ -843,14 +842,16 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
                 await self._execute_remote(
                     lease,
                     bootstrap,
-                    self._python(_PREPARE, str(lease.id), "restore"),
+                    self._python(
+                        _PREPARE, str(lease.id), "restore", json.dumps(self._archive_excludes)
+                    ),
                     stdin=source,
                 )
         else:
             await self._execute_remote(
                 lease,
                 bootstrap,
-                self._python(_PREPARE, str(lease.id), "empty"),
+                self._python(_PREPARE, str(lease.id), "empty", json.dumps(self._archive_excludes)),
             )
         await self.target(lease, bootstrap)
         payload = json.loads(next(item.content for item in bootstrap.files if item.path == _LAUNCH))
@@ -924,7 +925,8 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
                             "-n",
                             "tar",
                             "--one-file-system",
-                            "--exclude=" + _CODEX_TMP_ARCHIVE_PATH,
+                            "--exclude=./.allocation",
+                            *[f"--exclude=./{p}" for p in self._archive_excludes],
                             "-C",
                             _REMOTE_DATA,
                             "-cf",

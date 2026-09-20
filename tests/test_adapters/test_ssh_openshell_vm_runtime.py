@@ -779,6 +779,7 @@ async def test_start_stages_session_and_launches_without_host_install(tmp_path: 
     runtime._sandbox_gid = 998
     runtime._sandbox_command = ("/usr/local/bin/openshell-run-installed-skuld",)
     runtime._policy = ""
+    runtime._archive_excludes = ("home/.cache",)
     runtime._execute_remote = AsyncMock(return_value=0)
     runtime.target = AsyncMock()
     lease = SimpleNamespace(id=uuid4(), session_id=uuid4(), owner_id="owner")
@@ -789,7 +790,9 @@ async def test_start_stages_session_and_launches_without_host_install(tmp_path: 
     commands = [call.args[2] for call in runtime._execute_remote.await_args_list]
     assert len(commands) == 3
     assert commands[0] == runtime._python(module._SESSION_FILES)
-    assert commands[1] == runtime._python(module._PREPARE, str(lease.id), "empty")
+    assert commands[1] == runtime._python(
+        module._PREPARE, str(lease.id), "empty", json.dumps(runtime._archive_excludes)
+    )
     assert commands[2] == runtime._user_python(module._START_OPENSHELL)
     assert runtime._user_python(module._INSTALL_OPENSHELL) not in commands
     runtime.target.assert_awaited_once_with(lease, bootstrap)
@@ -806,6 +809,7 @@ async def test_start_passes_base_policy_through_user_owned_runtime_file_without_
     runtime._sandbox_gid = 998
     runtime._sandbox_command = ("run-skuld",)
     runtime._policy = "version: 1\nnetwork_policies: {}\n"
+    runtime._archive_excludes = ()
     runtime._execute_remote = AsyncMock(return_value=0)
     runtime.target = AsyncMock()
     lease = SimpleNamespace(id=uuid4(), session_id=uuid4(), owner_id="owner")
@@ -830,6 +834,7 @@ async def test_stop_archives_session_atomically_through_guest_access(tmp_path: P
     runtime._data = tmp_path
     runtime._sandbox_delete_timing = (120, 2, 30)
     runtime._broker_port = 8081
+    runtime._archive_excludes = ("home/.cache", "home/.codex/tmp")
     runtime._close_tunnel = AsyncMock()
     lease = SimpleNamespace(id=uuid4(), session_id=uuid4())
 
@@ -849,7 +854,10 @@ async def test_stop_archives_session_atomically_through_guest_access(tmp_path: P
     assert runtime._execute_remote.await_args_list[0].kwargs["safe_detail_prefix"] == (
         module._OPEN_SHELL_DETAIL_PREFIX
     )
-    assert "--exclude=./home/.codex/tmp" in runtime._execute_remote.await_args_list[1].args[2]
+    archive_command = runtime._execute_remote.await_args_list[1].args[2]
+    assert "--exclude=./.allocation" in archive_command
+    assert "--exclude=./home/.cache" in archive_command
+    assert "--exclude=./home/.codex/tmp" in archive_command
     runtime._close_tunnel.assert_awaited_once_with(str(lease.id))
 
 

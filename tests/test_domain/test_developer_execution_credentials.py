@@ -10,6 +10,7 @@ from volundr.composition_builders import _create_developer_execution_credential_
 from volundr.config import Settings
 from volundr.domain.models import PodSpecAdditions, Session, SessionStatus
 from volundr.domain.services.developer_execution_credentials import (
+    _ACTIVE_STATUSES,
     DeveloperExecutionCredentialBinding,
     DeveloperExecutionCredentialError,
     DeveloperExecutionCredentialService,
@@ -205,7 +206,7 @@ async def test_rotation_loop_survives_failed_cycle() -> None:
     issuer = Issuer()
     projection = Projection()
     credential_service = service(repository, issuer, projection)
-    original = credential_service.reconcile_once
+    original = credential_service._reconcile_active_cycle
     calls = 0
 
     async def flaky() -> None:
@@ -215,13 +216,118 @@ async def test_rotation_loop_survives_failed_cycle() -> None:
             raise DeveloperExecutionCredentialError("transient")
         await original()
 
-    credential_service.reconcile_once = flaky  # type: ignore[method-assign]
+    credential_service._reconcile_active_cycle = flaky  # type: ignore[method-assign]
     await credential_service.start()
     await asyncio.sleep(0.035)
     await credential_service.stop()
 
     assert calls >= 3
     assert len(projection.projected) >= 2
+
+
+@pytest.mark.asyncio
+async def test_rotation_loop_survives_a_bare_repository_exception() -> None:
+    """A transient repository fault (e.g. a dropped asyncpg connection) must not
+
+    kill the rotation loop, even though it is not a
+    `DeveloperExecutionCredentialError` — previously only that narrower type was
+    caught at the cycle boundary, so a bare connection error would propagate
+    out of `_run()` and silently end rotation for good.
+    """
+    item = session()
+    repository = Repository([item])
+    issuer = Issuer()
+    projection = Projection()
+    credential_service = service(repository, issuer, projection)
+    original = credential_service._reconcile_active_cycle
+    calls = 0
+
+    async def flaky() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ConnectionError("connection to server was lost")
+        await original()
+
+    credential_service._reconcile_active_cycle = flaky  # type: ignore[method-assign]
+    await credential_service.start()
+    await asyncio.sleep(0.035)
+    await credential_service.stop()
+
+    assert calls >= 3
+    assert len(projection.projected) >= 2
+
+
+@pytest.mark.asyncio
+async def test_periodic_cycle_only_lists_active_statuses_not_full_history() -> None:
+    """The periodic cycle must not repeat reconcile_once()'s unbounded list()
+
+    scan: doing that every tick would make each interval's DB read grow with
+    total historical session count instead of active-session count.
+    """
+    item = session()
+    requested_statuses: list[SessionStatus | None] = []
+
+    class TrackingRepository(Repository):
+        async def list(self, status: SessionStatus | None = None, **_kwargs):
+            requested_statuses.append(status)
+            return await super().list(status=status, **_kwargs)
+
+    repository = TrackingRepository([item])
+    credential_service = service(repository, Issuer(), Projection())
+
+    await credential_service._reconcile_active_cycle()
+
+    assert None not in requested_statuses
+    assert set(requested_statuses) == set(_ACTIVE_STATUSES)
+
+
+@pytest.mark.asyncio
+async def test_periodic_cycle_removes_projection_for_session_that_left_active_set() -> None:
+    """Cleanup on the transition: once a tracked session is no longer among the
+
+    active rows the cycle fetches, its projection is removed — without waiting
+    for (or repeating) a full-history scan.
+    """
+    item = session()
+    repository = Repository([item])
+    projection = Projection()
+    credential_service = service(repository, Issuer(), projection)
+
+    await credential_service._reconcile_active_cycle()
+    assert projection.projected == [(item.id, "token-1", "docker")]
+
+    repository.sessions = []
+    await credential_service._reconcile_active_cycle()
+
+    assert projection.removed == [item.id]
+    assert item.id not in credential_service._locations
+
+
+@pytest.mark.asyncio
+async def test_rotation_loop_death_is_logged_critical(caplog) -> None:
+    """If the cycle-boundary catch-all is ever bypassed, the loop's own death
+
+    must still be loud — no-fallbacks forbids a background loop dying with
+    only a debug-level trace, since tokens would then expire silently.
+    """
+    item = session()
+    repository = Repository([item])
+    credential_service = service(repository, Issuer(), Projection())
+
+    async def explode() -> None:
+        raise RuntimeError("unexpected escape from the cycle catch-all")
+
+    credential_service._run = explode  # type: ignore[method-assign]
+    with caplog.at_level("CRITICAL"):
+        await credential_service.start()
+        await asyncio.sleep(0.02)
+
+    assert any(
+        record.levelname == "CRITICAL" and "rotation loop exited unexpectedly" in record.message
+        for record in caplog.records
+    )
+    credential_service._task = None
 
 
 def test_configured_backend_and_trusted_signer_are_required() -> None:

@@ -130,12 +130,12 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch"]
-  {{- if .Values.developerExecutionCredentials.enabled }}
-  # Rotating per-session coordinator bearer Secrets in the session namespace.
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "create", "patch", "delete"]
-  {{- end }}
+  {{- /*
+  No secrets rule here, deliberately. developerExecutionCredentials writes
+  per-session bearer Secrets into the release namespace, which the namespaced
+  Role above already covers. A ClusterRole rule would grant Secret
+  create/patch/delete in every namespace of the cluster.
+  */}}
   {{- with .Values.rbac.extraClusterRules }}
   {{- toYaml . | nindent 2 }}
   {{- end }}

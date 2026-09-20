@@ -53,6 +53,13 @@ class IntegrationConflictError(WorkstreamGitError):
     """Approved commits conflict and require a coder-owned repair workstream."""
 
 
+class _OutputCapExceededError(Exception):
+    """Internal signal that a running process' combined output crossed the cap.
+
+    Never escapes `_run`; always translated into `WorkstreamGitError`.
+    """
+
+
 class LocalGitWorkstreamRepository(WorkstreamRepository):
     """Allocate isolated worktrees and run only configured argv test contracts."""
 
@@ -76,6 +83,7 @@ class LocalGitWorkstreamRepository(WorkstreamRepository):
         command_timeout_seconds: float = 900.0,
         max_output_bytes: int = 16 * 1024 * 1024,
         max_inspection_patch_bytes: int = 1024 * 1024,
+        output_read_chunk_bytes: int = 65536,
     ) -> None:
         if not repository_roots:
             raise ValueError("At least one repository root is required")
@@ -127,6 +135,9 @@ class LocalGitWorkstreamRepository(WorkstreamRepository):
         if max_inspection_patch_bytes <= 0 or max_inspection_patch_bytes > max_output_bytes:
             raise ValueError("Inspection patch limit must fit within the output limit")
         self._max_inspection_patch_bytes = max_inspection_patch_bytes
+        if output_read_chunk_bytes <= 0:
+            raise ValueError("Output read chunk size must be positive")
+        self._output_read_chunk_bytes = output_read_chunk_bytes
         self._workspace_root.mkdir(parents=True, exist_ok=True)
         self._evidence_root.mkdir(parents=True, exist_ok=True)
 
@@ -761,6 +772,7 @@ class LocalGitWorkstreamRepository(WorkstreamRepository):
         staging_parent.mkdir(parents=True, exist_ok=True)
         staging = Path(tempfile.mkdtemp(prefix=f"{receipt_id}-", dir=staging_parent))
         container_name = f"niuu-verify-{receipt_id}"
+        original: BaseException | None = None
         try:
             await self._git(staging_parent, "clone", "--no-hardlinks", str(workspace), str(staging))
             await self._git(staging, "checkout", "--detach", candidate_sha)
@@ -793,9 +805,46 @@ class LocalGitWorkstreamRepository(WorkstreamRepository):
                 *contract.argv,
             )
             return await self._run(command, staging_parent)
+        except BaseException as exc:
+            original = exc
+            raise
         finally:
+            await self._cleanup_container_run(container_name, staging, staging_parent, original)
+
+    async def _cleanup_container_run(
+        self,
+        container_name: str,
+        staging: Path,
+        staging_parent: Path,
+        original: BaseException | None,
+    ) -> None:
+        """Run both cleanup steps unconditionally so one failure never skips the other.
+
+        A verification container leak or an orphaned staging clone are both real
+        infrastructure problems, so a cleanup failure is never swallowed. If the
+        verification itself already raised, that original exception is what
+        propagates (a caller matching on WorkstreamGitError subtypes must not see
+        its type change because cleanup also failed); the cleanup failure is
+        chained onto it via `__cause__` so it is still visible in the traceback.
+        If verification succeeded, the cleanup failure itself is raised.
+        """
+        cleanup_error: BaseException | None = None
+        try:
             await self._run((self._container_binary, "rm", "-f", container_name), staging_parent)
+        except BaseException as exc:  # noqa: BLE001 - deliberately typed below
+            cleanup_error = exc
+        try:
             shutil.rmtree(staging)
+        except BaseException as exc:  # noqa: BLE001 - deliberately typed below
+            if cleanup_error is not None:
+                exc.__context__ = cleanup_error
+            cleanup_error = exc
+        if cleanup_error is None:
+            return
+        if original is not None:
+            original.__cause__ = cleanup_error
+            return
+        raise cleanup_error
 
     async def _is_ancestor(self, repository: Path, base: str, candidate: str) -> bool:
         return await self._git_ok(repository, "merge-base", "--is-ancestor", base, candidate)
@@ -825,6 +874,21 @@ class LocalGitWorkstreamRepository(WorkstreamRepository):
             *arguments,
         )
 
+    async def _pump_capped(self, stream: asyncio.StreamReader, sink: list[bytes]) -> None:
+        """Read a stream incrementally, raising as soon as the running total exceeds the cap.
+
+        Reading the whole stream via `communicate()` before checking a size limit
+        lets a chatty, candidate-controlled process buffer arbitrarily much output
+        in memory for up to the full command timeout. Checking after every chunk
+        bounds memory to roughly one cap's worth per stream.
+        """
+        total = 0
+        while chunk := await stream.read(self._output_read_chunk_bytes):
+            sink.append(chunk)
+            total += len(chunk)
+            if total > self._max_output_bytes:
+                raise _OutputCapExceededError()
+
     async def _run(self, arguments: tuple[str, ...], cwd: Path) -> tuple[int, bytes, bytes]:
         process = await asyncio.create_subprocess_exec(
             *arguments,
@@ -834,8 +898,30 @@ class LocalGitWorkstreamRepository(WorkstreamRepository):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+
+        async def _consume() -> int:
+            stdout_task = asyncio.ensure_future(self._pump_capped(process.stdout, stdout_chunks))
+            stderr_task = asyncio.ensure_future(self._pump_capped(process.stderr, stderr_chunks))
+            try:
+                await asyncio.gather(stdout_task, stderr_task)
+            finally:
+                for task in (stdout_task, stderr_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            return await process.wait()
+
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), self._timeout)
+            returncode = await asyncio.wait_for(_consume(), self._timeout)
+        except _OutputCapExceededError:
+            if process.returncode is None:
+                process.kill()
+            await process.communicate()
+            raise WorkstreamGitError(
+                "Delivery command output exceeded the configured limit"
+            ) from None
         except (TimeoutError, asyncio.CancelledError) as exc:
             if process.returncode is None:
                 process.kill()
@@ -843,9 +929,7 @@ class LocalGitWorkstreamRepository(WorkstreamRepository):
             if isinstance(exc, asyncio.CancelledError):
                 raise
             raise WorkstreamGitError("Delivery command timed out") from None
-        if len(stdout) + len(stderr) > self._max_output_bytes:
-            raise WorkstreamGitError("Delivery command output exceeded the configured limit")
-        return process.returncode or 0, stdout, stderr
+        return returncode or 0, b"".join(stdout_chunks), b"".join(stderr_chunks)
 
     def _write_log(self, receipt_id: str, stdout: bytes, stderr: bytes) -> None:
         directory = (self._evidence_root / receipt_id).resolve()

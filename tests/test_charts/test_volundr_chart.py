@@ -480,6 +480,64 @@ class TestRbacTemplate:
         """Test template has cluster-wide conditional."""
         assert ".Values.rbac.clusterWide" in template_yaml
 
+    @staticmethod
+    def _render_rbac(*overrides: str) -> list[dict]:
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                "--namespace",
+                "forge",
+                "--set",
+                "rbac.clusterWide=true",
+                *overrides,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+
+    @staticmethod
+    def _secret_verbs(document: dict) -> list[list[str]]:
+        return [
+            rule["verbs"] for rule in document.get("rules", []) if "secrets" in rule["resources"]
+        ]
+
+    @pytest.mark.parametrize("enabled", ["true", "false"])
+    def test_cluster_role_never_grants_secrets_for_developer_credentials(self, enabled):
+        """Per-session bearer Secrets live in the release namespace only, so a
+        cluster-wide Secret write grant would be pure excess privilege."""
+        documents = self._render_rbac("--set", f"developerExecutionCredentials.enabled={enabled}")
+        cluster_roles = [doc for doc in documents if doc.get("kind") == "ClusterRole"]
+
+        assert cluster_roles
+        for cluster_role in cluster_roles:
+            assert self._secret_verbs(cluster_role) == []
+
+    def test_namespaced_role_grants_secret_writes_for_developer_credentials(self):
+        documents = self._render_rbac("--set", "developerExecutionCredentials.enabled=true")
+        role = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "Role" and doc["metadata"]["name"] == "test-volundr"
+        )
+
+        assert role["metadata"].get("namespace", "forge") == "forge"
+        assert self._secret_verbs(role) == [["get", "list", "watch", "create", "patch", "delete"]]
+
+    def test_namespaced_role_is_read_only_on_secrets_without_developer_credentials(self):
+        documents = self._render_rbac()
+        role = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "Role" and doc["metadata"]["name"] == "test-volundr"
+        )
+
+        assert self._secret_verbs(role) == [["get", "list", "watch"]]
+
 
 class TestConfigMapTemplate:
     """Tests for configmap.yaml template."""
@@ -524,6 +582,77 @@ class TestConfigMapTemplate:
         config = yaml.safe_load(configmap["data"]["config.yaml"])
 
         assert config["resident_runtimes"]["profiles"] == []
+
+    @staticmethod
+    def _developer_credentials_config(*overrides: str) -> dict:
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                "--namespace",
+                "forge",
+                "--set",
+                "developerExecutionCredentials.enabled=true",
+                *overrides,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        configmap = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+        assert configmap["data"]["config.yaml"].count("projection_kwargs:") == 1
+        config = yaml.safe_load(configmap["data"]["config.yaml"])
+        return config["developer_execution_credentials"]
+
+    def test_developer_credential_projection_defaults_to_release_namespace(self):
+        config = self._developer_credentials_config()
+
+        assert config["projection_kwargs"] == {"namespace": "forge"}
+
+    def test_developer_credential_projection_namespace_override_is_single_key(self):
+        result_config = self._developer_credentials_config(
+            "--set",
+            "developerExecutionCredentials.projectionKwargs.namespace=sessions",
+            "--set",
+            "developerExecutionCredentials.projectionKwargs.label=x",
+        )
+
+        assert result_config["projection_kwargs"] == {"namespace": "sessions", "label": "x"}
+
+    def test_developer_credential_projection_namespace_is_not_duplicated(self):
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                "--set",
+                "developerExecutionCredentials.projectionKwargs.namespace=sessions",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        configmap = next(
+            doc
+            for doc in yaml.safe_load_all(result.stdout)
+            if doc
+            and doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+        rendered = configmap["data"]["config.yaml"]
+        start = rendered.index("projection_kwargs:")
+        end = rendered.index("projection_secret_kwargs_env:")
+
+        assert rendered[start:end].count("namespace:") == 1
 
     @pytest.mark.parametrize(
         "overrides,expected_image",

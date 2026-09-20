@@ -235,52 +235,126 @@ class DeveloperExecutionCredentialService:
         )
         return claims
 
+    async def _reconcile_session(
+        self, session: Session, failures: list[tuple[UUID, Exception]]
+    ) -> None:
+        """Rotate, fail, or clean up the credential binding for one session row."""
+        try:
+            binding = DeveloperExecutionCredentialBinding.from_session(session)
+        except DeveloperExecutionCredentialError as exc:
+            # Historical descriptors need cleanup, but their terminal
+            # status must remain unchanged.
+            if session.status in _ACTIVE_STATUSES:
+                failed = session.with_status(SessionStatus.FAILED).with_error(str(exc))
+                await self._repository.update(failed)
+                logger.error(
+                    "Rejected malformed developer credential binding for session %s: %s",
+                    session.id,
+                    exc,
+                )
+            try:
+                await self.remove(session.id)
+            except Exception as cleanup_error:
+                failures.append((session.id, cleanup_error))
+                logger.exception("Developer credential cleanup failed for %s", session.id)
+            return
+        try:
+            if binding is None:
+                return
+            if session.status in _ACTIVE_STATUSES:
+                await self.project(session)
+                return
+            await self.remove(session.id)
+        except Exception as exc:
+            failures.append((session.id, exc))
+            logger.exception(
+                "Developer credential reconciliation failed for session %s", session.id
+            )
+
+    @staticmethod
+    def _raise_aggregated_failures(failures: list[tuple[UUID, Exception]]) -> None:
+        if not failures:
+            return
+        ids = ", ".join(str(session_id) for session_id, _ in failures)
+        raise DeveloperExecutionCredentialError(
+            f"developer credential reconciliation failed for sessions: {ids}"
+        ) from failures[0][1]
+
     async def reconcile_once(self) -> None:
+        """Exhaustive sweep over every session row.
+
+        Used once at startup (via `start()`) to pick up bindings from before
+        this process existed — a prior instance's projected credential can
+        outlive it if the process died mid-cleanup. This does list() with no
+        status filter deliberately: it is the one place that is allowed to be
+        unbounded, precisely because it only ever runs once per process
+        lifetime. The periodic loop must not repeat this shape (see
+        `_reconcile_active_cycle`).
+        """
         sessions = await self._repository.list()
         failures: list[tuple[UUID, Exception]] = []
         for session in sessions:
+            await self._reconcile_session(session, failures)
+        self._raise_aggregated_failures(failures)
+
+    async def _reconcile_active_cycle(self) -> None:
+        """Bounded per-interval reconciliation: active sessions, plus drift cleanup.
+
+        Rotation only needs currently-active sessions, so this lists by status
+        instead of every session ever created — the table only grows, so an
+        unfiltered list() here would make each tick more expensive than the
+        last forever. Terminal-session cleanup is bounded the same way: rather
+        than re-scanning full history, it diffs `_locations` (the sessions this
+        process actually holds a live projection for, populated by `project()`)
+        against the freshly-fetched active set and removes whatever fell out —
+        i.e. "clean up on the transition", using the marker that already
+        exists. A session that went terminal before this process ever
+        projected for it is caught by the startup `reconcile_once()` sweep
+        instead, not by this cycle.
+        """
+        sessions: dict[UUID, Session] = {}
+        for status in _ACTIVE_STATUSES:
+            for item in await self._repository.list(status=status):
+                sessions[item.id] = item
+        failures: list[tuple[UUID, Exception]] = []
+        for item in sessions.values():
+            await self._reconcile_session(item, failures)
+        for session_id in [sid for sid in self._locations if sid not in sessions]:
             try:
-                binding = DeveloperExecutionCredentialBinding.from_session(session)
-            except DeveloperExecutionCredentialError as exc:
-                # Historical descriptors need cleanup, but their terminal
-                # status must remain unchanged.
-                if session.status in _ACTIVE_STATUSES:
-                    failed = session.with_status(SessionStatus.FAILED).with_error(str(exc))
-                    await self._repository.update(failed)
-                    logger.error(
-                        "Rejected malformed developer credential binding for session %s: %s",
-                        session.id,
-                        exc,
-                    )
-                try:
-                    await self.remove(session.id)
-                except Exception as cleanup_error:
-                    failures.append((session.id, cleanup_error))
-                    logger.exception("Developer credential cleanup failed for %s", session.id)
-                continue
-            try:
-                if binding is None:
-                    continue
-                if session.status in _ACTIVE_STATUSES:
-                    await self.project(session)
-                    continue
-                await self.remove(session.id)
-            except Exception as exc:
-                failures.append((session.id, exc))
-                logger.exception(
-                    "Developer credential reconciliation failed for session %s", session.id
-                )
-        if failures:
-            ids = ", ".join(str(session_id) for session_id, _ in failures)
-            raise DeveloperExecutionCredentialError(
-                f"developer credential reconciliation failed for sessions: {ids}"
-            ) from failures[0][1]
+                await self.remove(session_id)
+            except Exception as cleanup_error:
+                failures.append((session_id, cleanup_error))
+                logger.exception("Developer credential cleanup failed for %s", session_id)
+        self._raise_aggregated_failures(failures)
 
     async def start(self) -> None:
         if self._task is not None:
             return
         await self.reconcile_once()
         self._task = asyncio.create_task(self._run(), name="developer-credential-rotation")
+        self._task.add_done_callback(self._log_if_rotation_loop_died)
+
+    @staticmethod
+    def _log_if_rotation_loop_died(task: asyncio.Task[None]) -> None:
+        """Backstop so a dead rotation loop can never be silent.
+
+        `_run()` already catches every non-cancellation exception at the cycle
+        boundary and keeps going, so this should never fire in practice — but
+        if it ever does (a bug in the catch-all itself, for instance), tokens
+        silently stop rotating and expire with no other signal. A `critical`
+        log with the full traceback is the loud failure no-fallbacks requires.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            return
+        logger.critical(
+            "Developer credential rotation loop exited unexpectedly; developer "
+            "coordinator tokens will stop rotating and expire until the process "
+            "is restarted",
+            exc_info=exc,
+        )
 
     async def stop(self) -> None:
         task = self._task
@@ -294,8 +368,15 @@ class DeveloperExecutionCredentialService:
         while True:
             await asyncio.sleep(self._refresh_interval_seconds)
             try:
-                await self.reconcile_once()
+                await self._reconcile_active_cycle()
             except asyncio.CancelledError:
                 raise
-            except DeveloperExecutionCredentialError:
+            except Exception:
+                # Broad on purpose: reconcile_once()/​_reconcile_active_cycle()
+                # already isolate per-session failures, so anything still
+                # reaching here is a cycle-wide fault — e.g. the repository
+                # connection itself (list()/update() are not wrapped
+                # per-session). A transient asyncpg error must not kill this
+                # loop forever, or coordinator tokens quietly expire; retry on
+                # the next interval instead.
                 logger.exception("Developer credential rotation cycle failed; retrying")

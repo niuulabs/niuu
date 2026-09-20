@@ -1074,17 +1074,33 @@ class SessionService:
             # A failed start may already own partially-created infrastructure.
             # Stop it before publishing the terminal session verdict so pending
             # provider requests do not remain bound to a failed session forever.
+            #
+            # A cleanup failure here must never vanish (no-fallbacks): for a
+            # durable-compute backend (VM, or any backend behind an execution
+            # resolver) the machine keeps running and capacity keeps being
+            # charged if we merely warn-and-continue as before. Both failures
+            # are recorded on the session so an operator sees the full story,
+            # and reconcile_active_sessions() now also sweeps FAILED sessions
+            # for durable-compute backends (previously kubernetes-only) so the
+            # leaked infrastructure gets a retry on the next reconcile pass
+            # instead of being excluded from the sweep forever.
+            cleanup_error: str | None = None
             try:
                 await self._pod_manager.stop(session)
-            except Exception:
-                logger.warning(
-                    "Failed to clean up infrastructure after provisioning failure for session %s",
+            except Exception as cleanup_exc:
+                cleanup_error = str(cleanup_exc).strip() or repr(cleanup_exc)
+                logger.error(
+                    "Failed to clean up infrastructure after provisioning failure for "
+                    "session %s; infrastructure may still be running and will be retried "
+                    "by the next reconcile sweep",
                     _sanitize_log(session.id),
                     exc_info=True,
                 )
             session = await self._repository.get(session.id)
             if session is None:
                 return
+            if cleanup_error is not None:
+                error = f"{error}; cleanup after provisioning failure also failed: {cleanup_error}"
             failed = session.with_status(SessionStatus.FAILED).with_error(error)
             await self._repository.update(failed)
 
@@ -1658,6 +1674,7 @@ class SessionService:
             SessionStatus.RUNNING,
             SessionStatus.STOPPING,
         ]
+        durable_compute = self._runtime_backend == "vm" or self._execution_resolver is not None
         if self._runtime_backend == "kubernetes":
             statuses.extend(
                 [
@@ -1666,11 +1683,25 @@ class SessionService:
                     SessionStatus.ARCHIVED,
                 ]
             )
+        elif durable_compute:
+            # Kubernetes sheds orphaned resources for terminal rows on its own,
+            # so only FAILED (a row a provisioning-cleanup failure can leave
+            # bound to still-running compute) needs to keep being swept for a
+            # durable-compute backend; see the comment in _provision_background.
+            statuses.append(SessionStatus.FAILED)
         sessions = [
             session for status in statuses for session in await self._repository.list(status=status)
         ]
         reconciled = 0
         for session in sessions:
+            if session.status == SessionStatus.FAILED and self._runtime_backend != "kubernetes":
+                # Swept only to release compute a failed cleanup left bound. Never
+                # ask for its status: a VM runtime reports a still-bound lease as
+                # provisioning and restarts it, which would resurrect the session.
+                if await self._pod_manager.stop(session):
+                    reconciled += 1
+                continue
+
             actual_status = await self._pod_manager.status(session)
             status_detail = await self._pod_manager.status_detail(session)
 

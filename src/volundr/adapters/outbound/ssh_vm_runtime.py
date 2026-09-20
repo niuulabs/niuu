@@ -39,7 +39,6 @@ _HOST_KEY = HOST_KEY_PATH
 _HOST_KEY_CONFIG = HOST_KEY_CONFIG_PATH
 _LAUNCH = "/etc/niuu/session-launch.json"
 _REMOTE_DATA = "/var/lib/niuu/session"
-_CODEX_TMP_ARCHIVE_PATH = "./home/.codex/tmp"
 
 # Passed as a fixed program; session-controlled values arrive as JSON on stdin.
 _START = r"""

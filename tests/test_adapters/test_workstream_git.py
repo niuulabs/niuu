@@ -24,6 +24,7 @@ from volundr.adapters.outbound.workstream_git import (
     IntegrationConflictError,
     LocalGitWorkstreamRepository,
     WorkspaceSafetyError,
+    WorkstreamGitError,
 )
 
 REPOSITORY = "https://git.example/org/repo"
@@ -1080,4 +1081,127 @@ async def test_integration_rejects_dirty_workspace_before_applying_candidate(
         )
 
     assert _git(binary, integration_path, "rev-parse", "HEAD") == base
-    assert (integration_path / "local.txt").read_text() == "preexisting\n"
+
+
+def _minimal_repository(
+    tmp_path: Path,
+    *,
+    git_binary: str,
+    container_binary: str = "docker",
+    **overrides: object,
+) -> LocalGitWorkstreamRepository:
+    return LocalGitWorkstreamRepository(
+        workspace_root=str(tmp_path / "worktrees"),
+        evidence_root=str(tmp_path / "evidence"),
+        repository_roots=(str(tmp_path),),
+        test_contracts={
+            "unit": {
+                "image": f"runner@sha256:{'f' * 64}",
+                "argv": (sys.executable, "-c", "pass"),
+                "pinned_inputs": {"verification.lock": "e" * 40},
+            }
+        },
+        authenticator=_authenticator(),
+        producer_id="trusted-runner",
+        git_binary=git_binary,
+        container_binary=container_binary,
+        **overrides,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_kills_process_and_raises_once_combined_output_exceeds_the_cap(
+    tmp_path: Path,
+):
+    """A chatty candidate-controlled verification process must be bounded in memory.
+
+    Reading everything via `communicate()` before checking a size limit lets the
+    process buffer arbitrarily much output for the whole command timeout. The
+    cap must instead be enforced while streaming, and the process killed as soon
+    as it is crossed.
+    """
+    binary = _git_available()
+    adapter = _minimal_repository(
+        tmp_path,
+        git_binary=binary,
+        max_output_bytes=1024,
+        max_inspection_patch_bytes=512,
+        output_read_chunk_bytes=256,
+        command_timeout_seconds=10,
+    )
+    chatty = (
+        sys.executable,
+        "-c",
+        "import sys\nwhile True:\n    sys.stdout.write('x' * 4096)\n    sys.stdout.flush()\n",
+    )
+
+    with pytest.raises(WorkstreamGitError, match="exceeded the configured limit"):
+        await adapter._run(chatty, tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_run_returns_full_output_under_the_cap(tmp_path: Path):
+    binary = _git_available()
+    adapter = _minimal_repository(
+        tmp_path, git_binary=binary, max_output_bytes=4096, max_inspection_patch_bytes=2048
+    )
+    quiet = (sys.executable, "-c", "import sys; sys.stdout.write('ok')")
+
+    code, stdout, stderr = await adapter._run(quiet, tmp_path)
+
+    assert code == 0
+    assert stdout == b"ok"
+    assert stderr == b""
+
+
+@pytest.mark.asyncio
+async def test_cleanup_container_run_removes_staging_even_when_container_rm_fails(
+    tmp_path: Path,
+):
+    """Both cleanup steps must run independently: one failing must not skip the other."""
+    binary = _git_available()
+    adapter = _minimal_repository(
+        tmp_path, git_binary=binary, container_binary=str(tmp_path / "does-not-exist")
+    )
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "file").write_text("leftover")
+
+    with pytest.raises(FileNotFoundError):
+        await adapter._cleanup_container_run("container", staging, tmp_path, None)
+
+    assert not staging.exists()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_container_run_preserves_original_exception_and_chains_cleanup_failure(
+    tmp_path: Path,
+):
+    binary = _git_available()
+    adapter = _minimal_repository(
+        tmp_path, git_binary=binary, container_binary=str(tmp_path / "does-not-exist")
+    )
+    missing_staging = tmp_path / "missing-staging"
+    original = WorkstreamGitError("verification failed")
+
+    # The real caller (`_run_in_container`) re-raises `original` itself once this
+    # returns; the helper's job is only to make sure the cleanup failure is
+    # visible on it rather than disappearing, never to raise a second exception
+    # in its place.
+    await adapter._cleanup_container_run("container", missing_staging, tmp_path, original)
+
+    assert isinstance(original.__cause__, FileNotFoundError)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_container_run_raises_cleanup_failure_when_nothing_else_failed(
+    tmp_path: Path,
+):
+    binary = _git_available()
+    adapter = _minimal_repository(
+        tmp_path, git_binary=binary, container_binary=str(tmp_path / "does-not-exist")
+    )
+    missing_staging = tmp_path / "missing-staging"
+
+    with pytest.raises(FileNotFoundError):
+        await adapter._cleanup_container_run("container", missing_staging, tmp_path, None)

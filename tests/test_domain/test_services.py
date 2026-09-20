@@ -1058,7 +1058,70 @@ class TestSessionServiceStart:
         session = await repository.get(created.id)
         assert session is not None
         assert session.status == SessionStatus.FAILED
-        assert session.error == "Pod start failed"
+        # Both the original provisioning failure and the cleanup failure that
+        # followed it must be recorded — a cleanup failure here left durable
+        # compute (or capacity) bound to this session, and no-fallbacks means
+        # that must never disappear into a warning log alone.
+        assert session.error == (
+            "Pod start failed; cleanup after provisioning failure also failed: Pod stop failed"
+        )
+
+    async def test_start_failure_cleanup_failure_is_swept_by_reconcile_for_durable_compute(
+        self, repository: Repo, failing_pod_manager: Pods
+    ):
+        """A VM-backed session whose provisioning cleanup also fails must not be
+        excluded from the reconcile sweep — otherwise the leaked machine is
+        never retried. Simulate that: after the FAILED status. If the pod
+        manager still reports the underlying infrastructure as failed, the
+        durable-compute reconcile sweep must attempt to stop it again."""
+        service = SessionService(repository, failing_pod_manager, runtime_backend="vm")
+        created = await service.create_session(
+            name="test",
+            model="claude-3-opus",
+            source=GitSource(
+                repo="https://github.com/org/repo",
+                branch="main",
+            ),
+        )
+        await service.start_session(created.id)
+        await asyncio.sleep(0.5)
+        session = await repository.get(created.id)
+        assert session is not None
+        assert session.status == SessionStatus.FAILED
+        failing_pod_manager.stop_calls.clear()
+        # The next reconcile pass is the retry: this time the (still-bound)
+        # infrastructure stop succeeds.
+        failing_pod_manager.stop_success = True
+
+        reconciled = await service.reconcile_active_sessions()
+
+        assert reconciled == 1
+        assert len(failing_pod_manager.stop_calls) == 1
+        assert failing_pod_manager.stop_calls[0].id == session.id
+
+    async def test_failed_vm_session_is_stopped_and_never_resurrected(
+        self, repository: Repo, failing_pod_manager: Pods
+    ):
+        """A VM runtime reports a still-bound lease as provisioning. The sweep
+        must release it without consulting status, or the failed session would
+        be promoted back to an active state."""
+        service = SessionService(repository, failing_pod_manager, runtime_backend="vm")
+        created = await service.create_session(
+            name="test",
+            model="claude-3-opus",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        await service.start_session(created.id)
+        await asyncio.sleep(0.5)
+        failing_pod_manager.stop_success = True
+        failing_pod_manager.status = AsyncMock(return_value=SessionStatus.PROVISIONING)
+
+        await service.reconcile_active_sessions()
+
+        failing_pod_manager.status.assert_not_awaited()
+        session = await repository.get(created.id)
+        assert session is not None
+        assert session.status == SessionStatus.FAILED
 
 
 class TestSessionServiceStop:
