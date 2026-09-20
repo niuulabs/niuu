@@ -116,11 +116,23 @@ def test_refuses_unpinned_runner_or_repository_outside_proof_root(tmp_path: Path
         with pytest.raises(ValueError, match="contracts|commands"):
             build_config(**kwargs, contracts=contracts)
 
-    definitions = yaml.safe_load(
-        (
-            Path(__file__).resolve().parents[2] / "proof/developer-delivery/contracts.yaml"
-        ).read_text()
+    # A contracts file as an operator passes it with --contracts-file: workstreams
+    # require less than integration does.
+    contracts_file = tmp_path / "contracts.yaml"
+    contracts_file.write_text(
+        yaml.safe_dump(
+            {
+                "commands": {
+                    "proof-syntax": ["python", "-m", "compileall", "-q", "src"],
+                    "proof-slug": ["python", "-m", "unittest", "tests.test_slug", "-v"],
+                    "proof-limits": ["python", "-m", "unittest", "tests.test_limits", "-v"],
+                },
+                "workstream_required": ["proof-syntax"],
+                "integration_required": ["proof-syntax", "proof-slug", "proof-limits"],
+            }
+        )
     )
+    definitions = yaml.safe_load(contracts_file.read_text())
     configured = build_config(**kwargs, contracts=definitions)
     policy = DeliveryConfig.model_validate(configured["delivery"])
     assert policy.policies["developer-workstream"].required_test_contract_ids == ("proof-syntax",)
