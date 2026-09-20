@@ -3,17 +3,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 from ting.delivery.domain import ChildExecution, DeliveryExecution
 from ting.ports.workflow_execution import SessionContinuation, WorkflowExecutionRepository
-
-if TYPE_CHECKING:
-    from ting.domain.workflow_wait import (
-        WaitObservation,
-        WorkflowWait,
-    )
+from ting.ports.workflow_wait import WaitContinuation
 
 
 class DeliveryExecutionRepository(
@@ -61,14 +55,9 @@ class DeliveryExecutionRepository(
         """Persist one idempotent review of the current inspected integration candidate."""
 
 
-class ParentWorkflowContinuation(SessionContinuation[DeliveryExecution], ABC):
-    """Resume the exact suspended parent session, including delivery observations."""
-
-    @abstractmethod
-    async def notify_delivery_observation(
-        self,
-        execution: DeliveryExecution,
-        wait: WorkflowWait,
-        observation: WaitObservation,
-    ) -> None:
-        """Deliver one persisted Forge observation to the exact parent session."""
+class ParentWorkflowContinuation(
+    SessionContinuation[DeliveryExecution],
+    WaitContinuation[DeliveryExecution],
+    ABC,
+):
+    """Resume the exact suspended parent session, including wait observations."""

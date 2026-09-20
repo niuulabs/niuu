@@ -95,7 +95,7 @@ class WorkflowExecutionCredentialBinding:
             ) from exc
 
         parent_session_key = required("parent_session_key")
-        expected_prefix = "workflow:a2a-" if child_attempt_id else "workflow:developer-"
+        expected_prefix = "workflow:a2a-" if child_attempt_id else "workflow:execution-"
         if not parent_session_key.startswith(expected_prefix):
             raise WorkflowExecutionCredentialError(
                 f"workflow_execution parent_session_key must start with {expected_prefix}"

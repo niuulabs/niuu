@@ -34,7 +34,7 @@ export interface IDeliveryExecutionService {
   reconcile(id: string): Promise<WorkflowExecution>;
   retry(id: string, childKey: string, attemptId: string): Promise<WorkflowExecution>;
   evidence(id: string): Promise<Record<string, unknown>>;
-  deliveryWaits(id: string): Promise<WorkflowWait[]>;
+  waits(id: string): Promise<WorkflowWait[]>;
   trace(id: string, options?: ExecutionTraceOptions): Promise<WorkflowExecutionTrace>;
 }
 import type {

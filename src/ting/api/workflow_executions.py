@@ -28,6 +28,7 @@ from ting.delivery.domain import ChildExecution, DeliveryExecution
 from ting.delivery.ports import DeliveryExecutionRepository
 from ting.delivery.service import DeliveryExecutionCoordinator, DeliveryExecutionService
 from ting.domain.services.workflow_wait import WorkflowWaitService
+from ting.domain.workflow_continuation_events import wait_node_conditions
 from ting.domain.workflow_document import workflow_document_revision
 from ting.domain.workflow_execution import (
     ChildExecutionState,
@@ -44,7 +45,6 @@ from ting.domain.workflow_execution_trace import (
     workflow_event_sources,
 )
 from ting.domain.workflow_snapshot import build_workflow_snapshot
-from ting.domain.workflow_wait import WorkflowWaitRequest
 from ting.ports.volundr import PublicSessionLogPage, VolundrFactory
 from ting.ports.workflow_repository import WorkflowRepository
 
@@ -134,6 +134,14 @@ class RetryChildBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     attempt_id: UUID
+
+
+class WaitRequestBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    node_id: str = Field(alias="nodeId", min_length=1, max_length=255)
+    condition_type: str = Field(alias="conditionType", min_length=1, max_length=255)
+    request: dict[str, Any] = Field(default_factory=dict)
 
 
 class DeliveryAuthorizationBody(BaseModel):
@@ -273,7 +281,7 @@ def create_workflow_executions_router() -> APIRouter:
         if reserved.parent_session_id:
             return await _detail(execution_repo, reserved)
 
-        session_key = f"workflow:developer-{reserved.id.hex}"
+        session_key = f"workflow:execution-{reserved.id.hex}"
         sessions = await target_adapter.list_sessions(
             auth_token=bearer_token,
             principal=principal,
@@ -679,8 +687,8 @@ def create_workflow_executions_router() -> APIRouter:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return await _detail(repository, saved)
 
-    @router.get("/{execution_id}/delivery-waits")
-    async def list_delivery_waits(
+    @router.get("/{execution_id}/waits")
+    async def list_waits(
         execution_id: UUID,
         principal: Principal = Depends(extract_principal),
         repository: DeliveryExecutionRepository = Depends(resolve_workflow_execution_repo),
@@ -689,10 +697,10 @@ def create_workflow_executions_router() -> APIRouter:
         execution = await _owned(repository, execution_id, principal)
         return [wait.to_dict() for wait in await service.list_waits(execution)]
 
-    @router.post("/{execution_id}/delivery-waits")
-    async def wait_for_delivery(
+    @router.post("/{execution_id}/waits")
+    async def request_wait(
         execution_id: UUID,
-        body: WorkflowWaitRequest,
+        body: WaitRequestBody,
         request: Request,
         principal: Principal = Depends(extract_principal),
         bearer_token: str | None = Depends(extract_bearer_token),
@@ -702,8 +710,15 @@ def create_workflow_executions_router() -> APIRouter:
     ) -> dict[str, Any]:
         execution = await _owned(repository, execution_id, principal)
         _assert_coordinator_claims(request, bearer_token, execution)
+        allowed_condition_types = _wait_node_conditions(execution, body.node_id)
         try:
-            wait = await service.request_wait(execution, body)
+            wait = await service.request_wait(
+                execution,
+                node_id=body.node_id,
+                condition_type=body.condition_type,
+                request=body.request,
+                allowed_condition_types=allowed_condition_types,
+            )
         except WorkflowExecutionError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return wait.to_dict()
@@ -1089,7 +1104,7 @@ def _assert_coordinator_claims(
         )
     except jwt.InvalidTokenError as exc:
         raise HTTPException(status_code=403, detail="Coordinator credential is invalid") from exc
-    expected_session_key = f"workflow:developer-{execution.id.hex}"
+    expected_session_key = f"workflow:execution-{execution.id.hex}"
     expected = {
         "token_use": VALKYRIE_BUILD_TOKEN_USE,
         "workload_workflow_execution_id": str(execution.id),
@@ -1155,7 +1170,7 @@ async def _assert_delivery_claims(
         isinstance(scopes, list) and "ting:workflow:coordinate" in scopes
     ):
         raise HTTPException(status_code=403, detail="Delivery credential lineage is invalid")
-    parent_key = f"workflow:developer-{execution.id.hex}"
+    parent_key = f"workflow:execution-{execution.id.hex}"
     if claims.get("workload_parent_session_key") == parent_key:
         if (
             not execution.parent_session_id
@@ -1259,6 +1274,19 @@ def _expansion_policy(workflow, node_id: str) -> tuple[dict[str, Any], Expansion
         max_active_children=int(node.get("maxActiveChildren") or node.get("maxChildren") or 0),
         join_mode=str(node.get("joinMode") or ""),
     )
+
+
+def _wait_node_conditions(execution: DeliveryExecution, node_id: str) -> frozenset[str]:
+    snapshot = execution.workflow_snapshot
+    graph = snapshot.get("graph") if isinstance(snapshot, dict) else None
+    if not isinstance(graph, dict):
+        raise HTTPException(
+            status_code=503, detail="Execution has no pinned workflow graph to resolve its waits"
+        )
+    try:
+        return wait_node_conditions(graph, node_id)
+    except WorkflowExecutionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 async def _owned(

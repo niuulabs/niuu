@@ -158,7 +158,7 @@ class TestTokenHasScope:
             "integration-candidate",
             "complete",
             "delivery-authorizations",
-            "delivery-waits",
+            "waits",
         ],
     )
     def test_execution_coordinator_can_call_execution_mutations(self, suffix: str) -> None:
@@ -173,7 +173,7 @@ class TestTokenHasScope:
     def test_execution_coordinator_retry_is_post_only_and_gets_remain_denied(self) -> None:
         token = _build_token(["ting:workflow:coordinate"])
         retry = "/api/v1/ting/workflow-executions/execution-1/children/api/retry"
-        wait = "/api/v1/ting/workflow-executions/execution-1/delivery-waits"
+        wait = "/api/v1/ting/workflow-executions/execution-1/waits"
 
         assert credential_allows_route(token, "POST", retry)
         assert credential_allows_route(token, "POST", wait)

@@ -1055,16 +1055,23 @@ class WorkflowExecutionConfig(BaseModel):
             "credentials. These roles are never accepted from execution descriptors."
         ),
     )
-    delivery_wait_repository_adapter: str = Field(
+    wait_repository_adapter: str = Field(
         default="ting.adapters.postgres_workflow_waits.PostgresWorkflowWaitRepository",
-        description="Durable repository adapter for exact developer delivery waits.",
+        description="Durable repository adapter for workflow waits.",
     )
-    delivery_wait_repository_kwargs: dict[str, Any] = Field(default_factory=dict)
-    delivery_wait_observer_adapter: str = Field(
-        default="ting.adapters.wait_condition_observer.ForgeWaitConditionObserver",
-        description="Read-only remote delivery observation adapter.",
+    wait_repository_kwargs: dict[str, Any] = Field(default_factory=dict)
+    wait_observers: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Wait condition observers, each `{condition_type, adapter, ...kwargs}`. "
+            "condition_type is the opaque condition identity a wait node's `conditions` "
+            "list can declare; adapter is the dotted class path implementing "
+            "WaitConditionObserver (ting.ports.workflow_wait). Extra entry keys are "
+            "passed as constructor kwargs; volundr_factory, policy_id, token_issuer, "
+            "admission_roles, and poll_interval_seconds are injected only when the "
+            "adapter's constructor declares them."
+        ),
     )
-    delivery_wait_observer_kwargs: dict[str, Any] = Field(default_factory=dict)
     review_authenticator_adapter: str = Field(default="")
     review_authenticator_kwargs: dict[str, Any] = Field(default_factory=dict)
     review_authenticator_secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
@@ -1110,13 +1117,13 @@ class WorkflowExecutionConfig(BaseModel):
             "so a single poisoned child cannot starve the reconcile queue forever."
         ),
     )
-    max_delivery_wait_failures: int = Field(
+    max_wait_failures: int = Field(
         default=5,
         ge=1,
         le=100,
         description=(
-            "Consecutive reconcile failures tolerated for one delivery wait before it is "
-            "durably transitioned to its terminal failed state."
+            "Consecutive reconcile failures tolerated for one wait before it is durably "
+            "transitioned to its terminal failed state."
         ),
     )
     max_parent_stop_failures: int = Field(

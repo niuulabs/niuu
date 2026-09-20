@@ -26,16 +26,6 @@ from ting.domain.workflow_execution import (
     validate_expansion as validate_workflow_expansion,
 )
 
-DELIVERY_WAIT_SUSPENSION_REASONS = frozenset(
-    {"awaiting_checks", "awaiting_merge", "delivery_observed"}
-)
-"""Suspension reasons that mean the execution has moved past the children join
-into remote delivery observation. A manual reconcile must not re-run the join
-projection once one of these (or DELIVERY_WAIT_FAILURE_PREFIX) is current."""
-
-DELIVERY_WAIT_FAILURE_PREFIX = "delivery_wait_failed: "
-"""Prefix for the suspension reason recorded when a delivery wait terminally fails."""
-
 MISSING_COMMITS_FAILURE_KIND = "missing_commits"
 """Delivery-specific failure kind: a workstream produced no commits to review."""
 

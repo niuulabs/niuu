@@ -68,27 +68,27 @@ class VolundrParentWorkflowContinuation(ParentWorkflowContinuation):
             },
         )
 
-    async def notify_delivery_observation(
+    async def notify_wait_observation(
         self,
         execution: DeliveryExecution,
         wait: WorkflowWait,
         observation: WaitObservation,
     ) -> None:
         adapter = await self._adapter(execution)
-        event_type = wait_observed_event(self._graph(execution))
+        event_type = wait_observed_event(self._graph(execution), wait.node_id)
         await self._deliver(
             adapter,
             execution,
             event_type,
-            seed=f"delivery-wait:{wait.id}",
+            seed=f"wait:{wait.id}",
             fields={
                 "schemaVersion": 1,
                 "waitId": str(wait.id),
+                "nodeId": wait.node_id,
+                "conditionType": wait.condition_type,
                 "requestDigest": wait.request_digest,
                 "parentNodeId": execution.parent_node_id,
                 "generation": wait.execution_generation,
-                "candidateDigest": wait.candidate_digest,
-                "mode": wait.request.mode.value,
                 **observation.to_dict(),
             },
         )

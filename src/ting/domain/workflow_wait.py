@@ -1,25 +1,35 @@
-"""Durable, identity-bound observations of remote developer delivery state."""
+"""Durable, identity-bound observations of an external wait condition.
+
+A ``wait`` node in a workflow graph suspends its parent execution until an
+opaque condition external to the engine is observed: a CI check, a
+publication event, a timer, a tracker issue, anything. The condition's
+meaning belongs entirely to
+whichever ``WaitConditionObserver`` is registered for its ``condition_type``
+(see ``ting.ports.workflow_wait``); this module owns only the identity, state
+machine, and lease mechanics of the wait itself, never what the condition
+means.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from ting.domain.workflow_execution import WorkflowExecutionError
 
-from niuu.domain.delivery import CheckReceipt, MergeReceipt, ReviewCandidate
+WAIT_SUSPENSION_PREFIX = "awaiting:"
+"""Suspension reason prefix while a wait is pending: ``awaiting:<condition_type>``."""
 
-_GIT_SHA = r"^(?:[a-f0-9]{40}|[a-f0-9]{64})$"
+WAIT_OBSERVED_SUSPENSION_REASON = "wait_observed"
+"""Suspension reason recorded once a wait's terminal observation is satisfied."""
 
-
-class WorkflowWaitMode(StrEnum):
-    CHECKS = "checks"
-    MERGE = "merge"
+WAIT_FAILURE_PREFIX = "wait_failed: "
+"""Prefix for the suspension reason recorded when a wait terminally fails."""
 
 
 class WorkflowWaitState(StrEnum):
@@ -30,100 +40,40 @@ class WorkflowWaitState(StrEnum):
 
 
 class WaitObservationStatus(StrEnum):
-    CHECKS_PENDING = "checks_pending"
-    CHECKS_PASSED = "checks_passed"
-    CHECKS_FAILED = "checks_failed"
-    MERGE_PENDING = "merge_pending"
-    MERGED = "merged"
-    MERGE_FAILED = "merge_failed"
-    STALE_CANDIDATE = "stale_candidate"
+    PENDING = "pending"
+    SATISFIED = "satisfied"
+    FAILED = "failed"
 
 
 _TERMINAL_OBSERVATION_STATUSES = frozenset(
-    {
-        WaitObservationStatus.CHECKS_PASSED,
-        WaitObservationStatus.CHECKS_FAILED,
-        WaitObservationStatus.MERGED,
-        WaitObservationStatus.MERGE_FAILED,
-        WaitObservationStatus.STALE_CANDIDATE,
-    }
+    {WaitObservationStatus.SATISFIED, WaitObservationStatus.FAILED}
 )
 
 
-class WorkflowWaitRequest(BaseModel):
-    """Exact remote review identity selected by the parent coordinator."""
+@dataclass(frozen=True)
+class WaitObservation:
+    """One condition-agnostic read of an external wait condition.
 
-    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
-
-    mode: WorkflowWaitMode
-    repository: str = Field(min_length=1)
-    review_number: int = Field(
-        gt=0,
-        validation_alias=AliasChoices("review_number", "reviewNumber"),
-    )
-    expected_head_sha: str = Field(
-        pattern=_GIT_SHA,
-        validation_alias=AliasChoices("expected_head_sha", "expectedHeadSha"),
-    )
-    expected_base_sha: str = Field(
-        pattern=_GIT_SHA,
-        validation_alias=AliasChoices("expected_base_sha", "expectedBaseSha"),
-    )
-    expected_target_branch: str = Field(
-        min_length=1,
-        validation_alias=AliasChoices("expected_target_branch", "expectedTargetBranch"),
-    )
-    policy_id: str = Field(
-        min_length=1,
-        validation_alias=AliasChoices("policy_id", "policyId"),
-    )
-    method: str | None = Field(default=None, pattern=r"^(merge|squash|rebase)$")
-    provider_operation_id: str | None = Field(
-        default=None,
-        min_length=1,
-        validation_alias=AliasChoices("provider_operation_id", "providerOperationId"),
-    )
-
-    @model_validator(mode="after")
-    def validate_mode_fields(self):
-        if self.mode is WorkflowWaitMode.MERGE and self.method is None:
-            raise ValueError("merge delivery waits require a merge method")
-        if self.mode is WorkflowWaitMode.CHECKS and self.method is not None:
-            raise ValueError("checks delivery waits cannot specify a merge method")
-        if self.mode is WorkflowWaitMode.CHECKS and self.provider_operation_id is not None:
-            raise ValueError("checks delivery waits cannot specify a provider operation ID")
-        return self
-
-    def canonical_payload(self) -> dict[str, Any]:
-        payload = self.model_dump(mode="json", by_alias=False)
-        if self.provider_operation_id is None:
-            payload.pop("provider_operation_id", None)
-        return payload
-
-    @property
-    def digest(self) -> str:
-        payload = json.dumps(
-            self.canonical_payload(), sort_keys=True, separators=(",", ":"), allow_nan=False
-        )
-        return hashlib.sha256(payload.encode()).hexdigest()
-
-
-class WaitObservation(BaseModel):
-    """One provider-authenticated, mechanically classified review observation."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    ``detail`` carries whatever the observer's own condition type needs to
+    explain the observation (remote check names, a publication receipt, a
+    resolved timer deadline, ...); the generic wait machinery never reads it.
+    """
 
     status: WaitObservationStatus
-    repository: str = Field(min_length=1)
-    review_number: int = Field(gt=0)
-    expected_head_sha: str = Field(pattern=_GIT_SHA)
-    expected_base_sha: str = Field(pattern=_GIT_SHA)
-    expected_target_branch: str = Field(min_length=1)
     observed_at: datetime
     reason: str = ""
-    candidate: ReviewCandidate | None = None
-    checks: CheckReceipt | None = None
-    merge_receipt: MergeReceipt | None = None
+    detail: dict[str, Any] = field(default_factory=dict)
+    retry_after_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.retry_after_seconds is not None and self.retry_after_seconds < 0:
+            raise WorkflowExecutionError("wait observation retry_after_seconds cannot be negative")
+        try:
+            json.dumps(self.detail, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise WorkflowExecutionError(
+                "wait observation detail must be finite JSON-compatible values"
+            ) from exc
 
     @property
     def terminal(self) -> bool:
@@ -132,34 +82,24 @@ class WaitObservation(BaseModel):
     def to_dict(self) -> dict[str, Any]:
         return {
             "status": self.status.value,
-            "repository": self.repository,
-            "reviewNumber": self.review_number,
-            "expectedHeadSha": self.expected_head_sha,
-            "expectedBaseSha": self.expected_base_sha,
-            "expectedTargetBranch": self.expected_target_branch,
             "observedAt": self.observed_at.isoformat(),
             "reason": self.reason,
-            "candidate": (
-                self.candidate.model_dump(mode="json") if self.candidate is not None else None
-            ),
-            "checks": self.checks.model_dump(mode="json") if self.checks is not None else None,
-            "mergeReceipt": (
-                self.merge_receipt.model_dump(mode="json")
-                if self.merge_receipt is not None
-                else None
-            ),
+            "detail": self.detail,
         }
 
 
 @dataclass(frozen=True)
 class WorkflowWait:
+    """One durable, leaseable registration of a wait against a pinned execution."""
+
     id: UUID
     execution_id: UUID
-    request: WorkflowWaitRequest
+    node_id: str
+    condition_type: str
+    request: dict[str, Any]
     request_digest: str
     execution_generation: int
     execution_revision: int
-    candidate_digest: str
     state: WorkflowWaitState
     next_poll_at: datetime
     observation: WaitObservation | None = None
@@ -173,30 +113,25 @@ class WorkflowWait:
     updated_at: datetime | None = None
     notified_at: datetime | None = None
 
+    def __post_init__(self) -> None:
+        if not self.node_id.strip():
+            raise WorkflowExecutionError("wait node_id is required")
+        if not self.condition_type.strip():
+            raise WorkflowExecutionError("wait condition_type is required")
+        if not self.request_digest.strip():
+            raise WorkflowExecutionError("wait request_digest is required")
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "waitId": str(self.id),
             "executionId": str(self.execution_id),
-            "mode": self.request.mode.value,
+            "nodeId": self.node_id,
+            "conditionType": self.condition_type,
             "state": self.state.value,
             "requestDigest": self.request_digest,
             "generation": self.execution_generation,
             "executionRevision": self.execution_revision,
-            "candidateDigest": self.candidate_digest,
-            "request": {
-                "repository": self.request.repository,
-                "reviewNumber": self.request.review_number,
-                "expectedHeadSha": self.request.expected_head_sha,
-                "expectedBaseSha": self.request.expected_base_sha,
-                "expectedTargetBranch": self.request.expected_target_branch,
-                "policyId": self.request.policy_id,
-                "method": self.request.method,
-                **(
-                    {"providerOperationId": self.request.provider_operation_id}
-                    if self.request.provider_operation_id is not None
-                    else {}
-                ),
-            },
+            "request": self.request,
             "nextPollAt": self.next_poll_at.isoformat(),
             "attemptCount": self.attempt_count,
             "lastError": self.last_error,
@@ -204,35 +139,38 @@ class WorkflowWait:
         }
 
 
-def delivery_candidate_digest(
-    *,
-    integration_candidate: dict[str, Any] | None,
-    integration_allocation: dict[str, Any] | None,
-) -> str:
-    """Bind a wait to the exact persisted candidate and its allocation."""
-    payload = json.dumps(
-        {
-            "integrationAllocation": integration_allocation,
-            "integrationCandidate": integration_candidate,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
+def wait_suspension_reason(condition_type: str) -> str:
+    """Return the execution suspension reason recorded while a wait is pending."""
+    return f"{WAIT_SUSPENSION_PREFIX}{condition_type}"
+
+
+def is_wait_suspension_reason(suspension_reason: str) -> bool:
+    """True once a suspension reason means the execution moved past its join into a wait.
+
+    Covers a pending wait (``awaiting:<condition_type>``), a satisfied wait
+    (``wait_observed``), and a terminally failed wait (``wait_failed: ...``).
+    """
+    return (
+        suspension_reason.startswith(WAIT_SUSPENSION_PREFIX)
+        or suspension_reason == WAIT_OBSERVED_SUSPENSION_REASON
+        or suspension_reason.startswith(WAIT_FAILURE_PREFIX)
     )
-    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def workflow_wait_digest(
-    request: WorkflowWaitRequest,
     *,
+    node_id: str,
+    condition_type: str,
+    request: dict[str, Any],
     execution_generation: int,
-    candidate_digest: str,
 ) -> str:
+    """Bind a wait to its exact node, condition, request, and execution generation."""
     payload = json.dumps(
         {
-            "candidateDigest": candidate_digest,
+            "nodeId": node_id,
+            "conditionType": condition_type,
             "executionGeneration": execution_generation,
-            "request": request.canonical_payload(),
+            "request": request,
         },
         sort_keys=True,
         separators=(",", ":"),

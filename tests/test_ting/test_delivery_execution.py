@@ -1104,7 +1104,7 @@ async def test_service_launch_reconcile_and_resume_exact_parent() -> None:
 
 @pytest.mark.parametrize(
     "delivery_suspension_reason",
-    ["awaiting_checks", "awaiting_merge", "delivery_observed", "delivery_wait_failed: stale head"],
+    ["awaiting:forge.checks", "awaiting:forge.merge", "wait_observed", "wait_failed: stale head"],
 )
 @pytest.mark.asyncio
 async def test_manual_reconcile_does_not_reproject_join_during_delivery_wait(

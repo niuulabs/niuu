@@ -9,8 +9,6 @@ from uuid import UUID
 
 from niuu.ports.workload_identity import WorkloadTokenIssuer
 from ting.delivery.domain import (
-    DELIVERY_WAIT_FAILURE_PREFIX,
-    DELIVERY_WAIT_SUSPENSION_REASONS,
     ChildExecution,
     DeliveryExecution,
     WorkstreamProposal,
@@ -24,6 +22,7 @@ from ting.domain.workflow_execution import (
     WorkflowExecutionError,
     digest_json,
 )
+from ting.domain.workflow_wait import is_wait_suspension_reason
 from ting.ports.child_evidence import ChildEvidenceVerifier, ChildReviewAttestor
 from ting.ports.workflow_execution import ChildWorkflowGateway
 
@@ -103,9 +102,7 @@ class DeliveryExecutionService(
         """
         if super()._past_children_join(execution):
             return True
-        if execution.suspension_reason in DELIVERY_WAIT_SUSPENSION_REASONS:
-            return True
-        return execution.suspension_reason.startswith(DELIVERY_WAIT_FAILURE_PREFIX)
+        return is_wait_suspension_reason(execution.suspension_reason)
 
 
 class DeliveryExecutionCoordinator:

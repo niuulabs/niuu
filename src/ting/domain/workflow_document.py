@@ -767,20 +767,14 @@ def _validate_review_verdict_policies(graph: dict[str, Any]) -> None:
 def _validate_wait_nodes(graph: dict[str, Any], *, schema_version: int) -> None:
     """Validate passive external waits without turning them into agent or human gates.
 
-    The runtime observes a durable wait against the execution alone; it has no
-    node identifier to disambiguate between several passive waits, so a graph
-    may declare at most one. Its outgoing edges must also agree on exactly one
-    event type — that is the event the runtime publishes once the wait is
-    observed, read directly from the graph rather than duplicated onto the
-    node.
+    A wait is always addressed to its own explicit node id, so a graph may
+    declare several. Each one names the condition types it accepts, and its
+    outgoing edges must agree on exactly one event type — that is the event
+    the runtime publishes once this node's wait is observed, read directly
+    from the graph rather than duplicated onto the node.
     """
     edges = graph.get("edges", [])
     wait_nodes = [node for node in graph.get("nodes", []) if node.get("kind") == "wait"]
-    if len(wait_nodes) > 1:
-        raise WorkflowDocumentError(
-            "Workflow graph must declare at most one wait node; the runtime cannot "
-            "attribute an observation to a specific one"
-        )
     for node in wait_nodes:
         node_id = _required_string(node.get("id"), "wait node id")
         _required_string(node.get("label"), f"wait node {node_id!r} label")
@@ -790,6 +784,7 @@ def _validate_wait_nodes(graph: dict[str, Any], *, schema_version: int) -> None:
             raise WorkflowDocumentError(
                 f"Wait node {node_id!r} must not declare personas or stage members"
             )
+        _validate_wait_conditions(node_id, node.get("conditions"))
         incoming = [edge for edge in edges if str(edge.get("target") or "") == node_id]
         outgoing = [edge for edge in edges if str(edge.get("source") or "") == node_id]
         if not incoming or not outgoing:
@@ -810,6 +805,21 @@ def _validate_wait_nodes(graph: dict[str, Any], *, schema_version: int) -> None:
             raise WorkflowDocumentError(
                 f"Wait node {node_id!r} outgoing edges must agree on exactly one observed event"
             )
+
+
+def _validate_wait_conditions(node_id: str, conditions: object) -> None:
+    if not isinstance(conditions, list) or not conditions:
+        raise WorkflowDocumentError(
+            f"Wait node {node_id!r} must declare a non-empty conditions list"
+        )
+    seen: set[str] = set()
+    for item in conditions:
+        condition_type = _required_string(item, f"wait node {node_id!r} condition")
+        if condition_type in seen:
+            raise WorkflowDocumentError(
+                f"Wait node {node_id!r} declares duplicate condition {condition_type!r}"
+            )
+        seen.add(condition_type)
 
 
 def _split_edge_label_for_validation(value: object) -> tuple[str, str]:

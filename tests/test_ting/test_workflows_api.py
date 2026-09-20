@@ -713,7 +713,7 @@ class TestWorkflowCatalogAPI:
                 "provenance": {
                     "workflow_execution": {
                         "execution_id": "7705d9d8-78db-4a78-b5e7-d8557eac114c",
-                        "parent_session_key": "workflow:developer-forged",
+                        "parent_session_key": "workflow:execution-forged",
                     }
                 },
             },

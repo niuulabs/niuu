@@ -3,8 +3,8 @@ CREATE TABLE IF NOT EXISTS workflow_waits (
     execution_id UUID NOT NULL REFERENCES workflow_executions(id) ON DELETE CASCADE,
     execution_generation INTEGER NOT NULL CHECK (execution_generation >= 0),
     execution_revision INTEGER NOT NULL CHECK (execution_revision > 0),
-    candidate_digest TEXT NOT NULL CHECK (candidate_digest ~ '^[a-f0-9]{64}$'),
-    mode TEXT NOT NULL CHECK (mode IN ('checks', 'merge')),
+    node_id TEXT NOT NULL CHECK (node_id <> ''),
+    condition_type TEXT NOT NULL CHECK (condition_type <> ''),
     request_digest TEXT NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
     request JSONB NOT NULL,
     state TEXT NOT NULL DEFAULT 'pending'
@@ -23,8 +23,8 @@ CREATE TABLE IF NOT EXISTS workflow_waits (
     UNIQUE (execution_id, request_digest)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_waits_active_generation
-    ON workflow_waits (execution_id, execution_generation)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_waits_active_node
+    ON workflow_waits (execution_id, execution_generation, node_id)
     WHERE state <> 'notified';
 
 CREATE INDEX IF NOT EXISTS idx_workflow_waits_due

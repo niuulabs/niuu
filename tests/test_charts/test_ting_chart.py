@@ -70,15 +70,19 @@ class TestConfigMapTemplate:
     def test_workflow_wait_adapters_are_rendered_from_values(self, template_yaml):
         values = yaml.safe_load((CHART_DIR / "values.yaml").read_text())
         developer = values["workflowExecution"]
-        assert developer["deliveryWaitRepositoryAdapter"].endswith("PostgresWorkflowWaitRepository")
-        assert developer["deliveryWaitObserverAdapter"].endswith("ForgeWaitConditionObserver")
+        assert developer["waitRepositoryAdapter"].endswith("PostgresWorkflowWaitRepository")
+        observer_adapters = {
+            entry["condition_type"]: entry["adapter"] for entry in developer["waitObservers"]
+        }
+        assert observer_adapters["forge.checks"].endswith("ForgeChecksWaitObserver")
+        assert observer_adapters["forge.merge"].endswith("ForgeMergeWaitObserver")
+        assert observer_adapters["timer"].endswith("TimerWaitObserver")
         assert developer["admissionRoles"] == ["volundr:developer"]
-        assert "delivery_wait_repository_adapter:" in template_yaml
-        assert ".Values.workflowExecution.deliveryWaitRepositoryAdapter" in template_yaml
-        assert "delivery_wait_repository_kwargs:" in template_yaml
-        assert "delivery_wait_observer_adapter:" in template_yaml
-        assert ".Values.workflowExecution.deliveryWaitObserverAdapter" in template_yaml
-        assert "delivery_wait_observer_kwargs:" in template_yaml
+        assert "wait_repository_adapter:" in template_yaml
+        assert ".Values.workflowExecution.waitRepositoryAdapter" in template_yaml
+        assert "wait_repository_kwargs:" in template_yaml
+        assert "wait_observers:" in template_yaml
+        assert ".Values.workflowExecution.waitObservers" in template_yaml
         assert "admission_roles:" in template_yaml
 
 

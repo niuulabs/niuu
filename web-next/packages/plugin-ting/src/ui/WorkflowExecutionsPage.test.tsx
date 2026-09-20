@@ -66,7 +66,7 @@ function setup(
       workflowDigest: 'sha256:workflow',
       verification: { status: 'accepted', blockingReasons: [] },
     }),
-    deliveryWaits: vi.fn().mockResolvedValue([]),
+    waits: vi.fn().mockResolvedValue([]),
     ...overrides,
   };
   const client = new QueryClient({
@@ -302,17 +302,17 @@ describe('WorkflowExecutionsPage', () => {
     );
   });
 
-  it('loads durable delivery waits into rendered and raw results', async () => {
-    const deliveryWaits = vi.fn().mockResolvedValue([
+  it('loads durable waits into rendered and raw results', async () => {
+    const waits = vi.fn().mockResolvedValue([
       {
         waitId: 'wait-1',
         executionId: 'execution',
-        mode: 'checks',
+        nodeId: 'delivery-publication-wait',
+        conditionType: 'forge.checks',
         state: 'pending',
         requestDigest: 'request-digest',
         generation: 1,
         executionRevision: 4,
-        candidateDigest: 'candidate-digest',
         request: {
           repository: 'repo',
           reviewNumber: 17,
@@ -328,7 +328,7 @@ describe('WorkflowExecutionsPage', () => {
       },
     ]);
     setup({
-      deliveryWaits,
+      waits,
       get: async () => ({
         ...run,
         integrationCandidate: {
@@ -343,7 +343,7 @@ describe('WorkflowExecutionsPage', () => {
 
     expect(await screen.findByText('Remote verification · review #17')).toBeInTheDocument();
     expect(screen.getByText('Recorded attempts')).toBeInTheDocument();
-    expect(deliveryWaits).toHaveBeenCalledWith('execution');
+    expect(waits).toHaveBeenCalledWith('execution');
     fireEvent.click(screen.getByText('Raw evidence JSON'));
     expect(screen.getByLabelText('Raw execution evidence')).toHaveTextContent('wait-1');
   });

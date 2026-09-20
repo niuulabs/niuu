@@ -6,8 +6,8 @@ version: 1.0.0
 persona_dependencies:
   developer-coordinator:
     id: developer-coordinator
-    revision: content-9ed93b5b7e2a0fb8
-    digest: sha256:9ed93b5b7e2a0fb85d5ef3303bccf75ff3dc356119f9ee6c53c66d0ea7148459
+    revision: content-dd029911fb1ef340
+    digest: sha256:dd029911fb1ef340d482ec21e9fd4037b5cda247da2c3133f695041a1f25ec32
     path: personas/developer-coordinator.yaml
   developer-analyst:
     id: developer-analyst
@@ -37,8 +37,8 @@ persona_dependencies:
 workflow_dependencies:
   workstream:
     id: 98133eab-cd89-44d1-b32d-26c82f99dddc
-    revision: sha256:c35c9217a08015b6341c2e7cc730353d5ee7469de4c956dfdb3ade55decb198c
-    digest: sha256:c35c9217a08015b6341c2e7cc730353d5ee7469de4c956dfdb3ade55decb198c
+    revision: sha256:7f97a642f3c64a5c5abff9a1be95d9d98e6153c3ad77b020b7b0574b98720065
+    digest: sha256:7f97a642f3c64a5c5abff9a1be95d9d98e6153c3ad77b020b7b0574b98720065
     path: workflows/developer-workstream.yaml
 graph:
   executionContract: developer-delivery/v1
@@ -235,6 +235,7 @@ graph:
     - id: delivery-publication-wait
       kind: wait
       label: Await authoritative delivery observation
+      conditions: [forge.checks, forge.merge]
     - id: delivery-repair
       kind: stage
       label: Replace a rejected integration generation

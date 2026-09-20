@@ -62,11 +62,11 @@ class _WorkflowExecutionTool(ToolPort):
             "record_integration": (
                 "Persist a signed, verified integration candidate before independent review."
             ),
-            "wait_delivery": (
-                "Persist a restart-safe wait for the exact review candidate's checks or merge. "
-                "After registration, yield the workflow; the workflow's declared continuation "
-                "event resumes the coordinator with the terminal observation. This tool never "
-                "merges."
+            "wait": (
+                "Persist a restart-safe wait against the exact pinned wait node, for one "
+                "condition type it declares (forge.checks, forge.merge, ...). After "
+                "registration, yield the workflow; the workflow's declared continuation event "
+                "resumes the coordinator with the terminal observation. This tool never merges."
             ),
         }[self.operation]
 
@@ -78,51 +78,37 @@ class _WorkflowExecutionTool(ToolPort):
             "generation": {"type": "integer", "minimum": 1},
         }
         required = ["campaign_id", "parent_node_id"]
-        if self.operation == "wait_delivery":
-            properties = {
-                "mode": {"type": "string", "enum": ["checks", "merge"]},
-                "repository": {"type": "string", "minLength": 1},
-                "reviewNumber": {"type": "integer", "minimum": 1},
-                "expectedHeadSha": {
-                    "type": "string",
-                    "pattern": r"^(?:[a-f0-9]{40}|[a-f0-9]{64})$",
-                },
-                "expectedBaseSha": {
-                    "type": "string",
-                    "pattern": r"^(?:[a-f0-9]{40}|[a-f0-9]{64})$",
-                },
-                "expectedTargetBranch": {"type": "string", "minLength": 1},
-                "policyId": {"type": "string", "minLength": 1},
-                "method": {"type": "string", "enum": ["merge", "squash", "rebase"]},
-                "providerOperationId": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": (
-                        "Exact provider_operation_id returned by the conditional merge receipt."
-                    ),
-                },
-            }
+        if self.operation == "wait":
             return {
                 "type": "object",
-                "properties": properties,
-                "required": [
-                    name for name in properties if name not in {"method", "providerOperationId"}
-                ],
-                "oneOf": [
-                    {
-                        "properties": {"mode": {"const": "checks"}},
-                        "not": {
-                            "anyOf": [
-                                {"required": ["method"]},
-                                {"required": ["providerOperationId"]},
-                            ]
-                        },
+                "properties": {
+                    "nodeId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": (
+                            "Exact id of the pinned graph's wait node this wait is registered "
+                            "against."
+                        ),
                     },
-                    {
-                        "properties": {"mode": {"const": "merge"}},
-                        "required": ["method", "providerOperationId"],
+                    "conditionType": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": (
+                            "One of the wait node's declared condition types, e.g. forge.checks "
+                            "or forge.merge."
+                        ),
                     },
-                ],
+                    "request": {
+                        "type": "object",
+                        "description": (
+                            "Condition-specific identity. For forge.checks: repository, "
+                            "reviewNumber, expectedHeadSha, expectedBaseSha, "
+                            "expectedTargetBranch, policyId. For forge.merge: the same fields "
+                            "plus method and providerOperationId."
+                        ),
+                    },
+                },
+                "required": ["nodeId", "conditionType", "request"],
                 "additionalProperties": False,
             }
         elif self.operation == "retry":
@@ -278,8 +264,8 @@ class WorkflowExecutionRecordIntegrationTool(_WorkflowExecutionTool):
     operation = "record_integration"
 
 
-class WorkflowExecutionWaitDeliveryTool(_WorkflowExecutionTool):
-    operation = "wait_delivery"
+class WorkflowExecutionWaitTool(_WorkflowExecutionTool):
+    operation = "wait"
 
 
 class _DeliveryServiceTool(ToolPort):

@@ -1,10 +1,10 @@
 """Continuation event types read from a pinned workflow graph.
 
 A subworkflow node names the events the engine publishes to the parent
-session when its children join or block; the graph's single wait node names
-the event published once its condition is observed. Both live on the graph
-because they belong to whichever workflow declares them, never as Python
-literals in the engine that merely delivers them.
+session when its children join or block; a wait node names the event
+published once its own condition is observed. Both live on the graph because
+they belong to whichever workflow declares them, never as Python literals in
+the engine that merely delivers them.
 
 ``ting.domain.workflow_document`` rejects a graph missing this information at
 load time, so the lookups here assume a validated graph and fail loudly
@@ -38,22 +38,40 @@ def subworkflow_blocked_event(graph: dict[str, Any], node_id: str) -> str:
     return event_type
 
 
-def wait_observed_event(graph: dict[str, Any]) -> str:
-    """Return the event published once the graph's one wait node is observed."""
-    wait_nodes = [
-        node
-        for node in graph.get("nodes", [])
-        if isinstance(node, dict) and node.get("kind") == "wait"
-    ]
-    if len(wait_nodes) != 1:
-        raise WorkflowExecutionError(
-            "Workflow graph must declare exactly one wait node to observe a delivery wait"
-        )
-    node_id = str(wait_nodes[0].get("id") or "")
+def wait_observed_event(graph: dict[str, Any], node_id: str) -> str:
+    """Return the event published once this exact wait node's condition is observed."""
+    node = next(
+        (
+            candidate
+            for candidate in graph.get("nodes", [])
+            if isinstance(candidate, dict) and str(candidate.get("id") or "") == node_id
+        ),
+        None,
+    )
+    if node is None or node.get("kind") != "wait":
+        raise WorkflowExecutionError(f"Workflow graph has no wait node {node_id!r}")
     events = _outgoing_events(graph, node_id)
     if len(events) != 1:
         raise WorkflowExecutionError(f"Wait node {node_id!r} has no single outgoing observed event")
     return next(iter(events))
+
+
+def wait_node_conditions(graph: dict[str, Any], node_id: str) -> frozenset[str]:
+    """Return the condition types this exact wait node accepts."""
+    node = next(
+        (
+            candidate
+            for candidate in graph.get("nodes", [])
+            if isinstance(candidate, dict) and str(candidate.get("id") or "") == node_id
+        ),
+        None,
+    )
+    if node is None or node.get("kind") != "wait":
+        raise WorkflowExecutionError(f"Workflow graph has no wait node {node_id!r}")
+    conditions = node.get("conditions")
+    if not isinstance(conditions, list) or not conditions:
+        raise WorkflowExecutionError(f"Wait node {node_id!r} does not declare any conditions")
+    return frozenset(str(item) for item in conditions)
 
 
 def _subworkflow_node(graph: dict[str, Any], node_id: str) -> dict[str, Any]:

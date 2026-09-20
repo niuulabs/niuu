@@ -42,7 +42,7 @@ from ravn.adapters.tools.delivery import (
     WorkflowExecutionReconcileTool,
     WorkflowExecutionRecordIntegrationTool,
     WorkflowExecutionRetryTool,
-    WorkflowExecutionWaitDeliveryTool,
+    WorkflowExecutionWaitTool,
 )
 from ravn.cli.commands import _build_tool_mcp_tools
 from ravn.cli.tool_builders import _build_tools
@@ -900,7 +900,7 @@ def test_coordinator_tool_schemas_stay_below_native_compaction_budget() -> None:
         WorkflowExecutionMessageTool(service=service),
         WorkflowExecutionCompleteTool(service=service),
         WorkflowExecutionRecordIntegrationTool(service=service),
-        WorkflowExecutionWaitDeliveryTool(service=service),
+        WorkflowExecutionWaitTool(service=service),
         DeliveryWorkspaceTool(service=service),
         DeliveryForgeTool(service=service),
         DeliveryEvidenceTool(service=service),
@@ -1019,7 +1019,7 @@ def test_coordinator_runtime_has_only_bounded_delivery_tools(tmp_path) -> None:
         "workflow_execution_cancel",
         "workflow_execution_complete",
         "workflow_execution_record_integration",
-        "workflow_execution_wait_delivery",
+        "workflow_execution_wait",
         "delivery_workspace",
         "delivery_forge",
         "delivery_evidence",
@@ -1052,7 +1052,7 @@ def test_coordinator_tool_mcp_builds_bounded_delivery_tools(tmp_path) -> None:
         "workflow_execution_cancel",
         "workflow_execution_complete",
         "workflow_execution_record_integration",
-        "workflow_execution_wait_delivery",
+        "workflow_execution_wait",
         "delivery_workspace",
         "delivery_forge",
         "delivery_evidence",
@@ -1115,7 +1115,7 @@ _CHILD_WORKSTREAM_DISABLED_TOOLS = [
     "workflow_execution_message",
     "workflow_execution_complete",
     "workflow_execution_record_integration",
-    "workflow_execution_wait_delivery",
+    "workflow_execution_wait",
     "delivery_forge",
     "delivery_evidence",
 ]
@@ -1380,7 +1380,7 @@ async def test_http_execution_client_uses_owner_bound_routes() -> None:
     await client.cancel()
     await client.complete({"merge": {}, "evidence": {}})
     await client.record_integration({"integration_receipts": [{}], "integration_allocation": {}})
-    await client.wait_delivery({"mode": "checks"})
+    await client.wait({"nodeId": "wait-1", "conditionType": "forge.checks", "request": {}})
 
     assert [url.rsplit("/", 1)[-1] for url, _body in http.posts] == [
         "expansions",
@@ -1389,7 +1389,7 @@ async def test_http_execution_client_uses_owner_bound_routes() -> None:
         "cancel",
         "complete",
         "integration-candidate",
-        "delivery-waits",
+        "waits",
     ]
     assert http.posts[1][1] == http.posts[3][1] == {}
 
@@ -1566,28 +1566,27 @@ async def test_retry_tool_retains_exact_attempt_identity() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wait_delivery_tool_preserves_exact_candidate_and_rejects_policy_override():
-    service = SimpleNamespace(
-        wait_delivery=AsyncMock(return_value={"waitId": "wait-1", "state": "pending"})
-    )
-    tool = WorkflowExecutionWaitDeliveryTool(service=service)
+async def test_wait_tool_preserves_exact_node_and_condition_and_rejects_unknown_fields():
+    service = SimpleNamespace(wait=AsyncMock(return_value={"waitId": "wait-1", "state": "pending"}))
+    tool = WorkflowExecutionWaitTool(service=service)
     payload = {
-        "mode": "checks",
-        "repository": "https://git.example/org/repo",
-        "reviewNumber": 7,
-        "expectedHeadSha": "a" * 40,
-        "expectedBaseSha": "b" * 40,
-        "expectedTargetBranch": "topic",
-        "policyId": "integration",
+        "nodeId": "delivery-publication-wait",
+        "conditionType": "forge.checks",
+        "request": {
+            "repository": "https://git.example/org/repo",
+            "reviewNumber": 7,
+            "expectedHeadSha": "a" * 40,
+            "expectedBaseSha": "b" * 40,
+            "expectedTargetBranch": "topic",
+            "policyId": "integration",
+        },
     }
     result = await tool.execute(payload)
     assert not result.is_error
-    service.wait_delivery.assert_awaited_once_with(payload)
+    service.wait.assert_awaited_once_with(payload)
     assert set(tool.input_schema["required"]) == set(payload)
     assert tool.input_schema["additionalProperties"] is False
     assert "the workflow's declared continuation event resumes" in tool.description
-    merge_contract = tool.input_schema["oneOf"][1]
-    assert set(merge_contract["required"]) == {"method", "providerOperationId"}
     rejected = await tool.execute({**payload, "policy": {"required_checks": []}})
     assert rejected.is_error
-    assert service.wait_delivery.await_count == 1
+    assert service.wait.await_count == 1

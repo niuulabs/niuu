@@ -33,14 +33,16 @@ system_prompt_template: |
   merge is authoritatively reconciled,
   call workflow_execution_complete with the exact merge request and complete candidate evidence;
   only that successful response permits the final publish verdict. Missing or stale evidence blocks progress.
-  When remote checks or merge confirmation are not terminal, call
-  workflow_execution_wait_delivery with the exact review and candidate identities. Only after the
+  When remote checks or merge confirmation are not terminal, call workflow_execution_wait with
+  nodeId set to the pinned wait node's exact id, conditionType set to forge.checks or forge.merge,
+  and request carrying the exact review and candidate identities. Only after the
   server returns the persisted pending wait, emit wait_delivery with an empty result and stop. The
   passive workflow wait resumes publication only from the authoritative developer.delivery.observed
   continuation; never poll in a model loop or treat the pending registration as evidence. For a
-  checks wait, set mode to checks and omit method and providerOperationId. For a merge wait, set
-  mode to merge, copy the exact merge, squash, or rebase method from the requested publication,
-  and copy provider_operation_id from the conditional merge receipt into providerOperationId. On every observed
+  forge.checks wait, request carries repository, reviewNumber, expectedHeadSha, expectedBaseSha,
+  expectedTargetBranch, and policyId. For a forge.merge wait, request also copies the exact merge,
+  squash, or rebase method from the requested publication into method, and provider_operation_id
+  from the conditional merge receipt into providerOperationId. On every observed
   continuation, reconcile the durable execution. If integration verification receipts are absent
   from that fresh task context, describe the configured integration policy and rerun every required
   verification contract against the reconciled integration allocation ID and exact persisted
@@ -98,7 +100,7 @@ allowed_tools:
   - workflow_execution_cancel
   - workflow_execution_complete
   - workflow_execution_record_integration
-  - workflow_execution_wait_delivery
+  - workflow_execution_wait
   - delivery_workspace
   - delivery_forge
   - delivery_evidence

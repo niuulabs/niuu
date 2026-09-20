@@ -67,7 +67,7 @@ def session(*, child: bool = False, status: SessionStatus = SessionStatus.RUNNIN
         "execution_id": str(execution_id),
         "parent_node_id": "delivery-workstreams",
         "parent_session_key": (
-            f"workflow:a2a-{uuid4().hex}" if child else f"workflow:developer-{execution_id.hex}"
+            f"workflow:a2a-{uuid4().hex}" if child else f"workflow:execution-{execution_id.hex}"
         ),
         "coordinator_id": "developer-coordinator",
     }

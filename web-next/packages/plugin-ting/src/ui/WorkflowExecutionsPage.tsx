@@ -63,18 +63,18 @@ export function WorkflowExecutionsPage() {
     enabled: !!selectedId && showEvidence,
     refetchInterval: selected.data && !executionIsTerminal(selected.data.state) ? 3000 : false,
   });
-  const deliveryWaits = useQuery({
-    queryKey: ['ting', 'developer-delivery-waits', selectedId, resultsScope],
-    queryFn: () => service.deliveryWaits(selectedId),
+  const waits = useQuery({
+    queryKey: ['ting', 'developer-waits', selectedId, resultsScope],
+    queryFn: () => service.waits(selectedId),
     enabled: !!selectedId && showEvidence,
     refetchInterval: selected.data && !executionIsTerminal(selected.data.state) ? 3000 : false,
   });
   useEffect(() => {
-    if (!focusEvidence.current || !showEvidence || !evidence.data || !deliveryWaits.data) return;
+    if (!focusEvidence.current || !showEvidence || !evidence.data || !waits.data) return;
     evidenceRegion.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
     evidenceRegion.current?.focus({ preventScroll: true });
     focusEvidence.current = false;
-  }, [showEvidence, evidence.data, deliveryWaits.data]);
+  }, [showEvidence, evidence.data, waits.data]);
   const update = (run: WorkflowExecution) => {
     setSelectedId(run.executionId);
     queryClient.setQueryData(['ting', 'workflow-execution', run.executionId], run);
@@ -84,7 +84,7 @@ export function WorkflowExecutionsPage() {
         queryKey: ['ting', 'developer-evidence', run.executionId],
       });
       void queryClient.invalidateQueries({
-        queryKey: ['ting', 'developer-delivery-waits', run.executionId],
+        queryKey: ['ting', 'developer-waits', run.executionId],
       });
     }
   };
@@ -127,7 +127,7 @@ export function WorkflowExecutionsPage() {
     selected.error ??
     catalog.error ??
     evidence.error ??
-    deliveryWaits.error;
+    waits.error;
   const errorMessage =
     error && 'detail' in error && typeof error.detail === 'string' ? error.detail : error?.message;
 
@@ -388,11 +388,11 @@ export function WorkflowExecutionsPage() {
             </tbody>
           </table>
           {showEvidence &&
-            (evidence.isPending || deliveryWaits.isPending ? (
+            (evidence.isPending || waits.isPending ? (
               <p role="status">Loading results…</p>
             ) : (
               evidence.data &&
-              deliveryWaits.data && (
+              waits.data && (
                 <div ref={evidenceRegion} tabIndex={-1} className="niuu:space-y-3">
                   <WorkflowResults
                     ariaLabel="Execution evidence"
@@ -409,7 +409,7 @@ export function WorkflowExecutionsPage() {
                     markdown={buildWorkflowExecutionResultsMarkdown(
                       selected.data,
                       evidence.data,
-                      deliveryWaits.data,
+                      waits.data,
                     )}
                   />
                   <details className="niuu:rounded niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-4">
@@ -424,7 +424,7 @@ export function WorkflowExecutionsPage() {
                         {
                           execution: selected.data,
                           evidence: evidence.data,
-                          deliveryWaits: deliveryWaits.data,
+                          waits: waits.data,
                         },
                         null,
                         2,

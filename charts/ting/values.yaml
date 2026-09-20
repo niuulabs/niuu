@@ -180,10 +180,17 @@ workflowExecution:
   # Gateway admission roles on Ting-issued exact-scope workload credentials.
   admissionRoles:
     - volundr:developer
-  deliveryWaitRepositoryAdapter: ting.adapters.postgres_workflow_waits.PostgresWorkflowWaitRepository
-  deliveryWaitRepositoryKwargs: {}
-  deliveryWaitObserverAdapter: ting.adapters.wait_condition_observer.ForgeWaitConditionObserver
-  deliveryWaitObserverKwargs: {}
+  waitRepositoryAdapter: ting.adapters.postgres_workflow_waits.PostgresWorkflowWaitRepository
+  waitRepositoryKwargs: {}
+  # Wait condition observers, each `{condition_type, adapter, ...kwargs}`; see
+  # WorkflowExecutionConfig.wait_observers for the constructor-injection rules.
+  waitObservers:
+    - condition_type: forge.checks
+      adapter: ting.delivery.wait_observers.ForgeChecksWaitObserver
+    - condition_type: forge.merge
+      adapter: ting.delivery.wait_observers.ForgeMergeWaitObserver
+    - condition_type: timer
+      adapter: ting.adapters.timer_wait_observer.TimerWaitObserver
   # Dynamic `EvidenceAuthenticator` used to sign server-derived reviewer receipts.
   reviewAuthenticatorAdapter: ""
   reviewAuthenticatorKwargs: {}
@@ -204,7 +211,7 @@ workflowExecution:
   evidencePolicyId: developer-workstream
   integrationPolicyId: developer-integration
   maxChildReconcileFailures: 5
-  maxDeliveryWaitFailures: 5
+  maxWaitFailures: 5
   maxParentStopFailures: 5
 
 database:

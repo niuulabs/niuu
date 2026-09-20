@@ -46,16 +46,9 @@ export interface ChildEvidenceValidation {
   blocking_reasons?: string[];
 }
 
-export type WorkflowWaitMode = 'checks' | 'merge';
 export type WorkflowWaitState = 'pending' | 'ready' | 'failed' | 'notified';
-export type WaitObservationStatus =
-  | 'checks_pending'
-  | 'checks_passed'
-  | 'checks_failed'
-  | 'merge_pending'
-  | 'merged'
-  | 'merge_failed'
-  | 'stale_candidate';
+/** Generic wait outcome. What a status means is owned by the wait's own conditionType. */
+export type WaitObservationStatus = 'pending' | 'satisfied' | 'failed';
 
 export interface DeliveryRemoteCheck {
   name: string;
@@ -106,41 +99,37 @@ export interface DeliveryMergeReceipt extends Record<string, unknown> {
   provenance?: DeliveryReceiptProvenance | null;
 }
 
-export interface WorkflowWaitRequest {
-  repository: string;
-  reviewNumber: number;
-  expectedHeadSha: string;
-  expectedBaseSha: string;
-  expectedTargetBranch: string;
-  policyId: string;
-  method?: string | null;
-  providerOperationId?: string;
-}
+/**
+ * Condition-specific identity a wait was registered with. Opaque to the generic
+ * engine; a `forge.checks` or `forge.merge` wait carries repository, reviewNumber,
+ * expectedHeadSha, expectedBaseSha, expectedTargetBranch, policyId, and (for
+ * forge.merge) method and providerOperationId. Other condition types (timer, ...)
+ * carry whatever their own observer requires.
+ */
+export type WaitRequest = Record<string, unknown>;
 
+/**
+ * Condition-specific detail explaining an observation. A `forge.checks` wait's
+ * detail carries `candidate` and `checks`; a `forge.merge` wait's carries
+ * `mergeReceipt`. Other condition types carry whatever their own observer reports.
+ */
 export interface WaitObservation {
   status: WaitObservationStatus;
-  repository: string;
-  reviewNumber: number;
-  expectedHeadSha: string;
-  expectedBaseSha: string;
-  expectedTargetBranch: string;
   observedAt: string;
   reason: string;
-  candidate?: AttestedReviewCandidate | null;
-  checks?: DeliveryCheckReceipt | null;
-  mergeReceipt?: DeliveryMergeReceipt | null;
+  detail: Record<string, unknown>;
 }
 
 export interface WorkflowWait {
   waitId: string;
   executionId: string;
-  mode: WorkflowWaitMode;
+  nodeId: string;
+  conditionType: string;
   state: WorkflowWaitState;
   requestDigest: string;
   generation: number;
   executionRevision: number;
-  candidateDigest: string;
-  request: WorkflowWaitRequest;
+  request: WaitRequest;
   nextPollAt: string;
   attemptCount: number;
   lastError: string;

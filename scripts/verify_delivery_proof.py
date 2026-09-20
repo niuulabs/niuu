@@ -42,6 +42,13 @@ _REQUIRED_CHILD_REVIEW_ROLES = frozenset({"code", "security", "adversarial"})
 # validate_producer_pins` applies server-side, so a role can't be left
 # unpinned by omission.
 _REVIEW_ROLES_REQUIRING_PINS = _REQUIRED_CHILD_REVIEW_ROLES | frozenset({"integration"})
+# The only wait condition types this script knows how to treat as delivery
+# evidence. A wait registered under any other condition type (e.g. a plain
+# "timer") is still reported, but this script never reads its request or
+# observation as proof of anything.
+_FORGE_CHECKS_CONDITION = "forge.checks"
+_FORGE_MERGE_CONDITION = "forge.merge"
+_FORGE_CONDITION_TYPES = frozenset({_FORGE_CHECKS_CONDITION, _FORGE_MERGE_CONDITION})
 
 
 class ProofVerificationError(RuntimeError):
@@ -90,7 +97,7 @@ def _source_urls(base_url: str, execution_id: UUID) -> dict[str, str]:
     return {
         "execution": prefix,
         "evidence": f"{prefix}/evidence",
-        "deliveryWaits": f"{prefix}/delivery-waits",
+        "waits": f"{prefix}/waits",
     }
 
 
@@ -336,7 +343,7 @@ def verify_documents(
     checks = _Checks()
     checks.require(isinstance(detail, dict), "execution detail is an object")
     checks.require(isinstance(evidence, dict), "execution evidence is an object")
-    checks.require(isinstance(waits, list), "delivery wait history is an array")
+    checks.require(isinstance(waits, list), "wait history is an array")
     if checks.errors:
         return _report(
             checks,
@@ -792,29 +799,39 @@ def verify_documents(
     ]
     for item in current_waits:
         wait_id = str(item.get("waitId") or "")
+        condition_type = str(item.get("conditionType") or "")
         checks.require(item.get("executionId") == expected_id, f"wait {wait_id} execution matches")
         checks.require(item.get("state") == "notified", f"wait {wait_id} reached notified state")
         checks.require(not item.get("lastError"), f"wait {wait_id} has no terminal delivery error")
         request = item.get("request") or {}
-        checks.require(
-            request.get("repository") == repository, f"wait {wait_id} repository matches"
-        )
-        checks.require(
-            request.get("expectedBaseSha") == base_sha, f"wait {wait_id} base SHA matches"
-        )
-        checks.require(
-            request.get("expectedTargetBranch") == base_ref, f"wait {wait_id} target matches"
-        )
-        if inspection is not None:
+        # Only a forge.checks/forge.merge wait's request carries this repository/SHA
+        # identity. A wait registered under any other condition type (a timer, say)
+        # still appears in the report below, but it is never treated as delivery
+        # evidence, so it is not held to a review identity it never claimed.
+        if condition_type in _FORGE_CONDITION_TYPES:
             checks.require(
-                request.get("expectedHeadSha") == inspection.candidate_sha,
-                f"wait {wait_id} candidate matches inspected integration",
+                request.get("repository") == repository, f"wait {wait_id} repository matches"
             )
+            checks.require(
+                request.get("expectedBaseSha") == base_sha, f"wait {wait_id} base SHA matches"
+            )
+            checks.require(
+                request.get("expectedTargetBranch") == base_ref, f"wait {wait_id} target matches"
+            )
+            if inspection is not None:
+                checks.require(
+                    request.get("expectedHeadSha") == inspection.candidate_sha,
+                    f"wait {wait_id} candidate matches inspected integration",
+                )
         observation = item.get("observation")
         checks.require(isinstance(observation, dict), f"wait {wait_id} has an observation")
         if not isinstance(observation, dict):
             continue
-        raw_wait_checks = observation.get("checks")
+        observation_status = observation.get("status")
+        observation_detail = observation.get("detail")
+        if not isinstance(observation_detail, dict):
+            observation_detail = {}
+        raw_wait_checks = observation_detail.get("checks")
         if raw_wait_checks is not None:
             wait_checks = checks.model(
                 CheckReceipt,
@@ -823,8 +840,8 @@ def verify_documents(
             )
             if wait_checks is not None:
                 checks.require(
-                    item.get("mode") == "checks" and observation.get("status") == "checks_passed",
-                    f"wait {wait_id} check receipt belongs to a passed checks observation",
+                    condition_type == _FORGE_CHECKS_CONDITION and observation_status == "satisfied",
+                    f"wait {wait_id} check receipt belongs to a satisfied forge.checks observation",
                 )
                 checks.require(
                     (
@@ -851,7 +868,7 @@ def verify_documents(
                     wait_checks,
                     f"wait {wait_id} check receipt",
                 )
-        raw_wait_merge = observation.get("mergeReceipt")
+        raw_wait_merge = observation_detail.get("mergeReceipt")
         if raw_wait_merge is not None:
             wait_merge = checks.model(
                 MergeReceipt,
@@ -860,10 +877,10 @@ def verify_documents(
             )
             if wait_merge is not None:
                 checks.require(
-                    item.get("mode") == "merge"
-                    and observation.get("status") == "merged"
+                    condition_type == _FORGE_MERGE_CONDITION
+                    and observation_status == "satisfied"
                     and wait_merge.state is PublicationState.MERGED,
-                    f"wait {wait_id} merge receipt belongs to a merged observation",
+                    f"wait {wait_id} merge receipt belongs to a satisfied forge.merge observation",
                 )
                 checks.require(
                     (
@@ -937,18 +954,27 @@ def verify_documents(
         ),
         "mergeReceipt": detail.get("mergeReceipt"),
     }
-    report["deliveryWaits"] = [
+    report["waits"] = [
         {
             "waitId": item.get("waitId"),
-            "mode": item.get("mode"),
+            "nodeId": item.get("nodeId"),
+            "conditionType": item.get("conditionType"),
             "state": item.get("state"),
             "requestDigest": item.get("requestDigest"),
-            "candidateDigest": item.get("candidateDigest"),
+            "candidateSha": (
+                (item.get("request") or {}).get("expectedHeadSha")
+                if str(item.get("conditionType") or "") in _FORGE_CONDITION_TYPES
+                else None
+            ),
             "checkReceiptId": (
-                ((item.get("observation") or {}).get("checks") or {}).get("receipt_id")
+                (((item.get("observation") or {}).get("detail") or {}).get("checks") or {}).get(
+                    "receipt_id"
+                )
             ),
             "mergeReceiptId": (
-                ((item.get("observation") or {}).get("mergeReceipt") or {}).get("receipt_id")
+                (
+                    ((item.get("observation") or {}).get("detail") or {}).get("mergeReceipt") or {}
+                ).get("receipt_id")
             ),
         }
         for item in current_waits
@@ -982,10 +1008,10 @@ def _report(
             "receiptSignaturesChecked": checks.cryptographic_checks,
             "statement": (
                 "This verifier checks typed identities, accepted Ting validation records, and "
-                "typed receipts present in current-generation delivery-wait observations. "
+                "typed receipts present in current-generation forge wait observations. "
                 + (
                     "It independently verified every such receipt signature present in the "
-                    "completed execution, accepted child evidence, and current delivery waits "
+                    "completed execution, accepted child evidence, and current forge waits "
                     "against the supplied public-key and producer authorization mappings."
                     if independent_verified
                     else (
@@ -1074,7 +1100,7 @@ def main(argv: list[str] | None = None) -> int:
         report = verify_documents(
             documents["execution"],
             documents["evidence"],
-            documents["deliveryWaits"],
+            documents["waits"],
             execution_id=args.execution_id,
             source_urls=urls,
             evidence_trust=evidence_trust,

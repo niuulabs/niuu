@@ -450,8 +450,8 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         required_context=frozenset({"workflow_execution"}),
         kwargs_fn=lambda _s, ctx: {"service": ctx["workflow_execution"]},
     ),
-    "workflow_execution_wait_delivery": BuiltinToolDef(
-        adapter="ravn.adapters.tools.delivery.WorkflowExecutionWaitDeliveryTool",
+    "workflow_execution_wait": BuiltinToolDef(
+        adapter="ravn.adapters.tools.delivery.WorkflowExecutionWaitTool",
         groups=frozenset({"delivery"}),
         required_context=frozenset({"workflow_execution"}),
         kwargs_fn=lambda _s, ctx: {"service": ctx["workflow_execution"]},

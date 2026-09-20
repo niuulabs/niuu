@@ -72,21 +72,28 @@ const execution: WorkflowExecution = {
   updatedAt: '2026-01-01T01:00:00Z',
 };
 
+/**
+ * A `forge.checks` wait. `status: 'stale'` models a wait whose observation
+ * reports a candidate that no longer matches the persisted request identity
+ * (the generic equivalent of what a distinct "stale_candidate" status used to
+ * mean) rather than a distinct backend status.
+ */
 function currentChecksWait(
-  status: 'checks_pending' | 'checks_passed' | 'checks_failed' | 'stale_candidate',
+  status: 'pending' | 'satisfied' | 'failed' | 'stale',
   changes: Partial<WorkflowWait> = {},
 ): WorkflowWait {
   const headSha = 'd'.repeat(40);
   const baseSha = 'a'.repeat(40);
+  const observedSha = status === 'stale' ? 'f'.repeat(40) : headSha;
   return {
     waitId: `wait-${status}`,
     executionId: execution.executionId,
-    mode: 'checks',
-    state: status === 'checks_pending' ? 'pending' : 'notified',
+    nodeId: 'delivery-publication-wait',
+    conditionType: 'forge.checks',
+    state: status === 'pending' ? 'pending' : 'notified',
     requestDigest: `digest-${status}`,
     generation: 1,
     executionRevision: 8,
-    candidateDigest: 'candidate-digest',
     request: {
       repository: execution.repo,
       reviewNumber: 42,
@@ -99,52 +106,49 @@ function currentChecksWait(
     attemptCount: 2,
     lastError: '',
     observation: {
-      status,
-      repository: execution.repo,
-      reviewNumber: 42,
-      expectedHeadSha: headSha,
-      expectedBaseSha: baseSha,
-      expectedTargetBranch: 'main',
+      status: status === 'stale' ? 'failed' : status,
       observedAt: '2026-01-01T02:00:00Z',
       reason: status,
-      candidate: {
-        provider: 'forge-provider',
-        repository: execution.repo,
-        review_number: 42,
-        source_branch: 'feature',
-        target_branch: 'main',
-        candidate_sha: status === 'stale_candidate' ? 'f'.repeat(40) : headSha,
-        tested_base_sha: baseSha,
-        current_target_sha: baseSha,
-        mergeable: status !== 'stale_candidate',
-        checks: [],
-        serialized_publication: true,
+      detail: {
+        candidate: {
+          provider: 'forge-provider',
+          repository: execution.repo,
+          review_number: 42,
+          source_branch: 'feature',
+          target_branch: 'main',
+          candidate_sha: observedSha,
+          tested_base_sha: baseSha,
+          current_target_sha: baseSha,
+          mergeable: status !== 'stale',
+          checks: [],
+          serialized_publication: true,
+        },
+        checks:
+          status === 'stale'
+            ? null
+            : {
+                receipt_id: `receipt-${status}`,
+                provider: 'forge-provider',
+                repository: execution.repo,
+                review_number: 42,
+                candidate_sha: headSha,
+                tested_base_sha: baseSha,
+                observed_at: '2026-01-01T02:00:00Z',
+                provenance: { signature: 'present' },
+                checks: [
+                  {
+                    name: 'required-ci',
+                    conclusion:
+                      status === 'satisfied'
+                        ? 'passing'
+                        : status === 'failed'
+                          ? 'failing'
+                          : 'pending',
+                  },
+                ],
+              },
+        mergeReceipt: null,
       },
-      checks:
-        status === 'stale_candidate'
-          ? null
-          : {
-              receipt_id: `receipt-${status}`,
-              provider: 'forge-provider',
-              repository: execution.repo,
-              review_number: 42,
-              candidate_sha: headSha,
-              tested_base_sha: baseSha,
-              observed_at: '2026-01-01T02:00:00Z',
-              provenance: { signature: 'present' },
-              checks: [
-                {
-                  name: 'required-ci',
-                  conclusion:
-                    status === 'checks_passed'
-                      ? 'passing'
-                      : status === 'checks_failed'
-                        ? 'failing'
-                        : 'pending',
-                },
-              ],
-            },
-      mergeReceipt: null,
     },
     ...changes,
   };
@@ -328,12 +332,12 @@ describe('buildWorkflowExecutionResultsMarkdown', () => {
       {
         waitId: 'checks-wait',
         executionId: execution.executionId,
-        mode: 'checks',
+        nodeId: 'delivery-publication-wait',
+        conditionType: 'forge.checks',
         state: 'notified',
         requestDigest: 'request-digest',
         generation: 1,
         executionRevision: 8,
-        candidateDigest: 'candidate-digest',
         request: {
           repository: execution.repo,
           reviewNumber: 42,
@@ -346,56 +350,53 @@ describe('buildWorkflowExecutionResultsMarkdown', () => {
         attemptCount: 2,
         lastError: '',
         observation: {
-          status: 'checks_passed',
-          repository: execution.repo,
-          reviewNumber: 42,
-          expectedHeadSha: 'd'.repeat(40),
-          expectedBaseSha: 'a'.repeat(40),
-          expectedTargetBranch: 'main',
+          status: 'satisfied',
           observedAt: '2026-01-01T02:00:00Z',
           reason: 'All required checks passed',
-          candidate: {
-            provider: 'forge-provider',
-            repository: execution.repo,
-            review_number: 42,
-            source_branch: 'feature',
-            target_branch: 'main',
-            candidate_sha: 'd'.repeat(40),
-            tested_base_sha: 'a'.repeat(40),
-            current_target_sha: 'a'.repeat(40),
-            mergeable: true,
-            checks: [],
-            serialized_publication: true,
+          detail: {
+            candidate: {
+              provider: 'forge-provider',
+              repository: execution.repo,
+              review_number: 42,
+              source_branch: 'feature',
+              target_branch: 'main',
+              candidate_sha: 'd'.repeat(40),
+              tested_base_sha: 'a'.repeat(40),
+              current_target_sha: 'a'.repeat(40),
+              mergeable: true,
+              checks: [],
+              serialized_publication: true,
+            },
+            checks: {
+              receipt_id: 'remote-check-receipt',
+              provider: 'forge-provider',
+              repository: execution.repo,
+              review_number: 42,
+              candidate_sha: 'd'.repeat(40),
+              tested_base_sha: 'a'.repeat(40),
+              observed_at: '2026-01-01T02:00:00Z',
+              provenance: { signature: 'present' },
+              checks: [
+                {
+                  name: 'required-ci',
+                  conclusion: 'passing',
+                  details_url: 'https://ci.example/jobs/1',
+                },
+              ],
+            },
+            mergeReceipt: null,
           },
-          checks: {
-            receipt_id: 'remote-check-receipt',
-            provider: 'forge-provider',
-            repository: execution.repo,
-            review_number: 42,
-            candidate_sha: 'd'.repeat(40),
-            tested_base_sha: 'a'.repeat(40),
-            observed_at: '2026-01-01T02:00:00Z',
-            provenance: { signature: 'present' },
-            checks: [
-              {
-                name: 'required-ci',
-                conclusion: 'passing',
-                details_url: 'https://ci.example/jobs/1',
-              },
-            ],
-          },
-          mergeReceipt: null,
         },
       },
       {
         waitId: 'merge-wait',
         executionId: execution.executionId,
-        mode: 'merge',
+        nodeId: 'delivery-publication-wait',
+        conditionType: 'forge.merge',
         state: 'ready',
         requestDigest: 'merge-request-digest',
         generation: 1,
         executionRevision: 9,
-        candidateDigest: 'candidate-digest',
         request: {
           repository: execution.repo,
           reviewNumber: 42,
@@ -410,31 +411,28 @@ describe('buildWorkflowExecutionResultsMarkdown', () => {
         attemptCount: 3,
         lastError: '',
         observation: {
-          status: 'merged',
-          repository: execution.repo,
-          reviewNumber: 42,
-          expectedHeadSha: 'd'.repeat(40),
-          expectedBaseSha: 'a'.repeat(40),
-          expectedTargetBranch: 'main',
+          status: 'satisfied',
           observedAt: '2026-01-01T03:00:00Z',
           reason: '',
-          candidate: null,
-          checks: null,
-          mergeReceipt: {
-            receipt_id: 'merge-receipt',
-            provider: 'forge-provider',
-            repository: execution.repo,
-            review_number: 42,
-            source_sha: 'd'.repeat(40),
-            base_sha: 'a'.repeat(40),
-            target_branch: 'main',
-            result_sha: 'e'.repeat(40),
-            canonical_target_sha: 'e'.repeat(40),
-            method: 'squash',
-            state: 'merged',
-            provider_operation_id: 'operation-7',
-            verified_at: '2026-01-01T03:00:00Z',
-            provenance: { signature: 'present' },
+          detail: {
+            candidate: null,
+            checks: null,
+            mergeReceipt: {
+              receipt_id: 'merge-receipt',
+              provider: 'forge-provider',
+              repository: execution.repo,
+              review_number: 42,
+              source_sha: 'd'.repeat(40),
+              base_sha: 'a'.repeat(40),
+              target_branch: 'main',
+              result_sha: 'e'.repeat(40),
+              canonical_target_sha: 'e'.repeat(40),
+              method: 'squash',
+              state: 'merged',
+              provider_operation_id: 'operation-7',
+              verified_at: '2026-01-01T03:00:00Z',
+              provenance: { signature: 'present' },
+            },
           },
         },
       },
@@ -443,8 +441,9 @@ describe('buildWorkflowExecutionResultsMarkdown', () => {
     const markdown = buildWorkflowExecutionResultsMarkdown(execution, {}, waits);
 
     expect(markdown).toContain('### Remote verification · review #42');
+    expect(markdown).toContain('| Condition type | `forge.checks` |');
     expect(markdown).toContain('| Provider | `forge-provider` |');
-    expect(markdown).toContain('| Provider observation | `checks_passed` |');
+    expect(markdown).toContain('| Observation status | `satisfied` |');
     expect(markdown).toContain('| required-ci | `passing` |');
     expect(markdown).toContain('[Open authoritative details](<https://ci.example/jobs/1>)');
     expect(markdown).toContain('Observed candidate `dddddddddddd…`');
@@ -454,7 +453,7 @@ describe('buildWorkflowExecutionResultsMarkdown', () => {
     expect(markdown).toContain('Merge receipt provider operation: `operation-7`');
     expect(markdown).toContain('Last observation | 2026-01-01T03:00:00Z');
     expect(markdown).toContain(
-      'Remote CI success is established by a matching current-candidate `checks_passed` observation and verification receipt.',
+      'Remote CI success is established by a matching current-candidate `satisfied` forge.checks observation.',
     );
     expect(markdown).toContain(
       'Merge is established by an authoritative receipt matching the current candidate.',
@@ -463,14 +462,14 @@ describe('buildWorkflowExecutionResultsMarkdown', () => {
 
   it('establishes current remote publication and CI without claiming an unobserved merge', () => {
     const markdown = buildWorkflowExecutionResultsMarkdown(execution, {}, [
-      currentChecksWait('checks_passed'),
+      currentChecksWait('satisfied'),
     ]);
 
     expect(markdown).toContain(
       'Remote review/publication was observed for the current integration candidate.',
     );
     expect(markdown).toContain(
-      'Remote CI success is established by a matching current-candidate `checks_passed` observation and verification receipt.',
+      'Remote CI success is established by a matching current-candidate `satisfied` forge.checks observation.',
     );
     expect(markdown).toContain('Merge is not established for the current integration candidate.');
     expect(markdown).not.toContain(
@@ -479,8 +478,8 @@ describe('buildWorkflowExecutionResultsMarkdown', () => {
   });
 
   it.each([
-    ['checks_pending', 'Remote CI is pending for the current delivery request'],
-    ['checks_failed', 'Remote CI failed for the current delivery request'],
+    ['pending', 'Remote CI is pending for the current delivery request'],
+    ['failed', 'Remote CI failed for the current delivery request'],
   ] as const)('reports a current %s observation precisely', (status, expected) => {
     const markdown = buildWorkflowExecutionResultsMarkdown(execution, {}, [
       currentChecksWait(status),
@@ -494,9 +493,9 @@ describe('buildWorkflowExecutionResultsMarkdown', () => {
     expect(markdown).not.toContain('Remote CI success is established');
   });
 
-  it('does not establish current publication or CI from a stale candidate observation', () => {
+  it('does not establish current publication or CI from an observation whose detail does not match', () => {
     const markdown = buildWorkflowExecutionResultsMarkdown(execution, {}, [
-      currentChecksWait('stale_candidate'),
+      currentChecksWait('stale'),
     ]);
 
     expect(markdown).toContain('· Non-current identity');
@@ -504,16 +503,16 @@ describe('buildWorkflowExecutionResultsMarkdown', () => {
       'This observation is retained as history and does not establish the current generation’s delivery state.',
     );
     expect(markdown).toContain(
-      'The provider reported a stale candidate; remote review/publication is not established',
+      'The provider reported an observation that does not match the current candidate; remote review/publication is not established',
     );
     expect(markdown).toContain(
-      'Remote CI success is not established because the provider candidate is stale.',
+      'Remote CI success is not established because the reported observation does not match the current candidate.',
     );
   });
 
   it('labels prior-generation checks as historical without clearing current limitations', () => {
     const markdown = buildWorkflowExecutionResultsMarkdown(execution, {}, [
-      currentChecksWait('checks_passed', { generation: 0 }),
+      currentChecksWait('satisfied', { generation: 0 }),
     ]);
 
     expect(markdown).toContain('· Historical generation');
@@ -524,5 +523,36 @@ describe('buildWorkflowExecutionResultsMarkdown', () => {
       'Remote CI success is not established for the current integration candidate.',
     );
     expect(markdown).not.toContain('Remote CI success is established');
+  });
+
+  it('renders a non-forge condition generically and surfaces its detail fields', () => {
+    const timerWait: WorkflowWait = {
+      waitId: 'timer-wait',
+      executionId: execution.executionId,
+      nodeId: 'delivery-publication-wait',
+      conditionType: 'timer',
+      state: 'notified',
+      requestDigest: 'timer-request-digest',
+      generation: 1,
+      executionRevision: 5,
+      request: { after_seconds: 3600 },
+      nextPollAt: '2026-01-01T04:00:00Z',
+      attemptCount: 1,
+      lastError: '',
+      observation: {
+        status: 'satisfied',
+        observedAt: '2026-01-01T02:00:00Z',
+        reason: 'The configured deadline has passed',
+        detail: { until: '2026-01-01T01:00:00+00:00' },
+      },
+    };
+
+    const markdown = buildWorkflowExecutionResultsMarkdown(execution, {}, [timerWait]);
+
+    expect(markdown).toContain('### timer');
+    expect(markdown).toContain('| Condition type | `timer` |');
+    expect(markdown).toContain('| Observation status | `satisfied` |');
+    expect(markdown).toContain('Additional observation detail:');
+    expect(markdown).toContain('- until: "2026-01-01T01:00:00\\+00:00"');
   });
 });

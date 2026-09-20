@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import sys
 import uuid
@@ -169,6 +170,61 @@ def _create_runtime_bound_adapter(
         )
     cls = import_class(adapter_path)
     return cls(**configured_kwargs, **runtime_kwargs)
+
+
+def _accepts_kwarg(adapter_cls: type, name: str) -> bool:
+    """True when the adapter's constructor declares (or catches-all) the named kwarg."""
+    try:
+        parameters = inspect.signature(adapter_cls).parameters
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD or parameter.name == name
+        for parameter in parameters.values()
+    )
+
+
+def _build_wait_observers(
+    entries: list[dict],
+    *,
+    runtime_kwargs: dict,
+) -> dict[str, WaitConditionObserver]:
+    """Build the condition_type -> observer registry from dynamic adapter config.
+
+    Each entry names its own ``condition_type`` and ``adapter`` class path;
+    remaining entry keys are constructor kwargs. A runtime resource (the
+    Volundr factory, the integration policy ID, ...) is injected only when
+    the adapter's own constructor declares it, so heterogeneous observers
+    (a Forge-backed one needing infrastructure, a timer needing none) share
+    one registry-building pass with no branching on condition_type.
+    """
+    observers: dict[str, WaitConditionObserver] = {}
+    for entry in entries:
+        condition_type = str(entry.get("condition_type") or "").strip()
+        adapter_path = str(entry.get("adapter") or "").strip()
+        if not condition_type or not adapter_path:
+            raise ValueError("Each configured wait observer requires condition_type and adapter")
+        if condition_type in observers:
+            raise ValueError(f"Duplicate wait observer condition_type {condition_type!r}")
+        configured_kwargs = {
+            key: value for key, value in entry.items() if key not in {"condition_type", "adapter"}
+        }
+        cls = import_class(adapter_path)
+        injected = {
+            name: value
+            for name, value in runtime_kwargs.items()
+            if name not in configured_kwargs and _accepts_kwarg(cls, name)
+        }
+        observer = cls(**configured_kwargs, **injected)
+        if not isinstance(observer, WaitConditionObserver):
+            raise TypeError(f"Wait observer {adapter_path} must implement WaitConditionObserver")
+        if observer.condition_type != condition_type:
+            raise ValueError(
+                f"Wait observer {adapter_path} condition_type {observer.condition_type!r} "
+                f"does not match its configured condition_type {condition_type!r}"
+            )
+        observers[condition_type] = observer
+    return observers
 
 
 async def _assert_workflow_catalog_migrated(
@@ -791,44 +847,38 @@ def create_app(
                     ),
                     max_parent_stop_failures=(settings.workflow_execution.max_parent_stop_failures),
                 )
-                delivery_wait_repository = _create_runtime_bound_adapter(
-                    settings.workflow_execution.delivery_wait_repository_adapter,
-                    dict(settings.workflow_execution.delivery_wait_repository_kwargs),
+                wait_repository = _create_runtime_bound_adapter(
+                    settings.workflow_execution.wait_repository_adapter,
+                    dict(settings.workflow_execution.wait_repository_kwargs),
                     {"pool": pool},
-                    label="Developer delivery wait repository",
+                    label="Workflow wait repository",
                 )
-                if not isinstance(delivery_wait_repository, WorkflowWaitRepository):
+                if not isinstance(wait_repository, WorkflowWaitRepository):
                     raise TypeError(
-                        "Developer delivery wait repository must implement WorkflowWaitRepository"
+                        "Workflow wait repository must implement WorkflowWaitRepository"
                     )
-                delivery_wait_observer = _create_runtime_bound_adapter(
-                    settings.workflow_execution.delivery_wait_observer_adapter,
-                    dict(settings.workflow_execution.delivery_wait_observer_kwargs),
-                    {
+                wait_observers = _build_wait_observers(
+                    settings.workflow_execution.wait_observers,
+                    runtime_kwargs={
                         "volundr_factory": app.state.volundr_factory,
                         "policy_id": settings.workflow_execution.integration_policy_id,
                         "token_issuer": execution_token_issuer,
                         "admission_roles": tuple(settings.workflow_execution.admission_roles),
+                        "poll_interval_seconds": (
+                            settings.workflow_execution.reconcile_interval_seconds
+                        ),
                     },
-                    label="Developer delivery observer",
                 )
-                if not isinstance(delivery_wait_observer, WaitConditionObserver):
-                    raise TypeError(
-                        "Developer delivery observer must implement WaitConditionObserver"
-                    )
                 workflow_wait_service = WorkflowWaitService(
-                    repository=delivery_wait_repository,
+                    repository=wait_repository,
                     execution_repository=workflow_execution_repo,
-                    observer=delivery_wait_observer,
+                    observers=wait_observers,
                     continuation=parent_continuation,
-                    policy_id=settings.workflow_execution.integration_policy_id,
                     worker_id=settings.workflow_execution.worker_id,
                     claim_limit=settings.workflow_execution.reconcile_limit,
                     lease_seconds=settings.workflow_execution.lease_seconds,
                     poll_interval_seconds=(settings.workflow_execution.reconcile_interval_seconds),
-                    max_consecutive_failures=(
-                        settings.workflow_execution.max_delivery_wait_failures
-                    ),
+                    max_consecutive_failures=(settings.workflow_execution.max_wait_failures),
                 )
                 attested_review_projector = TrustedIntegrationReviewProjector(
                     repository=workflow_execution_repo,

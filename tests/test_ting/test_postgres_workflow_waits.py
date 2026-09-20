@@ -1,4 +1,4 @@
-"""Tests for the postgres durable ledger of exact remote delivery observations."""
+"""Tests for the postgres durable ledger of condition-agnostic workflow waits."""
 
 from __future__ import annotations
 
@@ -18,16 +18,12 @@ from ting.domain.workflow_wait import (
     WaitObservation,
     WaitObservationStatus,
     WorkflowWait,
-    WorkflowWaitMode,
-    WorkflowWaitRequest,
     WorkflowWaitState,
-    delivery_candidate_digest,
 )
 
 
-def _request(**changes) -> WorkflowWaitRequest:
+def _request(**changes) -> dict:
     payload = {
-        "mode": WorkflowWaitMode.CHECKS,
         "repository": "https://example.test/repo.git",
         "review_number": 7,
         "expected_head_sha": "a" * 40,
@@ -36,7 +32,7 @@ def _request(**changes) -> WorkflowWaitRequest:
         "policy_id": "policy-1",
     }
     payload.update(changes)
-    return WorkflowWaitRequest.model_validate(payload)
+    return payload
 
 
 def _execution_row(execution) -> dict:
@@ -44,22 +40,30 @@ def _execution_row(execution) -> dict:
         "id": execution.id,
         "revision": execution.revision,
         "current_generation": execution.current_generation,
-        "integration_candidate": None,
-        "integration_allocation": None,
         "cancel_requested": execution.cancel_requested,
         "state": execution.state.value,
     }
 
 
-def _wait_row(wait_id, execution, request, *, request_digest, candidate_digest, **changes) -> dict:
+def _wait_row(
+    wait_id,
+    execution,
+    request,
+    *,
+    request_digest,
+    node_id="wait-1",
+    condition_type="forge.checks",
+    **changes,
+) -> dict:
     row = {
         "id": wait_id,
         "execution_id": execution.id,
         "execution_generation": execution.current_generation,
         "execution_revision": execution.revision,
-        "candidate_digest": candidate_digest,
+        "node_id": node_id,
+        "condition_type": condition_type,
         "request_digest": request_digest,
-        "request": json.dumps(request.canonical_payload(), sort_keys=True),
+        "request": json.dumps(request, sort_keys=True),
         "state": WorkflowWaitState.PENDING.value,
         "next_poll_at": datetime.now(UTC),
         "observation": None,
@@ -80,11 +84,6 @@ def _wait_row(wait_id, execution, request, *, request_digest, candidate_digest, 
 def _observation(*, terminal_status: WaitObservationStatus) -> WaitObservation:
     return WaitObservation(
         status=terminal_status,
-        repository="https://example.test/repo.git",
-        review_number=7,
-        expected_head_sha="a" * 40,
-        expected_base_sha="b" * 40,
-        expected_target_branch="main",
         observed_at=datetime.now(UTC),
         reason="",
     )
@@ -159,31 +158,22 @@ def _reserve_context():
         _execution(), state=ExecutionState.RUNNING, revision=1, current_generation=1
     )
     request = _request()
-    candidate_digest = delivery_candidate_digest(
-        integration_candidate=None, integration_allocation=None
-    )
-    request_digest = request.digest
+    request_digest = "d" * 64
     wait_id = uuid4()
-    return execution, request, candidate_digest, request_digest, wait_id
+    return execution, request, request_digest, wait_id
 
 
 @pytest.mark.asyncio
 async def test_reserve_inserts_new_wait_and_projects_execution() -> None:
-    execution, request, candidate_digest, request_digest, wait_id = _reserve_context()
+    execution, request, request_digest, wait_id = _reserve_context()
     connection = _Connection()
-    inserted_row = _wait_row(
-        wait_id,
-        execution,
-        request,
-        request_digest=request_digest,
-        candidate_digest=candidate_digest,
-    )
+    inserted_row = _wait_row(wait_id, execution, request, request_digest=request_digest)
     connection.fetchrow_handlers = [
         (
             "FROM workflow_executions WHERE id = $1 FOR UPDATE",
             lambda *_: _execution_row(execution),
         ),
-        ("AND execution_generation = $2", lambda *_: None),
+        ("AND node_id = $3", lambda *_: None),
         ("AND request_digest = $2", lambda *_: None),
         ("INSERT INTO workflow_waits", lambda *_: inserted_row),
     ]
@@ -193,45 +183,43 @@ async def test_reserve_inserts_new_wait_and_projects_execution() -> None:
     next_poll_at = datetime.now(UTC) + timedelta(seconds=30)
     wait = await repository.reserve(
         execution,
-        request,
         wait_id=wait_id,
+        node_id="wait-1",
+        condition_type="forge.checks",
+        request=request,
         request_digest=request_digest,
-        candidate_digest=candidate_digest,
         next_poll_at=next_poll_at,
     )
 
     assert wait.id == wait_id
     assert wait.state == WorkflowWaitState.PENDING
+    assert wait.node_id == "wait-1"
+    assert wait.condition_type == "forge.checks"
     assert connection.in_transaction is False
 
 
 @pytest.mark.asyncio
 async def test_reserve_replays_existing_wait_for_same_request_digest() -> None:
-    execution, request, candidate_digest, request_digest, wait_id = _reserve_context()
+    execution, request, request_digest, wait_id = _reserve_context()
     connection = _Connection()
-    existing_row = _wait_row(
-        wait_id,
-        execution,
-        request,
-        request_digest=request_digest,
-        candidate_digest=candidate_digest,
-    )
+    existing_row = _wait_row(wait_id, execution, request, request_digest=request_digest)
     connection.fetchrow_handlers = [
         (
             "FROM workflow_executions WHERE id = $1 FOR UPDATE",
             lambda *_: _execution_row(execution),
         ),
-        ("AND execution_generation = $2", lambda *_: None),
+        ("AND node_id = $3", lambda *_: None),
         ("AND request_digest = $2", lambda *_: existing_row),
     ]
     repository = PostgresWorkflowWaitRepository(_Pool(connection))
 
     wait = await repository.reserve(
         execution,
-        request,
         wait_id=uuid4(),
+        node_id="wait-1",
+        condition_type="forge.checks",
+        request=request,
         request_digest=request_digest,
-        candidate_digest=candidate_digest,
         next_poll_at=datetime.now(UTC),
     )
 
@@ -240,8 +228,34 @@ async def test_reserve_replays_existing_wait_for_same_request_digest() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reserve_rejects_a_different_active_wait_on_the_same_node() -> None:
+    execution, request, request_digest, wait_id = _reserve_context()
+    connection = _Connection()
+    active_row = _wait_row(uuid4(), execution, request, request_digest="e" * 64)
+    connection.fetchrow_handlers = [
+        (
+            "FROM workflow_executions WHERE id = $1 FOR UPDATE",
+            lambda *_: _execution_row(execution),
+        ),
+        ("AND node_id = $3", lambda *_: active_row),
+    ]
+    repository = PostgresWorkflowWaitRepository(_Pool(connection))
+
+    with pytest.raises(WorkflowExecutionError, match="already active"):
+        await repository.reserve(
+            execution,
+            wait_id=wait_id,
+            node_id="wait-1",
+            condition_type="forge.checks",
+            request=request,
+            request_digest=request_digest,
+            next_poll_at=datetime.now(UTC),
+        )
+
+
+@pytest.mark.asyncio
 async def test_reserve_rejects_changed_execution() -> None:
-    execution, request, candidate_digest, request_digest, wait_id = _reserve_context()
+    execution, request, request_digest, wait_id = _reserve_context()
     connection = _Connection()
     stale_row = _execution_row(execution) | {"revision": execution.revision + 1}
     connection.fetchrow_handlers = [
@@ -252,10 +266,11 @@ async def test_reserve_rejects_changed_execution() -> None:
     with pytest.raises(WorkflowExecutionError, match="changed while reserving"):
         await repository.reserve(
             execution,
-            request,
             wait_id=wait_id,
+            node_id="wait-1",
+            condition_type="forge.checks",
+            request=request,
             request_digest=request_digest,
-            candidate_digest=candidate_digest,
             next_poll_at=datetime.now(UTC),
         )
 
@@ -264,16 +279,7 @@ async def test_reserve_rejects_changed_execution() -> None:
 async def test_claim_due_passes_now_limit_worker_and_lease_and_maps_rows() -> None:
     execution = _execution()
     request = _request()
-    candidate_digest = delivery_candidate_digest(
-        integration_candidate=None, integration_allocation=None
-    )
-    row = _wait_row(
-        uuid4(),
-        execution,
-        request,
-        request_digest=request.digest,
-        candidate_digest=candidate_digest,
-    )
+    row = _wait_row(uuid4(), execution, request, request_digest="f" * 64)
 
     class _ClaimPool:
         def __init__(self):
@@ -303,17 +309,15 @@ async def test_claim_due_passes_now_limit_worker_and_lease_and_maps_rows() -> No
 def _leased_wait(**changes) -> WorkflowWait:
     execution = _execution()
     request = _request()
-    candidate_digest = delivery_candidate_digest(
-        integration_candidate=None, integration_allocation=None
-    )
     value = WorkflowWait(
         id=uuid4(),
         execution_id=execution.id,
+        node_id="wait-1",
+        condition_type="forge.checks",
         request=request,
-        request_digest=request.digest,
+        request_digest="a" * 64,
         execution_generation=execution.current_generation,
         execution_revision=execution.revision,
-        candidate_digest=candidate_digest,
         state=WorkflowWaitState.PENDING,
         next_poll_at=datetime.now(UTC),
         lease_token=uuid4(),
@@ -341,14 +345,13 @@ async def test_record_pending_updates_and_raises_on_stale_lease() -> None:
 @pytest.mark.asyncio
 async def test_record_terminal_success_projects_execution() -> None:
     wait = _leased_wait()
-    observation = _observation(terminal_status=WaitObservationStatus.CHECKS_PASSED)
+    observation = _observation(terminal_status=WaitObservationStatus.SATISFIED)
     connection = _Connection()
     updated_row = _wait_row(
         wait.id,
         _execution(id=wait.execution_id),
         wait.request,
         request_digest=wait.request_digest,
-        candidate_digest=wait.candidate_digest,
         state=WorkflowWaitState.READY.value,
     )
     connection.fetchrow_handlers = [
@@ -371,7 +374,7 @@ async def test_record_terminal_success_projects_execution() -> None:
 @pytest.mark.asyncio
 async def test_record_terminal_raises_when_wait_lease_is_stale() -> None:
     wait = _leased_wait()
-    observation = _observation(terminal_status=WaitObservationStatus.CHECKS_PASSED)
+    observation = _observation(terminal_status=WaitObservationStatus.SATISFIED)
     connection = _Connection()
     connection.fetchrow_handlers = [
         ("UPDATE workflow_waits", lambda *_: None),
@@ -391,14 +394,13 @@ async def test_record_terminal_raises_when_wait_lease_is_stale() -> None:
 async def test_record_terminal_raises_and_rolls_back_when_execution_row_did_not_update() -> None:
     """The T-D fix: a concurrent revision bump on the execution must fail the whole write."""
     wait = _leased_wait()
-    observation = _observation(terminal_status=WaitObservationStatus.CHECKS_PASSED)
+    observation = _observation(terminal_status=WaitObservationStatus.SATISFIED)
     connection = _Connection()
     updated_row = _wait_row(
         wait.id,
         _execution(id=wait.execution_id),
         wait.request,
         request_digest=wait.request_digest,
-        candidate_digest=wait.candidate_digest,
         state=WorkflowWaitState.READY.value,
     )
     connection.fetchrow_handlers = [
@@ -421,14 +423,13 @@ async def test_record_terminal_raises_and_rolls_back_when_execution_row_did_not_
 @pytest.mark.asyncio
 async def test_record_terminal_skips_execution_projection_when_not_requested() -> None:
     wait = _leased_wait()
-    observation = _observation(terminal_status=WaitObservationStatus.CHECKS_FAILED)
+    observation = _observation(terminal_status=WaitObservationStatus.FAILED)
     connection = _Connection()
     updated_row = _wait_row(
         wait.id,
         _execution(id=wait.execution_id),
         wait.request,
         request_digest=wait.request_digest,
-        candidate_digest=wait.candidate_digest,
         state=WorkflowWaitState.FAILED.value,
     )
     connection.fetchrow_handlers = [

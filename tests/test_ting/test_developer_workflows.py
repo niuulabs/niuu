@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -24,6 +25,12 @@ from ting.domain.workflow_document import (
     workflow_document_revision,
 )
 from ting.domain.workflow_snapshot import build_workflow_snapshot
+from ting.domain.workflow_wait import (
+    WaitObservation,
+    WaitObservationStatus,
+    WorkflowWait,
+    WorkflowWaitState,
+)
 from ting.system_workflows import BUNDLED_SYSTEM_WORKFLOWS_PATH, load_system_workflows
 
 
@@ -89,7 +96,7 @@ def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_i
         "workflow_execution_cancel",
         "workflow_execution_complete",
         "workflow_execution_record_integration",
-        "workflow_execution_wait_delivery",
+        "workflow_execution_wait",
         "delivery_workspace",
         "delivery_forge",
         "delivery_evidence",
@@ -127,7 +134,8 @@ def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_i
         coordinator_persona.system_prompt_template
     )
     assert "emit wait_delivery" in coordinator_persona.system_prompt_template
-    assert "checks wait, set mode to checks and omit method" in (
+    assert "workflow_execution_wait with" in coordinator_persona.system_prompt_template
+    assert "conditionType set to forge.checks or forge.merge" in (
         coordinator_persona.system_prompt_template
     )
 
@@ -438,6 +446,7 @@ def test_delivery_observation_wait_is_passive_and_reenters_publication() -> None
         "id": "delivery-publication-wait",
         "kind": "wait",
         "label": "Await authoritative delivery observation",
+        "conditions": ["forge.checks", "forge.merge"],
     }
     edges = {edge["id"]: edge for edge in graph["edges"]}
     assert edges["delivery-publish-wait"] == {
@@ -700,3 +709,87 @@ async def test_blocked_children_notify_parent_with_stable_correlation() -> None:
     assert kwargs["payload"]["children"] == children
     assert kwargs["payload"]["revision"] == 7
     assert kwargs["request_id"] == kwargs["payload"]["continuationId"]
+
+
+def _wait_snapshot() -> dict:
+    """A minimal pinned graph naming the exact wait node's observed event.
+
+    Uses an event name distinct from any bundled workflow's own vocabulary,
+    to prove the continuation adapter reads it from the exact wait node
+    rather than assuming a single graph-wide wait.
+    """
+    return {
+        "graph": {
+            "nodes": [
+                {"id": "publication-wait", "kind": "wait", "conditions": ["timer"]},
+            ],
+            "edges": [
+                {
+                    "id": "wait-observed",
+                    "source": "publication-wait",
+                    "target": "delivery-publish",
+                    "label": "publication.observed -> publication.observed",
+                },
+            ],
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_terminal_wait_observation_notifies_parent_with_exact_wait_binding() -> None:
+    class Adapter:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def publish_workflow_event(self, *args, **kwargs) -> None:
+            self.calls.append((args, kwargs))
+
+    adapter = Adapter()
+
+    class Factory:
+        async def primary_for_owner(self, owner_id):
+            assert owner_id == "owner-1"
+            return adapter
+
+    execution = SimpleNamespace(
+        id=uuid4(),
+        owner_id="owner-1",
+        connection_id="",
+        parent_session_id="session-1",
+        parent_node_id="publication-wait",
+        workflow_snapshot=_wait_snapshot(),
+    )
+    wait = WorkflowWait(
+        id=uuid4(),
+        execution_id=execution.id,
+        node_id="publication-wait",
+        condition_type="timer",
+        request={"until": "2026-01-01T00:00:00+00:00"},
+        request_digest="a" * 64,
+        execution_generation=2,
+        execution_revision=1,
+        state=WorkflowWaitState.READY,
+        next_poll_at=datetime.now(UTC),
+    )
+    observation = WaitObservation(
+        status=WaitObservationStatus.SATISFIED,
+        observed_at=datetime.now(UTC),
+        reason="The configured deadline has passed",
+        detail={"until": "2026-01-01T00:00:00+00:00"},
+    )
+    continuation = VolundrParentWorkflowContinuation(volundr_factory=Factory())
+
+    await continuation.notify_wait_observation(execution, wait, observation)
+    await continuation.notify_wait_observation(execution, wait, observation)
+
+    first_args, first_kwargs = adapter.calls[0]
+    second_args, second_kwargs = adapter.calls[1]
+    assert first_args[:2] == ("session-1", "publication.observed")
+    assert first_kwargs["payload"]["waitId"] == str(wait.id)
+    assert first_kwargs["payload"]["nodeId"] == "publication-wait"
+    assert first_kwargs["payload"]["conditionType"] == "timer"
+    assert first_kwargs["payload"]["generation"] == 2
+    assert first_kwargs["payload"]["status"] == "satisfied"
+    assert first_kwargs["payload"]["detail"] == {"until": "2026-01-01T00:00:00+00:00"}
+    assert first_kwargs["request_id"] == second_kwargs["request_id"]
+    assert first_args == second_args

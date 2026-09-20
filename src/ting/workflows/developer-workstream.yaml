@@ -6,8 +6,8 @@ version: 1.0.0
 persona_dependencies:
   developer-coordinator:
     id: developer-coordinator
-    revision: content-9ed93b5b7e2a0fb8
-    digest: sha256:9ed93b5b7e2a0fb85d5ef3303bccf75ff3dc356119f9ee6c53c66d0ea7148459
+    revision: content-dd029911fb1ef340
+    digest: sha256:dd029911fb1ef340d482ec21e9fd4037b5cda247da2c3133f695041a1f25ec32
     path: personas/developer-coordinator.yaml
   developer-coder:
     id: developer-coder
@@ -45,7 +45,7 @@ graph:
     - workflow_execution_message
     - workflow_execution_complete
     - workflow_execution_record_integration
-    - workflow_execution_wait_delivery
+    - workflow_execution_wait
     - delivery_forge
     - delivery_evidence
   toolActions:

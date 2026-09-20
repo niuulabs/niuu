@@ -60,8 +60,8 @@ class HttpWorkflowExecutionClient:
     async def record_integration(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._post("/integration-candidate", payload)
 
-    async def wait_delivery(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._post("/delivery-waits", payload)
+    async def wait(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._post("/waits", payload)
 
     async def _post(self, suffix: str, payload: dict[str, Any]) -> dict[str, Any]:
         response = await self._client.post(self._url + suffix, payload)

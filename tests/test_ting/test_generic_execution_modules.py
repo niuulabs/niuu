@@ -31,16 +31,10 @@ _DELIVERY_CONCEPT = re.compile(
 BURN_DOWN: frozenset[str] = frozenset(
     {
         "adapters/child_evidence.py",
-        "adapters/parent_workflow_continuation.py",
         "adapters/postgres_workflow_executions.py",
-        "adapters/postgres_workflow_waits.py",
-        "adapters/wait_condition_observer.py",
         "api/workflow_executions.py",
-        "domain/services/workflow_wait.py",
         "domain/workflow_continuation_events.py",
         "domain/workflow_execution_trace.py",
-        "domain/workflow_wait.py",
-        "ports/workflow_wait.py",
     }
 )
 

@@ -267,12 +267,12 @@ def _documents():
         {
             "waitId": "33333333-3333-4333-8333-333333333332",
             "executionId": str(EXECUTION_ID),
-            "mode": "checks",
+            "nodeId": "await-checks",
+            "conditionType": "forge.checks",
             "state": "notified",
             "requestDigest": "6" * 64,
             "generation": 1,
             "executionRevision": 4,
-            "candidateDigest": "8" * 64,
             "request": {
                 "repository": REPOSITORY,
                 "reviewNumber": 42,
@@ -280,22 +280,26 @@ def _documents():
                 "expectedBaseSha": BASE_SHA,
                 "expectedTargetBranch": TARGET,
                 "policyId": "developer-integration",
-                "method": None,
             },
             "nextPollAt": NOW,
             "attemptCount": 2,
             "lastError": "",
-            "observation": {"status": "checks_passed", "checks": forge_checks},
+            "observation": {
+                "status": "satisfied",
+                "reason": "All configured Forge checks passed",
+                "observedAt": NOW,
+                "detail": {"checks": forge_checks},
+            },
         },
         {
             "waitId": "33333333-3333-4333-8333-333333333333",
             "executionId": str(EXECUTION_ID),
-            "mode": "merge",
+            "nodeId": "await-merge",
+            "conditionType": "forge.merge",
             "state": "notified",
             "requestDigest": "7" * 64,
             "generation": 1,
             "executionRevision": 5,
-            "candidateDigest": "8" * 64,
             "request": {
                 "repository": REPOSITORY,
                 "reviewNumber": 42,
@@ -310,12 +314,36 @@ def _documents():
             "attemptCount": 2,
             "lastError": "",
             "observation": {
-                "status": "merged",
-                "mergeReceipt": {
-                    key: value
-                    for key, value in deepcopy(merge).items()
-                    if key != "evidence_manifest_digest"
+                "status": "satisfied",
+                "reason": "Remote merge and canonical target were verified",
+                "observedAt": NOW,
+                "detail": {
+                    "mergeReceipt": {
+                        key: value
+                        for key, value in deepcopy(merge).items()
+                        if key != "evidence_manifest_digest"
+                    }
                 },
+            },
+        },
+        {
+            "waitId": "33333333-3333-4333-8333-333333333334",
+            "executionId": str(EXECUTION_ID),
+            "nodeId": "await-timer",
+            "conditionType": "timer",
+            "state": "notified",
+            "requestDigest": "9" * 64,
+            "generation": 1,
+            "executionRevision": 6,
+            "request": {"durationSeconds": 60},
+            "nextPollAt": NOW,
+            "attemptCount": 1,
+            "lastError": "",
+            "observation": {
+                "status": "satisfied",
+                "reason": "Timer deadline reached",
+                "observedAt": NOW,
+                "detail": {"deadline": NOW},
             },
         },
     ]
@@ -385,8 +413,8 @@ def _signed_documents():
         sign(raw, verifier.IntegrationReceipt)
     sign(detail["integrationReviewReceipt"], verifier.ReviewReceipt)
     sign(detail["mergeReceipt"], verifier.MergeReceipt)
-    sign(waits[0]["observation"]["checks"], verifier.CheckReceipt)
-    sign(waits[1]["observation"]["mergeReceipt"], verifier.MergeReceipt)
+    sign(waits[0]["observation"]["detail"]["checks"], verifier.CheckReceipt)
+    sign(waits[1]["observation"]["detail"]["mergeReceipt"], verifier.MergeReceipt)
     evidence["mergeReceipt"] = detail["mergeReceipt"]
     trust = {
         "trusted_public_keys": {"proof-public-key": public_pem},
@@ -523,14 +551,14 @@ def test_completed_immediate_remote_delivery_without_waits_remains_valid() -> No
     report = _verify((detail, evidence, []))
 
     assert report["status"] == "verified", report["errors"]
-    assert report["deliveryWaits"] == []
+    assert report["waits"] == []
 
 
 def test_independent_verification_rejects_tampered_wait_receipts() -> None:
     documents, evidence_authenticator, _trust = _signed_documents()
     waits = documents[2]
-    waits[0]["observation"]["checks"]["checks"][0]["conclusion"] = "failing"
-    waits[1]["observation"]["mergeReceipt"]["verified_at"] = "2026-09-19T12:00:01+00:00"
+    waits[0]["observation"]["detail"]["checks"]["checks"][0]["conclusion"] = "failing"
+    waits[1]["observation"]["detail"]["mergeReceipt"]["verified_at"] = "2026-09-19T12:00:01+00:00"
 
     report = _verify_signed(documents, evidence_authenticator)
 
@@ -542,8 +570,8 @@ def test_independent_verification_rejects_tampered_wait_receipts() -> None:
 
 def test_wait_receipts_must_match_exact_remote_request_identity() -> None:
     detail, evidence, waits = _documents()
-    waits[0]["observation"]["checks"]["candidate_sha"] = "9" * 40
-    waits[1]["observation"]["mergeReceipt"]["target_branch"] = "other-target"
+    waits[0]["observation"]["detail"]["checks"]["candidate_sha"] = "9" * 40
+    waits[1]["observation"]["detail"]["mergeReceipt"]["target_branch"] = "other-target"
 
     report = _verify((detail, evidence, waits))
 
@@ -553,6 +581,47 @@ def test_wait_receipts_must_match_exact_remote_request_identity() -> None:
     )
     assert any(
         "merge receipt matches its exact request identity" in item for item in report["errors"]
+    )
+
+
+def test_non_forge_wait_is_reported_but_not_treated_as_evidence() -> None:
+    detail, evidence, waits = _documents()
+
+    report = _verify((detail, evidence, waits))
+
+    assert report["status"] == "verified", report["errors"]
+    timer_entry = next(item for item in report["waits"] if item["conditionType"] == "timer")
+    assert timer_entry["checkReceiptId"] is None
+    assert timer_entry["mergeReceiptId"] is None
+    assert timer_entry["candidateSha"] is None
+    assert not any(timer_entry["waitId"] in item for item in report["errors"])
+
+
+def test_forge_receipt_under_the_wrong_condition_type_fails_verification() -> None:
+    detail, evidence, waits = _documents()
+    checks_wait = next(item for item in waits if item["conditionType"] == "forge.checks")
+    checks_wait["conditionType"] = "forge.merge"
+
+    report = _verify((detail, evidence, waits))
+
+    assert report["status"] == "failed"
+    assert any(
+        "check receipt belongs to a satisfied forge.checks observation" in item
+        for item in report["errors"]
+    )
+
+
+def test_forge_receipt_with_a_pending_observation_fails_verification() -> None:
+    detail, evidence, waits = _documents()
+    merge_wait = next(item for item in waits if item["conditionType"] == "forge.merge")
+    merge_wait["observation"]["status"] = "pending"
+
+    report = _verify((detail, evidence, waits))
+
+    assert report["status"] == "failed"
+    assert any(
+        "merge receipt belongs to a satisfied forge.merge observation" in item
+        for item in report["errors"]
     )
 
 
@@ -819,7 +888,7 @@ def test_cli_reads_only_three_public_endpoints_and_writes_report(
         fetched.append((url, kwargs))
         if url.endswith("/evidence"):
             return evidence
-        if url.endswith("/delivery-waits"):
+        if url.endswith("/waits"):
             return waits
         return detail
 

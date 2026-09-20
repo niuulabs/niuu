@@ -1,5 +1,10 @@
 import type {
+  AttestedReviewCandidate,
   DeliveryCandidate,
+  DeliveryCheckReceipt,
+  DeliveryMergeReceipt,
+  WaitObservation,
+  WaitRequest,
   WorkflowChildExecution,
   WorkflowWait,
   WorkflowExecution,
@@ -241,6 +246,39 @@ function currentDeliveryIdentity(
   return { generation: execution.currentGeneration, headSha, baseSha, targetBranch };
 }
 
+function requestText(request: WaitRequest, key: string): string | null {
+  return text(request[key]);
+}
+
+function requestNumber(request: WaitRequest, key: string): number | null {
+  return numberValue(request[key]);
+}
+
+interface ForgeObservationDetail {
+  candidate: AttestedReviewCandidate | null;
+  checks: DeliveryCheckReceipt | null;
+  mergeReceipt: DeliveryMergeReceipt | null;
+}
+
+const FORGE_DETAIL_KEYS = new Set(['candidate', 'checks', 'mergeReceipt']);
+
+/** Extract the `forge.checks`/`forge.merge` sub-objects a generic observation's
+ * detail carries. Absent for any other condition_type's observation. */
+function forgeDetail(observation: WaitObservation | null | undefined): ForgeObservationDetail {
+  const detail = observation?.detail;
+  return {
+    candidate: record(detail?.candidate) as AttestedReviewCandidate | null,
+    checks: record(detail?.checks) as DeliveryCheckReceipt | null,
+    mergeReceipt: record(detail?.mergeReceipt) as DeliveryMergeReceipt | null,
+  };
+}
+
+function conditionLabel(conditionType: string): string {
+  if (conditionType === 'forge.checks') return 'Remote verification';
+  if (conditionType === 'forge.merge') return 'Merge operation';
+  return conditionType;
+}
+
 function waitRequestMatchesCurrent(
   wait: WorkflowWait,
   identity: CurrentDeliveryIdentity | null,
@@ -248,9 +286,9 @@ function waitRequestMatchesCurrent(
   return Boolean(
     identity &&
     wait.generation === identity.generation &&
-    wait.request.expectedHeadSha === identity.headSha &&
-    wait.request.expectedBaseSha === identity.baseSha &&
-    wait.request.expectedTargetBranch === identity.targetBranch,
+    requestText(wait.request, 'expectedHeadSha') === identity.headSha &&
+    requestText(wait.request, 'expectedBaseSha') === identity.baseSha &&
+    requestText(wait.request, 'expectedTargetBranch') === identity.targetBranch,
   );
 }
 
@@ -259,32 +297,25 @@ function waitObservationMatchesCurrent(
   identity: CurrentDeliveryIdentity | null,
 ): boolean {
   if (!waitRequestMatchesCurrent(wait, identity) || !identity || !wait.observation) return false;
-  const observation = wait.observation;
+  const { candidate, checks, mergeReceipt } = forgeDetail(wait.observation);
   if (
-    observation.expectedHeadSha !== identity.headSha ||
-    observation.expectedBaseSha !== identity.baseSha ||
-    observation.expectedTargetBranch !== identity.targetBranch
+    candidate &&
+    (candidate.candidate_sha !== identity.headSha ||
+      candidate.tested_base_sha !== identity.baseSha ||
+      candidate.current_target_sha !== identity.baseSha ||
+      candidate.target_branch !== identity.targetBranch)
   )
     return false;
   if (
-    observation.candidate &&
-    (observation.candidate.candidate_sha !== identity.headSha ||
-      observation.candidate.tested_base_sha !== identity.baseSha ||
-      observation.candidate.current_target_sha !== identity.baseSha ||
-      observation.candidate.target_branch !== identity.targetBranch)
+    checks &&
+    (checks.candidate_sha !== identity.headSha || checks.tested_base_sha !== identity.baseSha)
   )
     return false;
   if (
-    observation.checks &&
-    (observation.checks.candidate_sha !== identity.headSha ||
-      observation.checks.tested_base_sha !== identity.baseSha)
-  )
-    return false;
-  if (
-    observation.mergeReceipt &&
-    (observation.mergeReceipt.source_sha !== identity.headSha ||
-      observation.mergeReceipt.base_sha !== identity.baseSha ||
-      observation.mergeReceipt.target_branch !== identity.targetBranch)
+    mergeReceipt &&
+    (mergeReceipt.source_sha !== identity.headSha ||
+      mergeReceipt.base_sha !== identity.baseSha ||
+      mergeReceipt.target_branch !== identity.targetBranch)
   )
     return false;
   return true;
@@ -302,7 +333,7 @@ function executionMergeMatchesCurrent(
   );
 }
 
-function deliveryWaitLines(
+function waitLines(
   waits: readonly WorkflowWait[],
   identity: CurrentDeliveryIdentity | null,
   currentGeneration: number,
@@ -322,24 +353,24 @@ function deliveryWaitLines(
           ? ' · Non-current identity'
           : '';
     const observation = wait.observation;
-    const checkReceipt = observation?.checks;
-    const mergeReceipt = observation?.mergeReceipt;
-    const candidate = observation?.candidate;
+    const { candidate, checks: checkReceipt, mergeReceipt } = forgeDetail(observation);
     const provider = checkReceipt?.provider ?? mergeReceipt?.provider ?? candidate?.provider;
     const remoteChecks = checkReceipt?.checks ?? candidate?.checks ?? [];
+    const reviewNumber = requestNumber(wait.request, 'reviewNumber');
     lines.push(
-      `### ${wait.mode === 'checks' ? 'Remote verification' : 'Merge operation'} · review #${wait.request.reviewNumber}${scopeLabel}`,
+      `### ${conditionLabel(wait.conditionType)}${reviewNumber !== null ? ` · review #${reviewNumber}` : ''}${scopeLabel}`,
       '',
       '| Field | Value |',
       '| --- | --- |',
+      `| Condition type | ${code(wait.conditionType)} |`,
       `| Provider | ${provider ? code(provider) : 'Not reported'} |`,
       `| Durable wait state | ${code(wait.state)} |`,
-      `| Provider observation | ${observation ? code(observation.status) : 'Not observed'} |`,
+      `| Observation status | ${observation ? code(observation.status) : 'Not observed'} |`,
       `| Generation | ${wait.generation} |`,
-      `| Expected head | ${shortCode(wait.request.expectedHeadSha)} |`,
-      `| Expected base | ${shortCode(wait.request.expectedBaseSha)} |`,
-      `| Target branch | ${code(wait.request.expectedTargetBranch)} |`,
-      `| Provider operation | ${code(wait.request.providerOperationId)} |`,
+      `| Expected head | ${shortCode(requestText(wait.request, 'expectedHeadSha'))} |`,
+      `| Expected base | ${shortCode(requestText(wait.request, 'expectedBaseSha'))} |`,
+      `| Target branch | ${code(requestText(wait.request, 'expectedTargetBranch'))} |`,
+      `| Provider operation | ${code(requestText(wait.request, 'providerOperationId'))} |`,
       `| Attempts | ${wait.attemptCount} |`,
       `| Last observation | ${observation ? escapeCell(observation.observedAt) : 'Not observed'} |`,
       '',
@@ -380,6 +411,18 @@ function deliveryWaitLines(
         '',
       );
     }
+    const extraDetail = observation
+      ? Object.entries(observation.detail).filter(([key]) => !FORGE_DETAIL_KEYS.has(key))
+      : [];
+    if (extraDetail.length) {
+      lines.push(
+        'Additional observation detail:',
+        ...extraDetail.map(
+          ([key, value]) => `- ${escapeCell(key)}: ${escapeCell(JSON.stringify(value))}`,
+        ),
+        '',
+      );
+    }
     if (observation?.reason)
       lines.push(`Provider reason: ${markdownText(observation.reason)}.`, '');
     if (wait.lastError) lines.push(`Last observer error: ${markdownText(wait.lastError)}.`, '');
@@ -396,57 +439,72 @@ function deliveryStatusLines(
   const currentObservations = currentRequests.filter((wait) =>
     waitObservationMatchesCurrent(wait, identity),
   );
-  const publicationObserved = currentObservations.some(
+  const checksWaits = currentObservations.filter((wait) => wait.conditionType === 'forge.checks');
+  const mergeWaits = currentObservations.filter((wait) => wait.conditionType === 'forge.merge');
+
+  const publicationObserved = currentObservations.some((wait) => {
+    const { candidate, checks, mergeReceipt } = forgeDetail(wait.observation);
+    return Boolean(candidate || checks || mergeReceipt);
+  });
+  const checksPassed = checksWaits.some(
     (wait) =>
-      wait.observation?.status !== 'stale_candidate' &&
-      Boolean(
-        wait.observation?.candidate || wait.observation?.checks || wait.observation?.mergeReceipt,
-      ),
+      wait.observation?.status === 'satisfied' && Boolean(forgeDetail(wait.observation).checks),
   );
-  const checksPassed = currentObservations.some(
-    (wait) => wait.observation?.status === 'checks_passed' && Boolean(wait.observation.checks),
-  );
-  const mergeObserved = currentObservations.some(
-    (wait) =>
-      wait.observation?.status === 'merged' &&
-      wait.observation.mergeReceipt?.state.toLowerCase() === 'merged',
-  );
+  const checksFailed = checksWaits.some((wait) => wait.observation?.status === 'failed');
+  const checksPending = checksWaits.some((wait) => wait.observation?.status === 'pending');
+  const mergeObserved = mergeWaits.some((wait) => {
+    const { mergeReceipt } = forgeDetail(wait.observation);
+    return (
+      wait.observation?.status === 'satisfied' && mergeReceipt?.state.toLowerCase() === 'merged'
+    );
+  });
+  const mergeFailed = mergeWaits.some((wait) => wait.observation?.status === 'failed');
+  const mergePending = mergeWaits.some((wait) => wait.observation?.status === 'pending');
   const mergeEstablished =
     mergeObserved || executionMergeMatchesCurrent(executionMergeReceipt, identity);
-  const statuses = currentRequests
-    .map((wait) => wait.observation?.status)
-    .filter((status): status is NonNullable<typeof status> => Boolean(status));
-  const has = (status: (typeof statuses)[number]) => statuses.includes(status);
+  // A wait requested against the current candidate whose reported observation's
+  // own detail identity does not match it — the generic equivalent of what a
+  // stale-candidate report used to mean, without depending on a named status.
+  const nonCurrentObservationExists = currentRequests.some(
+    (wait) => wait.observation && !waitObservationMatchesCurrent(wait, identity),
+  );
   const lines = [
     publicationObserved
       ? 'Remote review/publication was observed for the current integration candidate.'
-      : has('stale_candidate')
-        ? 'The provider reported a stale candidate; remote review/publication is not established for the current integration candidate.'
+      : nonCurrentObservationExists
+        ? 'The provider reported an observation that does not match the current candidate; remote ' +
+          'review/publication is not established for the current integration candidate.'
         : 'Remote review/publication has not been observed for the current integration candidate.',
   ];
   if (checksPassed) {
     lines.push(
-      'Remote CI success is established by a matching current-candidate `checks_passed` observation and verification receipt.',
+      'Remote CI success is established by a matching current-candidate `satisfied` forge.checks observation.',
     );
-  } else if (has('checks_failed')) {
+  } else if (checksFailed) {
     lines.push('Remote CI failed for the current delivery request; CI success is not established.');
-  } else if (has('checks_pending')) {
+  } else if (checksPending) {
     lines.push(
       'Remote CI is pending for the current delivery request; CI success is not established.',
     );
-  } else if (has('stale_candidate')) {
-    lines.push('Remote CI success is not established because the provider candidate is stale.');
+  } else if (nonCurrentObservationExists) {
+    lines.push(
+      'Remote CI success is not established because the reported observation does not match ' +
+        'the current candidate.',
+    );
   } else {
     lines.push('Remote CI success is not established for the current integration candidate.');
   }
   if (mergeEstablished) {
     lines.push('Merge is established by an authoritative receipt matching the current candidate.');
-  } else if (has('merge_failed')) {
+  } else if (mergeFailed) {
     lines.push('The current merge operation failed; merge is not established.');
-  } else if (has('merge_pending')) {
+  } else if (mergePending) {
     lines.push('The current merge operation is pending; merge is not established.');
-  } else if (has('stale_candidate')) {
-    lines.push('Merge is not established because the provider candidate is stale.');
+  } else if (nonCurrentObservationExists) {
+    lines.push(
+      'Merge is not established because the reported observation does not match the current ' +
+        'candidate.',
+    );
   } else {
     lines.push('Merge is not established for the current integration candidate.');
   }
@@ -457,7 +515,7 @@ function deliveryStatusLines(
 export function buildWorkflowExecutionResultsMarkdown(
   execution: WorkflowExecution,
   evidence: Record<string, unknown>,
-  deliveryWaits: readonly WorkflowWait[] = [],
+  waits: readonly WorkflowWait[] = [],
 ): string {
   const verification = record(evidence.verification);
   const verificationStatus = text(verification?.status) ?? 'not reported';
@@ -543,7 +601,7 @@ export function buildWorkflowExecutionResultsMarkdown(
     lines.push('No integrated candidate has been recorded.', '');
   }
 
-  lines.push(...deliveryWaitLines(deliveryWaits, deliveryIdentity, execution.currentGeneration));
+  lines.push(...waitLines(waits, deliveryIdentity, execution.currentGeneration));
   lines.push('## Publication', '');
   if (mergeReceipt) {
     lines.push(
@@ -563,7 +621,7 @@ export function buildWorkflowExecutionResultsMarkdown(
     );
   }
   if (!integrationCandidate) limitations.push('Integration has not produced a candidate.');
-  limitations.push(...deliveryStatusLines(deliveryWaits, deliveryIdentity, mergeReceipt));
+  limitations.push(...deliveryStatusLines(waits, deliveryIdentity, mergeReceipt));
   limitations.push(
     `Budget reports ${execution.budget.availableUnits} available, ${execution.budget.reservedUnits} reserved, and ${execution.budget.spentUnits} spent units.`,
   );

@@ -37,8 +37,8 @@ describe('developer execution HTTP adapter', () => {
     });
     await service.evidence('id');
     expect(client.get).toHaveBeenLastCalledWith('/workflow-executions/id/evidence');
-    await service.deliveryWaits('id/a');
-    expect(client.get).toHaveBeenLastCalledWith('/workflow-executions/id%2Fa/delivery-waits');
+    await service.waits('id/a');
+    expect(client.get).toHaveBeenLastCalledWith('/workflow-executions/id%2Fa/waits');
     await service.trace('id/a');
     expect(client.get).toHaveBeenLastCalledWith('/workflow-executions/id%2Fa/trace');
     await service.trace('id/a', { childId: 'child/a', after: 0, limit: 100 });

@@ -24,7 +24,7 @@ export function buildWorkflowExecutionHttpAdapter(client: ApiClient): IDeliveryE
         attempt_id: attemptId,
       }),
     evidence: (id) => client.get<Record<string, unknown>>(`${path(id)}/evidence`),
-    deliveryWaits: (id) => client.get(`${path(id)}/delivery-waits`),
+    waits: (id) => client.get(`${path(id)}/waits`),
     trace: (id, options = {}) => {
       const params = new URLSearchParams();
       if (options.childId) params.set('childId', options.childId);

@@ -171,10 +171,9 @@ data:
       gateway_adapter: {{ .Values.workflowExecution.gatewayAdapter | quote }}
       gateway_kwargs: {{ .Values.workflowExecution.gatewayKwargs | default dict | toJson }}
       admission_roles: {{ .Values.workflowExecution.admissionRoles | toJson }}
-      delivery_wait_repository_adapter: {{ .Values.workflowExecution.deliveryWaitRepositoryAdapter | quote }}
-      delivery_wait_repository_kwargs: {{ .Values.workflowExecution.deliveryWaitRepositoryKwargs | default dict | toJson }}
-      delivery_wait_observer_adapter: {{ .Values.workflowExecution.deliveryWaitObserverAdapter | quote }}
-      delivery_wait_observer_kwargs: {{ .Values.workflowExecution.deliveryWaitObserverKwargs | default dict | toJson }}
+      wait_repository_adapter: {{ .Values.workflowExecution.waitRepositoryAdapter | quote }}
+      wait_repository_kwargs: {{ .Values.workflowExecution.waitRepositoryKwargs | default dict | toJson }}
+      wait_observers: {{ .Values.workflowExecution.waitObservers | default list | toJson }}
       review_authenticator_adapter: {{ .Values.workflowExecution.reviewAuthenticatorAdapter | default "" | quote }}
       review_authenticator_kwargs: {{ .Values.workflowExecution.reviewAuthenticatorKwargs | default dict | toJson }}
       review_authenticator_secret_kwargs_env: {{ .Values.workflowExecution.reviewAuthenticatorSecretKwargsEnv | default dict | toJson }}
@@ -191,7 +190,7 @@ data:
       evidence_policy_id: {{ .Values.workflowExecution.evidencePolicyId | quote }}
       integration_policy_id: {{ .Values.workflowExecution.integrationPolicyId | quote }}
       max_child_reconcile_failures: {{ .Values.workflowExecution.maxChildReconcileFailures }}
-      max_delivery_wait_failures: {{ .Values.workflowExecution.maxDeliveryWaitFailures }}
+      max_wait_failures: {{ .Values.workflowExecution.maxWaitFailures }}
       max_parent_stop_failures: {{ .Values.workflowExecution.maxParentStopFailures }}
 
     cerbos:

@@ -183,15 +183,20 @@ verifies the source, base, method, pipeline, ancestry, and canonical merge resul
 An explicitly supplied operation ID must match. Retrying the merge operation still
 requires fresh preflight; it does not bypass a target that has already advanced.
 
-When checks or a queued merge are pending, the coordinator registers an exact
-candidate wait with `workflow_execution_wait_delivery` and yields to the graph's
-passive `wait` node. Ting persists the observation request and uses the existing
-developer execution worker to poll it. Terminal observations resume the parent
+When checks or a queued merge are pending, the coordinator registers a wait with
+`workflow_execution_wait` against the graph's pinned `wait` node, then yields to it.
+The call names one of the node's own declared `conditions` (`forge.checks`,
+`forge.merge`, ...) plus a condition-specific `request` identity — the tool call
+itself is `{nodeId, conditionType, request}`. Ting persists the wait and uses the
+existing developer execution worker to poll it through whichever
+`WaitConditionObserver` is registered for that exact condition type in Ting's
+`workflow_execution.wait_observers` configuration; the generic wait machinery never
+interprets what the condition means. Terminal observations resume the parent
 through `developer.delivery.observed`; no model turn is needed while waiting.
-The request binds the repository, review, source commit, target commit and branch,
-and configured integration policy. A merge wait also binds the merge method.
-Owner-scoped wait history is available at
-`GET /api/v1/ting/workflow-executions/{execution_id}/delivery-waits`.
+A `forge.checks`/`forge.merge` request binds the repository, review, source commit,
+target commit and branch, and configured integration policy; a merge wait also
+binds the merge method. Owner-scoped wait history is available at
+`GET /api/v1/ting/workflow-executions/{execution_id}/waits`.
 
 Integration-review or CI failures route to an executable coordinator repair
 stage. It reconciles the recorded plan revision and creates a complete replacement

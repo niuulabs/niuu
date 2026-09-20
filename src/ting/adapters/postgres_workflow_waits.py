@@ -1,22 +1,27 @@
-"""Postgres durable ledger for exact remote delivery observations."""
+"""Postgres durable ledger for condition-agnostic workflow waits."""
 
 from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 import asyncpg
 
-from ting.delivery.domain import DELIVERY_WAIT_FAILURE_PREFIX, DeliveryExecution
-from ting.domain.workflow_execution import TERMINAL_EXECUTION_STATES, WorkflowExecutionError
+from ting.domain.workflow_execution import (
+    TERMINAL_EXECUTION_STATES,
+    WorkflowExecution,
+    WorkflowExecutionError,
+)
 from ting.domain.workflow_wait import (
+    WAIT_FAILURE_PREFIX,
+    WAIT_OBSERVED_SUSPENSION_REASON,
     WaitObservation,
     WaitObservationStatus,
     WorkflowWait,
-    WorkflowWaitRequest,
     WorkflowWaitState,
-    delivery_candidate_digest,
+    wait_suspension_reason,
 )
 from ting.ports.workflow_wait import WorkflowWaitRepository
 
@@ -27,12 +32,13 @@ class PostgresWorkflowWaitRepository(WorkflowWaitRepository):
 
     async def reserve(
         self,
-        execution: DeliveryExecution,
-        request: WorkflowWaitRequest,
+        execution: WorkflowExecution,
         *,
         wait_id: UUID,
+        node_id: str,
+        condition_type: str,
+        request: dict[str, Any],
         request_digest: str,
-        candidate_digest: str,
         next_poll_at: datetime,
     ) -> WorkflowWait:
         async with self._pool.acquire() as conn, conn.transaction():
@@ -41,37 +47,29 @@ class PostgresWorkflowWaitRepository(WorkflowWaitRepository):
                 execution.id,
             )
             if current is None:
-                raise WorkflowExecutionError("Developer execution no longer exists")
-            current_candidate = _json_dict(current.get("integration_candidate"))
-            current_allocation = _json_dict(current.get("integration_allocation"))
-            current_digest = delivery_candidate_digest(
-                integration_candidate=current_candidate,
-                integration_allocation=current_allocation,
-            )
+                raise WorkflowExecutionError("Execution no longer exists")
             if (
                 current["revision"] != execution.revision
                 or current["current_generation"] != execution.current_generation
-                or current_digest != candidate_digest
                 or current["cancel_requested"]
                 or current["state"] in {state.value for state in TERMINAL_EXECUTION_STATES}
             ):
-                raise WorkflowExecutionError(
-                    "Developer execution changed while reserving its delivery wait"
-                )
+                raise WorkflowExecutionError("Execution changed while reserving its wait")
             active = await conn.fetchrow(
                 """
                 SELECT * FROM workflow_waits
-                WHERE execution_id = $1 AND execution_generation = $2
+                WHERE execution_id = $1 AND execution_generation = $2 AND node_id = $3
                   AND state <> 'notified'
                 FOR UPDATE
                 """,
                 execution.id,
                 execution.current_generation,
+                node_id,
             )
             if active is not None:
                 if active["request_digest"] != request_digest:
                     raise WorkflowExecutionError(
-                        "A different delivery observation is already active for this execution"
+                        "A different wait is already active for this wait node"
                     )
                 return _wait_from_row(active)
             existing = await conn.fetchrow(
@@ -88,7 +86,7 @@ class PostgresWorkflowWaitRepository(WorkflowWaitRepository):
                 """
                 INSERT INTO workflow_waits (
                     id, execution_id, execution_generation, execution_revision,
-                    candidate_digest, mode, request_digest, request, state, next_poll_at
+                    node_id, condition_type, request_digest, request, state, next_poll_at
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, 'pending', $9)
                 RETURNING *
                 """,
@@ -96,10 +94,10 @@ class PostgresWorkflowWaitRepository(WorkflowWaitRepository):
                 execution.id,
                 execution.current_generation,
                 execution.revision,
-                candidate_digest,
-                request.mode.value,
+                node_id,
+                condition_type,
                 request_digest,
-                json.dumps(request.canonical_payload(), sort_keys=True),
+                json.dumps(request, sort_keys=True),
                 next_poll_at,
             )
             result = await conn.execute(
@@ -110,10 +108,10 @@ class PostgresWorkflowWaitRepository(WorkflowWaitRepository):
                 WHERE id = $1 AND revision = $3
                 """,
                 execution.id,
-                ("awaiting_checks" if request.mode.value == "checks" else "awaiting_merge"),
+                wait_suspension_reason(condition_type),
                 execution.revision,
             )
-            _require_updated(result, "Developer execution changed while entering delivery wait")
+            _require_updated(result, "Execution changed while entering its wait")
         return _wait_from_row(row)
 
     async def list_for_execution(self, execution_id: UUID) -> list[WorkflowWait]:
@@ -191,7 +189,7 @@ class PostgresWorkflowWaitRepository(WorkflowWaitRepository):
             wait.lease_token,
             wait.fencing_generation,
         )
-        _require_updated(result, "delivery wait lease is no longer current")
+        _require_updated(result, "wait lease is no longer current")
 
     async def record_terminal(
         self,
@@ -202,14 +200,10 @@ class PostgresWorkflowWaitRepository(WorkflowWaitRepository):
         project_execution: bool,
     ) -> WorkflowWait:
         if not observation.terminal:
-            raise WorkflowExecutionError("Cannot terminally record a pending delivery observation")
+            raise WorkflowExecutionError("Cannot terminally record a pending wait observation")
         state = (
             WorkflowWaitState.READY
-            if observation.status
-            in {
-                WaitObservationStatus.CHECKS_PASSED,
-                WaitObservationStatus.MERGED,
-            }
+            if observation.status is WaitObservationStatus.SATISFIED
             else WorkflowWaitState.FAILED
         )
         async with self._pool.acquire() as conn, conn.transaction():
@@ -232,7 +226,7 @@ class PostgresWorkflowWaitRepository(WorkflowWaitRepository):
                 wait.fencing_generation,
             )
             if row is None:
-                raise WorkflowExecutionError("delivery wait lease is no longer current")
+                raise WorkflowExecutionError("wait lease is no longer current")
             if project_execution:
                 result = await conn.execute(
                     """
@@ -246,17 +240,17 @@ class PostgresWorkflowWaitRepository(WorkflowWaitRepository):
                     """,
                     wait.execution_id,
                     (
-                        "delivery_observed"
+                        WAIT_OBSERVED_SUSPENSION_REASON
                         if state is WorkflowWaitState.READY
-                        else f"{DELIVERY_WAIT_FAILURE_PREFIX}{observation.reason}"
+                        else f"{WAIT_FAILURE_PREFIX}{observation.reason}"
                     ),
                     wait.execution_generation,
                     expected_execution_revision,
                 )
                 _require_updated(
                     result,
-                    "Developer execution changed while recording its terminal delivery "
-                    "observation; the wait stays pending and is observed again",
+                    "Execution changed while recording its terminal wait observation; the "
+                    "wait stays pending and is observed again",
                 )
         return _wait_from_row(row)
 
@@ -274,7 +268,7 @@ class PostgresWorkflowWaitRepository(WorkflowWaitRepository):
             wait.lease_token,
             wait.fencing_generation,
         )
-        _require_updated(result, "delivery wait notification lease is no longer current")
+        _require_updated(result, "wait notification lease is no longer current")
 
 
 def _wait_from_row(row) -> WorkflowWait:
@@ -284,17 +278,26 @@ def _wait_from_row(row) -> WorkflowWait:
     observation_raw = row["observation"]
     if isinstance(observation_raw, str):
         observation_raw = json.loads(observation_raw)
+    observation = None
+    if observation_raw:
+        observation = WaitObservation(
+            status=WaitObservationStatus(observation_raw["status"]),
+            observed_at=datetime.fromisoformat(observation_raw["observedAt"]),
+            reason=observation_raw.get("reason", ""),
+            detail=observation_raw.get("detail") or {},
+        )
     return WorkflowWait(
         id=row["id"],
         execution_id=row["execution_id"],
-        request=WorkflowWaitRequest.model_validate(request_raw),
+        node_id=row["node_id"],
+        condition_type=row["condition_type"],
+        request=dict(request_raw),
         request_digest=row["request_digest"],
         execution_generation=int(row["execution_generation"]),
         execution_revision=int(row["execution_revision"]),
-        candidate_digest=row["candidate_digest"],
         state=WorkflowWaitState(row["state"]),
         next_poll_at=row["next_poll_at"],
-        observation=(WaitObservation.model_validate(observation_raw) if observation_raw else None),
+        observation=observation,
         attempt_count=row["attempt_count"],
         last_error=row["last_error"],
         lease_owner=row["lease_owner"],
@@ -308,17 +311,9 @@ def _wait_from_row(row) -> WorkflowWait:
 
 
 def _observation_json(observation: WaitObservation | None) -> str | None:
-    return observation.model_dump_json() if observation is not None else None
+    return json.dumps(observation.to_dict(), sort_keys=True) if observation is not None else None
 
 
 def _require_updated(result: str, message: str) -> None:
     if result != "UPDATE 1":
         raise WorkflowExecutionError(message)
-
-
-def _json_dict(value) -> dict | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        value = json.loads(value)
-    return dict(value)

@@ -35,7 +35,7 @@ async function configure(page: Page) {
   await page.route('**/api/v1/ting/workflow-executions**', async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith('/evidence')) return route.fulfill({ json: {} });
-    if (path.endsWith('/delivery-waits')) return route.fulfill({ json: [] });
+    if (path.endsWith('/waits')) return route.fulfill({ json: [] });
     return route.fulfill({
       json: path.endsWith('/workflow-executions') ? { executions: [run], nextCursor: null } : run,
     });

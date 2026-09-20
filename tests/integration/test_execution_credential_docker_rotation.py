@@ -41,7 +41,7 @@ def _token(issuer: WorkloadIdentityService, session_id: str) -> str:
             tenant_id="docker-proof-tenant",
             roles=["volundr:developer"],
         ),
-        workload_subject="workflow:developer-docker-proof",
+        workload_subject="workflow:execution-docker-proof",
         workload_name="developer-coordinator",
         audiences=[],
         token_use=VALKYRIE_BUILD_TOKEN_USE,

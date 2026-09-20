@@ -111,18 +111,18 @@ test('launches a ticket, retries the exact attempt, shows evidence and cancellat
           verification: { status: 'accepted', blockingReasons: [] },
         },
       });
-    if (path.endsWith('/delivery-waits'))
+    if (path.endsWith('/waits'))
       return route.fulfill({
         json: [
           {
             waitId: 'wait-1',
             executionId: execution.executionId,
-            mode: 'checks',
+            nodeId: 'await-checks',
+            conditionType: 'forge.checks',
             state: 'ready',
             requestDigest: 'request-digest',
             generation: 1,
             executionRevision: 4,
-            candidateDigest: 'candidate-digest',
             request: {
               repository: execution.repo,
               reviewNumber: 18,
@@ -135,26 +135,23 @@ test('launches a ticket, retries the exact attempt, shows evidence and cancellat
             attemptCount: 1,
             lastError: '',
             observation: {
-              status: 'checks_passed',
-              repository: execution.repo,
-              reviewNumber: 18,
-              expectedHeadSha: 'a'.repeat(40),
-              expectedBaseSha: 'base-sha',
-              expectedTargetBranch: 'proof-target',
+              status: 'satisfied',
               observedAt: '2026-01-01T00:00:00Z',
               reason: '',
-              candidate: null,
-              mergeReceipt: null,
-              checks: {
-                receipt_id: 'remote-receipt',
-                provider: 'forge-provider',
-                repository: execution.repo,
-                review_number: 18,
-                candidate_sha: 'a'.repeat(40),
-                tested_base_sha: 'base-sha',
-                observed_at: '2026-01-01T00:00:00Z',
-                provenance: null,
-                checks: [{ name: 'remote-ci', conclusion: 'passing', details_url: null }],
+              detail: {
+                candidate: null,
+                mergeReceipt: null,
+                checks: {
+                  receipt_id: 'remote-receipt',
+                  provider: 'forge-provider',
+                  repository: execution.repo,
+                  review_number: 18,
+                  candidate_sha: 'a'.repeat(40),
+                  tested_base_sha: 'base-sha',
+                  observed_at: '2026-01-01T00:00:00Z',
+                  provenance: null,
+                  checks: [{ name: 'remote-ci', conclusion: 'passing', details_url: null }],
+                },
               },
             },
           },

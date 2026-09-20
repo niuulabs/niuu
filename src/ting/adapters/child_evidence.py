@@ -105,7 +105,7 @@ class ForgeChildEvidenceVerifier(ChildEvidenceVerifier):
         )
         auth_token = None
         if self._token_issuer is not None:
-            session_key = f"workflow:developer-{execution.id.hex}"
+            session_key = f"workflow:execution-{execution.id.hex}"
             auth_token = self._token_issuer.issue_token(
                 principal=principal,
                 workload_subject=session_key,

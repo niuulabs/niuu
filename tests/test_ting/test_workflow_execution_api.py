@@ -120,7 +120,7 @@ def test_child_api_preserves_pending_input_identities() -> None:
 
 
 def _token(execution, *, forge_session_id: str | None = None) -> str:
-    session_key = f"workflow:developer-{execution.id.hex}"
+    session_key = f"workflow:execution-{execution.id.hex}"
     return jwt.encode(
         {
             "sub": execution.owner_id,
@@ -345,7 +345,7 @@ def test_launch_recovers_reserved_parent_session_without_duplicate_spawn(monkeyp
             return [
                 SimpleNamespace(
                     id="recovered-session",
-                    tracker_issue_id=f"workflow:developer-{repository.execution.id.hex}",
+                    tracker_issue_id=f"workflow:execution-{repository.execution.id.hex}",
                 )
             ]
 
@@ -1221,8 +1221,17 @@ def test_delivery_authorization_rejects_token_from_different_forge_session() -> 
     assert "parent Forge session" in response.json()["detail"]
 
 
-def test_delivery_wait_route_binds_owner_and_exact_coordinator_before_registration():
-    execution = _execution(state=ExecutionState.RUNNING)
+def _wait_graph(
+    node_id: str = "delivery-publication-wait", conditions=("forge.checks", "forge.merge")
+):
+    return {"graph": {"nodes": [{"id": node_id, "kind": "wait", "conditions": list(conditions)}]}}
+
+
+def test_wait_route_binds_owner_and_exact_coordinator_before_registration():
+    execution = _execution(
+        state=ExecutionState.RUNNING,
+        workflow_snapshot=_wait_graph(),
+    )
     repository = MemoryRepository(execution)
     service = SimpleNamespace(
         request_wait=AsyncMock(
@@ -1237,55 +1246,85 @@ def test_delivery_wait_route_binds_owner_and_exact_coordinator_before_registrati
     app.include_router(create_workflow_executions_router())
     app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
     client = TestClient(app)
-    url = f"/api/v1/ting/workflow-executions/{execution.id}/delivery-waits"
+    url = f"/api/v1/ting/workflow-executions/{execution.id}/waits"
     payload = {
-        "mode": "checks",
-        "repository": execution.repository,
-        "reviewNumber": 8,
-        "expectedHeadSha": "b" * 40,
-        "expectedBaseSha": execution.base_sha,
-        "expectedTargetBranch": execution.base_ref,
-        "policyId": "developer-integration",
+        "nodeId": "delivery-publication-wait",
+        "conditionType": "forge.checks",
+        "request": {"repository": execution.repository, "reviewNumber": 8},
     }
     response = client.post(url, headers=_headers(execution), json=payload)
     assert response.status_code == 200, response.text
-    bound_execution, wait_request = service.request_wait.await_args.args
+    bound_execution = service.request_wait.await_args.args[0]
+    wait_kwargs = service.request_wait.await_args.kwargs
     assert bound_execution.id == execution.id
-    assert wait_request.expected_head_sha == "b" * 40
-    assert wait_request.review_number == 8
+    assert wait_kwargs["node_id"] == "delivery-publication-wait"
+    assert wait_kwargs["condition_type"] == "forge.checks"
+    assert wait_kwargs["request"] == payload["request"]
+    assert wait_kwargs["allowed_condition_types"] == frozenset({"forge.checks", "forge.merge"})
     assert response.json()["state"] == "pending"
 
     another_owner = client.post(url, headers=_headers(execution, owner="other"), json=payload)
     assert another_owner.status_code == 404
     another_coordinator = client.post(url, headers=_headers(_execution()), json=payload)
     assert another_coordinator.status_code == 403
-    malformed = client.post(
-        url, headers=_headers(execution), json={**payload, "expectedHeadSha": "bad"}
+    missing_field = client.post(
+        url, headers=_headers(execution), json={"nodeId": "delivery-publication-wait"}
     )
-    assert malformed.status_code == 422
-    arbitrary_policy = client.post(url, headers=_headers(execution), json={**payload, "policy": {}})
-    assert arbitrary_policy.status_code == 422
+    assert missing_field.status_code == 422
+    extra_field = client.post(url, headers=_headers(execution), json={**payload, "policy": {}})
+    assert extra_field.status_code == 422
     assert service.request_wait.await_count == 1
 
 
-def test_delivery_wait_route_reports_configuration_and_contract_failures():
-    execution = _execution(state=ExecutionState.RUNNING)
+def test_wait_route_rejects_unknown_or_non_wait_node():
+    execution = _execution(state=ExecutionState.RUNNING, workflow_snapshot=_wait_graph())
+    repository = MemoryRepository(execution)
+    service = SimpleNamespace(request_wait=AsyncMock())
+    app = FastAPI()
+    app.state.settings = _settings()
+    app.state.workflow_wait_service = service
+    app.include_router(create_workflow_executions_router())
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
+    client = TestClient(app)
+    url = f"/api/v1/ting/workflow-executions/{execution.id}/waits"
+
+    unknown_node = client.post(
+        url,
+        headers=_headers(execution),
+        json={"nodeId": "no-such-node", "conditionType": "forge.checks", "request": {}},
+    )
+    assert unknown_node.status_code == 422
+    service.request_wait.assert_not_awaited()
+
+    no_graph_execution = _execution(state=ExecutionState.RUNNING)
+    no_graph_repository = MemoryRepository(no_graph_execution)
+    app.dependency_overrides[resolve_workflow_execution_repo] = lambda: no_graph_repository
+    no_graph = client.post(
+        url.replace(str(execution.id), str(no_graph_execution.id)),
+        headers=_headers(no_graph_execution),
+        json={
+            "nodeId": "delivery-publication-wait",
+            "conditionType": "forge.checks",
+            "request": {},
+        },
+    )
+    assert no_graph.status_code == 503
+    service.request_wait.assert_not_awaited()
+
+
+def test_wait_route_reports_configuration_and_contract_failures():
+    execution = _execution(state=ExecutionState.RUNNING, workflow_snapshot=_wait_graph())
     repository = MemoryRepository(execution)
     app = FastAPI()
     app.state.settings = _settings()
     app.include_router(create_workflow_executions_router())
     app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
     client = TestClient(app)
-    url = f"/api/v1/ting/workflow-executions/{execution.id}/delivery-waits"
+    url = f"/api/v1/ting/workflow-executions/{execution.id}/waits"
     payload = {
-        "mode": "merge",
-        "repository": execution.repository,
-        "reviewNumber": 8,
-        "expectedHeadSha": "b" * 40,
-        "expectedBaseSha": execution.base_sha,
-        "expectedTargetBranch": execution.base_ref,
-        "policyId": "developer-integration",
-        "method": "merge",
+        "nodeId": "delivery-publication-wait",
+        "conditionType": "forge.merge",
+        "request": {"repository": execution.repository, "reviewNumber": 8, "method": "merge"},
     }
     assert client.post(url, headers=_headers(execution), json=payload).status_code == 503
     service = SimpleNamespace(
@@ -1299,16 +1338,21 @@ def test_delivery_wait_route_reports_configuration_and_contract_failures():
     response = client.post(url, headers=_headers(execution), json=payload)
     assert response.status_code == 409
     assert response.json()["detail"] == "candidate differs from persisted integration"
+    assert service.request_wait.await_count == 1
 
 
-def test_delivery_wait_history_is_owner_scoped():
+def test_wait_history_is_owner_scoped():
     execution = _execution(state=ExecutionState.WAITING)
     repository = MemoryRepository(execution)
     service = SimpleNamespace(
         list_waits=AsyncMock(
             return_value=[
                 SimpleNamespace(
-                    to_dict=lambda: {"waitId": "wait-1", "state": "pending", "mode": "checks"},
+                    to_dict=lambda: {
+                        "waitId": "wait-1",
+                        "state": "pending",
+                        "conditionType": "forge.checks",
+                    },
                 )
             ]
         )
@@ -1319,10 +1363,10 @@ def test_delivery_wait_history_is_owner_scoped():
     app.include_router(create_workflow_executions_router())
     app.dependency_overrides[resolve_workflow_execution_repo] = lambda: repository
     client = TestClient(app)
-    url = f"/api/v1/ting/workflow-executions/{execution.id}/delivery-waits"
+    url = f"/api/v1/ting/workflow-executions/{execution.id}/waits"
     response = client.get(url, headers=_headers())
     assert response.status_code == 200, response.text
-    assert response.json()[0]["mode"] == "checks"
+    assert response.json()[0]["conditionType"] == "forge.checks"
     service.list_waits.assert_awaited_once_with(execution)
     assert client.get(url, headers=_headers(owner="other")).status_code == 404
     assert service.list_waits.await_count == 1

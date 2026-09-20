@@ -120,7 +120,12 @@ def test_rejects_subworkflow_node_with_an_ambiguous_joined_event() -> None:
 def test_passive_wait_node_survives_round_trip_without_a_persona() -> None:
     raw = payload()
     raw["graph"]["nodes"].append(
-        {"id": "external-wait", "kind": "wait", "label": "Await external observation"}
+        {
+            "id": "external-wait",
+            "kind": "wait",
+            "label": "Await external observation",
+            "conditions": ["external.observed"],
+        }
     )
     raw["graph"]["edges"].extend(
         [
@@ -152,11 +157,18 @@ def test_passive_wait_node_survives_round_trip_without_a_persona() -> None:
         ("incoming", "requires incoming suspension"),
         ("outgoing", "requires incoming suspension"),
         ("label", "label must be a non-empty string"),
+        ("no-conditions", "non-empty conditions list"),
+        ("duplicate-conditions", "duplicate condition"),
     ],
 )
 def test_rejects_invalid_passive_wait_nodes(mutation: str, reason: str) -> None:
     raw = payload()
-    wait = {"id": "external-wait", "kind": "wait", "label": "Await observation"}
+    wait = {
+        "id": "external-wait",
+        "kind": "wait",
+        "label": "Await observation",
+        "conditions": ["external.observed"],
+    }
     raw["graph"]["nodes"].append(wait)
     incoming = {
         "id": "wait-in",
@@ -181,6 +193,10 @@ def test_rejects_invalid_passive_wait_nodes(mutation: str, reason: str) -> None:
         raw["graph"]["edges"].remove(incoming)
     elif mutation == "outgoing":
         raw["graph"]["edges"].remove(outgoing)
+    elif mutation == "no-conditions":
+        wait["conditions"] = []
+    elif mutation == "duplicate-conditions":
+        wait["conditions"] = ["external.observed", "external.observed"]
     else:
         wait["label"] = ""
 
@@ -191,7 +207,12 @@ def test_rejects_invalid_passive_wait_nodes(mutation: str, reason: str) -> None:
 def test_rejects_wait_node_with_an_ambiguous_observed_event() -> None:
     raw = payload()
     raw["graph"]["nodes"].append(
-        {"id": "external-wait", "kind": "wait", "label": "Await observation"}
+        {
+            "id": "external-wait",
+            "kind": "wait",
+            "label": "Await observation",
+            "conditions": ["external.observed"],
+        }
     )
     raw["graph"]["edges"].extend(
         [
@@ -219,11 +240,17 @@ def test_rejects_wait_node_with_an_ambiguous_observed_event() -> None:
         load_workflow_document(yaml.safe_dump(raw))
 
 
-def test_rejects_more_than_one_wait_node() -> None:
+def test_allows_more_than_one_wait_node() -> None:
+    """Several wait nodes may coexist: each is addressed by its own node id."""
     raw = payload()
     for suffix in ("a", "b"):
         raw["graph"]["nodes"].append(
-            {"id": f"external-wait-{suffix}", "kind": "wait", "label": "Await observation"}
+            {
+                "id": f"external-wait-{suffix}",
+                "kind": "wait",
+                "label": "Await observation",
+                "conditions": [f"external.observed.{suffix}"],
+            }
         )
         raw["graph"]["edges"].extend(
             [
@@ -242,5 +269,6 @@ def test_rejects_more_than_one_wait_node() -> None:
             ]
         )
 
-    with pytest.raises(WorkflowDocumentError, match="at most one wait node"):
-        load_workflow_document(yaml.safe_dump(raw))
+    document = load_workflow_document(yaml.safe_dump(raw))
+
+    assert workflow_document_payload(document) == raw
