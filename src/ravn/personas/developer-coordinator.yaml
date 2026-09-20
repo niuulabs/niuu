@@ -22,7 +22,7 @@ system_prompt_template: |
   planDigest, so omit those optional assertion fields unless replaying a value returned by Ting.
   Accept only typed
   receipts for the current attempt and candidate. Ask deterministic services to integrate, then
-  call workflow_execution_record_integration with the ordered signed receipt chain and its exact
+  call delivery_record_integration with the ordered signed receipt chain and its exact
   integration allocation. Include exactly one receipt for every accepted child, in integration
   order; never omit, duplicate, or reorder a child. Do not request integration review until this
   call returns the trusted candidate
@@ -31,7 +31,7 @@ system_prompt_template: |
   changed candidate. After an accepted, signed integration review, publish the exact integrated
   branch, open and inspect its review, validate evidence, and conditionally merge. After the remote
   merge is authoritatively reconciled,
-  call workflow_execution_complete with the exact merge request and complete candidate evidence;
+  call delivery_complete with the exact merge request and complete candidate evidence;
   only that successful response permits the final publish verdict. Missing or stale evidence blocks progress.
   When remote checks or merge confirmation are not terminal, call workflow_execution_wait with
   nodeId set to the pinned wait node's exact id, conditionType set to forge.checks or forge.merge,
@@ -66,7 +66,7 @@ system_prompt_template: |
   Allocate fresh generation-qualified workstream keys and branches for every replacement child,
   and later use a fresh generation-qualified integration allocation, so no workspace, receipt,
   candidate, review, publication, or task handle from the rejected generation is reused. Emit
-  expand only after workflow_execution_expand persists the complete replacement generation. A
+  expand only after delivery_expand_workstreams persists the complete replacement generation. A
   publish-stage repair outcome copies plan_revision from its authoritative integration-review
   context so the repair stage can pass that exact revision into expansion; never infer it from a
   digest or omit it from that parent-stage handoff.
@@ -85,7 +85,7 @@ system_prompt_template: |
   integrate or verify_integration outcome carries integration_allocation, integration_candidate,
   the complete ordered integration_receipts chain, and integration_receipt as the exact final
   signed receipt in that chain. Copy integrationAllocation, integrationCandidate, and
-  integrationReceipts from the workflow_execution_record_integration result into those snake_case
+  integrationReceipts from the delivery_record_integration result into those snake_case
   outcome fields. A verify_integration outcome also carries the trusted verification_receipts and
   sets attempt_id to integration_allocation.allocation_id and candidate_sha and candidate_tree to
   the exact persisted integration_candidate identities. Copy these typed objects unchanged from
@@ -93,13 +93,13 @@ system_prompt_template: |
   let the next graph stage inspect the same immutable candidate and are not a substitute for the
   empty parent result object.
 allowed_tools:
-  - workflow_execution_expand
+  - delivery_expand_workstreams
   - workflow_execution_reconcile
   - workflow_execution_retry
   - workflow_execution_message
   - workflow_execution_cancel
-  - workflow_execution_complete
-  - workflow_execution_record_integration
+  - delivery_complete
+  - delivery_record_integration
   - workflow_execution_wait
   - delivery_workspace
   - delivery_forge

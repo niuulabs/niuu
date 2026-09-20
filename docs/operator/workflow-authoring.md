@@ -78,6 +78,45 @@ checks/reviews and their trusted producer IDs. Authors select requirements;
 operators configure the services that produce and authenticate those receipts.
 An ordinary agent's assertion that a check passed is not a signed receipt.
 
+## Declaring a subworkflow node's default children
+
+A `kind: subworkflow` node fans out into a bounded generation of child
+workflows that a coordinator persona proposes through the expansion route.
+When the author already knows the shape of that fan-out — a fixed set of
+research threads, review angles, or translation targets — the node can
+declare its own default children instead of leaving every one of them to be
+invented at runtime:
+
+```yaml
+- id: research-threads
+  kind: subworkflow
+  workflowDependency: thread
+  allowedCoordinator: research-coordinator
+  maxChildren: 6
+  maxAttempts: 2
+  joinMode: all
+  blockedEvent: research.threads.blocked
+  children:
+    - key: breadth
+      objective: Map the landscape widely across the framed question.
+      input: {}
+    - key: depth
+      objective: Drill into the highest-value thread from the frame.
+      dependencies: [breadth]
+      input: {}
+```
+
+Each entry names a unique `key` and a non-empty `objective`; `dependencies`
+must reference other declared keys and must not form a cycle; `input` is
+validated against the node's own `inputSchema` when the node declares one.
+
+The engine never expands these on its own. A coordinator persona still calls
+the expansion tool to propose them — verbatim, amended, or alongside
+additional children it invents — the same way it would for any other
+generation. The declared list is exposed on the execution response
+(`declaredChildren`) purely so the coordinator can see what the graph already
+knows about its node before it decides.
+
 ## Current boundaries
 
 Ordinary noncoding graphs already run through the existing workflow runtime.

@@ -23,7 +23,7 @@ _FEATURE_VOCABULARY = re.compile(
     r"|evidence|snapshot|completion|credential|a2a|plan|candidate)"
     r"|Developer(Execution|Delivery|Child|Coordinat|Credential|A2A|Evidence|Review"
     r"|Integration|Snapshot|Completion)"
-    r"""|["']developer[-.][a-z]|:developer-"""
+    r"""|["']developer[-.][a-z]|:developer-|developer:[a-z]"""
 )
 
 BURN_DOWN: frozenset[str] = frozenset()

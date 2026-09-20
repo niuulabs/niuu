@@ -6,8 +6,8 @@ version: 1.0.0
 persona_dependencies:
   developer-coordinator:
     id: developer-coordinator
-    revision: content-dd029911fb1ef340
-    digest: sha256:dd029911fb1ef340d482ec21e9fd4037b5cda247da2c3133f695041a1f25ec32
+    revision: content-88ab53096f6bf786
+    digest: sha256:88ab53096f6bf786bf2f9c02f3a82eb91cf633e4ba9d1dd238d47a013d1337b1
     path: personas/developer-coordinator.yaml
   developer-integration-verifier:
     id: developer-integration-verifier

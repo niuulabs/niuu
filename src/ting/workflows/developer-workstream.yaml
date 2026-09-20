@@ -6,13 +6,13 @@ version: 1.0.0
 persona_dependencies:
   developer-coordinator:
     id: developer-coordinator
-    revision: content-dd029911fb1ef340
-    digest: sha256:dd029911fb1ef340d482ec21e9fd4037b5cda247da2c3133f695041a1f25ec32
+    revision: content-88ab53096f6bf786
+    digest: sha256:88ab53096f6bf786bf2f9c02f3a82eb91cf633e4ba9d1dd238d47a013d1337b1
     path: personas/developer-coordinator.yaml
   developer-coder:
     id: developer-coder
-    revision: content-81bc57dd11846cf0
-    digest: sha256:81bc57dd11846cf0214beabbf997f46022970eab3df51239067c218642bde047
+    revision: content-a6eba7bfb959be20
+    digest: sha256:a6eba7bfb959be20a1af79f3d4243de89ae4bda15e138188ae3ab8e5290d5714
     path: personas/developer-coder.yaml
   developer-code-reviewer:
     id: developer-code-reviewer
@@ -43,9 +43,10 @@ graph:
     - workflow_execution_retry
     - workflow_execution_cancel
     - workflow_execution_message
-    - workflow_execution_complete
-    - workflow_execution_record_integration
+    - delivery_complete
+    - delivery_record_integration
     - workflow_execution_wait
+    - delivery_expand_workstreams
     - delivery_forge
     - delivery_evidence
   toolActions:

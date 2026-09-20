@@ -6,8 +6,8 @@ version: 1.0.0
 persona_dependencies:
   developer-coordinator:
     id: developer-coordinator
-    revision: content-dd029911fb1ef340
-    digest: sha256:dd029911fb1ef340d482ec21e9fd4037b5cda247da2c3133f695041a1f25ec32
+    revision: content-88ab53096f6bf786
+    digest: sha256:88ab53096f6bf786bf2f9c02f3a82eb91cf633e4ba9d1dd238d47a013d1337b1
     path: personas/developer-coordinator.yaml
   developer-analyst:
     id: developer-analyst
@@ -37,8 +37,8 @@ persona_dependencies:
 workflow_dependencies:
   workstream:
     id: 98133eab-cd89-44d1-b32d-26c82f99dddc
-    revision: sha256:7f97a642f3c64a5c5abff9a1be95d9d98e6153c3ad77b020b7b0574b98720065
-    digest: sha256:7f97a642f3c64a5c5abff9a1be95d9d98e6153c3ad77b020b7b0574b98720065
+    revision: sha256:102f10a88e502a59dcb3c9a21efffc61a9c302238ebc5197387d16f602adaa7f
+    digest: sha256:102f10a88e502a59dcb3c9a21efffc61a9c302238ebc5197387d16f602adaa7f
     path: workflows/developer-workstream.yaml
 graph:
   executionContract: developer-delivery/v1

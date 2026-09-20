@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import quote
 
 from niuu.domain.delivery import (
     BranchPublicationRequest,
@@ -17,14 +16,14 @@ from niuu.domain.delivery import (
 from ravn.adapters.tool_build.http import AsyncJsonHttpClient
 
 
-class HttpWorkflowExecutionClient:
-    """Call the owner-bound Ting coordinator facade from a Ravn session.
+class HttpDeliveryExecutionClient:
+    """Call the code-delivery execution specialization from a Ravn session.
 
-    Domain-neutral lifecycle operations (reconcile, retry, cancel, message,
-    wait) call the generic ``/workflow-executions`` execution; the two
-    operations that carry a git-shaped payload (workstream expansion, and
-    the delivery-only completion/integration calls) call the code-delivery
-    specialization at ``/delivery-executions`` for the same execution id.
+    These three operations carry a git-shaped payload (workstream expansion,
+    typed merge/candidate completion, and signed integration recording) and
+    call ``/delivery-executions`` for the same execution id that the generic
+    ``ravn.adapters.workflow_execution_http.HttpWorkflowExecutionClient``
+    addresses through ``/workflow-executions``.
     """
 
     def __init__(
@@ -38,40 +37,17 @@ class HttpWorkflowExecutionClient:
             raise ValueError("developer execution_id is required")
         root = base_url.rstrip("/")
         execution_id = execution_id.strip()
-        self._url = f"{root}/api/v1/ting/workflow-executions/{execution_id}"
-        self._delivery_url = f"{root}/api/v1/ting/delivery-executions/{execution_id}"
+        self._url = f"{root}/api/v1/ting/delivery-executions/{execution_id}"
         self._client = client
 
-    async def expand(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._post(self._delivery_url, "/expansions", payload)
-
-    async def reconcile(self, payload: dict[str, Any]) -> dict[str, Any]:
-        del payload
-        return await self._post(self._url, "/reconcile", {})
-
-    async def retry(self, payload: dict[str, Any]) -> dict[str, Any]:
-        child_key = str(payload.get("child_key") or "").strip()
-        attempt_id = str(payload.get("attempt_id") or "").strip()
-        if not child_key or not attempt_id:
-            raise ValueError("retry requires the exact child_key and current attempt_id")
-        return await self._post(
-            self._url, f"/children/{quote(child_key, safe='')}/retry", {"attempt_id": attempt_id}
-        )
-
-    async def cancel(self) -> dict[str, Any]:
-        return await self._post(self._url, "/cancel", {})
-
-    async def message(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._post(self._url, "/messages", payload)
+    async def expand_workstreams(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._post(self._url, "/expansions", payload)
 
     async def complete(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._post(self._delivery_url, "/complete", payload)
+        return await self._post(self._url, "/complete", payload)
 
     async def record_integration(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._post(self._delivery_url, "/integration-candidate", payload)
-
-    async def wait(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._post(self._url, "/waits", payload)
+        return await self._post(self._url, "/integration-candidate", payload)
 
     async def _post(self, base_url: str, suffix: str, payload: dict[str, Any]) -> dict[str, Any]:
         response = await self._client.post(base_url + suffix, payload)

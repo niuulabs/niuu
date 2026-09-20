@@ -1,20 +1,25 @@
-schema_version: 1
+schema_version: 2
 id: 1bfc01b1-4d01-5d20-86e1-2956dff11464
 name: Research Campaign
-description: Flexible deep-research workflow that frames a question, explores the evidence deeply, challenges
-  the thesis, and distills durable memory into Mimir.
+description: Flexible deep-research workflow that frames a question, explores the evidence deeply through parallel
+  threads, challenges the thesis, and distills durable memory into Mimir.
 version: 1.0.0
 persona_dependencies:
+  research-analyst:
+    id: research-analyst
+    revision: content-74b1d265222e22bc
+    digest: sha256:74b1d265222e22bc865910f6a6000e79ffbe6f400f76ef727f0e3db844ef6495
+    path: personas/research-analyst.yaml
+  research-coordinator:
+    id: research-coordinator
+    revision: content-04c0d35f0f5f2409
+    digest: sha256:04c0d35f0f5f2409a3a60ab88b9a582bc44f6268351a80b425daf3c7ba20b023
+    path: personas/research-coordinator.yaml
   research-curator:
     id: research-curator
     revision: content-5a0a1f4c3921ad43
     digest: sha256:5a0a1f4c3921ad439ffbd56df012d59cca97c300e89424eadea256771a163d59
     path: personas/research-curator.yaml
-  research-explorer:
-    id: research-explorer
-    revision: content-3473f94adab9ff8a
-    digest: sha256:3473f94adab9ff8a9cbac94f3f89e6c8b1801efd19cd04b88b081f1a150d32cb
-    path: personas/research-explorer.yaml
   research-framer:
     id: research-framer
     revision: content-c0e2d1858e4f92fa
@@ -22,19 +27,25 @@ persona_dependencies:
     path: personas/research-framer.yaml
   research-publisher:
     id: research-publisher
-    revision: content-e03c110ea6be6a1e
-    digest: sha256:e03c110ea6be6a1e36db8b0964ad517e993f5e11c0b464ef333fcd93068d3244
+    revision: content-34d86029c872386e
+    digest: sha256:34d86029c872386e169ab41945a6d22849039a5a21a4137e2982062ab33b1449
     path: personas/research-publisher.yaml
   research-skeptic:
     id: research-skeptic
-    revision: content-f6b9ff45d63175ca
-    digest: sha256:f6b9ff45d63175cac24b05fc5f20499bf601a14b84cb450652de2b08681c7cce
+    revision: content-bc15a3c42fd916f7
+    digest: sha256:bc15a3c42fd916f7efffadcae01e9ebe13deb6da0cf009b5061a470f3fcd03a9
     path: personas/research-skeptic.yaml
   research-synthesist:
     id: research-synthesist
-    revision: content-528cb48375d9e90d
-    digest: sha256:528cb48375d9e90d963fd5ed1b13b118ef6ecb081b77bc2c1c57e185d15ffa9a
+    revision: content-42adc4ae8106bddf
+    digest: sha256:42adc4ae8106bddf782d3f7c785d9b8debff5a283b5f4741801e7ee2310b1e55
     path: personas/research-synthesist.yaml
+workflow_dependencies:
+  thread:
+    id: 4e7ebec4-0cfa-4567-98dd-2ee4ce0bc308
+    revision: sha256:19b6257e74141459d11d4bd4eefb350d0cd4a68853f1be1c375057b8055a31a2
+    digest: sha256:19b6257e74141459d11d4bd4eefb350d0cd4a68853f1be1c375057b8055a31a2
+    path: workflows/research-thread.yaml
 graph:
   tags:
   - research
@@ -63,7 +74,7 @@ graph:
     - sources
     position:
       x: 320
-      y: 520
+      y: 560
   - id: research-frame
     kind: stage
     label: Frame the inquiry
@@ -78,19 +89,81 @@ graph:
     position:
       x: 320
       y: 280
-  - id: research-explore
+  - id: research-coordinate
     kind: stage
-    label: Explore the evidence
+    label: Define and dispatch exploration threads
     executionMode: sequential
     joinMode: any
     stageMembers:
-    - personaId: research-explorer
-      budget: 16
+    - personaId: research-coordinator
+      budget: 20
       model: gpt-5.5
       consumesEventTypes:
       - research.framed
+      - research.threads.blocked
     position:
       x: 608
+      y: 280
+  - id: research-threads
+    kind: subworkflow
+    label: Explore the framed question across parallel threads
+    workflowDependency: thread
+    allowedCoordinator: research-coordinator
+    maxChildren: 12
+    maxActiveChildren: 3
+    maxAttempts: 2
+    joinMode: all
+    blockedEvent: research.threads.blocked
+    inputSchema:
+      type: object
+      properties:
+        slug: {type: string}
+        angle: {type: string}
+      required: [slug, angle]
+      additionalProperties: false
+    resultSchema:
+      type: object
+      properties:
+        question: {type: string, minLength: 1}
+        findings:
+          type: array
+          minItems: 1
+          items: {type: string, minLength: 1}
+        sources:
+          type: array
+          items: {type: string, minLength: 1}
+        confidence: {type: string, enum: [high, medium, low]}
+        openQuestions:
+          type: array
+          items: {type: string, minLength: 1}
+      required: [question, findings, sources, confidence, openQuestions]
+      additionalProperties: false
+    children:
+    - key: breadth
+      objective: Map the landscape widely across the framed question before anyone collapses too early into one story.
+      input: {slug: campaign, angle: breadth}
+    - key: depth
+      objective: Drill into the highest-value thread from the frame and track mechanisms, not just headlines.
+      input: {slug: campaign, angle: depth}
+    - key: contrarian
+      objective: Hunt for counterpoints, contradictory evidence, and neglected context that weaken the default story.
+      input: {slug: campaign, angle: contrarian}
+    position:
+      x: 928
+      y: 280
+  - id: research-analysis
+    kind: stage
+    label: Analyze the joined threads
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: research-analyst
+      budget: 28
+      model: gpt-5.5
+      consumesEventTypes:
+      - research.threads.joined
+    position:
+      x: 1216
       y: 280
   - id: research-challenge
     kind: stage
@@ -102,9 +175,9 @@ graph:
       budget: 14
       model: gpt-5.5
       consumesEventTypes:
-      - research.explored
+      - research.analyzed
     position:
-      x: 928
+      x: 1504
       y: 280
   - id: research-synthesis
     kind: stage
@@ -118,7 +191,7 @@ graph:
       consumesEventTypes:
       - research.challenged
     position:
-      x: 1216
+      x: 1792
       y: 280
   - id: research-curation
     kind: stage
@@ -132,7 +205,7 @@ graph:
       consumesEventTypes:
       - research.synthesized
     position:
-      x: 1504
+      x: 2080
       y: 280
   - id: research-publish
     kind: stage
@@ -146,7 +219,7 @@ graph:
       consumesEventTypes:
       - research.curated
     position:
-      x: 1792
+      x: 2368
       y: 280
   - id: research-complete
     kind: end
@@ -154,21 +227,29 @@ graph:
     joinMode: all
     completionEvent: research.completed
     position:
-      x: 2080
+      x: 2656
       y: 280
   edges:
   - id: edge-research-request-to-frame
     source: research-request
     target: research-frame
     label: research.requested -> research.requested
-  - id: edge-frame-to-explore
+  - id: edge-frame-to-coordinate
     source: research-frame
-    target: research-explore
+    target: research-coordinate
     label: research.framed -> research.framed
-  - id: edge-explore-to-challenge
-    source: research-explore
+  - id: edge-coordinate-to-threads
+    source: research-coordinate
+    target: research-threads
+    label: research.threads.waiting -> research.threads.waiting
+  - id: edge-threads-to-analysis
+    source: research-threads
+    target: research-analysis
+    label: research.threads.joined -> research.threads.joined
+  - id: edge-analysis-to-challenge
+    source: research-analysis
     target: research-challenge
-    label: research.explored -> research.explored
+    label: research.analyzed -> research.analyzed
   - id: edge-challenge-to-synthesis
     source: research-challenge
     target: research-synthesis

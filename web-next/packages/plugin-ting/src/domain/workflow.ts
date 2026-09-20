@@ -148,6 +148,21 @@ export const workflowResourceNodeSchema = z.object({
 });
 export type WorkflowResourceNode = z.input<typeof workflowResourceNodeSchema>;
 
+/**
+ * A default child a subworkflow node already knows about when the workflow
+ * is authored (a research thread, a review angle, ...). The engine never
+ * auto-expands these — a coordinator persona still decides, through the
+ * ordinary expansion route, whether to propose them verbatim, amended, or
+ * alongside additional children it invents at runtime.
+ */
+export const workflowDeclaredChildSchema = z.object({
+  key: z.string().min(1),
+  objective: z.string().min(1),
+  dependencies: z.array(z.string().min(1)).optional(),
+  input: z.record(z.string(), z.unknown()).optional(),
+});
+export type WorkflowDeclaredChild = z.input<typeof workflowDeclaredChildSchema>;
+
 export const workflowSubworkflowNodeSchema = z.object({
   id: z.string().min(1),
   kind: z.literal('subworkflow'),
@@ -167,6 +182,8 @@ export const workflowSubworkflowNodeSchema = z.object({
    * own outgoing edge, the same way any other node's continuation is.
    */
   blockedEvent: z.string().min(1).optional(),
+  /** Default children this node already declares; see `workflowDeclaredChildSchema`. */
+  children: z.array(workflowDeclaredChildSchema).optional(),
 });
 export type WorkflowSubworkflowNode = z.input<typeof workflowSubworkflowNodeSchema>;
 

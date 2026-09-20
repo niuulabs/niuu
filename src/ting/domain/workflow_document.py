@@ -13,6 +13,7 @@ from uuid import UUID
 
 import yaml
 
+from niuu.domain.json_schema import PortableSchemaError, validate_object_instance
 from niuu.domain.workflow_evidence import validate_evidence_gate_nodes
 from ravn.domain.persona_document import PersonaDocumentError, validate_persona_identifier
 from ting.domain.exceptions import WorkflowDocumentError
@@ -864,6 +865,7 @@ def _validate_subworkflow_nodes(
             )
         _validate_contract_schema(node.get("inputSchema"), node_id=node_id, field="inputSchema")
         _validate_contract_schema(node.get("resultSchema"), node_id=node_id, field="resultSchema")
+        _validate_declared_children(node, node_id=node_id)
         _validate_bounded_integer(
             node.get("maxChildren"),
             node_id=node_id,
@@ -901,6 +903,93 @@ def _validate_subworkflow_nodes(
             raise WorkflowDocumentError(
                 f"Subworkflow node {node_id!r} blockedEvent must differ from its joined event"
             )
+
+
+def _validate_declared_children(node: dict[str, Any], *, node_id: str) -> None:
+    """Validate a subworkflow node's optional default child declarations.
+
+    A `subworkflow` node may declare `children` up front when the workflow
+    author already knows the shape of the fan-out (research threads, review
+    angles, ...). The engine never auto-expands these: a coordinator persona
+    still decides whether to propose them, verbatim or amended, through the
+    ordinary expansion route. This only validates that the declaration itself
+    is internally consistent.
+    """
+    if "children" not in node:
+        return
+    children = node["children"]
+    if not isinstance(children, list) or not children:
+        raise WorkflowDocumentError(
+            f"Subworkflow node {node_id!r} children must be a non-empty list when declared"
+        )
+    input_schema = node.get("inputSchema")
+    by_key: dict[str, dict[str, Any]] = {}
+    for entry in children:
+        if not isinstance(entry, dict):
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} children entries must be mappings"
+            )
+        unknown = set(entry) - {"key", "objective", "dependencies", "input"}
+        if unknown:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} children entry has unknown field(s): "
+                + ", ".join(sorted(unknown))
+            )
+        key = _required_string(entry.get("key"), f"subworkflow node {node_id!r} child key")
+        _required_string(
+            entry.get("objective"), f"subworkflow node {node_id!r} child {key!r} objective"
+        )
+        if key in by_key:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} declares duplicate child key {key!r}"
+            )
+        by_key[key] = entry
+    for key, entry in by_key.items():
+        dependencies = entry.get("dependencies", [])
+        if not isinstance(dependencies, list) or any(
+            not isinstance(item, str) or not item.strip() for item in dependencies
+        ):
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} child {key!r} dependencies must be a list of "
+                "non-empty strings"
+            )
+        unknown_dependencies = set(dependencies) - set(by_key)
+        if unknown_dependencies:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} child {key!r} has unknown dependencies: "
+                + ", ".join(sorted(unknown_dependencies))
+            )
+        if key in dependencies:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} child {key!r} cannot depend on itself"
+            )
+        child_input = entry.get("input", {})
+        if not isinstance(child_input, dict):
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} child {key!r} input must be a mapping"
+            )
+        if isinstance(input_schema, dict):
+            try:
+                validate_object_instance(child_input, input_schema, field=f"child {key!r} input")
+            except PortableSchemaError as exc:
+                raise WorkflowDocumentError(
+                    f"Subworkflow node {node_id!r} child {key!r} input is invalid: {exc}"
+                ) from exc
+    _require_acyclic_children(node_id, by_key)
+
+
+def _require_acyclic_children(node_id: str, by_key: dict[str, dict[str, Any]]) -> None:
+    remaining = {key: set(entry.get("dependencies") or ()) for key, entry in by_key.items()}
+    while remaining:
+        ready = [key for key, dependencies in remaining.items() if not dependencies]
+        if not ready:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} declared children contain a dependency cycle"
+            )
+        for key in ready:
+            remaining.pop(key)
+        for dependencies in remaining.values():
+            dependencies.difference_update(ready)
 
 
 def _validate_contract_schema(value: object, *, node_id: str, field: str) -> None:

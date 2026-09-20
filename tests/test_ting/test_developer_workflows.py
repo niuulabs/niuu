@@ -90,12 +90,12 @@ def test_developer_personas_and_templates_are_provider_neutral_and_coordinator_i
 
     coordinator = Path("src/ravn/personas/developer-coordinator.yaml").read_text(encoding="utf-8")
     for tool in (
-        "workflow_execution_expand",
+        "delivery_expand_workstreams",
         "workflow_execution_reconcile",
         "workflow_execution_message",
         "workflow_execution_cancel",
-        "workflow_execution_complete",
-        "workflow_execution_record_integration",
+        "delivery_complete",
+        "delivery_record_integration",
         "workflow_execution_wait",
         "delivery_workspace",
         "delivery_forge",

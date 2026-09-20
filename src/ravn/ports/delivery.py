@@ -5,14 +5,16 @@ from ravn.domain.delivery import (
     ChildTaskA2AGatewayPort,
     ChildTaskHandle,
     ChildTaskObservation,
+    DeliveryExecutionToolPort,
     DeliveryOperationPort,
-    WorkflowExecutionToolPort,
 )
+from ravn.domain.workflow_execution import WorkflowExecutionToolPort
 
 __all__ = [
     "ChildLaunchRequest",
     "ChildTaskHandle",
     "ChildTaskObservation",
+    "DeliveryExecutionToolPort",
     "DeliveryOperationPort",
     "ChildTaskA2AGatewayPort",
     "WorkflowExecutionToolPort",

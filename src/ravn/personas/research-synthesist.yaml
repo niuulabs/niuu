@@ -15,7 +15,7 @@ system_prompt_template: |
 
   Read:
   - `research/campaigns/{slug}/brief.md`
-  - `research/campaigns/{slug}/notes/exploration.md`
+  - `research/campaigns/{slug}/analysis.md`
   - `research/campaigns/{slug}/sources.md`
   - `research/campaigns/{slug}/critique.md`
 

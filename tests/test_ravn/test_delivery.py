@@ -26,24 +26,28 @@ from ravn.adapters.child_task_a2a import (
     _tool_payload,
 )
 from ravn.adapters.delivery_http import (
+    HttpDeliveryExecutionClient,
     HttpDeliveryServiceClient,
-    HttpWorkflowExecutionClient,
 )
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ravn.adapters.tool_build.http import HttpResponse
 from ravn.adapters.tools.delivery import (
+    DeliveryCompleteTool,
     DeliveryEvidenceTool,
+    DeliveryExpandWorkstreamsTool,
     DeliveryForgeTool,
+    DeliveryRecordIntegrationTool,
     DeliveryWorkspaceTool,
+)
+from ravn.adapters.tools.workflow_execution import (
     WorkflowExecutionCancelTool,
-    WorkflowExecutionCompleteTool,
     WorkflowExecutionExpandTool,
     WorkflowExecutionMessageTool,
     WorkflowExecutionReconcileTool,
-    WorkflowExecutionRecordIntegrationTool,
     WorkflowExecutionRetryTool,
     WorkflowExecutionWaitTool,
 )
+from ravn.adapters.workflow_execution_http import HttpWorkflowExecutionClient
 from ravn.cli.commands import _build_tool_mcp_tools
 from ravn.cli.tool_builders import _build_tools
 from ravn.config import Settings
@@ -360,7 +364,7 @@ async def test_message_tool_calls_durable_execution_facade() -> None:
 @pytest.mark.asyncio
 async def test_complete_tool_rejects_policy_bodies_before_service_call() -> None:
     service = MagicMock()
-    tool = WorkflowExecutionCompleteTool(service=service)
+    tool = DeliveryCompleteTool(service=service)
 
     result = await tool.execute(
         {"merge": {}, "evidence": {"nested": {"acceptance_policy": {"unsafe": True}}}}
@@ -606,7 +610,7 @@ async def test_delivery_tools_dispatch_every_provider_neutral_typed_operation() 
         assert all(
             item["properties"]["payload"].get("additionalProperties") is False for item in variants
         )
-        assert tool.required_permission == "developer:coordinate"
+        assert tool.required_permission == "workflow:coordinate"
         assert tool.parallelisable is False
         assert "narrow deterministic" in tool.description
     calls = [
@@ -715,12 +719,6 @@ async def test_workflow_execution_tools_dispatch_and_expose_strict_schemas() -> 
         async def message(self, payload):
             return {"operation": "message", **payload}
 
-        async def complete(self, payload):
-            return {"operation": "complete", **payload}
-
-        async def record_integration(self, payload):
-            return {"operation": "record_integration", **payload}
-
     cases = [
         (
             WorkflowExecutionExpandTool,
@@ -729,7 +727,16 @@ async def test_workflow_execution_tools_dispatch_and_expose_strict_schemas() -> 
                 "parent_node_id": "node",
                 "generation": 1,
                 "plan_revision": "plan-7",
-                "workstreams": [{}],
+                "children": [
+                    {
+                        "key": "api",
+                        "objective": "Do the thing",
+                        "budgetUnits": 4,
+                        "deadline": "2030-01-01T00:00:00Z",
+                        "agentId": "agent-1",
+                        "skillId": "skill-1",
+                    }
+                ],
             },
         ),
         (WorkflowExecutionReconcileTool, {"campaign_id": "campaign-1", "parent_node_id": "node"}),
@@ -746,9 +753,50 @@ async def test_workflow_execution_tools_dispatch_and_expose_strict_schemas() -> 
                 "message_id": "message-1",
             },
         ),
-        (WorkflowExecutionCompleteTool, {"merge": {}, "evidence": {}}),
+    ]
+    for tool_type, payload in cases:
+        tool = tool_type(service=Service())
+        assert tool.input_schema["additionalProperties"] is False
+        result = await tool.execute(payload)
+        assert not result.is_error
+        assert json.loads(result.content)["operation"] == tool.operation
+
+    expand_schema = WorkflowExecutionExpandTool(service=Service()).input_schema
+    assert "plan_revision" in expand_schema["required"]
+    proposal = expand_schema["properties"]["children"]["items"]
+    assert "inputDigest" not in proposal["required"]
+    assert "planDigest" not in proposal["required"]
+    message_schema = WorkflowExecutionMessageTool(service=Service()).input_schema
+    assert "metadata" in message_schema["required"]
+    assert set(proposal["required"]) >= {"key", "objective", "budgetUnits", "agentId", "skillId"}
+
+
+@pytest.mark.asyncio
+async def test_delivery_expand_workstreams_and_execution_tools_dispatch_strict_schemas() -> None:
+    class Service:
+        async def expand_workstreams(self, payload):
+            return {"operation": "expand_workstreams", **payload}
+
+        async def complete(self, payload):
+            return {"operation": "complete", **payload}
+
+        async def record_integration(self, payload):
+            return {"operation": "record_integration", **payload}
+
+    cases = [
         (
-            WorkflowExecutionRecordIntegrationTool,
+            DeliveryExpandWorkstreamsTool,
+            {
+                "campaign_id": "campaign-1",
+                "parent_node_id": "node",
+                "generation": 1,
+                "plan_revision": "plan-7",
+                "workstreams": [{}],
+            },
+        ),
+        (DeliveryCompleteTool, {"merge": {}, "evidence": {}}),
+        (
+            DeliveryRecordIntegrationTool,
             {
                 "integration_receipts": [{}],
                 "integration_allocation": {},
@@ -762,13 +810,12 @@ async def test_workflow_execution_tools_dispatch_and_expose_strict_schemas() -> 
         assert not result.is_error
         assert json.loads(result.content)["operation"] == tool.operation
 
-    expand_schema = WorkflowExecutionExpandTool(service=Service()).input_schema
+    assert DeliveryExpandWorkstreamsTool(service=Service()).name == "delivery_expand_workstreams"
+    expand_schema = DeliveryExpandWorkstreamsTool(service=Service()).input_schema
     assert "plan_revision" in expand_schema["required"]
     proposal = expand_schema["properties"]["workstreams"]["items"]
     assert "inputDigest" not in proposal["required"]
     assert "planDigest" not in proposal["required"]
-    message_schema = WorkflowExecutionMessageTool(service=Service()).input_schema
-    assert "metadata" in message_schema["required"]
     assert set(proposal["required"]) >= {
         "key",
         "objective",
@@ -898,9 +945,10 @@ def test_coordinator_tool_schemas_stay_below_native_compaction_budget() -> None:
         WorkflowExecutionRetryTool(service=service),
         WorkflowExecutionCancelTool(service=service),
         WorkflowExecutionMessageTool(service=service),
-        WorkflowExecutionCompleteTool(service=service),
-        WorkflowExecutionRecordIntegrationTool(service=service),
         WorkflowExecutionWaitTool(service=service),
+        DeliveryExpandWorkstreamsTool(service=service),
+        DeliveryCompleteTool(service=service),
+        DeliveryRecordIntegrationTool(service=service),
         DeliveryWorkspaceTool(service=service),
         DeliveryForgeTool(service=service),
         DeliveryEvidenceTool(service=service),
@@ -913,7 +961,7 @@ def test_coordinator_tool_schemas_stay_below_native_compaction_budget() -> None:
 
 def test_delivery_schema_exposes_exact_copy_and_policy_guidance() -> None:
     workspace = DeliveryWorkspaceTool(service=object())
-    complete = WorkflowExecutionCompleteTool(service=object())
+    complete = DeliveryCompleteTool(service=object())
 
     assert "Do not pass the child result wrapper" in workspace.description
     assert "configured workstream/evidence policy_id" in workspace.description
@@ -1012,13 +1060,13 @@ def test_coordinator_runtime_has_only_bounded_delivery_tools(tmp_path) -> None:
     )
     names = {tool.name for tool in tools}
     assert names == {
-        "workflow_execution_expand",
+        "delivery_expand_workstreams",
         "workflow_execution_reconcile",
         "workflow_execution_retry",
         "workflow_execution_message",
         "workflow_execution_cancel",
-        "workflow_execution_complete",
-        "workflow_execution_record_integration",
+        "delivery_complete",
+        "delivery_record_integration",
         "workflow_execution_wait",
         "delivery_workspace",
         "delivery_forge",
@@ -1026,7 +1074,7 @@ def test_coordinator_runtime_has_only_bounded_delivery_tools(tmp_path) -> None:
     }
     assert not names & {"bash", "terminal", "write_file", "edit_file", "a2a_task"}
 
-    execution = next(tool for tool in tools if tool.name == "workflow_execution_expand")
+    execution = next(tool for tool in tools if tool.name == "delivery_expand_workstreams")
     delivery = next(tool for tool in tools if tool.name == "delivery_workspace")
     assert delivery._service._client is execution._service._client
     assert execution._service._client._headers()["Authorization"] == "Bearer execution-token"
@@ -1045,13 +1093,13 @@ def test_coordinator_tool_mcp_builds_bounded_delivery_tools(tmp_path) -> None:
     tools = _build_tool_mcp_tools(settings, persona_config=persona)
 
     assert {tool.name for tool in tools} == {
-        "workflow_execution_expand",
+        "delivery_expand_workstreams",
         "workflow_execution_reconcile",
         "workflow_execution_retry",
         "workflow_execution_message",
         "workflow_execution_cancel",
-        "workflow_execution_complete",
-        "workflow_execution_record_integration",
+        "delivery_complete",
+        "delivery_record_integration",
         "workflow_execution_wait",
         "delivery_workspace",
         "delivery_forge",
@@ -1100,7 +1148,7 @@ def test_coordinator_runtime_explicit_anonymous_dev_avoids_platform_base_auth(tm
     )
 
     delivery = next(tool for tool in tools if tool.name == "delivery_workspace")
-    execution = next(tool for tool in tools if tool.name == "workflow_execution_expand")
+    execution = next(tool for tool in tools if tool.name == "delivery_expand_workstreams")
     assert delivery._service._client._auth is None
     assert execution._service._client._auth is None
     assert delivery._service._client is execution._service._client
@@ -1113,9 +1161,10 @@ _CHILD_WORKSTREAM_DISABLED_TOOLS = [
     "workflow_execution_retry",
     "workflow_execution_cancel",
     "workflow_execution_message",
-    "workflow_execution_complete",
-    "workflow_execution_record_integration",
+    "delivery_complete",
+    "delivery_record_integration",
     "workflow_execution_wait",
+    "delivery_expand_workstreams",
     "delivery_forge",
     "delivery_evidence",
 ]
@@ -1378,20 +1427,35 @@ async def test_http_execution_client_uses_owner_bound_routes() -> None:
     await client.reconcile({"ignored": True})
     await client.message({"child_key": "api", "message_id": "message-1"})
     await client.cancel()
-    await client.complete({"merge": {}, "evidence": {}})
-    await client.record_integration({"integration_receipts": [{}], "integration_allocation": {}})
     await client.wait({"nodeId": "wait-1", "conditionType": "forge.checks", "request": {}})
 
     assert [url for url, _body in http.posts] == [
-        "https://ting.example/api/v1/ting/delivery-executions/execution-1/expansions",
+        "https://ting.example/api/v1/ting/workflow-executions/execution-1/expansions",
         "https://ting.example/api/v1/ting/workflow-executions/execution-1/reconcile",
         "https://ting.example/api/v1/ting/workflow-executions/execution-1/messages",
         "https://ting.example/api/v1/ting/workflow-executions/execution-1/cancel",
-        "https://ting.example/api/v1/ting/delivery-executions/execution-1/complete",
-        "https://ting.example/api/v1/ting/delivery-executions/execution-1/integration-candidate",
         "https://ting.example/api/v1/ting/workflow-executions/execution-1/waits",
     ]
     assert http.posts[1][1] == http.posts[3][1] == {}
+
+
+@pytest.mark.asyncio
+async def test_http_delivery_execution_client_uses_delivery_routes() -> None:
+    http = _HttpClient()
+    client = HttpDeliveryExecutionClient(
+        base_url="https://ting.example/",
+        execution_id="execution-1",
+        client=http,  # type: ignore[arg-type]
+    )
+    await client.expand_workstreams({"generation": 1})
+    await client.complete({"merge": {}, "evidence": {}})
+    await client.record_integration({"integration_receipts": [{}], "integration_allocation": {}})
+
+    assert [url for url, _body in http.posts] == [
+        "https://ting.example/api/v1/ting/delivery-executions/execution-1/expansions",
+        "https://ting.example/api/v1/ting/delivery-executions/execution-1/complete",
+        "https://ting.example/api/v1/ting/delivery-executions/execution-1/integration-candidate",
+    ]
 
 
 @pytest.mark.asyncio

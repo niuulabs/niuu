@@ -153,7 +153,12 @@ def _build_tools(
         if workflow_sources:
             runtime_ctx["workflow_sources"] = workflow_sources
 
-    if settings.gateway.platform.enabled and include_groups & {"ravn", "a2a", "delivery"}:
+    if settings.gateway.platform.enabled and include_groups & {
+        "ravn",
+        "a2a",
+        "delivery",
+        "workflow_execution",
+    }:
         from ravn.adapters.agent_directory import (  # noqa: PLC0415
             GuildAgentDirectoryAdapter,
         )
@@ -196,15 +201,20 @@ def _build_tools(
             platform.base_url,
             *platform.a2a_trusted_origins,
         ]
-        if "delivery" in include_groups:
-            from ravn.adapters.delivery_http import (  # noqa: PLC0415
-                HttpDeliveryServiceClient,
-                HttpWorkflowExecutionClient,
-            )
-
+        # The domain-neutral execution lifecycle (workflow_execution_*) and the
+        # code-delivery specialization (delivery_expand_workstreams,
+        # delivery_complete/record_integration, delivery_workspace/
+        # forge/evidence) both need an owner-bound execution client whenever
+        # either group is requested; a persona gets only the tools its own
+        # group actually needs.
+        if include_groups & {"workflow_execution", "delivery"}:
             workflow_execution = settings.workflow_execution
             delivery_client = peer_client
             if workflow_execution.execution_id:
+                from ravn.adapters.workflow_execution_http import (  # noqa: PLC0415
+                    HttpWorkflowExecutionClient,
+                )
+
                 execution_base_url = workflow_execution.base_url or platform.base_url
                 execution_origins = list(dict.fromkeys([execution_base_url, platform.base_url]))
                 if platform.anonymous_dev_mode:
@@ -236,10 +246,25 @@ def _build_tools(
                     execution_id=workflow_execution.execution_id,
                     client=execution_client,
                 )
-            runtime_ctx["delivery_service"] = HttpDeliveryServiceClient(
-                base_url=platform.base_url,
-                client=delivery_client,
-            )
+                if "delivery" in include_groups:
+                    from ravn.adapters.delivery_http import (  # noqa: PLC0415
+                        HttpDeliveryExecutionClient,
+                    )
+
+                    runtime_ctx["delivery_execution"] = HttpDeliveryExecutionClient(
+                        base_url=execution_base_url,
+                        execution_id=workflow_execution.execution_id,
+                        client=execution_client,
+                    )
+            if "delivery" in include_groups:
+                from ravn.adapters.delivery_http import (  # noqa: PLC0415
+                    HttpDeliveryServiceClient,
+                )
+
+                runtime_ctx["delivery_service"] = HttpDeliveryServiceClient(
+                    base_url=platform.base_url,
+                    client=delivery_client,
+                )
 
     # The session_join tool only makes sense for a resident daemon, which owns
     # the manager and injects it here; when absent (CLI single-shot) the tool
@@ -252,14 +277,22 @@ def _build_tools(
         name == "workflow_execution" or name.startswith("workflow_execution_")
         for name in persona_allowed
     )
+    needs_delivery_execution = "delivery_expand_workstreams" in persona_allowed or any(
+        name in {"delivery_complete", "delivery_record_integration"} for name in persona_allowed
+    )
     needs_delivery_service = any(
         name in {"delivery_workspace", "delivery_forge", "delivery_evidence"}
         for name in persona_allowed
     )
     if needs_workflow_execution and runtime_ctx.get("workflow_execution") is None:
         raise RuntimeError(
-            "Persona requires durable developer execution tools, but an owner-bound "
+            "Persona requires durable workflow execution tools, but an owner-bound "
             "workflow_execution runtime context is not configured"
+        )
+    if needs_delivery_execution and runtime_ctx.get("delivery_execution") is None:
+        raise RuntimeError(
+            "Persona requires the code-delivery execution specialization, but an owner-bound "
+            "delivery_execution runtime context is not configured"
         )
     if needs_delivery_service and runtime_ctx.get("delivery_service") is None:
         raise RuntimeError(

@@ -1,0 +1,75 @@
+schema_version: 2
+id: 4e7ebec4-0cfa-4567-98dd-2ee4ce0bc308
+name: Research Thread
+description: Run one exploration thread on an assigned angle and produce a structured finding for the parent research campaign.
+version: 1.0.0
+persona_dependencies:
+  research-explorer:
+    id: research-explorer
+    revision: content-0dbcf7e4b53776d8
+    digest: sha256:0dbcf7e4b53776d8e310e0478cf65a5961c88ffaf8754ef4ad8e24229afe9c99
+    path: personas/research-explorer.yaml
+workflow_dependencies: {}
+graph:
+  tags:
+    - research
+    - thread
+  executionContract: research-thread/v1
+  disabledTools:
+    - workflow_execution_expand
+    - workflow_execution_reconcile
+    - workflow_execution_retry
+    - workflow_execution_cancel
+    - workflow_execution_message
+    - delivery_complete
+    - delivery_record_integration
+    - workflow_execution_wait
+    - delivery_expand_workstreams
+    - delivery_workspace
+    - delivery_forge
+    - delivery_evidence
+  nodes:
+    - id: thread-request
+      kind: trigger
+      label: Begin exploration thread
+      source: research campaign
+      dispatchEvent: research.thread.requested
+    - id: thread-memory
+      kind: resource
+      label: Research Memory
+      resourceType: mimir
+      bindingMode: registry
+      registryEntryId: mimir-yggdrasil
+      url: https://mimir.yggdrasil.niuu.world/api/v1
+      authRef: integration:volundr
+      role: shared
+      categories: [research, memory, sources]
+      position: {x: 320, y: 480}
+    - id: thread-explore
+      kind: stage
+      label: Explore the assigned angle
+      executionMode: sequential
+      joinMode: any
+      stageMembers:
+        - personaId: research-explorer
+          model: gpt-5.5
+          budget: 20
+          consumesEventTypes: [research.thread.requested]
+    - id: thread-complete
+      kind: end
+      label: Thread finding recorded
+      joinMode: all
+      passingVerdicts: [explored]
+      completionEvent: research.thread.completed
+  edges:
+    - {id: thread-request-explore, source: thread-request, target: thread-explore, label: research.thread.requested -> research.thread.requested}
+    - {id: thread-explore-complete, source: thread-explore, target: thread-complete, label: research.thread.completed -> research.thread.completed}
+  resourceBindings:
+    - id: binding-thread-memory
+      resourceNodeId: thread-memory
+      targetType: workflow
+      targetId: research-thread
+      access: read_write
+      writePrefixes:
+        - research/
+      readPriority: 1

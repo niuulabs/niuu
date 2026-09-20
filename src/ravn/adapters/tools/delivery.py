@@ -1,9 +1,15 @@
-"""Coordinator-safe tools for durable developer workflow operations."""
+"""Coordinator-safe tools for the code-delivery execution specialization.
+
+The domain-neutral fan-out/join, retry, message, cancel, and wait tools live
+in ``ravn.adapters.tools.workflow_execution``. This module holds only the
+tools shaped by the delivery contract: workstream expansion, typed
+merge/candidate completion, signed integration recording, and the narrow
+deterministic workspace/forge/evidence operations.
+"""
 
 from __future__ import annotations
 
 import inspect
-import json
 from typing import Any
 
 from niuu.domain.delivery import (
@@ -15,60 +21,39 @@ from niuu.domain.delivery import (
     WorkspaceAllocation,
     WorkstreamSpec,
 )
-from ravn.domain.delivery import WorkflowExecutionToolPort
+from ravn.adapters.tools.workflow_execution import (
+    WorkflowExecutionToolBase,
+    _error,
+    _payload_error,
+    _result,
+)
+from ravn.domain.delivery import DeliveryExecutionToolPort
 from ravn.domain.models import ToolResult
 from ravn.ports.tool import ToolPort
 
-_FORBIDDEN_PAYLOAD_FIELDS = frozenset(
-    {"command", "commands", "shell", "script", "policy", "acceptance_policy"}
-)
+
+class _DeliveryExecutionTool(WorkflowExecutionToolBase):
+    """Shared plumbing for a tool over the delivery execution specialization."""
+
+    def __init__(self, *, service: DeliveryExecutionToolPort) -> None:
+        super().__init__(service=service)
 
 
-class _WorkflowExecutionTool(ToolPort):
-    operation = ""
+class DeliveryExpandWorkstreamsTool(_DeliveryExecutionTool):
+    """Persist and dispatch a validated generation of developer workstreams.
 
-    def __init__(self, *, service: WorkflowExecutionToolPort) -> None:
-        self._service = service
+    Unlike the generic ``workflow_execution_expand``, each proposed child here
+    is a full git-shaped workstream: requirement ids, repository, base SHA,
+    allowed paths, expected outputs, test contracts, and an allocated
+    workspace. This posts to the code-delivery execution specialization.
+    """
 
-    @property
-    def name(self) -> str:
-        return f"workflow_execution_{self.operation}"
+    operation = "expand_workstreams"
+    tool_name = "delivery_expand_workstreams"
 
     @property
     def description(self) -> str:
-        return {
-            "expand": "Persist and dispatch a validated generation of developer child workflows.",
-            "reconcile": "Read durable child states and validate completed child result contracts.",
-            "retry": "Retry an eligible child using its exact current durable attempt ID.",
-            "message": (
-                "Reply to one exact outstanding child input using the current attempt_id. "
-                "Copy metadata.requestId for a question, or metadata.gateId plus "
-                "gateDecision for a gate, from the blocker notification. Reuse message_id "
-                "unchanged when retrying the same delivery."
-            ),
-            "cancel": (
-                "Irreversibly cancel the ENTIRE durable developer execution: every child "
-                "attempt, the whole campaign, and this coordinator's own session. There is no "
-                "per-child cancel; a single stuck child cannot be cancelled on its own. Use "
-                "workflow_execution_retry to recover one child instead, or "
-                "workflow_execution_reconcile plus a fresh generation for a broader repair."
-            ),
-            "complete": (
-                "Finalize only after deterministic merge evidence is verified. Copy the exact "
-                "reconciled MergeRequest and provide direct snake_case CandidateEvidence for the "
-                "integrated candidate; copy its signed receipt objects unchanged from trusted "
-                "tool results."
-            ),
-            "record_integration": (
-                "Persist a signed, verified integration candidate before independent review."
-            ),
-            "wait": (
-                "Persist a restart-safe wait against the exact pinned wait node, for one "
-                "condition type it declares (forge.checks, forge.merge, ...). After "
-                "registration, yield the workflow; the workflow's declared continuation event "
-                "resumes the coordinator with the terminal observation. This tool never merges."
-            ),
-        }[self.operation]
+        return "Persist and dispatch a validated generation of developer child workflows."
 
     @property
     def input_schema(self) -> dict:
@@ -76,121 +61,20 @@ class _WorkflowExecutionTool(ToolPort):
             "campaign_id": {"type": "string"},
             "parent_node_id": {"type": "string"},
             "generation": {"type": "integer", "minimum": 1},
-        }
-        required = ["campaign_id", "parent_node_id"]
-        if self.operation == "wait":
-            return {
-                "type": "object",
-                "properties": {
-                    "nodeId": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": (
-                            "Exact id of the pinned graph's wait node this wait is registered "
-                            "against."
-                        ),
-                    },
-                    "conditionType": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": (
-                            "One of the wait node's declared condition types, e.g. forge.checks "
-                            "or forge.merge."
-                        ),
-                    },
-                    "request": {
-                        "type": "object",
-                        "description": (
-                            "Condition-specific identity. For forge.checks: repository, "
-                            "reviewNumber, expectedHeadSha, expectedBaseSha, "
-                            "expectedTargetBranch, policyId. For forge.merge: the same fields "
-                            "plus method and providerOperationId."
-                        ),
-                    },
-                },
-                "required": ["nodeId", "conditionType", "request"],
-                "additionalProperties": False,
-            }
-        elif self.operation == "retry":
-            properties = {
-                "child_key": {"type": "string", "minLength": 1},
-                "attempt_id": {"type": "string", "format": "uuid"},
-            }
-            required = ["child_key", "attempt_id"]
-        elif self.operation == "complete":
-            properties = {
-                "merge": _copied_object_schema(
-                    "Copy the exact MergeRequest used for the reconciled provider merge."
-                ),
-                "evidence": _candidate_evidence_schema(),
-            }
-            required = ["merge", "evidence"]
-        elif self.operation == "record_integration":
-            properties = {
-                "integration_receipts": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": _inline_model_schema(IntegrationReceipt),
-                },
-                "integration_allocation": _inline_model_schema(WorkspaceAllocation),
-            }
-            required = ["integration_receipts", "integration_allocation"]
-        elif self.operation == "expand":
-            properties["plan_revision"] = {
+            "plan_revision": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 255,
                 "description": "Approved plan revision; Ting derives the canonical plan digest.",
-            }
-            properties["workstreams"] = {
+            },
+            "workstreams": {
                 "type": "array",
                 "minItems": 1,
                 "maxItems": 100,
                 "items": _workstream_proposal_schema(),
-            }
-            required.extend(["generation", "plan_revision", "workstreams"])
-        elif self.operation == "message":
-            properties.update(
-                {
-                    "child_key": {"type": "string", "minLength": 1},
-                    "attempt_id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Exact current attemptId from the blocker notification.",
-                    },
-                    "answer": {"type": "string", "minLength": 1},
-                    "metadata": {
-                        "type": "object",
-                        "description": (
-                            "Exact outstanding input identity: requestId for a question; or "
-                            "gateId and gateDecision for a gate."
-                        ),
-                        "properties": {
-                            "requestId": {"type": "string", "minLength": 1},
-                            "gateId": {"type": "string", "minLength": 1},
-                            "gateDecision": {
-                                "type": "string",
-                                "enum": ["approve", "request_changes"],
-                            },
-                        },
-                        "oneOf": [
-                            {"required": ["requestId"]},
-                            {"required": ["gateId", "gateDecision"]},
-                        ],
-                        "additionalProperties": False,
-                    },
-                    "message_id": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": (
-                            "Stable idempotency identity; reuse it unchanged for delivery retries."
-                        ),
-                    },
-                }
-            )
-            required.extend(["child_key", "attempt_id", "answer", "metadata", "message_id"])
-        # reconcile and cancel act on the whole durable execution named by campaign_id and
-        # parent_node_id; there is no per-child targeting field to accept here.
+            },
+        }
+        required = ["campaign_id", "parent_node_id", "generation", "plan_revision", "workstreams"]
         return {
             "type": "object",
             "properties": properties,
@@ -198,74 +82,60 @@ class _WorkflowExecutionTool(ToolPort):
             "additionalProperties": False,
         }
 
-    @property
-    def required_permission(self) -> str:
-        return "developer:coordinate"
 
-    @property
-    def parallelisable(self) -> bool:
-        return False
-
-    async def execute(self, input: dict) -> ToolResult:
-        if error := _payload_error(input):
-            return _error(error)
-        if error := self._unknown_field_error(input):
-            return _error(error)
-        method = getattr(self._service, self.operation)
-        try:
-            if self.operation == "cancel":
-                result = await method()
-            else:
-                result = await method(dict(input))
-        except Exception as exc:
-            return _error(str(exc))
-        return _result(result)
-
-    def _unknown_field_error(self, input: dict) -> str:
-        allowed = set(self.input_schema["properties"])
-        unknown = set(input) - allowed
-        if not unknown:
-            return ""
-        if self.operation in ("cancel", "reconcile") and "child_keys" in unknown:
-            return (
-                f"{self.name} has no per-child targeting; child_keys is not accepted. "
-                "workflow_execution_cancel stops the entire execution, every child, and this "
-                "coordinator's own session, irreversibly. There is no per-child cancel — use "
-                "workflow_execution_retry to recover one child instead."
-            )
-        return f"unexpected field(s) for {self.name}: {', '.join(sorted(unknown))}"
-
-
-class WorkflowExecutionExpandTool(_WorkflowExecutionTool):
-    operation = "expand"
-
-
-class WorkflowExecutionReconcileTool(_WorkflowExecutionTool):
-    operation = "reconcile"
-
-
-class WorkflowExecutionRetryTool(_WorkflowExecutionTool):
-    operation = "retry"
-
-
-class WorkflowExecutionCancelTool(_WorkflowExecutionTool):
-    operation = "cancel"
-
-
-class WorkflowExecutionMessageTool(_WorkflowExecutionTool):
-    operation = "message"
-
-
-class WorkflowExecutionCompleteTool(_WorkflowExecutionTool):
+class DeliveryCompleteTool(_DeliveryExecutionTool):
+    tool_name = "delivery_complete"
     operation = "complete"
 
+    @property
+    def description(self) -> str:
+        return (
+            "Finalize only after deterministic merge evidence is verified. Copy the exact "
+            "reconciled MergeRequest and provide direct snake_case CandidateEvidence for the "
+            "integrated candidate; copy its signed receipt objects unchanged from trusted "
+            "tool results."
+        )
 
-class WorkflowExecutionRecordIntegrationTool(_WorkflowExecutionTool):
+    @property
+    def input_schema(self) -> dict:
+        properties = {
+            "merge": _copied_object_schema(
+                "Copy the exact MergeRequest used for the reconciled provider merge."
+            ),
+            "evidence": _candidate_evidence_schema(),
+        }
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": ["merge", "evidence"],
+            "additionalProperties": False,
+        }
+
+
+class DeliveryRecordIntegrationTool(_DeliveryExecutionTool):
+    tool_name = "delivery_record_integration"
     operation = "record_integration"
 
+    @property
+    def description(self) -> str:
+        return "Persist a signed, verified integration candidate before independent review."
 
-class WorkflowExecutionWaitTool(_WorkflowExecutionTool):
-    operation = "wait"
+    @property
+    def input_schema(self) -> dict:
+        properties = {
+            "integration_receipts": {
+                "type": "array",
+                "minItems": 1,
+                "items": _inline_model_schema(IntegrationReceipt),
+            },
+            "integration_allocation": _inline_model_schema(WorkspaceAllocation),
+        }
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": ["integration_receipts", "integration_allocation"],
+            "additionalProperties": False,
+        }
 
 
 class _DeliveryServiceTool(ToolPort):
@@ -341,7 +211,7 @@ class _DeliveryServiceTool(ToolPort):
 
     @property
     def required_permission(self) -> str:
-        return "developer:coordinate"
+        return "workflow:coordinate"
 
     @property
     def parallelisable(self) -> bool:
@@ -793,32 +663,3 @@ def _required_integer(payload: dict[str, Any], field: str) -> int:
     if type(value) is not int:
         raise ValueError(f"payload.{field} must be an integer")
     return value
-
-
-def _payload_error(value: Any, *, path: str = "payload") -> str:
-    if isinstance(value, list):
-        for index, item in enumerate(value):
-            if error := _payload_error(item, path=f"{path}[{index}]"):
-                return error
-        return ""
-    if not isinstance(value, dict):
-        return ""
-    for key, item in value.items():
-        normalized = str(key).casefold().replace("-", "_")
-        if normalized in _FORBIDDEN_PAYLOAD_FIELDS:
-            return f"{path}.{key} is not accepted; use a pinned contract or policy id"
-        if error := _payload_error(item, path=f"{path}.{key}"):
-            return error
-    return ""
-
-
-def _result(value: Any) -> ToolResult:
-    if hasattr(value, "model_dump"):
-        value = value.model_dump(mode="json")
-    elif hasattr(value, "to_dict"):
-        value = value.to_dict()
-    return ToolResult(tool_call_id="", content=json.dumps(value, indent=2, default=str))
-
-
-def _error(message: str) -> ToolResult:
-    return ToolResult(tool_call_id="", content=message, is_error=True)

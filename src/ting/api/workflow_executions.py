@@ -811,7 +811,37 @@ def _execution_json(execution: WorkflowExecution) -> dict[str, Any]:
         "createdAt": execution.created_at,
         "updatedAt": execution.updated_at,
         "completedAt": execution.completed_at,
+        "declaredChildren": _declared_children(execution),
     }
+
+
+def _declared_children(execution: WorkflowExecution) -> list[dict[str, Any]] | None:
+    """Surface a subworkflow node's own default children, when it declares any.
+
+    The engine never proposes these itself — a coordinator persona still
+    decides, through the ordinary expansion route, whether to submit them
+    verbatim, amended, or alongside additional children it invents. This only
+    lets the coordinator see what the graph already knows about its node.
+    """
+    snapshot = execution.workflow_snapshot
+    graph = snapshot.get("graph") if isinstance(snapshot, dict) else None
+    if not isinstance(graph, dict):
+        return None
+    node = next(
+        (
+            candidate
+            for candidate in graph.get("nodes", [])
+            if isinstance(candidate, dict)
+            and str(candidate.get("id") or "") == execution.parent_node_id
+        ),
+        None,
+    )
+    if node is None:
+        return None
+    children = node.get("children")
+    if not isinstance(children, list) or not children:
+        return None
+    return [dict(child) for child in children if isinstance(child, dict)]
 
 
 def _child_json(child: WorkflowChildExecution) -> dict[str, Any]:
