@@ -94,9 +94,10 @@ def _source_urls(base_url: str, execution_id: UUID) -> dict[str, str]:
     root = base_url.rstrip("/")
     execution = quote(str(execution_id), safe="")
     prefix = f"{root}/api/v1/ting/workflow-executions/{execution}"
+    delivery_prefix = f"{root}/api/v1/ting/delivery-executions/{execution}"
     return {
-        "execution": prefix,
-        "evidence": f"{prefix}/evidence",
+        "execution": delivery_prefix,
+        "evidence": f"{delivery_prefix}/evidence",
         "waits": f"{prefix}/waits",
     }
 

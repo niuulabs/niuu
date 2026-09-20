@@ -29,11 +29,7 @@ _DELIVERY_CONCEPT = re.compile(
     r"""|["']repository["']|\.repository\b(?!\.)|\brepository: str"""
 )
 
-BURN_DOWN: frozenset[str] = frozenset(
-    {
-        "api/workflow_executions.py",
-    }
-)
+BURN_DOWN: frozenset[str] = frozenset()
 
 
 def _generic_modules() -> list[Path]:

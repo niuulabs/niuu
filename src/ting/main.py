@@ -43,6 +43,7 @@ from ting.adapters.postgres_notification_subscriptions import (
 )
 from ting.adapters.postgres_sagas import PostgresSagaRepository
 from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRepository
+from ting.adapters.postgres_workflow_executions import PostgresWorkflowExecutionRepository
 from ting.adapters.tracker_factory import TrackerAdapterFactory
 from ting.adapters.volundr_factory import VolundrAdapterFactory
 from ting.adapters.workflow_execution_worker import WorkflowExecutionWorker
@@ -93,6 +94,11 @@ from ting.api.workflow_executions import (
 )
 from ting.api.workflows import create_workflows_router, resolve_workflow_repo
 from ting.config import Settings
+from ting.delivery.api import (
+    create_delivery_executions_router,
+    resolve_delivery_execution_repo,
+    resolve_delivery_execution_service,
+)
 from ting.delivery.evidence import ForgeChildEvidenceVerifier
 from ting.delivery.ports import DeliveryExecutionRepository
 from ting.delivery.postgres import PostgresDeliveryExecutionRepository
@@ -112,6 +118,7 @@ from ting.domain.services.resource_authorization import (
 )
 from ting.domain.services.review_engine import ReviewEngine
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
+from ting.domain.services.workflow_execution import WorkflowExecutionService
 from ting.domain.services.workflow_wait import WorkflowWaitService
 from ting.infrastructure.database import database_pool
 from ting.ports.dispatcher_repository import DispatcherRepository
@@ -574,6 +581,7 @@ def create_app(
     app.include_router(create_a2a_router())
     app.include_router(create_research_router())
     app.include_router(create_workflow_executions_router())
+    app.include_router(create_delivery_executions_router())
     app.include_router(create_specs_router())
     app.include_router(create_flock_flows_router())
     app.include_router(create_flock_config_router())
@@ -822,20 +830,49 @@ def create_app(
                 parent_continuation = VolundrParentWorkflowContinuation(
                     volundr_factory=app.state.volundr_factory
                 )
+                execution_evidence_verifier = ForgeChildEvidenceVerifier(
+                    volundr_factory=app.state.volundr_factory,
+                    policy_id=settings.workflow_execution.evidence_policy_id,
+                    token_issuer=execution_token_issuer,
+                    admission_roles=tuple(settings.workflow_execution.admission_roles),
+                )
+                execution_review_attestor = TrustedChildReviewAttestor(
+                    authenticator=review_authenticator,
+                    role_producers=settings.workflow_execution.review_producers,
+                )
                 workflow_execution_service = DeliveryExecutionService(
                     repository=workflow_execution_repo,
                     gateway=execution_gateway,
                     continuation=parent_continuation,
-                    evidence_verifier=ForgeChildEvidenceVerifier(
-                        volundr_factory=app.state.volundr_factory,
-                        policy_id=settings.workflow_execution.evidence_policy_id,
-                        token_issuer=execution_token_issuer,
-                        admission_roles=tuple(settings.workflow_execution.admission_roles),
+                    evidence_verifier=execution_evidence_verifier,
+                    review_attestor=execution_review_attestor,
+                    token_issuer=execution_token_issuer,
+                    admission_roles=tuple(settings.workflow_execution.admission_roles),
+                    worker_id=settings.workflow_execution.worker_id,
+                    launch_claim_limit=settings.workflow_execution.launch_claim_limit,
+                    reconcile_limit=settings.workflow_execution.reconcile_limit,
+                    lease_seconds=settings.workflow_execution.lease_seconds,
+                    max_child_reconcile_failures=(
+                        settings.workflow_execution.max_child_reconcile_failures
                     ),
-                    review_attestor=TrustedChildReviewAttestor(
-                        authenticator=review_authenticator,
-                        role_producers=settings.workflow_execution.review_producers,
-                    ),
+                    max_parent_stop_failures=(settings.workflow_execution.max_parent_stop_failures),
+                )
+                # The generic router operates on its own plain-generic repository so
+                # a workflow execution with no delivery extension row (none exist
+                # yet outside tests) reads back cleanly. It shares the same
+                # underlying tables as the delivery repository above, so an
+                # execution launched through either router is visible through the
+                # other's GET/list. Its gateway and continuation are domain-neutral
+                # and already shared; no domain-neutral evidence verifier or review
+                # attestor exists yet, so it reuses the delivery pack's until one is
+                # built for a non-delivery workflow.
+                generic_workflow_execution_repo = PostgresWorkflowExecutionRepository(pool)
+                generic_workflow_execution_service = WorkflowExecutionService(
+                    repository=generic_workflow_execution_repo,
+                    gateway=execution_gateway,
+                    continuation=parent_continuation,
+                    evidence_verifier=execution_evidence_verifier,
+                    review_attestor=execution_review_attestor,
                     token_issuer=execution_token_issuer,
                     admission_roles=tuple(settings.workflow_execution.admission_roles),
                     worker_id=settings.workflow_execution.worker_id,
@@ -895,20 +932,35 @@ def create_app(
                 app.state.workflow_execution_service = workflow_execution_service
                 app.state.workflow_wait_service = workflow_wait_service
 
-                async def _resolve_workflow_execution_repo(
+                async def _resolve_delivery_execution_repo(
                     principal: Principal = Depends(extract_principal),
                 ) -> DeliveryExecutionRepository:
                     del principal
                     return workflow_execution_repo
 
-                async def _resolve_workflow_execution_service() -> DeliveryExecutionService:
+                async def _resolve_delivery_execution_service() -> DeliveryExecutionService:
                     return workflow_execution_service
 
+                async def _resolve_generic_workflow_execution_repo(
+                    principal: Principal = Depends(extract_principal),
+                ) -> PostgresWorkflowExecutionRepository:
+                    del principal
+                    return generic_workflow_execution_repo
+
+                async def _resolve_generic_workflow_execution_service() -> WorkflowExecutionService:
+                    return generic_workflow_execution_service
+
+                app.dependency_overrides[resolve_delivery_execution_repo] = (
+                    _resolve_delivery_execution_repo
+                )
+                app.dependency_overrides[resolve_delivery_execution_service] = (
+                    _resolve_delivery_execution_service
+                )
                 app.dependency_overrides[resolve_workflow_execution_repo] = (
-                    _resolve_workflow_execution_repo
+                    _resolve_generic_workflow_execution_repo
                 )
                 app.dependency_overrides[resolve_workflow_execution_service] = (
-                    _resolve_workflow_execution_service
+                    _resolve_generic_workflow_execution_service
                 )
 
             a2a_push_dispatcher = None

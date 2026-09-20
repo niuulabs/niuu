@@ -45,7 +45,9 @@ async def test_forwards_bearer_to_ting_campaign_projection() -> None:
         credential="Bearer signed-workload-token",
     )
     assert seen[0].headers["authorization"] == "Bearer signed-workload-token"
-    assert seen[0].url.path.endswith("/campaign-1/delivery-authorizations")
+    assert seen[0].url.path == (
+        "/api/v1/ting/delivery-executions/campaign-1/delivery-authorizations"
+    )
     assert seen[0].content == (
         b'{"operation":"conditional_merge","repository":"https://gitlab.example/org/repo",'
         b'"base_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'

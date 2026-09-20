@@ -13,7 +13,7 @@ from starlette.requests import Request
 
 from niuu.domain.delivery import EvidenceValidationReport
 from niuu.ports.workload_identity import IssuedWorkloadToken
-from ting.api.workflow_executions import _assert_delivery_claims
+from ting.delivery.auth import assert_delivery_claims
 from ting.delivery.domain import (
     ChildExecution,
     DeliveryExecution,
@@ -2681,7 +2681,7 @@ async def test_child_delivery_token_only_authorizes_current_verification_attempt
     repository.children = [child]
     token = _child_delivery_token(execution, child)
 
-    await _assert_delivery_claims(
+    await assert_delivery_claims(
         _request_with_auth(execution, child),
         token,
         execution,
@@ -2690,7 +2690,7 @@ async def test_child_delivery_token_only_authorizes_current_verification_attempt
     )
 
     with pytest.raises(HTTPException, match="cannot authorize"):
-        await _assert_delivery_claims(
+        await assert_delivery_claims(
             _request_with_auth(execution, child),
             token,
             execution,
@@ -2708,7 +2708,7 @@ async def test_child_delivery_token_only_authorizes_current_verification_attempt
         )
     )
     with pytest.raises(HTTPException, match="no longer active"):
-        await _assert_delivery_claims(
+        await assert_delivery_claims(
             _request_with_auth(execution, child),
             token,
             execution,
@@ -2730,7 +2730,7 @@ async def test_child_delivery_token_is_bound_to_persisted_a2a_task() -> None:
     token = _child_delivery_token(execution, replace(child, task_id="other-task"))
 
     with pytest.raises(HTTPException, match="lineage is invalid"):
-        await _assert_delivery_claims(
+        await assert_delivery_claims(
             _request_with_auth(execution, child),
             token,
             execution,
@@ -2751,7 +2751,7 @@ async def test_child_delivery_token_is_bound_to_actual_forge_session() -> None:
     repository.children = [child]
 
     with pytest.raises(HTTPException, match="child Forge session"):
-        await _assert_delivery_claims(
+        await assert_delivery_claims(
             _request_with_auth(execution, child),
             _child_delivery_token(execution, child, forge_session_id="forged-session"),
             execution,

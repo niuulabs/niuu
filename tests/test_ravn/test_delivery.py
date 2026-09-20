@@ -1382,14 +1382,14 @@ async def test_http_execution_client_uses_owner_bound_routes() -> None:
     await client.record_integration({"integration_receipts": [{}], "integration_allocation": {}})
     await client.wait({"nodeId": "wait-1", "conditionType": "forge.checks", "request": {}})
 
-    assert [url.rsplit("/", 1)[-1] for url, _body in http.posts] == [
-        "expansions",
-        "reconcile",
-        "messages",
-        "cancel",
-        "complete",
-        "integration-candidate",
-        "waits",
+    assert [url for url, _body in http.posts] == [
+        "https://ting.example/api/v1/ting/delivery-executions/execution-1/expansions",
+        "https://ting.example/api/v1/ting/workflow-executions/execution-1/reconcile",
+        "https://ting.example/api/v1/ting/workflow-executions/execution-1/messages",
+        "https://ting.example/api/v1/ting/workflow-executions/execution-1/cancel",
+        "https://ting.example/api/v1/ting/delivery-executions/execution-1/complete",
+        "https://ting.example/api/v1/ting/delivery-executions/execution-1/integration-candidate",
+        "https://ting.example/api/v1/ting/workflow-executions/execution-1/waits",
     ]
     assert http.posts[1][1] == http.posts[3][1] == {}
 

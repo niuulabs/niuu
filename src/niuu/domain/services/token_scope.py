@@ -158,14 +158,18 @@ def credential_allows_route(token: str, method: str, path: str) -> bool:
         ("POST", r"/api/v1/ting/workflows/[^/?%]+/launch", "ting:workflow:launch"),
         (
             "POST",
-            r"/api/v1/ting/workflow-executions/[^/?%]+/"
-            r"(expansions|messages|reconcile|cancel|integration-candidate|complete|"
-            r"delivery-authorizations|waits)",
+            r"/api/v1/ting/workflow-executions/[^/?%]+/(expansions|messages|reconcile|cancel|waits)",
             "ting:workflow:coordinate",
         ),
         (
             "POST",
             r"/api/v1/ting/workflow-executions/[^/?%]+/children/[^/?%]+/retry",
+            "ting:workflow:coordinate",
+        ),
+        (
+            "POST",
+            r"/api/v1/ting/delivery-executions/[^/?%]+/"
+            r"(expansions|integration-candidate|complete|delivery-authorizations)",
             "ting:workflow:coordinate",
         ),
         (

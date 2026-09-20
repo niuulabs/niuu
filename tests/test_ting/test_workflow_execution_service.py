@@ -308,7 +308,35 @@ class InMemoryWorkflowRepository(
         return calculate_join(generation, sealed=self.sealed, children=self.children)
 
     async def request_cancel(self, execution_id, *, owner_id, tenant_id):
-        raise NotImplementedError
+        del execution_id, owner_id, tenant_id
+        next_state = self.execution.state
+        next_reason = self.execution.suspension_reason
+        if self.execution.state not in {ExecutionState.COMPLETED, ExecutionState.FAILED}:
+            next_state = ExecutionState.CANCELING
+            next_reason = "canceling_children"
+        self.execution = replace(
+            self.execution,
+            state=next_state,
+            suspension_reason=next_reason,
+            cancel_requested=True,
+        )
+        terminal = {
+            ChildExecutionState.CANCELED,
+            ChildExecutionState.COMPLETED,
+            ChildExecutionState.FAILED,
+            ChildExecutionState.SUPERSEDED,
+        }
+        self.children = [
+            (
+                replace(item, state=ChildExecutionState.CANCELING)
+                if item.task_id
+                else replace(item, state=ChildExecutionState.CANCELED)
+            )
+            if item.state not in terminal
+            else item
+            for item in self.children
+        ]
+        return self.execution
 
     async def create_retry(self, child, retry, *, owner_id, tenant_id):
         self._replace(replace(child, state=ChildExecutionState.SUPERSEDED))

@@ -148,26 +148,27 @@ class TestTokenHasScope:
         assert not credential_allows_route(unrelated, "POST", "/api/v1/ting/a2a")
         assert not credential_allows_route(launcher, "GET", "/api/v1/ting/a2a")
 
-    @pytest.mark.parametrize(
-        "suffix",
-        [
-            "expansions",
-            "messages",
-            "reconcile",
-            "cancel",
-            "integration-candidate",
-            "complete",
-            "delivery-authorizations",
-            "waits",
-        ],
-    )
-    def test_execution_coordinator_can_call_execution_mutations(self, suffix: str) -> None:
+    @pytest.mark.parametrize("suffix", ["expansions", "messages", "reconcile", "cancel", "waits"])
+    def test_execution_coordinator_can_call_generic_execution_mutations(self, suffix: str) -> None:
         token = _build_token(["ting:workflow:coordinate"])
 
         assert credential_allows_route(
             token,
             "POST",
             f"/api/v1/ting/workflow-executions/execution-1/{suffix}",
+        )
+
+    @pytest.mark.parametrize(
+        "suffix",
+        ["expansions", "integration-candidate", "complete", "delivery-authorizations"],
+    )
+    def test_execution_coordinator_can_call_delivery_execution_mutations(self, suffix: str) -> None:
+        token = _build_token(["ting:workflow:coordinate"])
+
+        assert credential_allows_route(
+            token,
+            "POST",
+            f"/api/v1/ting/delivery-executions/execution-1/{suffix}",
         )
 
     def test_execution_coordinator_retry_is_post_only_and_gets_remain_denied(self) -> None:
@@ -180,7 +181,7 @@ class TestTokenHasScope:
         assert not credential_allows_route(token, "GET", retry)
         assert not credential_allows_route(token, "GET", wait)
         assert not credential_allows_route(
-            token, "GET", "/api/v1/ting/workflow-executions/execution-1/evidence"
+            token, "GET", "/api/v1/ting/delivery-executions/execution-1/evidence"
         )
 
     def test_build_token_missing_scope_denied(self) -> None:
