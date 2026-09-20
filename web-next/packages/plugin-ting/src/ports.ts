@@ -18,12 +18,22 @@ import type {
 } from './domain/workflowExecutionTrace';
 import type {
   WorkflowExecution,
+  DeliveryExecution,
   WorkflowWait,
   WorkflowExecutionLaunch,
+  DeliveryExecutionLaunch,
   WorkflowExecutionState,
 } from './domain/workflowExecution';
 
-export interface IDeliveryExecutionService {
+/**
+ * Generic durable workflow execution service — `/api/v1/ting/workflow-executions`.
+ * Serves any workflow that expands into a bounded child DAG, whatever pack (if
+ * any) layers additional vocabulary over it. A code-delivery execution is also
+ * a row here: its generic fields (state, budget, children, waits, trace) are
+ * always readable through this service, even though its git identity and
+ * integration state are only visible through `IDeliveryExecutionService`.
+ */
+export interface IWorkflowExecutionService {
   list(filter?: {
     state?: WorkflowExecutionState;
     cursor?: string;
@@ -33,9 +43,20 @@ export interface IDeliveryExecutionService {
   cancel(id: string): Promise<WorkflowExecution>;
   reconcile(id: string): Promise<WorkflowExecution>;
   retry(id: string, childKey: string, attemptId: string): Promise<WorkflowExecution>;
-  evidence(id: string): Promise<Record<string, unknown>>;
   waits(id: string): Promise<WorkflowWait[]>;
   trace(id: string, options?: ExecutionTraceOptions): Promise<WorkflowExecutionTrace>;
+}
+
+/**
+ * Code-delivery specialization service — `/api/v1/ting/delivery-executions`.
+ * Only the operations that need git identity or delivery evidence live here;
+ * everything else (list, cancel, reconcile, retry, waits, trace) is served by
+ * `IWorkflowExecutionService` against the same execution id.
+ */
+export interface IDeliveryExecutionService {
+  get(id: string): Promise<DeliveryExecution>;
+  launch(request: DeliveryExecutionLaunch, idempotencyKey: string): Promise<DeliveryExecution>;
+  evidence(id: string): Promise<Record<string, unknown>>;
 }
 import type {
   ResearchCampaign,

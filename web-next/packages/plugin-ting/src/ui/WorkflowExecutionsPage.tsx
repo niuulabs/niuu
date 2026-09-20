@@ -2,9 +2,19 @@ import { useEffect, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import { randomId } from '@niuulabs/ui';
-import type { IDeliveryExecutionService, IWorkflowService } from '../ports';
-import type { WorkflowExecution, WorkflowExecutionLaunch } from '../domain/workflowExecution';
+import type {
+  IWorkflowExecutionService,
+  IDeliveryExecutionService,
+  IWorkflowService,
+} from '../ports';
+import type {
+  WorkflowExecution,
+  DeliveryExecution,
+  WorkflowExecutionLaunch,
+  DeliveryExecutionLaunch,
+} from '../domain/workflowExecution';
 import { executionIsTerminal } from '../domain/workflowExecution';
+import { subworkflowNodes, workflowRequiresDeliveryPack } from '../domain/workflow';
 import { buildWorkflowExecutionResultsMarkdown } from '../application/workflowExecutionResults';
 import { WorkflowResults } from './WorkflowResults';
 import { WorkflowExecutionTraceGraph } from './WorkflowExecutionTraceGraph';
@@ -14,12 +24,19 @@ const inputClass =
 const buttonClass =
   'niuu:rounded niuu:border niuu:border-border niuu:px-3 niuu:py-2 niuu:disabled:opacity-50';
 
+type LaunchRequest =
+  | { kind: 'generic'; request: WorkflowExecutionLaunch }
+  | { kind: 'delivery'; request: DeliveryExecutionLaunch };
+
 export function WorkflowExecutionsPage() {
-  const service = useService<IDeliveryExecutionService>('ting.workflowExecutions');
+  const workflowExecutions = useService<IWorkflowExecutionService>('ting.workflowExecutions');
+  const deliveryExecutions = useService<IDeliveryExecutionService>('ting.deliveryExecutions');
   const workflows = useService<IWorkflowService>('ting.workflows');
   const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState('');
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState('');
   const [workflowId, setWorkflowId] = useState('');
+  const [parentNodeId, setParentNodeId] = useState('');
   const [prompt, setPrompt] = useState('');
   const [repo, setRepo] = useState('');
   const [baseBranch, setBaseBranch] = useState('');
@@ -34,10 +51,23 @@ export function WorkflowExecutionsPage() {
     queryKey: ['ting', 'workflows'],
     queryFn: () => workflows.listWorkflows(),
   });
+  const launchableWorkflows =
+    catalog.data?.filter((workflow) => workflow.schemaVersion === 2) ?? [];
+  const selectedWorkflow = catalog.data?.find((workflow) => workflow.id === workflowId);
+  const expansionNodes = selectedWorkflow ? subworkflowNodes(selectedWorkflow) : [];
+  const isDeliveryWorkflow = selectedWorkflow
+    ? workflowRequiresDeliveryPack(selectedWorkflow)
+    : false;
+  const selectedRunWorkflow = catalog.data?.find((item) => item.id === selectedWorkflowId);
+  const isDeliverySelected = selectedRunWorkflow
+    ? workflowRequiresDeliveryPack(selectedRunWorkflow)
+    : false;
+
   const runs = useInfiniteQuery({
     queryKey: ['ting', 'workflow-executions', 'pages'],
     initialPageParam: undefined as string | undefined,
-    queryFn: ({ pageParam }) => service.list(pageParam ? { cursor: pageParam } : undefined),
+    queryFn: ({ pageParam }) =>
+      workflowExecutions.list(pageParam ? { cursor: pageParam } : undefined),
     getNextPageParam: (page) => page.nextCursor ?? undefined,
     refetchInterval: 5000,
   });
@@ -48,8 +78,15 @@ export function WorkflowExecutionsPage() {
   ];
   const selected = useQuery({
     queryKey: ['ting', 'workflow-execution', selectedId],
-    queryFn: () => service.get(selectedId),
+    queryFn: () => workflowExecutions.get(selectedId),
     enabled: !!selectedId,
+    refetchInterval: (query) =>
+      query.state.data && executionIsTerminal(query.state.data.state) ? false : 3000,
+  });
+  const selectedDelivery = useQuery({
+    queryKey: ['ting', 'delivery-execution', selectedId],
+    queryFn: () => deliveryExecutions.get(selectedId),
+    enabled: !!selectedId && isDeliverySelected && showEvidence,
     refetchInterval: (query) =>
       query.state.data && executionIsTerminal(query.state.data.state) ? false : 3000,
   });
@@ -57,53 +94,76 @@ export function WorkflowExecutionsPage() {
     selected.data && executionIsTerminal(selected.data.state)
       ? `terminal:${selected.data.state}:${selected.data.updatedAt}`
       : 'active';
-  const evidence = useQuery({
-    queryKey: ['ting', 'developer-evidence', selectedId, resultsScope],
-    queryFn: () => service.evidence(selectedId),
+  const waits = useQuery({
+    queryKey: ['ting', 'workflow-execution-waits', selectedId, resultsScope],
+    queryFn: () => workflowExecutions.waits(selectedId),
     enabled: !!selectedId && showEvidence,
     refetchInterval: selected.data && !executionIsTerminal(selected.data.state) ? 3000 : false,
   });
-  const waits = useQuery({
-    queryKey: ['ting', 'developer-waits', selectedId, resultsScope],
-    queryFn: () => service.waits(selectedId),
-    enabled: !!selectedId && showEvidence,
+  const evidence = useQuery({
+    queryKey: ['ting', 'delivery-evidence', selectedId, resultsScope],
+    queryFn: () => deliveryExecutions.evidence(selectedId),
+    enabled: !!selectedId && showEvidence && isDeliverySelected,
     refetchInterval: selected.data && !executionIsTerminal(selected.data.state) ? 3000 : false,
   });
   useEffect(() => {
-    if (!focusEvidence.current || !showEvidence || !evidence.data || !waits.data) return;
+    const deliveryReady = !isDeliverySelected || (evidence.data && selectedDelivery.data);
+    if (!focusEvidence.current || !showEvidence || !waits.data || !deliveryReady) return;
     evidenceRegion.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
     evidenceRegion.current?.focus({ preventScroll: true });
     focusEvidence.current = false;
-  }, [showEvidence, evidence.data, waits.data]);
-  const update = (run: WorkflowExecution) => {
+  }, [showEvidence, waits.data, evidence.data, selectedDelivery.data, isDeliverySelected]);
+  const selectRun = (run: { executionId: string; workflowId: string }) => {
     setSelectedId(run.executionId);
-    queryClient.setQueryData(['ting', 'workflow-execution', run.executionId], run);
-    void queryClient.invalidateQueries({ queryKey: ['ting', 'workflow-executions'] });
-    if (!executionIsTerminal(run.state)) {
-      void queryClient.invalidateQueries({
-        queryKey: ['ting', 'developer-evidence', run.executionId],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ['ting', 'developer-waits', run.executionId],
-      });
-    }
+    setSelectedWorkflowId(run.workflowId);
+    setShowEvidence(false);
+    setShowGraph(false);
+    focusEvidence.current = false;
   };
-  const launch = useMutation({
-    mutationFn: (request: WorkflowExecutionLaunch) => {
-      const fingerprint = JSON.stringify(request);
+  const invalidateRunQueries = (executionId: string, terminal: boolean) => {
+    void queryClient.invalidateQueries({ queryKey: ['ting', 'workflow-executions'] });
+    if (terminal) return;
+    void queryClient.invalidateQueries({
+      queryKey: ['ting', 'workflow-execution-waits', executionId],
+    });
+    void queryClient.invalidateQueries({ queryKey: ['ting', 'delivery-evidence', executionId] });
+  };
+  const launch = useMutation<WorkflowExecution | DeliveryExecution, Error, LaunchRequest>({
+    mutationFn: (input: LaunchRequest) => {
+      const fingerprint = JSON.stringify(input);
       if (launchAttempt.current?.fingerprint !== fingerprint) {
         launchAttempt.current = { fingerprint, idempotencyKey: randomId() };
       }
-      return service.launch(request, launchAttempt.current.idempotencyKey);
+      return input.kind === 'delivery'
+        ? deliveryExecutions.launch(input.request, launchAttempt.current.idempotencyKey)
+        : workflowExecutions.launch(input.request, launchAttempt.current.idempotencyKey);
     },
-    onSuccess: (run) => {
+    onSuccess: (run: WorkflowExecution | DeliveryExecution, input) => {
       launchAttempt.current = null;
-      update(run);
+      setSelectedId(run.executionId);
+      setSelectedWorkflowId(run.workflowId);
+      if (input.kind === 'delivery') {
+        queryClient.setQueryData(['ting', 'delivery-execution', run.executionId], run);
+        void queryClient.invalidateQueries({
+          queryKey: ['ting', 'workflow-execution', run.executionId],
+        });
+      } else {
+        queryClient.setQueryData(['ting', 'workflow-execution', run.executionId], run);
+      }
+      invalidateRunQueries(run.executionId, executionIsTerminal(run.state));
     },
   });
   const changeLaunchField = (change: () => void) => {
     launchAttempt.current = null;
     change();
+  };
+  const handleWorkflowChange = (id: string) => {
+    changeLaunchField(() => {
+      setWorkflowId(id);
+      const workflow = catalog.data?.find((item) => item.id === id);
+      const nodes = workflow ? subworkflowNodes(workflow) : [];
+      setParentNodeId(nodes.length === 1 ? nodes[0]!.id : '');
+    });
   };
   const action = useMutation({
     mutationFn: (
@@ -112,19 +172,24 @@ export function WorkflowExecutionsPage() {
         | { operation: 'retry'; childKey: string; attemptId: string },
     ) =>
       request.operation === 'retry'
-        ? service.retry(selectedId, request.childKey, request.attemptId)
-        : service[request.operation](selectedId),
-    onSuccess: update,
+        ? workflowExecutions.retry(selectedId, request.childKey, request.attemptId)
+        : workflowExecutions[request.operation](selectedId),
+    onSuccess: (run: WorkflowExecution) => {
+      queryClient.setQueryData(['ting', 'workflow-execution', run.executionId], run);
+      if (isDeliverySelected) {
+        void queryClient.invalidateQueries({
+          queryKey: ['ting', 'delivery-execution', run.executionId],
+        });
+      }
+      invalidateRunQueries(run.executionId, executionIsTerminal(run.state));
+    },
   });
-  const deliveryWorkflows =
-    catalog.data?.filter(
-      (workflow) => workflow.graph?.executionContract === 'developer-delivery/v1',
-    ) ?? [];
   const error =
     launch.error ??
     action.error ??
     runs.error ??
     selected.error ??
+    selectedDelivery.error ??
     catalog.error ??
     evidence.error ??
     waits.error;
@@ -149,13 +214,31 @@ export function WorkflowExecutionsPage() {
         className="niuu:grid niuu:gap-3"
         onSubmit={(event) => {
           event.preventDefault();
+          if (!selectedWorkflow || !parentNodeId) return;
+          if (isDeliveryWorkflow) {
+            launch.mutate({
+              kind: 'delivery',
+              request: {
+                workflowId,
+                parentNodeId,
+                prompt,
+                repo,
+                baseBranch,
+                ...(model ? { model } : {}),
+                ...(connectionId ? { connectionId } : {}),
+              },
+            });
+            return;
+          }
           launch.mutate({
-            workflowId,
-            prompt,
-            repo,
-            baseBranch,
-            ...(model ? { model } : {}),
-            ...(connectionId ? { connectionId } : {}),
+            kind: 'generic',
+            request: {
+              workflowId,
+              parentNodeId,
+              prompt,
+              ...(model ? { model } : {}),
+              ...(connectionId ? { connectionId } : {}),
+            },
           });
         }}
       >
@@ -165,10 +248,10 @@ export function WorkflowExecutionsPage() {
             required
             className={inputClass}
             value={workflowId}
-            onChange={(event) => changeLaunchField(() => setWorkflowId(event.target.value))}
+            onChange={(event) => handleWorkflowChange(event.target.value)}
           >
             <option value="">Choose a developer workflow</option>
-            {deliveryWorkflows.map((workflow) => (
+            {launchableWorkflows.map((workflow) => (
               <option key={workflow.id} value={workflow.id}>
                 {workflow.name}
               </option>
@@ -177,9 +260,35 @@ export function WorkflowExecutionsPage() {
         </label>
         {catalog.isPending ? (
           <p role="status">Loading workflows…</p>
-        ) : !catalog.isError && deliveryWorkflows.length === 0 ? (
+        ) : !catalog.isError && launchableWorkflows.length === 0 ? (
           <p>No developer workflows are installed.</p>
         ) : null}
+        {selectedWorkflow && expansionNodes.length === 0 && (
+          <p role="alert">
+            This workflow has no subworkflow expansion point; it cannot be launched from here.
+          </p>
+        )}
+        {expansionNodes.length > 1 && (
+          <label>
+            Expansion point
+            <select
+              required
+              className={inputClass}
+              value={parentNodeId}
+              onChange={(event) => changeLaunchField(() => setParentNodeId(event.target.value))}
+            >
+              <option value="">Choose an expansion point</option>
+              {expansionNodes.map((node) => (
+                <option key={node.id} value={node.id}>
+                  {node.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {expansionNodes.length === 1 && (
+          <p className="niuu:text-text-secondary">Expansion point: {expansionNodes[0]!.label}</p>
+        )}
         <label>
           Ticket or objective
           <textarea
@@ -190,25 +299,29 @@ export function WorkflowExecutionsPage() {
             onChange={(event) => changeLaunchField(() => setPrompt(event.target.value))}
           />
         </label>
-        <label>
-          Repository
-          <input
-            required
-            className={inputClass}
-            value={repo}
-            onChange={(event) => changeLaunchField(() => setRepo(event.target.value))}
-            placeholder="Repository URL"
-          />
-        </label>
-        <label>
-          Target branch
-          <input
-            required
-            className={inputClass}
-            value={baseBranch}
-            onChange={(event) => changeLaunchField(() => setBaseBranch(event.target.value))}
-          />
-        </label>
+        {isDeliveryWorkflow && (
+          <>
+            <label>
+              Repository
+              <input
+                required
+                className={inputClass}
+                value={repo}
+                onChange={(event) => changeLaunchField(() => setRepo(event.target.value))}
+                placeholder="Repository URL"
+              />
+            </label>
+            <label>
+              Target branch
+              <input
+                required
+                className={inputClass}
+                value={baseBranch}
+                onChange={(event) => changeLaunchField(() => setBaseBranch(event.target.value))}
+              />
+            </label>
+          </>
+        )}
         <details>
           <summary>Runtime settings</summary>
           <label>
@@ -230,7 +343,11 @@ export function WorkflowExecutionsPage() {
             />
           </label>
         </details>
-        <button type="submit" className={buttonClass} disabled={launch.isPending || !workflowId}>
+        <button
+          type="submit"
+          className={buttonClass}
+          disabled={launch.isPending || !workflowId || !parentNodeId}
+        >
           {launch.isPending ? 'Starting…' : 'Start workflow'}
         </button>
       </form>
@@ -247,12 +364,7 @@ export function WorkflowExecutionsPage() {
               <button
                 className={buttonClass}
                 aria-pressed={selectedId === run.executionId}
-                onClick={() => {
-                  setSelectedId(run.executionId);
-                  setShowEvidence(false);
-                  setShowGraph(false);
-                  focusEvidence.current = false;
-                }}
+                onClick={() => selectRun(run)}
               >
                 {run.name} · {run.state}
               </button>
@@ -387,53 +499,87 @@ export function WorkflowExecutionsPage() {
               ))}
             </tbody>
           </table>
-          {showEvidence &&
-            (evidence.isPending || waits.isPending ? (
-              <p role="status">Loading results…</p>
-            ) : (
-              evidence.data &&
-              waits.data && (
-                <div ref={evidenceRegion} tabIndex={-1} className="niuu:space-y-3">
-                  <WorkflowResults
-                    ariaLabel="Execution evidence"
-                    headingLevel={3}
-                    title="Workflow results"
-                    status={selected.data.state}
-                    filename={`${selected.data.executionId}-results.md`}
-                    context={[
-                      { label: 'Generation', value: String(selected.data.currentGeneration) },
-                      { label: 'Plan revision', value: selected.data.planRevision ?? 'Pending' },
-                      { label: 'Recorded attempts', value: String(selected.data.children.length) },
-                      { label: 'Updated', value: selected.data.updatedAt || 'Not reported' },
-                    ]}
-                    markdown={buildWorkflowExecutionResultsMarkdown(
-                      selected.data,
-                      evidence.data,
-                      waits.data,
-                    )}
-                  />
-                  <details className="niuu:rounded niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-4">
-                    <summary className="niuu:cursor-pointer niuu:font-medium">
-                      Raw evidence JSON
-                    </summary>
-                    <pre
-                      aria-label="Raw execution evidence"
-                      className="niuu:mt-3 niuu:overflow-auto niuu:text-xs"
-                    >
-                      {JSON.stringify(
-                        {
-                          execution: selected.data,
-                          evidence: evidence.data,
-                          waits: waits.data,
-                        },
-                        null,
-                        2,
-                      )}
-                    </pre>
-                  </details>
-                </div>
-              )
-            ))}
+          {showEvidence && (
+            <div ref={evidenceRegion} tabIndex={-1} className="niuu:space-y-3">
+              <section aria-label="Execution waits" className="niuu:space-y-2">
+                <h3 className="niuu:text-lg niuu:font-semibold">Waits</h3>
+                {waits.isPending ? (
+                  <p role="status">Loading waits…</p>
+                ) : waits.data && waits.data.length === 0 ? (
+                  <p>No waits have been recorded for this execution.</p>
+                ) : (
+                  <ul className="niuu:space-y-1">
+                    {waits.data?.map((wait) => (
+                      <li key={wait.waitId}>
+                        {wait.nodeId} · {wait.conditionType} · {wait.state}
+                        {wait.observation && <> · {wait.observation.status}</>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+              {isDeliverySelected &&
+                (evidence.isPending || selectedDelivery.isPending || waits.isPending ? (
+                  <p role="status">Loading results…</p>
+                ) : (
+                  evidence.data &&
+                  selectedDelivery.data &&
+                  waits.data && (
+                    <div className="niuu:space-y-3">
+                      <WorkflowResults
+                        ariaLabel="Execution evidence"
+                        headingLevel={3}
+                        title="Workflow results"
+                        status={selectedDelivery.data.state}
+                        filename={`${selectedDelivery.data.executionId}-results.md`}
+                        context={[
+                          {
+                            label: 'Generation',
+                            value: String(selectedDelivery.data.currentGeneration),
+                          },
+                          {
+                            label: 'Plan revision',
+                            value: selectedDelivery.data.planRevision ?? 'Pending',
+                          },
+                          {
+                            label: 'Recorded attempts',
+                            value: String(selectedDelivery.data.children.length),
+                          },
+                          {
+                            label: 'Updated',
+                            value: selectedDelivery.data.updatedAt || 'Not reported',
+                          },
+                        ]}
+                        markdown={buildWorkflowExecutionResultsMarkdown(
+                          selectedDelivery.data,
+                          evidence.data,
+                          waits.data,
+                        )}
+                      />
+                      <details className="niuu:rounded niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-4">
+                        <summary className="niuu:cursor-pointer niuu:font-medium">
+                          Raw evidence JSON
+                        </summary>
+                        <pre
+                          aria-label="Raw execution evidence"
+                          className="niuu:mt-3 niuu:overflow-auto niuu:text-xs"
+                        >
+                          {JSON.stringify(
+                            {
+                              execution: selectedDelivery.data,
+                              evidence: evidence.data,
+                              waits: waits.data,
+                            },
+                            null,
+                            2,
+                          )}
+                        </pre>
+                      </details>
+                    </div>
+                  )
+                ))}
+            </div>
+          )}
         </section>
       )}
     </main>

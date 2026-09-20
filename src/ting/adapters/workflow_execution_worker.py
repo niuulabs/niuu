@@ -1,13 +1,21 @@
-"""Lifecycle runner for durable developer child launch and reconciliation."""
+"""Lifecycle runner for durable child launch and reconciliation.
+
+Drives an arbitrary list of execution reconcilers — the generic pack's own
+service, plus any specialization's (code delivery's, today) — and one shared
+wait reconciler, every cycle. Each reconciler's own repository decides which
+rows it owns (see ``PostgresWorkflowExecutionRepository._ownership_predicate``
+and its delivery override), so this worker never branches on what
+distinguishes one service from another.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
-from typing import TYPE_CHECKING
-
-from ting.delivery.service import DeliveryExecutionService
+from typing import TYPE_CHECKING, Protocol
+from uuid import UUID
 
 if TYPE_CHECKING:
     from ting.domain.services.workflow_wait import WorkflowWaitService
@@ -15,19 +23,29 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class ExecutionReconciler(Protocol):
+    """Structural contract for one pack's own execution/child reconciliation loop."""
+
+    async def reconcile(self, execution_id: UUID | None = None) -> dict[str, int]: ...
+
+    async def launch_ready(self) -> int: ...
+
+
 class WorkflowExecutionWorker:
     def __init__(
         self,
         *,
-        service: DeliveryExecutionService,
+        services: Sequence[ExecutionReconciler],
         interval_seconds: float,
-        delivery_wait_service: WorkflowWaitService | None = None,
+        wait_service: WorkflowWaitService | None = None,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("developer execution interval must be positive")
-        self._service = service
+        if not services:
+            raise ValueError("workflow execution worker requires at least one service")
+        self._services = tuple(services)
         self._interval_seconds = interval_seconds
-        self._delivery_wait_service = delivery_wait_service
+        self._wait_service = wait_service
         self._task: asyncio.Task[None] | None = None
 
     @property
@@ -53,15 +71,15 @@ class WorkflowExecutionWorker:
             # others in the same cycle. A phase's own durable state
             # (leases, poll ordering, failure counters) is what makes the
             # next cycle's retry safe, so every phase still gets to run.
-            await self._run_phase("reconcile", self._service.reconcile)
-            if self._delivery_wait_service is not None:
-                await self._run_phase(
-                    "delivery wait reconcile", self._delivery_wait_service.reconcile
-                )
-            await self._run_phase("launch_ready", self._service.launch_ready)
+            for index, service in enumerate(self._services):
+                await self._run_phase(f"reconcile[{index}]", service.reconcile)
+            if self._wait_service is not None:
+                await self._run_phase("wait reconcile", self._wait_service.reconcile)
+            for index, service in enumerate(self._services):
+                await self._run_phase(f"launch_ready[{index}]", service.launch_ready)
             await asyncio.sleep(self._interval_seconds)
 
-    async def _run_phase(self, name: str, phase) -> None:
+    async def _run_phase(self, name: str, phase: Callable[[], Awaitable[object]]) -> None:
         try:
             await phase()
         except Exception:

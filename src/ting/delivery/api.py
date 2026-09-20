@@ -272,8 +272,8 @@ def create_delivery_executions_router() -> APIRouter:
                         "spent_units": reserved.budget.spent_units,
                         "available_units": reserved.budget.available_units,
                     },
-                    "evidence_policy_id": settings.evidence_policy_id,
-                    "integration_policy_id": settings.integration_policy_id,
+                    "evidence_policy_id": settings.delivery.evidence_policy_id,
+                    "integration_policy_id": settings.delivery.integration_policy_id,
                     "current_generation": reserved.current_generation,
                     "workflow": {
                         "id": str(reserved.workflow_id),
@@ -346,7 +346,7 @@ def create_delivery_executions_router() -> APIRouter:
         service = DeliveryCompletionService(
             repository=repository,
             volundr_factory=volundr_factory,
-            policy_id=request.app.state.settings.workflow_execution.integration_policy_id,
+            policy_id=request.app.state.settings.workflow_execution.delivery.integration_policy_id,
         )
         try:
             completed = await service.complete(
@@ -404,7 +404,7 @@ def create_delivery_executions_router() -> APIRouter:
         inspection = await adapter.inspect_delivery_integration_chain(
             body.integration_allocation,
             tuple(body.integration_receipts),
-            policy_id=request.app.state.settings.workflow_execution.integration_policy_id,
+            policy_id=request.app.state.settings.workflow_execution.delivery.integration_policy_id,
             auth_token=bearer_token,
             principal=principal,
         )
@@ -542,7 +542,7 @@ def create_delivery_executions_router() -> APIRouter:
         )
         settings = request.app.state.settings.workflow_execution
         if body.operation in {"publish_branch", "conditional_merge"}:
-            if body.policy_id != settings.integration_policy_id or not exact_candidate:
+            if body.policy_id != settings.delivery.integration_policy_id or not exact_candidate:
                 raise HTTPException(
                     status_code=409,
                     detail=(

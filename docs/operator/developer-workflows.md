@@ -96,10 +96,14 @@ directory to remain accessible wherever the checkout is used. Integration fetche
 the exact accepted commit between isolated clones before validating and applying it.
 
 Ting's `workflow_execution` configuration controls claim/reconcile batch sizes,
-lease duration, polling interval, launch budget, deadline, and evidence policy
-identifiers. `evidence_policy_id` selects child acceptance;
-`integration_policy_id` selects final integration acceptance. Configure the final
-policy with the required remote check names and trusted forge producer identities.
+lease duration, polling interval, launch budget, and deadline for any workflow
+execution. The code delivery specialization's own settings — including the
+evidence policy identifiers — live under `workflow_execution.delivery` and
+only apply once `workflow_execution.delivery.enabled` is true.
+`workflow_execution.delivery.evidence_policy_id` selects child acceptance;
+`workflow_execution.delivery.integration_policy_id` selects final integration
+acceptance. Configure the final policy with the required remote check names and
+trusted forge producer identities.
 
 The parent coordinator can read those configured requirements through
 `delivery_evidence.describe` before allocating workspaces. This returns policy

@@ -98,8 +98,6 @@ def _settings(*, anonymous: bool = False):
             default_deadline_seconds=3600,
             default_budget_units=100,
             list_page_size=50,
-            evidence_policy_id="developer-workstream",
-            integration_policy_id="developer-integration",
         ),
     )
 

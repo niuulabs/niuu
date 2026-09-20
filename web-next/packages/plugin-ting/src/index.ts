@@ -21,8 +21,11 @@ import { SpecsNewPage } from './ui/SpecsNewPage';
 import { SpecsCampaignPage } from './ui/SpecsCampaignPage';
 import { WorkflowExecutionsPage } from './ui/WorkflowExecutionsPage';
 
-export { buildWorkflowExecutionHttpAdapter } from './adapters/workflowExecution';
-export type { IDeliveryExecutionService } from './ports';
+export {
+  buildWorkflowExecutionHttpAdapter,
+  buildDeliveryExecutionHttpAdapter,
+} from './adapters/workflowExecution';
+export type { IWorkflowExecutionService, IDeliveryExecutionService } from './ports';
 export { WorkflowExecutionGraph } from './ui/WorkflowExecutionGraph';
 export type { WorkflowExecutionGraphProps } from './ui/WorkflowExecutionGraph';
 export type * from './domain/workflowExecutionGraph';
@@ -32,6 +35,10 @@ export type {
   WorkflowWait,
   WorkflowExecution,
   WorkflowExecutionLaunch,
+  DeliveryExecution,
+  DeliveryExecutionLaunch,
+  WorkflowChildExecution,
+  DeliveryChildExecution,
   DeliveryRemoteCheck,
 } from './domain/workflowExecution';
 export { buildWorkflowExecutionResultsMarkdown } from './application/workflowExecutionResults';
@@ -322,11 +329,14 @@ export {
   workflowRequirementSchema,
   validateWorkflow,
   WorkflowValidationError,
+  subworkflowNodes,
+  workflowRequiresDeliveryPack,
   type WorkflowNodeKind,
   type WorkflowStageNode,
   type WorkflowGateNode,
   type WorkflowCondNode,
   type WorkflowWaitNode,
+  type WorkflowSubworkflowNode,
   type WorkflowNode,
   type WorkflowEdge,
   type Workflow,

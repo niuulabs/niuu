@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { WorkflowWait, WorkflowExecution } from '../domain/workflowExecution';
+import type { WorkflowWait, DeliveryExecution } from '../domain/workflowExecution';
 import { buildWorkflowExecutionResultsMarkdown } from './workflowExecutionResults';
 
-const execution: WorkflowExecution = {
+const execution: DeliveryExecution = {
   executionId: 'execution-1',
   name: 'Portable delivery',
   prompt: 'Ship it',
@@ -10,6 +10,7 @@ const execution: WorkflowExecution = {
   baseBranch: 'main',
   baseSha: 'a'.repeat(40),
   workflowId: 'workflow-1',
+  input: {},
   state: 'running',
   suspensionReason: 'children_contract_valid',
   currentGeneration: 1,

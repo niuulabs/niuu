@@ -648,3 +648,20 @@ async def test_rejects_integration_candidate_after_cancel() -> None:
             receipts=[{"receipt_id": "receipt-1"}],
             candidate={"candidate_sha": "b" * 40, "candidate_tree": "c" * 40},
         )
+
+
+def test_delivery_repository_claims_only_rows_with_its_own_extension() -> None:
+    """The delivery repository never reconciles a purely generic execution.
+
+    The generic pack's own repository (instantiated separately by the
+    composition root with ``exclude_extension_tables=("delivery_executions",)``
+    when delivery is enabled) excludes rows this repository owns; this
+    repository does the inverse so the two never double-process the same
+    row — a plain execution with no ``delivery_executions`` row is invisible
+    to every claim/reconcile query this class inherits.
+    """
+    repository = PostgresDeliveryExecutionRepository(pool=None)
+    predicate = repository._ownership_predicate(execution_id_column="child.execution_id")
+    assert "EXISTS (SELECT 1 FROM delivery_executions" in predicate
+    assert "NOT EXISTS" not in predicate
+    assert "delivery_executions.execution_id = child.execution_id" in predicate

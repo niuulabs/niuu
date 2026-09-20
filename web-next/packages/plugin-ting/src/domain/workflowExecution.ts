@@ -136,6 +136,29 @@ export interface WorkflowWait {
   observation?: WaitObservation | null;
 }
 
+/**
+ * Pending question/gate shapes are common to every child, whichever pack
+ * layers evidence on top of the durable parent/child engine.
+ */
+interface PendingChildQuestion {
+  requestId: string;
+  persona: string;
+  question: string;
+  reason: string;
+  recommendation: string;
+  attempted: string[];
+}
+
+interface PendingChildGate {
+  gateId: string;
+  nodeId: string;
+  label: string;
+  condition: string;
+  instructions: string;
+  summary: string;
+}
+
+/** A domain-neutral child of a durable workflow execution. */
 export interface WorkflowChildExecution {
   childId: string;
   childKey: string;
@@ -143,59 +166,103 @@ export interface WorkflowChildExecution {
   generation?: number;
   state: string;
   dependencies: string[];
-  requirementIds?: string[];
+  input: Record<string, unknown>;
   taskHandle: { agentId: string; taskId: string; contextId?: string } | null;
+  result: Record<string, unknown> | null;
+  artifacts: Record<string, unknown>[];
+  resultValidation?: ChildEvidenceValidation | null;
+  resultValidatedAt?: string | null;
+  error: { kind: string | null; detail: string } | null;
+  pendingQuestions?: PendingChildQuestion[];
+  pendingGates?: PendingChildGate[];
+  deadline?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/**
+ * The code-delivery specialization of a child execution (a workstream). Same
+ * durable identity as `WorkflowChildExecution`, with its generic `result` /
+ * `artifacts` / `resultValidation` replaced by the delivery pack's own
+ * `candidate` / `evidence` / `evidenceValidation` vocabulary, plus the
+ * workspace and requirement fields only the delivery pack tracks.
+ */
+export interface DeliveryChildExecution extends Omit<
+  WorkflowChildExecution,
+  'input' | 'result' | 'artifacts' | 'resultValidation' | 'resultValidatedAt'
+> {
+  requirementIds?: string[];
   workspace: Record<string, unknown> | null;
   candidate?: DeliveryCandidate | null;
   evidence?: Record<string, unknown>[];
   evidenceValidation?: ChildEvidenceValidation | null;
-  error: { kind: string | null; detail: string } | null;
-  pendingQuestions?: {
-    requestId: string;
-    persona: string;
-    question: string;
-    reason: string;
-    recommendation: string;
-    attempted: string[];
-  }[];
-  pendingGates?: {
-    gateId: string;
-    nodeId: string;
-    label: string;
-    condition: string;
-    instructions: string;
-    summary: string;
-  }[];
+  evidenceValidatedAt?: string | null;
 }
 
+/**
+ * A domain-neutral durable workflow execution — fan-out/join, durable waits,
+ * and session continuation for any workflow that expands into a bounded
+ * child DAG. No git or delivery vocabulary belongs here; a pack that needs
+ * more (code delivery today) layers its own type over this one, the same way
+ * its API layers its own router over the generic one.
+ */
 export interface WorkflowExecution {
   executionId: string;
   name: string;
   prompt: string;
-  repo: string;
-  baseBranch?: string;
-  baseSha?: string;
   workflowId: string;
+  input: Record<string, unknown>;
   state: WorkflowExecutionState;
   suspensionReason: string;
+  parentStopRequestedAt?: string | null;
+  parentStoppedAt?: string | null;
   currentGeneration: number;
-  planRevision?: string;
+  planRevision?: string | null;
   budget: { totalUnits: number; reservedUnits: number; spentUnits: number; availableUnits: number };
   join: Record<string, unknown> | null;
   children: WorkflowChildExecution[];
   createdAt: string;
   updatedAt: string;
   deadline?: string;
+  completedAt?: string | null;
+}
+
+/**
+ * The code-delivery specialization of a workflow execution. Everything a
+ * generic execution has, plus the git identity and integration/publication
+ * state only the delivery pack's own API surface reports.
+ */
+export interface DeliveryExecution extends Omit<WorkflowExecution, 'children'> {
+  children: DeliveryChildExecution[];
+  repo: string;
+  baseBranch: string;
+  baseSha: string;
   integrationAllocation?: Record<string, unknown> | null;
   integrationCandidate?: Record<string, unknown> | null;
   integrationReceipts?: Record<string, unknown>[];
   integrationReviewReceipt?: AttestedReviewReceipt | null;
   mergeReceipt?: Record<string, unknown> | null;
-  completedAt?: string | null;
 }
 
+/** Launch a generic durable workflow execution — no git identity involved. */
 export interface WorkflowExecutionLaunch {
   workflowId: string;
+  /** The `kind: subworkflow` node in the workflow graph this execution expands. */
+  parentNodeId: string;
+  prompt: string;
+  input?: Record<string, unknown>;
+  name?: string;
+  model?: string;
+  connectionId?: string;
+  budgetUnits?: number;
+  deadline?: string;
+}
+
+/** Launch a code-delivery execution — bound to a repository and base branch. */
+export interface DeliveryExecutionLaunch {
+  workflowId: string;
+  /** The `kind: subworkflow` node in the workflow graph this execution expands. */
+  parentNodeId: string;
   prompt: string;
   repo: string;
   baseBranch: string;

@@ -1,13 +1,13 @@
 import type {
   AttestedReviewCandidate,
   DeliveryCandidate,
+  DeliveryChildExecution,
   DeliveryCheckReceipt,
+  DeliveryExecution,
   DeliveryMergeReceipt,
   WaitObservation,
   WaitRequest,
-  WorkflowChildExecution,
   WorkflowWait,
-  WorkflowExecution,
   AttestedReviewReceipt,
   DeliveryVerificationReceipt,
 } from '../domain/workflowExecution';
@@ -81,7 +81,7 @@ function signatureState(receipt: { provenance?: { signature?: string } | null })
   return receipt.provenance?.signature ? 'Present' : 'Absent';
 }
 
-function candidateFor(child: WorkflowChildExecution): DeliveryCandidate | null {
+function candidateFor(child: DeliveryChildExecution): DeliveryCandidate | null {
   return child.candidate ?? null;
 }
 
@@ -99,7 +99,7 @@ function reviewRows(receipts: AttestedReviewReceipt[]): string[] {
   );
 }
 
-function workstreamSummary(child: WorkflowChildExecution): string {
+function workstreamSummary(child: DeliveryChildExecution): string {
   const candidate = candidateFor(child);
   const verificationReceipts = candidate?.verificationReceipts?.length ?? 0;
   const reviews = candidate?.reviewReceipts?.length ?? 0;
@@ -111,14 +111,14 @@ function workstreamSummary(child: WorkflowChildExecution): string {
   return `| ${escapeCell(child.childKey)} | ${child.generation ?? '—'} | ${child.attempt} | ${escapeCell(child.state)} | ${shortCode(candidate?.candidateSha)} | ${verificationReceipts} | ${reviews} | ${validation} |`;
 }
 
-function currentAndHistoricalChildren(execution: WorkflowExecution): {
-  current: WorkflowChildExecution[];
-  historical: WorkflowChildExecution[];
+function currentAndHistoricalChildren(execution: DeliveryExecution): {
+  current: DeliveryChildExecution[];
+  historical: DeliveryChildExecution[];
 } {
   const eligible = execution.children.filter(
     (child) => child.generation === undefined || child.generation === execution.currentGeneration,
   );
-  const latest = new Map<string, WorkflowChildExecution>();
+  const latest = new Map<string, DeliveryChildExecution>();
   for (const child of eligible) {
     const previous = latest.get(child.childKey);
     if (!previous || child.attempt > previous.attempt) latest.set(child.childKey, child);
@@ -139,7 +139,7 @@ function requirementLines(candidate: DeliveryCandidate): string[] {
   });
 }
 
-function workstreamDetails(child: WorkflowChildExecution): string[] {
+function workstreamDetails(child: DeliveryChildExecution): string[] {
   const candidate = candidateFor(child);
   const lines = [`### ${markdownText(child.childKey)}`, ''];
   if (!candidate) {
@@ -182,8 +182,8 @@ function workstreamDetails(child: WorkflowChildExecution): string[] {
 }
 
 function blockerLines(
-  execution: WorkflowExecution,
-  currentChildren: WorkflowChildExecution[],
+  execution: DeliveryExecution,
+  currentChildren: DeliveryChildExecution[],
   verification: Record<string, unknown> | null,
 ): string[] {
   const blockers = [
@@ -234,7 +234,7 @@ interface CurrentDeliveryIdentity {
 }
 
 function currentDeliveryIdentity(
-  execution: WorkflowExecution,
+  execution: DeliveryExecution,
   integrationCandidate: Record<string, unknown> | null,
 ): CurrentDeliveryIdentity | null {
   const headSha = text(integrationCandidate?.candidate_sha);
@@ -513,7 +513,7 @@ function deliveryStatusLines(
 
 /** Build a portable Markdown report from the public execution and evidence projections. */
 export function buildWorkflowExecutionResultsMarkdown(
-  execution: WorkflowExecution,
+  execution: DeliveryExecution,
   evidence: Record<string, unknown>,
   waits: readonly WorkflowWait[] = [],
 ): string {

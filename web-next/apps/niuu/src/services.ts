@@ -34,6 +34,8 @@ import {
   buildTrackerHttpAdapter,
   buildWorkflowHttpAdapter,
   buildWorkflowExecutionHttpAdapter,
+  buildDeliveryExecutionHttpAdapter,
+  type IWorkflowExecutionService,
   type IDeliveryExecutionService,
   buildResearchHttpAdapter,
   buildSpecsHttpAdapter,
@@ -1604,7 +1606,10 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     ting: tingService,
     'ting.workflowExecutions': tingClient
       ? buildWorkflowExecutionHttpAdapter(tingClient)
-      : unavailableService<IDeliveryExecutionService>('ting.workflowExecutions'),
+      : unavailableService<IWorkflowExecutionService>('ting.workflowExecutions'),
+    'ting.deliveryExecutions': tingClient
+      ? buildDeliveryExecutionHttpAdapter(tingClient)
+      : unavailableService<IDeliveryExecutionService>('ting.deliveryExecutions'),
     'ting.dispatcher': dispatcherService,
     'ting.sessions': tingSessionService,
     'ting.tracker': trackerService,

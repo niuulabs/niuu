@@ -12,6 +12,7 @@ code delivery pack uses.
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -36,6 +37,8 @@ from ting.domain.workflow_execution import (
 )
 from ting.ports.workflow_execution import WorkflowExecutionRepository
 
+_TABLE_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
 
 class PostgresWorkflowExecutionRepository[
     ExecutionT: WorkflowExecution,
@@ -43,13 +46,43 @@ class PostgresWorkflowExecutionRepository[
 ](WorkflowExecutionRepository[ExecutionT, ChildT]):
     """Raw-asyncpg ledger with transactional budget and fenced launch writes."""
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        exclude_extension_tables: tuple[str, ...] = (),
+    ) -> None:
+        for table in exclude_extension_tables:
+            if not _TABLE_NAME.match(table):
+                raise ValueError(f"invalid extension table name {table!r}")
         self._pool = pool
+        self._exclude_extension_tables = tuple(exclude_extension_tables)
 
     # -- overridable row/object mapping hooks --------------------------------
     #
     # A specialization overrides these to attach its own extension-table
     # columns without duplicating any of the generic ledger logic below.
+
+    def _ownership_predicate(self, *, execution_id_column: str) -> str:
+        """SQL fragment appended to every ownership-scoped ledger query.
+
+        Empty by default: this repository owns every row in the shared
+        ledger tables. Constructed with ``exclude_extension_tables``, it
+        instead excludes rows another pack's extension table already
+        claims — so it can share these tables with a specialization's own
+        repository (constructed over the same pool) without either one
+        double-claiming the other's rows. A specialization overrides this
+        method instead, to claim only the rows that DO carry its own
+        extension row; see ``ting.delivery.postgres`` for the one the code
+        delivery pack uses.
+        """
+        if not self._exclude_extension_tables:
+            return ""
+        clauses = " AND ".join(
+            f"NOT EXISTS (SELECT 1 FROM {table} WHERE {table}.execution_id = {execution_id_column})"
+            for table in self._exclude_extension_tables
+        )
+        return f" AND {clauses}"
 
     async def _to_execution(
         self, row, *, connection: asyncpg.Connection | None = None
@@ -374,7 +407,7 @@ class PostgresWorkflowExecutionRepository[
 
     async def list_reconcilable(self, *, limit: int) -> list[ChildT]:
         rows = await self._pool.fetch(
-            """
+            f"""
             SELECT child.*
             FROM workflow_execution_children child
             JOIN workflow_executions execution ON execution.id = child.execution_id
@@ -388,6 +421,7 @@ class PostgresWorkflowExecutionRepository[
                         AND child.state = 'canceling'
                     )
               )
+              {self._ownership_predicate(execution_id_column="child.execution_id")}
             ORDER BY COALESCE(child.last_polled_at, child.created_at), child.id
             LIMIT $1
             """,
@@ -397,10 +431,11 @@ class PostgresWorkflowExecutionRepository[
 
     async def list_parent_stop_pending(self, *, limit: int) -> list[ExecutionT]:
         rows = await self._pool.fetch(
-            """
+            f"""
             SELECT * FROM workflow_executions
             WHERE parent_stop_requested_at IS NOT NULL
               AND parent_stopped_at IS NULL
+              {self._ownership_predicate(execution_id_column="id")}
             ORDER BY parent_stop_attempts, parent_stop_requested_at, id
             LIMIT $1
             """,
@@ -410,13 +445,14 @@ class PostgresWorkflowExecutionRepository[
 
     async def list_deadline_expired_children(self, *, now: datetime, limit: int) -> list[ChildT]:
         rows = await self._pool.fetch(
-            """
+            f"""
             SELECT child.*
             FROM workflow_execution_children child
             JOIN workflow_executions execution ON execution.id = child.execution_id
             WHERE child.deadline < $1
               AND child.state NOT IN ('canceled', 'completed', 'failed', 'superseded')
               AND execution.state NOT IN ('canceled', 'completed', 'failed')
+              {self._ownership_predicate(execution_id_column="child.execution_id")}
             ORDER BY child.deadline, child.id
             LIMIT $2
             """,
@@ -429,10 +465,11 @@ class PostgresWorkflowExecutionRepository[
         self, *, now: datetime, limit: int
     ) -> list[ExecutionT]:
         rows = await self._pool.fetch(
-            """
+            f"""
             SELECT * FROM workflow_executions
             WHERE deadline < $1
               AND state NOT IN ('canceled', 'completed', 'failed')
+              {self._ownership_predicate(execution_id_column="id")}
             ORDER BY deadline, id
             LIMIT $2
             """,
@@ -492,7 +529,7 @@ class PostgresWorkflowExecutionRepository[
         claimed_rows = []
         async with self._pool.acquire() as connection, connection.transaction():
             executions = await connection.fetch(
-                """
+                f"""
                 SELECT execution.*
                 FROM workflow_executions execution
                 WHERE execution.deadline > NOW()
@@ -519,6 +556,7 @@ class PostgresWorkflowExecutionRepository[
                         AND (child.state = 'reserved' OR child.lease_expires_at < NOW())
                         AND child.deadline > NOW()
                   )
+                  {self._ownership_predicate(execution_id_column="execution.id")}
                 ORDER BY execution.updated_at, execution.id
                 FOR UPDATE OF execution SKIP LOCKED
                 LIMIT $1

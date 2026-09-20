@@ -1,8 +1,9 @@
 import type { ApiClient } from '@niuulabs/query';
-import type { IDeliveryExecutionService } from '../ports';
-import type { WorkflowExecution } from '../domain/workflowExecution';
+import type { IWorkflowExecutionService, IDeliveryExecutionService } from '../ports';
+import type { WorkflowExecution, DeliveryExecution } from '../domain/workflowExecution';
 
-export function buildWorkflowExecutionHttpAdapter(client: ApiClient): IDeliveryExecutionService {
+/** Generic durable workflow execution adapter — `/workflow-executions`. */
+export function buildWorkflowExecutionHttpAdapter(client: ApiClient): IWorkflowExecutionService {
   const base = '/workflow-executions';
   const path = (id: string) => `${base}/${encodeURIComponent(id)}`;
   return {
@@ -23,7 +24,6 @@ export function buildWorkflowExecutionHttpAdapter(client: ApiClient): IDeliveryE
       client.post<WorkflowExecution>(`${path(id)}/children/${encodeURIComponent(childKey)}/retry`, {
         attempt_id: attemptId,
       }),
-    evidence: (id) => client.get<Record<string, unknown>>(`${path(id)}/evidence`),
     waits: (id) => client.get(`${path(id)}/waits`),
     trace: (id, options = {}) => {
       const params = new URLSearchParams();
@@ -32,5 +32,19 @@ export function buildWorkflowExecutionHttpAdapter(client: ApiClient): IDeliveryE
       if (options.limit !== undefined) params.set('limit', String(options.limit));
       return client.get(`${path(id)}/trace${params.size ? `?${params}` : ''}`);
     },
+  };
+}
+
+/** Code-delivery execution adapter — `/delivery-executions`. */
+export function buildDeliveryExecutionHttpAdapter(client: ApiClient): IDeliveryExecutionService {
+  const base = '/delivery-executions';
+  const path = (id: string) => `${base}/${encodeURIComponent(id)}`;
+  return {
+    get: (id) => client.get<DeliveryExecution>(path(id)),
+    launch: (request, idempotencyKey) =>
+      client.post<DeliveryExecution>(base, request, {
+        headers: { 'Idempotency-Key': idempotencyKey },
+      }),
+    evidence: (id) => client.get<Record<string, unknown>>(`${path(id)}/evidence`),
   };
 }

@@ -25,10 +25,11 @@ from ting.domain.workflow_execution import (
     ExecutionState,
     WorkflowExecutionError,
 )
+from ting.ports.activity_projection import ActivityProjector
 from ting.ports.volundr import ActivityEvent
 
 
-class TrustedIntegrationReviewProjector:
+class TrustedIntegrationReviewProjector(ActivityProjector):
     """Project parent failures and signed reviews onto their exact execution."""
 
     def __init__(

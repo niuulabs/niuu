@@ -241,15 +241,18 @@ def build_config(
                 "base_url": f"http://niuu:{port}",
                 "anonymous_dev_mode": True,
             },
-            "review_authenticator_adapter": authenticator["adapter"],
-            "review_authenticator_kwargs": authenticator["kwargs"],
-            "review_producers": {
-                "code": "developer-code-reviewer",
-                "security": "developer-security-reviewer",
-                "adversarial": "developer-adversarial-reviewer",
+            "delivery": {
+                "enabled": True,
+                "review_authenticator_adapter": authenticator["adapter"],
+                "review_authenticator_kwargs": authenticator["kwargs"],
+                "review_producers": {
+                    "code": "developer-code-reviewer",
+                    "security": "developer-security-reviewer",
+                    "adversarial": "developer-adversarial-reviewer",
+                },
+                "evidence_policy_id": "developer-workstream",
+                "integration_policy_id": "developer-integration",
             },
-            "evidence_policy_id": "developer-workstream",
-            "integration_policy_id": "developer-integration",
         },
         "volundr": {
             "url": f"http://127.0.0.1:{port}",

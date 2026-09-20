@@ -10,7 +10,7 @@ const execution: WorkflowExecution = {
   executionId: 'run',
   name: 'Ticket',
   prompt: 'Fix',
-  repo: 'repo',
+  input: {},
   workflowId: 'workflow',
   state: 'completed',
   suspensionReason: '',

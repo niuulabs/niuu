@@ -177,6 +177,12 @@ export const workflowWaitNodeSchema = z.object({
   /** Passive waits never execute personas. */
   personaIds: z.never().optional(),
   stageMembers: z.never().optional(),
+  /**
+   * Condition types this wait accepts (e.g. `forge.checks`, `forge.merge`,
+   * `timer`). Required by the runtime for a schema v2 wait node; optional
+   * here so older or partially-authored documents still parse.
+   */
+  conditions: z.array(z.string()).optional(),
   position: positionSchema,
 });
 export type WorkflowWaitNode = z.input<typeof workflowWaitNodeSchema>;
@@ -389,4 +395,34 @@ export function validateWorkflow(workflow: Workflow): void {
     }
     bindingKeys.add(key);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Launch-time introspection
+// ---------------------------------------------------------------------------
+
+/**
+ * `kind: subworkflow` nodes in a workflow's graph — each one is a valid
+ * expansion point (`parentNodeId`) for launching a durable workflow execution.
+ */
+export function subworkflowNodes(workflow: Pick<Workflow, 'nodes'>): WorkflowSubworkflowNode[] {
+  return workflow.nodes.filter(
+    (node): node is WorkflowSubworkflowNode => node.kind === 'subworkflow',
+  );
+}
+
+/**
+ * A workflow requires the code-delivery pack when its graph declares a wait
+ * on a `forge.*` condition type (e.g. `forge.checks`, `forge.merge`) — the
+ * durable observation a Forge-backed delivery uses to confirm remote checks
+ * and merges. This is a structural fact about the workflow graph, not a name
+ * or id match: any workflow whose waits depend on Forge needs a repository
+ * and base branch to launch, whatever the workflow happens to be called.
+ */
+export function workflowRequiresDeliveryPack(workflow: Pick<Workflow, 'nodes'>): boolean {
+  return workflow.nodes.some(
+    (node) =>
+      node.kind === 'wait' &&
+      (node.conditions ?? []).some((condition) => condition.startsWith('forge.')),
+  );
 }

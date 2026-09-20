@@ -31,10 +31,14 @@ async function configure(page: Page) {
   await page.route('**/api/v1/setup', (route) =>
     route.fulfill({ json: { enabled: false, completed: true } }),
   );
+  // The catalog has no workflow definitions, so this run's workflow can never
+  // be classified as a code-delivery workflow: opening its evidence panel
+  // exercises the generic waits view only, never the delivery-only markdown
+  // report (which needs a `/delivery-executions` projection this run has none
+  // of).
   await page.route('**/api/v1/ting/workflows', (route) => route.fulfill({ json: [] }));
   await page.route('**/api/v1/ting/workflow-executions**', async (route) => {
     const path = new URL(route.request().url()).pathname;
-    if (path.endsWith('/evidence')) return route.fulfill({ json: {} });
     if (path.endsWith('/waits')) return route.fulfill({ json: [] });
     return route.fulfill({
       json: path.endsWith('/workflow-executions') ? { executions: [run], nextCursor: null } : run,
@@ -48,7 +52,7 @@ async function openGraph(page: Page) {
   await page.keyboard.press('Enter');
 }
 
-test('inspects recorded stage outcomes, expands an exact child, and opens Markdown evidence', async ({
+test('inspects recorded stage outcomes, expands an exact child, and opens the waits panel', async ({
   page,
 }) => {
   await configure(page);
@@ -96,8 +100,9 @@ test('inspects recorded stage outcomes, expands an exact child, and opens Markdo
   await page.keyboard.press('Enter');
   await page.getByRole('button', { name: 'Fit', exact: true }).click();
   await page.getByRole('button', { name: 'Open run evidence', exact: true }).click();
-  await expect(page.getByRole('region', { name: 'Execution evidence', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Download Markdown' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Execution waits', exact: true })).toBeVisible();
+  await expect(page.getByText('No waits have been recorded for this execution.')).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Execution evidence' })).toHaveCount(0);
 });
 
 test('shows pending history and a recoverable load error', async ({ page }) => {

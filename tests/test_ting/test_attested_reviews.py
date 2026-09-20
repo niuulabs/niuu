@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from niuu.adapters.evidence_signing import RsaEvidenceAuthenticator
 from niuu.domain.delivery import ReviewReceipt, evidence_payload
 from tests.test_ting.test_delivery_execution import _execution, _proposal
-from ting.adapters.attested_reviews import TrustedChildReviewAttestor
+from ting.delivery.attested_reviews import TrustedChildReviewAttestor
 from ting.delivery.domain import make_children
 from ting.domain.workflow_execution import WorkflowExecutionError
 

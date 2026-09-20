@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from ting.config import DatabaseConfig, LoggingConfig, Settings
+from ting.config import (
+    DatabaseConfig,
+    LoggingConfig,
+    Settings,
+    WorkflowExecutionConfig,
+)
 
 
 class TestDatabaseConfig:
@@ -89,3 +94,63 @@ class TestSettings:
 
         with pytest.raises(ValueError, match=field):
             Settings()
+
+
+class TestWorkflowExecutionConfig:
+    """The generic pack and its code-delivery specialization gate independently."""
+
+    def test_defaults_are_generic_only(self) -> None:
+        config = WorkflowExecutionConfig()
+        assert config.enabled is False
+        assert config.delivery.enabled is False
+        # Delivery-only settings moved off the top-level model entirely.
+        assert not hasattr(config, "evidence_policy_id")
+        assert not hasattr(config, "integration_policy_id")
+        assert not hasattr(config, "review_producers")
+
+    def test_delivery_enabled_requires_workflow_execution_enabled(self) -> None:
+        with pytest.raises(ValueError, match="requires workflow_execution.enabled"):
+            WorkflowExecutionConfig(enabled=False, delivery={"enabled": True})
+
+    def test_delivery_enabled_with_workflow_execution_enabled_is_accepted(self) -> None:
+        config = WorkflowExecutionConfig(enabled=True, delivery={"enabled": True})
+        assert config.delivery.enabled is True
+
+    def test_rejects_ting_delivery_wait_observer_while_delivery_is_disabled(self) -> None:
+        with pytest.raises(ValueError, match="ting.delivery"):
+            WorkflowExecutionConfig(
+                enabled=True,
+                delivery={"enabled": False},
+                wait_observers=[
+                    {
+                        "condition_type": "forge.checks",
+                        "adapter": "ting.delivery.wait_observers.ForgeChecksWaitObserver",
+                    }
+                ],
+            )
+
+    def test_accepts_ting_delivery_wait_observer_once_delivery_is_enabled(self) -> None:
+        config = WorkflowExecutionConfig(
+            enabled=True,
+            delivery={"enabled": True},
+            wait_observers=[
+                {
+                    "condition_type": "forge.checks",
+                    "adapter": "ting.delivery.wait_observers.ForgeChecksWaitObserver",
+                }
+            ],
+        )
+        assert config.wait_observers[0]["adapter"].endswith("ForgeChecksWaitObserver")
+
+    def test_generic_only_wait_observer_is_unaffected_by_delivery_state(self) -> None:
+        config = WorkflowExecutionConfig(
+            enabled=True,
+            delivery={"enabled": False},
+            wait_observers=[
+                {
+                    "condition_type": "timer",
+                    "adapter": "ting.adapters.timer_wait_observer.TimerWaitObserver",
+                }
+            ],
+        )
+        assert config.wait_observers[0]["condition_type"] == "timer"

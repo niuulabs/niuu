@@ -173,12 +173,9 @@ data:
       admission_roles: {{ .Values.workflowExecution.admissionRoles | toJson }}
       wait_repository_adapter: {{ .Values.workflowExecution.waitRepositoryAdapter | quote }}
       wait_repository_kwargs: {{ .Values.workflowExecution.waitRepositoryKwargs | default dict | toJson }}
-      wait_observers: {{ .Values.workflowExecution.waitObservers | default list | toJson }}
-      review_authenticator_adapter: {{ .Values.workflowExecution.reviewAuthenticatorAdapter | default "" | quote }}
-      review_authenticator_kwargs: {{ .Values.workflowExecution.reviewAuthenticatorKwargs | default dict | toJson }}
-      review_authenticator_secret_kwargs_env: {{ .Values.workflowExecution.reviewAuthenticatorSecretKwargsEnv | default dict | toJson }}
-      review_producers: {{ .Values.workflowExecution.reviewProducers | default dict | toJson }}
-      integration_review_producer: {{ .Values.workflowExecution.integrationReviewProducer | quote }}
+      {{- $genericWaitObservers := .Values.workflowExecution.waitObservers | default list }}
+      {{- $deliveryWaitObservers := .Values.workflowExecution.delivery.waitObservers | default list }}
+      wait_observers: {{ concat $genericWaitObservers (ternary $deliveryWaitObservers list (.Values.workflowExecution.delivery.enabled | default false)) | toJson }}
       worker_id: {{ .Values.workflowExecution.workerId | quote }}
       launch_claim_limit: {{ .Values.workflowExecution.launchClaimLimit }}
       reconcile_limit: {{ .Values.workflowExecution.reconcileLimit }}
@@ -187,11 +184,18 @@ data:
       default_budget_units: {{ .Values.workflowExecution.defaultBudgetUnits }}
       default_deadline_seconds: {{ .Values.workflowExecution.defaultDeadlineSeconds }}
       list_page_size: {{ .Values.workflowExecution.listPageSize }}
-      evidence_policy_id: {{ .Values.workflowExecution.evidencePolicyId | quote }}
-      integration_policy_id: {{ .Values.workflowExecution.integrationPolicyId | quote }}
       max_child_reconcile_failures: {{ .Values.workflowExecution.maxChildReconcileFailures }}
       max_wait_failures: {{ .Values.workflowExecution.maxWaitFailures }}
       max_parent_stop_failures: {{ .Values.workflowExecution.maxParentStopFailures }}
+      delivery:
+        enabled: {{ .Values.workflowExecution.delivery.enabled | default false }}
+        review_authenticator_adapter: {{ .Values.workflowExecution.delivery.reviewAuthenticatorAdapter | default "" | quote }}
+        review_authenticator_kwargs: {{ .Values.workflowExecution.delivery.reviewAuthenticatorKwargs | default dict | toJson }}
+        review_authenticator_secret_kwargs_env: {{ .Values.workflowExecution.delivery.reviewAuthenticatorSecretKwargsEnv | default dict | toJson }}
+        review_producers: {{ .Values.workflowExecution.delivery.reviewProducers | default dict | toJson }}
+        integration_review_producer: {{ .Values.workflowExecution.delivery.integrationReviewProducer | default "" | quote }}
+        evidence_policy_id: {{ .Values.workflowExecution.delivery.evidencePolicyId | default "" | quote }}
+        integration_policy_id: {{ .Values.workflowExecution.delivery.integrationPolicyId | default "" | quote }}
 
     cerbos:
       url: {{ .Values.cerbos.url | default "http://localhost:3592" | quote }}

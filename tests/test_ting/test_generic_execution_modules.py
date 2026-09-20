@@ -60,3 +60,15 @@ def test_no_new_generic_module_carries_delivery_concepts() -> None:
 def test_burn_down_list_only_names_modules_that_still_offend() -> None:
     cleaned = sorted(BURN_DOWN - _offenders())
     assert not cleaned, f"These modules are clean now; remove them from BURN_DOWN: {cleaned}"
+
+
+def test_only_the_composition_root_imports_the_delivery_pack() -> None:
+    """The pack builds on the generic blocks; nothing generic may depend on it."""
+    importers = sorted(
+        path.relative_to(TING).as_posix()
+        for path in TING.rglob("*.py")
+        if "delivery" not in path.relative_to(TING).parts
+        and path.name != "main.py"
+        and re.search(r"^\s*(from|import) ting\.delivery\b", path.read_text(encoding="utf-8"), re.M)
+    )
+    assert not importers, f"Generic Ting modules import ting.delivery: {importers}"

@@ -1,64 +1,95 @@
 import { expect, test, type Page } from '@playwright/test';
 
-const execution = {
-  executionId: 'delivery-1',
+const workflowId = '00000000-0000-4000-8000-000000000001';
+const executionId = 'delivery-1';
+
+const pendingQuestion = {
+  requestId: 'question-1',
+  persona: 'coder',
+  question: 'Should empty input be rejected?',
+  reason: 'The ticket does not specify this case.',
+  recommendation: 'Reject empty input.',
+  attempted: [],
+};
+
+const genericExecutionFields = {
+  executionId,
   name: 'Parser ticket',
   prompt: 'Fix parser',
-  repo: 'https://git.example/repo',
-  baseBranch: 'proof-target',
-  baseSha: 'base-sha',
-  workflowId: '00000000-0000-4000-8000-000000000001',
-  state: 'waiting',
+  workflowId,
+  input: {},
   suspensionReason: 'Waiting for child review',
   currentGeneration: 1,
   planRevision: 'plan-1',
   budget: { totalUnits: 100, reservedUnits: 10, spentUnits: 20, availableUnits: 70 },
   join: {},
-  integrationCandidate: {
-    repository: 'https://git.example/repo',
-    base_sha: 'base-sha',
-    candidate_sha: 'a'.repeat(40),
-  },
-  children: [
-    {
-      childId: 'child-1',
-      childKey: 'parser',
-      attempt: 1,
-      state: 'blocked',
-      dependencies: [],
-      taskHandle: { agentId: 'worker', taskId: 'task-1' },
-      workspace: null,
-      evidenceValidation: { accepted: true, blocking_reasons: [] },
-      candidate: {
-        attemptId: 'child-1',
-        candidateSha: 'verified-sha',
-        candidateTree: 'verified-tree',
-        verificationReceipts: [
-          {
-            receipt_id: 'check-1',
-            contract_id: 'parser-tests',
-            exit_code: 0,
-            provenance: { signature: 'present' },
-          },
-        ],
-        reviewReceipts: [],
-      },
-      error: null,
-      pendingQuestions: [
-        {
-          requestId: 'question-1',
-          persona: 'coder',
-          question: 'Should empty input be rejected?',
-          reason: 'The ticket does not specify this case.',
-          recommendation: 'Reject empty input.',
-          attempted: [],
-        },
-      ],
-    },
-  ],
   createdAt: '',
   updatedAt: '',
 };
+
+const genericChild = {
+  childId: 'child-1',
+  childKey: 'parser',
+  attempt: 1,
+  state: 'blocked',
+  dependencies: [],
+  input: {},
+  taskHandle: { agentId: 'worker', taskId: 'task-1' },
+  result: null,
+  artifacts: [],
+  resultValidation: { accepted: true, blocking_reasons: [] },
+  error: null,
+  pendingQuestions: [pendingQuestion],
+};
+
+const deliveryCandidate = {
+  attemptId: 'child-1',
+  candidateSha: 'verified-sha',
+  candidateTree: 'verified-tree',
+  verificationReceipts: [
+    {
+      receipt_id: 'check-1',
+      contract_id: 'parser-tests',
+      exit_code: 0,
+      provenance: { signature: 'present' },
+    },
+  ],
+  reviewReceipts: [],
+};
+
+const deliveryChild = {
+  childId: 'child-1',
+  childKey: 'parser',
+  attempt: 1,
+  state: 'blocked',
+  dependencies: [],
+  taskHandle: { agentId: 'worker', taskId: 'task-1' },
+  workspace: null,
+  evidenceValidation: { accepted: true, blocking_reasons: [] },
+  candidate: deliveryCandidate,
+  error: null,
+  pendingQuestions: [pendingQuestion],
+};
+
+function genericExecution(state: string) {
+  return { ...genericExecutionFields, state, children: [genericChild] };
+}
+
+function deliveryExecution(state: string) {
+  return {
+    ...genericExecutionFields,
+    state,
+    repo: 'https://git.example/repo',
+    baseBranch: 'proof-target',
+    baseSha: 'base-sha',
+    integrationCandidate: {
+      repository: 'https://git.example/repo',
+      base_sha: 'base-sha',
+      candidate_sha: 'a'.repeat(40),
+    },
+    children: [deliveryChild],
+  };
+}
 
 async function configure(page: Page) {
   await page.route('**/config*.json', async (route) => {
@@ -77,13 +108,24 @@ async function configure(page: Page) {
     route.fulfill({
       json: [
         {
-          id: execution.workflowId,
+          id: workflowId,
           name: 'Developer delivery',
           schema_version: 2,
           scope: 'system',
           owner_id: null,
           graph: { executionContract: 'developer-delivery/v1' },
-          nodes: [],
+          // A single subworkflow node preselects as the launch expansion point;
+          // the wait node's `forge.*` conditions are the structural signal that
+          // this workflow needs the code-delivery pack (repository, base branch).
+          nodes: [
+            { id: 'delivery-workstreams', kind: 'subworkflow', label: 'Execute workstreams' },
+            {
+              id: 'delivery-publication-wait',
+              kind: 'wait',
+              label: 'Await authoritative delivery observation',
+              conditions: ['forge.checks', 'forge.merge'],
+            },
+          ],
           edges: [],
           persona_dependencies: {},
           workflow_dependencies: {},
@@ -102,29 +144,20 @@ test('launches a ticket, retries the exact attempt, shows evidence and cancellat
   let retried = false;
   await page.route('**/api/v1/ting/workflow-executions**', async (route) => {
     const path = new URL(route.request().url()).pathname;
-    if (path.endsWith('/evidence'))
-      return route.fulfill({
-        json: {
-          schemaVersion: 1,
-          executionId: execution.executionId,
-          workflowDigest: 'sha256:workflow',
-          verification: { status: 'accepted', blockingReasons: [] },
-        },
-      });
     if (path.endsWith('/waits'))
       return route.fulfill({
         json: [
           {
             waitId: 'wait-1',
-            executionId: execution.executionId,
-            nodeId: 'await-checks',
+            executionId,
+            nodeId: 'delivery-publication-wait',
             conditionType: 'forge.checks',
             state: 'ready',
             requestDigest: 'request-digest',
             generation: 1,
             executionRevision: 4,
             request: {
-              repository: execution.repo,
+              repository: 'https://git.example/repo',
               reviewNumber: 18,
               expectedHeadSha: 'a'.repeat(40),
               expectedBaseSha: 'base-sha',
@@ -144,7 +177,7 @@ test('launches a ticket, retries the exact attempt, shows evidence and cancellat
                 checks: {
                   receipt_id: 'remote-receipt',
                   provider: 'forge-provider',
-                  repository: execution.repo,
+                  repository: 'https://git.example/repo',
                   review_number: 18,
                   candidate_sha: 'a'.repeat(40),
                   tested_base_sha: 'base-sha',
@@ -157,33 +190,52 @@ test('launches a ticket, retries the exact attempt, shows evidence and cancellat
           },
         ],
       });
-    if (path.endsWith('/cancel')) canceled = true;
+    if (path.endsWith('/cancel')) {
+      canceled = true;
+      return route.fulfill({ json: genericExecution('canceled') });
+    }
     if (path.endsWith('/children/parser/retry')) {
       expect(route.request().postDataJSON()).toEqual({ attempt_id: 'child-1' });
       retried = true;
+      return route.fulfill({ json: genericExecution('blocked') });
     }
-    if (path.endsWith('/workflow-executions') && route.request().method() === 'POST') {
+    if (path.endsWith('/workflow-executions')) {
+      return route.fulfill({
+        json: { executions: created ? [genericExecution('waiting')] : [], nextCursor: null },
+      });
+    }
+    // GET /workflow-executions/{id} — the generic projection of the execution.
+    return route.fulfill({ json: genericExecution(canceled ? 'canceled' : 'waiting') });
+  });
+  await page.route('**/api/v1/ting/delivery-executions**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/evidence'))
+      return route.fulfill({
+        json: {
+          schemaVersion: 1,
+          executionId,
+          workflowDigest: 'sha256:workflow',
+          verification: { status: 'accepted', blockingReasons: [] },
+        },
+      });
+    if (path.endsWith('/delivery-executions') && route.request().method() === 'POST') {
       const body = route.request().postDataJSON();
       expect(route.request().headers()['idempotency-key']).toMatch(
         /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
       );
+      expect(body.parentNodeId).toBe('delivery-workstreams');
       expect(body.prompt).toBe('Fix parser');
       expect(body.baseBranch).toBe('proof-target');
       created = true;
-      return route.fulfill({ status: 201, json: execution });
+      return route.fulfill({ status: 201, json: deliveryExecution('waiting') });
     }
-    const run = { ...execution, state: canceled ? 'canceled' : execution.state };
-    return route.fulfill({
-      json: path.endsWith('/workflow-executions')
-        ? { executions: created ? [run] : [], nextCursor: null }
-        : run,
-    });
+    // GET /delivery-executions/{id} — the delivery projection of the same execution.
+    return route.fulfill({ json: deliveryExecution(canceled ? 'canceled' : 'waiting') });
   });
   await page.goto('/ting/workflows/runs');
   await expect(page.getByRole('heading', { name: 'Developer workflows' })).toBeVisible();
-  await page
-    .getByRole('combobox', { name: 'Workflow', exact: true })
-    .selectOption(execution.workflowId);
+  await page.getByRole('combobox', { name: 'Workflow', exact: true }).selectOption(workflowId);
+  await expect(page.getByText('Expansion point: Execute workstreams')).toBeVisible();
   await page.getByLabel('Ticket or objective').fill('Fix parser');
   await page.getByLabel('Repository', { exact: true }).fill('https://git.example/repo');
   await page.getByLabel('Target branch').fill('proof-target');

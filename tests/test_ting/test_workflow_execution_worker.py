@@ -31,7 +31,7 @@ class TransientService:
 @pytest.mark.asyncio
 async def test_worker_survives_transient_cycle_and_retries() -> None:
     service = TransientService()
-    worker = WorkflowExecutionWorker(service=service, interval_seconds=0.001)
+    worker = WorkflowExecutionWorker(services=[service], interval_seconds=0.001)
 
     await worker.start()
     await asyncio.wait_for(service.recovered.wait(), timeout=1)
@@ -45,7 +45,12 @@ async def test_worker_survives_transient_cycle_and_retries() -> None:
 
 def test_worker_rejects_nonpositive_interval() -> None:
     with pytest.raises(ValueError, match="interval"):
-        WorkflowExecutionWorker(service=TransientService(), interval_seconds=0)
+        WorkflowExecutionWorker(services=[TransientService()], interval_seconds=0)
+
+
+def test_worker_rejects_empty_service_list() -> None:
+    with pytest.raises(ValueError, match="at least one service"):
+        WorkflowExecutionWorker(services=[], interval_seconds=1)
 
 
 class AlwaysFailingReconcileService:
@@ -64,7 +69,7 @@ class AlwaysFailingReconcileService:
         return 0
 
 
-class RecordingDeliveryWaitService:
+class RecordingWaitService:
     def __init__(self) -> None:
         self.calls = 0
 
@@ -76,20 +81,51 @@ class RecordingDeliveryWaitService:
 @pytest.mark.asyncio
 async def test_worker_runs_every_phase_even_when_an_earlier_phase_raises() -> None:
     service = AlwaysFailingReconcileService()
-    delivery_wait_service = RecordingDeliveryWaitService()
+    wait_service = RecordingWaitService()
     worker = WorkflowExecutionWorker(
-        service=service,
+        services=[service],
         interval_seconds=0.001,
-        delivery_wait_service=delivery_wait_service,
+        wait_service=wait_service,
     )
 
     await worker.start()
     for _ in range(200):
-        if service.launch_calls >= 2 and delivery_wait_service.calls >= 2:
+        if service.launch_calls >= 2 and wait_service.calls >= 2:
             break
         await asyncio.sleep(0.005)
     await worker.stop()
 
     assert service.reconcile_calls >= 2
     assert service.launch_calls >= 2
-    assert delivery_wait_service.calls >= 2
+    assert wait_service.calls >= 2
+
+
+@pytest.mark.asyncio
+async def test_worker_reconciles_every_configured_service_each_cycle() -> None:
+    """A deployment with both the generic pack and the delivery specialization
+
+    enabled supplies one service per pack; the worker must drive each one's
+    own reconcile/launch_ready every cycle rather than picking just one, so
+    a purely generic execution and a delivery execution are both serviced
+    by the composition root's own repository-scoped service in one worker.
+    """
+    generic_service = TransientService()
+    generic_service.launch_calls = 1  # skip the induced-failure branch
+    delivery_service = TransientService()
+    delivery_service.launch_calls = 1
+    worker = WorkflowExecutionWorker(
+        services=[generic_service, delivery_service],
+        interval_seconds=0.001,
+    )
+
+    await worker.start()
+    for _ in range(200):
+        if generic_service.reconcile_calls >= 2 and delivery_service.reconcile_calls >= 2:
+            break
+        await asyncio.sleep(0.005)
+    await worker.stop()
+
+    assert generic_service.reconcile_calls >= 2
+    assert delivery_service.reconcile_calls >= 2
+    assert generic_service.launch_calls >= 2
+    assert delivery_service.launch_calls >= 2

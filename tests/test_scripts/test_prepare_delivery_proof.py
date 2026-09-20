@@ -36,8 +36,9 @@ def test_builds_isolated_docker_clone_mode_config(tmp_path: Path) -> None:
     assert delivery.workstreams.kwargs["repository_paths"] == {
         "https://git.example/approved/project": str(repository)
     }
-    assert developer.integration_policy_id == "developer-integration"
+    assert developer.delivery.integration_policy_id == "developer-integration"
     assert developer.enabled
+    assert developer.delivery.enabled
     assert config["docker"]["project_name"] == "niuu-developer-delivery-proof"
     assert config["pod_manager"]["sandbox_sessions_dir"] == str(root / "workspaces")
 

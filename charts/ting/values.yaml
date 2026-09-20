@@ -173,7 +173,7 @@ a2a:
     kwargs: {}
 
 workflowExecution:
-  # Requires workload identity plus configured Ravn A2A and Forge delivery/evidence adapters.
+  # Domain-neutral fan-out/join, durable waits, and the Ravn A2A gateway.
   enabled: false
   gatewayAdapter: ravn.adapters.child_task_a2a.ConfiguredRavnChildTaskA2AGateway
   gatewayKwargs: {}
@@ -182,24 +182,13 @@ workflowExecution:
     - volundr:developer
   waitRepositoryAdapter: ting.adapters.postgres_workflow_waits.PostgresWorkflowWaitRepository
   waitRepositoryKwargs: {}
-  # Wait condition observers, each `{condition_type, adapter, ...kwargs}`; see
-  # WorkflowExecutionConfig.wait_observers for the constructor-injection rules.
+  # Generic wait condition observers, each `{condition_type, adapter, ...kwargs}`; see
+  # WorkflowExecutionConfig.wait_observers for the constructor-injection rules. The
+  # code delivery specialization's own forge.* observers live under delivery.waitObservers
+  # below and are only registered when delivery.enabled.
   waitObservers:
-    - condition_type: forge.checks
-      adapter: ting.delivery.wait_observers.ForgeChecksWaitObserver
-    - condition_type: forge.merge
-      adapter: ting.delivery.wait_observers.ForgeMergeWaitObserver
     - condition_type: timer
       adapter: ting.adapters.timer_wait_observer.TimerWaitObserver
-  # Dynamic `EvidenceAuthenticator` used to sign server-derived reviewer receipts.
-  reviewAuthenticatorAdapter: ""
-  reviewAuthenticatorKwargs: {}
-  reviewAuthenticatorSecretKwargsEnv: {}
-  reviewProducers:
-    code: developer-code-reviewer
-    security: developer-security-reviewer
-    adversarial: developer-adversarial-reviewer
-  integrationReviewProducer: developer-integration-verifier
   workerId: ting-workflow-execution
   launchClaimLimit: 4
   reconcileLimit: 100
@@ -208,11 +197,32 @@ workflowExecution:
   defaultBudgetUnits: 100
   defaultDeadlineSeconds: 86400
   listPageSize: 50
-  evidencePolicyId: developer-workstream
-  integrationPolicyId: developer-integration
   maxChildReconcileFailures: 5
   maxWaitFailures: 5
   maxParentStopFailures: 5
+  # Code delivery specialization: its own repository, router, and Forge/review
+  # wiring, layered over the generic execution ledger above. Requires enabled.
+  delivery:
+    # Also requires workload identity plus configured Ravn A2A and Forge
+    # delivery/evidence adapters.
+    enabled: true
+    # forge.* wait condition observers, registered only when delivery is enabled.
+    waitObservers:
+      - condition_type: forge.checks
+        adapter: ting.delivery.wait_observers.ForgeChecksWaitObserver
+      - condition_type: forge.merge
+        adapter: ting.delivery.wait_observers.ForgeMergeWaitObserver
+    # Dynamic `EvidenceAuthenticator` used to sign server-derived reviewer receipts.
+    reviewAuthenticatorAdapter: ""
+    reviewAuthenticatorKwargs: {}
+    reviewAuthenticatorSecretKwargsEnv: {}
+    reviewProducers:
+      code: developer-code-reviewer
+      security: developer-security-reviewer
+      adversarial: developer-adversarial-reviewer
+    integrationReviewProducer: developer-integration-verifier
+    evidencePolicyId: developer-workstream
+    integrationPolicyId: developer-integration
 
 database:
   name: ting

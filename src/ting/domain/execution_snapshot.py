@@ -2,16 +2,19 @@
 
 import json
 
-from ting.delivery.domain import ChildExecution, DeliveryExecution
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_document import load_workflow_document, workflow_document_revision
-from ting.domain.workflow_execution import WorkflowExecutionError
+from ting.domain.workflow_execution import (
+    WorkflowChildExecution,
+    WorkflowExecution,
+    WorkflowExecutionError,
+)
 from ting.domain.workflow_snapshot import build_workflow_snapshot
 
 
 def pinned_child_workflow(
-    execution: DeliveryExecution,
-    child: ChildExecution,
+    execution: WorkflowExecution,
+    child: WorkflowChildExecution,
 ) -> WorkflowDefinition:
     if child.execution_id != execution.id:
         raise WorkflowExecutionError("Child does not belong to this execution")

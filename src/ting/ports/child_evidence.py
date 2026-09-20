@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
-from niuu.domain.delivery import EvidenceValidationReport
+from niuu.domain.evidence import EvidenceValidationReport
 from ting.domain.workflow_execution import WorkflowChildExecution, WorkflowExecution
 
 

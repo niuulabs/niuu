@@ -25,13 +25,13 @@ except ImportError:
 
 from ting.config import WatcherConfig
 from ting.domain.models import RavnOutcome, Run, RunStatus, SessionMessage
+from ting.ports.activity_projection import ActivityProjector
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.event_bus import EventBusPort, TingEvent
 from ting.ports.tracker import TrackerFactory, TrackerPort  # noqa: F401 — re-exported for consumers
 from ting.ports.volundr import ActivityEvent, VolundrFactory, VolundrPort
 
 if TYPE_CHECKING:
-    from ting.adapters.delivery_integration_reviews import TrustedIntegrationReviewProjector
     from ting.domain.services.review_engine import ReviewEngine
     from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 
@@ -67,7 +67,7 @@ class SessionActivitySubscriber:
         review_engine: ReviewEngine | None = None,
         sleipnir_publisher: object | None = None,
         workflow_campaign_projector: WorkflowCampaignProjector | None = None,
-        attested_review_projector: TrustedIntegrationReviewProjector | None = None,
+        attested_review_projector: ActivityProjector | None = None,
     ) -> None:
         self._factory = volundr_factory
         self._tracker_factory = tracker_factory

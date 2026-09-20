@@ -39,6 +39,20 @@ class PostgresDeliveryExecutionRepository(
 ):
     """Layers the delivery extension table over the generic execution ledger."""
 
+    def _ownership_predicate(self, *, execution_id_column: str) -> str:
+        """Claim only rows that carry this pack's own delivery extension row.
+
+        The generic ledger tables are shared with the plain, non-delivery
+        repository; without this, this repository's claim/reconcile queries
+        would also pick up a purely generic execution (one with no
+        ``delivery_executions`` row) and process it with delivery-specific
+        validation it was never meant to satisfy.
+        """
+        return (
+            " AND EXISTS (SELECT 1 FROM delivery_executions "
+            f"WHERE delivery_executions.execution_id = {execution_id_column})"
+        )
+
     async def _to_execution(
         self,
         row,

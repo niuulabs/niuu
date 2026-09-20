@@ -523,6 +523,7 @@ class _ClaimConnection:
         self.children = [_child_row(child) for child in children]
         self.active = active
         self.claim_limit = None
+        self.claim_query = ""
         self.in_transaction = False
 
     def transaction(self):
@@ -536,6 +537,7 @@ class _ClaimConnection:
     async def fetch(self, query, *args):
         assert self.in_transaction
         if "SELECT execution.*" in query:
+            self.claim_query = query
             return [dict(self.execution)]
         assert "WITH claimable" in query
         self.claim_limit = args[1]
@@ -1415,3 +1417,85 @@ async def test_reserve_message_rejects_reused_message_id_for_different_content()
 
     with pytest.raises(ExecutionConflictError, match="reused"):
         await PostgresWorkflowExecutionRepository(_CollidingMessagePool()).reserve_message(message)
+
+
+# ---------------------------------------------------------------------------
+# Ownership scoping — how a plain generic repository and a specialization's
+# repository (code delivery's, layered in test_delivery_postgres.py) can share
+# these tables without one worker's reconcile double-claiming the other's rows.
+# ---------------------------------------------------------------------------
+
+
+def test_ownership_predicate_is_empty_without_configured_exclusions() -> None:
+    repository = PostgresWorkflowExecutionRepository(_Pool(_CreateConnection()))
+    assert repository._ownership_predicate(execution_id_column="id") == ""
+
+
+def test_ownership_predicate_excludes_configured_extension_tables() -> None:
+    repository = PostgresWorkflowExecutionRepository(
+        _Pool(_CreateConnection()), exclude_extension_tables=("delivery_executions",)
+    )
+    predicate = repository._ownership_predicate(execution_id_column="child.execution_id")
+    assert "NOT EXISTS" in predicate
+    assert "FROM delivery_executions" in predicate
+    assert "delivery_executions.execution_id = child.execution_id" in predicate
+
+
+def test_ownership_predicate_rejects_unsafe_table_names() -> None:
+    with pytest.raises(ValueError, match="invalid extension table name"):
+        PostgresWorkflowExecutionRepository(
+            _Pool(_CreateConnection()), exclude_extension_tables=("delivery_executions; DROP",)
+        )
+
+
+@pytest.mark.asyncio
+async def test_exclusion_scoped_queries_carry_the_ownership_predicate() -> None:
+    """A repository excluding another pack's extension table never reads its rows.
+
+    This is what lets the composition root run the plain generic repository
+    alongside a specialization's own (e.g. code delivery's) over the same
+    ledger tables: each one's claim/reconcile queries are scoped to the rows
+    it actually owns, so a single worker driving both never processes the
+    other pack's row with the wrong validator/evidence hooks.
+    """
+
+    class CapturePool:
+        query = ""
+
+        async def fetch(self, query, *args):
+            self.query = query
+            return []
+
+    repository = PostgresWorkflowExecutionRepository(
+        CapturePool(), exclude_extension_tables=("delivery_executions",)
+    )
+
+    pool = repository._pool
+    await repository.list_reconcilable(limit=5)
+    assert "NOT EXISTS (SELECT 1 FROM delivery_executions" in pool.query
+    assert "delivery_executions.execution_id = child.execution_id" in pool.query
+
+    await repository.list_parent_stop_pending(limit=5)
+    assert "delivery_executions.execution_id = id" in pool.query
+
+    now = datetime.now(UTC)
+    await repository.list_deadline_expired_children(now=now, limit=5)
+    assert "delivery_executions.execution_id = child.execution_id" in pool.query
+
+    await repository.list_deadline_expired_executions(now=now, limit=5)
+    assert "delivery_executions.execution_id = id" in pool.query
+
+
+@pytest.mark.asyncio
+async def test_claim_launches_carries_the_ownership_predicate() -> None:
+    execution = _execution()
+    children = [make_children(execution, 1, (_proposal(execution, "en"),))[0]]
+    connection = _ClaimConnection(execution, children, active=0)
+    repository = PostgresWorkflowExecutionRepository(
+        _Pool(connection), exclude_extension_tables=("delivery_executions",)
+    )
+
+    await repository.claim_launches(worker_id="worker-1", limit=1, lease_until=datetime.now(UTC))
+
+    assert "NOT EXISTS (SELECT 1 FROM delivery_executions" in connection.claim_query
+    assert "delivery_executions.execution_id = execution.id" in connection.claim_query

@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import AliasChoices, BaseModel, Field, SecretStr, field_validator
+from pydantic import AliasChoices, BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -1032,15 +1032,78 @@ class A2AConfig(BaseModel):
     )
 
 
-class WorkflowExecutionConfig(BaseModel):
-    """Durable workflow execution and Ravn A2A gateway settings."""
+class WorkflowExecutionDeliveryConfig(BaseModel):
+    """Code-delivery specialization settings layered over generic workflow execution.
+
+    Everything here — signed reviewer attestation, the Forge evidence and
+    integration policies, and the trusted integration review projector — is
+    meaningless without the delivery extension table and its `forge.*` wait
+    observers. ``enabled`` gates all of it independently of the generic
+    ``workflow_execution.enabled`` flag, which only the reusable fan-out,
+    join, and wait machinery needs.
+    """
 
     enabled: bool = Field(
         default=False,
         description=(
-            "Enable durable developer delivery after workload identity, the Ravn A2A "
-            "gateway, Forge evidence policy, and delivery adapters are configured."
+            "Enable the code delivery specialization: the delivery router and "
+            "repository, Forge evidence/review wiring, and forge.* wait observers. "
+            "Requires workflow_execution.enabled."
         ),
+    )
+    review_authenticator_adapter: str = Field(
+        default="",
+        description=(
+            "Dynamic EvidenceAuthenticator adapter used to sign server-derived "
+            "reviewer receipts, required once delivery is enabled."
+        ),
+    )
+    review_authenticator_kwargs: dict[str, Any] = Field(default_factory=dict)
+    review_authenticator_secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+    review_producers: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Role name to signing-producer identity, required for every role a "
+            "workflow's reviewAttestation declares once delivery is enabled."
+        ),
+    )
+    integration_review_producer: str = Field(
+        default="",
+        description=(
+            "Signing-producer identity for the trusted integration review projector, "
+            "required once delivery is enabled."
+        ),
+    )
+    evidence_policy_id: str = Field(
+        default="",
+        min_length=1,
+        description="Forge evidence policy ID, required once delivery is enabled.",
+    )
+    integration_policy_id: str = Field(
+        default="",
+        min_length=1,
+        description="Forge integration policy ID, required once delivery is enabled.",
+    )
+
+
+class WorkflowExecutionConfig(BaseModel):
+    """Durable, domain-neutral workflow execution: fan-out/join, waits, and the Ravn A2A gateway.
+
+    Every field here serves any workflow that expands into a bounded child
+    DAG and carries no code-delivery vocabulary. The code delivery
+    specialization (its own repository, router, and Forge/review wiring)
+    lives entirely under ``delivery``.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable durable workflow execution: fan-out/join, durable waits, and the "
+            "Ravn A2A gateway. Requires workload identity outside anonymous dev mode."
+        ),
+    )
+    delivery: WorkflowExecutionDeliveryConfig = Field(
+        default_factory=WorkflowExecutionDeliveryConfig
     )
     gateway_adapter: str = Field(
         default="ravn.adapters.child_task_a2a.ConfiguredRavnChildTaskA2AGateway",
@@ -1072,23 +1135,6 @@ class WorkflowExecutionConfig(BaseModel):
             "adapter's constructor declares them."
         ),
     )
-    review_authenticator_adapter: str = Field(default="")
-    review_authenticator_kwargs: dict[str, Any] = Field(default_factory=dict)
-    review_authenticator_secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
-    review_producers: dict[str, str] = Field(
-        default_factory=dict,
-        description=(
-            "Role name to signing-producer identity, required for every role a "
-            "workflow's reviewAttestation declares once workflow execution is enabled."
-        ),
-    )
-    integration_review_producer: str = Field(
-        default="",
-        description=(
-            "Signing-producer identity for the trusted integration review projector, "
-            "required once workflow execution is enabled."
-        ),
-    )
     worker_id: str = Field(default="ting-workflow-execution")
     launch_claim_limit: int = Field(default=4, ge=1, le=100)
     reconcile_limit: int = Field(default=100, ge=1, le=1000)
@@ -1097,16 +1143,6 @@ class WorkflowExecutionConfig(BaseModel):
     default_budget_units: int = Field(default=100, ge=1)
     default_deadline_seconds: int = Field(default=86400, ge=60)
     list_page_size: int = Field(default=50, ge=1, le=200)
-    evidence_policy_id: str = Field(
-        default="",
-        min_length=1,
-        description="Forge evidence policy ID, required once workflow execution is enabled.",
-    )
-    integration_policy_id: str = Field(
-        default="",
-        min_length=1,
-        description=("Forge integration policy ID, required once workflow execution is enabled."),
-    )
     max_child_reconcile_failures: int = Field(
         default=5,
         ge=1,
@@ -1143,6 +1179,29 @@ class WorkflowExecutionConfig(BaseModel):
         if any(not role for role in normalized):
             raise ValueError("developer execution admission roles must be non-empty")
         return normalized
+
+    @model_validator(mode="after")
+    def _validate_delivery_wiring(self) -> WorkflowExecutionConfig:
+        if self.delivery.enabled and not self.enabled:
+            raise ValueError(
+                "workflow_execution.delivery.enabled requires workflow_execution.enabled; "
+                "set workflow_execution.enabled: true or disable workflow_execution.delivery"
+            )
+        if not self.delivery.enabled:
+            offending = sorted(
+                {
+                    adapter
+                    for entry in self.wait_observers
+                    if (adapter := str(entry.get("adapter") or "")).startswith("ting.delivery.")
+                }
+            )
+            if offending:
+                raise ValueError(
+                    "workflow_execution.wait_observers configures ting.delivery adapter(s) "
+                    f"({', '.join(offending)}) while workflow_execution.delivery.enabled is "
+                    "false; enable workflow_execution.delivery or remove the observer(s)"
+                )
+        return self
 
 
 class Settings(BaseSettings):

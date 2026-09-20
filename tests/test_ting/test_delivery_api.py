@@ -161,8 +161,10 @@ def _settings(*, anonymous: bool = False):
             default_deadline_seconds=3600,
             default_budget_units=100,
             list_page_size=50,
-            evidence_policy_id="developer-workstream",
-            integration_policy_id="developer-integration",
+            delivery=SimpleNamespace(
+                evidence_policy_id="developer-workstream",
+                integration_policy_id="developer-integration",
+            ),
         ),
     )
 
@@ -621,7 +623,9 @@ def test_record_integration_persists_only_forge_inspected_candidate() -> None:
     app = FastAPI()
     app.state.settings = SimpleNamespace(
         auth=SimpleNamespace(allow_anonymous_dev=False),
-        workflow_execution=SimpleNamespace(integration_policy_id="developer-integration"),
+        workflow_execution=SimpleNamespace(
+            delivery=SimpleNamespace(integration_policy_id="developer-integration")
+        ),
     )
     app.include_router(create_delivery_executions_router())
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
@@ -651,7 +655,9 @@ def test_record_integration_rejects_before_ready_child_join() -> None:
     app = FastAPI()
     app.state.settings = SimpleNamespace(
         auth=SimpleNamespace(allow_anonymous_dev=False),
-        workflow_execution=SimpleNamespace(integration_policy_id="developer-integration"),
+        workflow_execution=SimpleNamespace(
+            delivery=SimpleNamespace(integration_policy_id="developer-integration")
+        ),
     )
     app.include_router(create_delivery_executions_router())
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
@@ -689,7 +695,9 @@ def test_record_integration_rejects_forge_chain_identity_mismatch() -> None:
     app = FastAPI()
     app.state.settings = SimpleNamespace(
         auth=SimpleNamespace(allow_anonymous_dev=False),
-        workflow_execution=SimpleNamespace(integration_policy_id="developer-integration"),
+        workflow_execution=SimpleNamespace(
+            delivery=SimpleNamespace(integration_policy_id="developer-integration")
+        ),
     )
     app.include_router(create_delivery_executions_router())
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
@@ -727,7 +735,9 @@ def test_conditional_merge_authorization_requires_stored_review_and_exact_policy
     app = FastAPI()
     app.state.settings = SimpleNamespace(
         auth=SimpleNamespace(allow_anonymous_dev=False),
-        workflow_execution=SimpleNamespace(integration_policy_id="developer-integration"),
+        workflow_execution=SimpleNamespace(
+            delivery=SimpleNamespace(integration_policy_id="developer-integration")
+        ),
     )
     app.include_router(create_delivery_executions_router())
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
@@ -784,7 +794,9 @@ def test_publish_branch_authorization_requires_exact_allocated_non_base_branch()
     app = FastAPI()
     app.state.settings = SimpleNamespace(
         auth=SimpleNamespace(allow_anonymous_dev=False),
-        workflow_execution=SimpleNamespace(integration_policy_id="developer-integration"),
+        workflow_execution=SimpleNamespace(
+            delivery=SimpleNamespace(integration_policy_id="developer-integration")
+        ),
     )
     app.include_router(create_delivery_executions_router())
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository
@@ -833,7 +845,9 @@ def test_delivery_authorization_rejects_token_from_different_forge_session() -> 
     app = FastAPI()
     app.state.settings = SimpleNamespace(
         auth=SimpleNamespace(allow_anonymous_dev=False),
-        workflow_execution=SimpleNamespace(integration_policy_id="developer-integration"),
+        workflow_execution=SimpleNamespace(
+            delivery=SimpleNamespace(integration_policy_id="developer-integration")
+        ),
     )
     app.include_router(create_delivery_executions_router())
     app.dependency_overrides[resolve_delivery_execution_repo] = lambda: repository

@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { keepPreviousData, useInfiniteQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
-import type { IDeliveryExecutionService } from '../ports';
+import type { IWorkflowExecutionService } from '../ports';
 import type { WorkflowExecution } from '../domain/workflowExecution';
 import { executionIsTerminal } from '../domain/workflowExecution';
 import { projectWorkflowExecutionTrace } from '../application/workflowExecutionTrace';
@@ -10,7 +10,11 @@ import { WorkflowExecutionGraph } from './WorkflowExecutionGraph';
 const buttonClass =
   'niuu:rounded niuu:border niuu:border-border niuu:px-3 niuu:py-2 niuu:disabled:opacity-50';
 
-/** Fetch only the selected parent/child session through the execution service. */
+/**
+ * Fetch only the selected parent/child session through the generic execution
+ * service. The trace is entirely provider-neutral — it renders the same way
+ * for a code-delivery execution and any other workflow execution.
+ */
 export function WorkflowExecutionTraceGraph({
   execution,
   onOpenEvidence,
@@ -18,7 +22,7 @@ export function WorkflowExecutionTraceGraph({
   execution: WorkflowExecution;
   onOpenEvidence: () => void;
 }) {
-  const service = useService<IDeliveryExecutionService>('ting.workflowExecutions');
+  const service = useService<IWorkflowExecutionService>('ting.workflowExecutions');
   const [childId, setChildId] = useState('');
   const sessionSelect = useRef<HTMLSelectElement>(null);
   const terminal = executionIsTerminal(execution.state);
