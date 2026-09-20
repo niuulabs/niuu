@@ -39,7 +39,14 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install real tmux
         if: matrix.lane == 'tmux'
-        run: sudo apt-get update && sudo apt-get install -y tmux
+        # tmux comes from the Ubuntu archive. Refresh only that source so an
+        # outage of an unrelated preinstalled repository cannot fail the lane.
+        run: |
+          sudo apt-get update \
+            -o Dir::Etc::sourcelist=sources.list.d/ubuntu.sources \
+            -o Dir::Etc::sourceparts=- \
+            -o APT::Get::List-Cleanup=0
+          sudo apt-get install -y tmux
       - name: Run required gate
         env:
           REPEATS: ${{ github.event_name == 'schedule' && matrix.lane == 'tmux' && '10' || '1' }}
