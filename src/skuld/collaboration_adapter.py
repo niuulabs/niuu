@@ -23,19 +23,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Built-in event types that are attestable review outcomes even when no
-# workflow graph configures `reviewAttestation` explicitly (the frozen v1
-# contracts below). A workflow's own configured `reviewAttestation.eventType`
-# is ALSO attestable and must be added by the caller — see
-# `SkuldCollaborationAdapter.__init__`'s `attestable_review_event_types` — so a
-# custom (v2) event type gets the same strict, no-coercion `valid` handling.
-_STRICT_REVIEW_EVENT_TYPES = frozenset(
-    {
-        "developer.review.completed",
-        "developer.integration.reviewed",
-    }
-)
-
 TurnAppender = Callable[[Any], None]
 TimelineReporter = Callable[[dict[str, Any]], Awaitable[None]]
 PeerObserver = Callable[[str, str, dict[str, Any]], Awaitable[None]]
@@ -64,7 +51,7 @@ def _source_wire_fields(event: dict[str, Any]) -> dict[str, Any]:
 def _peer_observation(
     event: dict[str, Any],
     *,
-    strict_review_event_types: frozenset[str] = _STRICT_REVIEW_EVENT_TYPES,
+    strict_review_event_types: frozenset[str] = frozenset(),
 ) -> tuple[str, dict[str, Any]] | None:
     """Translate a collaboration event into Skuld's peer-observation contract."""
     kind = str(event.get("kind") or "")
@@ -184,13 +171,12 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         self._publish_presence_event = publish_presence_event
         self._report_usage = report_usage
         # Event types requiring an explicit boolean `valid` before being trusted
-        # as attested review evidence: the built-in frozen-v1 contracts plus
-        # whatever event type this workflow's own `reviewAttestation` names, so
-        # a configured (v2) review event never falls through to the default
-        # "no `valid` field means valid" coercion applied to ordinary outcomes.
-        self._strict_review_event_types = _STRICT_REVIEW_EVENT_TYPES | frozenset(
-            attestable_review_event_types
-        )
+        # as attested review evidence: exactly whatever event type(s) this
+        # workflow's own `reviewAttestation` names, threaded in by the caller
+        # (see `attestable_review_event_types`), so a configured review event
+        # never falls through to the default "no `valid` field means valid"
+        # coercion applied to ordinary outcomes.
+        self._strict_review_event_types = frozenset(attestable_review_event_types)
         self._websockets: dict[str, WebSocket] = {}
         self._reported_usage_ids: set[str] = set()
         self._delivered_source_events: OrderedDict[str, None] = OrderedDict()

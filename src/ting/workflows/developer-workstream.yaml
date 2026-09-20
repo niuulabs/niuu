@@ -32,6 +32,8 @@ persona_dependencies:
 workflow_dependencies: {}
 graph:
   executionContract: developer-workstream/v1
+  toolActions:
+    delivery_workspace: [verify]
   reviewAttestation:
     version: 1
     scope: workstream

@@ -85,8 +85,9 @@ def test_broker_projects_custom_authenticated_persona_to_configured_role(tmp_pat
 def test_broker_threads_configured_review_event_type_into_room_bridge(tmp_path) -> None:
     """The room bridge must treat the workflow's own reviewAttestation.eventType
 
-    as strictly as the built-in developer.* event types, or a custom (v2) review
-    event with no `valid` field would be coerced to `valid: True` downstream.
+    strictly, or a review event with no `valid` field would be coerced to
+    `valid: True` downstream. Only the event type(s) this workflow's own
+    binding names are strict — nothing is built into the room bridge itself.
     """
     graph = {
         "reviewAttestation": {
@@ -112,55 +113,18 @@ def test_broker_threads_configured_review_event_type_into_room_bridge(tmp_path) 
     )
 
     assert broker._room_bridge is not None
-    assert "artifact.review.completed" in broker._room_bridge._strict_review_event_types
-    assert "developer.review.completed" in broker._room_bridge._strict_review_event_types
-
-
-def test_skuld_supports_frozen_v1_workstream_contract_explicitly() -> None:
-    binding = _workflow_review_attestation({"executionContract": "developer-workstream/v1"})
-
-    assert binding is not None
-    assert binding.roles["code"] == "developer-code-reviewer"
-
-
-def test_skuld_supports_frozen_v1_root_delivery_integration_binding() -> None:
-    binding = _workflow_review_attestation({"executionContract": "developer-delivery/v1"})
-
-    assert binding is not None
-    assert binding.scope == "integration"
-    assert binding.event_type == "developer.integration.reviewed"
-    assert binding.roles == {"integration": "developer-integration-verifier"}
-
-
-def test_frozen_root_delivery_broker_still_projects_integration_review(tmp_path) -> None:
-    broker = Broker(
-        settings=SkuldSettings(
-            session={"id": "legacy-root", "workspace_dir": str(tmp_path)},
-            workflow={"graph": {"executionContract": "developer-delivery/v1"}},
-        )
+    assert broker._room_bridge._strict_review_event_types == frozenset(
+        {"artifact.review.completed"}
     )
 
-    outcome = broker._developer_review_outcome(
-        peer_id="integration-peer",
-        persona="developer-integration-verifier",
-        event_type="developer.integration.reviewed",
-        fields={
-            "attempt_id": "allocation-1",
-            "candidate_sha": "a" * 40,
-            "candidate_tree": "b" * 40,
-            "verdict": "pass",
-            "findings": [],
-        },
-        valid=True,
-        event_id="legacy-review-1",
-    )
 
-    assert outcome is not None
-    assert outcome["role"] == "integration"
-    assert outcome["scope"] == "integration"
+def test_skuld_reads_nothing_without_an_explicit_binding() -> None:
+    assert _workflow_review_attestation({"executionContract": "developer-delivery/v1"}) is None
+    assert _workflow_review_attestation({"executionContract": "custom-delivery/v1"}) is None
+    assert _workflow_review_attestation({}) is None
 
 
-def test_skuld_never_falls_back_from_malformed_explicit_legacy_binding() -> None:
+def test_skuld_never_falls_back_from_a_malformed_explicit_binding() -> None:
     with pytest.raises(ValueError, match="roles are required"):
         _workflow_review_attestation(
             {
@@ -175,14 +139,9 @@ def test_skuld_never_falls_back_from_malformed_explicit_legacy_binding() -> None
         )
 
 
-def test_skuld_does_not_infer_bindings_for_unknown_contracts() -> None:
-    assert _workflow_review_attestation({"executionContract": "custom-delivery/v1"}) is None
-
-
 @pytest.mark.parametrize(
     "graph",
     [
-        {"executionContract": "developer-workstream/v2"},
         {
             "reviewAttestation": {
                 "version": 1,
@@ -201,6 +160,6 @@ def test_skuld_does_not_infer_bindings_for_unknown_contracts() -> None:
         },
     ],
 )
-def test_skuld_rejects_missing_or_tampered_review_bindings(graph: dict) -> None:
+def test_skuld_rejects_tampered_review_bindings(graph: dict) -> None:
     with pytest.raises(ValueError):
         _workflow_review_attestation(graph)

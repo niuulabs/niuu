@@ -172,7 +172,6 @@ class TrustedChildReviewAttestor(ChildReviewAttestor):
             binding = workflow_review_attestation(
                 workflow.graph,
                 persona_dependencies=workflow.persona_dependencies,
-                allow_legacy=True,
             )
         except WorkflowDocumentError as exc:
             raise DeveloperExecutionError("frozen child review attestation is invalid") from exc

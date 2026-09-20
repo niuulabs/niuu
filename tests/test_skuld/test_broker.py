@@ -76,6 +76,35 @@ def _developer_review_id(session_id: str, peer_id: str, source_event_id: str) ->
     )
 
 
+# A workflow graph declaring an explicit review attestation for the three
+# candidate reviewer roles, plus the joinMode-all stage their personas must
+# belong to for that binding to validate.
+_WORKSTREAM_REVIEW_GRAPH = {
+    "executionContract": "developer-workstream/v1",
+    "reviewAttestation": {
+        "version": 1,
+        "scope": "workstream",
+        "eventType": "developer.review.completed",
+        "roles": {
+            "code": "developer-code-reviewer",
+            "security": "developer-security-reviewer",
+            "adversarial": "developer-adversarial-reviewer",
+        },
+    },
+    "nodes": [
+        {
+            "kind": "stage",
+            "joinMode": "all",
+            "stageMembers": [
+                {"personaId": "developer-code-reviewer"},
+                {"personaId": "developer-security-reviewer"},
+                {"personaId": "developer-adversarial-reviewer"},
+            ],
+        }
+    ],
+}
+
+
 def _ack_kickoff(
     broker_instance: Broker,
     peer_id: str,
@@ -2217,7 +2246,7 @@ class TestBroker:
         settings = SkuldSettings(
             session={"id": "child-session", "workspace_dir": str(tmp_path)},
             room={"enabled": True},
-            workflow={"graph": {"executionContract": "developer-workstream/v1"}},
+            workflow={"graph": _WORKSTREAM_REVIEW_GRAPH},
         )
         broker_under_test = Broker(settings=settings)
         broker_under_test._room_bridge = MagicMock()
@@ -2325,7 +2354,7 @@ class TestBroker:
         settings = SkuldSettings(
             session={"id": "child-session", "workspace_dir": str(tmp_path)},
             room={"enabled": True},
-            workflow={"graph": {"executionContract": "developer-workstream/v1"}},
+            workflow={"graph": _WORKSTREAM_REVIEW_GRAPH},
         )
         broker_under_test = Broker(settings=settings)
         broker_under_test._room_bridge = MagicMock()
@@ -2418,7 +2447,7 @@ class TestBroker:
             session={"id": "child-session", "workspace_dir": str(tmp_path)},
             room={"enabled": True},
             volundr_api_url="http://volundr.test",
-            workflow={"graph": {"executionContract": "developer-workstream/v1"}},
+            workflow={"graph": _WORKSTREAM_REVIEW_GRAPH},
         )
         source = Broker(settings=settings)
         assert source._room_bridge is not None
@@ -2604,7 +2633,7 @@ class TestBroker:
         settings = SkuldSettings(
             session={"id": "child-session", "workspace_dir": str(tmp_path)},
             room={"enabled": True},
-            workflow={"graph": {"executionContract": "developer-workstream/v1"}},
+            workflow={"graph": _WORKSTREAM_REVIEW_GRAPH},
         )
         broker_under_test = Broker(settings=settings)
         broker_under_test._room_bridge = MagicMock()
@@ -2650,7 +2679,7 @@ class TestBroker:
         settings = SkuldSettings(
             session={"id": "child-session", "workspace_dir": str(tmp_path)},
             room={"enabled": True},
-            workflow={"graph": {"executionContract": "developer-workstream/v1"}},
+            workflow={"graph": _WORKSTREAM_REVIEW_GRAPH},
         )
         broker_under_test = Broker(settings=settings)
         broker_under_test._room_bridge = MagicMock()

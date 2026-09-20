@@ -38,30 +38,6 @@ _V1_DOCUMENT_KEYS = {
 _V2_DOCUMENT_KEYS = _V1_DOCUMENT_KEYS | {"workflow_dependencies"}
 _DEPENDENCY_KEYS = {"id", "revision", "digest", "path"}
 _REVIEW_ATTESTATION_KEYS = {"version", "scope", "eventType", "roles"}
-_LEGACY_REVIEW_ATTESTATIONS: dict[str, dict[str, Any]] = {
-    "developer-workstream/v1": {
-        "version": 1,
-        "scope": "workstream",
-        "eventType": "developer.review.completed",
-        "roles": {
-            "code": "developer-code-reviewer",
-            "security": "developer-security-reviewer",
-            "adversarial": "developer-adversarial-reviewer",
-        },
-    },
-    "developer-integration/v1": {
-        "version": 1,
-        "scope": "integration",
-        "eventType": "developer.integration.reviewed",
-        "roles": {"integration": "developer-integration-verifier"},
-    },
-    "developer-delivery/v1": {
-        "version": 1,
-        "scope": "integration",
-        "eventType": "developer.integration.reviewed",
-        "roles": {"integration": "developer-integration-verifier"},
-    },
-}
 
 
 class _UniqueKeySafeLoader(yaml.SafeLoader):
@@ -228,6 +204,7 @@ def load_workflow_document(text: str) -> WorkflowDocument:
         raise WorkflowDocumentError(f"Invalid workflow evidence gate: {exc}") from exc
     _validate_review_verdict_policies(graph)
     _validate_wait_nodes(graph, schema_version=schema_version)
+    _validate_tool_actions(graph)
 
     dependencies_raw = raw["persona_dependencies"]
     if not isinstance(dependencies_raw, dict):
@@ -505,21 +482,13 @@ def workflow_review_attestation(
     graph: dict[str, Any],
     *,
     persona_dependencies: dict[str, PersonaDependency] | None = None,
-    allow_legacy: bool = False,
 ) -> ReviewAttestationBinding | None:
-    """Parse a workflow-pinned reviewer binding without inferring roles from names."""
+    """Parse a workflow-pinned reviewer binding declared directly on the graph."""
     raw = graph.get("reviewAttestation")
-    execution_contract = str(graph.get("executionContract") or "").strip()
     if raw is None:
-        legacy = _LEGACY_REVIEW_ATTESTATIONS.get(execution_contract) if allow_legacy else None
-        if legacy is not None:
-            raw = legacy
-        elif execution_contract in {"developer-workstream/v2", "developer-integration/v2"}:
-            raise WorkflowDocumentError(
-                f"Workflow {execution_contract!r} requires graph.reviewAttestation"
-            )
-        else:
-            return None
+        if _requires_review_attestation(graph):
+            raise WorkflowDocumentError("Workflow graph requires graph.reviewAttestation")
+        return None
     if not isinstance(raw, dict):
         raise WorkflowDocumentError("Workflow graph reviewAttestation must be a mapping")
     unknown = set(raw) - _REVIEW_ATTESTATION_KEYS
@@ -588,6 +557,62 @@ def workflow_review_attestation(
         event_type=event_type,
         roles=roles,
     )
+
+
+def _requires_review_attestation(graph: dict[str, Any]) -> bool:
+    """Return whether the graph uses a construct that consumes an attested binding.
+
+    A `reviewVerdictPolicy` stage gates its pass/fail outcome on an event type
+    supplied by authenticated reviewer identities, and a subworkflow whose
+    `resultSchema` requires `reviewReceipts` hands a signed reviewer receipt
+    across the child/parent boundary. Either one needs to know which persona
+    may speak for which role, which is exactly what `reviewAttestation`
+    supplies — so declaring one of these constructs without it is fatal rather
+    than silently ungoverned.
+    """
+    for node in graph.get("nodes", []):
+        if not isinstance(node, dict):
+            continue
+        if isinstance(node.get("reviewVerdictPolicy"), dict):
+            return True
+        if node.get("kind") != "subworkflow":
+            continue
+        result_schema = node.get("resultSchema")
+        required = result_schema.get("required") if isinstance(result_schema, dict) else None
+        if isinstance(required, list) and "reviewReceipts" in required:
+            return True
+    return False
+
+
+def _validate_tool_actions(graph: dict[str, Any]) -> None:
+    """Validate the optional graph-level narrowing of tool actions by name.
+
+    `toolActions` maps a tool name to the exact action names a persona running
+    this graph may use from it; the tool builder can only intersect a
+    persona's own declared actions against this list, never widen them. The
+    key is opaque here — no tool or action name is privileged by the engine.
+    """
+    if "toolActions" not in graph:
+        return
+    tool_actions = graph["toolActions"]
+    if not isinstance(tool_actions, dict) or not tool_actions:
+        raise WorkflowDocumentError("Workflow graph toolActions must be a non-empty mapping")
+    for tool_name, actions in tool_actions.items():
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            raise WorkflowDocumentError("Workflow graph toolActions tool names must be strings")
+        if (
+            not isinstance(actions, list)
+            or not actions
+            or any(not isinstance(action, str) or not action.strip() for action in actions)
+        ):
+            raise WorkflowDocumentError(
+                f"Workflow graph toolActions[{tool_name!r}] must be a non-empty list of "
+                "action names"
+            )
+        if len(set(actions)) != len(actions):
+            raise WorkflowDocumentError(
+                f"Workflow graph toolActions[{tool_name!r}] must not repeat action names"
+            )
 
 
 def _validate_graph_structure(graph: dict[str, Any]) -> None:

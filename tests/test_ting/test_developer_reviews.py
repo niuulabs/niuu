@@ -49,6 +49,16 @@ def _context():
         workflow_resolver=lambda *_args: SimpleNamespace(
             graph={
                 "executionContract": "developer-workstream/v1",
+                "reviewAttestation": {
+                    "version": 1,
+                    "scope": "workstream",
+                    "eventType": "developer.review.completed",
+                    "roles": {
+                        "code": "developer-code-reviewer",
+                        "security": "developer-security-reviewer",
+                        "adversarial": "developer-adversarial-reviewer",
+                    },
+                },
                 "nodes": [
                     {
                         "kind": "stage",
@@ -185,6 +195,27 @@ async def test_attestor_requires_literal_validation_before_signing(valid) -> Non
     result["_trustedReviewEnvelope"]["reviews"][0]["valid"] = valid
 
     with pytest.raises(DeveloperExecutionError, match="not validated"):
+        await attestor.attest(execution, child, result)
+
+
+@pytest.mark.asyncio
+async def test_attestor_rejects_a_child_workflow_with_no_review_binding() -> None:
+    """A child graph declaring neither `reviewAttestation` nor a construct that
+
+    requires one has nothing for the attestor to authenticate reviewers
+    against, so it must fail loudly rather than sign an ungoverned receipt.
+    """
+    execution, child, authenticator, _, result = _context()
+    attestor = TrustedChildReviewAttestor(
+        authenticator=authenticator,
+        role_producers={"code": "code-producer"},
+        workflow_resolver=lambda *_args: SimpleNamespace(
+            graph={"nodes": [], "edges": []},
+            persona_dependencies={},
+        ),
+    )
+
+    with pytest.raises(DeveloperExecutionError, match="no review attestation binding"):
         await attestor.attest(execution, child, result)
 
 

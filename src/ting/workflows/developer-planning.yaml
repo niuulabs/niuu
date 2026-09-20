@@ -27,6 +27,14 @@ persona_dependencies:
 workflow_dependencies: {}
 graph:
   executionContract: developer-planning/v1
+  reviewAttestation:
+    version: 1
+    scope: planning
+    eventType: plan.review.completed
+    roles:
+      architecture: developer-architecture-reviewer
+      correctness: developer-correctness-reviewer
+      security: developer-security-plan-reviewer
   nodes:
     - id: planning-request
       kind: trigger

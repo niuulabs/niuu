@@ -237,6 +237,7 @@ def test_launch_reserves_frozen_snapshot_before_parent_session(monkeypatch) -> N
         headers={**_headers(), "idempotency-key": "ticket-123"},
         json={
             "workflowId": str(workflow.id),
+            "parentNodeId": "delivery-workstreams",
             "prompt": "Implement ticket 123",
             "repo": "https://gitlab.example/org/repo",
             "baseBranch": "main",
@@ -248,6 +249,70 @@ def test_launch_reserves_frozen_snapshot_before_parent_session(monkeypatch) -> N
     assert repository.execution.launch_key == "ticket-123"
     assert repository.execution.workflow_snapshot["workflow_definitions"]
     assert captured["workflow"].id == workflow.id
+
+
+def test_launch_rejects_an_unknown_parent_node_id() -> None:
+    """The caller must name an existing subworkflow node; nothing is inferred."""
+    workflow = _developer_workflow()
+    repository = MemoryRepository(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow if workflow_id == workflow.id else None
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_developer_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_developer_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/developer-executions",
+        headers={**_headers(), "idempotency-key": "unknown-node"},
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "does-not-exist",
+            "prompt": "Implement ticket 123",
+            "repo": "https://gitlab.example/org/repo",
+            "baseBranch": "main",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert "does-not-exist" in response.text
+
+
+def test_launch_rejects_a_parent_node_id_that_is_not_a_subworkflow() -> None:
+    """A real node id of the wrong kind is rejected just like an unknown one."""
+    workflow = _developer_workflow()
+    repository = MemoryRepository(_execution())
+
+    class WorkflowRepo:
+        async def get_workflow(self, workflow_id):
+            return workflow if workflow_id == workflow.id else None
+
+    app = FastAPI()
+    app.state.settings = _settings(anonymous=True)
+    app.include_router(create_developer_executions_router())
+    app.dependency_overrides[resolve_workflow_repo] = lambda: WorkflowRepo()
+    app.dependency_overrides[resolve_developer_execution_repo] = lambda: repository
+    app.dependency_overrides[resolve_volundr_factory] = lambda: SimpleNamespace()
+
+    response = TestClient(app).post(
+        "/api/v1/ting/developer-executions",
+        headers={**_headers(), "idempotency-key": "wrong-kind-node"},
+        json={
+            "workflowId": str(workflow.id),
+            "parentNodeId": "delivery-request",
+            "prompt": "Implement ticket 123",
+            "repo": "https://gitlab.example/org/repo",
+            "baseBranch": "main",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert "delivery-request" in response.text
 
 
 def test_launch_recovers_reserved_parent_session_without_duplicate_spawn(monkeypatch) -> None:
@@ -304,6 +369,7 @@ def test_launch_recovers_reserved_parent_session_without_duplicate_spawn(monkeyp
         headers={**_headers(), "idempotency-key": "recover-parent"},
         json={
             "workflowId": str(workflow.id),
+            "parentNodeId": "delivery-workstreams",
             "prompt": "Recover this launch",
             "repo": "https://gitlab.example/org/repo",
             "baseBranch": "main",
@@ -422,6 +488,7 @@ def test_replayed_launch_context_uses_reserved_identity_and_excludes_token(monke
         headers={**_headers(), "idempotency-key": "replay-context"},
         json={
             "workflowId": str(workflow.id),
+            "parentNodeId": "delivery-workstreams",
             "prompt": "Resume the reserved delivery",
             "repo": "https://gitlab.example/org/repo",
             "baseBranch": "main",

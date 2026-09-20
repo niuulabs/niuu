@@ -106,59 +106,109 @@ def test_rejects_tampered_review_attestation_bindings(
         load_workflow_document(yaml.safe_dump(raw))
 
 
-def test_new_developer_contract_requires_explicit_review_binding() -> None:
+def test_review_verdict_policy_requires_explicit_review_binding() -> None:
+    """A `reviewVerdictPolicy` stage gates its outcome on attested reviewer
+
+    identity, so a graph that declares one without `reviewAttestation` is
+    rejected regardless of what its `executionContract` is named.
+    """
     raw = _document()
-    raw["graph"]["executionContract"] = "developer-workstream/v2"
     raw["graph"].pop("reviewAttestation")
+    raw["graph"]["nodes"] = [
+        {
+            "id": "reviews",
+            "kind": "stage",
+            "joinMode": "all",
+            "stageMembers": [
+                {"personaId": "platform-auditor"},
+                {"personaId": "data-steward"},
+            ],
+        },
+        {
+            "id": "acceptance",
+            "kind": "stage",
+            "joinMode": "all",
+            "reviewVerdictPolicy": {
+                "eventType": "artifact.review.completed",
+                "passOutcomes": ["accepted"],
+                "failOutcomes": ["rejected"],
+                "bindingFields": ["attempt_id"],
+            },
+            "stageMembers": [{"personaId": "platform-auditor"}],
+        },
+    ]
+    raw["graph"]["edges"] = [
+        {
+            "id": "reviews-acceptance",
+            "source": "reviews",
+            "target": "acceptance",
+            "label": "artifact.review.completed -> artifact.review.completed",
+        },
+        {
+            "id": "acceptance-accept",
+            "source": "acceptance",
+            "target": "reviews",
+            "label": "accepted -> accepted",
+        },
+        {
+            "id": "acceptance-reject",
+            "source": "acceptance",
+            "target": "reviews",
+            "label": "rejected -> rejected",
+        },
+    ]
 
     with pytest.raises(WorkflowDocumentError, match="requires graph.reviewAttestation"):
         load_workflow_document(yaml.safe_dump(raw))
 
 
-def test_frozen_v1_contract_uses_only_explicit_legacy_handler() -> None:
-    raw = _document()
-    raw["graph"]["executionContract"] = "developer-workstream/v1"
-    raw["graph"].pop("reviewAttestation")
-    raw["graph"]["nodes"] = []
-    raw["persona_dependencies"] = {}
-    document = load_workflow_document(yaml.safe_dump(raw))
+def test_subworkflow_requiring_review_receipts_requires_explicit_review_binding() -> None:
+    """A subworkflow whose resultSchema demands `reviewReceipts` hands a signed
 
-    assert workflow_review_attestation(document.graph) is None
-    legacy = workflow_review_attestation(document.graph, allow_legacy=True)
-    assert legacy is not None
-    assert legacy.roles == {
-        "code": "developer-code-reviewer",
-        "security": "developer-security-reviewer",
-        "adversarial": "developer-adversarial-reviewer",
+    receipt across the child/parent boundary, so it also requires
+    `reviewAttestation` on the declaring graph.
+    """
+    raw = _document()
+    raw["graph"].pop("reviewAttestation")
+    raw["graph"]["nodes"] = [
+        {
+            "id": "children",
+            "kind": "subworkflow",
+            "workflowDependency": "child",
+            "allowedCoordinator": "platform-auditor",
+            "maxChildren": 1,
+            "maxAttempts": 1,
+            "joinMode": "all",
+            "inputSchema": {"type": "object", "properties": {}, "required": []},
+            "resultSchema": {
+                "type": "object",
+                "properties": {"reviewReceipts": {"type": "array"}},
+                "required": ["reviewReceipts"],
+            },
+        }
+    ]
+    raw["graph"]["edges"] = []
+    raw["workflow_dependencies"] = {
+        "child": {
+            "id": str(uuid4()),
+            "revision": "content-abc",
+            "digest": "sha256:" + "b" * 64,
+        }
     }
 
+    with pytest.raises(WorkflowDocumentError, match="requires graph.reviewAttestation"):
+        load_workflow_document(yaml.safe_dump(raw))
 
-def test_frozen_root_delivery_contract_retains_integration_review_binding() -> None:
+
+def test_malformed_explicit_binding_never_falls_back() -> None:
     raw = _document()
-    raw["graph"]["executionContract"] = "developer-delivery/v1"
-    raw["graph"].pop("reviewAttestation")
-    raw["graph"]["nodes"] = []
-    raw["persona_dependencies"] = {}
-    document = load_workflow_document(yaml.safe_dump(raw))
-
-    assert workflow_review_attestation(document.graph) is None
-    legacy = workflow_review_attestation(document.graph, allow_legacy=True)
-    assert legacy is not None
-    assert legacy.scope == "integration"
-    assert legacy.event_type == "developer.integration.reviewed"
-    assert legacy.roles == {"integration": "developer-integration-verifier"}
-
-
-def test_malformed_explicit_legacy_binding_never_falls_back() -> None:
-    raw = _document()
-    raw["graph"]["executionContract"] = "developer-delivery/v1"
     raw["graph"]["reviewAttestation"]["roles"] = {}
 
     with pytest.raises(WorkflowDocumentError, match="roles must be a non-empty mapping"):
         load_workflow_document(yaml.safe_dump(raw))
 
 
-def test_unknown_contract_never_infers_a_review_binding() -> None:
+def test_graph_with_no_attestation_consuming_construct_never_requires_a_binding() -> None:
     graph = {"executionContract": "custom-delivery/v1", "nodes": [], "edges": []}
 
-    assert workflow_review_attestation(graph, allow_legacy=True) is None
+    assert workflow_review_attestation(graph) is None

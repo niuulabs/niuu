@@ -1113,7 +1113,10 @@ def test_child_workstream_coordinator_exposes_only_child_credential_operations(t
     )
     assert persona is not None
     settings = _coordinator_settings()
-    settings.workflow.graph = {"executionContract": "developer-workstream/v1"}
+    settings.workflow.graph = {
+        "executionContract": "developer-workstream/v1",
+        "toolActions": {"delivery_workspace": ["verify"]},
+    }
 
     tools = _build_tools(
         settings,
@@ -1139,6 +1142,59 @@ def test_child_workstream_coordinator_exposes_only_child_credential_operations(t
         "WorkspaceAllocation returned by delivery_workspace.allocate"
         in verify["properties"]["allocation"]["description"]
     )
+
+
+def test_graph_tool_actions_narrow_delivery_workspace_without_a_contract_name(tmp_path) -> None:
+    """toolActions narrows delivery_workspace by graph content alone.
+
+    No `executionContract` value is set here — the same coordinator persona
+    still loses the other three declared actions purely because this graph's
+    `toolActions` names only `verify` for `delivery_workspace`.
+    """
+    persona = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load(
+        "developer-coordinator"
+    )
+    assert persona is not None
+    settings = _coordinator_settings()
+    settings.workflow.graph = {"toolActions": {"delivery_workspace": ["verify"]}}
+
+    tools = _build_tools(
+        settings,
+        tmp_path,
+        Session(),
+        MagicMock(),
+        None,
+        None,
+        persona_config=persona,
+    )
+
+    workspace = next(tool for tool in tools if tool.name == "delivery_workspace")
+    assert workspace.input_schema["properties"]["operation"]["enum"] == ["verify"]
+
+
+def test_graph_tool_actions_can_only_narrow_never_widen(tmp_path) -> None:
+    """A graph cannot grant an action the persona document did not declare."""
+    persona = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load(
+        "developer-integration-verifier"
+    )
+    assert persona is not None
+    settings = _coordinator_settings()
+    settings.workflow.graph = {
+        "toolActions": {"delivery_workspace": ["allocate", "verify", "integrate", "inspect"]}
+    }
+
+    tools = _build_tools(
+        settings,
+        tmp_path,
+        Session(),
+        MagicMock(),
+        None,
+        None,
+        persona_config=persona,
+    )
+
+    workspace = next(tool for tool in tools if tool.name == "delivery_workspace")
+    assert workspace.input_schema["properties"]["operation"]["enum"] == ["inspect"]
 
 
 def test_integration_reviewer_exposes_only_read_only_candidate_inspection(tmp_path) -> None:

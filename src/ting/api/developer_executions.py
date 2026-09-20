@@ -52,7 +52,6 @@ from ting.ports.developer_execution import DeveloperExecutionRepository
 from ting.ports.volundr import PublicSessionLogPage, VolundrFactory
 from ting.ports.workflow_repository import WorkflowRepository
 
-_EXECUTION_CONTRACT = "developer-delivery/v1"
 _ACTIVE_DELIVERY_STATES = frozenset(
     {ExecutionState.RUNNING, ExecutionState.WAITING, ExecutionState.BLOCKED}
 )
@@ -78,6 +77,7 @@ class DeveloperExecutionLaunchBody(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     workflow_id: UUID = Field(alias="workflowId")
+    parent_node_id: str = Field(alias="parentNodeId", min_length=1, max_length=255)
     prompt: str = Field(min_length=1, max_length=100_000)
     repo: str = Field(min_length=1, max_length=2_000)
     base_branch: str = Field(alias="baseBranch", min_length=1, max_length=500)
@@ -204,13 +204,8 @@ def create_developer_executions_router() -> APIRouter:
             raise HTTPException(status_code=404, detail="Developer workflow not found")
         if workflow.schema_version < 2:
             raise HTTPException(status_code=422, detail="Developer workflow requires schema v2")
-        if str(workflow.graph.get("executionContract") or "") != _EXECUTION_CONTRACT:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Workflow does not declare executionContract={_EXECUTION_CONTRACT}",
-            )
         try:
-            node, policy = _expansion_policy(workflow)
+            node, policy = _expansion_policy(workflow, body.parent_node_id)
         except DeveloperExecutionError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -1238,19 +1233,19 @@ async def _assert_delivery_claims(
         raise HTTPException(status_code=403, detail="Delivery child attempt is no longer active")
 
 
-def _expansion_policy(workflow) -> tuple[dict[str, Any], ExpansionPolicy]:
-    nodes = [
-        node
-        for node in workflow.graph.get("nodes", [])
-        if isinstance(node, dict)
-        and node.get("kind") == "subworkflow"
-        and node.get("expansionRole") == "workstream"
-    ]
-    if len(nodes) != 1:
+def _expansion_policy(workflow, node_id: str) -> tuple[dict[str, Any], ExpansionPolicy]:
+    node = next(
+        (
+            candidate
+            for candidate in workflow.graph.get("nodes", [])
+            if isinstance(candidate, dict) and str(candidate.get("id") or "") == node_id
+        ),
+        None,
+    )
+    if node is None or node.get("kind") != "subworkflow":
         raise DeveloperExecutionError(
-            "Developer workflow must declare exactly one workstream expansion subworkflow"
+            f"Workflow does not declare a subworkflow node {node_id!r} to expand"
         )
-    node = nodes[0]
     dependency_alias = str(node.get("workflowDependency") or "")
     dependency = workflow.workflow_dependencies.get(dependency_alias)
     if dependency is None:

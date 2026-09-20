@@ -37,8 +37,8 @@ persona_dependencies:
 workflow_dependencies:
   workstream:
     id: 98133eab-cd89-44d1-b32d-26c82f99dddc
-    revision: sha256:5dfa7a194d12f4e70ee3bf1da89bc6bced584a89575fcc59ed7adaf6b3df9c8e
-    digest: sha256:5dfa7a194d12f4e70ee3bf1da89bc6bced584a89575fcc59ed7adaf6b3df9c8e
+    revision: sha256:47a04dc22a014b24f11351a1be9a3448ba2eb53659598c186378f70f106b01c4
+    digest: sha256:47a04dc22a014b24f11351a1be9a3448ba2eb53659598c186378f70f106b01c4
     path: workflows/developer-workstream.yaml
 graph:
   executionContract: developer-delivery/v1
@@ -99,7 +99,6 @@ graph:
           consumesEventTypes: [developer.plan.approved, developer.children.blocked]
     - id: delivery-workstreams
       kind: subworkflow
-      expansionRole: workstream
       label: Execute bounded workstream generation
       workflowDependency: workstream
       allowedCoordinator: developer-coordinator

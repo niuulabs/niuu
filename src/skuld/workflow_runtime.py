@@ -119,35 +119,12 @@ class WorkflowReviewAttestation:
 def _workflow_review_attestation(
     graph: dict[str, Any] | None,
 ) -> WorkflowReviewAttestation | None:
-    """Read an explicit review binding, with named handlers for frozen v1 contracts."""
+    """Read the workflow's explicit review binding, if it declares one."""
     if not isinstance(graph, dict):
         return None
     raw = graph.get("reviewAttestation")
-    explicit_binding = raw is not None
-    contract = str(graph.get("executionContract") or "").strip()
     if raw is None:
-        if contract == "developer-workstream/v1":
-            raw = {
-                "version": 1,
-                "scope": "workstream",
-                "eventType": "developer.review.completed",
-                "roles": {
-                    "code": "developer-code-reviewer",
-                    "security": "developer-security-reviewer",
-                    "adversarial": "developer-adversarial-reviewer",
-                },
-            }
-        elif contract in {"developer-integration/v1", "developer-delivery/v1"}:
-            raw = {
-                "version": 1,
-                "scope": "integration",
-                "eventType": "developer.integration.reviewed",
-                "roles": {"integration": "developer-integration-verifier"},
-            }
-        elif contract in {"developer-workstream/v2", "developer-integration/v2"}:
-            raise ValueError(f"workflow {contract!r} requires graph.reviewAttestation")
-        else:
-            return None
+        return None
     if not isinstance(raw, dict) or set(raw) != {"version", "scope", "eventType", "roles"}:
         raise ValueError("workflow graph reviewAttestation is invalid")
     if type(raw["version"]) is not int or raw["version"] != 1:
@@ -170,21 +147,18 @@ def _workflow_review_attestation(
         normalized[role.strip()] = persona_id.strip()
     if len(normalized) != len(roles) or len(set(normalized.values())) != len(normalized):
         raise ValueError("workflow graph reviewAttestation roles and personas must be unique")
-    if explicit_binding:
-        joined_personas = {
-            str(member.get("personaId") or "").strip()
-            for node in graph.get("nodes", [])
-            if isinstance(node, dict)
-            and node.get("kind") == "stage"
-            and node.get("joinMode") == "all"
-            for member in node.get("stageMembers", [])
-            if isinstance(member, dict)
-        }
-        unjoined = set(normalized.values()) - joined_personas
-        if unjoined:
-            raise ValueError(
-                "workflow graph reviewAttestation personas must belong to a joinMode all stage"
-            )
+    joined_personas = {
+        str(member.get("personaId") or "").strip()
+        for node in graph.get("nodes", [])
+        if isinstance(node, dict) and node.get("kind") == "stage" and node.get("joinMode") == "all"
+        for member in node.get("stageMembers", [])
+        if isinstance(member, dict)
+    }
+    unjoined = set(normalized.values()) - joined_personas
+    if unjoined:
+        raise ValueError(
+            "workflow graph reviewAttestation personas must belong to a joinMode all stage"
+        )
     return WorkflowReviewAttestation(
         scope=scope.strip(),
         event_type=event_type.strip(),

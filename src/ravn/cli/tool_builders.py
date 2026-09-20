@@ -326,32 +326,38 @@ def _build_tools(
         ]
 
     # Narrow delivery_workspace to exactly the operations this persona's own
-    # document declares (`delivery_workspace_actions`), never off `name` or
-    # `executionContract`: InlinePersonaAdapter.load only overwrites `name`
-    # when a workflow maps a dependency to this persona under a local alias,
-    # so a name- or contract-keyed check silently widens (or narrows) with
-    # the alias while the declared field survives it unchanged. Fail closed —
-    # a persona granted the tool with no declared actions gets none.
+    # document declares (`delivery_workspace_actions`), further narrowed —
+    # never widened — by the workflow graph's own `toolActions[tool.name]`
+    # when it declares one. This is how the same coordinator persona gets
+    # every declared action in the parent workflow and only `verify` inside a
+    # child workstream graph, without keying off `name` or `executionContract`:
+    # InlinePersonaAdapter.load only overwrites `name` when a workflow maps a
+    # dependency to this persona under a local alias, so a name- or
+    # contract-keyed check silently widens (or narrows) with the alias while
+    # the declared fields survive it unchanged. Fail closed — a persona
+    # granted the tool with no declared actions gets none.
     delivery_workspace_operations = {
         "allocate": "allocate_workstream",
         "verify": "run_verification",
         "integrate": "integrate_candidate",
         "inspect": "inspect_integration",
     }
+    workflow_graph = getattr(getattr(settings, "workflow", None), "graph", None) or {}
+    tool_actions = workflow_graph.get("toolActions") if isinstance(workflow_graph, dict) else None
     declared_actions = set(getattr(persona_config, "delivery_workspace_actions", None) or [])
-    if execution_contract == "developer-workstream/v1":
-        # The legacy v1 contract only ever drives the child-workstream
-        # verification operation through delivery_workspace, regardless of
-        # what else this persona's document otherwise declares. This narrows
-        # further; it can only shrink `declared_actions`, never grant an
-        # action the persona document itself did not already declare.
-        declared_actions &= {"verify"}
     for tool in tools:
         if tool.name == "delivery_workspace" and hasattr(tool, "operations"):
+            allowed_actions = declared_actions
+            if isinstance(tool_actions, dict):
+                narrowed = tool_actions.get(tool.name)
+                if isinstance(narrowed, list):
+                    allowed_actions = allowed_actions & {
+                        action for action in narrowed if isinstance(action, str)
+                    }
             tool.operations = {
                 action: method
                 for action, method in delivery_workspace_operations.items()
-                if action in declared_actions
+                if action in allowed_actions
             }
 
     # Update state tool with final tool names after filtering
