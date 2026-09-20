@@ -22,7 +22,8 @@ _GENERIC_MODULE = re.compile(
 
 _DELIVERY_CONCEPT = re.compile(
     r"\b(repository_(url|path|root)|base_sha|base_ref|baseSha|baseRef|head_sha|headSha|merge[a-z_]*"
-    r"|candidate[a-zA-Z_]*|integration[a-zA-Z_]*|forge[a-zA-Z_]*|review_number|reviewNumber"
+    r"|candidate_(sha|tree|digest)|candidateSha|candidateTree|candidateDigest"
+    r"|integration[a-zA-Z_]*|forge[a-zA-Z_]*|review_number|reviewNumber"
     r"|target_branch|targetBranch|workspace[a-zA-Z_]*|commit[a-z_]*|allowed_paths"
     r"|allowedPaths|test_contract[a-z_]*|testContractIds)\b"
     r"""|["']repository["']|\.repository\b(?!\.)|\brepository: str"""
@@ -33,8 +34,6 @@ BURN_DOWN: frozenset[str] = frozenset(
         "adapters/child_evidence.py",
         "adapters/postgres_workflow_executions.py",
         "api/workflow_executions.py",
-        "domain/workflow_continuation_events.py",
-        "domain/workflow_execution_trace.py",
     }
 )
 
