@@ -845,15 +845,7 @@ def _validate_subworkflow_nodes(
             raise WorkflowDocumentError(
                 f"Subworkflow node {node_id!r} requires workflow schema_version 2"
             )
-        dependency_alias = _required_string(
-            node.get("workflowDependency"),
-            f"subworkflow node {node_id!r} workflowDependency",
-        )
-        if dependency_alias not in dependencies:
-            raise WorkflowDocumentError(
-                f"Subworkflow node {node_id!r} references undeclared workflow dependency "
-                f"{dependency_alias!r}"
-            )
+        templates = _validate_node_templates(node, node_id=node_id, dependencies=dependencies)
         coordinator = _required_string(
             node.get("allowedCoordinator"),
             f"subworkflow node {node_id!r} allowedCoordinator",
@@ -865,7 +857,7 @@ def _validate_subworkflow_nodes(
             )
         _validate_contract_schema(node.get("inputSchema"), node_id=node_id, field="inputSchema")
         _validate_contract_schema(node.get("resultSchema"), node_id=node_id, field="resultSchema")
-        _validate_declared_children(node, node_id=node_id)
+        _validate_declared_children(node, node_id=node_id, templates=templates)
         _validate_bounded_integer(
             node.get("maxChildren"),
             node_id=node_id,
@@ -905,7 +897,47 @@ def _validate_subworkflow_nodes(
             )
 
 
-def _validate_declared_children(node: dict[str, Any], *, node_id: str) -> None:
+def _validate_node_templates(
+    node: dict[str, Any],
+    *,
+    node_id: str,
+    dependencies: dict[str, WorkflowDependency],
+) -> dict[str, str]:
+    """Validate and return a subworkflow node's named child-workflow templates.
+
+    `templates` maps a node-local template name to a `workflow_dependencies`
+    alias; a node offering exactly one child workflow still declares a
+    mapping with one entry — there is no separate single-dependency form.
+    Returns the validated name -> alias mapping.
+    """
+    raw = node.get("templates")
+    if not isinstance(raw, dict) or not raw:
+        raise WorkflowDocumentError(
+            f"Subworkflow node {node_id!r} templates must be a non-empty mapping of template "
+            "name to workflowDependencies alias"
+        )
+    templates: dict[str, str] = {}
+    for name, alias in raw.items():
+        parsed_name = _required_string(name, f"subworkflow node {node_id!r} template name")
+        parsed_alias = _required_string(
+            alias, f"subworkflow node {node_id!r} template {parsed_name!r} workflow dependency"
+        )
+        if parsed_name in templates:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} declares duplicate template name {parsed_name!r}"
+            )
+        if parsed_alias not in dependencies:
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} template {parsed_name!r} references undeclared "
+                f"workflow dependency {parsed_alias!r}"
+            )
+        templates[parsed_name] = parsed_alias
+    return templates
+
+
+def _validate_declared_children(
+    node: dict[str, Any], *, node_id: str, templates: dict[str, str]
+) -> None:
     """Validate a subworkflow node's optional default child declarations.
 
     A `subworkflow` node may declare `children` up front when the workflow
@@ -929,7 +961,7 @@ def _validate_declared_children(node: dict[str, Any], *, node_id: str) -> None:
             raise WorkflowDocumentError(
                 f"Subworkflow node {node_id!r} children entries must be mappings"
             )
-        unknown = set(entry) - {"key", "objective", "dependencies", "input"}
+        unknown = set(entry) - {"key", "objective", "dependencies", "input", "template"}
         if unknown:
             raise WorkflowDocumentError(
                 f"Subworkflow node {node_id!r} children entry has unknown field(s): "
@@ -963,6 +995,7 @@ def _validate_declared_children(node: dict[str, Any], *, node_id: str) -> None:
             raise WorkflowDocumentError(
                 f"Subworkflow node {node_id!r} child {key!r} cannot depend on itself"
             )
+        _validate_declared_child_template(entry, node_id=node_id, key=key, templates=templates)
         child_input = entry.get("input", {})
         if not isinstance(child_input, dict):
             raise WorkflowDocumentError(
@@ -976,6 +1009,38 @@ def _validate_declared_children(node: dict[str, Any], *, node_id: str) -> None:
                     f"Subworkflow node {node_id!r} child {key!r} input is invalid: {exc}"
                 ) from exc
     _require_acyclic_children(node_id, by_key)
+
+
+def _validate_declared_child_template(
+    entry: dict[str, Any],
+    *,
+    node_id: str,
+    key: str,
+    templates: dict[str, str],
+) -> None:
+    """Validate a declared child's optional `template` name against the node's offer.
+
+    Omitting `template` is only valid when the node offers exactly one; with
+    several on offer, each declared child must name the one it runs.
+    """
+    raw_template = entry.get("template")
+    if raw_template is None:
+        if len(templates) != 1:
+            choices = ", ".join(sorted(templates))
+            raise WorkflowDocumentError(
+                f"Subworkflow node {node_id!r} child {key!r} must name a template; this node "
+                f"offers: {choices}"
+            )
+        return
+    template_name = _required_string(
+        raw_template, f"subworkflow node {node_id!r} child {key!r} template"
+    )
+    if template_name not in templates:
+        choices = ", ".join(sorted(templates))
+        raise WorkflowDocumentError(
+            f"Subworkflow node {node_id!r} child {key!r} names unknown template "
+            f"{template_name!r}; this node offers: {choices}"
+        )
 
 
 def _require_acyclic_children(node_id: str, by_key: dict[str, dict[str, Any]]) -> None:

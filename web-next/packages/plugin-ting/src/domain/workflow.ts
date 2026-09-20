@@ -160,6 +160,11 @@ export const workflowDeclaredChildSchema = z.object({
   objective: z.string().min(1),
   dependencies: z.array(z.string().min(1)).optional(),
   input: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Name of the node's own `templates` entry this declared child runs.
+   * Optional only when the node offers exactly one template.
+   */
+  template: z.string().min(1).optional(),
 });
 export type WorkflowDeclaredChild = z.input<typeof workflowDeclaredChildSchema>;
 
@@ -168,7 +173,16 @@ export const workflowSubworkflowNodeSchema = z.object({
   kind: z.literal('subworkflow'),
   label: z.string().min(1),
   position: positionSchema,
-  workflowDependency: z.string().min(1),
+  /**
+   * Named child-workflow templates this node offers, mapping a node-local
+   * template name to a `workflowDependencies` alias. A node offering exactly
+   * one child workflow still declares a mapping with one entry.
+   */
+  templates: z
+    .record(z.string(), z.string().min(1))
+    .refine((value) => Object.keys(value).length > 0, {
+      message: 'templates must declare at least one template',
+    }),
   allowedCoordinator: z.string().min(1),
   inputSchema: z.record(z.string(), z.unknown()),
   resultSchema: z.record(z.string(), z.unknown()),

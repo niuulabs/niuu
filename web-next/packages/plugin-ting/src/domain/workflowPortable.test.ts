@@ -78,7 +78,7 @@ describe('portable workflow documents', () => {
           kind: 'subworkflow',
           label: 'Workstreams',
           position: { x: 1, y: 2 },
-          workflowDependency: 'worker',
+          templates: { worker: 'worker' },
           allowedCoordinator: 'coordinator',
           inputSchema: { type: 'object' },
           resultSchema: { type: 'object' },

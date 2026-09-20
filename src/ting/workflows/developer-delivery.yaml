@@ -100,7 +100,8 @@ graph:
     - id: delivery-workstreams
       kind: subworkflow
       label: Execute bounded workstream generation
-      workflowDependency: workstream
+      templates:
+        workstream: workstream
       allowedCoordinator: developer-coordinator
       maxChildren: 100
       maxActiveChildren: 4

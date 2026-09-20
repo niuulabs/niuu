@@ -1,0 +1,76 @@
+schema_version: 2
+id: 42951d75-dd82-4596-92ea-1c0a6ef4b965
+name: Research Thread — Breadth
+description: Run the breadth explorer over the framed research question and produce a structured finding for the parent research campaign.
+version: 1.0.0
+persona_dependencies:
+  research-explorer-breadth:
+    id: research-explorer-breadth
+    revision: content-10bc7e6c4b36993f
+    digest: sha256:10bc7e6c4b36993f91f8c9dc2d5777232389eda40fef43d6f47a5b7426171e0d
+    path: personas/research-explorer-breadth.yaml
+workflow_dependencies: {}
+graph:
+  tags:
+    - research
+    - thread
+    - breadth
+  executionContract: research-thread/v1
+  disabledTools:
+    - workflow_execution_expand
+    - workflow_execution_reconcile
+    - workflow_execution_retry
+    - workflow_execution_cancel
+    - workflow_execution_message
+    - delivery_complete
+    - delivery_record_integration
+    - workflow_execution_wait
+    - delivery_expand_workstreams
+    - delivery_workspace
+    - delivery_forge
+    - delivery_evidence
+  nodes:
+    - id: thread-request
+      kind: trigger
+      label: Begin breadth exploration thread
+      source: research campaign
+      dispatchEvent: research.framed
+    - id: thread-memory
+      kind: resource
+      label: Research Memory
+      resourceType: mimir
+      bindingMode: registry
+      registryEntryId: mimir-yggdrasil
+      url: https://mimir.yggdrasil.niuu.world/api/v1
+      authRef: integration:volundr
+      role: shared
+      categories: [research, memory, sources]
+      position: {x: 320, y: 480}
+    - id: thread-explore
+      kind: stage
+      label: Map the landscape widely
+      executionMode: sequential
+      joinMode: any
+      stageMembers:
+        - personaId: research-explorer-breadth
+          model: gpt-5.5
+          budget: 20
+          consumesEventTypes: [research.framed]
+    - id: thread-complete
+      kind: end
+      label: Thread finding recorded
+      joinMode: all
+      passingVerdicts: [explored]
+      completionEvent: research.breadth.explored
+  edges:
+    - {id: thread-request-explore, source: thread-request, target: thread-explore, label: research.framed -> research.framed}
+    - {id: thread-explore-complete, source: thread-explore, target: thread-complete, label: research.breadth.explored -> research.breadth.explored}
+  resourceBindings:
+    - id: binding-thread-memory
+      resourceNodeId: thread-memory
+      targetType: workflow
+      targetId: research-thread-breadth
+      access: read_write
+      writePrefixes:
+        - research/
+      readPriority: 1

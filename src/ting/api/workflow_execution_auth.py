@@ -20,6 +20,7 @@ from niuu.domain.models import Principal
 from niuu.domain.services.token_scope import VALKYRIE_BUILD_TOKEN_USE, require_scope
 from ting.domain.workflow_execution import (
     ChildExecutionState,
+    ChildTemplate,
     ExpansionPolicy,
     WorkflowExecution,
     WorkflowExecutionError,
@@ -71,16 +72,23 @@ def resolve_launch_expansion_policy(
         raise WorkflowExecutionError(
             f"Workflow does not declare a subworkflow node {node_id!r} to expand"
         )
-    dependency_alias = str(node.get("workflowDependency") or "")
-    dependency = workflow.workflow_dependencies.get(dependency_alias)
-    if dependency is None:
-        raise WorkflowExecutionError("subworkflow references an undeclared workflow dependency")
+    raw_templates = node.get("templates")
+    if not isinstance(raw_templates, dict) or not raw_templates:
+        raise WorkflowExecutionError(f"subworkflow node {node_id!r} declares no templates")
+    templates: dict[str, ChildTemplate] = {}
+    for name, alias in raw_templates.items():
+        dependency = workflow.workflow_dependencies.get(str(alias))
+        if dependency is None:
+            raise WorkflowExecutionError("subworkflow references an undeclared workflow dependency")
+        templates[str(name)] = ChildTemplate(
+            dependency_alias=str(alias),
+            id=dependency.id,
+            revision=dependency.revision,
+            digest=dependency.digest,
+        )
     return node, ExpansionPolicy(
         coordinator_id=str(node.get("allowedCoordinator") or ""),
-        workflow_dependency=dependency_alias,
-        template_id=dependency.id,
-        template_revision=dependency.revision,
-        template_digest=dependency.digest,
+        templates=templates,
         input_schema=dict(node.get("inputSchema") or {}),
         result_schema=dict(node.get("resultSchema") or {}),
         max_children=int(node.get("maxChildren") or 0),

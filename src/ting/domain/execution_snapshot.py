@@ -8,6 +8,7 @@ from ting.domain.workflow_execution import (
     WorkflowChildExecution,
     WorkflowExecution,
     WorkflowExecutionError,
+    resolve_child_template,
 )
 from ting.domain.workflow_snapshot import build_workflow_snapshot
 
@@ -18,8 +19,9 @@ def pinned_child_workflow(
 ) -> WorkflowDefinition:
     if child.execution_id != execution.id:
         raise WorkflowExecutionError("Child does not belong to this execution")
+    _, template = resolve_child_template(execution.policy, child)
+    alias = template.dependency_alias
     snapshot = execution.workflow_snapshot
-    alias = execution.policy.workflow_dependency
     pin = snapshot.get("workflow_dependencies", {}).get(alias)
     aggregate = snapshot.get("workflow_definitions", {}).get(alias)
     if not isinstance(pin, dict) or not isinstance(aggregate, dict):

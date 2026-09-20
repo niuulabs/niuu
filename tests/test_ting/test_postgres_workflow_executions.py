@@ -27,6 +27,7 @@ from ting.domain.workflow_execution import (
     ChildPendingQuestion,
     ChildTaskHandle,
     ChildTaskObservation,
+    ChildTemplate,
     ExecutionBudget,
     ExecutionConflictError,
     ExecutionState,
@@ -70,10 +71,14 @@ def _execution(**changes) -> WorkflowExecution:
         connection_id="content-platform",
         policy=ExpansionPolicy(
             coordinator_id="editorial-coordinator",
-            workflow_dependency="translation-assignment",
-            template_id=uuid4(),
-            template_revision="v1",
-            template_digest=_digest("b"),
+            templates={
+                "translation": ChildTemplate(
+                    dependency_alias="translation-assignment",
+                    id=uuid4(),
+                    revision="v1",
+                    digest=_digest("b"),
+                ),
+            },
             input_schema=_schema(),
             result_schema=_schema(),
             max_children=5,

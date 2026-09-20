@@ -8,7 +8,7 @@ import pytest
 from tests.test_ting.test_delivery_execution import _execution, _proposal
 from ting.delivery.domain import make_children
 from ting.domain.execution_snapshot import pinned_child_workflow
-from ting.domain.workflow_execution import WorkflowExecutionError
+from ting.domain.workflow_execution import ChildTemplate, WorkflowExecutionError
 from ting.domain.workflow_snapshot import build_workflow_snapshot
 from ting.system_workflows import BUNDLED_SYSTEM_WORKFLOWS_PATH, load_system_workflows
 
@@ -25,9 +25,14 @@ def frozen_execution():
         execution,
         policy=replace(
             execution.policy,
-            template_id=pin.id,
-            template_revision=pin.revision,
-            template_digest=pin.digest,
+            templates={
+                "workstream": ChildTemplate(
+                    dependency_alias="workstream",
+                    id=pin.id,
+                    revision=pin.revision,
+                    digest=pin.digest,
+                ),
+            },
         ),
         workflow_snapshot=build_workflow_snapshot(root),
     )

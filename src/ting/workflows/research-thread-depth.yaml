@@ -1,0 +1,76 @@
+schema_version: 2
+id: bf5f97dd-d89b-4f3e-a8fc-ea61a42685a5
+name: Research Thread — Depth
+description: Run the depth explorer over the framed research question and produce a structured finding for the parent research campaign.
+version: 1.0.0
+persona_dependencies:
+  research-explorer-depth:
+    id: research-explorer-depth
+    revision: content-e0dfc9e6a266f9a0
+    digest: sha256:e0dfc9e6a266f9a0ff7bee1cfc868d56bdf387431a8977fb0165f63f46a675c5
+    path: personas/research-explorer-depth.yaml
+workflow_dependencies: {}
+graph:
+  tags:
+    - research
+    - thread
+    - depth
+  executionContract: research-thread/v1
+  disabledTools:
+    - workflow_execution_expand
+    - workflow_execution_reconcile
+    - workflow_execution_retry
+    - workflow_execution_cancel
+    - workflow_execution_message
+    - delivery_complete
+    - delivery_record_integration
+    - workflow_execution_wait
+    - delivery_expand_workstreams
+    - delivery_workspace
+    - delivery_forge
+    - delivery_evidence
+  nodes:
+    - id: thread-request
+      kind: trigger
+      label: Begin depth exploration thread
+      source: research campaign
+      dispatchEvent: research.framed
+    - id: thread-memory
+      kind: resource
+      label: Research Memory
+      resourceType: mimir
+      bindingMode: registry
+      registryEntryId: mimir-yggdrasil
+      url: https://mimir.yggdrasil.niuu.world/api/v1
+      authRef: integration:volundr
+      role: shared
+      categories: [research, memory, sources]
+      position: {x: 320, y: 480}
+    - id: thread-explore
+      kind: stage
+      label: Drill into the strongest threads
+      executionMode: sequential
+      joinMode: any
+      stageMembers:
+        - personaId: research-explorer-depth
+          model: gpt-5.5
+          budget: 22
+          consumesEventTypes: [research.framed]
+    - id: thread-complete
+      kind: end
+      label: Thread finding recorded
+      joinMode: all
+      passingVerdicts: [explored]
+      completionEvent: research.depth.explored
+  edges:
+    - {id: thread-request-explore, source: thread-request, target: thread-explore, label: research.framed -> research.framed}
+    - {id: thread-explore-complete, source: thread-explore, target: thread-complete, label: research.depth.explored -> research.depth.explored}
+  resourceBindings:
+    - id: binding-thread-memory
+      resourceNodeId: thread-memory
+      targetType: workflow
+      targetId: research-thread-depth
+      access: read_write
+      writePrefixes:
+        - research/
+      readPriority: 1

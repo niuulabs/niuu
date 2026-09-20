@@ -447,12 +447,12 @@ def test_replayed_launch_context_uses_reserved_identity_and_excludes_token(monke
                 "digest": repository.execution.workflow_digest,
             },
             "workstream_dependency": {
-                "alias": repository.execution.policy.workflow_dependency,
-                "template_id": str(repository.execution.policy.template_id),
-                "template_revision": repository.execution.policy.template_revision,
-                "template_digest": repository.execution.policy.template_digest,
+                "alias": repository.execution.policy.sole_template.dependency_alias,
+                "template_id": str(repository.execution.policy.sole_template.id),
+                "template_revision": repository.execution.policy.sole_template.revision,
+                "template_digest": repository.execution.policy.sole_template.digest,
                 "agent_id": configured_agent_id("https://ting.example/.well-known/agent-card.json"),
-                "skill_id": str(repository.execution.policy.template_id),
+                "skill_id": str(repository.execution.policy.sole_template.id),
                 "agent_card_url": "https://ting.example/.well-known/agent-card.json",
             },
         }

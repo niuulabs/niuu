@@ -21,6 +21,7 @@ from ting.adapters.timer_wait_observer import TimerWaitObserver
 from ting.config import WorkflowExecutionConfig
 from ting.domain.services.workflow_wait import WorkflowWaitService
 from ting.domain.workflow_execution import (
+    ChildTemplate,
     ExecutionBudget,
     ExecutionState,
     ExpansionPolicy,
@@ -64,10 +65,14 @@ def _generic_execution(**changes) -> WorkflowExecution:
         connection_id="content-platform",
         policy=ExpansionPolicy(
             coordinator_id="editorial-coordinator",
-            workflow_dependency="translation-assignment",
-            template_id=uuid4(),
-            template_revision="translation-v2",
-            template_digest=_digest("translation-template"),
+            templates={
+                "translation": ChildTemplate(
+                    dependency_alias="translation-assignment",
+                    id=uuid4(),
+                    revision="translation-v2",
+                    digest=_digest("translation-template"),
+                ),
+            },
             input_schema=schema,
             result_schema=schema,
             max_children=5,

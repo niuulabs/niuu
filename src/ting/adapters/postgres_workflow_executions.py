@@ -26,6 +26,7 @@ from ting.domain.workflow_execution import (
     ChildPendingQuestion,
     ChildTaskHandle,
     ChildTaskObservation,
+    ChildTemplate,
     ExecutionBudget,
     ExecutionConflictError,
     ExecutionState,
@@ -1209,10 +1210,15 @@ class PostgresWorkflowExecutionRepository[
 def _policy_to_json(policy: ExpansionPolicy) -> dict[str, object]:
     return {
         "coordinatorId": policy.coordinator_id,
-        "workflowDependency": policy.workflow_dependency,
-        "templateId": str(policy.template_id),
-        "templateRevision": policy.template_revision,
-        "templateDigest": policy.template_digest,
+        "templates": {
+            name: {
+                "dependencyAlias": template.dependency_alias,
+                "id": str(template.id),
+                "revision": template.revision,
+                "digest": template.digest,
+            }
+            for name, template in policy.templates.items()
+        },
         "inputSchema": policy.input_schema,
         "resultSchema": policy.result_schema,
         "maxChildren": policy.max_children,
@@ -1224,12 +1230,18 @@ def _policy_to_json(policy: ExpansionPolicy) -> dict[str, object]:
 
 def _policy_from_json(value: object) -> ExpansionPolicy:
     raw = json.loads(value) if isinstance(value, str) else dict(value or {})
+    templates = {
+        str(name): ChildTemplate(
+            dependency_alias=str(item["dependencyAlias"]),
+            id=UUID(str(item["id"])),
+            revision=str(item["revision"]),
+            digest=str(item["digest"]),
+        )
+        for name, item in dict(raw["templates"]).items()
+    }
     return ExpansionPolicy(
         coordinator_id=str(raw["coordinatorId"]),
-        workflow_dependency=str(raw["workflowDependency"]),
-        template_id=UUID(str(raw["templateId"])),
-        template_revision=str(raw["templateRevision"]),
-        template_digest=str(raw["templateDigest"]),
+        templates=templates,
         input_schema=dict(raw["inputSchema"]),
         result_schema=dict(raw["resultSchema"]),
         max_children=int(raw["maxChildren"]),

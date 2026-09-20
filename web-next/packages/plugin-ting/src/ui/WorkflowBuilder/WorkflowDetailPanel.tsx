@@ -1254,7 +1254,12 @@ export function WorkflowDetailPanel({
           className="niuu:space-y-3 niuu:px-4 niuu:py-3 niuu:text-xs niuu:text-text-secondary"
         >
           <h3 className={SECTION_LABEL}>{selectedNode.label}</h3>
-          <p>Dependency: {selectedNode.workflowDependency}</p>
+          <p>
+            Templates:{' '}
+            {Object.entries(selectedNode.templates)
+              .map(([name, alias]) => `${name} → ${alias}`)
+              .join(', ')}
+          </p>
           <p>Coordinator: {selectedNode.allowedCoordinator}</p>
           <p>
             Up to {selectedNode.maxChildren} workstreams,{' '}

@@ -287,5 +287,6 @@ def _proposal_from_payload(raw: object, *, plan_digest: str) -> WorkstreamPropos
         deadline=deadline,
         agent_id=str(raw.get("agentId") or ""),
         skill_id=str(raw.get("skillId") or ""),
+        template=str(raw.get("template") or ""),
         workspace=dict(raw.get("workspace") or {}),
     )

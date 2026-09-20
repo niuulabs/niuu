@@ -12,6 +12,7 @@ import pytest
 from ting.domain.services.workflow_execution import WorkflowExecutionLifecycle
 from ting.domain.workflow_execution import (
     ChildExecutionState,
+    ChildTemplate,
     ExecutionBudget,
     ExpansionPolicy,
     WorkflowChildExecution,
@@ -22,6 +23,7 @@ from ting.domain.workflow_execution import (
     digest_json,
     make_children,
     make_retry,
+    resolve_child_template,
     validate_expansion,
 )
 from ting.ports.workflow_execution import WorkflowExecutionRepository
@@ -31,7 +33,7 @@ def _digest(value: str) -> str:
     return "sha256:" + sha256(value.encode()).hexdigest()
 
 
-def _editorial_execution() -> WorkflowExecution:
+def _editorial_execution(*, templates: dict[str, ChildTemplate] | None = None) -> WorkflowExecution:
     now = datetime.now(UTC)
     schema = {
         "type": "object",
@@ -56,10 +58,15 @@ def _editorial_execution() -> WorkflowExecution:
         connection_id="content-platform",
         policy=ExpansionPolicy(
             coordinator_id="editorial-coordinator",
-            workflow_dependency="translation-assignment",
-            template_id=uuid4(),
-            template_revision="translation-v2",
-            template_digest=_digest("translation-template"),
+            templates=templates
+            or {
+                "translation": ChildTemplate(
+                    dependency_alias="translation-assignment",
+                    id=uuid4(),
+                    revision="translation-v2",
+                    digest=_digest("translation-template"),
+                ),
+            },
             input_schema=schema,
             result_schema={
                 "type": "object",
@@ -79,11 +86,32 @@ def _editorial_execution() -> WorkflowExecution:
     )
 
 
+def _multi_template_editorial_execution() -> WorkflowExecution:
+    """An editorial node offering two named templates instead of one."""
+    return _editorial_execution(
+        templates={
+            "translation": ChildTemplate(
+                dependency_alias="translation-assignment",
+                id=uuid4(),
+                revision="translation-v2",
+                digest=_digest("translation-template"),
+            ),
+            "review": ChildTemplate(
+                dependency_alias="review-assignment",
+                id=uuid4(),
+                revision="review-v1",
+                digest=_digest("review-template"),
+            ),
+        }
+    )
+
+
 def _assignment(
     execution: WorkflowExecution,
     locale: str,
     *,
     dependencies: tuple[str, ...] = (),
+    template: str = "",
 ) -> WorkflowChildProposal:
     payload = {"articleId": "handbook-2026", "locale": locale}
     return WorkflowChildProposal(
@@ -97,6 +125,7 @@ def _assignment(
         deadline=execution.deadline - timedelta(hours=1),
         agent_id=f"translator-{locale}",
         skill_id="translate-and-fact-check",
+        template=template,
         context={"styleGuide": "house-2026"},
     )
 
@@ -300,3 +329,87 @@ def test_noncoding_workflow_enforces_shared_budget_and_attempt_limits() -> None:
     exhausted = replace(child, attempt=2, state=ChildExecutionState.FAILED)
     with pytest.raises(WorkflowExecutionError, match="attempt limit"):
         make_retry(exhausted, attempt_id=exhausted.id, max_attempts=2)
+
+
+def test_child_naming_an_unknown_template_is_rejected() -> None:
+    execution = _multi_template_editorial_execution()
+    proposal = _assignment(execution, "fr-CA", template="proofreading")
+    with pytest.raises(WorkflowExecutionError, match="unknown child template"):
+        validate_expansion(
+            execution,
+            coordinator_id="editorial-coordinator",
+            generation=1,
+            children=[proposal],
+        )
+
+
+def test_omitting_template_when_several_are_offered_is_rejected() -> None:
+    execution = _multi_template_editorial_execution()
+    proposal = _assignment(execution, "fr-CA")
+    with pytest.raises(WorkflowExecutionError, match="child template is required"):
+        validate_expansion(
+            execution,
+            coordinator_id="editorial-coordinator",
+            generation=1,
+            children=[proposal],
+        )
+
+
+def test_omitting_template_when_only_one_is_offered_defaults_to_it() -> None:
+    execution = _editorial_execution()
+    proposal = _assignment(execution, "fr-CA")
+    ordered = validate_expansion(
+        execution,
+        coordinator_id="editorial-coordinator",
+        generation=1,
+        children=[proposal],
+    )
+    child = make_children(execution, 1, ordered)[0]
+    sole = execution.policy.sole_template
+    assert child.template_id == sole.id
+    assert child.template_revision == sole.revision
+    assert child.template_digest == sole.digest
+
+
+def test_each_child_is_stamped_with_its_own_named_templates_pin() -> None:
+    execution = _multi_template_editorial_execution()
+    proposals = [
+        _assignment(execution, "fr-CA", template="translation"),
+        _assignment(execution, "es-MX", template="review"),
+    ]
+    ordered = validate_expansion(
+        execution,
+        coordinator_id="editorial-coordinator",
+        generation=1,
+        children=proposals,
+    )
+    children = {child.key: child for child in make_children(execution, 1, ordered)}
+    translation = execution.policy.templates["translation"]
+    review = execution.policy.templates["review"]
+    assert children["fr-CA"].template_id == translation.id
+    assert children["fr-CA"].template_revision == translation.revision
+    assert children["fr-CA"].template_digest == translation.digest
+    assert children["es-MX"].template_id == review.id
+    assert children["es-MX"].template_revision == review.revision
+    assert children["es-MX"].template_digest == review.digest
+
+    # resolve_child_template recovers the same named template from the
+    # child's own recorded pin, independent of what other templates the
+    # node offers.
+    name, template = resolve_child_template(execution.policy, children["es-MX"])
+    assert name == "review"
+    assert template == review
+
+
+def test_retry_keeps_the_childs_original_template() -> None:
+    execution = _multi_template_editorial_execution()
+    proposal = _assignment(execution, "es-MX", template="review")
+    child = make_children(execution, 1, (proposal,))[0]
+    blocked = replace(child, state=ChildExecutionState.BLOCKED)
+
+    retry = make_retry(blocked, attempt_id=blocked.id, max_attempts=execution.policy.max_attempts)
+
+    review = execution.policy.templates["review"]
+    assert retry.template_id == review.id
+    assert retry.template_revision == review.revision
+    assert retry.template_digest == review.digest

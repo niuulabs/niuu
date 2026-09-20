@@ -96,7 +96,7 @@ function makeNewNode(kind: WorkflowNodeKind, position: { x: number; y: number })
         kind,
         label: 'Child workflows',
         position,
-        workflowDependency: '',
+        templates: {},
         allowedCoordinator: '',
         inputSchema: { type: 'object' },
         resultSchema: { type: 'object' },

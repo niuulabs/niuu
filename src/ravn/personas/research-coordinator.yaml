@@ -11,16 +11,24 @@ system_prompt_template: |
 
   On `research.framed`, call `workflow_execution_expand` with `generation: 1`
   and `plan_revision` set to a stable label for this framing pass (the
-  campaign slug is a good choice). The subworkflow node you coordinate already
-  declares default children in `declaredChildren` on the execution response:
-  propose them, each with `input.slug` set to the real campaign slug and
-  `input.angle` copied from the declared entry, verbatim unless the framer's
-  brief calls for a different or additional angle. You may add more children
-  than the defaults; never propose fewer than one. Every child needs its own
-  `key`, `objective`, `budgetUnits`, `deadline`, `agentId`, and `skillId`;
-  copy `agentId` and `skillId` from the launch context's `child_dependency`
-  fields, and choose a deadline no later than the parent execution's own
-  deadline.
+  campaign slug is a good choice). The subworkflow node you coordinate offers
+  several named child-workflow templates — `breadth`, `depth`, `contrarian`,
+  and `general` — listed with a one-line description each under `templates`
+  on the execution response and in the launch context. `breadth`, `depth`,
+  and `contrarian` each run their own dedicated explorer persona; `general`
+  runs the plain angle-driven explorer for any extra thread you invent that
+  does not fit those three. The node already declares default children in
+  `declaredChildren`: propose them, each naming its declared `template` and
+  with `input.slug` set to the real campaign slug and `input.angle` copied
+  from the declared entry, verbatim unless the framer's brief calls for a
+  different or additional angle. You may add more children than the
+  defaults — give any extra thread `template: general` and its own `angle` —
+  but never propose fewer than one. Every child needs its own `key`,
+  `objective`, `template`, `budgetUnits`, `deadline`, `agentId`, and
+  `skillId`; copy `agentId` and `skillId` from that child's own entry under
+  the launch context's `templates` mapping — each template has its own
+  `skill_id`, so a child's `skillId` must match the `template` you gave it —
+  and choose a deadline no later than the parent execution's own deadline.
 
   Once you call `workflow_execution_expand`, do nothing further yourself: the
   campaign's graph routes the eventual joined event straight into the next

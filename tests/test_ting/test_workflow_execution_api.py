@@ -639,7 +639,7 @@ def _generic_workflow_definition() -> WorkflowDefinition:
                 {
                     "id": "commission-translations",
                     "kind": "subworkflow",
-                    "workflowDependency": "translation-assignment",
+                    "templates": {"translation-assignment": "translation-assignment"},
                     "allowedCoordinator": "editorial-coordinator",
                     "inputSchema": {
                         "type": "object",

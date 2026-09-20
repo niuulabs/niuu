@@ -33,6 +33,7 @@ from ting.domain.workflow_execution import (
     ChildPendingQuestion,
     ChildTaskHandle,
     ChildTaskObservation,
+    ChildTemplate,
     ExecutionBudget,
     ExecutionConflictError,
     ExecutionState,
@@ -100,10 +101,14 @@ def _execution(**changes) -> DeliveryExecution:
         connection_id="forge-1",
         policy=ExpansionPolicy(
             coordinator_id="developer-coordinator",
-            workflow_dependency="workstream",
-            template_id=uuid4(),
-            template_revision="v1",
-            template_digest=_digest("b"),
+            templates={
+                "workstream": ChildTemplate(
+                    dependency_alias="workstream",
+                    id=uuid4(),
+                    revision="v1",
+                    digest=_digest("b"),
+                ),
+            },
             input_schema=_input_schema(),
             result_schema=_schema(),
             max_children=100,
@@ -156,7 +161,7 @@ def _proposal(execution: DeliveryExecution, key: str, dependencies=()) -> Workst
         budget_units=10,
         deadline=execution.deadline,
         agent_id="agent-1",
-        skill_id=str(execution.policy.template_id),
+        skill_id=str(execution.policy.sole_template.id),
         workspace=workspace,
     )
 
@@ -2500,8 +2505,7 @@ def test_budget_rejects_invalid_counters(kwargs) -> None:
     "changes",
     [
         {"coordinator_id": ""},
-        {"workflow_dependency": ""},
-        {"template_revision": ""},
+        {"templates": {}},
         {"max_children": 0},
         {"max_children": 1, "max_active_children": 2},
         {"join_mode": "any"},
@@ -2511,6 +2515,20 @@ def test_policy_rejects_invalid_contract(changes) -> None:
     policy = _execution().policy
     with pytest.raises(WorkflowExecutionError):
         replace(policy, **changes)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"dependency_alias": ""},
+        {"revision": ""},
+        {"digest": "not-a-digest"},
+    ],
+)
+def test_child_template_rejects_invalid_pin(changes) -> None:
+    template = next(iter(_execution().policy.templates.values()))
+    with pytest.raises(WorkflowExecutionError):
+        replace(template, **changes)
 
 
 @pytest.mark.parametrize(

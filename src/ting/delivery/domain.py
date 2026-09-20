@@ -181,6 +181,7 @@ def make_children(
     for proposal in ordered:
         child_id = uuid4()
         intent_id = uuid4()
+        _, template = execution.policy.resolve_template(proposal.template)
         children.append(
             ChildExecution(
                 id=child_id,
@@ -192,9 +193,9 @@ def make_children(
                 dependencies=proposal.dependencies,
                 requirement_ids=proposal.requirement_ids,
                 objective=proposal.objective,
-                template_id=execution.policy.template_id,
-                template_revision=execution.policy.template_revision,
-                template_digest=execution.policy.template_digest,
+                template_id=template.id,
+                template_revision=template.revision,
+                template_digest=template.digest,
                 plan_digest=proposal.plan_digest,
                 input_digest=proposal.input_digest,
                 input=proposal.input,

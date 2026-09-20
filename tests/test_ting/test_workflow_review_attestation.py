@@ -174,7 +174,7 @@ def test_subworkflow_requiring_review_receipts_requires_explicit_review_binding(
         {
             "id": "children",
             "kind": "subworkflow",
-            "workflowDependency": "child",
+            "templates": {"child": "child"},
             "allowedCoordinator": "platform-auditor",
             "maxChildren": 1,
             "maxAttempts": 1,

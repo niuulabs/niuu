@@ -29,6 +29,7 @@ from tests.test_ting.test_workflow_execution_service import (
 )
 from ting.api.workflow_execution_auth import resolve_launch_expansion_policy
 from ting.api.workflow_executions import _declared_children, _generic_proposal_from_payload
+from ting.domain.execution_snapshot import pinned_child_workflow
 from ting.domain.services.workflow_execution import WorkflowExecutionService
 from ting.domain.workflow_continuation_events import subworkflow_joined_event
 from ting.domain.workflow_document import workflow_document_revision
@@ -143,12 +144,14 @@ def _service(repository, *, gateway=None, continuation=None) -> WorkflowExecutio
 def _proposal_payload(entry: dict, *, plan_revision: str, deadline: datetime) -> dict:
     """Turn one declared child into a full expansion proposal, the way the
     research-coordinator persona is instructed to: keep key/objective/
-    dependencies, merge the real campaign slug into input, and add the
-    execution-time fields the graph does not (and should not) know about."""
+    dependencies/template, merge the real campaign slug into input, and add
+    the execution-time fields the graph does not (and should not) know
+    about."""
     return {
         "key": entry["key"],
         "objective": entry["objective"],
         "dependencies": entry.get("dependencies", []),
+        "template": entry["template"],
         "input": {**entry.get("input", {}), "slug": CAMPAIGN_SLUG},
         "budgetUnits": 8,
         "deadline": deadline.isoformat(),
@@ -174,6 +177,7 @@ async def test_research_threads_declared_children_join_publishes_the_graph_event
     declared = _declared_children(execution)
     assert declared is not None
     assert {entry["key"] for entry in declared} == {"breadth", "depth", "contrarian"}
+    assert {entry["template"] for entry in declared} == {"breadth", "depth", "contrarian"}
 
     plan_revision = "framing-pass-1"
     plan_digest = digest_json({"planRevision": plan_revision})
@@ -186,8 +190,33 @@ async def test_research_threads_declared_children_join_publishes_the_graph_event
     ]
     for proposal, entry in zip(proposals, declared, strict=True):
         assert proposal.key == entry["key"]
+        assert proposal.template == entry["template"]
         assert proposal.input["angle"] == entry["input"]["angle"]
         assert proposal.input["slug"] == CAMPAIGN_SLUG
+
+    # A fourth, runtime-invented thread the coordinator adds beyond the
+    # declared defaults, using the plain angle-driven `general` template.
+    wildcard_entry = {
+        "key": "wildcard",
+        "objective": "Chase a lead the frame surfaced that none of the fixed angles cover.",
+        "template": "general",
+        "input": {"slug": CAMPAIGN_SLUG, "angle": "wildcard"},
+    }
+    proposals.append(
+        _generic_proposal_from_payload(
+            {
+                "key": wildcard_entry["key"],
+                "objective": wildcard_entry["objective"],
+                "template": wildcard_entry["template"],
+                "input": wildcard_entry["input"],
+                "budgetUnits": 8,
+                "deadline": execution.deadline.isoformat(),
+                "agentId": "research-agent",
+                "skillId": "research-thread-skill",
+            },
+            plan_digest=plan_digest,
+        )
+    )
 
     repository = InMemoryWorkflowRepository(execution)
     gateway = ResultGateway()
@@ -204,7 +233,27 @@ async def test_research_threads_declared_children_join_publishes_the_graph_event
         children=proposals,
     )
     assert reserved.current_generation == 1
-    assert {child.key for child in repository.children} == {"breadth", "depth", "contrarian"}
+    assert {child.key for child in repository.children} == {
+        "breadth",
+        "depth",
+        "contrarian",
+        "wildcard",
+    }
+
+    # Each declared child resolves to a DIFFERENT frozen child workflow
+    # document, each naming its own dedicated explorer persona; the runtime
+    # "wildcard" child resolves to the shared generic thread and persona.
+    resolved_by_key = {
+        child.key: pinned_child_workflow(execution, child) for child in repository.children
+    }
+    assert len({document.id for document in resolved_by_key.values()}) == 4
+    persona_by_key = {
+        key: set(document.persona_dependencies) for key, document in resolved_by_key.items()
+    }
+    assert persona_by_key["breadth"] == {"research-explorer-breadth"}
+    assert persona_by_key["depth"] == {"research-explorer-depth"}
+    assert persona_by_key["contrarian"] == {"research-explorer-contrarian"}
+    assert persona_by_key["wildcard"] == {"research-explorer"}
 
     await repository.seal_generation(execution.id, 1)
 
@@ -216,13 +265,18 @@ async def test_research_threads_declared_children_join_publishes_the_graph_event
 
     result = await service.reconcile(execution.id)
 
-    assert result["projected"] == 3
+    assert result["projected"] == 4
     assert all(child.state == ChildExecutionState.COMPLETED for child in repository.children)
     assert len(continuation.resumed) == 1
     resumed_id, generation, results = continuation.resumed[0]
     assert resumed_id == execution.id
     assert generation == 1
-    assert {item["childKey"] for item in results} == {"breadth", "depth", "contrarian"}
+    assert {item["childKey"] for item in results} == {
+        "breadth",
+        "depth",
+        "contrarian",
+        "wildcard",
+    }
     for item in results:
         assert set(item["result"]) == {
             "question",
@@ -287,7 +341,12 @@ def test_research_workflow_declares_no_reviewattestation_and_stays_generic() -> 
     """Sanity check the fixture: research-campaign has no delivery baggage."""
     execution, node = _build_execution()
     assert node["allowedCoordinator"] == "research-coordinator"
-    assert node["workflowDependency"] == "thread"
+    assert node["templates"] == {
+        "breadth": "breadth",
+        "depth": "depth",
+        "contrarian": "contrarian",
+        "general": "general",
+    }
     assert execution.policy.join_mode == "all"
     with pytest.raises(WorkflowExecutionError):
         # A coordinator identity that does not match the pinned node must be

@@ -33,12 +33,18 @@ def public_trace_graph(graph: dict[str, Any]) -> dict[str, list[dict[str, Any]]]
             "executionMode",
             "joinMode",
             "expansionRole",
-            "workflowDependency",
             "source",
         ):
             value = raw_node.get(key)
             if isinstance(value, str) and value:
                 node[key] = value
+        templates = raw_node.get("templates")
+        if isinstance(templates, dict) and templates:
+            node["templates"] = {
+                str(name): str(alias)
+                for name, alias in templates.items()
+                if isinstance(name, str) and isinstance(alias, str)
+            }
         position = raw_node.get("position")
         if isinstance(position, dict):
             public_position = {

@@ -113,12 +113,32 @@ class ExecutionBudget:
 
 
 @dataclass(frozen=True)
+class ChildTemplate:
+    """One named child workflow a subworkflow node offers to its children.
+
+    ``dependency_alias`` is the key into the declaring workflow's
+    ``workflow_dependencies``; ``id``/``revision``/``digest`` are that
+    dependency's exact pin, copied here so a child stamped from this template
+    carries its own frozen identity independent of the other templates the
+    same node may offer.
+    """
+
+    dependency_alias: str
+    id: UUID
+    revision: str
+    digest: str
+
+    def __post_init__(self) -> None:
+        if not self.dependency_alias.strip():
+            raise WorkflowExecutionError("child template workflowDependency alias is required")
+        if not self.revision.strip() or not is_digest(self.digest):
+            raise WorkflowExecutionError("child template revision and sha256 digest are required")
+
+
+@dataclass(frozen=True)
 class ExpansionPolicy:
     coordinator_id: str
-    workflow_dependency: str
-    template_id: UUID
-    template_revision: str
-    template_digest: str
+    templates: dict[str, ChildTemplate]
     input_schema: dict[str, Any]
     result_schema: dict[str, Any]
     max_children: int
@@ -129,10 +149,10 @@ class ExpansionPolicy:
     def __post_init__(self) -> None:
         if not self.coordinator_id.strip():
             raise WorkflowExecutionError("allowedCoordinator must be a non-empty identity")
-        if not self.workflow_dependency.strip():
-            raise WorkflowExecutionError("workflowDependency must be a non-empty alias")
-        if not self.template_revision.strip() or not is_digest(self.template_digest):
-            raise WorkflowExecutionError("child template revision and sha256 digest are required")
+        if not self.templates:
+            raise WorkflowExecutionError("subworkflow node must declare at least one template")
+        if any(not name.strip() for name in self.templates):
+            raise WorkflowExecutionError("template names must be non-empty")
         if self.max_children <= 0 or self.max_attempts <= 0 or self.max_active_children <= 0:
             raise WorkflowExecutionError("expansion limits must be greater than zero")
         if self.max_active_children > self.max_children:
@@ -141,6 +161,42 @@ class ExpansionPolicy:
             raise WorkflowExecutionError("schema v2 supports only joinMode='all'")
         validate_json_schema(self.input_schema, field="inputSchema")
         validate_json_schema(self.result_schema, field="resultSchema")
+
+    @property
+    def sole_template(self) -> ChildTemplate:
+        """The one template a single-template node declares.
+
+        Convenience for callers (code delivery, most callers today) that only
+        ever offer one named child workflow; raises when the node actually
+        offers several, since there is then no single answer.
+        """
+        if len(self.templates) != 1:
+            raise WorkflowExecutionError(
+                "this subworkflow node offers more than one template; select one by name"
+            )
+        return next(iter(self.templates.values()))
+
+    def resolve_template(self, name: str) -> tuple[str, ChildTemplate]:
+        """Resolve a proposal's requested template name against this policy.
+
+        An empty name defaults to the node's own template when it offers only
+        one; with several on offer, a proposal must name one explicitly.
+        """
+        requested = name.strip()
+        if not requested:
+            if len(self.templates) != 1:
+                choices = ", ".join(sorted(self.templates))
+                raise WorkflowExecutionError(
+                    f"child template is required; this node offers: {choices}"
+                )
+            requested = next(iter(self.templates))
+        template = self.templates.get(requested)
+        if template is None:
+            choices = ", ".join(sorted(self.templates))
+            raise WorkflowExecutionError(
+                f"unknown child template {requested!r}; this node offers: {choices}"
+            )
+        return requested, template
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -217,6 +273,9 @@ class WorkflowChildProposal:
     deadline: datetime
     agent_id: str
     skill_id: str
+    template: str = ""
+    """Name of the node's template this child runs; empty defers to the
+    node's own template when it offers only one."""
     context: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -417,6 +476,10 @@ def validate_expansion(
             )
         if item.deadline > execution.deadline:
             raise WorkflowExecutionError(f"child {item.key!r} deadline exceeds the parent deadline")
+        try:
+            execution.policy.resolve_template(item.template)
+        except WorkflowExecutionError as exc:
+            raise WorkflowExecutionError(f"child {item.key!r}: {exc}") from exc
         validate_json_instance(item.input, execution.policy.input_schema, field=f"{item.key}.input")
     required_budget = sum(item.budget_units for item in children)
     if required_budget > execution.budget.available_units:
@@ -433,34 +496,57 @@ def make_children(
 ) -> tuple[WorkflowChildExecution, ...]:
     """Create first attempts for a validated generic expansion."""
     now = datetime.now(UTC)
-    return tuple(
-        WorkflowChildExecution(
-            id=uuid4(),
-            execution_id=execution.id,
-            generation=generation,
-            key=proposal.key,
-            attempt=1,
-            state=ChildExecutionState.RESERVED,
-            dependencies=proposal.dependencies,
-            objective=proposal.objective,
-            template_id=execution.policy.template_id,
-            template_revision=execution.policy.template_revision,
-            template_digest=execution.policy.template_digest,
-            plan_digest=proposal.plan_digest,
-            input_digest=proposal.input_digest,
-            input=proposal.input,
-            budget_units=proposal.budget_units,
-            deadline=proposal.deadline,
-            agent_id=proposal.agent_id,
-            skill_id=proposal.skill_id,
-            intent_id=uuid4(),
-            message_id=(f"{message_namespace}:{execution.id}:{generation}:{proposal.key}:1"),
-            context=proposal.context,
-            created_at=now,
-            updated_at=now,
+    children: list[WorkflowChildExecution] = []
+    for proposal in ordered:
+        _, template = execution.policy.resolve_template(proposal.template)
+        children.append(
+            WorkflowChildExecution(
+                id=uuid4(),
+                execution_id=execution.id,
+                generation=generation,
+                key=proposal.key,
+                attempt=1,
+                state=ChildExecutionState.RESERVED,
+                dependencies=proposal.dependencies,
+                objective=proposal.objective,
+                template_id=template.id,
+                template_revision=template.revision,
+                template_digest=template.digest,
+                plan_digest=proposal.plan_digest,
+                input_digest=proposal.input_digest,
+                input=proposal.input,
+                budget_units=proposal.budget_units,
+                deadline=proposal.deadline,
+                agent_id=proposal.agent_id,
+                skill_id=proposal.skill_id,
+                intent_id=uuid4(),
+                message_id=(f"{message_namespace}:{execution.id}:{generation}:{proposal.key}:1"),
+                context=proposal.context,
+                created_at=now,
+                updated_at=now,
+            )
         )
-        for proposal in ordered
-    )
+    return tuple(children)
+
+
+def resolve_child_template(
+    policy: ExpansionPolicy, child: WorkflowChildExecution
+) -> tuple[str, ChildTemplate]:
+    """Identify which of the policy's named templates a child was stamped from.
+
+    Matches the child's own recorded ``template_id``/``template_revision``/
+    ``template_digest`` against the policy's current templates. No match means
+    the child's pin no longer corresponds to anything this node offers —
+    tampering or a stale/foreign snapshot, not something to guess past.
+    """
+    for name, template in policy.templates.items():
+        if (
+            template.id == child.template_id
+            and template.revision == child.template_revision
+            and template.digest == child.template_digest
+        ):
+            return name, template
+    raise WorkflowExecutionError("Child pin differs from the frozen execution dependency")
 
 
 def calculate_join(

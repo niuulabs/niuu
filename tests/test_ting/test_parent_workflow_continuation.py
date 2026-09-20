@@ -18,7 +18,12 @@ from uuid import uuid4
 import pytest
 
 from ting.adapters.parent_workflow_continuation import VolundrParentWorkflowContinuation
-from ting.domain.workflow_execution import ExecutionBudget, ExpansionPolicy, WorkflowExecution
+from ting.domain.workflow_execution import (
+    ChildTemplate,
+    ExecutionBudget,
+    ExpansionPolicy,
+    WorkflowExecution,
+)
 from ting.domain.workflow_wait import (
     WaitObservation,
     WaitObservationStatus,
@@ -88,10 +93,14 @@ def _editorial_execution(**changes) -> WorkflowExecution:
         connection_id="",
         policy=ExpansionPolicy(
             coordinator_id="editorial-coordinator",
-            workflow_dependency="translation-assignment",
-            template_id=uuid4(),
-            template_revision="v1",
-            template_digest=_digest("child-template"),
+            templates={
+                "translation": ChildTemplate(
+                    dependency_alias="translation-assignment",
+                    id=uuid4(),
+                    revision="v1",
+                    digest=_digest("child-template"),
+                ),
+            },
             input_schema=schema,
             result_schema=schema,
             max_children=5,

@@ -85,16 +85,24 @@ class WorkflowExecutionExpandTool(WorkflowExecutionToolBase):
 
     The input is exactly the generic execution router's expansion body: a
     plan revision and a list of child proposals declaring their own key,
-    objective, dependencies, input, budget, deadline, and agent/skill
-    identity. Nothing here is workflow-specific — a subworkflow node's own
-    ``inputSchema``/``resultSchema`` validate what a child actually carries.
+    objective, dependencies, input, budget, deadline, template, and
+    agent/skill identity. Nothing here is workflow-specific — a subworkflow
+    node's own ``inputSchema``/``resultSchema`` validate what a child
+    actually carries.
     """
 
     operation = "expand"
 
     @property
     def description(self) -> str:
-        return "Persist and dispatch a validated generation of durable child workflows."
+        return (
+            "Persist and dispatch a validated generation of durable child workflows. The node "
+            "you coordinate may offer more than one named child-workflow template — see its "
+            "`templates` mapping (on the execution response and in the launch context) for the "
+            "available names, each with a one-line description and its own skillId. Name the "
+            "`template` a child runs; when the node offers only one, omitting `template` "
+            "defaults to it, otherwise omitting it is rejected."
+        )
 
     @property
     def input_schema(self) -> dict:
@@ -312,6 +320,15 @@ def _child_proposal_schema() -> dict[str, Any]:
             "deadline": {"type": "string", "format": "date-time"},
             "agentId": {"type": "string", "minLength": 1},
             "skillId": {"type": "string", "minLength": 1},
+            "template": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "Name of the node's template this child runs — one of the names listed "
+                    "under `templates`. Required when the node offers more than one; optional "
+                    "when it offers exactly one, defaulting to it."
+                ),
+            },
             "context": {"type": "object"},
         },
         "required": ["key", "objective", "budgetUnits", "deadline", "agentId", "skillId"],

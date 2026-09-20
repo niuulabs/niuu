@@ -12,8 +12,8 @@ persona_dependencies:
     path: personas/research-analyst.yaml
   research-coordinator:
     id: research-coordinator
-    revision: content-04c0d35f0f5f2409
-    digest: sha256:04c0d35f0f5f2409a3a60ab88b9a582bc44f6268351a80b425daf3c7ba20b023
+    revision: content-8c68a4ca59f58a40
+    digest: sha256:8c68a4ca59f58a40d7c69372aa56e2dea07717705b18b89a47a1b9901abcb889
     path: personas/research-coordinator.yaml
   research-curator:
     id: research-curator
@@ -41,11 +41,26 @@ persona_dependencies:
     digest: sha256:42adc4ae8106bddf782d3f7c785d9b8debff5a283b5f4741801e7ee2310b1e55
     path: personas/research-synthesist.yaml
 workflow_dependencies:
-  thread:
+  general:
     id: 4e7ebec4-0cfa-4567-98dd-2ee4ce0bc308
     revision: sha256:19b6257e74141459d11d4bd4eefb350d0cd4a68853f1be1c375057b8055a31a2
     digest: sha256:19b6257e74141459d11d4bd4eefb350d0cd4a68853f1be1c375057b8055a31a2
     path: workflows/research-thread.yaml
+  breadth:
+    id: 42951d75-dd82-4596-92ea-1c0a6ef4b965
+    revision: sha256:f7ad120a3a142696fb7643524d6a16f55516289b3d97468b68e3345d3667c029
+    digest: sha256:f7ad120a3a142696fb7643524d6a16f55516289b3d97468b68e3345d3667c029
+    path: workflows/research-thread-breadth.yaml
+  depth:
+    id: bf5f97dd-d89b-4f3e-a8fc-ea61a42685a5
+    revision: sha256:d0938f4a35247b97d22bf0706f170aca663d113fa1c03d0da3ab8a45bd444bc9
+    digest: sha256:d0938f4a35247b97d22bf0706f170aca663d113fa1c03d0da3ab8a45bd444bc9
+    path: workflows/research-thread-depth.yaml
+  contrarian:
+    id: 5777251e-7ff1-47f7-b182-d040ed9a7a2f
+    revision: sha256:fd4985d35d065d4fd499022e4c72dd0a1360c289e09b7c3077ab7c077c58a78f
+    digest: sha256:fd4985d35d065d4fd499022e4c72dd0a1360c289e09b7c3077ab7c077c58a78f
+    path: workflows/research-thread-contrarian.yaml
 graph:
   tags:
   - research
@@ -107,7 +122,11 @@ graph:
   - id: research-threads
     kind: subworkflow
     label: Explore the framed question across parallel threads
-    workflowDependency: thread
+    templates:
+      breadth: breadth
+      depth: depth
+      contrarian: contrarian
+      general: general
     allowedCoordinator: research-coordinator
     maxChildren: 12
     maxActiveChildren: 3
@@ -141,12 +160,15 @@ graph:
     children:
     - key: breadth
       objective: Map the landscape widely across the framed question before anyone collapses too early into one story.
+      template: breadth
       input: {slug: campaign, angle: breadth}
     - key: depth
       objective: Drill into the highest-value thread from the frame and track mechanisms, not just headlines.
+      template: depth
       input: {slug: campaign, angle: depth}
     - key: contrarian
       objective: Hunt for counterpoints, contradictory evidence, and neglected context that weaken the default story.
+      template: contrarian
       input: {slug: campaign, angle: contrarian}
     position:
       x: 928

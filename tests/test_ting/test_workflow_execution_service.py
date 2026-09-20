@@ -23,6 +23,7 @@ from ting.domain.workflow_execution import (
     ChildExecutionState,
     ChildTaskHandle,
     ChildTaskObservation,
+    ChildTemplate,
     ExecutionBudget,
     ExecutionState,
     ExpansionPolicy,
@@ -70,10 +71,14 @@ def _execution(**changes) -> WorkflowExecution:
         connection_id="content-platform",
         policy=ExpansionPolicy(
             coordinator_id="editorial-coordinator",
-            workflow_dependency="translation-assignment",
-            template_id=uuid4(),
-            template_revision="v1",
-            template_digest=_digest("b"),
+            templates={
+                "translation": ChildTemplate(
+                    dependency_alias="translation-assignment",
+                    id=uuid4(),
+                    revision="v1",
+                    digest=_digest("b"),
+                ),
+            },
             input_schema=_schema(),
             result_schema=_schema(),
             max_children=100,
@@ -100,7 +105,7 @@ def _proposal(execution: WorkflowExecution, key: str, dependencies=()) -> Workfl
         budget_units=10,
         deadline=execution.deadline,
         agent_id="translator-1",
-        skill_id=str(execution.policy.template_id),
+        skill_id=str(execution.policy.sole_template.id),
     )
 
 

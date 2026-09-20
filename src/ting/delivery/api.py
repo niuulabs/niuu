@@ -281,12 +281,12 @@ def create_delivery_executions_router() -> APIRouter:
                         "digest": reserved.workflow_digest,
                     },
                     "workstream_dependency": {
-                        "alias": reserved.policy.workflow_dependency,
-                        "template_id": str(reserved.policy.template_id),
-                        "template_revision": reserved.policy.template_revision,
-                        "template_digest": reserved.policy.template_digest,
+                        "alias": reserved.policy.sole_template.dependency_alias,
+                        "template_id": str(reserved.policy.sole_template.id),
+                        "template_revision": reserved.policy.sole_template.revision,
+                        "template_digest": reserved.policy.sole_template.digest,
                         "agent_id": local_agent_id,
-                        "skill_id": str(reserved.policy.template_id),
+                        "skill_id": str(reserved.policy.sole_template.id),
                         "agent_card_url": card_url,
                     },
                 }

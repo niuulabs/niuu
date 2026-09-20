@@ -58,6 +58,12 @@ system_prompt_template: |
   summary: |
     [One-line summary of the landscape you mapped]
   page_path: research/campaigns/{slug}/notes/breadth.md
+  result:
+    question: [the specific question your breadth pass pursued]
+    findings: [array of the concrete findings this pass surfaced]
+    sources: [array of the source_ids this pass relied on]
+    confidence: high | medium | low
+    openQuestions: [array of what remains open after this pass]
   ---end---
 
 allowed_tools: [mimir_search, mimir_read, mimir_read_source, mimir_ingest, mimir_write, web_search, web_fetch]
@@ -85,6 +91,12 @@ produces:
       type: string
     page_path:
       type: string
+    result:
+      type: object
+      description: >-
+        Required on explored: question, findings, sources, confidence, and
+        openQuestions for this pass, matching the subworkflow node's
+        resultSchema exactly. Omit or leave empty on blocked.
 
 fan_in:
   strategy: merge

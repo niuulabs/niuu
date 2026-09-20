@@ -665,7 +665,7 @@ function TriggerNode({
       </text>
       <text x={x + 14} y={y + 38} fill={C.textMuted} fontSize={8.5} fontFamily="var(--font-mono)">
         {node.kind === 'subworkflow'
-          ? `1–${node.maxChildren} · ${node.workflowDependency}`
+          ? `1–${node.maxChildren} · ${Object.keys(node.templates).join(', ')}`
           : outputEvent}
       </text>
       <circle

@@ -1,0 +1,76 @@
+schema_version: 2
+id: 5777251e-7ff1-47f7-b182-d040ed9a7a2f
+name: Research Thread — Contrarian
+description: Run the contrarian explorer over the framed research question and produce a structured finding for the parent research campaign.
+version: 1.0.0
+persona_dependencies:
+  research-explorer-contrarian:
+    id: research-explorer-contrarian
+    revision: content-3c65cb6ac2f78681
+    digest: sha256:3c65cb6ac2f78681d91148aaf835c8f245fb774b5150b2b21d223008b729f52c
+    path: personas/research-explorer-contrarian.yaml
+workflow_dependencies: {}
+graph:
+  tags:
+    - research
+    - thread
+    - contrarian
+  executionContract: research-thread/v1
+  disabledTools:
+    - workflow_execution_expand
+    - workflow_execution_reconcile
+    - workflow_execution_retry
+    - workflow_execution_cancel
+    - workflow_execution_message
+    - delivery_complete
+    - delivery_record_integration
+    - workflow_execution_wait
+    - delivery_expand_workstreams
+    - delivery_workspace
+    - delivery_forge
+    - delivery_evidence
+  nodes:
+    - id: thread-request
+      kind: trigger
+      label: Begin contrarian exploration thread
+      source: research campaign
+      dispatchEvent: research.framed
+    - id: thread-memory
+      kind: resource
+      label: Research Memory
+      resourceType: mimir
+      bindingMode: registry
+      registryEntryId: mimir-yggdrasil
+      url: https://mimir.yggdrasil.niuu.world/api/v1
+      authRef: integration:volundr
+      role: shared
+      categories: [research, memory, sources]
+      position: {x: 320, y: 480}
+    - id: thread-explore
+      kind: stage
+      label: Hunt for counterpoints
+      executionMode: sequential
+      joinMode: any
+      stageMembers:
+        - personaId: research-explorer-contrarian
+          model: gpt-5.5
+          budget: 18
+          consumesEventTypes: [research.framed]
+    - id: thread-complete
+      kind: end
+      label: Thread finding recorded
+      joinMode: all
+      passingVerdicts: [explored]
+      completionEvent: research.contrarian.explored
+  edges:
+    - {id: thread-request-explore, source: thread-request, target: thread-explore, label: research.framed -> research.framed}
+    - {id: thread-explore-complete, source: thread-explore, target: thread-complete, label: research.contrarian.explored -> research.contrarian.explored}
+  resourceBindings:
+    - id: binding-thread-memory
+      resourceNodeId: thread-memory
+      targetType: workflow
+      targetId: research-thread-contrarian
+      access: read_write
+      writePrefixes:
+        - research/
+      readPriority: 1

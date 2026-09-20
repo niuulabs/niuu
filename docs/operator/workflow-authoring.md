@@ -78,11 +78,58 @@ checks/reviews and their trusted producer IDs. Authors select requirements;
 operators configure the services that produce and authenticate those receipts.
 An ordinary agent's assertion that a check passed is not a signed receipt.
 
-## Declaring a subworkflow node's default children
+## A subworkflow node's templates
 
 A `kind: subworkflow` node fans out into a bounded generation of child
 workflows that a coordinator persona proposes through the expansion route.
-When the author already knows the shape of that fan-out — a fixed set of
+`templates` names every child workflow the node may run, mapping a
+node-local template name to a `workflow_dependencies` alias declared on the
+same document. A node offering exactly one child workflow still declares a
+mapping with one entry — there is no separate single-dependency form:
+
+```yaml
+workflow_dependencies:
+  breadth: {id: ..., revision: ..., digest: ..., path: workflows/research-thread-breadth.yaml}
+  depth: {id: ..., revision: ..., digest: ..., path: workflows/research-thread-depth.yaml}
+  general: {id: ..., revision: ..., digest: ..., path: workflows/research-thread.yaml}
+graph:
+  nodes:
+    - id: research-threads
+      kind: subworkflow
+      templates:
+        breadth: breadth
+        depth: depth
+        general: general
+      allowedCoordinator: research-coordinator
+      maxChildren: 6
+      maxAttempts: 2
+      joinMode: all
+      blockedEvent: research.threads.blocked
+```
+
+`inputSchema` and `resultSchema` stay declared once on the node, not per
+template: every child the node runs, whichever template it uses, validates
+its proposed `input` and completed `result` against the same pair of
+schemas.
+
+Each child proposed through the expansion tool — whether declared up front
+or invented by the coordinator at runtime — names the `template` it runs.
+Omitting `template` is only valid when the node offers exactly one; with
+several on offer, a proposal that omits it is rejected, naming the templates
+it could have chosen from. A child is stamped with its own named template's
+exact `id`/`revision`/`digest`, independent of any sibling running a
+different template in the same generation; a retry keeps the template its
+earlier attempt used.
+
+The execution response and the parent session's launch context both expose a
+`templates` map (name → pinned identity, A2A skill id, and the child
+workflow's own one-line `description`) so a coordinator persona can see what
+the node offers and which `skillId` belongs to which template before it
+decides.
+
+## Declaring a subworkflow node's default children
+
+When the author already knows the shape of a fan-out — a fixed set of
 research threads, review angles, or translation targets — the node can
 declare its own default children instead of leaving every one of them to be
 invented at runtime:
@@ -90,7 +137,7 @@ invented at runtime:
 ```yaml
 - id: research-threads
   kind: subworkflow
-  workflowDependency: thread
+  templates: {breadth: breadth, depth: depth, general: general}
   allowedCoordinator: research-coordinator
   maxChildren: 6
   maxAttempts: 2
@@ -99,16 +146,21 @@ invented at runtime:
   children:
     - key: breadth
       objective: Map the landscape widely across the framed question.
+      template: breadth
       input: {}
     - key: depth
       objective: Drill into the highest-value thread from the frame.
+      template: depth
       dependencies: [breadth]
       input: {}
 ```
 
-Each entry names a unique `key` and a non-empty `objective`; `dependencies`
-must reference other declared keys and must not form a cycle; `input` is
-validated against the node's own `inputSchema` when the node declares one.
+Each entry names a unique `key`, a non-empty `objective`, and (when the node
+offers more than one template) the `template` it runs — omitting it is a
+validation error naming the node's templates when there is more than one.
+`dependencies` must reference other declared keys and must not form a cycle;
+`input` is validated against the node's own `inputSchema` when the node
+declares one.
 
 The engine never expands these on its own. A coordinator persona still calls
 the expansion tool to propose them — verbatim, amended, or alongside

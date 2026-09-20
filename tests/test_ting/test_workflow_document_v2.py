@@ -21,7 +21,7 @@ def payload():
         {
             "id": "children",
             "kind": "subworkflow",
-            "workflowDependency": "worker",
+            "templates": {"worker": "worker"},
             "allowedCoordinator": "reviewer",
             "maxChildren": 100,
             "maxAttempts": 3,
@@ -56,7 +56,7 @@ def payload():
         (("workflow_dependencies", "worker", "path"), "workflows/../secret.yaml", "normalized"),
         (("workflow_dependencies", "worker", "path"), "/workflows/child.yaml", "normalized"),
         (("workflow_dependencies", "worker", "path"), "workflows\\child.yaml", "normalized"),
-        (("graph", "nodes", 1, "workflowDependency"), "missing", "undeclared workflow"),
+        (("graph", "nodes", 1, "templates", "worker"), "missing", "undeclared workflow"),
         (("graph", "nodes", 1, "allowedCoordinator"), "missing", "declared persona"),
         (("graph", "nodes", 1, "inputSchema"), [], "object JSON schema"),
         (("graph", "nodes", 1, "resultSchema", "type"), "string", "object JSON schema"),
@@ -79,6 +79,74 @@ def test_rejects_invalid_child_contracts_at_portable_boundary(path, value, reaso
     target[path[-1]] = value
     with pytest.raises(WorkflowDocumentError, match=reason):
         load_workflow_document(yaml.safe_dump(raw))
+
+
+def multi_template_payload():
+    """A subworkflow node offering two named templates over two dependencies."""
+    child_a = WorkflowDependency(uuid4(), "revision-1", "sha256:" + "b" * 64)
+    child_b = WorkflowDependency(uuid4(), "revision-2", "sha256:" + "c" * 64)
+    document = replace(
+        _workflow(),
+        schema_version=2,
+        workflow_dependencies={"worker-a": child_a, "worker-b": child_b},
+    )
+    raw = workflow_document_payload(document)
+    raw["graph"]["nodes"].append(
+        {
+            "id": "children",
+            "kind": "subworkflow",
+            "templates": {"alpha": "worker-a", "beta": "worker-b"},
+            "allowedCoordinator": "reviewer",
+            "maxChildren": 100,
+            "maxAttempts": 3,
+            "joinMode": "all",
+            "blockedEvent": "children.blocked",
+            "inputSchema": {"type": "object", "properties": {}},
+            "resultSchema": {"type": "object", "properties": {}},
+        }
+    )
+    raw["graph"]["edges"].append(
+        {
+            "id": "children-joined",
+            "source": "children",
+            "target": "review",
+            "label": "children.joined -> children.joined",
+        }
+    )
+    return raw
+
+
+def test_subworkflow_node_templates_must_be_a_non_empty_mapping():
+    raw = payload()
+    raw["graph"]["nodes"][1]["templates"] = {}
+    with pytest.raises(WorkflowDocumentError, match="non-empty mapping"):
+        load_workflow_document(yaml.safe_dump(raw))
+
+
+def test_subworkflow_node_with_several_templates_requires_declared_children_to_name_one():
+    raw = multi_template_payload()
+    raw["graph"]["nodes"][1]["children"] = [{"key": "a", "objective": "Do a", "input": {}}]
+    with pytest.raises(WorkflowDocumentError, match="must name a template"):
+        load_workflow_document(yaml.safe_dump(raw))
+
+
+def test_subworkflow_node_rejects_declared_child_naming_an_unknown_template():
+    raw = multi_template_payload()
+    raw["graph"]["nodes"][1]["children"] = [
+        {"key": "a", "objective": "Do a", "template": "gamma", "input": {}}
+    ]
+    with pytest.raises(WorkflowDocumentError, match="unknown template"):
+        load_workflow_document(yaml.safe_dump(raw))
+
+
+def test_subworkflow_node_accepts_declared_children_each_naming_its_own_template():
+    raw = multi_template_payload()
+    raw["graph"]["nodes"][1]["children"] = [
+        {"key": "a", "objective": "Do a", "template": "alpha", "input": {}},
+        {"key": "b", "objective": "Do b", "template": "beta", "input": {}},
+    ]
+    document = load_workflow_document(yaml.safe_dump(raw))
+    assert workflow_document_payload(document) == raw
 
 
 def test_v1_cannot_smuggle_a_dynamic_child_node():

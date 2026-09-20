@@ -36,11 +36,13 @@ from ting.domain.workflow_document import workflow_document_revision
 from ting.domain.workflow_execution import (
     ExecutionBudget,
     ExecutionConflictError,
+    ExpansionPolicy,
     WorkflowChildExecution,
     WorkflowChildProposal,
     WorkflowExecution,
     WorkflowExecutionError,
     digest_json,
+    resolve_child_template,
 )
 from ting.domain.workflow_execution_trace import (
     project_trace_event,
@@ -261,15 +263,9 @@ def create_workflow_executions_router() -> APIRouter:
                         "revision": reserved.workflow_revision,
                         "digest": reserved.workflow_digest,
                     },
-                    "child_dependency": {
-                        "alias": reserved.policy.workflow_dependency,
-                        "template_id": str(reserved.policy.template_id),
-                        "template_revision": reserved.policy.template_revision,
-                        "template_digest": reserved.policy.template_digest,
-                        "agent_id": local_agent_id,
-                        "skill_id": str(reserved.policy.template_id),
-                        "agent_card_url": card_url,
-                    },
+                    "templates": _launch_template_context(
+                        reserved, agent_id=local_agent_id, card_url=card_url
+                    ),
                 }
             },
             provenance={
@@ -688,8 +684,12 @@ def _trace_workflow(
 
     if child is not None:
         definitions = snapshot.get("workflow_definitions")
+        try:
+            _, child_template = resolve_child_template(execution.policy, child)
+        except WorkflowExecutionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         dependency = (
-            definitions.get(execution.policy.workflow_dependency)
+            definitions.get(child_template.dependency_alias)
             if isinstance(definitions, dict)
             else None
         )
@@ -749,6 +749,7 @@ def _generic_proposal_from_payload(raw: object, *, plan_digest: str) -> Workflow
         deadline=deadline,
         agent_id=str(raw.get("agentId") or ""),
         skill_id=str(raw.get("skillId") or ""),
+        template=str(raw.get("template") or ""),
         context=dict(raw.get("context") or {}),
     )
 
@@ -784,7 +785,7 @@ async def _detail(
     return {
         **_execution_json(execution),
         "join": join,
-        "children": [_child_json(child) for child in children],
+        "children": [_child_json(child, policy=execution.policy) for child in children],
     }
 
 
@@ -812,7 +813,53 @@ def _execution_json(execution: WorkflowExecution) -> dict[str, Any]:
         "updatedAt": execution.updated_at,
         "completedAt": execution.completed_at,
         "declaredChildren": _declared_children(execution),
+        "templates": _template_descriptions(execution),
     }
+
+
+def _launch_template_context(
+    execution: WorkflowExecution, *, agent_id: str, card_url: str
+) -> dict[str, Any]:
+    """Give the coordinator each named template's identity and A2A skill id.
+
+    A node offering several templates hands the coordinator one entry per
+    template so it can pick the right `skillId` for whichever `template` name
+    it proposes for a child — see `_template_descriptions` for the read-only
+    projection used once the execution already exists.
+    """
+    descriptions = _template_descriptions(execution)
+    return {
+        name: {
+            "alias": template.dependency_alias,
+            "template_id": str(template.id),
+            "template_revision": template.revision,
+            "template_digest": template.digest,
+            "agent_id": agent_id,
+            "skill_id": str(template.id),
+            "agent_card_url": card_url,
+            "description": descriptions.get(name, {}).get("description", ""),
+        }
+        for name, template in execution.policy.templates.items()
+    }
+
+
+def _template_descriptions(execution: WorkflowExecution) -> dict[str, dict[str, Any]]:
+    """Project each named template's identity and its child workflow's own description."""
+    snapshot = execution.workflow_snapshot
+    definitions = snapshot.get("workflow_definitions") if isinstance(snapshot, dict) else None
+    definitions = definitions if isinstance(definitions, dict) else {}
+    result: dict[str, dict[str, Any]] = {}
+    for name, template in execution.policy.templates.items():
+        aggregate = definitions.get(template.dependency_alias)
+        document = aggregate.get("document") if isinstance(aggregate, dict) else None
+        description = str(document.get("description") or "") if isinstance(document, dict) else ""
+        result[name] = {
+            "templateId": str(template.id),
+            "templateRevision": template.revision,
+            "templateDigest": template.digest,
+            "description": description,
+        }
+    return result
 
 
 def _declared_children(execution: WorkflowExecution) -> list[dict[str, Any]] | None:
@@ -844,13 +891,22 @@ def _declared_children(execution: WorkflowExecution) -> list[dict[str, Any]] | N
     return [dict(child) for child in children if isinstance(child, dict)]
 
 
-def _child_json(child: WorkflowChildExecution) -> dict[str, Any]:
+def _child_json(
+    child: WorkflowChildExecution, *, policy: ExpansionPolicy | None = None
+) -> dict[str, Any]:
+    template_name = ""
+    if policy is not None:
+        try:
+            template_name, _ = resolve_child_template(policy, child)
+        except WorkflowExecutionError:
+            template_name = ""
     return {
         "childId": str(child.id),
         "childKey": child.key,
         "attempt": child.attempt,
         "generation": child.generation,
         "state": child.state.value,
+        "template": template_name,
         "dependencies": list(child.dependencies),
         "input": child.input,
         "taskHandle": (

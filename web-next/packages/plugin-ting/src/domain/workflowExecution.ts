@@ -165,6 +165,8 @@ export interface WorkflowChildExecution {
   attempt: number;
   generation?: number;
   state: string;
+  /** Name of the node's own `templates` entry this child was stamped from. */
+  template?: string;
   dependencies: string[];
   input: Record<string, unknown>;
   taskHandle: { agentId: string; taskId: string; contextId?: string } | null;
@@ -225,6 +227,15 @@ export interface WorkflowExecution {
   updatedAt: string;
   deadline?: string;
   completedAt?: string | null;
+  /**
+   * The expanding node's own named child-workflow templates, keyed by name,
+   * each with its exact pin and the child workflow's own one-line
+   * description — see `templates` on the `kind: subworkflow` node.
+   */
+  templates?: Record<
+    string,
+    { templateId: string; templateRevision: string; templateDigest: string; description: string }
+  >;
 }
 
 /**
