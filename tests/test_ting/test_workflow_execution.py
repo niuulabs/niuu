@@ -161,7 +161,7 @@ class EditorialExecutionRepository(
     async def record_observation(self, child, observation):
         raise NotImplementedError
 
-    async def record_evidence_report(self, child_id, report):
+    async def record_gate_report(self, child_id, report):
         raise NotImplementedError
 
     async def record_reconcile_error(

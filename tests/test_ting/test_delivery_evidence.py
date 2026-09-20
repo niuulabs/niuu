@@ -11,9 +11,9 @@ import respx
 
 from niuu.domain.delivery import CandidateEvidence, EvidenceValidationReport, evidence_digest
 from tests.test_ting.test_delivery_execution import _execution, _proposal
-from ting.adapters.child_evidence import ForgeChildEvidenceVerifier
 from ting.adapters.volundr_http import VolundrHTTPAdapter
 from ting.delivery.domain import make_children
+from ting.delivery.evidence import ForgeChildEvidenceVerifier
 from ting.domain.workflow_execution import ChildExecutionState
 
 

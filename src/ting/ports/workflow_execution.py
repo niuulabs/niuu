@@ -164,8 +164,8 @@ class WorkflowExecutionRepository[
         """Persist one idempotent remote task observation."""
 
     @abstractmethod
-    async def record_evidence_report(self, child_id: UUID, report: dict) -> None:
-        """Persist the trusted verifier decision and manifest for audit."""
+    async def record_gate_report(self, child_id: UUID, report: dict) -> None:
+        """Persist the trusted result-gate decision and manifest for audit."""
 
     @abstractmethod
     async def record_reconcile_error(

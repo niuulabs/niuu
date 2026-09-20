@@ -1,4 +1,4 @@
-"""Validate child evidence through its configured authenticated Forge connection."""
+"""Validate delivery child evidence through its configured authenticated Forge connection."""
 
 import hashlib
 import json

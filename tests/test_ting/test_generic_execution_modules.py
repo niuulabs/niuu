@@ -31,8 +31,6 @@ _DELIVERY_CONCEPT = re.compile(
 
 BURN_DOWN: frozenset[str] = frozenset(
     {
-        "adapters/child_evidence.py",
-        "adapters/postgres_workflow_executions.py",
         "api/workflow_executions.py",
     }
 )

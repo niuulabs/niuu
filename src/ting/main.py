@@ -27,7 +27,6 @@ from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ravn.ports.persona import PersonaPort
 from ting.adapters.a2a_push_dispatcher import A2APushDispatcher
 from ting.adapters.attested_reviews import TrustedChildReviewAttestor
-from ting.adapters.child_evidence import ForgeChildEvidenceVerifier
 from ting.adapters.delivery_integration_reviews import TrustedIntegrationReviewProjector
 from ting.adapters.github_git import GitHubGitAdapter
 from ting.adapters.guild_instances import GuildInstanceRegistryClient
@@ -44,7 +43,6 @@ from ting.adapters.postgres_notification_subscriptions import (
 )
 from ting.adapters.postgres_sagas import PostgresSagaRepository
 from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRepository
-from ting.adapters.postgres_workflow_executions import PostgresDeliveryExecutionRepository
 from ting.adapters.tracker_factory import TrackerAdapterFactory
 from ting.adapters.volundr_factory import VolundrAdapterFactory
 from ting.adapters.workflow_execution_worker import WorkflowExecutionWorker
@@ -95,7 +93,9 @@ from ting.api.workflow_executions import (
 )
 from ting.api.workflows import create_workflows_router, resolve_workflow_repo
 from ting.config import Settings
+from ting.delivery.evidence import ForgeChildEvidenceVerifier
 from ting.delivery.ports import DeliveryExecutionRepository
+from ting.delivery.postgres import PostgresDeliveryExecutionRepository
 from ting.delivery.service import DeliveryExecutionService
 from ting.domain.services.activity_subscriber import SessionActivitySubscriber
 from ting.domain.services.dispatch_service import (

@@ -485,8 +485,6 @@ data:
         ON sagas(workflow_id)
         WHERE workflow_id IS NOT NULL;
 
-
-
   000025_legacy_schema_compat.down.sql: |
     -- Best-effort rollback for the legacy Ting schema compatibility rename.
 
@@ -1466,16 +1464,6 @@ data:
         ON a2a_push_notification_configs (next_attempt_at)
         WHERE pending_event IS NOT NULL;
 
-
-  000033_pat_authority.up.sql: |
-    -- Existing unattributed PATs remain recorded but are not valid credentials.
-    -- Rotate them through the authenticated issuance path to establish tenant/scope metadata.
-    ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
-    ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS scopes TEXT[];
-    ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
-    CREATE INDEX IF NOT EXISTS idx_pats_tenant_owner ON personal_access_tokens(tenant_id, owner_id);
-
-
   000033_pat_authority.down.sql: |
     -- Revoke scoped credentials before older code can treat them as unrestricted.
     -- Preserve the audit record; token_hash no longer matches any presented JWT.
@@ -1495,6 +1483,21 @@ data:
     ALTER TABLE personal_access_tokens DROP COLUMN IF EXISTS scopes;
     ALTER TABLE personal_access_tokens DROP COLUMN IF EXISTS tenant_id;
 
+  000033_pat_authority.up.sql: |
+    -- Existing unattributed PATs remain recorded but are not valid credentials.
+    -- Rotate them through the authenticated issuance path to establish tenant/scope metadata.
+    ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS scopes TEXT[];
+    ALTER TABLE personal_access_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+    CREATE INDEX IF NOT EXISTS idx_pats_tenant_owner ON personal_access_tokens(tenant_id, owner_id);
+
+  000034_resource_tenants.down.sql: |
+    DROP INDEX IF EXISTS idx_workflow_campaigns_tenant_owner;
+    DROP INDEX IF EXISTS idx_workflows_tenant_owner;
+    DROP INDEX IF EXISTS idx_sagas_tenant_owner;
+    ALTER TABLE workflow_campaigns DROP COLUMN IF EXISTS tenant_id;
+    ALTER TABLE workflows DROP COLUMN IF EXISTS tenant_id;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS tenant_id;
 
   000034_resource_tenants.up.sql: |
     -- Existing records have no authoritative tenant attribution. Do not infer it
@@ -1506,15 +1509,18 @@ data:
     CREATE INDEX IF NOT EXISTS idx_workflows_tenant_owner ON workflows(tenant_id, owner_id);
     CREATE INDEX IF NOT EXISTS idx_workflow_campaigns_tenant_owner ON workflow_campaigns(tenant_id, owner_id);
 
-
-  000034_resource_tenants.down.sql: |
-    DROP INDEX IF EXISTS idx_workflow_campaigns_tenant_owner;
-    DROP INDEX IF EXISTS idx_workflows_tenant_owner;
-    DROP INDEX IF EXISTS idx_sagas_tenant_owner;
-    ALTER TABLE workflow_campaigns DROP COLUMN IF EXISTS tenant_id;
-    ALTER TABLE workflows DROP COLUMN IF EXISTS tenant_id;
-    ALTER TABLE sagas DROP COLUMN IF EXISTS tenant_id;
-
+  000035_tracker_connections.down.sql: |
+    DROP INDEX IF EXISTS idx_run_session_messages_connection_tracker;
+    DROP INDEX IF EXISTS idx_run_confidence_events_connection_tracker;
+    DROP INDEX IF EXISTS idx_run_progress_connection_session;
+    DROP INDEX IF EXISTS idx_run_progress_connection_status;
+    ALTER TABLE run_progress DROP CONSTRAINT IF EXISTS run_progress_pkey;
+    ALTER TABLE run_progress ADD CONSTRAINT run_progress_pkey PRIMARY KEY (tracker_id);
+    ALTER TABLE run_session_messages DROP COLUMN IF EXISTS tracker_connection_id;
+    ALTER TABLE run_confidence_events DROP COLUMN IF EXISTS tracker_connection_id;
+    ALTER TABLE run_progress DROP COLUMN IF EXISTS tracker_connection_id;
+    DROP INDEX IF EXISTS idx_sagas_tracker_connection;
+    ALTER TABLE sagas DROP COLUMN IF EXISTS tracker_connection_id;
 
   000035_tracker_connections.up.sql: |
     -- Bind imported sagas to a specific integration connection. Provider type is
@@ -1546,20 +1552,10 @@ data:
     CREATE INDEX IF NOT EXISTS idx_run_session_messages_connection_tracker
         ON run_session_messages (tracker_connection_id, tracker_id);
 
-
-  000035_tracker_connections.down.sql: |
-    DROP INDEX IF EXISTS idx_run_session_messages_connection_tracker;
-    DROP INDEX IF EXISTS idx_run_confidence_events_connection_tracker;
-    DROP INDEX IF EXISTS idx_run_progress_connection_session;
-    DROP INDEX IF EXISTS idx_run_progress_connection_status;
-    ALTER TABLE run_progress DROP CONSTRAINT IF EXISTS run_progress_pkey;
-    ALTER TABLE run_progress ADD CONSTRAINT run_progress_pkey PRIMARY KEY (tracker_id);
-    ALTER TABLE run_session_messages DROP COLUMN IF EXISTS tracker_connection_id;
-    ALTER TABLE run_confidence_events DROP COLUMN IF EXISTS tracker_connection_id;
-    ALTER TABLE run_progress DROP COLUMN IF EXISTS tracker_connection_id;
-    DROP INDEX IF EXISTS idx_sagas_tracker_connection;
-    ALTER TABLE sagas DROP COLUMN IF EXISTS tracker_connection_id;
-
+  000036_workflow_portable_contract.down.sql: |
+    ALTER TABLE workflows DROP COLUMN IF EXISTS requirements_json;
+    ALTER TABLE workflows DROP COLUMN IF EXISTS persona_definitions_json;
+    ALTER TABLE workflows DROP COLUMN IF EXISTS persona_dependencies_json;
 
   000036_workflow_portable_contract.up.sql: |
     ALTER TABLE workflows
@@ -1569,15 +1565,19 @@ data:
     ALTER TABLE workflows
         ADD COLUMN IF NOT EXISTS requirements_json JSONB NOT NULL DEFAULT '[]'::jsonb;
 
-
-  000036_workflow_portable_contract.down.sql: |
-    ALTER TABLE workflows DROP COLUMN IF EXISTS requirements_json;
-    ALTER TABLE workflows DROP COLUMN IF EXISTS persona_definitions_json;
-    ALTER TABLE workflows DROP COLUMN IF EXISTS persona_dependencies_json;
-
+  000037_workflow_executions.down.sql: |
+    DROP TABLE IF EXISTS a2a_launch_reservations;
+    DROP TABLE IF EXISTS workflow_child_messages;
+    DROP TABLE IF EXISTS workflow_child_events;
+    DROP TABLE IF EXISTS workflow_execution_children;
+    DROP TABLE IF EXISTS workflow_execution_generations;
+    DROP TABLE IF EXISTS workflow_executions;
 
   000037_workflow_executions.up.sql: |
-    -- Durable parent/child ledger for developer-delivery workflow expansion.
+    -- Durable parent/child ledger for dynamically expanded workflow executions.
+    -- Domain-neutral only: a workflow that adds its own persisted fields (code
+    -- delivery's repository/base/merge state, for example) layers an extension
+    -- table over this ledger (see 000039_delivery_executions).
 
     CREATE TABLE IF NOT EXISTS workflow_executions (
         id UUID PRIMARY KEY,
@@ -1588,9 +1588,6 @@ data:
         workflow_id UUID NOT NULL,
         workflow_revision TEXT NOT NULL,
         workflow_digest TEXT NOT NULL,
-        repository TEXT NOT NULL,
-        base_ref TEXT NOT NULL,
-        base_sha TEXT NOT NULL,
         parent_session_id TEXT NOT NULL,
         parent_node_id TEXT NOT NULL,
         connection_id TEXT NOT NULL DEFAULT '',
@@ -1603,9 +1600,18 @@ data:
         suspension_reason TEXT NOT NULL DEFAULT '',
         cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
         policy JSONB NOT NULL,
+        input JSONB NOT NULL DEFAULT '{}'::jsonb,
         revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
         launch_key TEXT NOT NULL DEFAULT '',
         launch_digest TEXT NOT NULL DEFAULT '',
+        plan_revision TEXT NOT NULL DEFAULT '',
+        blocker_revision BIGINT NOT NULL DEFAULT 0,
+        blocker_notified_revision BIGINT NOT NULL DEFAULT 0,
+        completed_at TIMESTAMPTZ,
+        parent_stop_requested_at TIMESTAMPTZ,
+        parent_stopped_at TIMESTAMPTZ,
+        parent_stop_attempts INTEGER NOT NULL DEFAULT 0 CHECK (parent_stop_attempts >= 0),
+        parent_stop_error TEXT NOT NULL DEFAULT '',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         CONSTRAINT workflow_executions_state_check CHECK (
@@ -1625,6 +1631,12 @@ data:
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_executions_launch_key
         ON workflow_executions (owner_id, tenant_id, launch_key)
         WHERE launch_key <> '';
+    CREATE INDEX IF NOT EXISTS idx_workflow_executions_parent_session
+        ON workflow_executions (owner_id, parent_session_id)
+        WHERE state NOT IN ('canceled', 'completed', 'failed');
+    CREATE INDEX IF NOT EXISTS idx_workflow_executions_parent_stop_pending
+        ON workflow_executions (parent_stop_requested_at, id)
+        WHERE parent_stop_requested_at IS NOT NULL AND parent_stopped_at IS NULL;
 
     CREATE TABLE IF NOT EXISTS workflow_execution_generations (
         execution_id UUID NOT NULL REFERENCES workflow_executions(id) ON DELETE CASCADE,
@@ -1643,7 +1655,6 @@ data:
         attempt INTEGER NOT NULL CHECK (attempt > 0),
         state TEXT NOT NULL,
         dependencies TEXT[] NOT NULL DEFAULT '{}',
-        requirement_ids TEXT[] NOT NULL,
         objective TEXT NOT NULL,
         template_id UUID NOT NULL,
         template_revision TEXT NOT NULL,
@@ -1651,8 +1662,6 @@ data:
         plan_digest TEXT NOT NULL,
         input_digest TEXT NOT NULL,
         input JSONB NOT NULL,
-        repository TEXT NOT NULL,
-        base_sha TEXT NOT NULL,
         budget_units BIGINT NOT NULL CHECK (budget_units > 0),
         deadline TIMESTAMPTZ NOT NULL,
         agent_id TEXT NOT NULL,
@@ -1663,16 +1672,19 @@ data:
         context_id TEXT NOT NULL DEFAULT '',
         result JSONB,
         artifacts JSONB NOT NULL DEFAULT '[]'::jsonb,
-        workspace JSONB,
-        evidence_report JSONB,
-        evidence_validated_at TIMESTAMPTZ,
+        gate_report JSONB,
+        gate_validated_at TIMESTAMPTZ,
         failure_kind TEXT,
         error TEXT NOT NULL DEFAULT '',
+        pending_questions JSONB NOT NULL DEFAULT '[]'::jsonb,
+        pending_gates JSONB NOT NULL DEFAULT '[]'::jsonb,
         lease_owner TEXT NOT NULL DEFAULT '',
         lease_token UUID,
         fencing_generation BIGINT NOT NULL DEFAULT 0 CHECK (fencing_generation >= 0),
         lease_expires_at TIMESTAMPTZ,
         remote_observed_at TIMESTAMPTZ,
+        last_polled_at TIMESTAMPTZ,
+        reconcile_failure_count INTEGER NOT NULL DEFAULT 0 CHECK (reconcile_failure_count >= 0),
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         UNIQUE (execution_id, generation, child_key, attempt),
@@ -1747,13 +1759,10 @@ data:
         ON a2a_launch_reservations (state, lease_expires_at)
         WHERE state IN ('reserved', 'launching');
 
-  000037_workflow_executions.down.sql: |
-    DROP TABLE IF EXISTS a2a_launch_reservations;
-    DROP TABLE IF EXISTS workflow_child_messages;
-    DROP TABLE IF EXISTS workflow_child_events;
-    DROP TABLE IF EXISTS workflow_execution_children;
-    DROP TABLE IF EXISTS workflow_execution_generations;
-    DROP TABLE IF EXISTS workflow_executions;
+  000038_workflow_dependencies.down.sql: |
+    ALTER TABLE workflows DROP COLUMN IF EXISTS workflow_definitions_json;
+    ALTER TABLE workflows DROP COLUMN IF EXISTS workflow_dependencies_json;
+    ALTER TABLE workflows DROP COLUMN IF EXISTS schema_version;
 
   000038_workflow_dependencies.up.sql: |
     ALTER TABLE workflows
@@ -1763,79 +1772,34 @@ data:
     ALTER TABLE workflows
         ADD COLUMN IF NOT EXISTS workflow_definitions_json JSONB NOT NULL DEFAULT '{}'::jsonb;
 
-  000038_workflow_dependencies.down.sql: |
-    ALTER TABLE workflows DROP COLUMN IF EXISTS workflow_definitions_json;
-    ALTER TABLE workflows DROP COLUMN IF EXISTS workflow_dependencies_json;
-    ALTER TABLE workflows DROP COLUMN IF EXISTS schema_version;
+  000039_delivery_executions.down.sql: |
+    DROP TABLE IF EXISTS delivery_executions;
 
-  000039_delivery_completion.up.sql: |
-    ALTER TABLE workflow_executions ADD COLUMN IF NOT EXISTS merge_receipt JSONB;
-    ALTER TABLE workflow_executions ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
-    ALTER TABLE workflow_executions ADD COLUMN IF NOT EXISTS workflow_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
+  000039_delivery_executions.up.sql: |
+    -- Code delivery's own extension of the generic workflow execution ledger:
+    -- repository/base identity, the merge receipt, and the integration
+    -- candidate/review trail. A delivery child's own repository/base/workspace
+    -- fields have no columns of their own; they live in the generic child's
+    -- `input` JSON (see ting.delivery.domain.validate_expansion).
 
-  000039_delivery_completion.down.sql: |
-    ALTER TABLE workflow_executions DROP COLUMN IF EXISTS workflow_snapshot;
-    ALTER TABLE workflow_executions DROP COLUMN IF EXISTS completed_at;
-    ALTER TABLE workflow_executions DROP COLUMN IF EXISTS merge_receipt;
+    CREATE TABLE IF NOT EXISTS delivery_executions (
+        execution_id UUID PRIMARY KEY REFERENCES workflow_executions(id) ON DELETE CASCADE,
+        repository TEXT NOT NULL,
+        base_ref TEXT NOT NULL,
+        base_sha TEXT NOT NULL,
+        workflow_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+        merge_receipt JSONB,
+        integration_receipts JSONB NOT NULL DEFAULT '[]'::jsonb,
+        integration_allocation JSONB,
+        integration_candidate JSONB,
+        integration_review_receipt JSONB,
+        integration_review_event_id TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
 
-  000040_delivery_integration_reviews.up.sql: |
-    ALTER TABLE workflow_executions
-        ADD COLUMN IF NOT EXISTS integration_receipts JSONB NOT NULL DEFAULT '[]'::jsonb,
-        ADD COLUMN IF NOT EXISTS integration_allocation JSONB,
-        ADD COLUMN IF NOT EXISTS integration_candidate JSONB,
-        ADD COLUMN IF NOT EXISTS integration_review_receipt JSONB,
-        ADD COLUMN IF NOT EXISTS integration_review_event_id TEXT NOT NULL DEFAULT '';
-
-    CREATE INDEX IF NOT EXISTS idx_workflow_executions_parent_session
-        ON workflow_executions (owner_id, parent_session_id)
-        WHERE state NOT IN ('canceled', 'completed', 'failed');
-
-  000040_delivery_integration_reviews.down.sql: |
-    DROP INDEX IF EXISTS idx_workflow_executions_parent_session;
-
-    ALTER TABLE workflow_executions
-        DROP COLUMN IF EXISTS integration_review_event_id,
-        DROP COLUMN IF EXISTS integration_review_receipt,
-        DROP COLUMN IF EXISTS integration_candidate,
-        DROP COLUMN IF EXISTS integration_allocation,
-        DROP COLUMN IF EXISTS integration_receipts;
-
-  000041_workflow_blocker_notifications.up.sql: |
-    ALTER TABLE workflow_executions
-        ADD COLUMN IF NOT EXISTS blocker_revision BIGINT NOT NULL DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS blocker_notified_revision BIGINT NOT NULL DEFAULT 0;
-
-    ALTER TABLE workflow_execution_children
-        ADD COLUMN IF NOT EXISTS last_polled_at TIMESTAMPTZ;
-
-    UPDATE workflow_executions execution
-    SET blocker_revision = 1
-    WHERE blocker_revision = 0
-      AND execution.state NOT IN ('canceled', 'completed', 'failed')
-      AND EXISTS (
-          SELECT 1
-          FROM workflow_execution_children child
-          WHERE child.execution_id = execution.id
-            AND child.state IN ('blocked', 'failed')
-      );
-
-  000041_workflow_blocker_notifications.down.sql: |
-    ALTER TABLE workflow_execution_children
-        DROP COLUMN IF EXISTS last_polled_at;
-
-    ALTER TABLE workflow_executions
-        DROP COLUMN IF EXISTS blocker_notified_revision,
-        DROP COLUMN IF EXISTS blocker_revision;
-
-  000042_workflow_child_pending_input.up.sql: |
-    ALTER TABLE workflow_execution_children
-        ADD COLUMN IF NOT EXISTS pending_questions JSONB NOT NULL DEFAULT '[]'::jsonb,
-        ADD COLUMN IF NOT EXISTS pending_gates JSONB NOT NULL DEFAULT '[]'::jsonb;
-
-  000042_workflow_child_pending_input.down.sql: |
-    ALTER TABLE workflow_execution_children
-        DROP COLUMN IF EXISTS pending_gates,
-        DROP COLUMN IF EXISTS pending_questions;
+  000043_workflow_waits.down.sql: |
+    DROP TABLE IF EXISTS workflow_waits;
 
   000043_workflow_waits.up.sql: |
     CREATE TABLE IF NOT EXISTS workflow_waits (
@@ -1870,55 +1834,5 @@ data:
     CREATE INDEX IF NOT EXISTS idx_workflow_waits_due
         ON workflow_waits (state, next_poll_at, lease_expires_at)
         WHERE state IN ('pending', 'ready', 'failed');
-
-  000043_workflow_waits.down.sql: |
-    DROP TABLE IF EXISTS workflow_waits;
-
-  000044_workflow_plan_revision.up.sql: |
-    ALTER TABLE workflow_executions
-        ADD COLUMN IF NOT EXISTS plan_revision TEXT NOT NULL DEFAULT '';
-
-  000044_workflow_plan_revision.down.sql: |
-    ALTER TABLE workflow_executions
-        DROP COLUMN IF EXISTS plan_revision;
-
-  000045_workflow_parent_stop_cleanup.up.sql: |
-    ALTER TABLE workflow_executions
-        ADD COLUMN IF NOT EXISTS parent_stop_requested_at TIMESTAMPTZ,
-        ADD COLUMN IF NOT EXISTS parent_stopped_at TIMESTAMPTZ;
-
-    CREATE INDEX IF NOT EXISTS idx_workflow_executions_parent_stop_pending
-        ON workflow_executions (parent_stop_requested_at, id)
-        WHERE parent_stop_requested_at IS NOT NULL AND parent_stopped_at IS NULL;
-
-  000045_workflow_parent_stop_cleanup.down.sql: |
-    DROP INDEX IF EXISTS idx_workflow_executions_parent_stop_pending;
-
-    ALTER TABLE workflow_executions
-        DROP COLUMN IF EXISTS parent_stopped_at,
-        DROP COLUMN IF EXISTS parent_stop_requested_at;
-
-  000046_workflow_reconcile_failure_tracking.up.sql: |
-    -- Durable, visible failure tracking so one poisoned reconcile item cannot
-    -- starve the queue: a consecutive-failure counter per child (reset on a
-    -- successful poll, terminal-failed once it exceeds the configured maximum),
-    -- and an attempt/error trail for the durable parent-stop cleanup loop.
-
-    ALTER TABLE workflow_execution_children
-        ADD COLUMN IF NOT EXISTS reconcile_failure_count INTEGER NOT NULL DEFAULT 0
-            CHECK (reconcile_failure_count >= 0);
-
-    ALTER TABLE workflow_executions
-        ADD COLUMN IF NOT EXISTS parent_stop_attempts INTEGER NOT NULL DEFAULT 0
-            CHECK (parent_stop_attempts >= 0),
-        ADD COLUMN IF NOT EXISTS parent_stop_error TEXT NOT NULL DEFAULT '';
-
-  000046_workflow_reconcile_failure_tracking.down.sql: |
-    ALTER TABLE workflow_executions
-        DROP COLUMN IF EXISTS parent_stop_error,
-        DROP COLUMN IF EXISTS parent_stop_attempts;
-
-    ALTER TABLE workflow_execution_children
-        DROP COLUMN IF EXISTS reconcile_failure_count;
 
 {{- end }}

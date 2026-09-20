@@ -62,6 +62,25 @@ def _schema() -> dict:
     }
 
 
+def _input_schema() -> dict:
+    """The default node input schema: the base attempt shape plus the delivery
+    fields ``validate_expansion`` now requires in every workstream's ``input``
+    (the ledger derives a child's repository/base/workspace/requirements from
+    this JSON alone, so the node schema must allow them)."""
+    return {
+        "type": "object",
+        "properties": {
+            "attemptId": {"type": "string", "minLength": 1},
+            "requirementIds": {"type": "array", "items": {"type": "string"}},
+            "repository": {"type": "string"},
+            "baseSha": {"type": "string"},
+            "workspace": {"type": "object", "properties": {}, "additionalProperties": True},
+        },
+        "required": ["attemptId", "requirementIds", "repository", "baseSha", "workspace"],
+        "additionalProperties": False,
+    }
+
+
 def _execution(**changes) -> DeliveryExecution:
     now = datetime.now(UTC)
     value = DeliveryExecution(
@@ -85,7 +104,7 @@ def _execution(**changes) -> DeliveryExecution:
             template_id=uuid4(),
             template_revision="v1",
             template_digest=_digest("b"),
-            input_schema=_schema(),
+            input_schema=_input_schema(),
             result_schema=_schema(),
             max_children=100,
             max_attempts=3,
@@ -100,7 +119,30 @@ def _execution(**changes) -> DeliveryExecution:
 
 
 def _proposal(execution: DeliveryExecution, key: str, dependencies=()) -> WorkstreamProposal:
-    payload = {"attemptId": f"input-{key}"}
+    workspace = {
+        "allocation_id": f"allocation-{key}",
+        "campaign_id": str(execution.id),
+        "workstream_key": key,
+        "repository": execution.repository,
+        "workspace_path": f"/worktrees/{key}",
+        "repository_path": execution.repository,
+        "base_sha": execution.base_sha,
+        "branch_name": f"workstream/{key}",
+        "worker_id": f"worker-{key}",
+        "allowed_paths": ["src"],
+        "test_contract_ids": [],
+    }
+    # The ledger derives a child's repository/base/workspace/requirements
+    # solely from `input` (there are no dedicated columns for them), so the
+    # default proposal used across tests carries the same required keys a
+    # real coordinator must supply.
+    payload = {
+        "attemptId": f"input-{key}",
+        "requirementIds": [f"REQ-{key}"],
+        "repository": execution.repository,
+        "baseSha": execution.base_sha,
+        "workspace": workspace,
+    }
     return WorkstreamProposal(
         key=key,
         objective=f"Implement {key}",
@@ -115,19 +157,7 @@ def _proposal(execution: DeliveryExecution, key: str, dependencies=()) -> Workst
         deadline=execution.deadline,
         agent_id="agent-1",
         skill_id=str(execution.policy.template_id),
-        workspace={
-            "allocation_id": f"allocation-{key}",
-            "campaign_id": str(execution.id),
-            "workstream_key": key,
-            "repository": execution.repository,
-            "workspace_path": f"/worktrees/{key}",
-            "repository_path": execution.repository,
-            "base_sha": execution.base_sha,
-            "branch_name": f"workstream/{key}",
-            "worker_id": f"worker-{key}",
-            "allowed_paths": ["src"],
-            "test_contract_ids": [],
-        },
+        workspace=workspace,
     )
 
 
@@ -431,7 +461,7 @@ class MemoryRepository(DeliveryExecutionRepository):
         self.children: list[ChildExecution] = []
         self.events: set[str] = set()
         self.messages: dict[str, ChildMessage] = {}
-        self.evidence_reports: dict = {}
+        self.gate_reports: dict = {}
         self.sealed = False
         self.reconcile_failures: dict = {}
         self.parent_stop_attempts = 0
@@ -684,8 +714,8 @@ class MemoryRepository(DeliveryExecutionRepository):
             )
         return updated
 
-    async def record_evidence_report(self, child_id, report):
-        self.evidence_reports[child_id] = report
+    async def record_gate_report(self, child_id, report):
+        self.gate_reports[child_id] = report
 
     async def record_reconcile_error(
         self, child_id, *, error, failure_kind, max_consecutive_failures
@@ -2636,7 +2666,7 @@ async def test_evidence_veto_blocks_join_and_is_persisted() -> None:
     )
     await service.reconcile(execution.id)
     assert repository.children[0].failure_kind.value == "policy_rejected"
-    assert repository.evidence_reports[repository.children[0].id]["accepted"] is False
+    assert repository.gate_reports[repository.children[0].id]["accepted"] is False
 
 
 @pytest.mark.asyncio

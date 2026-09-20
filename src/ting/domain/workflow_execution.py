@@ -174,6 +174,7 @@ class WorkflowExecution:
     blocker_revision: int = 0
     blocker_notified_revision: int = 0
     completed_at: datetime | None = None
+    input: dict[str, Any] = field(default_factory=dict)
     context: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -264,6 +265,8 @@ class WorkflowChildExecution:
     context_id: str = ""
     result: dict[str, Any] | None = None
     artifacts: tuple[dict[str, Any], ...] = ()
+    gate_report: dict[str, Any] | None = None
+    gate_validated_at: datetime | None = None
     failure_kind: str | None = None
     pending_questions: tuple[ChildPendingQuestion, ...] = ()
     pending_gates: tuple[ChildPendingGate, ...] = ()

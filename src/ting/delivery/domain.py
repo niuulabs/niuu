@@ -74,14 +74,19 @@ class WorkstreamProposal(WorkflowChildProposal):
 
 @dataclass(frozen=True, kw_only=True)
 class ChildExecution(WorkflowChildExecution):
-    """Code delivery child attempt with workspace and evidence state."""
+    """Code delivery child attempt with workspace and requirement state.
+
+    ``requirement_ids``, ``repository``, ``base_sha``, and ``workspace`` have
+    no columns of their own: the ledger persists only the generic ``input``
+    JSON, and the delivery repository derives these fields from it on every
+    read (see ``validate_expansion`` below, which requires the same keys in
+    every workstream's ``input``).
+    """
 
     requirement_ids: tuple[str, ...]
     repository: str
     base_sha: str
     workspace: dict[str, Any] | None = None
-    evidence_report: dict[str, Any] | None = None
-    evidence_validated_at: datetime | None = None
 
 
 def validate_expansion(
@@ -114,29 +119,45 @@ def validate_expansion(
             raise WorkflowExecutionError(
                 f"workstream {item.key!r} workspace is not bound to this execution and base"
             )
-        input_bindings: tuple[tuple[str, object, object], ...] = (
-            ("childKey", item.input.get("childKey"), item.key),
-            ("objective", item.input.get("objective"), item.objective),
+        # The ledger drops the dedicated repository/base_sha/workspace/requirementIds
+        # columns and derives them solely from the generic child `input` JSON on
+        # every read, so these keys must always be present and must agree with
+        # the typed proposal fields — never merely checked when supplied.
+        required_input_fields: tuple[tuple[str, object, object], ...] = (
             ("requirementIds", item.input.get("requirementIds"), list(item.requirement_ids)),
             ("repository", item.input.get("repository"), item.repository),
             ("baseSha", item.input.get("baseSha"), item.base_sha),
-            ("dependencies", item.input.get("dependencies"), list(item.dependencies)),
         )
-        for field_name, actual, expected in input_bindings:
-            if field_name in item.input and actual != expected:
+        for field_name, actual, expected in required_input_fields:
+            if field_name not in item.input:
+                raise WorkflowExecutionError(
+                    f"workstream {item.key!r} input must include {field_name!r}"
+                )
+            if actual != expected:
                 raise WorkflowExecutionError(
                     f"workstream {item.key!r} input {field_name} differs from its proposal"
                 )
-        if "workspace" in item.input:
-            try:
-                input_allocation = WorkspaceAllocation.model_validate(item.input["workspace"])
-            except ValidationError as exc:
+        if "workspace" not in item.input:
+            raise WorkflowExecutionError(f"workstream {item.key!r} input must include 'workspace'")
+        try:
+            input_allocation = WorkspaceAllocation.model_validate(item.input["workspace"])
+        except ValidationError as exc:
+            raise WorkflowExecutionError(
+                f"workstream {item.key!r} input workspace allocation is invalid"
+            ) from exc
+        if input_allocation != allocation:
+            raise WorkflowExecutionError(
+                f"workstream {item.key!r} input workspace differs from its proposal"
+            )
+        optional_input_bindings: tuple[tuple[str, object, object], ...] = (
+            ("childKey", item.input.get("childKey"), item.key),
+            ("objective", item.input.get("objective"), item.objective),
+            ("dependencies", item.input.get("dependencies"), list(item.dependencies)),
+        )
+        for field_name, actual, expected in optional_input_bindings:
+            if field_name in item.input and actual != expected:
                 raise WorkflowExecutionError(
-                    f"workstream {item.key!r} input workspace allocation is invalid"
-                ) from exc
-            if input_allocation != allocation:
-                raise WorkflowExecutionError(
-                    f"workstream {item.key!r} input workspace differs from its proposal"
+                    f"workstream {item.key!r} input {field_name} differs from its proposal"
                 )
         allowed_paths = tuple(str(value) for value in item.input.get("allowedPaths") or ())
         contract_ids = tuple(str(value) for value in item.input.get("testContractIds") or ())

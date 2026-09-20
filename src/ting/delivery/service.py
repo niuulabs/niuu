@@ -229,7 +229,7 @@ def _launch_request(child: ChildExecution) -> ChildLaunchRequest:
 
 
 def _reset_delivery_retry(child: ChildExecution) -> ChildExecution:
-    return replace(child, evidence_report=None, evidence_validated_at=None)
+    return replace(child, gate_report=None, gate_validated_at=None)
 
 
 def _validate_delivery_expansion(

@@ -1,4 +1,7 @@
--- Durable parent/child ledger for developer-delivery workflow expansion.
+-- Durable parent/child ledger for dynamically expanded workflow executions.
+-- Domain-neutral only: a workflow that adds its own persisted fields (code
+-- delivery's repository/base/merge state, for example) layers an extension
+-- table over this ledger (see 000039_delivery_executions).
 
 CREATE TABLE IF NOT EXISTS workflow_executions (
     id UUID PRIMARY KEY,
@@ -9,9 +12,6 @@ CREATE TABLE IF NOT EXISTS workflow_executions (
     workflow_id UUID NOT NULL,
     workflow_revision TEXT NOT NULL,
     workflow_digest TEXT NOT NULL,
-    repository TEXT NOT NULL,
-    base_ref TEXT NOT NULL,
-    base_sha TEXT NOT NULL,
     parent_session_id TEXT NOT NULL,
     parent_node_id TEXT NOT NULL,
     connection_id TEXT NOT NULL DEFAULT '',
@@ -24,9 +24,18 @@ CREATE TABLE IF NOT EXISTS workflow_executions (
     suspension_reason TEXT NOT NULL DEFAULT '',
     cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
     policy JSONB NOT NULL,
+    input JSONB NOT NULL DEFAULT '{}'::jsonb,
     revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
     launch_key TEXT NOT NULL DEFAULT '',
     launch_digest TEXT NOT NULL DEFAULT '',
+    plan_revision TEXT NOT NULL DEFAULT '',
+    blocker_revision BIGINT NOT NULL DEFAULT 0,
+    blocker_notified_revision BIGINT NOT NULL DEFAULT 0,
+    completed_at TIMESTAMPTZ,
+    parent_stop_requested_at TIMESTAMPTZ,
+    parent_stopped_at TIMESTAMPTZ,
+    parent_stop_attempts INTEGER NOT NULL DEFAULT 0 CHECK (parent_stop_attempts >= 0),
+    parent_stop_error TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT workflow_executions_state_check CHECK (
@@ -46,6 +55,12 @@ CREATE INDEX IF NOT EXISTS idx_workflow_executions_active
 CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_executions_launch_key
     ON workflow_executions (owner_id, tenant_id, launch_key)
     WHERE launch_key <> '';
+CREATE INDEX IF NOT EXISTS idx_workflow_executions_parent_session
+    ON workflow_executions (owner_id, parent_session_id)
+    WHERE state NOT IN ('canceled', 'completed', 'failed');
+CREATE INDEX IF NOT EXISTS idx_workflow_executions_parent_stop_pending
+    ON workflow_executions (parent_stop_requested_at, id)
+    WHERE parent_stop_requested_at IS NOT NULL AND parent_stopped_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS workflow_execution_generations (
     execution_id UUID NOT NULL REFERENCES workflow_executions(id) ON DELETE CASCADE,
@@ -64,7 +79,6 @@ CREATE TABLE IF NOT EXISTS workflow_execution_children (
     attempt INTEGER NOT NULL CHECK (attempt > 0),
     state TEXT NOT NULL,
     dependencies TEXT[] NOT NULL DEFAULT '{}',
-    requirement_ids TEXT[] NOT NULL,
     objective TEXT NOT NULL,
     template_id UUID NOT NULL,
     template_revision TEXT NOT NULL,
@@ -72,8 +86,6 @@ CREATE TABLE IF NOT EXISTS workflow_execution_children (
     plan_digest TEXT NOT NULL,
     input_digest TEXT NOT NULL,
     input JSONB NOT NULL,
-    repository TEXT NOT NULL,
-    base_sha TEXT NOT NULL,
     budget_units BIGINT NOT NULL CHECK (budget_units > 0),
     deadline TIMESTAMPTZ NOT NULL,
     agent_id TEXT NOT NULL,
@@ -84,16 +96,19 @@ CREATE TABLE IF NOT EXISTS workflow_execution_children (
     context_id TEXT NOT NULL DEFAULT '',
     result JSONB,
     artifacts JSONB NOT NULL DEFAULT '[]'::jsonb,
-    workspace JSONB,
-    evidence_report JSONB,
-    evidence_validated_at TIMESTAMPTZ,
+    gate_report JSONB,
+    gate_validated_at TIMESTAMPTZ,
     failure_kind TEXT,
     error TEXT NOT NULL DEFAULT '',
+    pending_questions JSONB NOT NULL DEFAULT '[]'::jsonb,
+    pending_gates JSONB NOT NULL DEFAULT '[]'::jsonb,
     lease_owner TEXT NOT NULL DEFAULT '',
     lease_token UUID,
     fencing_generation BIGINT NOT NULL DEFAULT 0 CHECK (fencing_generation >= 0),
     lease_expires_at TIMESTAMPTZ,
     remote_observed_at TIMESTAMPTZ,
+    last_polled_at TIMESTAMPTZ,
+    reconcile_failure_count INTEGER NOT NULL DEFAULT 0 CHECK (reconcile_failure_count >= 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (execution_id, generation, child_key, attempt),

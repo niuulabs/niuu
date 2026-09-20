@@ -973,7 +973,7 @@ def create_workflow_executions_router() -> APIRouter:
             previous = current.get(child.key)
             if previous is None or child.attempt > previous.attempt:
                 current[child.key] = child
-        reports = [child.evidence_report for child in current.values()]
+        reports = [child.gate_report for child in current.values()]
         rejected = [
             reason
             for report in reports
@@ -1374,8 +1374,8 @@ def _child_json(child: ChildExecution) -> dict[str, Any]:
         "workspace": child.workspace,
         "candidate": child.result,
         "evidence": list(child.artifacts),
-        "evidenceValidation": child.evidence_report,
-        "evidenceValidatedAt": child.evidence_validated_at,
+        "evidenceValidation": child.gate_report,
+        "evidenceValidatedAt": child.gate_validated_at,
         "pendingQuestions": [item.to_a2a_metadata() for item in child.pending_questions],
         "pendingGates": [item.to_a2a_metadata() for item in child.pending_gates],
         "error": (

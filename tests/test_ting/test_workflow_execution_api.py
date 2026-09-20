@@ -915,8 +915,8 @@ def test_real_service_routes_expand_reconcile_retry_cancel_and_evidence() -> Non
     repository._replace(
         replace(
             completed_child,
-            evidence_report=repository.evidence_reports[completed_child.id],
-            evidence_validated_at=datetime.now(UTC),
+            gate_report=repository.gate_reports[completed_child.id],
+            gate_validated_at=datetime.now(UTC),
         )
     )
     evidence = client.get(url + "/evidence", headers=headers)
@@ -947,8 +947,8 @@ def test_evidence_reports_rejection_without_a_blocking_reason() -> None:
     repository._replace(
         replace(
             repository.children[0],
-            evidence_report={"accepted": False, "blocking_reasons": []},
-            evidence_validated_at=datetime.now(UTC),
+            gate_report={"accepted": False, "blocking_reasons": []},
+            gate_validated_at=datetime.now(UTC),
         )
     )
     app = FastAPI()

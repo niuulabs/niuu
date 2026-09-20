@@ -424,7 +424,7 @@ class WorkflowExecutionService[
                         child,
                         attested_result,
                     )
-                    await self._repository.record_evidence_report(
+                    await self._repository.record_gate_report(
                         child.id,
                         report.model_dump(mode="json"),
                     )

@@ -1,4 +1,13 @@
-"""PostgreSQL execution ledger for durable developer workflow expansion."""
+"""PostgreSQL execution ledger for durable, domain-neutral workflow expansion.
+
+Only domain-neutral columns live here: ``workflow_executions``,
+``workflow_execution_generations``, ``workflow_execution_children``,
+``workflow_child_events``, and ``workflow_child_messages``. A workflow pack
+that needs its own persisted fields layers an extension table over this
+ledger by subclassing ``PostgresWorkflowExecutionRepository`` and overriding
+its row/object mapping hooks — see ``ting.delivery.postgres`` for the one the
+code delivery pack uses.
+"""
 
 from __future__ import annotations
 
@@ -8,8 +17,6 @@ from uuid import UUID, uuid4
 
 import asyncpg
 
-from ting.delivery.domain import ChildExecution, DeliveryExecution
-from ting.delivery.ports import DeliveryExecutionRepository
 from ting.domain.workflow_execution import (
     TERMINAL_CHILD_STATES,
     ChildExecutionState,
@@ -23,72 +30,103 @@ from ting.domain.workflow_execution import (
     ExecutionState,
     ExpansionPolicy,
     FailureKind,
+    WorkflowChildExecution,
+    WorkflowExecution,
     calculate_join,
 )
+from ting.ports.workflow_execution import WorkflowExecutionRepository
 
 
-class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
+class PostgresWorkflowExecutionRepository[
+    ExecutionT: WorkflowExecution,
+    ChildT: WorkflowChildExecution,
+](WorkflowExecutionRepository[ExecutionT, ChildT]):
     """Raw-asyncpg ledger with transactional budget and fenced launch writes."""
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
-    async def create(self, execution: DeliveryExecution) -> DeliveryExecution:
+    # -- overridable row/object mapping hooks --------------------------------
+    #
+    # A specialization overrides these to attach its own extension-table
+    # columns without duplicating any of the generic ledger logic below.
+
+    async def _to_execution(
+        self, row, *, connection: asyncpg.Connection | None = None
+    ) -> ExecutionT:
+        del connection
+        return _generic_execution_from_row(row)  # type: ignore[return-value]
+
+    async def _to_executions(
+        self, rows: list, *, connection: asyncpg.Connection | None = None
+    ) -> list[ExecutionT]:
+        return [await self._to_execution(row, connection=connection) for row in rows]
+
+    def _to_child(self, row) -> ChildT:
+        return _generic_child_from_row(row)  # type: ignore[return-value]
+
+    async def _after_create(self, connection: asyncpg.Connection, execution: ExecutionT) -> None:
+        """Extension point: persist a specialization's own row in the same transaction."""
+
+    async def _after_reserve_generation(
+        self, connection: asyncpg.Connection, execution_id: UUID
+    ) -> None:
+        """Extension point: reset a specialization's own per-generation state."""
+
+    # -- lifecycle ------------------------------------------------------------
+
+    async def create(self, execution: ExecutionT) -> ExecutionT:
         try:
-            await self._pool.execute(
-                """
-                INSERT INTO workflow_executions (
-                    id, owner_id, tenant_id, name, prompt, workflow_id,
-                    workflow_revision, workflow_digest, repository, base_ref, base_sha,
-                    parent_session_id, parent_node_id, connection_id, state, current_generation,
-                    total_budget, reserved_budget, spent_budget, deadline,
-                    suspension_reason, cancel_requested, policy, revision,
-                    launch_key, launch_digest, created_at, updated_at, workflow_snapshot,
-                    plan_revision
-                ) VALUES (
-                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-                    $19,$20,$21,$22,$23::jsonb,$24,$25,$26,$27,$28,$29::jsonb,$30
+            async with self._pool.acquire() as connection, connection.transaction():
+                await connection.execute(
+                    """
+                    INSERT INTO workflow_executions (
+                        id, owner_id, tenant_id, name, prompt, workflow_id,
+                        workflow_revision, workflow_digest,
+                        parent_session_id, parent_node_id, connection_id, state,
+                        current_generation, total_budget, reserved_budget, spent_budget,
+                        deadline, suspension_reason, cancel_requested, policy, input,
+                        revision, launch_key, launch_digest, plan_revision,
+                        created_at, updated_at
+                    ) VALUES (
+                        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+                        $17,$18,$19,$20::jsonb,$21::jsonb,$22,$23,$24,$25,$26,$27
+                    )
+                    """,
+                    execution.id,
+                    execution.owner_id,
+                    execution.tenant_id,
+                    execution.name,
+                    execution.prompt,
+                    execution.workflow_id,
+                    execution.workflow_revision,
+                    execution.workflow_digest,
+                    execution.parent_session_id,
+                    execution.parent_node_id,
+                    execution.connection_id,
+                    execution.state.value,
+                    execution.current_generation,
+                    execution.budget.total_units,
+                    execution.budget.reserved_units,
+                    execution.budget.spent_units,
+                    execution.deadline,
+                    execution.suspension_reason,
+                    execution.cancel_requested,
+                    json.dumps(_policy_to_json(execution.policy)),
+                    json.dumps(execution.input),
+                    execution.revision,
+                    execution.launch_key,
+                    execution.launch_digest,
+                    execution.plan_revision,
+                    execution.created_at,
+                    execution.updated_at,
                 )
-                """,
-                execution.id,
-                execution.owner_id,
-                execution.tenant_id,
-                execution.name,
-                execution.prompt,
-                execution.workflow_id,
-                execution.workflow_revision,
-                execution.workflow_digest,
-                execution.repository,
-                execution.base_ref,
-                execution.base_sha,
-                execution.parent_session_id,
-                execution.parent_node_id,
-                execution.connection_id,
-                execution.state.value,
-                execution.current_generation,
-                execution.budget.total_units,
-                execution.budget.reserved_units,
-                execution.budget.spent_units,
-                execution.deadline,
-                execution.suspension_reason,
-                execution.cancel_requested,
-                json.dumps(_policy_to_json(execution.policy)),
-                execution.revision,
-                execution.launch_key,
-                execution.launch_digest,
-                execution.created_at,
-                execution.updated_at,
-                json.dumps(execution.workflow_snapshot),
-                execution.plan_revision,
-            )
+                await self._after_create(connection, execution)
         except asyncpg.UniqueViolationError as exc:
             raise ExecutionConflictError(f"execution {execution.id} already exists") from exc
         return execution
 
-    async def reserve_parent_launch(
-        self,
-        execution: DeliveryExecution,
-    ) -> tuple[DeliveryExecution, bool]:
+    async def reserve_parent_launch(self, execution: ExecutionT) -> tuple[ExecutionT, bool]:
         if not execution.launch_key or not execution.launch_digest:
             raise ExecutionConflictError("parent launch requires an idempotency key and digest")
         try:
@@ -106,10 +144,10 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
             )
             if row is None:
                 raise
-            existing = _execution_from_row(row)
+            existing = await self._to_execution(row)
             if existing.launch_digest != execution.launch_digest:
                 raise ExecutionConflictError(
-                    "Idempotency-Key was reused for a different developer execution launch"
+                    "Idempotency-Key was reused for a different workflow execution launch"
                 )
             return existing, False
 
@@ -119,7 +157,7 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
         *,
         session_id: str,
         connection_id: str,
-    ) -> DeliveryExecution:
+    ) -> ExecutionT:
         if not session_id.strip():
             raise ExecutionConflictError("parent session id is required")
         row = await self._pool.fetchrow(
@@ -143,7 +181,7 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
         )
         if row is None:
             raise ExecutionConflictError("a different parent session is already attached")
-        return _execution_from_row(row)
+        return await self._to_execution(row)
 
     async def get(
         self,
@@ -151,7 +189,7 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
         *,
         owner_id: str,
         tenant_id: str,
-    ) -> DeliveryExecution | None:
+    ) -> ExecutionT | None:
         row = await self._pool.fetchrow(
             """
             SELECT * FROM workflow_executions
@@ -161,21 +199,21 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
             owner_id,
             tenant_id,
         )
-        return _execution_from_row(row) if row is not None else None
+        return await self._to_execution(row) if row is not None else None
 
-    async def get_internal(self, execution_id: UUID) -> DeliveryExecution | None:
+    async def get_internal(self, execution_id: UUID) -> ExecutionT | None:
         row = await self._pool.fetchrow(
             "SELECT * FROM workflow_executions WHERE id = $1",
             execution_id,
         )
-        return _execution_from_row(row) if row is not None else None
+        return await self._to_execution(row) if row is not None else None
 
     async def get_by_parent_session(
         self,
         *,
         owner_id: str,
         session_id: str,
-    ) -> DeliveryExecution | None:
+    ) -> ExecutionT | None:
         row = await self._pool.fetchrow(
             """
             SELECT * FROM workflow_executions
@@ -187,7 +225,7 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
             owner_id,
             session_id,
         )
-        return _execution_from_row(row) if row is not None else None
+        return await self._to_execution(row) if row is not None else None
 
     async def list(
         self,
@@ -197,7 +235,7 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
         state: str = "",
         limit: int,
         cursor: str = "",
-    ) -> tuple[list[DeliveryExecution], str]:
+    ) -> tuple[list[ExecutionT], str]:
         cursor_time, cursor_id = _decode_cursor(cursor)
         rows = await self._pool.fetch(
             """
@@ -224,15 +262,15 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
         if len(rows) > limit and selected:
             last = selected[-1]
             next_cursor = f"{last['updated_at'].isoformat()}|{last['id']}"
-        return [_execution_from_row(row) for row in selected], next_cursor
+        return await self._to_executions(selected), next_cursor
 
     async def reserve_generation(
         self,
-        execution: DeliveryExecution,
-        children: tuple[ChildExecution, ...],
+        execution: ExecutionT,
+        children: tuple[ChildT, ...],
         *,
         plan_revision: str,
-    ) -> DeliveryExecution:
+    ) -> ExecutionT:
         if not children:
             raise ExecutionConflictError("cannot reserve an empty generation")
         if not plan_revision.strip():
@@ -246,7 +284,7 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
             )
             if row is None:
                 raise ExecutionConflictError(f"execution {execution.id} does not exist")
-            current = _execution_from_row(row)
+            current = await self._to_execution(row, connection=connection)
             if current.revision != execution.revision:
                 raise ExecutionConflictError("execution changed while expansion was being prepared")
             if current.cancel_requested or current.state in {
@@ -281,13 +319,13 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
                 """
                 INSERT INTO workflow_execution_children (
                     id, execution_id, generation, child_key, attempt, state,
-                    dependencies, requirement_ids, objective, template_id,
+                    dependencies, objective, template_id,
                     template_revision, template_digest, plan_digest, input_digest,
-                    input, workspace, repository, base_sha, budget_units, deadline, agent_id,
+                    input, budget_units, deadline, agent_id,
                     skill_id, intent_id, message_id, created_at, updated_at
                 ) VALUES (
-                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,
-                    $16::jsonb,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
+                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,
+                    $15,$16,$17,$18,$19,$20,$21,$22
                 )
                 """,
                 [_child_insert_values(child) for child in children],
@@ -300,11 +338,6 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
                     plan_revision = $4,
                     state = 'waiting',
                     suspension_reason = 'awaiting_children',
-                    integration_allocation = NULL,
-                    integration_receipts = '[]'::jsonb,
-                    integration_candidate = NULL,
-                    integration_review_receipt = NULL,
-                    integration_review_event_id = '',
                     revision = revision + 1,
                     updated_at = NOW()
                 WHERE id = $1
@@ -315,9 +348,11 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
                 reservation,
                 plan_revision,
             )
-        return _execution_from_row(updated_row)
+            await self._after_reserve_generation(connection, execution.id)
+            result = await self._to_execution(updated_row, connection=connection)
+        return result
 
-    async def list_children(self, execution_id: UUID) -> list[ChildExecution]:
+    async def list_children(self, execution_id: UUID) -> list[ChildT]:
         rows = await self._pool.fetch(
             """
             SELECT * FROM workflow_execution_children
@@ -326,16 +361,16 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
             """,
             execution_id,
         )
-        return [_child_from_row(row) for row in rows]
+        return [self._to_child(row) for row in rows]
 
-    async def get_child(self, child_id: UUID) -> ChildExecution | None:
+    async def get_child(self, child_id: UUID) -> ChildT | None:
         row = await self._pool.fetchrow(
             "SELECT * FROM workflow_execution_children WHERE id = $1",
             child_id,
         )
-        return _child_from_row(row) if row is not None else None
+        return self._to_child(row) if row is not None else None
 
-    async def list_reconcilable(self, *, limit: int) -> list[ChildExecution]:
+    async def list_reconcilable(self, *, limit: int) -> list[ChildT]:
         rows = await self._pool.fetch(
             """
             SELECT child.*
@@ -356,9 +391,9 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
             """,
             limit,
         )
-        return [_child_from_row(row) for row in rows]
+        return [self._to_child(row) for row in rows]
 
-    async def list_parent_stop_pending(self, *, limit: int) -> list[DeliveryExecution]:
+    async def list_parent_stop_pending(self, *, limit: int) -> list[ExecutionT]:
         rows = await self._pool.fetch(
             """
             SELECT * FROM workflow_executions
@@ -369,11 +404,9 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
             """,
             limit,
         )
-        return [_execution_from_row(row) for row in rows]
+        return await self._to_executions(rows)
 
-    async def list_deadline_expired_children(
-        self, *, now: datetime, limit: int
-    ) -> list[ChildExecution]:
+    async def list_deadline_expired_children(self, *, now: datetime, limit: int) -> list[ChildT]:
         rows = await self._pool.fetch(
             """
             SELECT child.*
@@ -388,11 +421,11 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
             now,
             limit,
         )
-        return [_child_from_row(row) for row in rows]
+        return [self._to_child(row) for row in rows]
 
     async def list_deadline_expired_executions(
         self, *, now: datetime, limit: int
-    ) -> list[DeliveryExecution]:
+    ) -> list[ExecutionT]:
         rows = await self._pool.fetch(
             """
             SELECT * FROM workflow_executions
@@ -404,7 +437,7 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
             now,
             limit,
         )
-        return [_execution_from_row(row) for row in rows]
+        return await self._to_executions(rows)
 
     async def mark_parent_stopped(self, execution_id: UUID) -> None:
         await self._pool.execute(
@@ -450,7 +483,7 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
         worker_id: str,
         limit: int,
         lease_until: datetime,
-    ) -> list[ChildExecution]:
+    ) -> list[ChildT]:
         if not worker_id.strip():
             raise ValueError("worker_id is required")
         lease_token = uuid4()
@@ -561,17 +594,17 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
                 remaining -= len(rows)
                 if remaining <= 0:
                     break
-        return [_child_from_row(row) for row in claimed_rows]
+        return [self._to_child(row) for row in claimed_rows]
 
     async def record_handle(
         self,
-        child: ChildExecution,
+        child: ChildT,
         handle: ChildTaskHandle,
         *,
         worker_id: str,
         lease_token: UUID,
         fencing_generation: int,
-    ) -> ChildExecution:
+    ) -> ChildT:
         row = await self._pool.fetchrow(
             """
             UPDATE workflow_execution_children
@@ -611,13 +644,13 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
             )
         if row is None:
             raise ExecutionConflictError("launch lease expired or was fenced")
-        return _child_from_row(row)
+        return self._to_child(row)
 
     async def record_observation(
         self,
-        child: ChildExecution,
+        child: ChildT,
         observation: ChildTaskObservation,
-    ) -> ChildExecution:
+    ) -> ChildT:
         payload = {
             "taskId": observation.handle.task_id,
             "contextId": observation.handle.context_id,
@@ -663,14 +696,14 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
                 )
                 if row is None:
                     raise ExecutionConflictError("child no longer exists")
-                return _child_from_row(row)
+                return self._to_child(row)
             current_row = await connection.fetchrow(
                 "SELECT * FROM workflow_execution_children WHERE id = $1 FOR UPDATE",
                 child.id,
             )
             if current_row is None:
                 raise ExecutionConflictError("child no longer exists")
-            current = _child_from_row(current_row)
+            current = self._to_child(current_row)
             remote_observed_at = current_row.get("remote_observed_at")
             if current.state in TERMINAL_CHILD_STATES or (
                 remote_observed_at is not None and observation.observed_at < remote_observed_at
@@ -684,7 +717,7 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
                     """,
                     child.id,
                 )
-                return _child_from_row(row)
+                return self._to_child(row)
             projected_state = observation.state
             if (
                 parent["cancel_requested"]
@@ -740,20 +773,20 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
                     """,
                     child.execution_id,
                 )
-        return _child_from_row(row)
+        return self._to_child(row)
 
-    async def record_evidence_report(self, child_id: UUID, report: dict) -> None:
+    async def record_gate_report(self, child_id: UUID, report: dict) -> None:
         result = await self._pool.execute(
             """
             UPDATE workflow_execution_children
-            SET evidence_report = $2::jsonb, evidence_validated_at = NOW(), updated_at = NOW()
+            SET gate_report = $2::jsonb, gate_validated_at = NOW(), updated_at = NOW()
             WHERE id = $1
             """,
             child_id,
             json.dumps(report),
         )
         if result == "UPDATE 0":
-            raise ExecutionConflictError("evidence child no longer exists")
+            raise ExecutionConflictError("gate report child no longer exists")
 
     async def record_reconcile_error(
         self,
@@ -762,7 +795,7 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
         error: str,
         failure_kind: str,
         max_consecutive_failures: int,
-    ) -> ChildExecution | None:
+    ) -> ChildT | None:
         if max_consecutive_failures <= 0:
             raise ValueError("max_consecutive_failures must be positive")
         async with self._pool.acquire() as connection, connection.transaction():
@@ -781,7 +814,7 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
             if row is None:
                 return None
             if row["reconcile_failure_count"] < max_consecutive_failures:
-                return _child_from_row(row)
+                return self._to_child(row)
             failed_row = await connection.fetchrow(
                 """
                 UPDATE workflow_execution_children
@@ -794,7 +827,7 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
                 failure_kind,
             )
             if failed_row is None:
-                return _child_from_row(row)
+                return self._to_child(row)
             await connection.execute(
                 """
                 UPDATE workflow_executions
@@ -803,7 +836,7 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
                 """,
                 failed_row["execution_id"],
             )
-            return _child_from_row(failed_row)
+            return self._to_child(failed_row)
 
     async def seal_generation(self, execution_id: UUID, generation: int) -> None:
         result = await self._pool.execute(
@@ -838,7 +871,7 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
         *,
         owner_id: str,
         tenant_id: str,
-    ) -> DeliveryExecution:
+    ) -> ExecutionT:
         async with self._pool.acquire() as connection, connection.transaction():
             row = await connection.fetchrow(
                 """
@@ -878,7 +911,7 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
                 )
                 if existing is None:
                     raise ExecutionConflictError("execution does not exist")
-                return _execution_from_row(existing)
+                return await self._to_execution(existing, connection=connection)
             await connection.execute(
                 """
                 UPDATE workflow_execution_children
@@ -893,16 +926,17 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
                 """,
                 execution_id,
             )
-        return _execution_from_row(row)
+            result = await self._to_execution(row, connection=connection)
+        return result
 
     async def create_retry(
         self,
-        child: ChildExecution,
-        retry: ChildExecution,
+        child: ChildT,
+        retry: ChildT,
         *,
         owner_id: str,
         tenant_id: str,
-    ) -> ChildExecution:
+    ) -> ChildT:
         async with self._pool.acquire() as connection, connection.transaction():
             execution = await connection.fetchrow(
                 """
@@ -945,13 +979,13 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
                 """
                 INSERT INTO workflow_execution_children (
                     id, execution_id, generation, child_key, attempt, state,
-                    dependencies, requirement_ids, objective, template_id,
+                    dependencies, objective, template_id,
                     template_revision, template_digest, plan_digest, input_digest,
-                    input, workspace, repository, base_sha, budget_units, deadline, agent_id,
+                    input, budget_units, deadline, agent_id,
                     skill_id, intent_id, message_id, created_at, updated_at
                 ) VALUES (
-                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,
-                    $16::jsonb,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
+                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,
+                    $15,$16,$17,$18,$19,$20,$21,$22
                 )
                 """,
                 *_child_insert_values(retry),
@@ -1061,7 +1095,7 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
         if already_applied:
             return
         raise ExecutionConflictError(
-            "developer execution changed since this projection observed it; "
+            "workflow execution changed since this projection observed it; "
             "the caller must re-read the execution before writing again"
         )
 
@@ -1081,157 +1115,6 @@ class PostgresDeliveryExecutionRepository(DeliveryExecutionRepository):
             execution_id,
             blocker_revision,
         )
-
-    async def complete_execution(
-        self,
-        execution_id: UUID,
-        *,
-        owner_id: str,
-        tenant_id: str,
-        expected_revision: int,
-        merge_receipt: dict,
-    ) -> DeliveryExecution:
-        async with self._pool.acquire() as conn, conn.transaction():
-            row = await conn.fetchrow(
-                "SELECT * FROM workflow_executions WHERE id = $1 AND owner_id = $2 "
-                "AND tenant_id = $3 FOR UPDATE",
-                execution_id,
-                owner_id,
-                tenant_id,
-            )
-            if row is None or row["revision"] != expected_revision:
-                raise ExecutionConflictError("Execution changed during publication verification")
-            execution = _execution_from_row(row)
-            if execution.cancel_requested or execution.state not in {
-                ExecutionState.RUNNING,
-                ExecutionState.WAITING,
-                ExecutionState.BLOCKED,
-            }:
-                raise ExecutionConflictError("Execution no longer permits completion")
-            children = await conn.fetch(
-                "SELECT * FROM workflow_execution_children WHERE execution_id = $1 "
-                "AND generation = $2 FOR UPDATE",
-                execution_id,
-                execution.current_generation,
-            )
-            sealed = await conn.fetchval(
-                "SELECT sealed FROM workflow_execution_generations "
-                "WHERE execution_id = $1 AND generation = $2",
-                execution_id,
-                execution.current_generation,
-            )
-            join = calculate_join(
-                execution.current_generation,
-                sealed=bool(sealed),
-                children=[_child_from_row(child) for child in children],
-            )
-            if not join.ready:
-                raise ExecutionConflictError("Child evidence barrier changed during completion")
-            if (
-                merge_receipt.get("campaign_id") != str(execution.id)
-                or merge_receipt.get("repository") != execution.repository
-                or merge_receipt.get("base_sha") != execution.base_sha
-                or merge_receipt.get("target_branch") != execution.base_ref
-                or merge_receipt.get("state") != "merged"
-            ):
-                raise ExecutionConflictError("Merge receipt does not match this execution")
-            updated = await conn.fetchrow(
-                "UPDATE workflow_executions SET state = 'completed', "
-                "suspension_reason = 'delivery_merged', merge_receipt = $2::jsonb, "
-                "completed_at = NOW(), updated_at = NOW(), revision = revision + 1 "
-                "WHERE id = $1 RETURNING *",
-                execution_id,
-                json.dumps(merge_receipt),
-            )
-            return _execution_from_row(updated)
-
-    async def record_integration_candidate(
-        self,
-        execution_id: UUID,
-        *,
-        owner_id: str,
-        tenant_id: str,
-        expected_revision: int,
-        allocation: dict,
-        receipts: list[dict],
-        candidate: dict,
-    ) -> DeliveryExecution:
-        row = await self._pool.fetchrow(
-            """
-            UPDATE workflow_executions
-            SET integration_allocation = $5::jsonb,
-                integration_receipts = $6::jsonb,
-                integration_candidate = $7::jsonb,
-                integration_review_receipt = NULL,
-                integration_review_event_id = '',
-                revision = revision + 1,
-                updated_at = NOW()
-            WHERE id = $1 AND owner_id = $2 AND tenant_id = $3 AND revision = $4
-              AND cancel_requested = FALSE
-              AND state IN ('running', 'waiting', 'blocked')
-            RETURNING *
-            """,
-            execution_id,
-            owner_id,
-            tenant_id,
-            expected_revision,
-            json.dumps(allocation),
-            json.dumps(receipts),
-            json.dumps(candidate),
-        )
-        if row is None:
-            raise ExecutionConflictError(
-                "Execution changed while recording the inspected integration candidate"
-            )
-        return _execution_from_row(row)
-
-    async def record_integration_review(
-        self,
-        execution_id: UUID,
-        *,
-        event_id: str,
-        candidate_sha: str,
-        candidate_tree: str,
-        receipt: dict,
-    ) -> DeliveryExecution:
-        existing = await self._pool.fetchrow(
-            "SELECT * FROM workflow_executions WHERE id = $1",
-            execution_id,
-        )
-        if existing is None:
-            raise ExecutionConflictError("Integration review execution was not found")
-        execution = _execution_from_row(existing)
-        if execution.integration_review_event_id == event_id:
-            if execution.integration_review_receipt != receipt:
-                raise ExecutionConflictError(
-                    "Integration review event was reused for different content"
-                )
-            return execution
-        row = await self._pool.fetchrow(
-            """
-            UPDATE workflow_executions
-            SET integration_review_receipt = $5::jsonb,
-                integration_review_event_id = $2,
-                revision = revision + 1,
-                updated_at = NOW()
-            WHERE id = $1 AND integration_review_event_id = ''
-              AND integration_candidate ->> 'candidate_sha' = $3
-              AND integration_candidate ->> 'candidate_tree' = $4
-              AND cancel_requested = FALSE
-              AND state IN ('running', 'waiting', 'blocked')
-            RETURNING *
-            """,
-            execution_id,
-            event_id,
-            candidate_sha,
-            candidate_tree,
-            json.dumps(receipt),
-        )
-        if row is None:
-            raise ExecutionConflictError(
-                "Integration review no longer matches the current inspected candidate"
-            )
-        return _execution_from_row(row)
 
     async def reserve_message(self, message: ChildMessage) -> ChildMessage:
         await self._pool.execute(
@@ -1316,8 +1199,8 @@ def _policy_from_json(value: object) -> ExpansionPolicy:
     )
 
 
-def _execution_from_row(row) -> DeliveryExecution:
-    return DeliveryExecution(
+def _generic_execution_from_row(row) -> WorkflowExecution:
+    return WorkflowExecution(
         id=row["id"],
         name=row["name"],
         prompt=row["prompt"],
@@ -1326,9 +1209,6 @@ def _execution_from_row(row) -> DeliveryExecution:
         workflow_id=row["workflow_id"],
         workflow_revision=row["workflow_revision"],
         workflow_digest=row["workflow_digest"],
-        repository=row["repository"],
-        base_ref=row["base_ref"],
-        base_sha=row["base_sha"],
         parent_session_id=row["parent_session_id"],
         parent_node_id=row["parent_node_id"],
         connection_id=row.get("connection_id") or "",
@@ -1351,28 +1231,14 @@ def _execution_from_row(row) -> DeliveryExecution:
         revision=int(row["revision"]),
         blocker_revision=int(row["blocker_revision"]),
         blocker_notified_revision=int(row["blocker_notified_revision"]),
-        merge_receipt=_json_dict(row["merge_receipt"]) if row.get("merge_receipt") else None,
-        integration_receipts=tuple(_json_list(row.get("integration_receipts"))),
-        integration_allocation=(
-            _json_dict(row["integration_allocation"]) if row.get("integration_allocation") else None
-        ),
-        integration_candidate=(
-            _json_dict(row["integration_candidate"]) if row.get("integration_candidate") else None
-        ),
-        integration_review_receipt=(
-            _json_dict(row["integration_review_receipt"])
-            if row.get("integration_review_receipt")
-            else None
-        ),
-        integration_review_event_id=row.get("integration_review_event_id") or "",
         completed_at=row.get("completed_at"),
-        workflow_snapshot=_json_dict(row.get("workflow_snapshot")),
+        input=_json_dict(row.get("input")),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
 
 
-def _child_insert_values(child: ChildExecution) -> tuple:
+def _child_insert_values(child: WorkflowChildExecution) -> tuple:
     return (
         child.id,
         child.execution_id,
@@ -1381,7 +1247,6 @@ def _child_insert_values(child: ChildExecution) -> tuple:
         child.attempt,
         child.state.value,
         list(child.dependencies),
-        list(child.requirement_ids),
         child.objective,
         child.template_id,
         child.template_revision,
@@ -1389,9 +1254,6 @@ def _child_insert_values(child: ChildExecution) -> tuple:
         child.plan_digest,
         child.input_digest,
         json.dumps(child.input),
-        json.dumps(child.workspace) if child.workspace is not None else None,
-        child.repository,
-        child.base_sha,
         child.budget_units,
         child.deadline,
         child.agent_id,
@@ -1403,13 +1265,12 @@ def _child_insert_values(child: ChildExecution) -> tuple:
     )
 
 
-def _child_from_row(row) -> ChildExecution:
+def _generic_child_from_row(row) -> WorkflowChildExecution:
     result = row.get("result")
     artifacts = row.get("artifacts") or []
-    workspace = row.get("workspace")
     pending_questions = _json_list(row.get("pending_questions"))
     pending_gates = _json_list(row.get("pending_gates"))
-    return ChildExecution(
+    return WorkflowChildExecution(
         id=row["id"],
         execution_id=row["execution_id"],
         generation=int(row["generation"]),
@@ -1417,7 +1278,6 @@ def _child_from_row(row) -> ChildExecution:
         attempt=int(row["attempt"]),
         state=ChildExecutionState(row["state"]),
         dependencies=tuple(row.get("dependencies") or ()),
-        requirement_ids=tuple(row.get("requirement_ids") or ()),
         objective=row["objective"],
         template_id=row["template_id"],
         template_revision=row["template_revision"],
@@ -1425,8 +1285,6 @@ def _child_from_row(row) -> ChildExecution:
         plan_digest=row["plan_digest"],
         input_digest=row["input_digest"],
         input=_json_dict(row["input"]),
-        repository=row["repository"],
-        base_sha=row["base_sha"],
         budget_units=int(row["budget_units"]),
         deadline=row["deadline"],
         agent_id=row["agent_id"],
@@ -1437,13 +1295,10 @@ def _child_from_row(row) -> ChildExecution:
         context_id=row.get("context_id") or "",
         result=_json_dict(result) if result is not None else None,
         artifacts=tuple(json.loads(artifacts) if isinstance(artifacts, str) else artifacts),
-        workspace=_json_dict(workspace) if workspace is not None else None,
-        evidence_report=(
-            _json_dict(row.get("evidence_report"))
-            if row.get("evidence_report") is not None
-            else None
+        gate_report=(
+            _json_dict(row.get("gate_report")) if row.get("gate_report") is not None else None
         ),
-        evidence_validated_at=row.get("evidence_validated_at"),
+        gate_validated_at=row.get("gate_validated_at"),
         failure_kind=FailureKind(row["failure_kind"]) if row.get("failure_kind") else None,
         error=row.get("error") or "",
         pending_questions=tuple(
@@ -1496,4 +1351,4 @@ def _decode_cursor(cursor: str) -> tuple[datetime | None, UUID | None]:
             raise ValueError("timestamp has no timezone")
         return parsed.astimezone(UTC), UUID(raw_id)
     except (ValueError, TypeError) as exc:
-        raise ValueError("invalid developer execution cursor") from exc
+        raise ValueError("invalid workflow execution cursor") from exc

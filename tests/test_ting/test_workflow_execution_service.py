@@ -274,7 +274,7 @@ class InMemoryWorkflowRepository(
         self._replace(updated)
         return updated
 
-    async def record_evidence_report(self, child_id, report):
+    async def record_gate_report(self, child_id, report):
         del child_id, report
 
     async def record_reconcile_error(
