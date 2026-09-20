@@ -616,6 +616,104 @@ async def test_reconcile_requires_canonical_remote_result(provider: GitLabProvid
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_reconcile_accepts_a_merge_result_contained_in_an_advanced_target(
+    provider: GitLabProvider,
+) -> None:
+    """A merge train landing another MR on `main` after this one must not fail a
+    genuinely merged campaign forever: the result being an ancestor of the moved
+    tip is proof enough."""
+    advanced_tip = "d" * 40
+    respx.get(f"{API}/merge_requests/7").mock(return_value=Response(200, json=_mr(state="merged")))
+    respx.get(f"{API}/repository/branches/main").mock(
+        return_value=Response(200, json={"commit": {"id": advanced_tip}})
+    )
+    _mock_completed_train()
+    respx.get(f"{API}/repository/commits/{RESULT}").mock(
+        return_value=Response(200, json={"parent_ids": [BASE]})
+    )
+    respx.get(f"{API}/repository/merge_base").mock(return_value=Response(200, json={"id": RESULT}))
+    request = MergeRequest(
+        campaign_id="campaign-1",
+        repository=REPOSITORY,
+        review_number=7,
+        expected_head_sha=HEAD,
+        expected_base_sha=BASE,
+        expected_target_branch="main",
+        method="squash",
+        provider_operation_id="99",
+    )
+
+    receipt = await provider.reconcile_merge(request)
+
+    assert receipt.state is PublicationState.MERGED
+    assert receipt.result_sha == RESULT
+    assert receipt.canonical_target_sha == advanced_tip
+    await provider.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reconcile_rejects_a_merge_result_not_contained_in_an_advanced_target(
+    provider: GitLabProvider,
+) -> None:
+    unrelated_tip = "d" * 40
+    respx.get(f"{API}/merge_requests/7").mock(return_value=Response(200, json=_mr(state="merged")))
+    respx.get(f"{API}/repository/branches/main").mock(
+        return_value=Response(200, json={"commit": {"id": unrelated_tip}})
+    )
+    _mock_completed_train()
+    respx.get(f"{API}/repository/commits/{RESULT}").mock(
+        return_value=Response(200, json={"parent_ids": [BASE]})
+    )
+    respx.get(f"{API}/repository/merge_base").mock(
+        return_value=Response(200, json={"id": "e" * 40})
+    )
+    request = MergeRequest(
+        campaign_id="campaign-1",
+        repository=REPOSITORY,
+        review_number=7,
+        expected_head_sha=HEAD,
+        expected_base_sha=BASE,
+        expected_target_branch="main",
+        method="squash",
+        provider_operation_id="99",
+    )
+
+    with pytest.raises(RuntimeError, match="ancestry proof is unavailable"):
+        await provider.reconcile_merge(request)
+    await provider.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reconcile_reports_queued_when_target_advances_while_still_queued(
+    provider: GitLabProvider,
+) -> None:
+    """The target branch moving on while this MR is still open/unmerged is normal
+    merge-train churn (something ahead of it landing), not a terminal failure."""
+    respx.get(f"{API}/merge_requests/7").mock(return_value=Response(200, json=_mr()))
+    respx.get(f"{API}/repository/branches/main").mock(
+        return_value=Response(200, json={"commit": {"id": "d" * 40}})
+    )
+    request = MergeRequest(
+        campaign_id="campaign-1",
+        repository=REPOSITORY,
+        review_number=7,
+        expected_head_sha=HEAD,
+        expected_base_sha=BASE,
+        expected_target_branch="main",
+        method="squash",
+        provider_operation_id="99",
+    )
+
+    receipt = await provider.reconcile_merge(request)
+
+    assert receipt.state is PublicationState.QUEUED
+    await provider.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_reconcile_recovers_exact_operation_id_when_receipt_was_lost(
     provider: GitLabProvider,
 ) -> None:

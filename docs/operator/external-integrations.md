@@ -121,6 +121,40 @@ advanced Docker deployment needs to mount a source directory outside the Niuu
 data directory. Helm/Kubernetes installs remain deployment-managed through
 values, volumes, and mounts rather than accepting node-local paths from the UI.
 
+### How UI-managed validation is confined
+
+Every route that can change the registered `external_integrations` list —
+the dedicated Settings endpoints and the generic stack `PUT /stack` /
+`POST /stack/apply` change set — is validated the same way before it is
+staged: `source_dir` must resolve inside the managed `private-integrations`
+root (or match an already-registered container mount exactly), its
+definition/manifest files must exist and resolve inside `source_dir`, and the
+resulting catalog cannot collide on slug, module id, or component name with
+another registered package. There is no separate, less-checked way to change
+this list.
+
+Only adding a genuinely new package imports its code, and it does so
+defensively:
+
+- the interpreter is started with `-P` (never prepends the script/working
+  directory to `sys.path`) and the package's directory is appended to the end
+  of `sys.path`, so the package can supply the modules it declares but cannot
+  shadow the standard library, an installed dependency, or Niuu's own
+  packages;
+- a package whose top-level module or package name collides with the
+  standard library, an installed distribution, or a platform package (for
+  example a top-level `os.py`, `yaml.py`, `niuu/`, or `sitecustomize.py`) is
+  rejected before anything is imported;
+- the subprocess runs with a minimal environment (`PATH` and locale only —
+  no database credentials, provider tokens, or signing keys) and a timeout
+  from `docker.external_integration_validation_timeout_seconds` (default 30
+  seconds); a timeout or non-zero exit is reported as a validation failure.
+
+Listing registered packages and re-validating the *other* already-registered
+packages while adding a new one never import anything — they parse the
+manifest/definition files statically. Only the package actually being added
+is imported.
+
 Each file can contain one definition, a list of definitions, or a
 `definitions` list:
 

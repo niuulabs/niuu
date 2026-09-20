@@ -162,6 +162,22 @@ class _FakeStack(StackControlPort):
         definition_files: list[str],
         manifest_file: str = "",
     ) -> ExternalIntegrationValidation:
+        return self._validation(source_dir, definition_files, manifest_file)
+
+    async def describe_external_integration(
+        self,
+        source_dir: str,
+        definition_files: list[str],
+        manifest_file: str = "",
+    ) -> ExternalIntegrationValidation:
+        return self._validation(source_dir, definition_files, manifest_file)
+
+    def _validation(
+        self,
+        source_dir: str,
+        definition_files: list[str],
+        manifest_file: str,
+    ) -> ExternalIntegrationValidation:
         if "invalid" in source_dir:
             return ExternalIntegrationValidation(
                 ok=False,

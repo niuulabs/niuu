@@ -622,6 +622,212 @@ async def test_external_module_revalidation_does_not_reuse_import_cache(
 
 
 @pytest.mark.asyncio
+async def test_stage_rejects_an_external_integration_outside_the_managed_root(
+    controller: DockerStackController,
+) -> None:
+    """`PUT /stack` must not be able to mount an arbitrary host directory just
+    because it skips the dedicated `/settings/external-integrations` endpoint:
+    `stage()` is the one path both go through."""
+    with pytest.raises(ValueError, match="must be inside"):
+        await controller.stage(
+            {"external_integrations": [{"source_dir": "/", "manifest_file": "x.yaml"}]}
+        )
+    view = await controller.view()
+    assert view.staged == {}
+
+
+@pytest.mark.asyncio
+async def test_stage_rejects_a_confined_package_that_shadows_the_platform(
+    controller: DockerStackController, stack_dir: Path
+) -> None:
+    """Confinement alone is not enough: a package inside the managed root that
+    ships a top-level `niuu` package would replace platform code once mounted,
+    so the generic stage path rejects it just as the dedicated endpoint does."""
+    package = stack_dir / "private-integrations" / "shadowing"
+    (package / "niuu").mkdir(parents=True)
+    (package / "niuu" / "__init__.py").write_text("")
+    (package / "integration.yaml").write_text(
+        "slug: private-shadow\nname: Shadow\nintegration_type: issue_tracker\n"
+        "adapter: niuu.Adapter\n"
+    )
+
+    with pytest.raises(ValueError, match="shadow"):
+        await controller.stage(
+            {
+                "external_integrations": [
+                    {"source_dir": str(package), "definition_files": ["integration.yaml"]}
+                ]
+            }
+        )
+    view = await controller.view()
+    assert view.staged == {}
+
+
+@pytest.mark.asyncio
+async def test_stage_accepts_a_confined_and_valid_external_integration_list(
+    controller: DockerStackController, stack_dir: Path
+) -> None:
+    package = stack_dir / "private-integrations" / "acme"
+    package.mkdir(parents=True)
+    (package / "integration.yaml").write_text(
+        "slug: acme\nname: Acme\nintegration_type: issue_tracker\nauth_type: api_key\n"
+    )
+
+    view = await controller.stage(
+        {
+            "external_integrations": [
+                {"source_dir": str(package), "definition_files": ["integration.yaml"]}
+            ]
+        }
+    )
+
+    assert [item.source_dir for item in view.effective.external_integrations] == [str(package)]
+
+
+@pytest.mark.asyncio
+async def test_stage_rejects_colliding_slugs_across_external_integrations(
+    controller: DockerStackController, stack_dir: Path
+) -> None:
+    first = stack_dir / "private-integrations" / "one"
+    second = stack_dir / "private-integrations" / "two"
+    for package in (first, second):
+        package.mkdir(parents=True)
+        (package / "integration.yaml").write_text(
+            "slug: shared-slug\nname: Shared\nintegration_type: issue_tracker\nauth_type: api_key\n"
+        )
+
+    with pytest.raises(ValueError, match="more than one external package"):
+        await controller.stage(
+            {
+                "external_integrations": [
+                    {"source_dir": str(first), "definition_files": ["integration.yaml"]},
+                    {"source_dir": str(second), "definition_files": ["integration.yaml"]},
+                ]
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_import_shadowing_is_rejected_before_anything_is_imported(
+    controller: DockerStackController, stack_dir: Path
+) -> None:
+    """A package that ships a top-level `os.py` would replace the stdlib `os`
+    module in every process that later imports it, not just the validator's."""
+    package = stack_dir / "private-integrations" / "shadowing"
+    package.mkdir(parents=True)
+    (package / "os.py").write_text("raise RuntimeError('should never import')\n")
+    (package / "niuu-module.yaml").write_text(
+        "schema_version: 1\n"
+        "id: shadowing\n"
+        "requires:\n"
+        "  niuu_machine_provider: 1\n"
+        "components:\n"
+        "  - kind: machine_provider\n"
+        "    name: shadowing\n"
+        "    adapter: os.Provider\n"
+    )
+
+    result = await controller.validate_external_integration(str(package), [], "niuu-module.yaml")
+
+    assert result.ok is False
+    assert "shadow" in result.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_describe_external_integration_never_executes_the_package(
+    controller: DockerStackController, stack_dir: Path
+) -> None:
+    """Listing/describing must be static: a package whose adapter cannot even
+    be imported still describes cleanly, because describe never imports it."""
+    package = stack_dir / "private-integrations" / "broken"
+    package.mkdir(parents=True)
+    (package / "integration.yaml").write_text(
+        "slug: private-broken\nname: Broken\nintegration_type: issue_tracker\n"
+        "adapter: package_that_does_not_exist.Adapter\n"
+    )
+
+    with patch.object(sc, "subprocess") as fake_subprocess:
+        described = await controller.describe_external_integration(
+            str(package), ["integration.yaml"]
+        )
+
+    assert described.ok is True
+    assert [item.slug for item in described.definitions] == ["private-broken"]
+    fake_subprocess.run.assert_not_called()
+
+    full = await controller.validate_external_integration(str(package), ["integration.yaml"])
+    assert full.ok is False
+    assert "package_that_does_not_exist" in full.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_validate_external_imports_uses_a_scrubbed_environment(
+    controller: DockerStackController, stack_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NIUU_POSTGRES_PASSWORD", "super-secret")
+    package = stack_dir / "private-integrations" / "compute"
+    package.mkdir(parents=True)
+    (package / "niuu-module.yaml").write_text(
+        "schema_version: 1\n"
+        "id: private-compute\n"
+        "requires:\n"
+        "  niuu_machine_provider: 1\n"
+        "components:\n"
+        "  - kind: machine_provider\n"
+        "    name: private\n"
+        "    adapter: volundr.adapters.outbound.harvester.HarvesterMachineProvider\n"
+    )
+    captured: dict[str, Any] = {}
+    real_run = sc.subprocess.run
+
+    def _spy(command: list[str], **kwargs: Any) -> Any:
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return real_run(command, **kwargs)
+
+    with patch.object(sc.subprocess, "run", side_effect=_spy):
+        result = await controller.validate_external_integration(
+            str(package), [], "niuu-module.yaml"
+        )
+
+    assert result.ok is True
+    assert "cwd" not in captured["kwargs"]
+    assert "NIUU_POSTGRES_PASSWORD" not in captured["kwargs"]["env"]
+    assert captured["kwargs"]["timeout"] == 30.0
+    assert "-P" in captured["command"]
+    assert "--package-path" in captured["command"]
+
+
+@pytest.mark.asyncio
+async def test_validate_external_imports_timeout_is_a_typed_failure(
+    controller: DockerStackController, stack_dir: Path
+) -> None:
+    package = stack_dir / "private-integrations" / "compute"
+    package.mkdir(parents=True)
+    (package / "niuu-module.yaml").write_text(
+        "schema_version: 1\n"
+        "id: private-compute\n"
+        "requires:\n"
+        "  niuu_machine_provider: 1\n"
+        "components:\n"
+        "  - kind: machine_provider\n"
+        "    name: private\n"
+        "    adapter: volundr.adapters.outbound.harvester.HarvesterMachineProvider\n"
+    )
+    with patch.object(
+        sc.subprocess,
+        "run",
+        side_effect=sc.subprocess.TimeoutExpired(cmd="python", timeout=30.0),
+    ):
+        result = await controller.validate_external_integration(
+            str(package), [], "niuu-module.yaml"
+        )
+
+    assert result.ok is False
+    assert "timed out" in result.errors[0]
+
+
+@pytest.mark.asyncio
 async def test_view_judges_fit_by_host_memory_on_a_unified_memory_gpu(
     controller: DockerStackController, stack_dir: Path
 ) -> None:

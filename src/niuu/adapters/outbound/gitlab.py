@@ -1186,9 +1186,15 @@ class GitLabProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
         if (
             source_sha != request.expected_head_sha
             or target_branch != request.expected_target_branch
-            or (not merged and canonical_sha != request.expected_base_sha)
         ):
             return receipt
+        if not merged and canonical_sha != request.expected_base_sha:
+            # The target branch tip moving while this MR is still queued in the
+            # merge train (something ahead of it landing) is normal, not a
+            # failure: only a closed/abandoned MR is terminal. Report it as
+            # still in progress rather than failing a campaign the train may
+            # still merge.
+            return receipt.model_copy(update={"state": PublicationState.QUEUED})
         if not merged and str(data.get("state") or "").casefold() == "closed":
             return receipt
         train_response = await client.get(
@@ -1275,7 +1281,9 @@ class GitLabProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
                 base_sha=request.expected_base_sha,
                 target_branch=target_branch,
             )
-        if canonical_sha != result_sha:
+        if canonical_sha != result_sha and not await self._gitlab_result_contained_in_target(
+            client, path, result_sha=result_sha, target_sha=canonical_sha
+        ):
             raise RuntimeError(
                 "GitLab target advanced beyond the merge result; ancestry proof is unavailable"
             )
@@ -1300,6 +1308,34 @@ class GitLabProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
             canonical_target_sha=canonical_sha,
             verified_at=verified_at,
         )
+
+    async def _gitlab_result_contained_in_target(
+        self,
+        client: httpx.AsyncClient,
+        path: str,
+        *,
+        result_sha: str,
+        target_sha: str,
+    ) -> bool:
+        """True when *result_sha* is an ancestor of (or equal to) *target_sha*.
+
+        Tip equality is checked first by the caller and is the fast path; a
+        merge train can land another change on the target branch between this
+        merge and reconciliation, so a genuinely merged campaign must not be
+        reported as unmergeable forever just because the tip moved. GitLab's
+        merge-base of `result_sha` and `target_sha` equals `result_sha` exactly
+        when `result_sha` is contained in `target_sha`'s history.
+        """
+        response = await client.get(
+            f"{path}/repository/merge_base",
+            params={"refs[]": [result_sha, target_sha]},
+        )
+        if response.status_code != 200:
+            raise RuntimeError(
+                "Cannot verify GitLab merge result ancestry against the target branch"
+            )
+        merge_base_sha = str(response.json().get("id") or "")
+        return bool(merge_base_sha) and merge_base_sha == result_sha
 
     async def _gitlab_merge_base_sha(
         self,

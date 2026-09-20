@@ -47,7 +47,26 @@ class StackControlPort(ABC):
         definition_files: list[str],
         manifest_file: str = "",
     ) -> ExternalIntegrationValidation:
-        """Validate metadata and component classes in one machine-local package."""
+        """Full validation: confinement/structure, then import the component classes.
+
+        This executes the package's code (in a confined subprocess) and
+        should only be used for a package that is genuinely new to the
+        platform, e.g. when it is first added.
+        """
+
+    @abstractmethod
+    async def describe_external_integration(
+        self,
+        source_dir: str,
+        definition_files: list[str],
+        manifest_file: str = "",
+    ) -> ExternalIntegrationValidation:
+        """Structural validation only: confinement, existence, static parsing.
+
+        Never imports or executes anything from the package. Use this to
+        describe an already-registered package (listing, re-validation
+        during an unrelated `add`/`stage`) without re-running its code.
+        """
 
     @abstractmethod
     async def external_integrations_root(self) -> str:

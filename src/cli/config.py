@@ -420,6 +420,13 @@ class DockerConfig(BaseModel):
             "(a sibling container, so the platform can be recreated underneath it)."
         ),
     )
+    external_integration_validation_timeout_seconds: float = Field(
+        default=30.0,
+        description=(
+            "How long the external-integration import validator subprocess may run before "
+            "it is killed and treated as a validation failure."
+        ),
+    )
 
     @model_validator(mode="after")
     def _mount_targets_are_unique(self) -> DockerConfig:

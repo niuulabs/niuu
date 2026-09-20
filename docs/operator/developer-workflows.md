@@ -255,25 +255,32 @@ depend on a repository provider or developer-workflow schema. The separate pure
 responses into that generic presentation contract.
 
 Use the read-only proof verifier to export and check a completed execution from its
-three public Ting evidence surfaces:
+three public Ting evidence surfaces. A trust decision is mandatory: pass either
+`--evidence-trust-file` (independent cryptographic verification) or
+`--trust-server-attestation` (explicitly accept the server's own report instead).
+Passing neither is a usage error — the tool refuses to run rather than silently
+report `status: "verified"` with zero signatures actually checked:
 
 ```bash
 python scripts/verify_developer_delivery_proof.py \
   --base-url http://127.0.0.1:8180 \
   --execution-id 00000000-0000-0000-0000-000000000000 \
+  --trust-server-attestation \
   --output developer-delivery-proof.json
 ```
 
 For authenticated deployments, pass `--token-file` with a bearer token file. The
 tool never reads a token from an ambient environment variable and never includes it
 in output. It performs only HTTP `GET` requests and exits nonzero for incomplete,
-rejected, unsigned, stale, or identity-mismatched evidence. Its report retains the
-typed signed receipts for later verification, but records
+rejected, unsigned, stale, or identity-mismatched evidence. With
+`--trust-server-attestation` and no trust file, the report's `status` is
+`"server-attested"` — never `"verified"` — and it records
 `independentCryptographicVerification: false`: without deployment public keys it
 checks signature presence and Ting's persisted validation decision rather than
 claiming an independent signature verification.
 
-To verify receipt signatures independently, pass a public-only trust file:
+To verify receipt signatures independently (and reach `status: "verified"`), pass
+a public-only trust file instead:
 
 ```bash
 python scripts/verify_developer_delivery_proof.py \
@@ -284,8 +291,9 @@ python scripts/verify_developer_delivery_proof.py \
 ```
 
 The JSON uses the same key and producer authorization mappings as the runtime
-evidence authenticator. Public keys are inline PEM strings; private keys, bearer
-tokens, and other credentials do not belong in this file:
+evidence authenticator, plus an optional `review_producers` role pin. Public keys
+are inline PEM strings; private keys, bearer tokens, and other credentials do not
+belong in this file:
 
 ```json
 {
@@ -295,7 +303,16 @@ tokens, and other credentials do not belong in this file:
   "producer_keys": {
     "workstream-runner": ["delivery-key-2026"],
     "developer-code-reviewer": ["delivery-key-2026"],
+    "developer-security-reviewer": ["delivery-key-2026"],
+    "developer-adversarial-reviewer": ["delivery-key-2026"],
+    "developer-integration-reviewer": ["delivery-key-2026"],
     "forge-service": ["delivery-key-2026"]
+  },
+  "review_producers": {
+    "code": ["developer-code-reviewer"],
+    "security": ["developer-security-reviewer"],
+    "adversarial": ["developer-adversarial-reviewer"],
+    "integration": ["developer-integration-reviewer"]
   }
 }
 ```
@@ -305,6 +322,16 @@ key. With a valid trust file, the verifier checks the canonical `evidence_payloa
 for every verification, review, integration, and merge receipt and records
 `independentCryptographicVerification: true`. A missing signature, altered payload,
 unknown producer, or unauthorized key makes verification fail.
+
+`review_producers` is optional, but once present it must pin every review role the
+verifier checks (`code`, `security`, `adversarial`, `integration`) — a partially
+pinned set is rejected at load time rather than silently leaving a role
+unrestricted. It mirrors `niuu.domain.evidence.EvidencePolicy.review_producers`
+(role -> authorized producer IDs): a producer that is a trusted signer in general
+(its key validates) but is not pinned to a given role is still rejected for a
+review under that role. This closes the gap where a `developer-code-reviewer` key
+could otherwise sign off a `security` review just because its signature is
+cryptographically valid.
 
 ## Verification
 

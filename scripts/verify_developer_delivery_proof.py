@@ -36,6 +36,12 @@ from niuu.domain.delivery import (
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REQUIRED_CHILD_REVIEW_ROLES = frozenset({"code", "security", "adversarial"})
+# Every review role this script checks. When a trust file opts into
+# review-role producer pinning (`review_producers`), it must pin all of
+# these — the same all-or-nothing requirement `EvidencePolicy.
+# validate_producer_pins` applies server-side, so a role can't be left
+# unpinned by omission.
+_REVIEW_ROLES_REQUIRING_PINS = _REQUIRED_CHILD_REVIEW_ROLES | frozenset({"integration"})
 
 
 class ProofVerificationError(RuntimeError):
@@ -100,7 +106,23 @@ def _read_token(path: Path | None) -> str:
     return token
 
 
-def _load_evidence_trust_file(path: Path | None) -> RsaEvidenceAuthenticator | None:
+@dataclass(frozen=True)
+class EvidenceTrust:
+    """A loaded trust file: who may sign evidence, and who may sign which review role.
+
+    ``review_producers`` mirrors ``niuu.domain.evidence.EvidencePolicy.
+    review_producers`` (role -> authorized producer IDs), so a producer that
+    is a trusted signer in general (present in ``producer_keys``) still
+    cannot pass off a review under a role it is not pinned to — the same
+    workstream-runner-cannot-sign-a-security-review guarantee the server-side
+    policy enforces.
+    """
+
+    authenticator: RsaEvidenceAuthenticator
+    review_producers: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+
+def _load_evidence_trust_file(path: Path | None) -> EvidenceTrust | None:
     if path is None:
         return None
     try:
@@ -109,9 +131,15 @@ def _load_evidence_trust_file(path: Path | None) -> RsaEvidenceAuthenticator | N
         raise ProofVerificationError(f"cannot read evidence trust file: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise ProofVerificationError("evidence trust file is not valid JSON") from exc
-    if not isinstance(raw, dict) or set(raw) != {"trusted_public_keys", "producer_keys"}:
+    allowed_top_level_keys = {"trusted_public_keys", "producer_keys", "review_producers"}
+    if (
+        not isinstance(raw, dict)
+        or not set(raw) <= allowed_top_level_keys
+        or not {"trusted_public_keys", "producer_keys"} <= set(raw)
+    ):
         raise ProofVerificationError(
-            "evidence trust file must contain only trusted_public_keys and producer_keys"
+            "evidence trust file must contain trusted_public_keys and producer_keys, "
+            "plus an optional review_producers"
         )
     trusted = raw["trusted_public_keys"]
     producers = raw["producer_keys"]
@@ -147,8 +175,9 @@ def _load_evidence_trust_file(path: Path | None) -> RsaEvidenceAuthenticator | N
                 f"producer {producer!r} references unknown evidence key IDs"
             )
         normalized_producers[producer] = key_ids
+    review_producers = _load_review_producer_pins(raw.get("review_producers"), producers)
     try:
-        return RsaEvidenceAuthenticator(
+        authenticator = RsaEvidenceAuthenticator(
             key_id=next(iter(sorted(trusted))),
             trusted_public_keys=trusted,
             producer_keys=normalized_producers,
@@ -157,6 +186,49 @@ def _load_evidence_trust_file(path: Path | None) -> RsaEvidenceAuthenticator | N
         raise ProofVerificationError(
             f"evidence trust file contains an invalid public key: {exc}"
         ) from exc
+    return EvidenceTrust(authenticator=authenticator, review_producers=review_producers)
+
+
+def _load_review_producer_pins(
+    raw: object, producers: dict[str, list[str]]
+) -> dict[str, tuple[str, ...]]:
+    """Parse the optional ``review_producers`` role -> producer-ID pinning.
+
+    Required (fail loudly, not a silent no-op) once present: a partially
+    pinned set would let an attacker sign the one review role the operator
+    forgot to list.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or not raw:
+        raise ProofVerificationError("review_producers must be a nonempty object")
+    normalized: dict[str, tuple[str, ...]] = {}
+    for role, producer_ids in raw.items():
+        if (
+            not isinstance(role, str)
+            or not role
+            or not isinstance(producer_ids, list)
+            or not producer_ids
+            or any(not isinstance(item, str) or not item for item in producer_ids)
+            or len(producer_ids) != len(set(producer_ids))
+        ):
+            raise ProofVerificationError(
+                "review_producers must map nonempty role names to unique producer ID arrays"
+            )
+        unknown = set(producer_ids) - set(producers)
+        if unknown:
+            raise ProofVerificationError(
+                f"review_producers role {role!r} references unknown producer IDs: "
+                + ", ".join(sorted(unknown))
+            )
+        normalized[role] = tuple(producer_ids)
+    missing_roles = _REVIEW_ROLES_REQUIRING_PINS - set(normalized)
+    if missing_roles:
+        raise ProofVerificationError(
+            "review_producers must pin every required review role: "
+            + ", ".join(sorted(missing_roles))
+        )
+    return normalized
 
 
 def _fetch_json(
@@ -210,6 +282,29 @@ def _verify_receipt_signature(
     )
 
 
+def _verify_review_producer_pin(
+    checks: _Checks,
+    review_producers: dict[str, tuple[str, ...]] | None,
+    receipt,
+    label: str,
+) -> None:
+    """A producer trusted in general still must be pinned to *this* review role.
+
+    Mirrors the server-side `EvidencePolicy.review_producers` gate: a
+    `workstream-runner` key that legitimately signs code reviews must not
+    also be accepted for a `security` review just because its signature is
+    cryptographically valid and it is a globally trusted producer.
+    """
+    if not review_producers:
+        return
+    allowed = review_producers.get(receipt.role, ())
+    provenance = receipt.provenance
+    checks.require_cryptographic(
+        provenance is not None and provenance.producer_id in allowed,
+        f"{label} was produced by a producer authorized for role {receipt.role!r}",
+    )
+
+
 def _current_children(evidence: dict[str, Any], generation: int) -> dict[str, dict[str, Any]]:
     current: dict[str, dict[str, Any]] = {}
     for raw in evidence.get("children") or []:
@@ -232,9 +327,12 @@ def verify_documents(
     *,
     execution_id: UUID,
     source_urls: dict[str, str],
-    evidence_authenticator: RsaEvidenceAuthenticator | None = None,
+    evidence_trust: EvidenceTrust | None = None,
+    success_status: str = "verified",
 ) -> dict[str, Any]:
     """Verify public Ting documents without performing any external mutation."""
+    evidence_authenticator = evidence_trust.authenticator if evidence_trust else None
+    review_producers = evidence_trust.review_producers if evidence_trust else None
     checks = _Checks()
     checks.require(isinstance(detail, dict), "execution detail is an object")
     checks.require(isinstance(evidence, dict), "execution evidence is an object")
@@ -245,6 +343,7 @@ def verify_documents(
             execution_id,
             source_urls,
             cryptographic_verification_requested=evidence_authenticator is not None,
+            success_status=success_status,
         )
     detail = dict(detail)
     evidence = dict(evidence)
@@ -458,6 +557,12 @@ def verify_documents(
                 receipt,
                 f"review {receipt.receipt_id}",
             )
+            _verify_review_producer_pin(
+                checks,
+                review_producers,
+                receipt,
+                f"review {receipt.receipt_id}",
+            )
             checks.require(
                 not any(
                     item.blocking and item.disposition.value == "open" for item in receipt.findings
@@ -646,6 +751,12 @@ def verify_documents(
             integration_review,
             "integration review",
         )
+        _verify_review_producer_pin(
+            checks,
+            review_producers,
+            integration_review,
+            "integration review",
+        )
     if merge is not None and inspection is not None:
         checks.require(merge.state is PublicationState.MERGED, "forge confirms merged state")
         checks.require(
@@ -793,6 +904,7 @@ def verify_documents(
         execution_id,
         source_urls,
         cryptographic_verification_requested=evidence_authenticator is not None,
+        success_status=success_status,
     )
     report["execution"] = {
         "repository": repository,
@@ -850,6 +962,7 @@ def _report(
     source_urls: dict[str, str],
     *,
     cryptographic_verification_requested: bool,
+    success_status: str = "verified",
 ) -> dict[str, Any]:
     independent_verified = (
         cryptographic_verification_requested
@@ -860,7 +973,7 @@ def _report(
         "schemaVersion": 1,
         "verifiedAt": datetime.now(UTC).isoformat(),
         "executionId": str(execution_id),
-        "status": "verified" if not checks.all_errors else "failed",
+        "status": success_status if not checks.all_errors else "failed",
         "sourceUrls": source_urls,
         "trust": {
             "serverValidatedEvidence": not checks.errors,
@@ -881,7 +994,10 @@ def _report(
                         if cryptographic_verification_requested
                         else (
                             "It checks provenance presence on those receipts, but no public-key "
-                            "trust file was supplied."
+                            "trust file was supplied; the operator explicitly accepted the "
+                            "server's own attestation instead of independent verification "
+                            "(--trust-server-attestation), so this report's status is "
+                            "'server-attested', never 'verified'."
                         )
                     )
                 )
@@ -915,8 +1031,19 @@ def main(argv: list[str] | None = None) -> int:
         "--evidence-trust-file",
         type=Path,
         help=(
-            "Optional public-only JSON trust file containing trusted_public_keys inline PEMs "
-            "and producer_keys authorization mappings"
+            "Public-only JSON trust file containing trusted_public_keys inline PEMs, "
+            "producer_keys authorization mappings, and an optional review_producers "
+            "role pinning. Required for a 'verified' report status; without it, pass "
+            "--trust-server-attestation instead."
+        ),
+    )
+    parser.add_argument(
+        "--trust-server-attestation",
+        action="store_true",
+        help=(
+            "Proceed without independent cryptographic verification, trusting the "
+            "server's own report of what happened. The report status is then "
+            "'server-attested', never 'verified'."
         ),
     )
     parser.add_argument("--timeout-seconds", type=float, default=15.0)
@@ -924,10 +1051,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.timeout_seconds <= 0 or args.max_response_bytes <= 0:
         parser.error("timeout and response byte limit must be positive")
+    if args.evidence_trust_file is None and not args.trust_server_attestation:
+        parser.error(
+            "either --evidence-trust-file (independent cryptographic verification, "
+            "status 'verified') or --trust-server-attestation (status 'server-attested', "
+            "never 'verified') is required"
+        )
+    success_status = "verified" if args.evidence_trust_file is not None else "server-attested"
     urls = _source_urls(args.base_url, args.execution_id)
     try:
         token = _read_token(args.token_file)
-        evidence_authenticator = _load_evidence_trust_file(args.evidence_trust_file)
+        evidence_trust = _load_evidence_trust_file(args.evidence_trust_file)
         documents = {
             name: _fetch_json(
                 url,
@@ -943,7 +1077,8 @@ def main(argv: list[str] | None = None) -> int:
             documents["deliveryWaits"],
             execution_id=args.execution_id,
             source_urls=urls,
-            evidence_authenticator=evidence_authenticator,
+            evidence_trust=evidence_trust,
+            success_status=success_status,
         )
     except ProofVerificationError as exc:
         report = {
@@ -961,7 +1096,7 @@ def main(argv: list[str] | None = None) -> int:
             "errors": [str(exc)],
         }
     _write_report(report, args.output)
-    return 0 if report["status"] == "verified" else 1
+    return 0 if report["status"] in {"verified", "server-attested"} else 1
 
 
 if __name__ == "__main__":

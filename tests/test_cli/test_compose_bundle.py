@@ -563,6 +563,28 @@ class TestStackFiles:
         with pytest.raises(ValueError, match="absolute path"):
             sc.load_stack_settings(stale, data / "none.yaml")
 
+    def test_stack_file_absolutises_external_integration_source_dirs(
+        self, settings: CLISettings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`source_dir` must survive being re-read against another HOME/cwd, the
+        same as `compose_dir`/`data_dir` — otherwise a later in-container apply
+        resolves `~pkg` or a relative path differently and the mount silently
+        changes to something else (or nothing)."""
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        (tmp_path / "home" / "acme-pkg").mkdir(parents=True)
+        settings.docker.external_integrations = [
+            DockerExternalIntegrationConfig(
+                source_dir="~/acme-pkg",
+                definition_files=["integration.yaml"],
+            )
+        ]
+        data = tmp_path / "data"
+        path = sc.write_stack_file(settings, data)
+        recorded = yaml.safe_load(path.read_text())
+        assert recorded["docker"]["external_integrations"][0]["source_dir"] == str(
+            tmp_path / "home" / "acme-pkg"
+        )
+
     def test_compose_args_and_command(self, settings: CLISettings) -> None:
         args = sc.compose_args(settings)
         assert args[0] == "compose"

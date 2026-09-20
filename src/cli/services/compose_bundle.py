@@ -187,6 +187,13 @@ def stack_settings_dict(settings: CLISettings) -> dict[str, Any]:
     docker_section = settings.docker.model_dump(mode="json")
     docker_section["compose_dir"] = str(compose_dir(settings))
     docker_section["data_dir"] = str(data_dir(settings))
+    # Absolutise the same way compose_dir/data_dir are: the platform
+    # container that later re-renders this file (`niuu` stack apply) has a
+    # different HOME/cwd, so a `~` or relative source_dir would resolve
+    # somewhere nothing mounted and quietly point the wizard at an empty or
+    # unrelated directory instead of failing loudly.
+    for integration in docker_section.get("external_integrations", []):
+        integration["source_dir"] = str(Path(integration["source_dir"]).expanduser().resolve())
     result = {
         "server": settings.server.model_dump(mode="json"),
         "docker": docker_section,

@@ -14,6 +14,7 @@ Uses the dynamic adapter pattern (plain ``**kwargs`` constructor).
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import json
 import logging
 import os
@@ -391,6 +392,19 @@ class DockerStackController(StackControlPort):
         CLISettings.model_validate(
             deep_merge(self._current_settings().model_dump(mode="json"), merged)
         )
+        # This is the one path every caller of `stage()` goes through,
+        # including `PUT /stack`: whatever route staged the change, an
+        # `external_integrations` list is confined to the managed root (or an
+        # already-registered mount), checked for missing definition/manifest
+        # files, and checked for slug/module/component collisions before it
+        # is written. This does not execute the package's code — that only
+        # happens when a genuinely new package is added through the
+        # dedicated `/settings/external-integrations` endpoint.
+        staged_external_integrations = merged.get("docker", {}).get("external_integrations")
+        if staged_external_integrations is not None:
+            await asyncio.to_thread(
+                self._check_staged_external_integrations, staged_external_integrations
+            )
         _write_yaml(self._staged_file, merged)
         return await self.view()
 
@@ -649,16 +663,36 @@ class DockerStackController(StackControlPort):
             manifest_file,
         )
 
-    async def external_integrations_root(self) -> str:
-        return str((self._dir / "private-integrations").resolve())
-
-    def _validate_external_integration(
+    async def describe_external_integration(
         self,
         source_dir: str,
         definition_files: list[str],
         manifest_file: str = "",
     ) -> ExternalIntegrationValidation:
-        """Validate a UI-managed package without copying it into the image."""
+        return await asyncio.to_thread(
+            self._describe_external_integration,
+            source_dir,
+            definition_files,
+            manifest_file,
+        )
+
+    async def external_integrations_root(self) -> str:
+        return str((self._dir / "private-integrations").resolve())
+
+    def _resolve_external_integration_source(
+        self,
+        source_dir: str,
+        definition_files: list[str],
+        manifest_file: str,
+    ) -> tuple[Path, Path | None, ExternalIntegrationValidation | None]:
+        """Confine *source_dir* to the managed root or an already-registered mount.
+
+        Returns ``(source, validation_source, error)``: ``error`` is set (and
+        ``validation_source`` is ``None``) when the directory is not confined
+        or does not exist — this is the check every caller of a staged
+        ``external_integrations`` change goes through, whether it arrives via
+        the dedicated settings endpoints or ``PUT /stack``.
+        """
         source = Path(source_dir).expanduser().resolve()
         managed_root = (self._dir / "private-integrations").resolve()
         validation_source = source
@@ -671,50 +705,55 @@ class DockerStackController(StackControlPort):
                 manifest_file,
             )
             if validation_source is None:
-                return ExternalIntegrationValidation(
+                return (
+                    source,
+                    None,
+                    ExternalIntegrationValidation(
+                        ok=False,
+                        source_dir=str(source),
+                        definition_files=tuple(definition_files),
+                        manifest_file=manifest_file,
+                        errors=(f"source_dir must be inside {managed_root}",),
+                    ),
+                )
+        if not validation_source.is_dir():
+            return (
+                source,
+                None,
+                ExternalIntegrationValidation(
                     ok=False,
                     source_dir=str(source),
                     definition_files=tuple(definition_files),
                     manifest_file=manifest_file,
-                    errors=(f"source_dir must be inside {managed_root}",),
-                )
-        if not validation_source.is_dir():
-            return ExternalIntegrationValidation(
-                ok=False,
-                source_dir=str(source),
-                definition_files=tuple(definition_files),
-                manifest_file=manifest_file,
-                errors=(f"Package directory does not exist: {validation_source}",),
+                    errors=(f"Package directory does not exist: {validation_source}",),
+                ),
             )
+        return source, validation_source, None
 
+    def _describe_external_integration(
+        self,
+        source_dir: str,
+        definition_files: list[str],
+        manifest_file: str = "",
+    ) -> ExternalIntegrationValidation:
+        """Structural validation only: confinement, existence, and static parsing.
+
+        Never imports or executes anything from the package, so it is safe to
+        run for every registered package on every list/add/stage call.
+        """
+        source, validation_source, error = self._resolve_external_integration_source(
+            source_dir, definition_files, manifest_file
+        )
+        if error is not None:
+            return error
+        assert validation_source is not None
         try:
-            normalized = validate_stack_changes(
-                {
-                    "external_integrations": [
-                        {
-                            "source_dir": str(validation_source),
-                            "definition_files": definition_files,
-                            "manifest_file": manifest_file,
-                        }
-                    ]
-                }
-            )["docker"]["external_integrations"][0]
-            definition_paths = [validation_source / name for name in normalized["definition_files"]]
-            metadata_paths = list(definition_paths)
-            manifest_path = None
-            if normalized.get("manifest_file"):
-                manifest_path = validation_source / normalized["manifest_file"]
-                metadata_paths.append(manifest_path)
-            for path in metadata_paths:
-                resolved = path.resolve()
-                try:
-                    resolved.relative_to(validation_source)
-                except ValueError as exc:
-                    raise ValueError(
-                        f"Definition file resolves outside source_dir: {path}"
-                    ) from exc
-                if not resolved.is_file():
-                    raise ValueError(f"External package file does not exist: {path}")
+            normalized, definition_paths, manifest_path = _normalize_external_integration(
+                validation_source, definition_files, manifest_file
+            )
+            # Static, so it guards every route that can stage a package, not only
+            # the endpoint that goes on to import it.
+            _check_import_shadowing(validation_source)
             discovered: list[ExternalIntegrationDefinition] = []
             components: list[ExternalModuleComponent] = []
             module_id = ""
@@ -740,11 +779,6 @@ class DockerStackController(StackControlPort):
             # collisions with the built-in catalog before a restart is attempted.
             load_integration_definition_configs(
                 IntegrationsConfig(definition_files=[str(path) for path in definition_paths])
-            )
-            _validate_external_imports(
-                validation_source,
-                manifest_path=manifest_path,
-                adapters=[definition.adapter for definition in definitions if definition.adapter],
             )
             for definition in definitions:
                 discovered.append(
@@ -775,6 +809,143 @@ class DockerStackController(StackControlPort):
             components=tuple(components),
         )
 
+    def _validate_external_integration(
+        self,
+        source_dir: str,
+        definition_files: list[str],
+        manifest_file: str = "",
+    ) -> ExternalIntegrationValidation:
+        """Full validation of a UI-managed package: structure, then imports.
+
+        Only the import step actually runs the package's code, in a
+        subprocess that cannot shadow the platform (`_check_import_shadowing`,
+        `_validate_external_imports`) and is bounded by a configured timeout.
+        """
+        source, validation_source, error = self._resolve_external_integration_source(
+            source_dir, definition_files, manifest_file
+        )
+        if error is not None:
+            return error
+        assert validation_source is not None
+        try:
+            normalized, definition_paths, manifest_path = _normalize_external_integration(
+                validation_source, definition_files, manifest_file
+            )
+            discovered: list[ExternalIntegrationDefinition] = []
+            components: list[ExternalModuleComponent] = []
+            module_id = ""
+            if manifest_path is not None:
+                loaded_module = read_external_module_manifest(manifest_path)
+                module_id = loaded_module.manifest.id
+                definition_paths.extend(loaded_module.integration_definition_files)
+                components.extend(
+                    ExternalModuleComponent(
+                        kind=component.kind,
+                        name=component.name,
+                        adapter=component.adapter,
+                    )
+                    for component in loaded_module.manifest.components
+                )
+            definitions = load_integration_definition_configs(
+                IntegrationsConfig(
+                    definitions=[],
+                    definition_files=[str(path) for path in definition_paths],
+                )
+            )
+            load_integration_definition_configs(
+                IntegrationsConfig(definition_files=[str(path) for path in definition_paths])
+            )
+            _check_import_shadowing(validation_source)
+            timeout_seconds = (
+                self._current_settings().docker.external_integration_validation_timeout_seconds
+            )
+            _validate_external_imports(
+                validation_source,
+                manifest_path=manifest_path,
+                adapters=[definition.adapter for definition in definitions if definition.adapter],
+                timeout_seconds=timeout_seconds,
+            )
+            for definition in definitions:
+                discovered.append(
+                    ExternalIntegrationDefinition(
+                        slug=definition.slug,
+                        name=definition.name,
+                        integration_type=definition.integration_type,
+                        adapter=definition.adapter,
+                    )
+                )
+            if not discovered and not components:
+                raise ValueError("No integration definitions or module components were found")
+        except (AttributeError, ImportError, OSError, TypeError, ValueError) as exc:
+            return ExternalIntegrationValidation(
+                ok=False,
+                source_dir=str(source),
+                definition_files=tuple(definition_files),
+                manifest_file=manifest_file,
+                errors=(str(exc),),
+            )
+        return ExternalIntegrationValidation(
+            ok=True,
+            source_dir=str(source),
+            definition_files=tuple(normalized["definition_files"]),
+            manifest_file=normalized.get("manifest_file", ""),
+            module_id=module_id,
+            definitions=tuple(discovered),
+            components=tuple(components),
+        )
+
+    def _check_staged_external_integrations(self, packages: list[dict[str, Any]]) -> None:
+        """Structural + collision validation for a whole staged package list.
+
+        Runs whatever confined ``external_integrations`` list is about to be
+        staged through the same checks `add_external_integration` applies,
+        so ``PUT /stack`` cannot bypass them. Deliberately uses the
+        structural-only description (no import execution): a package already
+        registered was already import-checked when it was added, so this only
+        needs to re-confirm confinement, existence, and that the final list
+        has no slug/module/component collisions.
+        """
+        slugs: set[str] = set()
+        module_ids: set[str] = set()
+        component_names: set[str] = set()
+        for package in packages:
+            result = self._describe_external_integration(
+                str(package.get("source_dir", "")),
+                list(package.get("definition_files", [])),
+                str(package.get("manifest_file", "")),
+            )
+            if not result.ok:
+                raise ValueError(
+                    f"external_integrations entry {package.get('source_dir')!r} is invalid: "
+                    + "; ".join(result.errors)
+                )
+            duplicate_slugs = sorted(
+                definition.slug for definition in result.definitions if definition.slug in slugs
+            )
+            if duplicate_slugs:
+                raise ValueError(
+                    "Integration slugs supplied by more than one external package: "
+                    + ", ".join(duplicate_slugs)
+                )
+            slugs.update(definition.slug for definition in result.definitions)
+            if result.module_id:
+                if result.module_id in module_ids:
+                    raise ValueError(
+                        f"External module id supplied by more than one package: {result.module_id}"
+                    )
+                module_ids.add(result.module_id)
+            duplicate_components = sorted(
+                f"{component.kind}:{component.name}"
+                for component in result.components
+                if component.name in component_names
+            )
+            if duplicate_components:
+                raise ValueError(
+                    "External component names supplied by more than one package: "
+                    + ", ".join(duplicate_components)
+                )
+            component_names.update(component.name for component in result.components)
+
     def _registered_external_integration_mount(
         self,
         source: Path,
@@ -796,37 +967,161 @@ class DockerStackController(StackControlPort):
         return None
 
 
+def _normalize_external_integration(
+    validation_source: Path,
+    definition_files: list[str],
+    manifest_file: str,
+) -> tuple[dict[str, Any], list[Path], Path | None]:
+    """Type-check the request and confirm its definition/manifest files exist.
+
+    Returns the normalized change-set entry, the resolved definition file
+    paths (relative ones only; a manifest may add more), and the manifest
+    path when one was given.
+    """
+    normalized = validate_stack_changes(
+        {
+            "external_integrations": [
+                {
+                    "source_dir": str(validation_source),
+                    "definition_files": definition_files,
+                    "manifest_file": manifest_file,
+                }
+            ]
+        }
+    )["docker"]["external_integrations"][0]
+    definition_paths = [validation_source / name for name in normalized["definition_files"]]
+    metadata_paths = list(definition_paths)
+    manifest_path = None
+    if normalized.get("manifest_file"):
+        manifest_path = validation_source / normalized["manifest_file"]
+        metadata_paths.append(manifest_path)
+    for path in metadata_paths:
+        resolved = path.resolve()
+        try:
+            resolved.relative_to(validation_source)
+        except ValueError as exc:
+            raise ValueError(f"Definition file resolves outside source_dir: {path}") from exc
+        if not resolved.is_file():
+            raise ValueError(f"External package file does not exist: {path}")
+    return normalized, definition_paths, manifest_path
+
+
+# Top-level package names this project ships (`packages` in pyproject.toml).
+# An external package that ships a module of the same name would shadow the
+# platform's own code the moment it is put anywhere on `sys.path`.
+PLATFORM_PACKAGE_NAMES: frozenset[str] = frozenset(
+    {
+        "audit",
+        "cli",
+        "credentials",
+        "features",
+        "guild",
+        "identity",
+        "integrations",
+        "niuu",
+        "volundr",
+        "ting",
+        "tracker",
+        "skuld",
+        "sleipnir",
+        "ravn",
+        "bifrost",
+        "mimir",
+        "observatory",
+        "personas",
+        "tyr",
+    }
+)
+
+# The validator subprocess needs nothing else: no database URLs, no
+# provider tokens, no signing keys. Anything not listed here never reaches
+# an external package's import-time code.
+_VALIDATOR_ENV_ALLOWLIST = ("PATH", "LANG", "LC_ALL", "LC_CTYPE")
+
+
+def _minimal_validator_environment() -> dict[str, str]:
+    """A scrubbed environment for the import-validator subprocess."""
+    return {key: os.environ[key] for key in _VALIDATOR_ENV_ALLOWLIST if key in os.environ}
+
+
+def _check_import_shadowing(source: Path) -> None:
+    """Reject a package whose top-level module names would shadow the stdlib,
+    an installed distribution, or one of this platform's own packages.
+
+    A package that is merely a dependency of the validated import graph is
+    put on `sys.path` (see `_validate_external_imports`); a module named the
+    same as `os`, `yaml`, `niuu`, `sitecustomize`, or an installed dependency
+    would silently replace it in every process that imports it, not just the
+    validator's.
+    """
+    reserved = set(sys.stdlib_module_names) | PLATFORM_PACKAGE_NAMES
+    reserved.update(importlib.metadata.packages_distributions().keys())
+    for entry in sorted(source.iterdir()):
+        name: str | None = None
+        if entry.is_file() and entry.suffix == ".py":
+            name = entry.stem
+        elif entry.is_dir() and (entry / "__init__.py").is_file():
+            name = entry.name
+        if name is None or name not in reserved:
+            continue
+        raise ValueError(
+            f"External package module {name!r} in {source} would shadow a stdlib, "
+            "installed, or platform module of the same name; rename it before "
+            "the package can be validated"
+        )
+
+
 def _validate_external_imports(
     source: Path,
     *,
     manifest_path: Path | None,
     adapters: list[str],
+    timeout_seconds: float,
 ) -> None:
-    """Validate external imports in a fresh interpreter with fresh bytecode."""
+    """Validate external imports in a fresh interpreter with fresh bytecode.
+
+    Run with ``-P`` (never prepend the script/cwd directory to ``sys.path``)
+    and the package path passed explicitly as ``--package-path``, which
+    ``volundr.external_modules`` appends to the *end* of ``sys.path`` rather
+    than the front. Combined with the scrubbed environment (no secrets) and a
+    configured timeout (no hang can wedge every list/add call), the package
+    can supply the modules it declares but cannot shadow the platform or the
+    interpreter that is validating it.
+    """
     if manifest_path is None and not adapters:
         return
 
-    command = [sys.executable, "-m", "volundr.external_modules"]
+    command = [
+        sys.executable,
+        "-P",
+        "-m",
+        "volundr.external_modules",
+        "--package-path",
+        str(source),
+    ]
     if manifest_path is not None:
         command.extend(("--manifest", str(manifest_path)))
     for adapter in adapters:
         command.extend(("--adapter", adapter))
 
-    environment = os.environ.copy()
-    existing_python_path = environment.get("PYTHONPATH", "")
-    environment["PYTHONPATH"] = os.pathsep.join(
-        part for part in (str(source), existing_python_path) if part
-    )
+    environment = _minimal_validator_environment()
     with tempfile.TemporaryDirectory(prefix="niuu-module-pycache-") as pycache:
         environment["PYTHONPYCACHEPREFIX"] = pycache
-        result = subprocess.run(
-            command,
-            cwd=source,
-            env=environment,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                command,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError(
+                f"External package validation timed out after {timeout_seconds:.0f}s; "
+                "raise docker.external_integration_validation_timeout_seconds if the "
+                "package legitimately needs longer to import"
+            ) from exc
     if result.returncode == 0:
         return
     detail = result.stderr.strip() or result.stdout.strip()

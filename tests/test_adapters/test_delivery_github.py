@@ -138,6 +138,112 @@ async def test_inspect_binds_checks_to_exact_head_and_base(provider: GitHubProvi
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_inspect_keeps_the_worst_check_on_a_name_collision(provider: GitHubProvider) -> None:
+    """A passing check-run must not hide a failing commit status of the same name."""
+    respx.get(f"{API}/pulls/7").mock(return_value=Response(200, json=_pr()))
+    respx.get(f"{API}/git/ref/heads/main").mock(
+        return_value=Response(200, json={"object": {"sha": BASE}})
+    )
+    respx.get(f"{API}/commits/{HEAD}/check-runs").mock(
+        return_value=Response(
+            200,
+            json={
+                "check_runs": [
+                    {"name": "ci", "status": "completed", "conclusion": "success"},
+                ]
+            },
+        )
+    )
+    respx.get(f"{API}/commits/{HEAD}/status").mock(
+        return_value=Response(
+            200,
+            json={"statuses": [{"context": "ci", "state": "failure"}]},
+        )
+    )
+
+    candidate, receipt = await provider.inspect_delivery_candidate(REPOSITORY, 7, ("ci",))
+
+    del candidate
+    checks_by_name = {check.name: check for check in receipt.checks}
+    assert checks_by_name["ci"].conclusion is CheckConclusion.FAILING
+    await provider.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_inspect_paginates_check_runs_and_statuses(provider: GitHubProvider) -> None:
+    respx.get(f"{API}/pulls/7").mock(return_value=Response(200, json=_pr()))
+    respx.get(f"{API}/git/ref/heads/main").mock(
+        return_value=Response(200, json={"object": {"sha": BASE}})
+    )
+    first_page_runs = [
+        {"name": f"run-{i}", "status": "completed", "conclusion": "success"} for i in range(100)
+    ]
+    second_page_runs = [{"name": "run-100", "status": "completed", "conclusion": "failure"}]
+    respx.get(f"{API}/commits/{HEAD}/check-runs", params={"page": 1}).mock(
+        return_value=Response(200, json={"check_runs": first_page_runs})
+    )
+    respx.get(f"{API}/commits/{HEAD}/check-runs", params={"page": 2}).mock(
+        return_value=Response(200, json={"check_runs": second_page_runs})
+    )
+    first_page_statuses = [{"context": f"status-{i}", "state": "success"} for i in range(100)]
+    second_page_statuses = [{"context": "status-100", "state": "failure"}]
+    respx.get(f"{API}/commits/{HEAD}/status", params={"page": 1}).mock(
+        return_value=Response(200, json={"statuses": first_page_statuses})
+    )
+    respx.get(f"{API}/commits/{HEAD}/status", params={"page": 2}).mock(
+        return_value=Response(200, json={"statuses": second_page_statuses})
+    )
+
+    _candidate, receipt = await provider.inspect_delivery_candidate(REPOSITORY, 7, ())
+
+    checks_by_name = {check.name: check for check in receipt.checks}
+    assert checks_by_name["run-100"].conclusion is CheckConclusion.FAILING
+    assert checks_by_name["status-100"].conclusion is CheckConclusion.FAILING
+    assert len(checks_by_name) == 202
+    await provider.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_ensure_review_filters_listing_by_head_and_base(provider: GitHubProvider) -> None:
+    """Recovery must work even in a repo with more than 100 open PRs: filter the
+    listing to this campaign's exact head/base instead of scanning one page."""
+    respx.get(f"{API}/commits/campaign/work").mock(return_value=Response(200, json={"sha": HEAD}))
+    existing = {
+        "number": 7,
+        "body": "<!-- niuu-campaign:campaign-1 -->",
+        "head": {"ref": "campaign/work", "sha": HEAD},
+        "base": {"ref": "main"},
+    }
+    listing = respx.get(
+        f"{API}/pulls",
+        params={"state": "open", "head": "org:campaign/work", "base": "main"},
+    ).mock(return_value=Response(200, json=[existing]))
+    respx.patch(f"{API}/pulls/7").mock(
+        return_value=Response(
+            200, json={**existing, "html_url": "https://github.com/org/repo/pull/7"}
+        )
+    )
+    request = ReviewRequest(
+        campaign_id="campaign-1",
+        repository=REPOSITORY,
+        title="Delivery",
+        description="Verified candidate",
+        source_branch="campaign/work",
+        target_branch="main",
+        expected_head_sha=HEAD,
+    )
+
+    publication = await provider.ensure_review(request)
+
+    assert listing.called
+    assert publication.review_number == 7
+    await provider.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_publish_branch_uses_remote_cas_and_verifies_result(
     provider: GitHubProvider,
 ) -> None:
@@ -454,6 +560,111 @@ async def test_reconcile_requires_canonical_remote_result(provider: GitHubProvid
     assert receipt.state is PublicationState.MERGED
     assert receipt.result_sha == RESULT
     assert receipt.canonical_target_sha == RESULT
+    await provider.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reconcile_accepts_a_merge_result_contained_in_an_advanced_target(
+    provider: GitHubProvider,
+) -> None:
+    """A merge queue landing another change on `main` after this merge must not
+    fail a genuinely merged campaign forever: the result being an ancestor of
+    the moved tip is proof enough."""
+    operation_id = "operation-7"
+    advanced_tip = "d" * 40
+    respx.get(f"{API}/pulls/7").mock(return_value=Response(200, json=_pr(merged=True)))
+    respx.get(f"{API}/pulls/7/merge-async/{operation_id}").mock(
+        return_value=Response(200, json={"status": "merged", "details": {"sha": RESULT}})
+    )
+    respx.get(f"{API}/git/commits/{RESULT}").mock(
+        return_value=Response(200, json={"parents": [{"sha": BASE}]})
+    )
+    respx.get(f"{API}/git/ref/heads/main").mock(
+        return_value=Response(200, json={"object": {"sha": advanced_tip}})
+    )
+    respx.get(f"{API}/compare/{RESULT}...{advanced_tip}").mock(
+        return_value=Response(200, json={"status": "ahead"})
+    )
+    request = MergeRequest(
+        campaign_id="campaign-1",
+        repository=REPOSITORY,
+        review_number=7,
+        expected_head_sha=HEAD,
+        expected_base_sha=BASE,
+        expected_target_branch="main",
+        method="squash",
+        provider_operation_id=operation_id,
+    )
+
+    receipt = await provider.reconcile_merge(request)
+
+    assert receipt.state is PublicationState.MERGED
+    assert receipt.result_sha == RESULT
+    assert receipt.canonical_target_sha == advanced_tip
+    await provider.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reconcile_rejects_a_merge_result_not_contained_in_an_advanced_target(
+    provider: GitHubProvider,
+) -> None:
+    operation_id = "operation-7"
+    unrelated_tip = "d" * 40
+    respx.get(f"{API}/pulls/7").mock(return_value=Response(200, json=_pr(merged=True)))
+    respx.get(f"{API}/pulls/7/merge-async/{operation_id}").mock(
+        return_value=Response(200, json={"status": "merged", "details": {"sha": RESULT}})
+    )
+    respx.get(f"{API}/git/commits/{RESULT}").mock(
+        return_value=Response(200, json={"parents": [{"sha": BASE}]})
+    )
+    respx.get(f"{API}/git/ref/heads/main").mock(
+        return_value=Response(200, json={"object": {"sha": unrelated_tip}})
+    )
+    respx.get(f"{API}/compare/{RESULT}...{unrelated_tip}").mock(
+        return_value=Response(200, json={"status": "diverged"})
+    )
+    request = MergeRequest(
+        campaign_id="campaign-1",
+        repository=REPOSITORY,
+        review_number=7,
+        expected_head_sha=HEAD,
+        expected_base_sha=BASE,
+        expected_target_branch="main",
+        method="squash",
+        provider_operation_id=operation_id,
+    )
+
+    with pytest.raises(RuntimeError, match="ancestry proof is unavailable"):
+        await provider.reconcile_merge(request)
+    await provider.close()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reconcile_reports_queued_when_target_advances_while_still_queued(
+    provider: GitHubProvider,
+) -> None:
+    """The base branch moving on while this PR is still open/unmerged is normal
+    merge-queue churn (something ahead of it landed), not a terminal failure."""
+    respx.get(f"{API}/pulls/7").mock(
+        return_value=Response(200, json=_pr(merged=False, target_sha="d" * 40))
+    )
+    request = MergeRequest(
+        campaign_id="campaign-1",
+        repository=REPOSITORY,
+        review_number=7,
+        expected_head_sha=HEAD,
+        expected_base_sha=BASE,
+        expected_target_branch="main",
+        method="squash",
+        provider_operation_id="operation-7",
+    )
+
+    receipt = await provider.reconcile_merge(request)
+
+    assert receipt.state is PublicationState.QUEUED
     await provider.close()
 
 

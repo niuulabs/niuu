@@ -672,7 +672,7 @@ def create_setup_router(
             root = await control.external_integrations_root()
             items = []
             for index, package in enumerate(view.effective.external_integrations):
-                validation = await control.validate_external_integration(
+                validation = await control.describe_external_integration(
                     package.source_dir,
                     list(package.definition_files),
                     package.manifest_file,
@@ -741,7 +741,7 @@ def create_setup_router(
             existing_module_ids: set[str] = set()
             existing_components: set[str] = set()
             for package in view.effective.external_integrations:
-                current = await control.validate_external_integration(
+                current = await control.describe_external_integration(
                     package.source_dir,
                     list(package.definition_files),
                     package.manifest_file,

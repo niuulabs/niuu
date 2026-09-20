@@ -419,7 +419,14 @@ def _refresh_child_manifest(child: dict) -> None:
     )
 
 
-def _verify_signed(documents, evidence_authenticator):
+def _verify_signed(documents, evidence_authenticator, review_producers=None):
+    trust = (
+        evidence_authenticator
+        if isinstance(evidence_authenticator, verifier.EvidenceTrust)
+        else verifier.EvidenceTrust(
+            authenticator=evidence_authenticator, review_producers=review_producers or {}
+        )
+    )
     detail, evidence, waits = documents
     return verifier.verify_documents(
         detail,
@@ -427,7 +434,7 @@ def _verify_signed(documents, evidence_authenticator):
         waits,
         execution_id=EXECUTION_ID,
         source_urls=verifier._source_urls("http://127.0.0.1:8180", EXECUTION_ID),
-        evidence_authenticator=evidence_authenticator,
+        evidence_trust=trust,
     )
 
 
@@ -458,6 +465,56 @@ def test_public_trust_file_independently_verifies_every_receipt(tmp_path: Path) 
     assert report["trust"]["independentCryptographicVerification"] is True
     assert report["trust"]["cryptographicVerificationRequested"] is True
     assert report["trust"]["receiptSignaturesChecked"] == 9
+
+
+def test_review_producers_accepts_correctly_pinned_reviewers() -> None:
+    documents, evidence_authenticator, _trust = _signed_documents()
+    review_producers = {
+        "code": ["code-reviewer"],
+        "security": ["security-reviewer"],
+        "adversarial": ["adversarial-reviewer"],
+        "integration": ["integration-reviewer"],
+    }
+
+    report = _verify_signed(documents, evidence_authenticator, review_producers=review_producers)
+
+    assert report["status"] == "verified", report["errors"]
+
+
+def test_review_producers_rejects_a_producer_signing_outside_its_pinned_role() -> None:
+    """A producer that is a globally trusted signer (its key validates) must still be
+    rejected for a review role it is not pinned to — a workstream-runner key must not
+    be able to sign a security review, the same guarantee EvidencePolicy.review_producers
+    enforces server-side."""
+    documents, evidence_authenticator, _trust = _signed_documents()
+    child = documents[0]["children"][0]
+    security_review = next(
+        item for item in child["candidate"]["reviewReceipts"] if item["role"] == "security"
+    )
+    security_review["provenance"]["producer_id"] = "workstream-runner"
+    _refresh_child_manifest(child)
+    review_producers = {
+        "code": ["code-reviewer"],
+        "security": ["security-reviewer"],
+        "adversarial": ["adversarial-reviewer"],
+        "integration": ["integration-reviewer"],
+    }
+
+    report = _verify_signed(documents, evidence_authenticator, review_producers=review_producers)
+
+    assert report["status"] == "failed"
+    assert any("authorized for role 'security'" in item for item in report["errors"])
+
+
+def test_review_producers_trust_file_must_pin_every_required_role(tmp_path: Path) -> None:
+    _documents_unused, _evidence_authenticator, trust = _signed_documents()
+    # missing security/adversarial/integration
+    trust["review_producers"] = {"code": ["code-reviewer"]}
+    trust_file = tmp_path / "evidence-trust.json"
+    trust_file.write_text(json.dumps(trust), encoding="utf-8")
+
+    with pytest.raises(verifier.ProofVerificationError, match="pin every required review role"):
+        verifier._load_evidence_trust_file(trust_file)
 
 
 def test_completed_immediate_remote_delivery_without_waits_remains_valid() -> None:
@@ -781,6 +838,7 @@ def test_cli_reads_only_three_public_endpoints_and_writes_report(
             str(output),
             "--token-file",
             str(token_file),
+            "--trust-server-attestation",
         ]
     )
 
@@ -789,7 +847,20 @@ def test_cli_reads_only_three_public_endpoints_and_writes_report(
     assert all(item[1]["token"] == "secret-proof-token" for item in fetched)
     rendered = output.read_text()
     assert "secret-proof-token" not in rendered
-    assert json.loads(rendered)["status"] == "verified"
+    assert json.loads(rendered)["status"] == "server-attested"
+
+
+def test_cli_requires_a_trust_choice(monkeypatch) -> None:
+    """Without a trust file or an explicit opt-in, the script must refuse rather than
+    silently report `status: "verified"` with zero signatures checked."""
+    detail, evidence, waits = _documents()
+    documents = iter((detail, evidence, waits))
+    monkeypatch.setattr(verifier, "_fetch_json", lambda *args, **kwargs: next(documents))
+
+    with pytest.raises(SystemExit) as exc_info:
+        verifier.main(["--base-url", "http://127.0.0.1:8180", "--execution-id", str(EXECUTION_ID)])
+
+    assert exc_info.value.code == 2
 
 
 def test_cli_returns_nonzero_for_canceled_public_fixture(monkeypatch) -> None:
@@ -799,6 +870,14 @@ def test_cli_returns_nonzero_for_canceled_public_fixture(monkeypatch) -> None:
     monkeypatch.setattr(verifier, "_fetch_json", lambda *args, **kwargs: next(documents))
 
     assert (
-        verifier.main(["--base-url", "http://127.0.0.1:8180", "--execution-id", str(EXECUTION_ID)])
+        verifier.main(
+            [
+                "--base-url",
+                "http://127.0.0.1:8180",
+                "--execution-id",
+                str(EXECUTION_ID),
+                "--trust-server-attestation",
+            ]
+        )
         == 1
     )

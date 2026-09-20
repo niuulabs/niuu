@@ -227,11 +227,22 @@ def _validate_catalog_adapter(adapter: str) -> None:
 
 
 def _validation_main(argv: list[str] | None = None) -> int:
-    """Validate imports in a short-lived process used by the Settings API."""
+    """Validate imports in a short-lived process used by the Settings API.
+
+    Invoked with ``-P`` so the interpreter never prepends the script/cwd
+    directory to ``sys.path``. ``--package-path`` is appended to the end of
+    ``sys.path`` instead of the front, so the package can supply the module
+    named by ``--adapter``/the manifest but can never shadow the stdlib, an
+    installed distribution, or the platform's own packages that a normal
+    import would resolve first.
+    """
     parser = argparse.ArgumentParser()
+    parser.add_argument("--package-path", type=Path)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--adapter", action="append", default=[])
     args = parser.parse_args(argv)
+    if args.package_path is not None:
+        sys.path.append(str(args.package_path))
     try:
         if args.manifest is not None:
             load_external_module_manifest(args.manifest)

@@ -41,6 +41,30 @@ from niuu.ports.git import (
 
 logger = logging.getLogger(__name__)
 
+# Least to most severe. A check-run and a commit status can legitimately share
+# a name (the same CI context reported through both APIs, or a rerun history);
+# on a collision the worse conclusion must win so a passing run can never hide
+# a failing status of the same name.
+_CHECK_SEVERITY: dict[CheckConclusion, int] = {
+    CheckConclusion.PASSING: 0,
+    CheckConclusion.SKIPPED: 1,
+    CheckConclusion.UNKNOWN: 2,
+    CheckConclusion.PENDING: 3,
+    CheckConclusion.CANCELED: 4,
+    CheckConclusion.FAILING: 5,
+}
+
+
+def _merge_worst_check(
+    checks_by_name: dict[str, CheckRecord], name: str, record: CheckRecord
+) -> None:
+    existing = checks_by_name.get(name)
+    if (
+        existing is None
+        or _CHECK_SEVERITY[record.conclusion] > _CHECK_SEVERITY[existing.conclusion]
+    ):
+        checks_by_name[name] = record
+
 
 class GitHubProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
     """GitHub git provider implementation.
@@ -751,7 +775,19 @@ class GitHubProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
         client = await self._get_client()
         marker = f"<!-- niuu-campaign:{request.campaign_id} -->"
         description = f"{request.description.rstrip()}\n\n{marker}".strip()
-        listing = await client.get(f"{path}/pulls", params={"state": "open", "per_page": 100})
+        parsed_repo = self._parse_url(request.repository)
+        if parsed_repo is None:
+            raise ValueError(f"Unsupported repo URL: {request.repository}")
+        owner, _repo_name = parsed_repo
+        listing = await client.get(
+            f"{path}/pulls",
+            params={
+                "state": "open",
+                "per_page": 100,
+                "head": f"{owner}:{request.source_branch}",
+                "base": request.target_branch,
+            },
+        )
         if listing.status_code != 200:
             raise RuntimeError(f"Cannot reconcile GitHub PRs: HTTP {listing.status_code}")
         matches = [
@@ -844,25 +880,41 @@ class GitHubProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
             raise RuntimeError("GitHub target ref response omitted its commit SHA")
 
         checks_by_name: dict[str, CheckRecord] = {}
-        runs_response = await client.get(
-            f"{path}/commits/{candidate_sha}/check-runs", params={"per_page": 100}
-        )
-        if runs_response.status_code != 200:
-            raise RuntimeError(
-                f"Cannot inspect GitHub check runs: HTTP {runs_response.status_code}"
+        page = 1
+        while True:
+            runs_response = await client.get(
+                f"{path}/commits/{candidate_sha}/check-runs",
+                params={"per_page": 100, "page": page},
             )
-        for run in runs_response.json().get("check_runs", []):
-            name = str(run.get("name") or "unnamed-check")
-            checks_by_name.setdefault(name, self._github_check(run))
+            if runs_response.status_code != 200:
+                raise RuntimeError(
+                    f"Cannot inspect GitHub check runs: HTTP {runs_response.status_code}"
+                )
+            runs = runs_response.json().get("check_runs", [])
+            for run in runs:
+                name = str(run.get("name") or "unnamed-check")
+                _merge_worst_check(checks_by_name, name, self._github_check(run))
+            if len(runs) < 100:
+                break
+            page += 1
 
-        statuses_response = await client.get(f"{path}/commits/{candidate_sha}/status")
-        if statuses_response.status_code != 200:
-            raise RuntimeError(
-                f"Cannot inspect GitHub commit statuses: HTTP {statuses_response.status_code}"
+        page = 1
+        while True:
+            statuses_response = await client.get(
+                f"{path}/commits/{candidate_sha}/status",
+                params={"per_page": 100, "page": page},
             )
-        for status in statuses_response.json().get("statuses", []):
-            name = str(status.get("context") or "unnamed-status")
-            checks_by_name.setdefault(name, self._github_status(status))
+            if statuses_response.status_code != 200:
+                raise RuntimeError(
+                    f"Cannot inspect GitHub commit statuses: HTTP {statuses_response.status_code}"
+                )
+            statuses = statuses_response.json().get("statuses", [])
+            for status in statuses:
+                name = str(status.get("context") or "unnamed-status")
+                _merge_worst_check(checks_by_name, name, self._github_status(status))
+            if len(statuses) < 100:
+                break
+            page += 1
         for missing in sorted(set(required_checks) - checks_by_name.keys()):
             checks_by_name[missing] = CheckRecord(name=missing, conclusion=CheckConclusion.UNKNOWN)
         checks = tuple(checks_by_name.values())
@@ -1136,9 +1188,14 @@ class GitHubProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
         if (
             source_sha != request.expected_head_sha
             or target_branch != request.expected_target_branch
-            or (not merged and base_sha != request.expected_base_sha)
         ):
             return receipt
+        if not merged and base_sha != request.expected_base_sha:
+            # The target branch tip moving while this PR is still queued (a merge
+            # queue landing something ahead of it) is normal, not a failure: only
+            # a closed/abandoned PR is terminal. Report it as still in progress so
+            # a genuinely merged campaign is not reported as failed forever.
+            return receipt.model_copy(update={"state": PublicationState.QUEUED})
         if not merged and str(data.get("state") or "").casefold() == "closed":
             return receipt
         operation = await client.get(
@@ -1190,7 +1247,9 @@ class GitHubProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
         if ref_response.status_code != 200:
             raise RuntimeError("Cannot verify GitHub canonical target branch")
         canonical_sha = str(ref_response.json().get("object", {}).get("sha") or "")
-        if canonical_sha != result_sha:
+        if canonical_sha != result_sha and not await self._github_result_contained_in_target(
+            client, path, result_sha=result_sha, target_sha=canonical_sha
+        ):
             raise RuntimeError(
                 "GitHub target advanced beyond the merge result; ancestry proof is unavailable"
             )
@@ -1204,6 +1263,32 @@ class GitHubProvider(GitProvider, GitWorkflowProvider, DeliveryForgeProvider):
             canonical_target_sha=canonical_sha,
             verified_at=datetime.now(UTC),
         )
+
+    async def _github_result_contained_in_target(
+        self,
+        client: httpx.AsyncClient,
+        path: str,
+        *,
+        result_sha: str,
+        target_sha: str,
+    ) -> bool:
+        """True when *result_sha* is an ancestor of (or equal to) *target_sha*.
+
+        Tip equality is checked first by the caller and is the fast path; a
+        merge queue can land another change on the target branch between this
+        merge and reconciliation, so a genuinely merged campaign must not be
+        reported as unmergeable forever just because the tip moved. GitHub's
+        compare API reports `status: "ahead"` (result strictly behind target,
+        i.e. contained in its history) or `"identical"` when comparing
+        `result_sha...target_sha`.
+        """
+        compare_response = await client.get(f"{path}/compare/{result_sha}...{target_sha}")
+        if compare_response.status_code != 200:
+            raise RuntimeError(
+                "Cannot verify GitHub merge result ancestry against the target branch"
+            )
+        status_value = str(compare_response.json().get("status") or "")
+        return status_value in {"identical", "ahead"}
 
     async def _github_merge_base_sha(
         self,
