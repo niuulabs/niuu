@@ -131,6 +131,7 @@ def _execution_row(execution: WorkflowExecution) -> dict:
         "parent_stopped_at": execution.parent_stopped_at,
         "policy": _policy_to_json(execution.policy),
         "input": execution.input,
+        "workflow_snapshot": execution.workflow_snapshot,
         "revision": execution.revision,
         "blocker_revision": execution.blocker_revision,
         "blocker_notified_revision": execution.blocker_notified_revision,
@@ -255,7 +256,8 @@ async def test_create_round_trips_a_plain_execution_with_no_extension_table() ->
 
     assert created is execution
     assert connection.insert_args[0] == execution.id
-    assert json.loads(connection.insert_args[-7]) == execution.input
+    assert json.loads(connection.insert_args[-8]) == execution.input
+    assert json.loads(connection.insert_args[-7]) == execution.workflow_snapshot
     assert connection.in_transaction is False
 
 
@@ -373,7 +375,11 @@ class _ReadPool:
 
 @pytest.mark.asyncio
 async def test_attach_read_and_page_execution_and_child_state() -> None:
-    execution = replace(_execution(), suspension_reason="launching_parent")
+    execution = replace(
+        _execution(),
+        suspension_reason="launching_parent",
+        workflow_snapshot={"graph": {"nodes": [], "edges": []}, "name": "Publish handbook"},
+    )
     child = make_children(execution, 1, (_proposal(execution, "en"),))[0]
     pool = _ReadPool(execution, child)
     repository = PostgresWorkflowExecutionRepository(pool)
@@ -398,6 +404,10 @@ async def test_attach_read_and_page_execution_and_child_state() -> None:
     assert attached.state == ExecutionState.RUNNING
     assert owned.id == internal.id == by_session.id == execution.id
     assert owned.input == execution.input
+    # A plain, non-delivery execution carries its pinned workflow snapshot
+    # through the generic ledger with no delivery extension table involved.
+    assert owned.workflow_snapshot == execution.workflow_snapshot
+    assert internal.workflow_snapshot == execution.workflow_snapshot
     assert children[0].id == loaded_child.id == child.id
     assert page[0].id == execution.id
     assert cursor.endswith(str(execution.id))

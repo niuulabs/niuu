@@ -88,17 +88,16 @@ class PostgresDeliveryExecutionRepository(
         await connection.execute(
             """
             INSERT INTO delivery_executions (
-                execution_id, repository, base_ref, base_sha, workflow_snapshot,
+                execution_id, repository, base_ref, base_sha,
                 merge_receipt, integration_receipts, integration_allocation,
                 integration_candidate, integration_review_receipt,
                 integration_review_event_id
-            ) VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb,$11)
+            ) VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10)
             """,
             execution.id,
             execution.repository,
             execution.base_ref,
             execution.base_sha,
-            json.dumps(execution.workflow_snapshot),
             json.dumps(execution.merge_receipt) if execution.merge_receipt is not None else None,
             json.dumps(list(execution.integration_receipts)),
             (
@@ -367,12 +366,12 @@ def _delivery_execution_from_rows(exec_row, delivery_row) -> DeliveryExecution:
         blocker_notified_revision=int(exec_row["blocker_notified_revision"]),
         completed_at=exec_row.get("completed_at"),
         input=_json_dict(exec_row.get("input")),
+        workflow_snapshot=_json_dict(exec_row.get("workflow_snapshot")),
         created_at=exec_row["created_at"],
         updated_at=exec_row["updated_at"],
         repository=delivery_row["repository"],
         base_ref=delivery_row["base_ref"],
         base_sha=delivery_row["base_sha"],
-        workflow_snapshot=_json_dict(delivery_row.get("workflow_snapshot")),
         merge_receipt=(
             _json_dict(delivery_row["merge_receipt"])
             if delivery_row.get("merge_receipt") is not None

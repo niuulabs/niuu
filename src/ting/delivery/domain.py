@@ -7,7 +7,7 @@ checks the pinned contract, dependency graph, identity, and resource bounds.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
@@ -43,7 +43,6 @@ class DeliveryExecution(WorkflowExecution):
     integration_candidate: dict[str, Any] | None = None
     integration_review_receipt: dict[str, Any] | None = None
     integration_review_event_id: str = ""
-    workflow_snapshot: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         super().__post_init__()

@@ -6,27 +6,31 @@ import json
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
-from ting.delivery.domain import DeliveryExecution
-from ting.delivery.ports import ParentWorkflowContinuation
 from ting.domain.workflow_continuation_events import (
     subworkflow_blocked_event,
     subworkflow_joined_event,
     wait_observed_event,
 )
+from ting.domain.workflow_execution import WorkflowExecution
 from ting.domain.workflow_wait import (
     WaitObservation,
     WorkflowWait,
 )
 from ting.ports.volundr import VolundrFactory
+from ting.ports.workflow_execution import SessionContinuation
+from ting.ports.workflow_wait import WaitContinuation
 
 
-class VolundrParentWorkflowContinuation(ParentWorkflowContinuation):
+class VolundrParentWorkflowContinuation(
+    SessionContinuation[WorkflowExecution],
+    WaitContinuation[WorkflowExecution],
+):
     def __init__(self, *, volundr_factory: VolundrFactory) -> None:
         self._volundr_factory = volundr_factory
 
     async def resume_parent(
         self,
-        execution: DeliveryExecution,
+        execution: WorkflowExecution,
         *,
         generation: int,
         results: list[dict],
@@ -47,7 +51,7 @@ class VolundrParentWorkflowContinuation(ParentWorkflowContinuation):
 
     async def notify_parent(
         self,
-        execution: DeliveryExecution,
+        execution: WorkflowExecution,
         *,
         generation: int,
         correlation_revision: int,
@@ -70,7 +74,7 @@ class VolundrParentWorkflowContinuation(ParentWorkflowContinuation):
 
     async def notify_wait_observation(
         self,
-        execution: DeliveryExecution,
+        execution: WorkflowExecution,
         wait: WorkflowWait,
         observation: WaitObservation,
     ) -> None:
@@ -93,12 +97,12 @@ class VolundrParentWorkflowContinuation(ParentWorkflowContinuation):
             },
         )
 
-    async def stop_parent(self, execution: DeliveryExecution) -> None:
+    async def stop_parent(self, execution: WorkflowExecution) -> None:
         adapter = await self._adapter(execution)
         await adapter.stop_session(execution.parent_session_id)
 
     @staticmethod
-    def _graph(execution: DeliveryExecution) -> dict[str, Any]:
+    def _graph(execution: WorkflowExecution) -> dict[str, Any]:
         snapshot = execution.workflow_snapshot
         graph = snapshot.get("graph") if isinstance(snapshot, dict) else None
         if not isinstance(graph, dict):
@@ -111,7 +115,7 @@ class VolundrParentWorkflowContinuation(ParentWorkflowContinuation):
     @staticmethod
     async def _deliver(
         adapter: Any,
-        execution: DeliveryExecution,
+        execution: WorkflowExecution,
         event_type: str,
         *,
         seed: str,
@@ -134,7 +138,7 @@ class VolundrParentWorkflowContinuation(ParentWorkflowContinuation):
             request_id=continuation_id,
         )
 
-    async def _adapter(self, execution: DeliveryExecution):
+    async def _adapter(self, execution: WorkflowExecution):
         if execution.connection_id:
             adapter = await self._volundr_factory.for_connection(
                 execution.owner_id,

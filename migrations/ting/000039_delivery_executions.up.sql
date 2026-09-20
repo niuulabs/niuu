@@ -9,7 +9,6 @@ CREATE TABLE IF NOT EXISTS delivery_executions (
     repository TEXT NOT NULL,
     base_ref TEXT NOT NULL,
     base_sha TEXT NOT NULL,
-    workflow_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
     merge_receipt JSONB,
     integration_receipts JSONB NOT NULL DEFAULT '[]'::jsonb,
     integration_allocation JSONB,

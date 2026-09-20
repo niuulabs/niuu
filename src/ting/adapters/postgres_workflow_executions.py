@@ -86,11 +86,12 @@ class PostgresWorkflowExecutionRepository[
                         parent_session_id, parent_node_id, connection_id, state,
                         current_generation, total_budget, reserved_budget, spent_budget,
                         deadline, suspension_reason, cancel_requested, policy, input,
+                        workflow_snapshot,
                         revision, launch_key, launch_digest, plan_revision,
                         created_at, updated_at
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-                        $17,$18,$19,$20::jsonb,$21::jsonb,$22,$23,$24,$25,$26,$27
+                        $17,$18,$19,$20::jsonb,$21::jsonb,$22::jsonb,$23,$24,$25,$26,$27,$28
                     )
                     """,
                     execution.id,
@@ -114,6 +115,7 @@ class PostgresWorkflowExecutionRepository[
                     execution.cancel_requested,
                     json.dumps(_policy_to_json(execution.policy)),
                     json.dumps(execution.input),
+                    json.dumps(execution.workflow_snapshot),
                     execution.revision,
                     execution.launch_key,
                     execution.launch_digest,
@@ -1233,6 +1235,7 @@ def _generic_execution_from_row(row) -> WorkflowExecution:
         blocker_notified_revision=int(row["blocker_notified_revision"]),
         completed_at=row.get("completed_at"),
         input=_json_dict(row.get("input")),
+        workflow_snapshot=_json_dict(row.get("workflow_snapshot")),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS workflow_executions (
     cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
     policy JSONB NOT NULL,
     input JSONB NOT NULL DEFAULT '{}'::jsonb,
+    workflow_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
     revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
     launch_key TEXT NOT NULL DEFAULT '',
     launch_digest TEXT NOT NULL DEFAULT '',
