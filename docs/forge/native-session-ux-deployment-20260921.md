@@ -1,6 +1,6 @@
 # Thor native-session UX API release
 
-September 21, 2026. **Thor deployed; native TestFlight publication still pending.**
+September 21, 2026. **Thor deployed; iOS and macOS 2.0 (2275) subsequently delivered.**
 Worker record, not user acceptance.
 
 The user explicitly authorized the Thor API update with a brief reconnect window.
@@ -61,3 +61,13 @@ Private evidence: `.local/release-20260921/` in
 `live-local-scope-readback.json`, `migration-live-readback.txt`, CI artifacts,
 `restart-proof-reuse-v4.json`, `health-observation-summary.json` and backups.
 Original failed/unlaunched preparation evidence is retained, not counted green.
+
+## Paired native delivery follow-up
+
+At 03:21 UTC (iOS) and 03:30 UTC (Mac), independent Apple reads verify the exact
+uploaded build2275, VALID, IN_BETA_TESTING, devs access and matching release notes.
+Native signed product is `6a49b6b508e1b4748edac16472477d34d0d8cee0`; documentation
+checkpoint `6f04885a` is separate from that artifact and from the deployed backend.
+No additional server mutation occurred for publication. Full report:
+`/home/thor/repos/worktrees/lexi-native-session-ux-release-20260921/apps/chat/docs/session-ux-2275/STATUS.md`.
+Manual UI/cross-device acceptance and other-host updates remain open.
