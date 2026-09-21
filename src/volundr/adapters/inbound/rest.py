@@ -9,7 +9,7 @@ import re
 import time
 from datetime import UTC, datetime
 from pathlib import Path as FilePath
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
@@ -1624,6 +1624,7 @@ def create_router(
             "file_manager_enabled": admin.get("storage", {}).get("file_manager_enabled", True),
             "mini_mode": settings.local_mounts.mini_mode,
             "local_mounts_allowed_prefixes": settings.local_mounts.allowed_prefixes,
+            "capabilities": {"local_session_scope": True},
             "projects_enabled": project_service is not None,
             "project_contract_version": 1 if project_service is not None else 0,
             "project_instance_id": project_service.instance_id if project_service else None,
@@ -1665,6 +1666,10 @@ def create_router(
     @router.get("/sessions", response_model=list[SessionResponse], tags=["Sessions"])
     async def list_sessions(
         request: Request,
+        response: Response,
+        scope: Literal["local", "guild"] = Query(
+            default="local", description="Standalone Forge always serves its own local sessions"
+        ),
         status_filter: SessionStatus | None = Query(
             default=None, alias="status", description="Filter by session status"
         ),
@@ -1677,6 +1682,7 @@ def create_router(
         parent_instance_id: str | None = Query(default=None),
     ) -> list[SessionResponse]:
         """List all sessions. Archived sessions are excluded by default."""
+        response.headers["X-Forge-Session-Scope"] = "local"
         principal = await _optional_principal(request)
         if principal is None and _strict_identity_enabled(request):
             return []
@@ -1714,7 +1720,10 @@ def create_router(
         responses={503: {"model": ErrorResponse}},
         tags=["Sessions"],
     )
-    async def stream_sessions(request: Request) -> StreamingResponse:
+    async def stream_sessions(
+        request: Request,
+        scope: Literal["local", "guild"] = Query(default="local"),
+    ) -> StreamingResponse:
         """Stream real-time session updates via Server-Sent Events (SSE).
 
         This endpoint provides a real-time stream of session events including:
@@ -1778,6 +1787,7 @@ def create_router(
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
                 "X-Accel-Buffering": "no",
+                "X-Forge-Session-Scope": "local",
             },
         )
 

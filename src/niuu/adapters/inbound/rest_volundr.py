@@ -7,7 +7,7 @@ import json
 import time
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import UUID
 
@@ -350,6 +350,40 @@ async def _sync_persona_to_instance(
     _ensure_remote_success(synced)
 
 
+async def _local_session_instance(
+    service: InstanceService,
+    principal: Principal,
+    request: Request,
+) -> RegisteredInstance:
+    """Resolve this shell's local runtime, never a default/remote guild member.
+
+    Use the existing explicit embedded transport identity and normal visibility
+    policy. A pure registry shell has no local sessions service: that is an error,
+    not permission to silently query an arbitrary registered node.
+    """
+    local = [
+        instance
+        for instance in await _visible_instances(service, principal)
+        if _uses_embedded_transport(instance)
+    ]
+    if len(local) != 1:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Local sessions require exactly one visible, enabled embedded Forge runtime",
+        )
+    selected = request.query_params.get("instance_id")
+    if selected and selected != local[0].id:
+        raise HTTPException(422, "scope=local cannot select a different guild instance")
+    return local[0]
+
+
+def _local_session_scope(request: Request) -> bool:
+    scope = request.query_params.get("scope", "guild")
+    if scope not in {"guild", "local"}:
+        raise HTTPException(422, "Session scope must be local or guild")
+    return scope == "local"
+
+
 async def _find_session_owner(
     service: InstanceService,
     principal: Principal,
@@ -359,11 +393,12 @@ async def _find_session_owner(
     embedded_app: ASGIApp | None = None,
 ) -> tuple[RegisteredInstance, dict[str, Any]]:
     selected = request.query_params.get("instance_id")
-    instances = (
-        [await _resolve_target_instance(service, principal, selected)]
-        if selected
-        else await _visible_instances(service, principal)
-    )
+    if _local_session_scope(request):
+        instances = [await _local_session_instance(service, principal, request)]
+    elif selected:
+        instances = [await _resolve_target_instance(service, principal, selected)]
+    else:
+        instances = await _visible_instances(service, principal)
     for instance in instances:
         response = await _request_remote(
             instance,
@@ -951,8 +986,33 @@ def create_volundr_router(
     @router.get("/sessions")
     async def list_sessions(
         request: Request,
+        response: Response,
+        scope: Literal["guild", "local"] = Query(
+            default="guild", description="Guild aggregation, or only this server's embedded runtime"
+        ),
         principal: Principal = Depends(extract_principal),
     ) -> list[dict[str, Any]]:
+        if scope == "local":
+            instance = await _local_session_instance(service, principal, request)
+            result = await _request_remote(
+                instance,
+                request,
+                method="GET",
+                path="/sessions",
+                params=_query_params(request),
+                embedded_app=embedded_forge_app,
+            )
+            # Unlike best-effort guild aggregation, a failed local read must not
+            # look like an empty successful list or fall through to remote nodes.
+            _ensure_remote_success(result)
+            try:
+                payload = result.json()
+            except ValueError as exc:
+                raise HTTPException(502, "Local Forge sessions response is not JSON") from exc
+            if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
+                raise HTTPException(502, "Unexpected local Forge sessions response")
+            response.headers["X-Forge-Session-Scope"] = "local"
+            return [_with_instance(item, instance) for item in payload]
         selected = request.query_params.get("instance_id")
         instances = (
             [await _resolve_target_instance(service, principal, selected)]
@@ -1018,6 +1078,7 @@ def create_volundr_router(
     @router.get("/sessions/stream")
     async def stream_sessions(
         request: Request,
+        scope: Literal["guild", "local"] = Query(default="guild"),
         principal: Principal = Depends(extract_principal),
     ) -> StreamingResponse:
         """Proxy the backing instance's Server-Sent Events session stream.
@@ -1029,7 +1090,11 @@ def create_volundr_router(
         reload). Single-instance/mini deployments stream the default backing
         instance; fleet-wide fan-in across instances is a separate feature.
         """
-        instance = await _resolve_target_instance(service, principal, None)
+        instance = (
+            await _local_session_instance(service, principal, request)
+            if scope == "local"
+            else await _resolve_target_instance(service, principal, None)
+        )
         headers = _forward_headers(request)
         embedded = _uses_embedded_transport(instance)
 
@@ -1070,6 +1135,7 @@ def create_volundr_router(
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
                 "X-Accel-Buffering": "no",
+                "X-Forge-Session-Scope": scope,
             },
         )
 
@@ -1333,7 +1399,11 @@ def create_volundr_router(
         request: Request,
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
-        instance = await _resolve_target_instance(service, principal, None)
+        instance = (
+            await _local_session_instance(service, principal, request)
+            if _local_session_scope(request)
+            else await _resolve_target_instance(service, principal, None)
+        )
         response = await _request_remote(
             instance,
             request,
@@ -1354,6 +1424,7 @@ def create_volundr_router(
             "session_events": False,
             "message_delivery": True,
             "native_history_import": True,
+            "local_session_scope": True,
         }
         return flags
 
