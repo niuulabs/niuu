@@ -248,8 +248,6 @@ def _default_models() -> list[ManagedModelConfig]:
             supports_tools=True,
             supports_thinking=True,
         ),
-        # Model ids MUST match `grok models` exactly — the CLI rejects an unknown id,
-        # which kills the session at its first prompt (the "grok-build" outage).
         ManagedModelConfig(
             id="gpt-5.6-terra",
             name="GPT-5.6 Terra",
@@ -264,6 +262,21 @@ def _default_models() -> list[ManagedModelConfig]:
             supports_tools=True,
             supports_thinking=True,
         ),
+        # Model ids MUST match `grok models` exactly — the CLI rejects an unknown id,
+        # which kills the session at its first prompt (the "grok-build" outage).
+        ManagedModelConfig(
+            id="grok-4.7",
+            name="Grok 4.7 (Build)",
+            vendor="xai",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.FRONTIER,
+            color="#1DA1F2",
+            description="xAI Grok 4.7 agentic coding model (ACP over stdio).",
+            cost_per_million_tokens=None,
+            session_definition="skuldGrok",
+            supports_tools=True,
+            supports_thinking=True,
+        ),
         ManagedModelConfig(
             id="grok-4.6",
             name="Grok 4.6 (Build)",
@@ -271,22 +284,7 @@ def _default_models() -> list[ManagedModelConfig]:
             provider=ManagedModelProvider.CLOUD,
             tier=ManagedModelTier.FRONTIER,
             color="#1DA1F2",
-            description=(
-                "xAI Grok 4.6 agentic coding model (ACP over stdio). Served as grok-4.6-build."
-            ),
-            cost_per_million_tokens=None,
-            session_definition="skuldGrok",
-            supports_tools=True,
-            supports_thinking=True,
-        ),
-        ManagedModelConfig(
-            id="grok-4.5",
-            name="Grok 4.5 (Build)",
-            vendor="xai",
-            provider=ManagedModelProvider.CLOUD,
-            tier=ManagedModelTier.FRONTIER,
-            color="#1DA1F2",
-            description="xAI Grok 4.5 agentic coding model (ACP over stdio).",
+            description="xAI Grok 4.6 agentic coding model (ACP over stdio).",
             cost_per_million_tokens=None,
             session_definition="skuldGrok",
             supports_tools=True,

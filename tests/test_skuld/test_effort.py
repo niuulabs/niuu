@@ -189,7 +189,9 @@ async def test_muse_and_claude_launch_and_change(tmp_path):
 def test_catalog_metadata_and_host_only_additions():
     base = BifrostConfig()
     assert base.model_entry("gpt-6-astra").default_effort == "xhigh"
-    assert base.model_entry("grok-4.5").effort_levels == ["low", "medium", "high"]
+    for model_id in ("grok-4.7", "grok-4.6"):
+        assert base.model_entry(model_id).effort_levels == ["low", "medium", "high", "xhigh"]
+        assert base.model_entry(model_id).default_effort == "xhigh"
     local = ManagedModelConfig(
         id="spark/qwen",
         name="Qwen",

@@ -116,11 +116,18 @@ class TestBifrostConfig:
         # outright, so every Grok session died at its first prompt while this
         # test stayed green. Ids here must track the live catalogue.
         models = BifrostConfig().models
-        for model_id in ("grok-4.6", "grok-4.5"):
+        assert [m.id for m in models if m.session_definition == "skuldGrok"] == [
+            "grok-4.7",
+            "grok-4.6",
+        ]
+        for model_id in ("grok-4.7", "grok-4.6"):
             grok = next((m for m in models if m.id == model_id), None)
             assert grok is not None, f"{model_id} missing from default model catalog"
             assert grok.session_definition == "skuldGrok"
             assert grok.vendor == "xai"
+            assert grok.supports_tools and grok.supports_thinking
+            assert grok.effort_levels == ["low", "medium", "high", "xhigh"]
+            assert grok.default_effort == "xhigh"
         assert not [m for m in models if m.id == "grok-build"], (
             "grok-build is not a real model id and must not reappear in the catalogue"
         )

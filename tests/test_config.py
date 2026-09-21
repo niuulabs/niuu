@@ -1033,6 +1033,20 @@ class TestEventPipelineConfig:
         assert settings.event_pipeline.otel.enabled is False
 
 
+def test_builtin_grok_default_matches_catalog_and_transport():
+    from bifrost.config import BifrostConfig
+    from niuu.config_models import default_session_definitions
+    from skuld.transports.grok import GROK_DEFAULT_MODEL
+
+    definition = default_session_definitions()["skuldGrok"]
+    assert definition.default_model == GROK_DEFAULT_MODEL == "grok-4.7"
+    model = BifrostConfig().model_entry(definition.default_model)
+    assert model.session_definition == "skuldGrok"
+    assert definition.defaults["broker"]["transportAdapter"] == (
+        "skuld.transports.grok.GrokACPTransport"
+    )
+
+
 def test_builtin_remote_control_definitions_present():
     """Remote Control session types ship as built-ins like the other skuld*
     definitions, wired to the remote-control transports."""
