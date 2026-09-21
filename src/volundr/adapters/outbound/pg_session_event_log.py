@@ -31,10 +31,13 @@ from volundr.domain.ports import SessionEventLogRepository, _log_entries_conflic
 
 logger = logging.getLogger(__name__)
 
-_INSERT_SQL = """WITH inserted AS (
+_INSERT_SQL = """WITH locked_session AS MATERIALIZED (
+           SELECT id FROM sessions WHERE id = $1 FOR UPDATE
+       ), inserted AS (
            INSERT INTO session_event_log
            (session_id, seq, kind, role, request_id, payload, ts)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           SELECT $1, $2, $3, $4, $5, $6, $7
+           FROM (SELECT COUNT(*) FROM locked_session) AS lock_guard
            ON CONFLICT (session_id, seq) DO NOTHING
            RETURNING session_id, seq, kind, payload, ts
        )

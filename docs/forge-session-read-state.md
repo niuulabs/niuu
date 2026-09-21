@@ -62,8 +62,8 @@ new inbox deliveries. Migration starts existing sessions at a zero cursor; it do
 not sweep historical sessions into unread. Updated brokers are required for new
 final markers; migration/backend code alone cannot upgrade already-loaded writers.
 
-The session row serializes final projection updates with reader mutations. Normal
-non-final log frames do not acquire an extra session row lock. `session_read_state`
+The session row serializes final projection updates with reader mutations. The release integration preserves the existing append/import session-row lock for
+all frames; the final projection adds no second lock. `session_read_state`
 SSE events are refresh hints carrying only session/owner IDs, never private reader
 markers. Hint failure does not fail an already-committed mutation; ordinary relisting
 recovers missed hints. iOS fetches the affected small projection, not the whole fleet.

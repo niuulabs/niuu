@@ -265,7 +265,13 @@ async def real_history_pool():
         pool = await asyncpg.create_pool(
             dsn, min_size=1, max_size=4, server_settings={"search_path": schema}
         )
-        await pool.execute("CREATE TABLE sessions (id uuid PRIMARY KEY, status text NOT NULL)")
+        await pool.execute(
+            """CREATE TABLE sessions (
+                id uuid PRIMARY KEY, status text NOT NULL,
+                latest_final_seq bigint NOT NULL DEFAULT 0,
+                latest_final_turn_id text, latest_final_at timestamptz
+            )"""
+        )
         await pool.execute(
             """CREATE TABLE session_event_log (
                 session_id uuid NOT NULL, seq bigint NOT NULL, kind text NOT NULL,
@@ -315,7 +321,7 @@ async def test_projection_repair_rejects_scrubbing_that_would_invalidate_its_pro
 async def test_real_projection_repair_preserves_raw_prefix_and_cold_rebuild(real_history_pool):
     pool = real_history_pool
     sid = uuid4()
-    await pool.execute("INSERT INTO sessions VALUES ($1, 'stopped')", sid)
+    await pool.execute("INSERT INTO sessions (id, status) VALUES ($1, 'stopped')", sid)
     repo = PostgresSessionEventLog(pool)
     frames, original, candidate = captured()
     raw = [_entry(sid, seq=frame.seq, kind=frame.kind, payload=frame.payload) for frame in frames]
@@ -340,7 +346,7 @@ async def test_real_projection_repair_preserves_raw_prefix_and_cold_rebuild(real
 async def test_real_projection_repair_rejects_invalid_proof_atomically(real_history_pool):
     pool = real_history_pool
     sid = uuid4()
-    await pool.execute("INSERT INTO sessions VALUES ($1, 'stopped')", sid)
+    await pool.execute("INSERT INTO sessions (id, status) VALUES ($1, 'stopped')", sid)
     repo = PostgresSessionEventLog(pool)
     _, original, candidate = captured()
     await repo.append([_entry(sid, seq=1, kind="conversation.turn", payload={"turn": original})])
@@ -356,7 +362,7 @@ async def test_real_projection_repair_rejects_invalid_proof_atomically(real_hist
 async def test_real_import_round_trip_preserves_chrome_and_native_time(real_history_pool):
     pool = real_history_pool
     sid = uuid4()
-    await pool.execute("INSERT INTO sessions VALUES ($1, 'stopped')", sid)
+    await pool.execute("INSERT INTO sessions (id, status) VALUES ($1, 'stopped')", sid)
     repo = PostgresSessionEventLog(pool)
     chrome = [
         ("system", {"subtype": "init"}),
@@ -399,7 +405,7 @@ async def test_real_import_round_trip_preserves_chrome_and_native_time(real_hist
 async def test_real_import_rejects_captured_or_unrecognized_history(real_history_pool, kind):
     pool = real_history_pool
     sid = uuid4()
-    await pool.execute("INSERT INTO sessions VALUES ($1, 'stopped')", sid)
+    await pool.execute("INSERT INTO sessions (id, status) VALUES ($1, 'stopped')", sid)
     repo = PostgresSessionEventLog(pool)
     await repo.append([_entry(sid, kind=kind, payload={})])
 
@@ -413,7 +419,7 @@ async def test_real_import_rejects_captured_or_unrecognized_history(real_history
 async def test_real_import_rolls_back_all_frames_when_marker_fails(real_history_pool, monkeypatch):
     pool = real_history_pool
     sid = uuid4()
-    await pool.execute("INSERT INTO sessions VALUES ($1, 'stopped')", sid)
+    await pool.execute("INSERT INTO sessions (id, status) VALUES ($1, 'stopped')", sid)
     repo = PostgresSessionEventLog(pool)
     original = repo._entry_to_args
 
@@ -436,7 +442,9 @@ async def test_real_import_rolls_back_all_frames_when_marker_fails(real_history_
 async def test_real_import_waits_for_inflight_append_then_refuses_merge(real_history_pool):
     pool = real_history_pool
     sid, unrelated = uuid4(), uuid4()
-    await pool.executemany("INSERT INTO sessions VALUES ($1, 'stopped')", [(sid,), (unrelated,)])
+    await pool.executemany(
+        "INSERT INTO sessions (id, status) VALUES ($1, 'stopped')", [(sid,), (unrelated,)]
+    )
     repo = PostgresSessionEventLog(pool)
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -455,7 +463,7 @@ async def test_real_import_waits_for_inflight_append_then_refuses_merge(real_his
 async def test_real_append_waits_for_import_session_lock(real_history_pool):
     pool = real_history_pool
     sid = uuid4()
-    await pool.execute("INSERT INTO sessions VALUES ($1, 'stopped')", sid)
+    await pool.execute("INSERT INTO sessions (id, status) VALUES ($1, 'stopped')", sid)
     repo = PostgresSessionEventLog(pool)
     async with pool.acquire() as conn:
         async with conn.transaction():
